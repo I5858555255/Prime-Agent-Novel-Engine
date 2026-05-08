@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildRlmBasePrompt } from "../src/core/prompts/index.js";
+import { buildRlmPrompt } from "../src/core/prompts/index.js";
 import type { Skill } from "../src/core/skills.js";
 import { buildSystemPrompt } from "../src/core/system-prompt.js";
 
@@ -19,9 +19,9 @@ function skill(name: string): Skill {
 	};
 }
 
-describe("buildRlmBasePrompt", () => {
-	test("matches the rlm base prompt without recursion", () => {
-		const prompt = buildRlmBasePrompt({
+describe("buildRlmPrompt", () => {
+	test("matches the rlm harness prompt without recursion", () => {
+		const prompt = buildRlmPrompt({
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
 			installedSkills: ["websearch"],
@@ -60,14 +60,11 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("You are a coding agent.");
 		expect(prompt).toContain("Working directory: /repo");
 		expect(prompt).toContain("Conversation log: /repo/.pi/sessions/session.jsonl");
-		expect(prompt).toContain("# IPython Kernel Guidance");
-		expect(prompt).toContain("You are driving an IPython kernel through the `ipython` tool.");
-		expect(prompt).toContain(
-			"When you have the final answer, stop calling tools and emit the answer as assistant text.",
-		);
-		expect(prompt).toContain("## Worked example: chunked summarization of a large file");
-		expect(prompt).toContain("## Anti-patterns");
+		expect(prompt).toContain("Call at most one built-in tool per turn.");
+		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("Available tools:");
+		expect(prompt).not.toContain("## Worked example:");
+		expect(prompt).not.toContain("## Anti-patterns");
 	});
 
 	test("custom prompt override bypasses the rlm harness body", () => {
@@ -95,19 +92,9 @@ describe("buildSystemPrompt", () => {
 			cwd: "/repo",
 		});
 
-		expect(prompt.indexOf("# IPython Kernel Guidance")).toBeLessThan(prompt.indexOf("extra instruction"));
-	});
-
-	test("omits the kernel appendix when ipython is not active", () => {
-		const prompt = buildSystemPrompt({
-			selectedTools: ["bash"],
-			contextFiles: [],
-			skills: [],
-			cwd: "/repo",
-		});
-
-		expect(prompt).toContain("You are a coding agent.");
-		expect(prompt).not.toContain("# IPython Kernel Guidance");
+		expect(prompt.indexOf("Call at most one built-in tool per turn.")).toBeLessThan(
+			prompt.indexOf("extra instruction"),
+		);
 	});
 
 	test("project context files are appended", () => {
