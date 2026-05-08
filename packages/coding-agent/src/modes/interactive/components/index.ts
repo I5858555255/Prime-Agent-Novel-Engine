@@ -4,6 +4,11 @@ export { AssistantMessageComponent } from "./assistant-message.js";
 export { BashExecutionComponent } from "./bash-execution.js";
 export { BorderedLoader } from "./bordered-loader.js";
 export { BranchSummaryMessageComponent } from "./branch-summary-message.js";
+export {
+	CompactionBreakComponent,
+	type CompactionBreakOptions,
+	type CompactionReason,
+} from "./compaction-break.js";
 export { CompactionSummaryMessageComponent } from "./compaction-summary-message.js";
 export { CustomEditor } from "./custom-editor.js";
 export { CustomMessageComponent } from "./custom-message.js";
@@ -14,6 +19,12 @@ export { ExtensionEditorComponent } from "./extension-editor.js";
 export { ExtensionInputComponent } from "./extension-input.js";
 export { ExtensionSelectorComponent } from "./extension-selector.js";
 export { FooterComponent } from "./footer.js";
+export {
+	getIpythonCodeFromArgs,
+	IPythonCellComponent,
+	type IPythonCellContentBlock,
+	type IPythonCellState,
+} from "./ipython-cell.js";
 export { keyHint, keyText, rawKeyHint } from "./keybinding-hints.js";
 export { LoginDialogComponent } from "./login-dialog.js";
 export { ModelSelectorComponent } from "./model-selector.js";
@@ -23,6 +34,13 @@ export { SessionSelectorComponent } from "./session-selector.js";
 export { type SettingsCallbacks, type SettingsConfig, SettingsSelectorComponent } from "./settings-selector.js";
 export { ShowImagesSelectorComponent } from "./show-images-selector.js";
 export { SkillInvocationMessageComponent } from "./skill-invocation-message.js";
+export {
+	type SubAgentStatus,
+	type SubAgentTranscriptLine,
+	SubAgentTreeComponent,
+	type SubAgentTreeNode,
+	type SubAgentTreeOptions,
+} from "./sub-agent-tree.js";
 export { ThemeSelectorComponent } from "./theme-selector.js";
 export { ThinkingSelectorComponent } from "./thinking-selector.js";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.js";
