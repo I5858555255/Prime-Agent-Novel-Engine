@@ -1,6 +1,12 @@
 /**
  * Persistent IPython kernel driven via Jupyter's ZMQ messaging protocol.
  * Variables, imports, and loaded data persist across `execute()` calls.
+ *
+ * TODO: reconsider persistent-kernel vs stateless `python -c` once RLM-1
+ * weights are available. If RLM-1's training tasks didn't materially
+ * exploit state across turns, a ~30-line stateless implementation could
+ * replace this whole file. M4 recursion needs the kernel namespace for
+ * `await rlm('...')`, so this decision becomes load-bearing then.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
