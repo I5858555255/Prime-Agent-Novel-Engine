@@ -5,6 +5,7 @@
 ### Changed
 
 - Changed the default active built-in tool set to `ipython`.
+- Replaced the default system prompt with an RLM bootstrap prompt for IPython-driven agent work.
 
 ### Removed
 
