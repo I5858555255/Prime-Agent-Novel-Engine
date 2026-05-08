@@ -197,6 +197,8 @@ export class KernelManager {
 	/** Serializes execute() calls — Jupyter shell channel is request/reply. */
 	private executionQueue: Promise<unknown> = Promise.resolve();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
+	/** Memoized so concurrent callers all await the same in-flight startup. */
+	private startPromise?: Promise<void>;
 
 	constructor(options: KernelManagerOptions) {
 		if (!existsSync(options.python)) {
@@ -210,6 +212,13 @@ export class KernelManager {
 	}
 
 	async start(): Promise<void> {
+		if (!this.startPromise) {
+			this.startPromise = this.doStart();
+		}
+		return this.startPromise;
+	}
+
+	private async doStart(): Promise<void> {
 		if (this.state !== "idle") return;
 		this.state = "starting";
 		installSignalHandlersOnce();
@@ -305,7 +314,7 @@ export class KernelManager {
 		if (opts.signal?.aborted) {
 			return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
 		}
-		if (this.state === "idle") await this.start();
+		await this.start();
 		if ((this.state as string) === "shutdown") {
 			throw new Error("Kernel has been shut down");
 		}

@@ -30,19 +30,26 @@ export function createIpythonToolDefinition(
 	cwd: string,
 	options?: IpythonToolOptions,
 ): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
-	let manager: KernelManager | undefined;
+	// Memoize the entire create+start so concurrent first calls all await the
+	// same in-flight startup instead of creating two managers or skipping the
+	// not-yet-finished start().
+	let managerPromise: Promise<KernelManager> | undefined;
 
-	async function getManager(): Promise<KernelManager> {
-		if (manager) return manager;
-		const python = options?.python ?? resolveKernelPython();
-		if (!python) {
-			throw new Error(
-				"No Python interpreter with `ipykernel` was found. Run `./scripts/setup-kernel-venv.sh` from the repo root, or set PRIME_AGENT_KERNEL_PYTHON to point at a python that has ipykernel installed.",
-			);
+	function getManager(): Promise<KernelManager> {
+		if (!managerPromise) {
+			managerPromise = (async () => {
+				const python = options?.python ?? resolveKernelPython();
+				if (!python) {
+					throw new Error(
+						"No Python interpreter with `ipykernel` was found. Run `./scripts/setup-kernel-venv.sh` from the repo root, or set PRIME_AGENT_KERNEL_PYTHON to point at a python that has ipykernel installed.",
+					);
+				}
+				const m = new KernelManager({ python, cwd });
+				await m.start();
+				return m;
+			})();
 		}
-		manager = new KernelManager({ python, cwd });
-		await manager.start();
-		return manager;
+		return managerPromise;
 	}
 
 	return {
@@ -53,6 +60,8 @@ export function createIpythonToolDefinition(
 			"persist across calls. Shell commands available inside Python via `!cmd` (single-line) " +
 			"or `%%bash` (multi-line cells).",
 		promptSnippet: "ipython - execute Python in a persistent kernel; state survives across calls",
+		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
+		executionMode: "sequential",
 		parameters: ipythonSchema,
 		execute: async (_toolCallId, params, signal, onUpdate) => {
 			const m = await getManager();
