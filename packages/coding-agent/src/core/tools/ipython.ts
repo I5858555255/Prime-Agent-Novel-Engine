@@ -1,5 +1,4 @@
-// TODO: reconsider whether the persistent kernel is needed once RLM-1
-// weights are available — see kernel/index.ts for the open question.
+// TODO: reconsider whether the persistent kernel is needed once RLM-1 weights land.
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.js";
