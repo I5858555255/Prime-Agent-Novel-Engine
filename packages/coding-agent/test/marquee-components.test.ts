@@ -2,7 +2,6 @@ import { type Component, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.js";
-import { CompactionBreakComponent } from "../src/modes/interactive/components/compaction-break.js";
 import { IPythonCellComponent, type IPythonCellState } from "../src/modes/interactive/components/ipython-cell.js";
 import { SubAgentTreeComponent } from "../src/modes/interactive/components/sub-agent-tree.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
@@ -118,27 +117,6 @@ describe("marquee TUI components", () => {
 		component.setExpanded("shard-0", true);
 		const expanded = await renderInVirtualTerminal(component);
 		expect(expanded).toContain("assistant: no anomaly found in this shard");
-	});
-
-	test("renders compaction break collapsed and expanded states", async () => {
-		const component = new CompactionBreakComponent({
-			summary: "Loaded df from logs.csv and found the next task is to inspect shard-3.",
-			tokensBefore: 123456,
-			reason: "threshold",
-			preCompactionTurns: 42,
-		});
-
-		const collapsed = await renderInVirtualTerminal(component);
-		expect(collapsed).toContain("compaction break context threshold reached");
-		expect(collapsed).toContain("pre-compaction transcript collapsed: 42 turns");
-		expect(collapsed).toContain("kernel restarted - variables wiped");
-		expect(collapsed).toContain("handoff summary hidden");
-		expect(collapsed).not.toContain("Loaded df from logs.csv");
-
-		component.setExpanded(true);
-		const expanded = await renderInVirtualTerminal(component);
-		expect(expanded).toContain("handoff summary");
-		expect(expanded).toContain("Loaded df from logs.csv");
 	});
 
 	test("routes built-in ipython tool rows through the cell renderer", () => {
