@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildNativePrompt } from "../src/core/prompts/index.js";
+import { buildRlmBasePrompt } from "../src/core/prompts/index.js";
 import type { Skill } from "../src/core/skills.js";
 import { buildSystemPrompt } from "../src/core/system-prompt.js";
 
@@ -19,9 +19,9 @@ function skill(name: string): Skill {
 	};
 }
 
-describe("buildNativePrompt", () => {
+describe("buildRlmBasePrompt", () => {
 	test("matches the rlm base prompt without recursion", () => {
-		const prompt = buildNativePrompt({
+		const prompt = buildRlmBasePrompt({
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
 			installedSkills: ["websearch"],
@@ -48,7 +48,7 @@ describe("buildNativePrompt", () => {
 });
 
 describe("buildSystemPrompt", () => {
-	test("uses the bootstrap prompt for default model behavior", () => {
+	test("uses the model-agnostic rlm harness prompt", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
 			contextFiles: [],
@@ -60,7 +60,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("You are a coding agent.");
 		expect(prompt).toContain("Working directory: /repo");
 		expect(prompt).toContain("Conversation log: /repo/.pi/sessions/session.jsonl");
-		expect(prompt).toContain("# Bootstrap Appendix");
+		expect(prompt).toContain("# IPython Kernel Guidance");
 		expect(prompt).toContain("You are driving an IPython kernel through the `ipython` tool.");
 		expect(prompt).toContain(
 			"When you have the final answer, stop calling tools and emit the answer as assistant text.",
@@ -70,7 +70,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("Available tools:");
 	});
 
-	test("custom prompt override bypasses bootstrap body", () => {
+	test("custom prompt override bypasses the rlm harness body", () => {
 		const prompt = buildSystemPrompt({
 			customPrompt: "custom body",
 			selectedTools: ["ipython"],
@@ -81,12 +81,12 @@ describe("buildSystemPrompt", () => {
 		});
 
 		expect(prompt).toContain("custom body");
-		expect(prompt).not.toContain("# Bootstrap Appendix");
+		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("You are a coding agent.");
 		expect(prompt.indexOf("Current working directory: /repo")).toBeLessThan(prompt.indexOf("custom append"));
 	});
 
-	test("append system prompt content is included after the bootstrap appendix", () => {
+	test("append system prompt content is included after the rlm harness prompt", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
 			appendSystemPrompt: "extra instruction",
@@ -95,7 +95,7 @@ describe("buildSystemPrompt", () => {
 			cwd: "/repo",
 		});
 
-		expect(prompt.indexOf("# Bootstrap Appendix")).toBeLessThan(prompt.indexOf("extra instruction"));
+		expect(prompt.indexOf("# IPython Kernel Guidance")).toBeLessThan(prompt.indexOf("extra instruction"));
 	});
 
 	test("omits the kernel appendix when ipython is not active", () => {
@@ -107,7 +107,7 @@ describe("buildSystemPrompt", () => {
 		});
 
 		expect(prompt).toContain("You are a coding agent.");
-		expect(prompt).not.toContain("# Bootstrap Appendix");
+		expect(prompt).not.toContain("# IPython Kernel Guidance");
 	});
 
 	test("project context files are appended", () => {
@@ -122,7 +122,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("## AGENTS.md\n\nproject rules");
 	});
 
-	test("skills are included in bootstrap prompts", () => {
+	test("skills are included in rlm harness prompts", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
 			contextFiles: [],

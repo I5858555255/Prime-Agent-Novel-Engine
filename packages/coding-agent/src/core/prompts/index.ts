@@ -1,2 +1,1 @@
-export { appendBootstrap, BOOTSTRAP_APPENDIX } from "./bootstrap-appendix.js";
-export { buildNativePrompt, type NativePromptOptions } from "./native.js";
+export { buildRlmBasePrompt, buildRlmPrompt, IPYTHON_KERNEL_GUIDANCE, type RlmPromptOptions } from "./rlm.js";

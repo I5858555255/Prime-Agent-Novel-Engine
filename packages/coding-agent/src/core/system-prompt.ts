@@ -2,7 +2,7 @@
  * System prompt construction and project context loading
  */
 
-import { appendBootstrap, buildNativePrompt } from "./prompts/index.js";
+import { buildRlmPrompt } from "./prompts/index.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
 
 export interface BuildSystemPromptOptions {
@@ -83,16 +83,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		return prompt;
 	}
 
-	let prompt = buildNativePrompt({
+	let prompt = buildRlmPrompt({
 		cwd: promptCwd,
 		messagesPath: promptMessagesPath,
 		installedSkills: skills.filter((skill) => !skill.disableModelInvocation).map((skill) => skill.name),
 		activeTools: tools.filter((name) => name === "ipython" || name === "bash" || name === "edit"),
 		allowRecursion: false,
 	});
-	if (tools.includes("ipython")) {
-		prompt = appendBootstrap(prompt);
-	}
 
 	const guidelines = formatPromptGuidelines(promptGuidelines);
 	if (guidelines) {
