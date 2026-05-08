@@ -11,6 +11,8 @@ import { Dealer, Subscriber } from "zeromq";
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
 const STARTUP_DELAY_MS = 500;
+const READY_TIMEOUT_MS = 5000;
+const DEFAULT_MAX_OUTPUT_CHARS = 65536;
 
 export interface KernelManagerOptions {
 	/** Python interpreter that has `ipykernel` available. */
@@ -24,6 +26,8 @@ export interface ExecuteOptions {
 	/** Aborting interrupts the kernel via the control channel. */
 	signal?: AbortSignal;
 	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
+	/** Cap stdout / stderr / result at this many characters. Default 65536. */
+	maxOutputChars?: number;
 }
 
 export interface ExecuteResult {
@@ -148,6 +152,36 @@ function makeConnection(): { info: ConnectionInfo; path: string; tempDir: string
 	return { info, path, tempDir };
 }
 
+// ---- process-wide cleanup -----------------------------------------------
+
+const liveKernels = new Set<KernelManager>();
+let signalHandlersInstalled = false;
+
+function installSignalHandlersOnce(): void {
+	if (signalHandlersInstalled) return;
+	signalHandlersInstalled = true;
+
+	const asyncShutdown = async (): Promise<void> => {
+		await Promise.allSettled([...liveKernels].map((k) => k.shutdown()));
+	};
+
+	// `beforeExit` and signal handlers can await async cleanup. `exit`
+	// can only do sync work (Node won't run pending microtasks past it),
+	// so it falls back to `dispose()` which kills the child synchronously.
+	process.on("beforeExit", () => {
+		void asyncShutdown();
+	});
+	process.on("SIGINT", () => {
+		void asyncShutdown().finally(() => process.exit(130));
+	});
+	process.on("SIGTERM", () => {
+		void asyncShutdown().finally(() => process.exit(143));
+	});
+	process.on("exit", () => {
+		for (const k of liveKernels) k.dispose();
+	});
+}
+
 // ---- kernel manager ------------------------------------------------------
 
 export class KernelManager {
@@ -159,6 +193,7 @@ export class KernelManager {
 	private control?: Dealer;
 	private connection?: ConnectionInfo;
 	private tempDir?: string;
+	private kernelStderr = "";
 	/** Serializes execute() calls — Jupyter shell channel is request/reply. */
 	private executionQueue: Promise<unknown> = Promise.resolve();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
@@ -177,6 +212,7 @@ export class KernelManager {
 	async start(): Promise<void> {
 		if (this.state !== "idle") return;
 		this.state = "starting";
+		installSignalHandlersOnce();
 
 		const { info, path: connectionPath, tempDir } = makeConnection();
 		this.connection = info;
@@ -188,7 +224,15 @@ export class KernelManager {
 		});
 
 		this.kernel.stderr?.on("data", (buf: Buffer) => {
-			process.stderr.write(`[kernel] ${buf.toString()}`);
+			const s = buf.toString();
+			this.kernelStderr += s;
+			process.stderr.write(`[kernel] ${s}`);
+		});
+
+		this.kernel.on("error", (err) => {
+			console.error(`[kernel] spawn error: ${err.message}`);
+			this.state = "shutdown";
+			liveKernels.delete(this);
 		});
 
 		this.kernel.on("exit", (code, signal) => {
@@ -196,6 +240,7 @@ export class KernelManager {
 				console.error(`[kernel] unexpected exit code=${code} signal=${signal}`);
 			}
 			this.state = "shutdown";
+			liveKernels.delete(this);
 		});
 
 		this.shell = new Dealer();
@@ -208,12 +253,60 @@ export class KernelManager {
 
 		// ZMQ slow-joiner: give the kernel time to bind ports before publishing.
 		await sleep(STARTUP_DELAY_MS);
+
+		try {
+			await this.probeReady();
+		} catch (e) {
+			await this.shutdown();
+			throw e;
+		}
+
+		liveKernels.add(this);
 		this.state = "running";
 	}
 
+	private async probeReady(): Promise<void> {
+		const conn = this.connection!;
+		const shell = this.shell!;
+
+		const msg = buildMessage("kernel_info_request", {}, this.session, this.options.username);
+		const requestMsgId = msg.header.msg_id;
+		await shell.send(encode(msg, conn.key));
+
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < READY_TIMEOUT_MS) {
+			if ((this.state as string) === "shutdown") {
+				const tail = this.kernelStderr.slice(-1024);
+				throw new Error(`Kernel exited during startup. stderr:\n${tail || "(empty)"}`);
+			}
+
+			const remaining = READY_TIMEOUT_MS - (Date.now() - startedAt);
+			const winner = await Promise.race([
+				shell.receive().then((frames) => ({ kind: "frames" as const, frames })),
+				sleep(remaining).then(() => ({ kind: "timeout" as const })),
+			]);
+			if (winner.kind === "timeout") break;
+
+			const incoming = decode(winner.frames);
+			if (
+				incoming?.header.msg_type === "kernel_info_reply" &&
+				(incoming.parent_header as { msg_id?: string }).msg_id === requestMsgId
+			) {
+				return;
+			}
+		}
+		const tail = this.kernelStderr.slice(-1024);
+		throw new Error(
+			`Kernel did not respond to kernel_info_request within ${READY_TIMEOUT_MS}ms. stderr tail:\n${tail || "(empty)"}`,
+		);
+	}
+
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+		if (opts.signal?.aborted) {
+			return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
+		}
 		if (this.state === "idle") await this.start();
-		if (this.state === "shutdown") {
+		if ((this.state as string) === "shutdown") {
 			throw new Error("Kernel has been shut down");
 		}
 
@@ -226,6 +319,12 @@ export class KernelManager {
 
 		const started = Date.now();
 		try {
+			if (opts.signal?.aborted) {
+				return { stdout: "", stderr: "", status: "aborted", durationMs: Date.now() - started };
+			}
+			if ((this.state as string) === "shutdown") {
+				throw new Error("Kernel has been shut down");
+			}
 			return await this.executeInner(code, opts, started);
 		} finally {
 			resolveNext();
@@ -236,6 +335,7 @@ export class KernelManager {
 		const conn = this.connection!;
 		const shell = this.shell!;
 		const iopub = this.iopub!;
+		const maxChars = opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
 
 		const msg = buildMessage(
 			"execute_request",
@@ -251,10 +351,16 @@ export class KernelManager {
 			this.options.username,
 		);
 		const requestMsgId = msg.header.msg_id;
+
+		if (opts.signal?.aborted) {
+			return { stdout: "", stderr: "", status: "aborted", durationMs: Date.now() - started };
+		}
 		await shell.send(encode(msg, conn.key));
 
 		let stdout = "";
 		let stderr = "";
+		let stdoutTruncated = false;
+		let stderrTruncated = false;
 		let result: string | undefined;
 		let error: ExecuteResult["error"];
 		let status: ExecuteResult["status"] = "ok";
@@ -273,8 +379,23 @@ export class KernelManager {
 				const t = incoming.header.msg_type;
 				if (t === "stream") {
 					const c = incoming.content as { name: "stdout" | "stderr"; text: string };
-					if (c.name === "stdout") stdout += c.text;
-					else stderr += c.text;
+					if (c.name === "stdout") {
+						if (stdout.length < maxChars) {
+							stdout += c.text;
+							if (stdout.length > maxChars) {
+								stdout = stdout.slice(0, maxChars);
+								stdoutTruncated = true;
+							}
+						}
+					} else {
+						if (stderr.length < maxChars) {
+							stderr += c.text;
+							if (stderr.length > maxChars) {
+								stderr = stderr.slice(0, maxChars);
+								stderrTruncated = true;
+							}
+						}
+					}
 					opts.onStream?.(c.text, c.name);
 				} else if (t === "execute_result") {
 					const c = incoming.content as { data: Record<string, string> };
@@ -292,6 +413,12 @@ export class KernelManager {
 			opts.signal?.removeEventListener("abort", onAbort);
 		}
 
+		if (stdoutTruncated) stdout += `\n[... output truncated at ${maxChars} chars ...]`;
+		if (stderrTruncated) stderr += `\n[... output truncated at ${maxChars} chars ...]`;
+		if (result !== undefined && result.length > maxChars) {
+			result = `${result.slice(0, maxChars)}\n[... output truncated at ${maxChars} chars ...]`;
+		}
+
 		if (opts.signal?.aborted) status = "aborted";
 
 		return { stdout, stderr, result, error, status, durationMs: Date.now() - started };
@@ -304,8 +431,12 @@ export class KernelManager {
 	}
 
 	async shutdown(): Promise<void> {
-		if (this.state === "shutdown") return;
+		if (this.state === "shutdown") {
+			liveKernels.delete(this);
+			return;
+		}
 		this.state = "shutdown";
+		liveKernels.delete(this);
 
 		try {
 			if (this.control && this.connection) {
@@ -321,7 +452,24 @@ export class KernelManager {
 		try {
 			this.kernel?.kill("SIGTERM");
 		} catch {}
-		if (this.tempDir) rmSync(this.tempDir, { recursive: true, force: true });
+		if (this.tempDir) {
+			try {
+				rmSync(this.tempDir, { recursive: true, force: true });
+			} catch {}
+		}
+	}
+
+	/** Synchronous best-effort cleanup. Safe to call from `process.on('exit')`. */
+	dispose(): void {
+		liveKernels.delete(this);
+		try {
+			this.kernel?.kill("SIGTERM");
+		} catch {}
+		if (this.tempDir) {
+			try {
+				rmSync(this.tempDir, { recursive: true, force: true });
+			} catch {}
+		}
 	}
 
 	get isRunning(): boolean {

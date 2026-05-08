@@ -45,10 +45,6 @@ export function createIpythonToolDefinition(
 		return manager;
 	}
 
-	process.once("exit", () => {
-		manager?.shutdown().catch(() => {});
-	});
-
 	return {
 		name: "ipython",
 		label: "ipython",
@@ -84,7 +80,7 @@ export function createIpythonToolDefinition(
 					status: r.status,
 					errorEname: r.error?.ename,
 				},
-				isError: r.status === "error",
+				isError: r.status === "error" || r.status === "aborted",
 			};
 		},
 	};
