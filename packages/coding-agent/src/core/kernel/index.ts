@@ -1,12 +1,6 @@
 /**
- * Persistent IPython kernel manager.
- *
- * Spawns an IPython kernel as a child process and drives it via Jupyter's
- * ZMQ messaging protocol. Variables, imports, and loaded data persist
- * across `execute()` calls — this is the substrate the `ipython` tool
- * runs against. RLM-1 was trained to exploit kernel persistence (load
- * data once, slice across turns), so a stateful kernel is required, not
- * a per-call subprocess.
+ * Persistent IPython kernel driven via Jupyter's ZMQ messaging protocol.
+ * Variables, imports, and loaded data persist across `execute()` calls.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
@@ -24,16 +18,14 @@ const STARTUP_DELAY_MS = 500;
 export interface KernelManagerOptions {
 	/** Python interpreter that has `ipykernel` available. */
 	python: string;
-	/** Working directory for the kernel. */
 	cwd?: string;
-	/** Username to send in message headers. Default: "prime-agent". */
+	/** Default: "prime-agent". */
 	username?: string;
 }
 
 export interface ExecuteOptions {
-	/** Abort the execution mid-flight. The kernel is interrupted via the control channel. */
+	/** Aborting interrupts the kernel via the control channel. */
 	signal?: AbortSignal;
-	/** Called as stdout/stderr arrives, before the call resolves. */
 	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
 }
 
@@ -44,7 +36,6 @@ export interface ExecuteResult {
 	result?: string;
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
-	/** Wall-clock duration in ms. */
 	durationMs: number;
 }
 
@@ -199,7 +190,6 @@ export class KernelManager {
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 
-		// Surface kernel stderr — useful for diagnosing startup failures.
 		this.kernel.stderr?.on("data", (buf: Buffer) => {
 			process.stderr.write(`[kernel] ${buf.toString()}`);
 		});
@@ -326,18 +316,14 @@ export class KernelManager {
 				await this.control.send(encode(msg, this.connection.key));
 				await sleep(200);
 			}
-		} catch {
-			// fall through to SIGTERM
-		}
+		} catch {}
 
 		this.shell?.close();
 		this.iopub?.close();
 		this.control?.close();
 		try {
 			this.kernel?.kill("SIGTERM");
-		} catch {
-			// already dead
-		}
+		} catch {}
 		if (this.tempDir) rmSync(this.tempDir, { recursive: true, force: true });
 	}
 
@@ -364,7 +350,6 @@ export function resolveKernelPython(): string | null {
 		if (existsSync(canonical)) return canonical;
 	}
 
-	// Walk up from cwd looking for a repo-root .kernel-venv.
 	for (let dir = process.cwd(); dir !== "/"; dir = join(dir, "..")) {
 		const candidate = join(dir, ".kernel-venv", "bin", "python");
 		if (existsSync(candidate)) return candidate;

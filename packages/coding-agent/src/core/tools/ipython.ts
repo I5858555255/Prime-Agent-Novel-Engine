@@ -21,12 +21,7 @@ export interface IpythonToolDetails {
 }
 
 export interface IpythonToolOptions {
-	/**
-	 * Path to the Python interpreter that runs the kernel. Must have `ipykernel`
-	 * installed. Defaults to {@link resolveKernelPython}, which checks
-	 * `PRIME_AGENT_KERNEL_PYTHON`, then `~/.prime-agent/kernel-venv`, then
-	 * `<repo>/.kernel-venv` for development.
-	 */
+	/** Defaults to {@link resolveKernelPython}. Must have `ipykernel` installed. */
 	python?: string;
 }
 
@@ -49,7 +44,6 @@ export function createIpythonToolDefinition(
 		return manager;
 	}
 
-	// Best-effort cleanup on process exit.
 	process.once("exit", () => {
 		manager?.shutdown().catch(() => {});
 	});
