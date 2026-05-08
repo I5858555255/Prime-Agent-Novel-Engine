@@ -1,0 +1,20 @@
+{
+  "name": "kernel-spike",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway: validates TS↔IPython kernel round-trip via Jupyter ZMQ messaging. Delete once promoted to packages/kernel/.",
+  "scripts": {
+    "spike": "tsx spike.ts"
+  },
+  "dependencies": {
+    "@nteract/messaging": "^7.0.20",
+    "uuid": "^11.0.3",
+    "zeromq": "^6.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/uuid": "^10.0.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

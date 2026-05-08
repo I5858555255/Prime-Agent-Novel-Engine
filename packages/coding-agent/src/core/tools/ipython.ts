@@ -1,0 +1,102 @@
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { type Static, Type } from "typebox";
+import type { ToolDefinition } from "../extensions/types.js";
+import { KernelManager, resolveKernelPython } from "../kernel/index.js";
+import { wrapToolDefinition } from "./tool-definition-wrapper.js";
+
+const ipythonSchema = Type.Object({
+	code: Type.String({
+		description:
+			"Python code to execute. State (variables, imports, loaded data) persists across calls. " +
+			"Shell commands available via `!cmd` (single-line) or `%%bash` (multi-line cell).",
+	}),
+});
+
+export type IpythonToolInput = Static<typeof ipythonSchema>;
+
+export interface IpythonToolDetails {
+	durationMs?: number;
+	status?: "ok" | "error" | "aborted";
+	errorEname?: string;
+}
+
+export interface IpythonToolOptions {
+	/**
+	 * Path to the Python interpreter that runs the kernel. Must have `ipykernel`
+	 * installed. Defaults to {@link resolveKernelPython}, which checks
+	 * `PRIME_AGENT_KERNEL_PYTHON`, then `~/.prime-agent/kernel-venv`, then
+	 * `<repo>/kernel-spike/.venv` for development.
+	 */
+	python?: string;
+}
+
+export function createIpythonToolDefinition(
+	cwd: string,
+	options?: IpythonToolOptions,
+): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
+	let manager: KernelManager | undefined;
+
+	async function getManager(): Promise<KernelManager> {
+		if (manager) return manager;
+		const python = options?.python ?? resolveKernelPython();
+		if (!python) {
+			throw new Error(
+				"No Python interpreter with `ipykernel` was found. Set PRIME_AGENT_KERNEL_PYTHON, or run kernel-spike/setup.sh during development.",
+			);
+		}
+		manager = new KernelManager({ python, cwd });
+		await manager.start();
+		return manager;
+	}
+
+	// Best-effort cleanup on process exit. The kernel is a child process, so
+	// the OS will reap it regardless; graceful shutdown is friendlier to the
+	// connection-file temp dir.
+	process.once("exit", () => {
+		manager?.shutdown().catch(() => {});
+	});
+
+	return {
+		name: "ipython",
+		label: "ipython",
+		description:
+			"Execute Python code in a persistent IPython kernel. Variables, imports, and loaded data persist across calls. " +
+			"This is the primary execution substrate — prefer it over `bash` for anything beyond a single command. " +
+			"Shell commands are available inside Python via `!cmd` (single-line) or `%%bash` (multi-line cells).",
+		promptSnippet: "ipython - execute Python in a persistent kernel; state survives across calls",
+		parameters: ipythonSchema,
+		execute: async (_toolCallId, params, signal, onUpdate) => {
+			const m = await getManager();
+			const r = await m.execute(params.code, {
+				signal,
+				onStream: (chunk) => {
+					onUpdate?.({
+						content: [{ type: "text", text: chunk }],
+						details: { status: "ok" },
+					});
+				},
+			});
+
+			let text = r.stdout;
+			if (r.stderr) text += (text ? "\n" : "") + r.stderr;
+			if (r.result) text += (text ? "\n" : "") + r.result;
+			if (r.status === "error" && r.error) {
+				text += (text ? "\n" : "") + r.error.traceback.join("\n");
+			}
+
+			return {
+				content: [{ type: "text", text: text || "" }],
+				details: {
+					durationMs: r.durationMs,
+					status: r.status,
+					errorEname: r.error?.ename,
+				},
+				isError: r.status === "error",
+			};
+		},
+	};
+}
+
+export function createIpythonTool(cwd: string, options?: IpythonToolOptions): AgentTool<typeof ipythonSchema> {
+	return wrapToolDefinition(createIpythonToolDefinition(cwd, options));
+}
