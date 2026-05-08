@@ -24,6 +24,10 @@ describe("buildRlmPrompt", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			memoryDirs: {
+				global: "/home/user/.prime-agent/memory",
+				project: "/repo/.prime-agent/memory",
+			},
 			installedSkills: ["websearch"],
 			activeTools: ["ipython"],
 		});
@@ -36,6 +40,7 @@ describe("buildRlmPrompt", () => {
 				"",
 				"Working directory: /repo",
 				"Conversation log: /repo/.pi/sessions/session.jsonl",
+				"Memory directories: global /home/user/.prime-agent/memory; project /repo/.prime-agent/memory. Contents are not auto-injected; read and write files there from the kernel when relevant.",
 				"",
 				"Installed skills (pre-imported): `websearch`.",
 				"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
@@ -60,6 +65,8 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("You are a coding agent.");
 		expect(prompt).toContain("Working directory: /repo");
 		expect(prompt).toContain("Conversation log: /repo/.pi/sessions/session.jsonl");
+		expect(prompt).toContain("Memory directories: global");
+		expect(prompt).toContain("project /repo/.prime-agent/memory");
 		expect(prompt).toContain("Call at most one built-in tool per turn.");
 		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("Available tools:");

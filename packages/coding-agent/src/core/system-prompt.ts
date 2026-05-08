@@ -2,6 +2,7 @@
  * System prompt construction and project context loading
  */
 
+import { ensureMemoryDirsForExistingCwd, formatMemoryPathForPrompt } from "./memory/index.js";
 import { buildRlmPrompt } from "./prompts/index.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
 
@@ -52,6 +53,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 	const tools = selectedTools ?? ["ipython"];
+	const memoryDirs = ensureMemoryDirsForExistingCwd({ cwd });
+	const promptMemoryDirs = {
+		global: formatMemoryPathForPrompt(memoryDirs.global),
+		project: formatMemoryPathForPrompt(memoryDirs.project),
+	};
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -86,6 +92,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	let prompt = buildRlmPrompt({
 		cwd: promptCwd,
 		messagesPath: promptMessagesPath,
+		memoryDirs: promptMemoryDirs,
 		installedSkills: skills.filter((skill) => !skill.disableModelInvocation).map((skill) => skill.name),
 		activeTools: tools.filter((name) => name === "ipython" || name === "bash" || name === "edit"),
 		allowRecursion: false,

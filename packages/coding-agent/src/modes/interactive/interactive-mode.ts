@@ -70,6 +70,7 @@ import type {
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
+import { runMemoryCommand } from "../../core/memory/index.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
 import { DefaultPackageManager } from "../../core/package-manager.js";
@@ -2481,6 +2482,11 @@ export class InteractiveMode {
 			}
 			if (text === "/session") {
 				this.handleSessionCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/memory" || text.startsWith("/memory ")) {
+				this.handleMemoryCommand(text);
 				this.editor.setText("");
 				return;
 			}
@@ -5112,6 +5118,18 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private handleMemoryCommand(text: string): void {
+		const args = text === "/memory" ? "" : text.slice("/memory".length).trim();
+		try {
+			const output = runMemoryCommand(args, { cwd: this.sessionManager.getCwd() });
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(output, 1, 0));
+			this.ui.requestRender();
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	private handleChangelogCommand(): void {

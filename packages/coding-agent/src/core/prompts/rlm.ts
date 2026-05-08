@@ -1,14 +1,17 @@
+import type { MemoryDirs } from "../memory/index.js";
+
 export interface RlmPromptOptions {
 	cwd: string;
 	skillsDir?: string;
 	installedSkills?: string[];
 	messagesPath: string;
+	memoryDirs?: MemoryDirs;
 	allowRecursion?: boolean;
 	activeTools?: string[];
 }
 
 export function buildRlmPrompt(options: RlmPromptOptions): string {
-	const { cwd, skillsDir, messagesPath } = options;
+	const { cwd, skillsDir, messagesPath, memoryDirs } = options;
 	const installedSkills = options.installedSkills ?? [];
 	const allowRecursion = options.allowRecursion ?? false;
 	const activeTools = options.activeTools ?? [];
@@ -20,6 +23,12 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		`Working directory: ${cwd}`,
 		`Conversation log: ${messagesPath}`,
 	];
+
+	if (memoryDirs) {
+		parts.push(
+			`Memory directories: global ${memoryDirs.global}; project ${memoryDirs.project}. Contents are not auto-injected; read and write files there from the kernel when relevant.`,
+		);
+	}
 
 	const skillLines: string[] = [];
 	if (skillsDir) {
