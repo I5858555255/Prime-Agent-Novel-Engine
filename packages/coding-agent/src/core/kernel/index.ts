@@ -661,7 +661,7 @@ export class KernelManager {
 		}
 
 		return (async () => {
-			// TODO: plumb AbortSignal through AgentSession.prompt so disposal can cancel child loops instead of only waiting.
+			// TODO: plumb AbortSignal through AgentSession.prompt so disposal can cancel long-running child loops.
 			try {
 				await this.waitForRlmRunsToSettle(inFlightRlmRuns, RLM_DISPOSE_TIMEOUT_MS);
 			} finally {
@@ -674,6 +674,7 @@ export class KernelManager {
 	disposeSync(): void {
 		this.state = "shutdown";
 		liveKernels.delete(this);
+		// TODO: replace this best-effort hard-exit path if Node exposes an awaitable process-exit cleanup hook.
 		this.cleanupResources();
 	}
 
