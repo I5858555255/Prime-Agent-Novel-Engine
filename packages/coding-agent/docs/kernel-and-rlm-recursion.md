@@ -263,11 +263,14 @@ PRIME_AGENT_KERNEL_PYTHON
 <repo>/.kernel-venv/bin/python
 ```
 
-After the kernel starts, the tool executes this bootstrap code:
+After the kernel starts, the tool bootstraps `rlm` into the user namespace:
 
 ```python
-import rlm as _prime_agent_rlm_module
-rlm = _prime_agent_rlm_module.rlm
+try:
+    import rlm as _prime_agent_rlm_module
+    rlm = _prime_agent_rlm_module.rlm
+except Exception:
+    rlm = _PrimeAgentMissingRlm()
 ```
 
 This puts the callable `rlm` object in the global IPython namespace. The model can use either:
@@ -278,6 +281,8 @@ await rlm.run("subtask")
 ```
 
 Both delegate to the same shim implementation.
+
+If `prime-agent-runtime` is missing from the kernel environment, startup remains non-fatal. The fallback `rlm` object raises a clear `RuntimeError` only when code actually calls `rlm.run(...)` or `rlm(...)`.
 
 ## Python RLM Shim
 
@@ -591,7 +596,8 @@ Common failures and where they surface:
 
 ```text
 prime-agent-runtime missing from .kernel-venv
-  -> ipython tool bootstrap fails when importing rlm
+  -> kernel startup succeeds
+  -> rlm.run raises RuntimeError with setup instructions when called
 
 RLM_DEPTH >= RLM_MAX_DEPTH
   -> Python RuntimeError before comm_open

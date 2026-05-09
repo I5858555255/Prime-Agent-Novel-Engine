@@ -6,7 +6,27 @@ import { KernelManager, resolveKernelPython } from "../kernel/index.js";
 import type { RlmRunHandler } from "../rlm-runtime.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
-const RLM_BOOTSTRAP_CODE = ["import rlm as _prime_agent_rlm_module", "rlm = _prime_agent_rlm_module.rlm"].join("\n");
+const RLM_BOOTSTRAP_CODE = `
+try:
+    import rlm as _prime_agent_rlm_module
+    rlm = _prime_agent_rlm_module.rlm
+except Exception as _prime_agent_rlm_error:
+    _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
+
+    class _PrimeAgentMissingRlm:
+        async def run(self, prompt, **kwargs):
+            raise RuntimeError(
+                "prime-agent-runtime is not installed in this IPython kernel. "
+                "Run ./scripts/setup-kernel-venv.sh from the repo root, or set "
+                "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
+                f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
+            )
+
+        async def __call__(self, prompt, **kwargs):
+            return await self.run(prompt, **kwargs)
+
+    rlm = _PrimeAgentMissingRlm()
+`.trim();
 
 const ipythonSchema = Type.Object({
 	code: Type.String({
