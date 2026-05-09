@@ -13,7 +13,9 @@ import { ensureKernelPython } from "./bootstrap.js";
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
+const PORTS_RESOLVE_TIMEOUT_MS = 5000;
 const READY_TIMEOUT_MS = 5000;
+// Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
 const RLM_DISPOSE_TIMEOUT_MS = 5000;
@@ -57,7 +59,7 @@ interface ConnectionInfo {
 	hb_port: number;
 	signature_scheme: "hmac-sha256";
 	key: string;
-	kernel_name: "python3";
+	kernel_name: string;
 }
 
 interface JupyterMessage {
@@ -161,6 +163,7 @@ function parseConnectionInfo(value: unknown): ConnectionInfo | null {
 	if (typeof stdinPort !== "number" || !Number.isInteger(stdinPort)) return null;
 	if (typeof controlPort !== "number" || !Number.isInteger(controlPort)) return null;
 	if (typeof hbPort !== "number" || !Number.isInteger(hbPort)) return null;
+	const kernelName = typeof value.kernel_name === "string" ? value.kernel_name : "python3";
 	return {
 		ip: value.ip,
 		transport: value.transport,
@@ -171,7 +174,7 @@ function parseConnectionInfo(value: unknown): ConnectionInfo | null {
 		hb_port: hbPort,
 		signature_scheme: value.signature_scheme,
 		key: value.key,
-		kernel_name: "python3",
+		kernel_name: kernelName,
 	};
 }
 
@@ -298,8 +301,7 @@ export class KernelManager {
 			throw error;
 		}
 
-		const { info, path: connectionPath, tempDir } = makeConnection();
-		this.connection = info;
+		const { path: connectionPath, tempDir } = makeConnection();
 		this.tempDir = tempDir;
 
 		const kernel = spawn(python, ["-m", "ipykernel_launcher", "-f", connectionPath], {
@@ -336,8 +338,9 @@ export class KernelManager {
 			conn = await this.waitForResolvedConnection(connectionPath);
 			this.connection = conn;
 		} catch (e) {
+			const canRetryStartup = (this.state as string) !== "shutdown";
 			await this.shutdown();
-			this.state = "idle";
+			if (canRetryStartup) this.state = "idle";
 			throw e;
 		}
 
@@ -355,8 +358,9 @@ export class KernelManager {
 		try {
 			await this.probeReady();
 		} catch (e) {
+			const canRetryStartup = (this.state as string) !== "shutdown";
 			await this.shutdown();
-			this.state = "idle";
+			if (canRetryStartup) this.state = "idle";
 			throw e;
 		}
 
@@ -366,7 +370,7 @@ export class KernelManager {
 
 	private async waitForResolvedConnection(connectionPath: string): Promise<ConnectionInfo> {
 		const startedAt = Date.now();
-		while (Date.now() - startedAt < READY_TIMEOUT_MS) {
+		while (Date.now() - startedAt < PORTS_RESOLVE_TIMEOUT_MS) {
 			if ((this.state as string) === "shutdown") {
 				const tail = this.kernelStderr.slice(-1024);
 				throw new Error(`Kernel exited before resolving ports. stderr:\n${tail || "(empty)"}`);
@@ -382,7 +386,7 @@ export class KernelManager {
 
 		const tail = this.kernelStderr.slice(-1024);
 		throw new Error(
-			`Kernel did not resolve connection ports within ${READY_TIMEOUT_MS}ms. stderr tail:\n${tail || "(empty)"}`,
+			`Kernel did not resolve connection ports within ${PORTS_RESOLVE_TIMEOUT_MS}ms. stderr tail:\n${tail || "(empty)"}`,
 		);
 	}
 
