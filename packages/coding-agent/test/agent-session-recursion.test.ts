@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -196,6 +196,35 @@ describe("AgentSession rlm recursion", () => {
 		expect(parentEntry.message.usage.input).toBe(result.usage.prompt_tokens);
 		expect(parentEntry.message.usage.output).toBe(result.usage.completion_tokens);
 		expect(parentEntry.message.usage.cost.total).toBe(10);
+
+		const sessionFile = root.sessionManager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("parent session file was not created");
+		}
+		expect(readFileSync(sessionFile, "utf-8")).toContain('"type":"child_usage_attributed"');
+
+		const reloaded = SessionManager.open(sessionFile, join(tempDir, "sessions"));
+		const reloadedAttribution = reloaded.getEntries().find((entry) => entry.type === "child_usage_attributed");
+		if (!reloadedAttribution || reloadedAttribution.type !== "child_usage_attributed") {
+			throw new Error("child usage attribution entry was not persisted");
+		}
+		expect(reloadedAttribution.childUsage.input).toBe(result.usage.prompt_tokens);
+		expect(reloadedAttribution.childUsage.output).toBe(result.usage.completion_tokens);
+		expect(reloadedAttribution.aggregateUsage.input).toBe(result.usage.prompt_tokens);
+		expect(reloadedAttribution.aggregateUsage.output).toBe(result.usage.completion_tokens);
+		expect(reloadedAttribution.aggregateUsage.cost.total).toBe(10);
+
+		const reloadedParentEntry = reloaded.getEntries().find((entry) => entry.type === "message");
+		if (
+			!reloadedParentEntry ||
+			reloadedParentEntry.type !== "message" ||
+			reloadedParentEntry.message.role !== "assistant"
+		) {
+			throw new Error("reloaded parent assistant entry was not recorded");
+		}
+		expect(reloadedParentEntry.message.usage.input).toBe(result.usage.prompt_tokens);
+		expect(reloadedParentEntry.message.usage.output).toBe(result.usage.completion_tokens);
+		expect(reloadedParentEntry.message.usage.cost.total).toBe(10);
 	});
 
 	it("rejects child creation at the configured recursion depth cap", async () => {

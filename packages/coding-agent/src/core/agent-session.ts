@@ -84,7 +84,7 @@ import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { RlmRunResult, RlmUsage } from "./rlm-runtime.js";
-import type { BranchSummaryEntry, CompactionEntry } from "./session-manager.js";
+import type { BranchSummaryEntry, CompactionEntry, SessionMessageEntry } from "./session-manager.js";
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
@@ -2553,12 +2553,22 @@ export class AgentSession {
 		return usage;
 	}
 
+	private _findAssistantEntryForMessage(message: AssistantMessage): SessionMessageEntry | undefined {
+		return this.sessionManager
+			.getEntries()
+			.find((entry): entry is SessionMessageEntry => entry.type === "message" && entry.message === message);
+	}
+
 	private _attributeRlmChildUsageToParent(childUsage: Usage): void {
 		const parentAssistant = this._findLastAssistantMessage();
 		if (!parentAssistant) {
 			return;
 		}
+		const parentEntry = this._findAssistantEntryForMessage(parentAssistant);
 		attributeChildUsage(parentAssistant.usage, childUsage);
+		if (parentEntry) {
+			this.sessionManager.appendChildUsageAttribution(parentEntry.id, childUsage, parentAssistant.usage);
+		}
 	}
 
 	private _assistantTurnCount(): number {

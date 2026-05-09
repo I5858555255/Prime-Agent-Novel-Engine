@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- Fixed RLM child usage aggregation so parent session totals include recursive child runs.
+- Fixed RLM child usage aggregation so parent session totals include recursive child runs after session reloads.
 
 ### Removed
 
