@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlm-skill-prime_eval"
+version = "0.1.0"
+description = "RLM skill for Prime Intellect evaluation runs and results."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["rlm"]
+
+[project.scripts]
+prime_eval = "rlm.skill:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
