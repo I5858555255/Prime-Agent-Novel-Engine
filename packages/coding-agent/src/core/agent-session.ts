@@ -300,6 +300,8 @@ function attributeChildUsage(parentUsage: Usage, childUsage: Usage): void {
 	const parentContextTokens =
 		parentUsage.totalTokens ||
 		parentUsage.input + parentUsage.output + parentUsage.cacheRead + parentUsage.cacheWrite;
+	// Recursive children are launched from an assistant tool call, so the parent assistant
+	// message carries their billable usage for session-level cost totals.
 	addAssistantUsage(parentUsage, childUsage);
 	// Child work affects session-level billable totals, not the parent's model-facing context size.
 	parentUsage.totalTokens = parentContextTokens;
