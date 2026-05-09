@@ -2512,7 +2512,11 @@ export class AgentSession {
 		return this.agent.state.messages.filter((message) => message.role === "assistant").length;
 	}
 
-	async runRlmChild(prompt: string, _kwargs: Record<string, unknown> = {}): Promise<RlmRunResult> {
+	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}): Promise<RlmRunResult> {
+		const unsupportedKwargs = Object.keys(kwargs);
+		if (unsupportedKwargs.length > 0) {
+			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
+		}
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
 				`RLM recursion depth limit reached (RLM_DEPTH=${this._rlmDepth}, RLM_MAX_DEPTH=${this._rlmMaxDepth})`,
