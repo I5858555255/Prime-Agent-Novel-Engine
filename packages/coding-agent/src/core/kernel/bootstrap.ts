@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const BOOTSTRAP_SCHEMA = 1;
@@ -10,6 +11,11 @@ const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
 const BOOTSTRAP_VERSION_FILE = ".bootstrap-version";
+const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
+const BOOTSTRAP_LOCK_RETRY_MS = 100;
+const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
+
+let inFlightEnsureKernelPython: { key: string; promise: Promise<string> } | null = null;
 
 interface BootstrapVersion {
 	schema: number;
@@ -19,6 +25,10 @@ interface BootstrapVersion {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+	return error instanceof Error && "code" in error && error.code === code;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -47,6 +57,15 @@ function expandHome(filePath: string): string {
 	if (filePath === "~") return os.homedir();
 	if (filePath.startsWith("~/")) return path.join(os.homedir(), filePath.slice(2));
 	return filePath;
+}
+
+function ensureKernelPythonKey(): string {
+	return [
+		process.env.PRIME_AGENT_KERNEL_PYTHON ?? "",
+		process.env.PRIME_AGENT_KERNEL_VENV ?? "",
+		process.env.HOME ?? "",
+		process.env.XDG_DATA_HOME ?? "",
+	].join("\0");
 }
 
 export function getKernelVenvDir(): string {
@@ -117,6 +136,61 @@ async function hasIpykernel(python: string): Promise<boolean> {
 
 async function hasPrimeAgentRuntime(python: string): Promise<boolean> {
 	return pythonImports(python, "rlm");
+}
+
+function bootstrapLockDir(venv: string): string {
+	return path.join(path.dirname(venv), `${path.basename(venv)}${BOOTSTRAP_LOCK_NAME}`);
+}
+
+function processIsRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return isNodeError(error, "EPERM");
+	}
+}
+
+async function readLockPid(lockDir: string): Promise<number | null> {
+	try {
+		const raw = await readFile(path.join(lockDir, "pid"), "utf8");
+		const pid = Number.parseInt(raw.trim(), 10);
+		return Number.isInteger(pid) && pid > 0 ? pid : null;
+	} catch {
+		return null;
+	}
+}
+
+async function lockMissingPidIsStale(lockDir: string): Promise<boolean> {
+	try {
+		const lockStat = await stat(lockDir);
+		return Date.now() - lockStat.mtimeMs > BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS;
+	} catch {
+		return false;
+	}
+}
+
+async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> {
+	const lockDir = bootstrapLockDir(venv);
+	await mkdir(path.dirname(lockDir), { recursive: true });
+
+	for (;;) {
+		try {
+			await mkdir(lockDir);
+			await writeFile(path.join(lockDir, "pid"), `${process.pid}\n`, "utf8");
+			return () => rm(lockDir, { recursive: true, force: true });
+		} catch (error) {
+			if (!isNodeError(error, "EEXIST")) throw error;
+
+			const pid = await readLockPid(lockDir);
+			if (pid === null ? await lockMissingPidIsStale(lockDir) : !processIsRunning(pid)) {
+				await rm(lockDir, { recursive: true, force: true });
+				continue;
+			}
+
+			await sleep(BOOTSTRAP_LOCK_RETRY_MS);
+		}
+	}
 }
 
 async function findExecutable(name: string): Promise<string | null> {
@@ -232,7 +306,7 @@ function formatBootstrapFailure(error: unknown): Error {
 	);
 }
 
-export async function ensureKernelPython(): Promise<string> {
+async function ensureKernelPythonUncached(): Promise<string> {
 	const override = process.env.PRIME_AGENT_KERNEL_PYTHON;
 	if (override) {
 		const python = path.resolve(expandHome(override));
@@ -244,19 +318,35 @@ export async function ensureKernelPython(): Promise<string> {
 	const python = path.join(venv, "bin", "python");
 	if (await kernelReady(python, venv)) return python;
 
-	const hadVenv = existsSync(venv);
-	process.stderr.write("› setting up python kernel (one-time, ~30s)…\n");
-	if (hadVenv) {
-		process.stderr.write("rebuilding kernel venv\n");
-		await rm(venv, { recursive: true, force: true });
-	}
-
+	const releaseLock = await acquireBootstrapLock(venv);
 	try {
+		if (await kernelReady(python, venv)) return python;
+
+		const hadVenv = existsSync(venv);
+		process.stderr.write("› setting up python kernel (one-time, ~30s)…\n");
+		if (hadVenv) {
+			process.stderr.write("rebuilding kernel venv\n");
+			await rm(venv, { recursive: true, force: true });
+		}
+
 		await bootstrapVenv(venv);
 	} catch (error) {
 		throw formatBootstrapFailure(error);
+	} finally {
+		await releaseLock().catch(() => undefined);
 	}
 
 	process.stderr.write("✓ ready\n");
 	return python;
+}
+
+export function ensureKernelPython(): Promise<string> {
+	const key = ensureKernelPythonKey();
+	if (inFlightEnsureKernelPython?.key === key) return inFlightEnsureKernelPython.promise;
+
+	const promise = ensureKernelPythonUncached().finally(() => {
+		if (inFlightEnsureKernelPython?.promise === promise) inFlightEnsureKernelPython = null;
+	});
+	inFlightEnsureKernelPython = { key, promise };
+	return promise;
 }

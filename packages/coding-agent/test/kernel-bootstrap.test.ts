@@ -120,6 +120,18 @@ describe("kernel bootstrap", () => {
 		expect(readFileSync(join(venv, ".bootstrap-version"), "utf8")).toContain('"schema":1');
 	});
 
+	it("shares concurrent bootstrap work in one process", async () => {
+		const logPath = installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const python = join(venv, "bin", "python");
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+
+		await expect(Promise.all([ensureKernelPython(), ensureKernelPython()])).resolves.toEqual([python, python]);
+
+		const log = readFileSync(logPath, "utf8");
+		expect(log.split("\n").filter((line) => line.startsWith(`venv ${venv} `))).toHaveLength(1);
+	});
+
 	it("reuses a current warm venv without invoking uv", async () => {
 		const venv = join(tempDir, "kernel-venv");
 		const python = join(venv, "bin", "python");
