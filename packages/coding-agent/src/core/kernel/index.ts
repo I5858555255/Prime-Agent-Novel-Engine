@@ -513,35 +513,31 @@ export class KernelManager {
 		}
 		this.handledRlmCommIds.add(commId);
 
-		let task: Promise<void> | undefined;
-		task = (async () => {
+		const task = (async () => {
 			try {
+				const result = await this.handleRlmRunRequest(data);
 				try {
-					const result = await this.handleRlmRunRequest(data);
-					try {
-						await this.sendCommMessage(commId, { status: "ok", ...result });
-					} catch (replyError) {
-						console.error(
-							`[kernel] failed to send rlm.run ok reply for comm ${commId}: ${errorMessage(replyError)}`,
-						);
-					}
-				} catch (error) {
-					console.error(`[kernel] rlm.run failed for comm ${commId}: ${errorMessage(error)}`);
-					try {
-						await this.sendCommMessage(commId, { status: "error", error: errorMessage(error) });
-					} catch (replyError) {
-						console.error(
-							`[kernel] failed to send rlm.run error reply for comm ${commId}: ${errorMessage(replyError)}`,
-						);
-					}
+					await this.sendCommMessage(commId, { status: "ok", ...result });
+				} catch (replyError) {
+					console.error(
+						`[kernel] failed to send rlm.run ok reply for comm ${commId}: ${errorMessage(replyError)}`,
+					);
 				}
-			} finally {
-				if (task) {
-					this.inFlightRlmRuns.delete(task);
+			} catch (error) {
+				console.error(`[kernel] rlm.run failed for comm ${commId}: ${errorMessage(error)}`);
+				try {
+					await this.sendCommMessage(commId, { status: "error", error: errorMessage(error) });
+				} catch (replyError) {
+					console.error(
+						`[kernel] failed to send rlm.run error reply for comm ${commId}: ${errorMessage(replyError)}`,
+					);
 				}
 			}
 		})();
 		this.inFlightRlmRuns.add(task);
+		void task.finally(() => {
+			this.inFlightRlmRuns.delete(task);
+		});
 	}
 
 	private async handleRlmRunRequest(data: unknown): Promise<RlmRunResult> {
