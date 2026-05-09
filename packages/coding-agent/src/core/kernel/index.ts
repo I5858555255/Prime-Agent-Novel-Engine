@@ -1,7 +1,7 @@
 // TODO: reconsider persistent kernel vs stateless `python -c` once RLM-1 weights land.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -13,8 +13,8 @@ import { ensureKernelPython } from "./bootstrap.js";
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
-const STARTUP_DELAY_MS = 500;
 const READY_TIMEOUT_MS = 5000;
+const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
 const RLM_DISPOSE_TIMEOUT_MS = 5000;
 
@@ -139,31 +139,66 @@ function decode(frames: Buffer[]): JupyterMessage | null {
 
 // ---- connection setup ----------------------------------------------------
 
-function pickPorts(n: number): number[] {
-	// Bind-to-0 + zeromq across all five sockets is fiddly. Random high
-	// ports are sufficient given kernel sessions are local and short-lived.
-	// Collisions surface on socket connect.
-	const start = 50000 + Math.floor(Math.random() * 5000);
-	return Array.from({ length: n }, (_, i) => start + i);
+const CONNECTION_PORT_KEYS = ["shell_port", "iopub_port", "stdin_port", "control_port", "hb_port"] as const;
+
+function hasResolvedPorts(info: ConnectionInfo): boolean {
+	return CONNECTION_PORT_KEYS.every((key) => Number.isInteger(info[key]) && info[key] > 0);
+}
+
+function parseConnectionInfo(value: unknown): ConnectionInfo | null {
+	if (!isRecord(value)) return null;
+	if (value.ip !== "127.0.0.1") return null;
+	if (value.transport !== "tcp") return null;
+	if (value.signature_scheme !== "hmac-sha256") return null;
+	if (typeof value.key !== "string") return null;
+	const shellPort = value.shell_port;
+	const iopubPort = value.iopub_port;
+	const stdinPort = value.stdin_port;
+	const controlPort = value.control_port;
+	const hbPort = value.hb_port;
+	if (typeof shellPort !== "number" || !Number.isInteger(shellPort)) return null;
+	if (typeof iopubPort !== "number" || !Number.isInteger(iopubPort)) return null;
+	if (typeof stdinPort !== "number" || !Number.isInteger(stdinPort)) return null;
+	if (typeof controlPort !== "number" || !Number.isInteger(controlPort)) return null;
+	if (typeof hbPort !== "number" || !Number.isInteger(hbPort)) return null;
+	return {
+		ip: value.ip,
+		transport: value.transport,
+		shell_port: shellPort,
+		iopub_port: iopubPort,
+		stdin_port: stdinPort,
+		control_port: controlPort,
+		hb_port: hbPort,
+		signature_scheme: value.signature_scheme,
+		key: value.key,
+		kernel_name: "python3",
+	};
+}
+
+function readConnectionInfo(path: string): ConnectionInfo | null {
+	try {
+		return parseConnectionInfo(JSON.parse(readFileSync(path, "utf8")));
+	} catch {
+		return null;
+	}
 }
 
 function makeConnection(): { info: ConnectionInfo; path: string; tempDir: string } {
-	const [shell_port, iopub_port, stdin_port, control_port, hb_port] = pickPorts(5);
 	const info: ConnectionInfo = {
 		ip: "127.0.0.1",
 		transport: "tcp",
-		shell_port,
-		iopub_port,
-		stdin_port,
-		control_port,
-		hb_port,
+		shell_port: 0,
+		iopub_port: 0,
+		stdin_port: 0,
+		control_port: 0,
+		hb_port: 0,
 		signature_scheme: "hmac-sha256",
 		key: randomBytes(16).toString("hex"),
 		kernel_name: "python3",
 	};
 	const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-kernel-"));
 	const path = join(tempDir, "connection.json");
-	writeFileSync(path, JSON.stringify(info, null, 2));
+	writeFileSync(path, JSON.stringify(info, null, 2), { mode: 0o600 });
 	return { info, path, tempDir };
 }
 
@@ -296,16 +331,26 @@ export class KernelManager {
 			liveKernels.delete(this);
 		});
 
+		let conn: ConnectionInfo;
+		try {
+			conn = await this.waitForResolvedConnection(connectionPath);
+			this.connection = conn;
+		} catch (e) {
+			await this.shutdown();
+			this.state = "idle";
+			throw e;
+		}
+
 		this.shell = new Dealer();
 		this.iopub = new Subscriber();
 		this.control = new Dealer();
-		this.shell.connect(`${info.transport}://${info.ip}:${info.shell_port}`);
-		this.iopub.connect(`${info.transport}://${info.ip}:${info.iopub_port}`);
-		this.control.connect(`${info.transport}://${info.ip}:${info.control_port}`);
+		this.shell.connect(`${conn.transport}://${conn.ip}:${conn.shell_port}`);
+		this.iopub.connect(`${conn.transport}://${conn.ip}:${conn.iopub_port}`);
+		this.control.connect(`${conn.transport}://${conn.ip}:${conn.control_port}`);
 		this.iopub.subscribe("");
 
-		// ZMQ slow-joiner: give the kernel time to bind ports before publishing.
-		await sleep(STARTUP_DELAY_MS);
+		// ZMQ PUB/SUB slow-joiner: give the subscription a brief chance to reach the kernel before first execute.
+		await sleep(IOPUB_SUBSCRIBE_DELAY_MS);
 
 		try {
 			await this.probeReady();
@@ -317,6 +362,28 @@ export class KernelManager {
 
 		liveKernels.add(this);
 		this.state = "running";
+	}
+
+	private async waitForResolvedConnection(connectionPath: string): Promise<ConnectionInfo> {
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < READY_TIMEOUT_MS) {
+			if ((this.state as string) === "shutdown") {
+				const tail = this.kernelStderr.slice(-1024);
+				throw new Error(`Kernel exited before resolving ports. stderr:\n${tail || "(empty)"}`);
+			}
+
+			const info = readConnectionInfo(connectionPath);
+			if (info && hasResolvedPorts(info)) {
+				return info;
+			}
+
+			await sleep(25);
+		}
+
+		const tail = this.kernelStderr.slice(-1024);
+		throw new Error(
+			`Kernel did not resolve connection ports within ${READY_TIMEOUT_MS}ms. stderr tail:\n${tail || "(empty)"}`,
+		);
 	}
 
 	private async probeReady(): Promise<void> {
