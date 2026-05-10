@@ -4,37 +4,65 @@ Prime Agent is a hard fork of [pi](https://github.com/badlogic/pi-mono) rebuilt 
 
 ## Architecture
 
-```mermaid
-flowchart LR
-	user[researcher / engineer] --> cli[prime-agent cli]
+Prime Agent keeps the core pieces that make pi a strong terminal agent: the TypeScript CLI, custom TUI renderer, model provider layer, session tree, slash commands, and extension/resource system. The main change is the model-facing runtime: instead of a large set of file and shell tools, the agent is centered on a persistent Python kernel.
 
-	subgraph host[typescript host]
-		cli --> tui[pi-tui terminal ui]
-		cli --> session[agent session]
-		session --> prompt[rlm prompt builder]
-		session --> tools[tool dispatcher]
-		session --> providers[pi-ai provider layer]
-		session --> sessions[(jsonl session tree)]
-		tui --> components[ipython cells<br/>subagent sidebar<br/>session controls]
-	end
+```text
+                         +----------------------+
+                         |      prime-agent     |
+                         |     typescript cli   |
+                         +----------+-----------+
+                                    |
+        +---------------------------+---------------------------+
+        |                           |                           |
+        v                           v                           v
++---------------+           +---------------+           +---------------+
+|    pi-tui     |           | agent session |           |    pi-ai      |
+| terminal ui   |           | loop + events |           | model clients |
++-------+-------+           +-------+-------+           +-------+-------+
+        |                           |                           |
+        |                           |                           v
+        |                           |                  +----------------+
+        |                           |                  | rlm-1 or       |
+        |                           |                  | bootstrap llm  |
+        |                           |                  +----------------+
+        |                           |
+        v                           v
++---------------+           +---------------+
+| ipython cells |           | jsonl session |
+| subagent pane |           | tree + resume |
++---------------+           +---------------+
 
-	subgraph model[model backend]
-		providers --> llm[rlm-1 or bootstrap llm]
-	end
-
-	subgraph kernel[python runtime]
-		tools --> ipython[ipython tool]
-		ipython <-->|jupyter zmq| ipykernel[ipython kernel]
-		ipykernel --> state[(persistent python state)]
-		ipykernel --> runtime[prime-agent-runtime]
-		runtime --> skills[python skills<br/>prime envs / eval / train]
-	end
-
-	runtime -->|comm channel| session
-	session --> child[child agent session]
-	child --> providers
-	child --> childKernel[child ipython kernel]
-	child --> sessions
+                            prime agent adds
+                                    |
+                                    v
+                         +----------------------+
+                         |     ipython tool     |
+                         +----------+-----------+
+                                    |
+                             jupyter zmq
+                                    |
+                                    v
+                         +----------------------+
+                         |   ipython kernel     |
+                         | persistent python    |
+                         | state across turns   |
+                         +----------+-----------+
+                                    |
+                 +------------------+------------------+
+                 |                                     |
+                 v                                     v
+        +------------------+                 +------------------+
+        | prime-agent-     |                 | python skills    |
+        | runtime          |                 | prime envs/eval/ |
+        | injects rlm      |                 | train/etc.       |
+        +--------+---------+                 +------------------+
+                 |
+                 | await rlm("subtask")
+                 v
+        +------------------+
+        | child agent      |
+        | session + kernel |
+        +------------------+
 ```
 
 The key loop is:
