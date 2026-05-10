@@ -30,7 +30,7 @@ flowchart LR
 		runtime --> skills[python skills<br/>prime envs / eval / train]
 	end
 
-	runtime -->|comm: await rlm(...)| session
+	runtime -->|comm channel| session
 	session --> child[child agent session]
 	child --> providers
 	child --> childKernel[child ipython kernel]
