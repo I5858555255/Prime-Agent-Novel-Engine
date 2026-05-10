@@ -65,7 +65,8 @@ describe("marquee TUI components", () => {
 		const component = new IPythonCellComponent(state);
 
 		const collapsed = await renderInVirtualTerminal(component);
-		expect(collapsed).toContain("ipython error 1.2s");
+		expect(collapsed).toContain("error · 1.2s");
+		expect(collapsed).not.toContain("ipython");
 		expect(collapsed).toContain("%%bash");
 		expect(collapsed).toContain("hi");
 		expect(collapsed).toContain("ValueError: bad");
@@ -214,7 +215,8 @@ describe("marquee TUI components", () => {
 		});
 
 		const output = stripAnsi(component.render(100).join("\n"));
-		expect(output).toContain("ipython done 12ms");
+		expect(output).toContain("done · 12ms");
+		expect(output).not.toContain("ipython");
 		expect(output).toContain("print(55)");
 		expect(output).toContain("55");
 		expect(output).not.toContain('"code"');
