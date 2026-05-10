@@ -37,6 +37,10 @@ interface TracebackParts {
 const MAGIC_LINE_PATTERN = /^\s*!/;
 const CELL_MAGIC_PATTERN = /^\s*%%bash\b/;
 
+// Collapse long kernel output to the last N lines with a "M earlier lines hidden" marker.
+// Mirrors the bash-execution preview cap so a long-running task doesn't flood the chat.
+const OUTPUT_PREVIEW_LINES = 20;
+
 export function getIpythonCodeFromArgs(args: unknown): string {
 	if (!args || typeof args !== "object" || !("code" in args)) {
 		return "";
@@ -251,8 +255,20 @@ export class IPythonCellComponent implements Component {
 	private renderOutputText(lines: string[], width: number, text: string, label: "out" | "err"): void {
 		const color = label === "err" ? "error" : "toolOutput";
 		const prefix = label === "err" ? theme.fg("dim", "  err ") : theme.fg("dim", "  out ");
-		for (const [index, line] of text.split("\n").entries()) {
-			this.addWrapped(lines, index === 0 ? prefix : theme.fg("dim", "      "), theme.fg(color, line || " "), width);
+		const allLines = text.split("\n");
+		const expanded = this.state.expanded ?? false;
+		const showCollapsed = !expanded && allLines.length > OUTPUT_PREVIEW_LINES;
+		const visibleLines = showCollapsed ? allLines.slice(-OUTPUT_PREVIEW_LINES) : allLines;
+
+		if (showCollapsed) {
+			const hidden = allLines.length - OUTPUT_PREVIEW_LINES;
+			const headerHint = `${theme.fg("muted", `${hidden} earlier line${hidden === 1 ? "" : "s"} hidden`)} (${keyHint("app.tools.expand", "to expand")})`;
+			this.addWrapped(lines, prefix, headerHint, width);
+		}
+
+		for (const [index, line] of visibleLines.entries()) {
+			const linePrefix = index === 0 && !showCollapsed ? prefix : theme.fg("dim", "      ");
+			this.addWrapped(lines, linePrefix, theme.fg(color, line || " "), width);
 		}
 	}
 
