@@ -5,6 +5,7 @@
 ### Added
 
 - Added automatic IPython kernel runtime bootstrap with uv-managed Python, `ipykernel`, and `prime-agent-runtime`.
+- Added `/goal` for long-running objectives that continue after early no-tool stops until a classifier marks the goal complete or the continuation limit is reached.
 
 ### Changed
 
