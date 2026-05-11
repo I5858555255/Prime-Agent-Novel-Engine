@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "../../src/core/extensions/types.js";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
-function assistantWithUsage(text: string, usage: Partial<Usage>): AssistantMessage {
-	const base = fauxAssistantMessage(text);
+function assistantWithUsage(message: string | AssistantMessage, usage: Partial<Usage>): AssistantMessage {
+	const base = typeof message === "string" ? fauxAssistantMessage(message) : message;
 	return {
 		...base,
 		usage: {
@@ -114,6 +114,30 @@ describe("AgentSession goals", () => {
 			lastReason: "Goal achieved",
 		});
 		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("counts tokens from the update_goal completion turn", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			assistantWithUsage(
+				fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+				{
+					input: 4,
+					output: 2,
+					totalTokens: 6,
+				},
+			),
+			fauxAssistantMessage("Goal complete."),
+		]);
+
+		await harness.session.prompt("/goal finish the task");
+
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "complete",
+		});
+		expect(harness.session.goalState.tokensUsed).toBeGreaterThan(0);
 	});
 
 	it("does not infer completion from an assistant claim without update_goal", async () => {

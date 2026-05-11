@@ -952,10 +952,16 @@ export class AgentSession {
 	}
 
 	private _accountGoalUsageForAssistantMessage(message: AssistantMessage): void {
-		if (this._goalState.status !== "active" || !this._goalState.objective) {
+		if (!this._goalState.objective) {
 			return;
 		}
 		if (message.stopReason === "error" || message.stopReason === "aborted") {
+			return;
+		}
+		const updateGoalRequested = message.content.some(
+			(content) => content.type === "toolCall" && content.name === UPDATE_GOAL_TOOL_NAME,
+		);
+		if (this._goalState.status !== "active" && !(this._goalState.status === "complete" && updateGoalRequested)) {
 			return;
 		}
 		const tokenDelta = goalTokenDeltaForUsage(message.usage);
@@ -964,9 +970,6 @@ export class AgentSession {
 			...goal,
 			tokensUsed: goal.tokensUsed + tokenDelta,
 		};
-		const updateGoalRequested = message.content.some(
-			(content) => content.type === "toolCall" && content.name === UPDATE_GOAL_TOOL_NAME,
-		);
 		const budgetReached =
 			!updateGoalRequested && nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
 		if (!budgetReached) {
