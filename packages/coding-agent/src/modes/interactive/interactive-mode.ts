@@ -60,6 +60,7 @@ import {
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type GoalState,
 	parseSkillBlock,
 	type RlmChildAgentSnapshot,
 } from "../../core/agent-session.js";
@@ -3075,6 +3076,35 @@ export class InteractiveMode {
 			case "rlm_child_update":
 				this.updateChildAgentInspector(event.child);
 				break;
+
+			case "goal_update":
+				this.showStatus(this.formatGoalStatus(event.goal));
+				break;
+		}
+	}
+
+	private formatGoalStatus(goal: GoalState): string {
+		const objective = goal.objective ? `: ${goal.objective}` : "";
+		const progress = `${goal.continuationsUsed}/${goal.maxContinuations}`;
+		switch (goal.status) {
+			case "idle":
+				return "No active goal";
+			case "running":
+				return `Goal running (${progress})${objective}`;
+			case "classifying":
+				return `Checking goal completion (${progress})${objective}`;
+			case "complete":
+				return goal.lastReason ? `Goal complete: ${goal.lastReason}` : "Goal complete";
+			case "stopped":
+				return "Goal stopped";
+			case "limit_reached":
+				return goal.lastReason ? `Goal limit reached: ${goal.lastReason}` : "Goal limit reached";
+			case "error":
+				return goal.lastError ? `Goal error: ${goal.lastError}` : "Goal error";
+			default: {
+				const _exhaustive: never = goal.status;
+				return _exhaustive;
+			}
 		}
 	}
 

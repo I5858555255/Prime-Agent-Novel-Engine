@@ -23,12 +23,14 @@ import {
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
+	type GetContinuationMessagesContext,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent, Usage } from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	completeSimple,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	modelsAreEqual,
@@ -144,6 +146,18 @@ export interface RlmChildAgentSnapshot {
 	transcript: readonly RlmChildAgentTranscriptLine[];
 }
 
+export type GoalStatus = "idle" | "running" | "classifying" | "complete" | "stopped" | "limit_reached" | "error";
+
+export interface GoalState {
+	active: boolean;
+	status: GoalStatus;
+	objective?: string;
+	maxContinuations: number;
+	continuationsUsed: number;
+	lastReason?: string;
+	lastError?: string;
+}
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
@@ -165,7 +179,8 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot };
+	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
+	| { type: "goal_update"; goal: GoalState };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -266,12 +281,27 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+type GoalSlashCommand =
+	| { kind: "status" }
+	| { kind: "stop" }
+	| { kind: "start"; objective: string; maxContinuations: number };
+
+interface GoalClassification {
+	complete: boolean;
+	reason: string;
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+const DEFAULT_GOAL_MAX_CONTINUATIONS = 50;
+const GOAL_CLASSIFIER_MAX_TOKENS = 256;
+const GOAL_CONTINUATION_CUSTOM_TYPE = "goal_continuation";
+const GOAL_CLASSIFIER_SYSTEM_PROMPT =
+	"You are a strict completion classifier for a long-running coding agent goal. Return only JSON.";
 
 function parseDepth(value: string | undefined, fallback: number, name: string): number {
 	if (value === undefined || value === "") {
@@ -408,6 +438,13 @@ export class AgentSession {
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
+	private _goalState: GoalState = {
+		active: false,
+		status: "idle",
+		maxContinuations: DEFAULT_GOAL_MAX_CONTINUATIONS,
+		continuationsUsed: 0,
+	};
+
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
@@ -486,6 +523,7 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentContinuationHook();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -584,6 +622,10 @@ export class AgentSession {
 		};
 	}
 
+	private _installAgentContinuationHook(): void {
+		this.agent.getContinuationMessages = (context, signal) => this._getGoalContinuationMessages(context, signal);
+	}
+
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
@@ -601,6 +643,324 @@ export class AgentSession {
 			steering: [...this._steeringMessages],
 			followUp: [...this._followUpMessages],
 		});
+	}
+
+	private _emitGoalUpdate(): void {
+		this._emit({ type: "goal_update", goal: this.goalState });
+	}
+
+	private _setGoalState(next: GoalState): void {
+		this._goalState = next;
+		this._emitGoalUpdate();
+	}
+
+	private _startGoal(objective: string, maxContinuations: number): void {
+		this._setGoalState({
+			active: true,
+			status: "running",
+			objective,
+			maxContinuations,
+			continuationsUsed: 0,
+		});
+	}
+
+	private _finishGoal(status: Exclude<GoalStatus, "idle" | "running" | "classifying">, reason?: string): void {
+		this._setGoalState({
+			...this._goalState,
+			active: false,
+			status,
+			lastReason: reason,
+		});
+	}
+
+	private _finishGoalWithError(errorMessage: string): void {
+		this._setGoalState({
+			...this._goalState,
+			active: false,
+			status: "error",
+			lastReason: errorMessage,
+			lastError: errorMessage,
+		});
+	}
+
+	private _finishGoalForTerminalAssistantMessage(message: AssistantMessage): void {
+		if (!this._goalState.active) {
+			return;
+		}
+
+		if (message.stopReason === "aborted") {
+			this._finishGoal("stopped", "Aborted by user");
+			return;
+		}
+
+		if (message.stopReason === "error") {
+			this._finishGoalWithError(message.errorMessage || "Assistant response failed");
+		}
+	}
+
+	private _parseGoalSlashCommand(text: string): GoalSlashCommand | undefined {
+		if (text !== "/goal" && !text.startsWith("/goal ")) {
+			return undefined;
+		}
+
+		const rest = text.slice("/goal".length).trim();
+		if (!rest || rest === "status") {
+			return { kind: "status" };
+		}
+		if (rest === "stop") {
+			return { kind: "stop" };
+		}
+
+		let maxContinuations = DEFAULT_GOAL_MAX_CONTINUATIONS;
+		let objective = rest;
+		const firstToken = rest.split(/\s+/, 1)[0] ?? "";
+		if (firstToken === "--turns" || firstToken.startsWith("--turns=")) {
+			let valueText: string;
+			if (firstToken === "--turns") {
+				const withoutFlag = rest.slice("--turns".length).trimStart();
+				const nextSpace = withoutFlag.search(/\s/);
+				if (nextSpace < 0) {
+					throw new Error("Usage: /goal --turns <count> <objective>");
+				}
+				valueText = withoutFlag.slice(0, nextSpace);
+				objective = withoutFlag.slice(nextSpace + 1).trim();
+			} else {
+				valueText = firstToken.slice("--turns=".length);
+				objective = rest.slice(firstToken.length).trim();
+			}
+
+			const parsed = Number.parseInt(valueText, 10);
+			if (!Number.isFinite(parsed) || parsed < 1) {
+				throw new Error("Goal turn limit must be a positive integer");
+			}
+			maxContinuations = parsed;
+		}
+
+		if (!objective) {
+			throw new Error("Usage: /goal [--turns <count>] <objective>");
+		}
+
+		return { kind: "start", objective, maxContinuations };
+	}
+
+	private _createGoalInitialPrompt(objective: string): string {
+		return `Work toward this long-running goal until it is complete.\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>`;
+	}
+
+	private _createGoalContinuationPrompt(objective: string, reason: string | undefined): string {
+		const reasonText = reason ? `\n\nClassifier reason: ${reason}` : "";
+		return `Continue working toward the active long-running goal. The previous assistant turn stopped without requesting a tool.${reasonText}\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>\n\nTake the next concrete step. Use available tools when useful.`;
+	}
+
+	private async _handleGoalSlashCommand(
+		text: string,
+		images: ImageContent[] | undefined,
+	): Promise<{ handled: true } | { handled: false; text: string; images?: ImageContent[] }> {
+		const command = this._parseGoalSlashCommand(text);
+		if (!command) {
+			return { handled: false, text, images };
+		}
+
+		if (command.kind === "status") {
+			this._emitGoalUpdate();
+			return { handled: true };
+		}
+
+		if (command.kind === "stop") {
+			if (this._goalState.active) {
+				this._finishGoal("stopped", "Stopped by user");
+			} else {
+				this._emitGoalUpdate();
+			}
+			return { handled: true };
+		}
+
+		this._startGoal(command.objective, command.maxContinuations);
+		const promptText = this._createGoalInitialPrompt(command.objective);
+		if (this.isStreaming) {
+			await this._queueFollowUp(promptText, images);
+			return { handled: true };
+		}
+
+		return { handled: false, text: promptText, images };
+	}
+
+	private _formatGoalTranscriptMessage(message: AgentMessage): string | undefined {
+		switch (message.role) {
+			case "user": {
+				const text = readTextBlocks(message.content).trim();
+				return text ? `user: ${text}` : undefined;
+			}
+			case "assistant": {
+				const text = readAssistantText(message as AssistantMessage).trim();
+				return text ? `assistant: ${text}` : undefined;
+			}
+			case "toolResult": {
+				const text = readTextBlocks(message.content).trim();
+				return text ? `tool ${message.toolName}: ${text}` : `tool ${message.toolName}: done`;
+			}
+			case "custom": {
+				if (!message.display && message.customType === GOAL_CONTINUATION_CUSTOM_TYPE) {
+					return undefined;
+				}
+				const text = typeof message.content === "string" ? message.content : readTextBlocks(message.content);
+				return text.trim() ? `custom ${message.customType}: ${text.trim()}` : undefined;
+			}
+			case "bashExecution": {
+				const status = message.cancelled ? "cancelled" : message.exitCode === 0 ? "succeeded" : "failed";
+				const output = message.output.trim();
+				return output ? `bash ${status}: ${output}` : `bash ${status}`;
+			}
+			case "branchSummary":
+				return `branch summary: ${message.summary}`;
+			case "compactionSummary":
+				return `compaction summary: ${message.summary}`;
+			default: {
+				const _exhaustive: never = message;
+				return _exhaustive;
+			}
+		}
+	}
+
+	private _buildGoalTranscript(messages: AgentMessage[]): string {
+		return messages
+			.slice(-30)
+			.map((message) => this._formatGoalTranscriptMessage(message))
+			.filter((line): line is string => line !== undefined)
+			.join("\n\n");
+	}
+
+	private _parseGoalClassification(text: string): GoalClassification {
+		const start = text.indexOf("{");
+		const end = text.lastIndexOf("}");
+		if (start < 0 || end < start) {
+			throw new Error("Goal classifier returned no JSON object");
+		}
+
+		const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+		if (!parsed || typeof parsed !== "object") {
+			throw new Error("Goal classifier returned invalid JSON");
+		}
+
+		const record = parsed as Record<string, unknown>;
+		if (typeof record.complete !== "boolean") {
+			throw new Error("Goal classifier response is missing complete");
+		}
+
+		return {
+			complete: record.complete,
+			reason: typeof record.reason === "string" ? record.reason : "",
+		};
+	}
+
+	private async _classifyGoalCompletion(
+		objective: string,
+		context: GetContinuationMessagesContext,
+		signal?: AbortSignal,
+	): Promise<GoalClassification> {
+		const model = this.model;
+		if (!model) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
+
+		const { apiKey, headers } = await this._getRequiredRequestAuth(model);
+		const transcript = this._buildGoalTranscript(context.context.messages);
+		const promptText = `Decide whether the active goal is fully complete based on the recent transcript.\n\nReturn only JSON in this shape:\n{"complete":true|false,"reason":"short reason"}\n\nMark complete true only if the requested goal has actually been achieved.\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>\n\n<recent_transcript>\n${transcript}\n</recent_transcript>`;
+		const messages: Message[] = [
+			{
+				role: "user",
+				content: [{ type: "text", text: promptText }],
+				timestamp: Date.now(),
+			},
+		];
+		const completionOptions =
+			model.reasoning && this.thinkingLevel !== "off"
+				? {
+						maxTokens: GOAL_CLASSIFIER_MAX_TOKENS,
+						signal,
+						apiKey,
+						headers,
+						reasoning: this.thinkingLevel,
+					}
+				: {
+						maxTokens: GOAL_CLASSIFIER_MAX_TOKENS,
+						signal,
+						apiKey,
+						headers,
+					};
+		const response = await completeSimple(
+			model,
+			{ systemPrompt: GOAL_CLASSIFIER_SYSTEM_PROMPT, messages },
+			completionOptions,
+		);
+		if (response.stopReason === "error") {
+			throw new Error(response.errorMessage || "Goal classifier failed");
+		}
+
+		const text = readAssistantText(response);
+		return this._parseGoalClassification(text);
+	}
+
+	private async _getGoalContinuationMessages(
+		context: GetContinuationMessagesContext,
+		signal?: AbortSignal,
+	): Promise<AgentMessage[]> {
+		const goal = this._goalState;
+		if (!goal.active || !goal.objective || signal?.aborted) {
+			return [];
+		}
+
+		const hasToolCalls = context.message.content.some((content) => content.type === "toolCall");
+		if (hasToolCalls || context.toolResults.length > 0) {
+			return [];
+		}
+
+		if (goal.continuationsUsed >= goal.maxContinuations) {
+			this._finishGoal("limit_reached", `Reached ${goal.maxContinuations} continuation turn limit`);
+			return [];
+		}
+
+		this._setGoalState({ ...goal, status: "classifying" });
+		let classification: GoalClassification;
+		try {
+			classification = await this._classifyGoalCompletion(goal.objective, context, signal);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			classification = { complete: false, reason: `Classifier failed: ${message}` };
+			this._setGoalState({ ...this._goalState, status: "running", lastError: message });
+		}
+
+		if (!this._goalState.active || this._goalState.objective !== goal.objective || signal?.aborted) {
+			return [];
+		}
+
+		if (classification.complete) {
+			this._finishGoal("complete", classification.reason);
+			return [];
+		}
+
+		const nextContinuationsUsed = this._goalState.continuationsUsed + 1;
+		this._setGoalState({
+			...this._goalState,
+			status: "running",
+			continuationsUsed: nextContinuationsUsed,
+			lastReason: classification.reason,
+			lastError: undefined,
+		});
+
+		const continuation: CustomMessage<{ objective: string; classifierReason?: string; continuationsUsed: number }> = {
+			role: "custom",
+			customType: GOAL_CONTINUATION_CUSTOM_TYPE,
+			content: this._createGoalContinuationPrompt(goal.objective, classification.reason),
+			display: false,
+			details: {
+				objective: goal.objective,
+				classifierReason: classification.reason || undefined,
+				continuationsUsed: nextContinuationsUsed,
+			},
+			timestamp: Date.now(),
+		};
+		return [continuation];
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -738,7 +1098,10 @@ export class AgentSession {
 			}
 
 			this._resolveRetry();
-			await this._checkCompaction(msg);
+			const compactionWillRetry = await this._checkCompaction(msg);
+			if (!compactionWillRetry) {
+				this._finishGoalForTerminalAssistantMessage(msg);
+			}
 		}
 	}
 
@@ -1033,6 +1396,10 @@ export class AgentSession {
 		return this.sessionManager.getSessionName();
 	}
 
+	get goalState(): GoalState {
+		return { ...this._goalState };
+	}
+
 	/** Scoped models for cycling (from --models flag) */
 	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
 		return this._scopedModels;
@@ -1124,15 +1491,31 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		let expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
 
 		try {
+			let currentText = text;
+			let currentImages = options?.images;
+
+			if (expandPromptTemplates) {
+				const goalCommandResult = await this._handleGoalSlashCommand(currentText, currentImages);
+				if (goalCommandResult.handled) {
+					preflightResult?.(true);
+					return;
+				}
+				if (goalCommandResult.text !== currentText) {
+					currentText = goalCommandResult.text;
+					currentImages = goalCommandResult.images;
+					expandPromptTemplates = false;
+				}
+			}
+
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
-			if (expandPromptTemplates && text.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(text);
+			if (expandPromptTemplates && currentText.startsWith("/")) {
+				const handled = await this._tryExecuteExtensionCommand(currentText);
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
@@ -1141,8 +1524,6 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion)
-			let currentText = text;
-			let currentImages = options?.images;
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
@@ -1545,6 +1926,9 @@ export class AgentSession {
 	 */
 	async abort(): Promise<void> {
 		this.abortRetry();
+		if (this._goalState.active) {
+			this._finishGoal("stopped", "Aborted by user");
+		}
 		this.agent.abort();
 		await this.agent.waitForIdle();
 	}
@@ -1927,12 +2311,12 @@ export class AgentSession {
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
-	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
-		if (!settings.enabled) return;
+		if (!settings.enabled) return false;
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
+		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
 
 		const contextWindow = this.model?.contextWindow ?? 0;
 
@@ -1950,7 +2334,7 @@ export class AgentSession {
 		const assistantIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
 		if (assistantIsFromBeforeCompaction) {
-			return;
+			return false;
 		}
 
 		// Case 1: Overflow - LLM returned context overflow error
@@ -1965,7 +2349,7 @@ export class AgentSession {
 					errorMessage:
 						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 				});
-				return;
+				return false;
 			}
 
 			this._overflowRecoveryAttempted = true;
@@ -1975,8 +2359,7 @@ export class AgentSession {
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.state.messages = messages.slice(0, -1);
 			}
-			await this._runAutoCompaction("overflow", true);
-			return;
+			return await this._runAutoCompaction("overflow", true);
 		}
 
 		// Case 2: Threshold - context is getting large
@@ -1986,7 +2369,7 @@ export class AgentSession {
 		if (assistantMessage.stopReason === "error") {
 			const messages = this.agent.state.messages;
 			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return; // No usage data at all
+			if (estimate.lastUsageIndex === null) return false; // No usage data at all
 			// Verify the usage source is post-compaction. Kept pre-compaction messages
 			// have stale usage reflecting the old (larger) context and would falsely
 			// trigger compaction right after one just finished.
@@ -1996,21 +2379,22 @@ export class AgentSession {
 				usageMsg.role === "assistant" &&
 				(usageMsg as AssistantMessage).timestamp <= new Date(compactionEntry.timestamp).getTime()
 			) {
-				return;
+				return false;
 			}
 			contextTokens = estimate.tokens;
 		} else {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			await this._runAutoCompaction("threshold", false);
+			return await this._runAutoCompaction("threshold", false);
 		}
+		return false;
 	}
 
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
+	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "compaction_start", reason });
@@ -2025,7 +2409,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
@@ -2037,7 +2421,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 			const { apiKey, headers } = authResult;
 
@@ -2052,7 +2436,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			let extensionCompaction: CompactionResult | undefined;
@@ -2075,7 +2459,7 @@ export class AgentSession {
 						aborted: true,
 						willRetry: false,
 					});
-					return;
+					return false;
 				}
 
 				if (extensionResult?.compaction) {
@@ -2120,7 +2504,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
@@ -2160,6 +2544,7 @@ export class AgentSession {
 				setTimeout(() => {
 					this.agent.continue().catch(() => {});
 				}, 100);
+				return true;
 			} else if (this.agent.hasQueuedMessages()) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
@@ -2167,6 +2552,7 @@ export class AgentSession {
 					this.agent.continue().catch(() => {});
 				}, 100);
 			}
+			return false;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			this._emit({
@@ -2180,6 +2566,7 @@ export class AgentSession {
 						? `Context overflow recovery failed: ${errorMessage}`
 						: `Auto-compaction failed: ${errorMessage}`,
 			});
+			return false;
 		} finally {
 			this._autoCompactionAbortController = undefined;
 		}
