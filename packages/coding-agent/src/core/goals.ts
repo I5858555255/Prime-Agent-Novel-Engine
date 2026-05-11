@@ -11,7 +11,6 @@ export const UPDATE_GOAL_TOOL_NAME = "update_goal";
 export const GOAL_TOOL_NAMES = [GET_GOAL_TOOL_NAME, CREATE_GOAL_TOOL_NAME, UPDATE_GOAL_TOOL_NAME] as const;
 export const MAX_THREAD_GOAL_OBJECTIVE_CHARS = 4000;
 
-export type GoalToolName = (typeof GOAL_TOOL_NAMES)[number];
 export type GoalStatus = "idle" | "active" | "paused" | "budget_limited" | "complete" | "error";
 export type GoalContextKind = "continuation" | "budget_limit" | "objective_updated";
 
@@ -86,10 +85,6 @@ const updateGoalSchema = Type.Object(
 type GetGoalArgs = Static<typeof getGoalSchema>;
 type CreateGoalArgs = Static<typeof createGoalSchema>;
 type UpdateGoalArgs = Static<typeof updateGoalSchema>;
-
-export function isGoalToolName(name: string): name is GoalToolName {
-	return GOAL_TOOL_NAMES.includes(name as GoalToolName);
-}
 
 export function emptyGoalState(): GoalState {
 	return {
