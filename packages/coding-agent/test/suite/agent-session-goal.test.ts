@@ -312,6 +312,43 @@ describe("AgentSession goals", () => {
 		});
 	});
 
+	it("does not resume a completed goal", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Goal complete."),
+			fauxAssistantMessage("should not run"),
+		]);
+
+		await harness.session.prompt("/goal finish the task");
+		await harness.session.prompt("/goal resume");
+
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "complete",
+		});
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
+	it("does not resume an errored goal", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: false } } });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid_api_key" }),
+			fauxAssistantMessage("should not run"),
+		]);
+
+		await harness.session.prompt("/goal do work");
+		await harness.session.prompt("/goal resume");
+
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "error",
+		});
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
 	it("reports active goal elapsed time on status reads and get_goal", async () => {
 		vi.useFakeTimers();
 		try {

@@ -776,6 +776,10 @@ export class AgentSession {
 			this._emitGoalUpdate();
 			return;
 		}
+		if (this._goalState.status !== "paused" && this._goalState.status !== "budget_limited") {
+			this._emitGoalUpdate();
+			return;
+		}
 		const exhausted =
 			this._goalState.tokenBudget !== undefined && this._goalState.tokensUsed >= this._goalState.tokenBudget;
 		const nextStatus: GoalStatus = exhausted ? "budget_limited" : "active";
