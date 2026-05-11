@@ -211,6 +211,8 @@ export interface AgentSessionConfig {
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
+	/** Whether the built-in long-running goal tools are exposed. Default: true. */
+	includeGoalTools?: boolean;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -479,6 +481,7 @@ export class AgentSession {
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
+	private _includeGoalTools: boolean;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -517,6 +520,7 @@ export class AgentSession {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
+		this._includeGoalTools = config.includeGoalTools ?? true;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
@@ -916,33 +920,30 @@ export class AgentSession {
 		await this.waitForRetry();
 	}
 
-	private async _handleGoalSlashCommand(
-		text: string,
-		images: ImageContent[] | undefined,
-	): Promise<{ handled: true } | { handled: false; text: string; images?: ImageContent[] }> {
+	private async _handleGoalSlashCommand(text: string, images: ImageContent[] | undefined): Promise<boolean> {
 		const command = this._parseGoalSlashCommand(text);
 		if (!command) {
-			return { handled: false, text, images };
+			return false;
 		}
 
 		if (command.kind === "status") {
 			this._emitGoalUpdate();
-			return { handled: true };
+			return true;
 		}
 
 		if (command.kind === "clear") {
 			this._clearGoal();
-			return { handled: true };
+			return true;
 		}
 
 		if (command.kind === "pause") {
 			this._pauseGoal();
-			return { handled: true };
+			return true;
 		}
 
 		if (command.kind === "resume") {
 			await this._resumeGoal();
-			return { handled: true };
+			return true;
 		}
 
 		const previousWasActive = this._goalState.status === "active";
@@ -952,7 +953,7 @@ export class AgentSession {
 		this._clearQueuedGoalContexts();
 		this._startGoal(command.objective, command.tokenBudget);
 		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
-		return { handled: true };
+		return true;
 	}
 
 	private _accountGoalUsageForAssistantMessage(message: AssistantMessage): void {
@@ -1566,7 +1567,7 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
-		let expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
 
@@ -1575,15 +1576,10 @@ export class AgentSession {
 			let currentImages = options?.images;
 
 			if (expandPromptTemplates) {
-				const goalCommandResult = await this._handleGoalSlashCommand(currentText, currentImages);
-				if (goalCommandResult.handled) {
+				const handledGoalCommand = await this._handleGoalSlashCommand(currentText, currentImages);
+				if (handledGoalCommand) {
 					preflightResult?.(true);
 					return;
-				}
-				if (goalCommandResult.text !== currentText) {
-					currentText = goalCommandResult.text;
-					currentImages = goalCommandResult.images;
-					expandPromptTemplates = false;
 				}
 			}
 
@@ -2934,9 +2930,11 @@ export class AgentSession {
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
-		for (const goalToolName of GOAL_TOOL_NAMES) {
-			if (isAllowedTool(goalToolName)) {
-				nextActiveToolNames.push(goalToolName);
+		if (this._includeGoalTools) {
+			for (const goalToolName of GOAL_TOOL_NAMES) {
+				if (isAllowedTool(goalToolName)) {
+					nextActiveToolNames.push(goalToolName);
+				}
 			}
 		}
 
@@ -2984,11 +2982,13 @@ export class AgentSession {
 					},
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
 				});
-		const goalToolDefinitions = createGoalToolDefinitions({
-			getGoalState: () => this.goalState,
-			createGoalFromTool: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
-			completeGoalFromTool: () => this.completeGoalFromTool(),
-		});
+		const goalToolDefinitions = this._includeGoalTools
+			? createGoalToolDefinitions({
+					getGoalState: () => this.goalState,
+					createGoalFromTool: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
+					completeGoalFromTool: () => this.completeGoalFromTool(),
+				})
+			: [];
 		const baseToolDefinitions = {
 			...configuredBaseToolDefinitions,
 			...Object.fromEntries(goalToolDefinitions.map((definition) => [definition.name, definition])),
@@ -3229,6 +3229,7 @@ export class AgentSession {
 			modelRegistry: this._modelRegistry,
 			initialActiveToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
+			includeGoalTools: this._includeGoalTools,
 			rlmDepth: this._rlmDepth + 1,
 			rlmMaxDepth: this._rlmMaxDepth,
 			rlmSessionDir: childSessionDir,
