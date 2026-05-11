@@ -89,7 +89,6 @@ import {
 	type GoalState,
 	type GoalStatus,
 	goalTokenDeltaForUsage,
-	isGoalToolName,
 	isPersistedGoalState,
 	normalizeGoalState,
 	UPDATE_GOAL_TOOL_NAME,
@@ -2856,8 +2855,7 @@ export class AgentSession {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
-		const isAllowedTool = (name: string): boolean =>
-			isGoalToolName(name) || !allowedToolNames || allowedToolNames.has(name);
+		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools = [
@@ -2923,7 +2921,9 @@ export class AgentSession {
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
 		for (const goalToolName of GOAL_TOOL_NAMES) {
-			nextActiveToolNames.push(goalToolName);
+			if (isAllowedTool(goalToolName)) {
+				nextActiveToolNames.push(goalToolName);
+			}
 		}
 
 		if (allowedToolNames) {
