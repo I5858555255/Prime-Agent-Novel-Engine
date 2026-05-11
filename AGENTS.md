@@ -7,6 +7,15 @@
 - No fluff or cheerful filler text
 - Technical prose only, be kind but direct (e.g., "Thanks @user" not "Thanks so much @user!")
 
+## Worktree Isolation
+
+- These rules apply to all agents and automation working on this repository.
+- Do not modify the main checkout at `/Users/kevin/pi/prime-agent` directly.
+- All changes to this repository must happen on a separate branch in a separate worktree under `/Users/kevin/pi/prime-agent/.worktrees/`.
+- Before editing files, create or reuse a task-specific worktree, for example `git worktree add -b <branch> /Users/kevin/pi/prime-agent/.worktrees/<task-slug> main`.
+- Treat `/Users/kevin/pi/prime-agent` as a read-only coordination checkout. It is fine to inspect files there, but do not edit, format, stage, commit, or otherwise mutate files there.
+- If you accidentally change files in the main checkout, stop and move your own changes into a branch worktree, then restore the main checkout to its previous state without touching unrelated user or agent work.
+
 ## Code Quality
 
 - Read files in full before making wide-ranging changes, before editing files you have not already fully inspected, and when the user asks you to investigate or audit something. Do not rely only on search snippets for broad changes.
