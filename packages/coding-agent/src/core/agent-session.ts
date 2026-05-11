@@ -700,20 +700,27 @@ export class AgentSession {
 		this._emitGoalUpdate();
 	}
 
-	private _goalWithAccountedWallClock(): GoalState {
+	private _goalWithCurrentWallClock(now = Date.now()): GoalState {
 		if (this._goalState.status !== "active" || !this._goalAccountingStartedAt) {
 			return this._goalState;
 		}
-		const now = Date.now();
 		const elapsedSeconds = Math.floor((now - this._goalAccountingStartedAt) / 1000);
 		if (elapsedSeconds <= 0) {
 			return this._goalState;
 		}
-		this._goalAccountingStartedAt = now;
 		return {
 			...this._goalState,
 			timeUsedSeconds: this._goalState.timeUsedSeconds + elapsedSeconds,
 		};
+	}
+
+	private _goalWithAccountedWallClock(): GoalState {
+		const now = Date.now();
+		const goal = this._goalWithCurrentWallClock(now);
+		if (goal !== this._goalState) {
+			this._goalAccountingStartedAt = now;
+		}
+		return goal;
 	}
 
 	private _clearQueuedGoalContexts(): void {
@@ -1458,7 +1465,7 @@ export class AgentSession {
 	}
 
 	get goalState(): GoalState {
-		return { ...this._goalState };
+		return { ...this._goalWithCurrentWallClock() };
 	}
 
 	/** Scoped models for cycling (from --models flag) */

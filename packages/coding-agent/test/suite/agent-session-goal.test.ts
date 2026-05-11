@@ -1,7 +1,8 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionContext } from "../../src/core/extensions/types.js";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
 function assistantWithUsage(text: string, usage: Partial<Usage>): AssistantMessage {
@@ -285,6 +286,37 @@ describe("AgentSession goals", () => {
 			status: "complete",
 			continuationsUsed: 0,
 		});
+	});
+
+	it("reports active goal elapsed time on status reads and get_goal", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+			const waiting = createWaitingTool();
+			const harness = await createHarness({ tools: [waiting.tool] });
+			harnesses.push(harness);
+			harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
+
+			const waitForStart = waiting.waitForStart(harness);
+			const promptPromise = harness.session.prompt("/goal track elapsed time");
+			await waitForStart;
+			vi.setSystemTime(new Date("2026-01-01T00:00:05Z"));
+
+			expect(harness.session.goalState.timeUsedSeconds).toBe(5);
+			const getGoalTool = harness.session.getToolDefinition("get_goal");
+			if (!getGoalTool) {
+				throw new Error("expected get_goal tool");
+			}
+			const result = await getGoalTool.execute("get-goal", {}, undefined, undefined, {} as ExtensionContext);
+			const details = result.details as { goal: { timeUsedSeconds: number } | null };
+			expect(details.goal?.timeUsedSeconds).toBe(5);
+
+			await harness.session.prompt("/goal pause");
+			waiting.release();
+			await promptPromise;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("clears a goal with /goal clear without consuming a provider response", async () => {
