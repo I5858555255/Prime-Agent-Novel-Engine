@@ -910,6 +910,9 @@ export class AgentSession {
 		}
 
 		const previousWasActive = this._goalState.status === "active";
+		if (!this.isStreaming) {
+			await this._validateCanStartAgentRun();
+		}
 		this._startGoal(command.objective, command.tokenBudget);
 		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
 		return { handled: true };

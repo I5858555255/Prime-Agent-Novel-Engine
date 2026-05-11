@@ -246,6 +246,19 @@ describe("AgentSession goals", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
+	it("does not persist a goal when start preflight fails", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+
+		await expect(harness.session.prompt("/goal do task")).rejects.toThrow();
+
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "idle",
+		});
+		expect(harness.session.messages).toEqual([]);
+	});
+
 	it("marks an active goal budget_limited when token budget is reached", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
