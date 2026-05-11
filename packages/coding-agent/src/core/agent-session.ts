@@ -663,6 +663,12 @@ export class AgentSession {
 		return emptyGoalState();
 	}
 
+	private _reloadGoalStateFromBranch(): void {
+		this._goalState = this._loadPersistedGoalState();
+		this._goalAccountingStartedAt = this._goalState.status === "active" ? Date.now() : undefined;
+		this._emitGoalUpdate();
+	}
+
 	private _persistGoalState(goal: GoalState): void {
 		this.sessionManager.appendCustomEntry(GOAL_STATE_CUSTOM_TYPE, goal);
 	}
@@ -3752,6 +3758,7 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			this._reloadGoalStateFromBranch();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({

@@ -158,6 +158,33 @@ describe("AgentSession goals", () => {
 		});
 	});
 
+	it("reloads goal state after tree navigation", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("before goal")]);
+		await harness.session.prompt("normal prompt");
+		const beforeGoalEntry = harness.sessionManager
+			.getEntries()
+			.find((entry) => entry.type === "message" && entry.message.role === "assistant");
+		if (!beforeGoalEntry) {
+			throw new Error("expected assistant entry before goal");
+		}
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Goal complete."),
+		]);
+		await harness.session.prompt("/goal finish the task");
+		expect(harness.session.goalState.status).toBe("complete");
+
+		await harness.session.navigateTree(beforeGoalEntry.id, { summarize: false });
+
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "idle",
+		});
+	});
+
 	it("keeps active goals sticky across normal user prompts", async () => {
 		const waiting = createWaitingTool();
 		const harness = await createHarness({ tools: [waiting.tool] });
