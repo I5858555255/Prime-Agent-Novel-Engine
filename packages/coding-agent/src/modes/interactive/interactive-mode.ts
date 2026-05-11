@@ -3096,7 +3096,7 @@ export class InteractiveMode {
 			case "complete":
 				return goal.lastReason ? `Goal complete: ${goal.lastReason}` : "Goal complete";
 			case "stopped":
-				return "Goal stopped";
+				return goal.lastReason ? `Goal stopped: ${goal.lastReason}` : "Goal stopped";
 			case "limit_reached":
 				return goal.lastReason ? `Goal limit reached: ${goal.lastReason}` : "Goal limit reached";
 			case "error":

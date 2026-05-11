@@ -113,7 +113,7 @@ export interface ShouldStopAfterTurnContext {
 }
 
 /** Context passed to `getContinuationMessages`. */
-export interface GetContinuationMessagesContext extends ShouldStopAfterTurnContext {}
+export type GetContinuationMessagesContext = ShouldStopAfterTurnContext;
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;

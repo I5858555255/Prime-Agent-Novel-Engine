@@ -670,6 +670,7 @@ export class AgentSession {
 			active: false,
 			status,
 			lastReason: reason,
+			lastError: undefined,
 		});
 	}
 

@@ -1,6 +1,20 @@
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
+
+const terminatingTool: AgentTool = {
+	name: "finish_turn",
+	label: "Finish Turn",
+	description: "Ends the current tool turn.",
+	parameters: Type.Object({}),
+	execute: async () => ({
+		content: [{ type: "text", text: "done" }],
+		details: {},
+		terminate: true,
+	}),
+};
 
 describe("AgentSession goals", () => {
 	const harnesses: Harness[] = [];
@@ -100,6 +114,67 @@ describe("AgentSession goals", () => {
 			lastReason: "Reached 1 continuation turn limit",
 		});
 		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("keeps active goals sticky across normal user prompts", async () => {
+		const harness = await createHarness({ tools: [terminatingTool] });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("finish_turn", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("answered the side question"),
+			fauxAssistantMessage('{"complete":false,"reason":"goal still open"}'),
+			fauxAssistantMessage("continued the goal"),
+			fauxAssistantMessage('{"complete":true,"reason":"goal done"}'),
+		]);
+
+		await harness.session.prompt("/goal complete the long task");
+
+		expect(harness.session.goalState).toMatchObject({
+			active: true,
+			status: "running",
+			continuationsUsed: 0,
+		});
+
+		await harness.session.prompt("answer a side question");
+
+		expect(getAssistantTexts(harness).filter(Boolean)).toEqual(["answered the side question", "continued the goal"]);
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "complete",
+			continuationsUsed: 1,
+			lastReason: "goal done",
+		});
+		expect(
+			harness.session.messages.some((message) => getMessageText(message).includes("answer a side question")),
+		).toBe(true);
+	});
+
+	it("stops an active goal with /goal stop", async () => {
+		const harness = await createHarness({ tools: [terminatingTool] });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage(fauxToolCall("finish_turn", {}), { stopReason: "toolUse" })]);
+
+		await harness.session.prompt("/goal complete the long task");
+		await harness.session.prompt("/goal stop");
+
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "stopped",
+			lastReason: "Stopped by user",
+		});
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("reports status for /goal stop when no goal is active", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("unused")]);
+
+		await harness.session.prompt("/goal stop");
+
+		expect(harness.session.messages).toEqual([]);
+		expect(harness.eventsOfType("goal_update").at(-1)?.goal.status).toBe("idle");
+		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
 	it("marks the goal as errored on terminal provider errors", async () => {
