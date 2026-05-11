@@ -30,7 +30,6 @@ import type { AssistantMessage, ImageContent, Message, Model, TextContent, Usage
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
-	completeSimple,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	modelsAreEqual,
@@ -80,6 +79,22 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import {
+	createGoalContextMessage,
+	createGoalToolDefinitions,
+	emptyGoalState,
+	GOAL_STATE_CUSTOM_TYPE,
+	GOAL_TOOL_NAMES,
+	type GoalState,
+	type GoalStatus,
+	goalTokenDeltaForUsage,
+	isGoalToolName,
+	isPersistedGoalState,
+	normalizeGoalState,
+	UPDATE_GOAL_TOOL_NAME,
+	validateGoalBudget,
+	validateGoalObjective,
+} from "./goals.js";
 import type { KernelManager } from "./kernel/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
@@ -100,6 +115,8 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions } from "./tools/index.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
+
+export type { GoalState, GoalStatus } from "./goals.js";
 
 // ============================================================================
 // Skill Block Parsing
@@ -144,18 +161,6 @@ export interface RlmChildAgentSnapshot {
 	answerPreview?: string;
 	sessionDir: string;
 	transcript: readonly RlmChildAgentTranscriptLine[];
-}
-
-export type GoalStatus = "idle" | "running" | "classifying" | "complete" | "stopped" | "limit_reached" | "error";
-
-export interface GoalState {
-	active: boolean;
-	status: GoalStatus;
-	objective?: string;
-	maxContinuations: number;
-	continuationsUsed: number;
-	lastReason?: string;
-	lastError?: string;
 }
 
 /** Session-specific events that extend the core AgentEvent */
@@ -283,13 +288,10 @@ interface ToolDefinitionEntry {
 
 type GoalSlashCommand =
 	| { kind: "status" }
-	| { kind: "stop" }
-	| { kind: "start"; objective: string; maxContinuations: number };
-
-interface GoalClassification {
-	complete: boolean;
-	reason: string;
-}
+	| { kind: "clear" }
+	| { kind: "pause" }
+	| { kind: "resume" }
+	| { kind: "start"; objective: string; tokenBudget?: number };
 
 // ============================================================================
 // Constants
@@ -297,11 +299,6 @@ interface GoalClassification {
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
-const DEFAULT_GOAL_MAX_CONTINUATIONS = 50;
-const GOAL_CLASSIFIER_MAX_TOKENS = 256;
-const GOAL_CONTINUATION_CUSTOM_TYPE = "goal_continuation";
-const GOAL_CLASSIFIER_SYSTEM_PROMPT =
-	"You are a strict completion classifier for a long-running coding agent goal. Return only JSON.";
 
 function parseDepth(value: string | undefined, fallback: number, name: string): number {
 	if (value === undefined || value === "") {
@@ -438,12 +435,9 @@ export class AgentSession {
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
-	private _goalState: GoalState = {
-		active: false,
-		status: "idle",
-		maxContinuations: DEFAULT_GOAL_MAX_CONTINUATIONS,
-		continuationsUsed: 0,
-	};
+	private _goalState: GoalState = emptyGoalState();
+	private _goalAccountingStartedAt: number | undefined = undefined;
+	private _goalAbortInProgress = false;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -518,6 +512,10 @@ export class AgentSession {
 		this._rlmMaxDepth = config.rlmMaxDepth ?? parseDepth(process.env.RLM_MAX_DEPTH, 1, "RLM_MAX_DEPTH");
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
+		this._goalState = this._loadPersistedGoalState();
+		if (this._goalState.status === "active") {
+			this._goalAccountingStartedAt = Date.now();
+		}
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -649,34 +647,125 @@ export class AgentSession {
 		this._emit({ type: "goal_update", goal: this.goalState });
 	}
 
-	private _setGoalState(next: GoalState): void {
-		this._goalState = next;
+	private _loadPersistedGoalState(): GoalState {
+		const branch = this.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (
+				entry.type === "custom" &&
+				entry.customType === GOAL_STATE_CUSTOM_TYPE &&
+				isPersistedGoalState(entry.data)
+			) {
+				return normalizeGoalState(entry.data);
+			}
+		}
+		return emptyGoalState();
+	}
+
+	private _persistGoalState(goal: GoalState): void {
+		this.sessionManager.appendCustomEntry(GOAL_STATE_CUSTOM_TYPE, goal);
+	}
+
+	private _setGoalState(next: GoalState, options: { persist?: boolean } = {}): void {
+		const normalized = normalizeGoalState({
+			...next,
+			updatedAt: Date.now(),
+		});
+		this._goalState = normalized;
+		if (normalized.status === "active") {
+			this._goalAccountingStartedAt ??= Date.now();
+		} else {
+			this._goalAccountingStartedAt = undefined;
+		}
+		if (options.persist !== false) {
+			this._persistGoalState(normalized);
+		}
 		this._emitGoalUpdate();
 	}
 
-	private _startGoal(objective: string, maxContinuations: number): void {
-		this._setGoalState({
-			active: true,
-			status: "running",
-			objective,
-			maxContinuations,
-			continuationsUsed: 0,
-		});
+	private _goalWithAccountedWallClock(): GoalState {
+		if (this._goalState.status !== "active" || !this._goalAccountingStartedAt) {
+			return this._goalState;
+		}
+		const now = Date.now();
+		const elapsedSeconds = Math.floor((now - this._goalAccountingStartedAt) / 1000);
+		if (elapsedSeconds <= 0) {
+			return this._goalState;
+		}
+		this._goalAccountingStartedAt = now;
+		return {
+			...this._goalState,
+			timeUsedSeconds: this._goalState.timeUsedSeconds + elapsedSeconds,
+		};
 	}
 
-	private _finishGoal(status: Exclude<GoalStatus, "idle" | "running" | "classifying">, reason?: string): void {
+	private _startGoal(objectiveText: string, tokenBudget: number | undefined): GoalState {
+		const objective = validateGoalObjective(objectiveText);
+		const budget = validateGoalBudget(tokenBudget);
+		const now = Date.now();
+		const goal: GoalState = {
+			active: true,
+			status: "active",
+			goalId: randomUUID(),
+			objective,
+			tokenBudget: budget,
+			tokensUsed: 0,
+			timeUsedSeconds: 0,
+			continuationsUsed: 0,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this._goalAccountingStartedAt = now;
+		this._setGoalState(goal);
+		return this._goalState;
+	}
+
+	private _clearGoal(): void {
+		this._setGoalState(emptyGoalState());
+	}
+
+	private _pauseGoal(reason = "Paused by user"): void {
+		if (this._goalState.status !== "active") {
+			this._emitGoalUpdate();
+			return;
+		}
+		const goal = this._goalWithAccountedWallClock();
 		this._setGoalState({
-			...this._goalState,
+			...goal,
 			active: false,
-			status,
+			status: "paused",
 			lastReason: reason,
 			lastError: undefined,
 		});
 	}
 
-	private _finishGoalWithError(errorMessage: string): void {
+	private async _resumeGoal(): Promise<void> {
+		if (!this._goalState.objective) {
+			this._emitGoalUpdate();
+			return;
+		}
+		const exhausted =
+			this._goalState.tokenBudget !== undefined && this._goalState.tokensUsed >= this._goalState.tokenBudget;
+		const nextStatus: GoalStatus = exhausted ? "budget_limited" : "active";
 		this._setGoalState({
 			...this._goalState,
+			active: nextStatus === "active",
+			status: nextStatus,
+			lastReason: exhausted ? "Goal token budget already reached" : undefined,
+			lastError: undefined,
+		});
+		if (nextStatus === "active") {
+			await this._runOrQueueGoalContext("continuation");
+		}
+	}
+
+	private _finishGoalWithError(errorMessage: string): void {
+		if (!this._goalState.objective || this._goalState.status !== "active") {
+			return;
+		}
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
 			active: false,
 			status: "error",
 			lastReason: errorMessage,
@@ -685,16 +774,20 @@ export class AgentSession {
 	}
 
 	private _finishGoalForTerminalAssistantMessage(message: AssistantMessage): void {
-		if (!this._goalState.active) {
+		if (this._goalState.status !== "active") {
 			return;
 		}
 
 		if (message.stopReason === "aborted") {
-			this._finishGoal("stopped", "Aborted by user");
+			this._goalAbortInProgress = false;
 			return;
 		}
 
 		if (message.stopReason === "error") {
+			if (this._goalAbortInProgress) {
+				this._goalAbortInProgress = false;
+				return;
+			}
 			this._finishGoalWithError(message.errorMessage || "Assistant response failed");
 		}
 	}
@@ -705,52 +798,86 @@ export class AgentSession {
 		}
 
 		const rest = text.slice("/goal".length).trim();
-		if (!rest || rest === "status") {
+		const normalized = rest.toLowerCase();
+		if (!rest || normalized === "status") {
 			return { kind: "status" };
 		}
-		if (rest === "stop") {
-			return { kind: "stop" };
+		if (normalized === "clear" || normalized === "stop") {
+			return { kind: "clear" };
+		}
+		if (normalized === "pause") {
+			return { kind: "pause" };
+		}
+		if (normalized === "resume") {
+			return { kind: "resume" };
 		}
 
-		let maxContinuations = DEFAULT_GOAL_MAX_CONTINUATIONS;
+		let tokenBudget: number | undefined;
 		let objective = rest;
 		const firstToken = rest.split(/\s+/, 1)[0] ?? "";
-		if (firstToken === "--turns" || firstToken.startsWith("--turns=")) {
+		if (
+			firstToken === "--budget" ||
+			firstToken === "--token-budget" ||
+			firstToken.startsWith("--budget=") ||
+			firstToken.startsWith("--token-budget=")
+		) {
 			let valueText: string;
-			if (firstToken === "--turns") {
-				const withoutFlag = rest.slice("--turns".length).trimStart();
+			if (firstToken === "--budget" || firstToken === "--token-budget") {
+				const withoutFlag = rest.slice(firstToken.length).trimStart();
 				const nextSpace = withoutFlag.search(/\s/);
 				if (nextSpace < 0) {
-					throw new Error("Usage: /goal --turns <count> <objective>");
+					throw new Error("Usage: /goal [--budget <tokens>] <objective>");
 				}
 				valueText = withoutFlag.slice(0, nextSpace);
 				objective = withoutFlag.slice(nextSpace + 1).trim();
 			} else {
-				valueText = firstToken.slice("--turns=".length);
+				const separator = firstToken.indexOf("=");
+				valueText = firstToken.slice(separator + 1);
 				objective = rest.slice(firstToken.length).trim();
 			}
+			tokenBudget = validateGoalBudget(Number.parseInt(valueText, 10));
+		}
 
-			const parsed = Number.parseInt(valueText, 10);
-			if (!Number.isFinite(parsed) || parsed < 1) {
-				throw new Error("Goal turn limit must be a positive integer");
+		return { kind: "start", objective: validateGoalObjective(objective), tokenBudget };
+	}
+
+	private async _validateCanStartAgentRun(): Promise<void> {
+		if (!this.model) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
+		if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+			if (isOAuth) {
+				throw new Error(
+					`Authentication failed for "${this.model.provider}". ` +
+						`Credentials may have expired or network is unavailable. ` +
+						`Run '/login ${this.model.provider}' to re-authenticate.`,
+				);
 			}
-			maxContinuations = parsed;
+			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 		}
-
-		if (!objective) {
-			throw new Error("Usage: /goal [--turns <count>] <objective>");
-		}
-
-		return { kind: "start", objective, maxContinuations };
 	}
 
-	private _createGoalInitialPrompt(objective: string): string {
-		return `Work toward this long-running goal until it is complete.\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>`;
-	}
+	private async _runOrQueueGoalContext(
+		kind: "continuation" | "budget_limit" | "objective_updated",
+		images?: ImageContent[],
+	): Promise<void> {
+		if (!this._goalState.objective) {
+			return;
+		}
+		const message = createGoalContextMessage(this._goalState, kind, images);
+		if (this.isStreaming) {
+			if (kind === "budget_limit") {
+				this.agent.steer(message);
+			} else {
+				this.agent.followUp(message);
+			}
+			return;
+		}
 
-	private _createGoalContinuationPrompt(objective: string, reason: string | undefined): string {
-		const reasonText = reason ? `\n\nClassifier reason: ${reason}` : "";
-		return `Continue working toward the active long-running goal. The previous assistant turn stopped without requesting a tool.${reasonText}\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>\n\nTake the next concrete step. Use available tools when useful.`;
+		await this._validateCanStartAgentRun();
+		await this.agent.prompt([message]);
+		await this.waitForRetry();
 	}
 
 	private async _handleGoalSlashCommand(
@@ -767,201 +894,104 @@ export class AgentSession {
 			return { handled: true };
 		}
 
-		if (command.kind === "stop") {
-			if (this._goalState.active) {
-				this._finishGoal("stopped", "Stopped by user");
-			} else {
-				this._emitGoalUpdate();
-			}
+		if (command.kind === "clear") {
+			this._clearGoal();
 			return { handled: true };
 		}
 
-		this._startGoal(command.objective, command.maxContinuations);
-		const promptText = this._createGoalInitialPrompt(command.objective);
-		if (this.isStreaming) {
-			await this._queueFollowUp(promptText, images);
+		if (command.kind === "pause") {
+			this._pauseGoal();
 			return { handled: true };
 		}
 
-		return { handled: false, text: promptText, images };
+		if (command.kind === "resume") {
+			await this._resumeGoal();
+			return { handled: true };
+		}
+
+		const previousWasActive = this._goalState.status === "active";
+		this._startGoal(command.objective, command.tokenBudget);
+		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
+		return { handled: true };
 	}
 
-	private _formatGoalTranscriptMessage(message: AgentMessage): string | undefined {
-		switch (message.role) {
-			case "user": {
-				const text = readTextBlocks(message.content).trim();
-				return text ? `user: ${text}` : undefined;
-			}
-			case "assistant": {
-				const text = readAssistantText(message as AssistantMessage).trim();
-				return text ? `assistant: ${text}` : undefined;
-			}
-			case "toolResult": {
-				const text = readTextBlocks(message.content).trim();
-				return text ? `tool ${message.toolName}: ${text}` : `tool ${message.toolName}: done`;
-			}
-			case "custom": {
-				if (!message.display && message.customType === GOAL_CONTINUATION_CUSTOM_TYPE) {
-					return undefined;
-				}
-				const text = typeof message.content === "string" ? message.content : readTextBlocks(message.content);
-				return text.trim() ? `custom ${message.customType}: ${text.trim()}` : undefined;
-			}
-			case "bashExecution": {
-				const status = message.cancelled ? "cancelled" : message.exitCode === 0 ? "succeeded" : "failed";
-				const output = message.output.trim();
-				return output ? `bash ${status}: ${output}` : `bash ${status}`;
-			}
-			case "branchSummary":
-				return `branch summary: ${message.summary}`;
-			case "compactionSummary":
-				return `compaction summary: ${message.summary}`;
-			default: {
-				const _exhaustive: never = message;
-				return _exhaustive;
-			}
+	private _accountGoalUsageForAssistantMessage(message: AssistantMessage): void {
+		if (this._goalState.status !== "active" || !this._goalState.objective) {
+			return;
 		}
-	}
-
-	private _buildGoalTranscript(messages: AgentMessage[]): string {
-		return messages
-			.slice(-30)
-			.map((message) => this._formatGoalTranscriptMessage(message))
-			.filter((line): line is string => line !== undefined)
-			.join("\n\n");
-	}
-
-	private _parseGoalClassification(text: string): GoalClassification {
-		const start = text.indexOf("{");
-		const end = text.lastIndexOf("}");
-		if (start < 0 || end < start) {
-			throw new Error("Goal classifier returned no JSON object");
+		if (message.stopReason === "error" || message.stopReason === "aborted") {
+			return;
 		}
-
-		const parsed: unknown = JSON.parse(text.slice(start, end + 1));
-		if (!parsed || typeof parsed !== "object") {
-			throw new Error("Goal classifier returned invalid JSON");
-		}
-
-		const record = parsed as Record<string, unknown>;
-		if (typeof record.complete !== "boolean") {
-			throw new Error("Goal classifier response is missing complete");
-		}
-
-		return {
-			complete: record.complete,
-			reason: typeof record.reason === "string" ? record.reason : "",
+		const tokenDelta = goalTokenDeltaForUsage(message.usage);
+		const goal = this._goalWithAccountedWallClock();
+		const nextGoal: GoalState = {
+			...goal,
+			tokensUsed: goal.tokensUsed + tokenDelta,
 		};
+		const updateGoalRequested = message.content.some(
+			(content) => content.type === "toolCall" && content.name === UPDATE_GOAL_TOOL_NAME,
+		);
+		const budgetReached =
+			!updateGoalRequested && nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
+		if (!budgetReached) {
+			this._setGoalState(nextGoal);
+			return;
+		}
+		this._setGoalState({
+			...nextGoal,
+			active: false,
+			status: "budget_limited",
+			lastReason: `Reached ${nextGoal.tokenBudget} token goal budget`,
+			lastError: undefined,
+		});
+		this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
 	}
 
-	private async _classifyGoalCompletion(
-		objective: string,
-		context: GetContinuationMessagesContext,
-		signal?: AbortSignal,
-	): Promise<GoalClassification> {
-		const model = this.model;
-		if (!model) {
-			throw new Error(formatNoModelSelectedMessage());
+	private createGoalFromTool(objective: string, tokenBudget: number | undefined): GoalState {
+		if (this._goalState.status !== "idle") {
+			throw new Error(
+				"cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete",
+			);
 		}
+		return this._startGoal(objective, tokenBudget);
+	}
 
-		const { apiKey, headers } = await this._getRequiredRequestAuth(model);
-		const transcript = this._buildGoalTranscript(context.context.messages);
-		const promptText = `Decide whether the active goal is fully complete based on the recent transcript.\n\nReturn only JSON in this shape:\n{"complete":true|false,"reason":"short reason"}\n\nMark complete true only if the requested goal has actually been achieved.\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>\n\n<recent_transcript>\n${transcript}\n</recent_transcript>`;
-		const messages: Message[] = [
-			{
-				role: "user",
-				content: [{ type: "text", text: promptText }],
-				timestamp: Date.now(),
-			},
-		];
-		const completionOptions =
-			model.reasoning && this.thinkingLevel !== "off"
-				? {
-						maxTokens: GOAL_CLASSIFIER_MAX_TOKENS,
-						signal,
-						apiKey,
-						headers,
-						reasoning: this.thinkingLevel,
-					}
-				: {
-						maxTokens: GOAL_CLASSIFIER_MAX_TOKENS,
-						signal,
-						apiKey,
-						headers,
-					};
-		const response = await completeSimple(
-			model,
-			{ systemPrompt: GOAL_CLASSIFIER_SYSTEM_PROMPT, messages },
-			completionOptions,
-		);
-		if (response.stopReason === "error") {
-			throw new Error(response.errorMessage || "Goal classifier failed");
+	private completeGoalFromTool(): GoalState {
+		if (!this._goalState.objective || this._goalState.status === "idle") {
+			throw new Error("cannot update goal because this thread has no goal");
 		}
-
-		const text = readAssistantText(response);
-		return this._parseGoalClassification(text);
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
+			active: false,
+			status: "complete",
+			lastReason: "Goal achieved",
+			lastError: undefined,
+		});
+		return this._goalState;
 	}
 
 	private async _getGoalContinuationMessages(
-		context: GetContinuationMessagesContext,
+		_context: GetContinuationMessagesContext,
 		signal?: AbortSignal,
 	): Promise<AgentMessage[]> {
-		const goal = this._goalState;
-		if (!goal.active || !goal.objective || signal?.aborted) {
+		if (signal?.aborted || this._goalState.status !== "active" || !this._goalState.objective) {
 			return [];
 		}
-
-		const hasToolCalls = context.message.content.some((content) => content.type === "toolCall");
-		if (hasToolCalls || context.toolResults.length > 0) {
-			return [];
-		}
-
-		if (goal.continuationsUsed >= goal.maxContinuations) {
-			this._finishGoal("limit_reached", `Reached ${goal.maxContinuations} continuation turn limit`);
-			return [];
-		}
-
-		this._setGoalState({ ...goal, status: "classifying" });
-		let classification: GoalClassification;
 		try {
-			classification = await this._classifyGoalCompletion(goal.objective, context, signal);
+			const nextGoal = {
+				...this._goalState,
+				continuationsUsed: this._goalState.continuationsUsed + 1,
+				lastReason: undefined,
+				lastError: undefined,
+			};
+			this._setGoalState(nextGoal);
+			return [createGoalContextMessage(this._goalState, "continuation")];
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			classification = { complete: false, reason: `Classifier failed: ${message}` };
-			this._setGoalState({ ...this._goalState, status: "running", lastError: message });
-		}
-
-		if (!this._goalState.active || this._goalState.objective !== goal.objective || signal?.aborted) {
+			this._finishGoalWithError(message);
 			return [];
 		}
-
-		if (classification.complete) {
-			this._finishGoal("complete", classification.reason);
-			return [];
-		}
-
-		const nextContinuationsUsed = this._goalState.continuationsUsed + 1;
-		this._setGoalState({
-			...this._goalState,
-			status: "running",
-			continuationsUsed: nextContinuationsUsed,
-			lastReason: classification.reason,
-			lastError: undefined,
-		});
-
-		const continuation: CustomMessage<{ objective: string; classifierReason?: string; continuationsUsed: number }> = {
-			role: "custom",
-			customType: GOAL_CONTINUATION_CUSTOM_TYPE,
-			content: this._createGoalContinuationPrompt(goal.objective, classification.reason),
-			display: false,
-			details: {
-				objective: goal.objective,
-				classifierReason: classification.reason || undefined,
-				continuationsUsed: nextContinuationsUsed,
-			},
-			timestamp: Date.now(),
-		};
-		return [continuation];
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -1084,6 +1114,7 @@ export class AgentSession {
 					});
 					this._retryAttempt = 0;
 				}
+				this._accountGoalUsageForAssistantMessage(assistantMsg);
 			}
 		}
 
@@ -1927,11 +1958,14 @@ export class AgentSession {
 	 */
 	async abort(): Promise<void> {
 		this.abortRetry();
-		if (this._goalState.active) {
-			this._finishGoal("stopped", "Aborted by user");
-		}
+		this._goalAbortInProgress = this._goalState.status === "active";
 		this.agent.abort();
-		await this.agent.waitForIdle();
+		try {
+			await this.agent.waitForIdle();
+			await this._agentEventQueue;
+		} finally {
+			this._goalAbortInProgress = false;
+		}
 	}
 
 	// =========================================================================
@@ -2792,7 +2826,8 @@ export class AgentSession {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
-		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
+		const isAllowedTool = (name: string): boolean =>
+			isGoalToolName(name) || !allowedToolNames || allowedToolNames.has(name);
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools = [
@@ -2857,6 +2892,9 @@ export class AgentSession {
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
+		for (const goalToolName of GOAL_TOOL_NAMES) {
+			nextActiveToolNames.push(goalToolName);
+		}
 
 		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
@@ -2886,7 +2924,7 @@ export class AgentSession {
 	}): void {
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
-		const baseToolDefinitions = this._baseToolsOverride
+		const configuredBaseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
 						name,
@@ -2902,6 +2940,15 @@ export class AgentSession {
 					},
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
 				});
+		const goalToolDefinitions = createGoalToolDefinitions({
+			getGoalState: () => this.goalState,
+			createGoalFromTool: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
+			completeGoalFromTool: () => this.completeGoalFromTool(),
+		});
+		const baseToolDefinitions = {
+			...configuredBaseToolDefinitions,
+			...Object.fromEntries(goalToolDefinitions.map((definition) => [definition.name, definition])),
+		};
 
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),

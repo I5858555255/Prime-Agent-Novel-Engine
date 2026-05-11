@@ -76,6 +76,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
+import { formatGoalUsage } from "../../core/goals.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
@@ -3085,20 +3086,21 @@ export class InteractiveMode {
 
 	private formatGoalStatus(goal: GoalState): string {
 		const objective = goal.objective ? `: ${goal.objective}` : "";
-		const progress = `${goal.continuationsUsed}/${goal.maxContinuations}`;
+		const usage = formatGoalUsage(goal);
+		const usageText = usage ? ` (${usage})` : "";
 		switch (goal.status) {
 			case "idle":
 				return "No active goal";
-			case "running":
-				return `Goal running (${progress})${objective}`;
-			case "classifying":
-				return `Checking goal completion (${progress})${objective}`;
+			case "active":
+				return `Pursuing goal${usageText}${objective}`;
+			case "paused":
+				return goal.lastReason ? `Goal paused: ${goal.lastReason}` : "Goal paused (/goal resume)";
+			case "budget_limited":
+				return goal.lastReason
+					? `Goal budget limited${usageText}: ${goal.lastReason}`
+					: `Goal budget limited${usageText}`;
 			case "complete":
 				return goal.lastReason ? `Goal complete: ${goal.lastReason}` : "Goal complete";
-			case "stopped":
-				return goal.lastReason ? `Goal stopped: ${goal.lastReason}` : "Goal stopped";
-			case "limit_reached":
-				return goal.lastReason ? `Goal limit reached: ${goal.lastReason}` : "Goal limit reached";
 			case "error":
 				return goal.lastError ? `Goal error: ${goal.lastError}` : "Goal error";
 			default: {
