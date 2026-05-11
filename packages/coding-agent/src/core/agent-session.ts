@@ -83,6 +83,7 @@ import {
 	createGoalContextMessage,
 	createGoalToolDefinitions,
 	emptyGoalState,
+	GOAL_CONTEXT_CUSTOM_TYPE,
 	GOAL_STATE_CUSTOM_TYPE,
 	GOAL_TOOL_NAMES,
 	type GoalState,
@@ -699,6 +700,12 @@ export class AgentSession {
 		};
 	}
 
+	private _clearQueuedGoalContexts(): void {
+		this.agent.removeQueuedMessages(
+			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_CUSTOM_TYPE,
+		);
+	}
+
 	private _startGoal(objectiveText: string, tokenBudget: number | undefined): GoalState {
 		const objective = validateGoalObjective(objectiveText);
 		const budget = validateGoalBudget(tokenBudget);
@@ -721,10 +728,12 @@ export class AgentSession {
 	}
 
 	private _clearGoal(): void {
+		this._clearQueuedGoalContexts();
 		this._setGoalState(emptyGoalState());
 	}
 
 	private _pauseGoal(reason = "Paused by user"): void {
+		this._clearQueuedGoalContexts();
 		if (this._goalState.status !== "active") {
 			this._emitGoalUpdate();
 			return;
@@ -913,6 +922,7 @@ export class AgentSession {
 		if (!this.isStreaming) {
 			await this._validateCanStartAgentRun();
 		}
+		this._clearQueuedGoalContexts();
 		this._startGoal(command.objective, command.tokenBudget);
 		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
 		return { handled: true };

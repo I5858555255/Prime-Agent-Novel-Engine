@@ -187,6 +187,32 @@ describe("AgentSession goals", () => {
 		});
 	});
 
+	it.each([
+		{ command: "/goal clear", status: "idle" },
+		{ command: "/goal pause", status: "paused" },
+	])("removes queued goal context after $command while streaming", async ({ command, status }) => {
+		const waiting = createWaitingTool();
+		const harness = await createHarness({ tools: [waiting.tool] });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("stale goal response"),
+		]);
+
+		const waitForStart = waiting.waitForStart(harness);
+		const promptPromise = harness.session.prompt("start a blocking turn");
+		await waitForStart;
+		await harness.session.prompt("/goal stale goal");
+		await harness.session.prompt(command);
+		waiting.release();
+		await promptPromise;
+
+		expect(goalContextMessages(harness)).toHaveLength(0);
+		expect(visibleAssistantTexts(harness)).toEqual([]);
+		expect(harness.session.goalState.status).toBe(status);
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
 	it("pauses an active goal with /goal pause", async () => {
 		const waiting = createWaitingTool();
 		const harness = await createHarness({ tools: [waiting.tool] });

@@ -143,6 +143,20 @@ class PendingMessageQueue {
 	clear(): void {
 		this.messages = [];
 	}
+
+	removeWhere(predicate: (message: AgentMessage) => boolean): AgentMessage[] {
+		const removed: AgentMessage[] = [];
+		const retained: AgentMessage[] = [];
+		for (const message of this.messages) {
+			if (predicate(message)) {
+				removed.push(message);
+			} else {
+				retained.push(message);
+			}
+		}
+		this.messages = retained;
+		return removed;
+	}
 }
 
 type ActiveRun = {
@@ -279,6 +293,11 @@ export class Agent {
 	clearAllQueues(): void {
 		this.clearSteeringQueue();
 		this.clearFollowUpQueue();
+	}
+
+	/** Remove queued messages matching the predicate from both queues. */
+	removeQueuedMessages(predicate: (message: AgentMessage) => boolean): AgentMessage[] {
+		return [...this.steeringQueue.removeWhere(predicate), ...this.followUpQueue.removeWhere(predicate)];
 	}
 
 	/** Returns true when either queue still contains pending messages. */
