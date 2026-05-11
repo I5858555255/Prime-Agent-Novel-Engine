@@ -2831,7 +2831,17 @@ export class AgentSession {
 			this._attributeRlmChildUsageToParent(child._assistantUsageForCurrentMessages());
 			status = "done";
 			durationMs = Date.now() - startedAt;
-			recordAssistantText(answer);
+			// Streaming events usually capture the final assistant text already. Only
+			// record again when it's missing — otherwise a child whose last streamed
+			// event was tool_execution_start would have currentAssistantIndex cleared,
+			// causing the final answer to be appended as a duplicate row.
+			const compactAnswer = compactRlmText(answer);
+			const lastAssistantText = [...transcript].reverse().find((line) => line.role === "assistant")?.text;
+			if (compactAnswer && compactAnswer !== lastAssistantText) {
+				recordAssistantText(answer);
+			} else if (compactAnswer) {
+				answerPreview = compactAnswer;
+			}
 			emitChildUpdate();
 			return {
 				answer,
