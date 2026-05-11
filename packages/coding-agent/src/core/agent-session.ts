@@ -312,6 +312,17 @@ function parseDepth(value: string | undefined, fallback: number, name: string): 
 	return parsed;
 }
 
+function parseGoalBudgetValue(value: string): number {
+	if (!/^[1-9]\d*$/.test(value)) {
+		throw new Error("Goal token budget must be a positive integer.");
+	}
+	const budget = validateGoalBudget(Number(value));
+	if (budget === undefined) {
+		throw new Error("Goal token budget must be a positive integer.");
+	}
+	return budget;
+}
+
 function emptyRlmUsage(): RlmUsage {
 	return { prompt_tokens: 0, completion_tokens: 0 };
 }
@@ -850,7 +861,7 @@ export class AgentSession {
 				valueText = firstToken.slice(separator + 1);
 				objective = rest.slice(firstToken.length).trim();
 			}
-			tokenBudget = validateGoalBudget(Number.parseInt(valueText, 10));
+			tokenBudget = parseGoalBudgetValue(valueText);
 		}
 
 		return { kind: "start", objective: validateGoalObjective(objective), tokenBudget };

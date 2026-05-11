@@ -331,6 +331,23 @@ describe("AgentSession goals", () => {
 		expect(harness.session.goalState.tokensUsed).toBeGreaterThanOrEqual(10);
 	});
 
+	it.each(["/goal --budget=1abc task", "/goal --budget 1.5 task", "/goal --budget 1e6 task"])(
+		"rejects malformed goal budget %s",
+		async (command) => {
+			const harness = await createHarness();
+			harnesses.push(harness);
+			harness.setResponses([fauxAssistantMessage("unused")]);
+
+			await expect(harness.session.prompt(command)).rejects.toThrow("Goal token budget must be a positive integer.");
+
+			expect(harness.session.goalState).toMatchObject({
+				active: false,
+				status: "idle",
+			});
+			expect(harness.getPendingResponseCount()).toBe(1);
+		},
+	);
+
 	it("marks the goal as errored on terminal provider errors", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: false } } });
 		harnesses.push(harness);
