@@ -87,6 +87,14 @@ interface CapturedCommReply {
 	data: Record<string, unknown>;
 }
 
+interface InspectableBackgroundRun {
+	abort: () => void;
+}
+
+interface InspectableBackgroundSession {
+	_backgroundRlmRuns: Map<string, InspectableBackgroundRun>;
+}
+
 function rlmCommOpenData(commId: string, data: Record<string, unknown>): TestCommMessage {
 	return {
 		header: { msg_type: "comm_open" },
@@ -299,6 +307,8 @@ describe("AgentSession rlm recursion", () => {
 		});
 
 		const start = root.startBackgroundRlmChild("slow shard");
+		const run = (root as unknown as InspectableBackgroundSession)._backgroundRlmRuns.get(start.id);
+		const activeAbort = run?.abort;
 
 		expect(start.state).toBe("running");
 		expect(start.id).toMatch(/^sub-/);
@@ -330,6 +340,7 @@ describe("AgentSession rlm recursion", () => {
 		expect(notice.display).toBe(false);
 		expect(notice.content).toContain("1 background RLM child has finished.");
 		expect(notice.content).toContain("Answer preview: child answer: slow shard");
+		expect(run?.abort).not.toBe(activeAbort);
 		await sleep(350);
 		expect(parentInputs).toEqual([]);
 	});

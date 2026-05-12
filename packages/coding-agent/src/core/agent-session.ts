@@ -294,6 +294,8 @@ type BackgroundRlmCompletionPolicy = "passive" | "wake" | "silent";
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 const BACKGROUND_RLM_COMPLETION_DEBOUNCE_MS = 250;
 
+function noopRlmChildAbort(): void {}
+
 function parseBackgroundRlmCompletionPolicy(value: unknown): BackgroundRlmCompletionPolicy {
 	if (value === undefined) {
 		return "passive";
@@ -2763,7 +2765,7 @@ export class AgentSession {
 			status: "running",
 			completionPolicy: options.completionPolicy ?? "passive",
 			waiters: new Set(),
-			abort: () => {},
+			abort: noopRlmChildAbort,
 		};
 		// Index of the assistant entry currently being streamed. Cleared whenever the
 		// conversation moves on (new assistant message, tool call) so subsequent assistant
@@ -2957,6 +2959,7 @@ export class AgentSession {
 			} finally {
 				unsubscribeChild();
 				child.dispose();
+				run.abort = noopRlmChildAbort;
 			}
 		})();
 		run.task = task;
