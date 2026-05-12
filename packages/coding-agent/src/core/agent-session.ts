@@ -106,6 +106,7 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions } from "./tools/index.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
+import { cloneUsage, emptyUsage } from "./usage.js";
 
 // ============================================================================
 // Skill Block Parsing
@@ -339,17 +340,6 @@ function addUsage(total: RlmUsage, usage: Usage): void {
 	total.completion_tokens += usage.output;
 }
 
-function emptyUsage(): Usage {
-	return {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-	};
-}
-
 function addAssistantUsage(total: Usage, usage: Usage): void {
 	total.input += usage.input;
 	total.output += usage.output;
@@ -393,23 +383,6 @@ function readAssistantThinking(message: AssistantMessage): string {
 		.filter((block) => block.type === "thinking")
 		.map((block) => block.thinking)
 		.join("");
-}
-
-function cloneUsage(usage: Usage): Usage {
-	return {
-		input: usage.input,
-		output: usage.output,
-		cacheRead: usage.cacheRead,
-		cacheWrite: usage.cacheWrite,
-		totalTokens: usage.totalTokens,
-		cost: {
-			input: usage.cost.input,
-			output: usage.cost.output,
-			cacheRead: usage.cost.cacheRead,
-			cacheWrite: usage.cost.cacheWrite,
-			total: usage.cost.total,
-		},
-	};
 }
 
 function cloneTextImageContentBlock(block: TextContent | ImageContent): TextContent | ImageContent {
@@ -480,6 +453,19 @@ function cloneAssistantMessage(message: AssistantMessage): AssistantMessage {
 		stopReason: message.stopReason,
 		...(message.errorMessage !== undefined ? { errorMessage: message.errorMessage } : {}),
 		timestamp: message.timestamp,
+	};
+}
+
+function createAssistantTextMessage(text: string, model: Model<any>, timestamp = Date.now()): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: emptyUsage(),
+		stopReason: "stop",
+		timestamp,
 	};
 }
 
@@ -2902,6 +2888,20 @@ export class AgentSession {
 				structuredTranscript[currentAssistantIndex] = entry;
 			}
 		};
+		const recordAssistantText = (text: string, sourceMessage?: AssistantMessage) => {
+			const compact = compactRlmText(text);
+			if (!compact) {
+				return;
+			}
+			const sourceCompact = sourceMessage
+				? compactRlmText(readAssistantText(sourceMessage)) || compactRlmText(readAssistantThinking(sourceMessage))
+				: undefined;
+			const message =
+				sourceMessage && sourceCompact === compact
+					? sourceMessage
+					: createAssistantTextMessage(text, model, sourceMessage?.timestamp);
+			recordAssistantMessage(message);
+		};
 		const recordUserMessage = (message: UserMessage) => {
 			const text = compactRlmText(readTextBlocks(message.content));
 			if (!text) {
@@ -3086,9 +3086,7 @@ export class AgentSession {
 			const lastAssistantText = [...transcript].reverse().find((line) => line.role === "assistant")?.text;
 			if (compactAnswer && compactAnswer !== lastAssistantText) {
 				const lastAssistant = child._findLastAssistantMessage();
-				if (lastAssistant) {
-					recordAssistantMessage(lastAssistant);
-				}
+				recordAssistantText(answer, lastAssistant);
 			} else if (compactAnswer) {
 				answerPreview = compactAnswer;
 			}
