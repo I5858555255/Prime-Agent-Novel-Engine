@@ -1076,7 +1076,11 @@ export class AgentSession {
 			return [createGoalContextMessage(this._goalState, "continuation")];
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this._finishGoalWithError(message);
+			try {
+				this._finishGoalWithError(message);
+			} catch {
+				// The continuation hook must not reject; listener failures should not crash the agent loop.
+			}
 			return [];
 		}
 	}
@@ -3058,12 +3062,12 @@ export class AgentSession {
 		if (this._includeGoalTools && this._autoActivateGoalTools) {
 			defaultActiveToolNames.push(...GOAL_TOOL_NAMES);
 		}
-		const baseActiveToolNames =
-			this._goalState.status === "active" && this._includeGoalTools
-				? [...(options.activeToolNames ?? defaultActiveToolNames), ...GOAL_TOOL_NAMES]
-				: (options.activeToolNames ?? defaultActiveToolNames);
+		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+		if (this._goalState.status === "active" && this._includeGoalTools) {
+			baseActiveToolNames.push(...GOAL_TOOL_NAMES);
+		}
 		this._refreshToolRegistry({
-			activeToolNames: baseActiveToolNames,
+			activeToolNames: [...new Set(baseActiveToolNames)],
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
 	}

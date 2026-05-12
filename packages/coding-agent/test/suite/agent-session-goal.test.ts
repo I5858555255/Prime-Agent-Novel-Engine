@@ -201,6 +201,54 @@ describe("AgentSession goals", () => {
 		expect(harness.session.getActiveToolNames()).toEqual([]);
 	});
 
+	it("does not duplicate goal tools on active-goal runtime rebuild", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const createGoalTool = harness.session.getToolDefinition("create_goal");
+		if (!createGoalTool) {
+			throw new Error("expected create_goal tool");
+		}
+		await createGoalTool.execute(
+			"create-goal",
+			{ objective: "finish the active goal" },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		await harness.session.reload();
+
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython", ...GOAL_TOOL_NAMES]);
+	});
+
+	it("does not reject continuation when goal error update listeners throw", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const createGoalTool = harness.session.getToolDefinition("create_goal");
+		if (!createGoalTool) {
+			throw new Error("expected create_goal tool");
+		}
+		await createGoalTool.execute(
+			"create-goal",
+			{ objective: "finish the active goal" },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		harness.session.subscribe((event) => {
+			if (event.type === "goal_update") {
+				throw new Error("listener failed");
+			}
+		});
+		harness.setResponses([fauxAssistantMessage("Still working.")]);
+
+		await expect(harness.session.prompt("continue")).resolves.toBeUndefined();
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "error",
+		});
+	});
+
 	it("does not infer completion from an assistant claim without update_goal", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
