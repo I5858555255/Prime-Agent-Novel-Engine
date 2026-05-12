@@ -3075,7 +3075,7 @@ export class AgentSession {
 	}
 
 	private _queueBackgroundRlmChildCompletion(run: RlmChildRun): void {
-		if (run.status === "cancelled") {
+		if (this._disposed || run.status === "cancelled") {
 			return;
 		}
 		this._pendingBackgroundRlmCompletions.push(run);
@@ -3084,6 +3084,10 @@ export class AgentSession {
 		}
 		this._backgroundRlmCompletionTimer = globalThis.setTimeout(() => {
 			this._backgroundRlmCompletionTimer = undefined;
+			if (this._disposed) {
+				this._pendingBackgroundRlmCompletions = [];
+				return;
+			}
 			void this._flushBackgroundRlmChildCompletions();
 		}, BACKGROUND_RLM_COMPLETION_DEBOUNCE_MS);
 		if (
@@ -3161,8 +3165,12 @@ export class AgentSession {
 	}
 
 	private async _flushBackgroundRlmChildCompletions(): Promise<void> {
+		if (this._disposed) {
+			this._pendingBackgroundRlmCompletions = [];
+			return;
+		}
 		const runs = this._pendingBackgroundRlmCompletions.splice(0);
-		if (runs.length === 0) {
+		if (runs.length === 0 || this._disposed) {
 			return;
 		}
 		const content = this._formatBackgroundRlmCompletionNotice(runs);

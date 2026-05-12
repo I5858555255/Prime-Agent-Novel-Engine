@@ -95,6 +95,27 @@ interface InspectableBackgroundSession {
 	_backgroundRlmRuns: Map<string, InspectableBackgroundRun>;
 }
 
+interface InspectableBackgroundCompletionRun {
+	id: string;
+	prompt: string;
+	status: "done";
+	sessionDir: string | null;
+	result: {
+		answer: string;
+		usage: { prompt_tokens: number; completion_tokens: number };
+		turns: number;
+		session_dir: string | null;
+	};
+	completionPolicy: "passive" | "wake" | "silent";
+	error?: string;
+}
+
+interface InspectableBackgroundCompletionSession {
+	_queueBackgroundRlmChildCompletion(run: InspectableBackgroundCompletionRun): void;
+	_pendingBackgroundRlmCompletions: InspectableBackgroundCompletionRun[];
+	_backgroundRlmCompletionTimer?: ReturnType<typeof globalThis.setTimeout>;
+}
+
 function rlmCommOpenData(commId: string, data: Record<string, unknown>): TestCommMessage {
 	return {
 		header: { msg_type: "comm_open" },
@@ -474,6 +495,36 @@ describe("AgentSession rlm recursion", () => {
 		await sleep(50);
 
 		expect(parentInputs).toEqual([]);
+	});
+
+	it("ignores background completion callbacks that arrive after dispose", async () => {
+		const root = createSession();
+		root.dispose();
+
+		const inspectable = root as unknown as InspectableBackgroundCompletionSession;
+		const entriesBefore = root.sessionManager.getEntries().length;
+		inspectable._queueBackgroundRlmChildCompletion({
+			id: "sub-after-dispose",
+			prompt: "finished shard",
+			status: "done",
+			sessionDir: null,
+			result: {
+				answer: "finished answer",
+				usage: { prompt_tokens: 1, completion_tokens: 1 },
+				turns: 1,
+				session_dir: null,
+			},
+			completionPolicy: "passive",
+		});
+
+		await sleep(350);
+
+		expect(inspectable._pendingBackgroundRlmCompletions).toEqual([]);
+		expect(inspectable._backgroundRlmCompletionTimer).toBeUndefined();
+		expect(root.sessionManager.getEntries()).toHaveLength(entriesBefore);
+		expect(
+			root.messages.some((message) => message.role === "custom" && message.customType === "rlm_background_result"),
+		).toBe(false);
 	});
 
 	it("runs parallel rlm comm requests independently", async () => {
