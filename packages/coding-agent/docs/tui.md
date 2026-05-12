@@ -445,10 +445,10 @@ interface MyTheme {
 
 ## Debug logging
 
-Set `PRIME_AGENT_TUI_WRITE_LOG` to capture the raw ANSI stream written to stdout.
+Set `PI_TUI_WRITE_LOG` to capture the raw ANSI stream written to stdout.
 
 ```bash
-PRIME_AGENT_TUI_WRITE_LOG=/tmp/tui-ansi.log npx tsx packages/tui/test/chat-simple.ts
+PI_TUI_WRITE_LOG=/tmp/tui-ansi.log npx tsx packages/tui/test/chat-simple.ts
 ```
 
 ## Performance

@@ -17,7 +17,7 @@ Run from source:
 /path/to/pi-mono/pi-test.sh
 ```
 
-The script can be run from any directory. Prime Agent keeps the caller's current working directory.
+The script can be run from any directory. Pi keeps the caller's current working directory.
 
 ## Forking / Rebranding
 
@@ -25,9 +25,9 @@ Configure via `package.json`:
 
 ```json
 {
-  "primeAgentConfig": {
-    "name": "prime-agent",
-    "configDir": ".prime/agent"
+  "piConfig": {
+    "name": "pi",
+    "configDir": ".pi"
   }
 }
 ```
@@ -48,7 +48,7 @@ Never use `__dirname` directly for package assets.
 
 ## Debug Command
 
-`/debug` (hidden) writes to `~/.prime/agent/pi-debug.log`:
+`/debug` (hidden) writes to `~/.pi/agent/pi-debug.log`:
 - Rendered TUI lines with ANSI codes
 - Last messages sent to the LLM
 
