@@ -106,6 +106,7 @@ import {
 	ChildAgentDetailComponent,
 	ChildAgentInspectorComponent,
 	type ChildAgentInspectorNode,
+	type ChildAgentStructuredTranscriptEntry,
 	type ChildAgentTranscriptLine,
 } from "./components/child-agent-inspector.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
@@ -567,7 +568,19 @@ export class InteractiveMode {
 		this.childAgentInspector = new ChildAgentInspectorComponent(() => this.ui.terminal.rows);
 		this.childAgentInspector.onCancel = () => this.unfocusChildAgentInspector();
 		this.childAgentInspector.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
-		this.childAgentDetail = new ChildAgentDetailComponent(() => this.ui.terminal.rows);
+		this.childAgentDetail = new ChildAgentDetailComponent(() => this.ui.terminal.rows, {
+			ui: this.ui,
+			getCwd: () => this.sessionManager.getCwd(),
+			getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
+			getToolOptions: () => ({
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+			}),
+			getMarkdownTheme: () => this.getMarkdownThemeWithSettings(),
+			getToolsExpanded: () => this.toolOutputExpanded,
+			getHideThinkingBlock: () => this.hideThinkingBlock,
+			getHiddenThinkingLabel: () => this.hiddenThinkingLabel,
+		});
 		this.childAgentDetail.onCancel = () => this.closeChildAgentDetail();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
@@ -3280,6 +3293,9 @@ export class InteractiveMode {
 					role: line.role,
 					text: line.text,
 				}),
+			),
+			structuredTranscript: child.structuredTranscript?.map(
+				(entry): ChildAgentStructuredTranscriptEntry => ({ ...entry }),
 			),
 			children: childrenByParent.get(child.id)?.map(build),
 		});

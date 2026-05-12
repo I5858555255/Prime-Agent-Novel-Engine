@@ -1,3 +1,4 @@
+import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 import { type Component, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -28,6 +29,42 @@ function createFakeTui(): TUI {
 	return {
 		requestRender: () => {},
 	} as unknown as TUI;
+}
+
+const EMPTY_USAGE: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		total: 0,
+	},
+};
+
+function createUserMessage(text: string): UserMessage {
+	return {
+		role: "user",
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	};
+}
+
+function createAssistantMessage(text: string, thinking?: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [...(thinking ? [{ type: "thinking" as const, thinking }] : []), { type: "text", text }],
+		api: "test-api",
+		provider: "test-provider",
+		model: "test-model",
+		usage: EMPTY_USAGE,
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
 }
 
 async function renderInVirtualTerminal(component: Component, width = 100, height = 30): Promise<string> {
@@ -138,6 +175,36 @@ describe("marquee TUI components", () => {
 			transcript: [
 				{ role: "user", text: "inspect training logs" },
 				{ role: "assistant", text: "reading shard metrics" },
+				{ role: "tool", text: "bash: hi" },
+			],
+			structuredTranscript: [
+				{
+					type: "message",
+					role: "user",
+					text: "inspect training logs",
+					message: createUserMessage("inspect training logs"),
+				},
+				{
+					type: "message",
+					role: "assistant",
+					text: "reading shard metrics",
+					message: createAssistantMessage("reading shard metrics", "checking loss curve"),
+				},
+				{
+					type: "tool",
+					role: "tool",
+					text: "bash: hi",
+					toolCallId: "tool-sub-a",
+					toolName: "bash",
+					args: { command: "echo hi" },
+					result: {
+						content: [{ type: "text", text: "hi" }],
+						isError: false,
+					},
+					isPartial: false,
+					executionStarted: true,
+					argsComplete: true,
+				},
 			],
 			children: [
 				{
@@ -173,15 +240,21 @@ describe("marquee TUI components", () => {
 		expect(openedNodeId).toBe("sub-a");
 		expect(stripAnsi(component.render(42).join("\n"))).not.toContain("assistant: reading shard metrics");
 
-		const detailComponent = new ChildAgentDetailComponent(() => 12);
+		const detailComponent = new ChildAgentDetailComponent(() => 20);
 		detailComponent.setNode(node);
 		const detailLines = detailComponent.render(42);
 		const detail = stripAnsi(detailLines.join("\n"));
 		expect(detail).toContain("running inspect training logs");
 		expect(detail).toContain("sub-a");
-		expect(detail).toContain("user: inspect training logs");
-		expect(detail).toContain("assistant: reading shard metrics");
-		expect(detailLines).toHaveLength(12);
+		expect(detail).toContain("inspect training logs");
+		expect(detail).toContain("checking loss curve");
+		expect(detail).toContain("reading shard metrics");
+		expect(detail).toContain("$ echo hi");
+		expect(detail).toContain("hi");
+		expect(detail).not.toContain("user: inspect training logs");
+		expect(detail).not.toContain("assistant: reading shard metrics");
+		expect(detail).not.toContain("tool: bash");
+		expect(detailLines).toHaveLength(20);
 
 		component.handleInput("\x1b");
 		const returned = stripAnsi(component.render(42).join("\n"));
@@ -194,6 +267,36 @@ describe("marquee TUI components", () => {
 
 		const narrow = stripAnsi(component.render(24).join("\n"));
 		expect(narrow).toContain("inspect…");
+	});
+
+	test("opens child agent detail at the bottom and scrolls through the transcript", () => {
+		const detailComponent = new ChildAgentDetailComponent(() => 8);
+		detailComponent.setNode({
+			id: "sub-scroll",
+			label: "inspect long output",
+			status: "done",
+			sessionDir: "/tmp/session/sub-scroll",
+			transcript: Array.from({ length: 12 }, (_, index) => ({
+				role: "assistant" as const,
+				text: `fallback transcript row ${String(index + 1).padStart(2, "0")}`,
+			})),
+		});
+
+		const bottom = stripAnsi(detailComponent.render(48).join("\n"));
+		expect(bottom).toContain("fallback transcript row 12");
+		expect(bottom).toContain("fallback transcript row 08");
+		expect(bottom).not.toContain("fallback transcript row 01");
+
+		detailComponent.handleInput("\x1b[5~");
+		const scrolledUp = stripAnsi(detailComponent.render(48).join("\n"));
+		expect(scrolledUp).toContain("fallback transcript row 04");
+		expect(scrolledUp).toContain("fallback transcript row 08");
+		expect(scrolledUp).not.toContain("fallback transcript row 12");
+
+		detailComponent.handleInput("\x1b[6~");
+		const scrolledDown = stripAnsi(detailComponent.render(48).join("\n"));
+		expect(scrolledDown).toContain("fallback transcript row 12");
+		expect(scrolledDown).not.toContain("fallback transcript row 01");
 	});
 
 	test("routes built-in ipython tool rows through the cell renderer", () => {

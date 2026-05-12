@@ -25,7 +25,15 @@ import {
 	type AgentTool,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent, Usage } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	ImageContent,
+	Message,
+	Model,
+	TextContent,
+	Usage,
+	UserMessage,
+} from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -133,6 +141,43 @@ export interface RlmChildAgentTranscriptLine {
 	text: string;
 }
 
+export interface RlmChildAgentToolResult {
+	content: (TextContent | ImageContent)[];
+	details?: unknown;
+	isError: boolean;
+}
+
+export interface RlmChildAgentMessageTranscriptEntry {
+	type: "message";
+	role: "user" | "assistant";
+	text: string;
+	message: UserMessage | AssistantMessage;
+}
+
+export interface RlmChildAgentToolTranscriptEntry {
+	type: "tool";
+	role: "tool";
+	text: string;
+	toolCallId: string;
+	toolName: string;
+	args: unknown;
+	result?: RlmChildAgentToolResult;
+	isPartial: boolean;
+	executionStarted: boolean;
+	argsComplete: boolean;
+}
+
+export interface RlmChildAgentSystemTranscriptEntry {
+	type: "system";
+	role: "system";
+	text: string;
+}
+
+export type RlmChildAgentStructuredTranscriptEntry =
+	| RlmChildAgentMessageTranscriptEntry
+	| RlmChildAgentToolTranscriptEntry
+	| RlmChildAgentSystemTranscriptEntry;
+
 export interface RlmChildAgentSnapshot {
 	id: string;
 	parentId?: string;
@@ -142,6 +187,7 @@ export interface RlmChildAgentSnapshot {
 	answerPreview?: string;
 	sessionDir: string;
 	transcript: readonly RlmChildAgentTranscriptLine[];
+	structuredTranscript?: readonly RlmChildAgentStructuredTranscriptEntry[];
 }
 
 /** Session-specific events that extend the core AgentEvent */
@@ -340,6 +386,137 @@ function readAssistantText(message: AssistantMessage): string {
 		.filter((block) => block.type === "text")
 		.map((block) => block.text)
 		.join("");
+}
+
+function readAssistantThinking(message: AssistantMessage): string {
+	return message.content
+		.filter((block) => block.type === "thinking")
+		.map((block) => block.thinking)
+		.join("");
+}
+
+function cloneUsage(usage: Usage): Usage {
+	return {
+		input: usage.input,
+		output: usage.output,
+		cacheRead: usage.cacheRead,
+		cacheWrite: usage.cacheWrite,
+		totalTokens: usage.totalTokens,
+		cost: {
+			input: usage.cost.input,
+			output: usage.cost.output,
+			cacheRead: usage.cost.cacheRead,
+			cacheWrite: usage.cost.cacheWrite,
+			total: usage.cost.total,
+		},
+	};
+}
+
+function cloneTextImageContentBlock(block: TextContent | ImageContent): TextContent | ImageContent {
+	if (block.type === "text") {
+		return {
+			type: "text",
+			text: block.text,
+			...(block.textSignature !== undefined ? { textSignature: block.textSignature } : {}),
+		};
+	}
+	return {
+		type: "image",
+		data: block.data,
+		mimeType: block.mimeType,
+	};
+}
+
+function cloneUserMessage(message: UserMessage): UserMessage {
+	return {
+		role: "user",
+		content:
+			typeof message.content === "string"
+				? message.content
+				: message.content.map((block) => cloneTextImageContentBlock(block)),
+		timestamp: message.timestamp,
+	};
+}
+
+function cloneAssistantContentBlock(block: AssistantMessage["content"][number]): AssistantMessage["content"][number] {
+	switch (block.type) {
+		case "text":
+			return {
+				type: "text",
+				text: block.text,
+				...(block.textSignature !== undefined ? { textSignature: block.textSignature } : {}),
+			};
+		case "thinking":
+			return {
+				type: "thinking",
+				thinking: block.thinking,
+				...(block.thinkingSignature !== undefined ? { thinkingSignature: block.thinkingSignature } : {}),
+				...(block.redacted !== undefined ? { redacted: block.redacted } : {}),
+			};
+		case "toolCall":
+			return {
+				type: "toolCall",
+				id: block.id,
+				name: block.name,
+				arguments: { ...block.arguments },
+				...(block.thoughtSignature !== undefined ? { thoughtSignature: block.thoughtSignature } : {}),
+			};
+	}
+}
+
+function cloneAssistantMessage(message: AssistantMessage): AssistantMessage {
+	return {
+		role: "assistant",
+		content: message.content.map((block) => cloneAssistantContentBlock(block)),
+		api: message.api,
+		provider: message.provider,
+		model: message.model,
+		...(message.responseModel !== undefined ? { responseModel: message.responseModel } : {}),
+		...(message.responseId !== undefined ? { responseId: message.responseId } : {}),
+		...(message.diagnostics !== undefined
+			? { diagnostics: message.diagnostics.map((diagnostic) => ({ ...diagnostic })) }
+			: {}),
+		usage: cloneUsage(message.usage),
+		stopReason: message.stopReason,
+		...(message.errorMessage !== undefined ? { errorMessage: message.errorMessage } : {}),
+		timestamp: message.timestamp,
+	};
+}
+
+function cloneUnknownTextImageContentBlock(block: unknown): TextContent | ImageContent | undefined {
+	if (!block || typeof block !== "object" || !("type" in block)) {
+		return undefined;
+	}
+	const typedBlock = block as { type?: unknown; text?: unknown; data?: unknown; mimeType?: unknown };
+	if (typedBlock.type === "text" && typeof typedBlock.text === "string") {
+		return { type: "text", text: typedBlock.text };
+	}
+	if (typedBlock.type === "image" && typeof typedBlock.data === "string" && typeof typedBlock.mimeType === "string") {
+		return { type: "image", data: typedBlock.data, mimeType: typedBlock.mimeType };
+	}
+	return undefined;
+}
+
+function cloneRlmToolResult(result: unknown, isError: boolean): RlmChildAgentToolResult | undefined {
+	if (!result || typeof result !== "object" || !("content" in result)) {
+		return undefined;
+	}
+	const resultRecord = result as { content?: unknown; details?: unknown };
+	if (!Array.isArray(resultRecord.content)) {
+		return undefined;
+	}
+	const content: (TextContent | ImageContent)[] = [];
+	for (const block of resultRecord.content) {
+		const cloned = cloneUnknownTextImageContentBlock(block);
+		if (cloned) {
+			content.push(cloned);
+		}
+	}
+	return {
+		content,
+		...(resultRecord.details !== undefined ? { details: resultRecord.details } : {}),
+		isError,
+	};
 }
 
 function readToolResultText(result: unknown): string | undefined {
@@ -2674,6 +2851,7 @@ export class AgentSession {
 		const childNodeId = basename(childSessionDir);
 		const startedAt = Date.now();
 		const transcript: RlmChildAgentTranscriptLine[] = [];
+		const structuredTranscript: RlmChildAgentStructuredTranscriptEntry[] = [];
 		const label = compactRlmText(prompt, 80) || "child agent";
 		let status: RlmChildAgentStatus = "running";
 		let answerPreview: string | undefined;
@@ -2695,21 +2873,69 @@ export class AgentSession {
 					answerPreview,
 					sessionDir: childSessionDir,
 					transcript: [...transcript],
+					structuredTranscript: [...structuredTranscript],
 				},
 			});
 		};
-		const recordAssistantText = (text: string) => {
-			const compact = compactRlmText(text);
+		const recordAssistantMessage = (message: AssistantMessage) => {
+			const text = compactRlmText(readAssistantText(message));
+			const thinking = compactRlmText(readAssistantThinking(message));
+			const compact = text || thinking;
 			if (!compact) {
 				return;
 			}
-			answerPreview = compact;
+			if (text) {
+				answerPreview = text;
+			}
+			const entry: RlmChildAgentMessageTranscriptEntry = {
+				type: "message",
+				role: "assistant",
+				text: compact,
+				message: cloneAssistantMessage(message),
+			};
 			if (currentAssistantIndex === undefined) {
 				currentAssistantIndex = transcript.length;
 				transcript.push({ role: "assistant", text: compact });
+				structuredTranscript.push(entry);
 			} else {
 				transcript[currentAssistantIndex] = { role: "assistant", text: compact };
+				structuredTranscript[currentAssistantIndex] = entry;
 			}
+		};
+		const recordUserMessage = (message: UserMessage) => {
+			const text = compactRlmText(readTextBlocks(message.content));
+			if (!text) {
+				return;
+			}
+			transcript.push({ role: "user", text });
+			structuredTranscript.push({
+				type: "message",
+				role: "user",
+				text,
+				message: cloneUserMessage(message),
+			});
+		};
+		const createToolTranscriptEntry = (
+			event: { toolCallId: string; toolName: string; args?: unknown },
+			text: string,
+			result: RlmChildAgentToolResult | undefined,
+			isPartial: boolean,
+		): RlmChildAgentToolTranscriptEntry => {
+			const entry: RlmChildAgentToolTranscriptEntry = {
+				type: "tool",
+				role: "tool",
+				text,
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+				isPartial,
+				executionStarted: true,
+				argsComplete: true,
+			};
+			if (result) {
+				entry.result = result;
+			}
+			return entry;
 		};
 		emitChildUpdate();
 
@@ -2764,15 +2990,12 @@ export class AgentSession {
 			switch (event.type) {
 				case "message_start": {
 					if (event.message.role === "user") {
-						const text = compactRlmText(readTextBlocks(event.message.content));
-						if (text) {
-							transcript.push({ role: "user", text });
-						}
+						recordUserMessage(event.message);
 						currentAssistantIndex = undefined;
 					} else if (event.message.role === "assistant") {
 						// New assistant turn: append a fresh entry so prior text isn't overwritten.
 						currentAssistantIndex = undefined;
-						recordAssistantText(readAssistantText(event.message as AssistantMessage));
+						recordAssistantMessage(event.message as AssistantMessage);
 					}
 					emitChildUpdate();
 					break;
@@ -2780,30 +3003,40 @@ export class AgentSession {
 				case "message_update":
 				case "message_end": {
 					if (event.message.role === "assistant") {
-						recordAssistantText(readAssistantText(event.message as AssistantMessage));
+						recordAssistantMessage(event.message as AssistantMessage);
 						emitChildUpdate();
 					}
 					break;
 				}
 				case "tool_execution_start": {
 					const args = formatRlmToolArgs(event.args);
+					const text = args ? `${event.toolName} running ${args}` : `${event.toolName} running`;
 					// Tool break: next assistant text starts a new entry after this tool row.
 					currentAssistantIndex = undefined;
 					lastToolTranscriptIndex = transcript.length;
-					transcript.push({
-						role: "tool",
-						text: args ? `${event.toolName} running ${args}` : `${event.toolName} running`,
-					});
+					transcript.push({ role: "tool", text });
+					structuredTranscript.push(createToolTranscriptEntry(event, text, undefined, true));
 					emitChildUpdate();
 					break;
 				}
 				case "tool_execution_update": {
 					const text = readToolResultText(event.partialResult);
-					if (text && lastToolTranscriptIndex !== undefined) {
-						transcript[lastToolTranscriptIndex] = {
-							role: "tool",
-							text: `${event.toolName} running: ${compactRlmText(text)}`,
-						};
+					if (lastToolTranscriptIndex !== undefined) {
+						const previous = structuredTranscript[lastToolTranscriptIndex];
+						const summary = text
+							? `${event.toolName} running: ${compactRlmText(text)}`
+							: transcript[lastToolTranscriptIndex]?.text || `${event.toolName} running`;
+						transcript[lastToolTranscriptIndex] = { role: "tool", text: summary };
+						structuredTranscript[lastToolTranscriptIndex] = createToolTranscriptEntry(
+							{
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								args: previous?.type === "tool" ? previous.args : event.args,
+							},
+							summary,
+							cloneRlmToolResult(event.partialResult, false),
+							true,
+						);
 						emitChildUpdate();
 					}
 					break;
@@ -2811,11 +3044,25 @@ export class AgentSession {
 				case "tool_execution_end": {
 					const text = readToolResultText(event.result);
 					const summary = text ? `${event.toolName}: ${compactRlmText(text)}` : `${event.toolName} done`;
+					const previous =
+						lastToolTranscriptIndex === undefined ? undefined : structuredTranscript[lastToolTranscriptIndex];
+					const entry = createToolTranscriptEntry(
+						{
+							toolCallId: event.toolCallId,
+							toolName: event.toolName,
+							args: previous?.type === "tool" ? previous.args : undefined,
+						},
+						summary,
+						cloneRlmToolResult(event.result, event.isError),
+						false,
+					);
 					if (lastToolTranscriptIndex === undefined) {
 						lastToolTranscriptIndex = transcript.length;
 						transcript.push({ role: "tool", text: summary });
+						structuredTranscript.push(entry);
 					} else {
 						transcript[lastToolTranscriptIndex] = { role: "tool", text: summary };
+						structuredTranscript[lastToolTranscriptIndex] = entry;
 					}
 					emitChildUpdate();
 					break;
@@ -2838,7 +3085,10 @@ export class AgentSession {
 			const compactAnswer = compactRlmText(answer);
 			const lastAssistantText = [...transcript].reverse().find((line) => line.role === "assistant")?.text;
 			if (compactAnswer && compactAnswer !== lastAssistantText) {
-				recordAssistantText(answer);
+				const lastAssistant = child._findLastAssistantMessage();
+				if (lastAssistant) {
+					recordAssistantMessage(lastAssistant);
+				}
 			} else if (compactAnswer) {
 				answerPreview = compactAnswer;
 			}
@@ -2852,7 +3102,9 @@ export class AgentSession {
 		} catch (error) {
 			status = "error";
 			durationMs = Date.now() - startedAt;
-			transcript.push({ role: "system", text: error instanceof Error ? error.message : String(error) });
+			const text = error instanceof Error ? error.message : String(error);
+			transcript.push({ role: "system", text });
+			structuredTranscript.push({ type: "system", role: "system", text });
 			emitChildUpdate();
 			throw error;
 		} finally {
