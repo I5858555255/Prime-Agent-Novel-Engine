@@ -141,7 +141,6 @@ def _status_from_payload(payload: dict[str, Any]) -> RLMBackgroundStatus:
 
 
 async def _host_request(data: dict[str, Any]) -> dict[str, Any]:
-    _ensure_recursion_allowed()
     if Comm is None:
         raise RuntimeError("Jupyter comm support is unavailable in this kernel")
     _install_control_comm_handlers()
@@ -183,6 +182,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMResult:
     """Run a recursive Prime Agent child through the TypeScript host."""
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
+    _ensure_recursion_allowed()
     payload = await _host_request({"type": "run", "prompt": prompt, "kwargs": kwargs})
     return _result_from_payload(payload)
 
@@ -197,6 +197,7 @@ async def background(prompt: str, **kwargs: Any) -> RLMBackgroundHandle:
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
+    _ensure_recursion_allowed()
     payload = await _host_request({"type": "background", "prompt": prompt, "kwargs": kwargs})
     session_dir_payload = payload.get("session_dir")
     session_dir = Path(session_dir_payload) if isinstance(session_dir_payload, str) else None
