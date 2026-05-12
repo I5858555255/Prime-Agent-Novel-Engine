@@ -308,7 +308,7 @@ function formatBootstrapFailure(error: unknown): Error {
 	return new Error(
 		`Failed to set up the Python kernel runtime. ${errorMessage(error)}\n` +
 			"First-time setup needs internet to install uv, Python, ipykernel, and prime-agent-runtime; once set up, prime-agent runs offline. " +
-			"Set PRIME_AGENT_KERNEL_PYTHON to a Python with ipykernel installed to skip auto-bootstrap.",
+			"Set PRIME_AGENT_KERNEL_PYTHON to a Python with ipykernel and a current prime-agent-runtime installed to skip auto-bootstrap.",
 	);
 }
 
@@ -316,8 +316,11 @@ async function ensureKernelPythonUncached(): Promise<string> {
 	const override = process.env.PRIME_AGENT_KERNEL_PYTHON;
 	if (override) {
 		const python = path.resolve(expandHome(override));
-		if (await hasIpykernel(python)) return python;
-		throw new Error(`PRIME_AGENT_KERNEL_PYTHON points to a Python that cannot import ipykernel: ${python}`);
+		const missing: string[] = [];
+		if (!(await hasIpykernel(python))) missing.push("ipykernel");
+		if (!(await hasPrimeAgentRuntime(python))) missing.push("a current prime-agent-runtime with rlm.background");
+		if (missing.length === 0) return python;
+		throw new Error(`PRIME_AGENT_KERNEL_PYTHON points to a Python missing ${missing.join(" and ")}: ${python}`);
 	}
 
 	const venv = await resolveWritableKernelVenvDir();

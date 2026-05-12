@@ -189,10 +189,18 @@ describe("kernel bootstrap", () => {
 
 	it("uses PRIME_AGENT_KERNEL_PYTHON as an override contract", async () => {
 		const overridePython = join(tempDir, "override-python");
-		writeFakePython(overridePython, ["ipykernel"]);
+		writeFakePython(overridePython, ["ipykernel", "rlm"]);
 		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
 
 		await expect(ensureKernelPython()).resolves.toBe(overridePython);
+	});
+
+	it("rejects PRIME_AGENT_KERNEL_PYTHON with a stale rlm runtime", async () => {
+		const overridePython = join(tempDir, "override-python");
+		writeFakePython(overridePython, ["ipykernel"]);
+		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
+
+		await expect(ensureKernelPython()).rejects.toThrow(/current prime-agent-runtime with rlm\.background/);
 	});
 
 	it("fails an invalid PRIME_AGENT_KERNEL_PYTHON without bootstrapping", async () => {
@@ -200,6 +208,6 @@ describe("kernel bootstrap", () => {
 		writeFakePython(overridePython, []);
 		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
 
-		await expect(ensureKernelPython()).rejects.toThrow(/cannot import ipykernel/);
+		await expect(ensureKernelPython()).rejects.toThrow(/missing ipykernel/);
 	});
 });
