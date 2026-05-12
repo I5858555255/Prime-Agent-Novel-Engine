@@ -195,7 +195,7 @@ function formatSplashCwd(cwd: string): string {
 	return normalized;
 }
 
-function truncatePathMiddle(value: string, width: number): string {
+export function truncatePathMiddle(value: string, width: number): string {
 	if (visibleWidth(value) <= width) {
 		return value;
 	}
@@ -205,11 +205,12 @@ function truncatePathMiddle(value: string, width: number): string {
 
 	const ellipsis = "…";
 	const normalized = value.replace(/\\/g, "/");
-	const parts = normalized.split("/");
+	const prefix = normalized.startsWith("~/") ? "~/" : normalized.startsWith("/") ? "/" : "";
+	const body = prefix ? normalized.slice(prefix.length) : normalized;
+	const parts = body.split("/").filter((part) => part.length > 0);
 	const last = parts.pop() ?? "";
 	const previous = parts.pop();
 	const suffix = previous ? `${previous}/${last}` : last;
-	const prefix = normalized.startsWith("~/") ? "~/" : normalized.startsWith("/") ? "/" : "";
 	const candidate = `${prefix}${ellipsis}/${suffix}`;
 	if (visibleWidth(candidate) <= width) {
 		return candidate;

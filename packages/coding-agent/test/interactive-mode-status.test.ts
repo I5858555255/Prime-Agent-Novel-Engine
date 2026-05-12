@@ -1,10 +1,15 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { type AutocompleteProvider, CombinedAutocompleteProvider, Container } from "@earendil-works/pi-tui";
+import {
+	type AutocompleteProvider,
+	CombinedAutocompleteProvider,
+	Container,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import type { SourceInfo } from "../src/core/source-info.js";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 function renderLastLine(container: Container, width = 120): string {
@@ -76,6 +81,16 @@ describe("InteractiveMode.showStatus", () => {
 		// adds spacer + text
 		expect(fakeThis.chatContainer.children).toHaveLength(5);
 		expect(renderLastLine(fakeThis.chatContainer)).toContain("STATUS_TWO");
+	});
+});
+
+describe("truncatePathMiddle", () => {
+	test("does not duplicate the home prefix for short tilde paths", () => {
+		const value = truncatePathMiddle("~/myproject", 8);
+
+		expect(value).toMatch(/^~\//);
+		expect(value).not.toContain("/~/");
+		expect(visibleWidth(value)).toBeLessThanOrEqual(8);
 	});
 });
 
