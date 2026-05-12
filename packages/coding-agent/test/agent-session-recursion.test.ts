@@ -432,6 +432,50 @@ describe("AgentSession rlm recursion", () => {
 		expect(parentInputs[0]).toContain("Answer preview: child answer: slow shard");
 	});
 
+	it("does not drain queued background completion follow-ups after dispose", async () => {
+		let releaseParent: () => void = () => {};
+		const parentRelease = new Promise<void>((resolve) => {
+			releaseParent = resolve;
+		});
+		let parentStarted = false;
+		const parentInputs: string[] = [];
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				if (text === "parent turn") {
+					parentStarted = true;
+					void parentRelease.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage("parent done") });
+					});
+				} else if (text === "slow shard") {
+					queueMicrotask(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				} else {
+					parentInputs.push(text);
+					queueMicrotask(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`parent saw: ${text}`) });
+					});
+				}
+				return stream;
+			},
+		});
+
+		const parentRun = root.prompt("parent turn");
+		await waitFor(() => parentStarted && root.isStreaming);
+		const start = root.startBackgroundRlmChild("slow shard", { notify: "wake" });
+		await expect(root.waitForBackgroundRlmChild(start.id, 1000)).resolves.toMatchObject({ state: "done" });
+		await sleep(350);
+
+		root.dispose();
+		releaseParent();
+		await parentRun;
+		await sleep(50);
+
+		expect(parentInputs).toEqual([]);
+	});
+
 	it("runs parallel rlm comm requests independently", async () => {
 		let active = 0;
 		let maxActive = 0;

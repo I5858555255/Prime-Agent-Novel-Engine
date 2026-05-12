@@ -494,6 +494,7 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _disposed = false;
 	private _ipythonKernelManagerRef: { current?: KernelManager } = {};
 	private _rlmDepth: number;
 	private _rlmMaxDepth: number;
@@ -959,6 +960,10 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		if (this._disposed) {
+			return;
+		}
+		this._disposed = true;
 		for (const run of this._backgroundRlmRuns.values()) {
 			if (run.status === "running" || run.status === "queued") {
 				run.status = "cancelled";
@@ -972,6 +977,10 @@ export class AgentSession {
 			this._backgroundRlmCompletionTimer = undefined;
 		}
 		this._pendingBackgroundRlmCompletions = [];
+		this._pendingNextTurnMessages = [];
+		this._steeringMessages = [];
+		this._followUpMessages = [];
+		this.agent.clearAllQueues();
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
@@ -3114,6 +3123,9 @@ export class AgentSession {
 	}
 
 	private _ensureBackgroundRlmQueueDrain(): void {
+		if (this._disposed) {
+			return;
+		}
 		if (this._backgroundRlmQueueDrainPromise) {
 			return;
 		}
@@ -3121,6 +3133,9 @@ export class AgentSession {
 			try {
 				while (true) {
 					await this.agent.waitForIdle();
+					if (this._disposed) {
+						return;
+					}
 					if (!this.agent.hasQueuedMessages()) {
 						return;
 					}
@@ -3128,6 +3143,9 @@ export class AgentSession {
 						await this.agent.continue();
 						await this.waitForRetry();
 					} catch (error) {
+						if (this._disposed) {
+							return;
+						}
 						if (this.isStreaming) {
 							continue;
 						}
