@@ -455,6 +455,7 @@ export class Editor implements Component, Focusable {
 		const result: string[] = [];
 		const leftPadding = " ".repeat(paddingX);
 		const rightPadding = leftPadding;
+		const cursorReset = useBackgroundSurface ? "\x1b[27m" : "\x1b[0m";
 		const renderSurfaceLine = (line: string): string => {
 			const padded = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 			return this.backgroundColor ? this.backgroundColor(padded) : padded;
@@ -501,12 +502,12 @@ export class Editor implements Component, Focusable {
 					const afterGraphemes = [...this.segment(after)];
 					const firstGrapheme = afterGraphemes[0]?.segment || "";
 					const restAfter = after.slice(firstGrapheme.length);
-					const cursor = `\x1b[7m${firstGrapheme}\x1b[27m`;
+					const cursor = `\x1b[7m${firstGrapheme}${cursorReset}`;
 					displayText = before + marker + cursor + restAfter;
 					// lineVisibleWidth stays the same - we're replacing, not adding
 				} else {
 					// Cursor is at the end - add highlighted space
-					const cursor = "\x1b[7m \x1b[27m";
+					const cursor = `\x1b[7m ${cursorReset}`;
 					displayText = before + marker + cursor;
 					lineVisibleWidth = lineVisibleWidth + 1;
 					// If cursor overflows content width into the padding, flag it
