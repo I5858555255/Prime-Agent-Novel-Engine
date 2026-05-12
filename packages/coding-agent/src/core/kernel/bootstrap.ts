@@ -10,6 +10,7 @@ const BOOTSTRAP_SCHEMA = 1;
 const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
+const RUNTIME_READY_CHECK = "import rlm; assert hasattr(rlm, 'background'); assert hasattr(rlm.rlm, 'background')";
 const BOOTSTRAP_VERSION_FILE = ".bootstrap-version";
 const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS = 100;
@@ -135,7 +136,12 @@ async function hasIpykernel(python: string): Promise<boolean> {
 }
 
 async function hasPrimeAgentRuntime(python: string): Promise<boolean> {
-	return pythonImports(python, "rlm");
+	try {
+		await run(python, ["-c", RUNTIME_READY_CHECK], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function bootstrapLockDir(venv: string): string {
