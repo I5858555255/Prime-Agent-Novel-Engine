@@ -19,10 +19,13 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	Agent,
+	type AgentContext,
 	type AgentEvent,
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
+	type GetContinuationMessagesContext,
+	type ShouldStopAfterTurnContext,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type {
@@ -86,12 +89,33 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import {
+	createGoalContextMessage,
+	createGoalToolDefinitions,
+	emptyGoalState,
+	GOAL_CONTEXT_CUSTOM_TYPE,
+	GOAL_STATE_CUSTOM_TYPE,
+	GOAL_TOOL_NAMES,
+	type GoalState,
+	type GoalStatus,
+	goalTokenDeltaForUsage,
+	isPersistedGoalState,
+	normalizeGoalState,
+	UPDATE_GOAL_TOOL_NAME,
+	validateGoalBudget,
+	validateGoalObjective,
+} from "./goals.js";
 import type { KernelManager } from "./kernel/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
-import type { RlmRunResult, RlmUsage } from "./rlm-runtime.js";
+import type {
+	RlmBackgroundRunStartResult,
+	RlmBackgroundRunStatusResult,
+	RlmRunResult,
+	RlmUsage,
+} from "./rlm-runtime.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionMessageEntry } from "./session-manager.js";
 import {
 	CURRENT_SESSION_VERSION,
@@ -107,6 +131,8 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.js"
 import { createAllToolDefinitions } from "./tools/index.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { cloneUsage, emptyUsage } from "./usage.js";
+
+export type { GoalState, GoalStatus } from "./goals.js";
 
 // ============================================================================
 // Skill Block Parsing
@@ -212,7 +238,8 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot };
+	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
+	| { type: "goal_update"; goal: GoalState };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -238,6 +265,10 @@ export interface AgentSessionConfig {
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
+	/** Whether the built-in long-running goal tools are exposed. Default: true. */
+	includeGoalTools?: boolean;
+	/** Whether goal tools are automatically active without an explicit goal. Default: true. */
+	autoActivateGoalTools?: boolean;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -313,12 +344,64 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+type GoalSlashCommand =
+	| { kind: "status" }
+	| { kind: "clear" }
+	| { kind: "pause" }
+	| { kind: "resume" }
+	| { kind: "start"; objective: string; tokenBudget?: number };
+
+interface RlmChildRun {
+	id: string;
+	prompt: string;
+	sessionDir: string;
+	status: RlmChildAgentStatus;
+	completionPolicy: BackgroundRlmCompletionPolicy;
+	result?: RlmRunResult;
+	error?: string;
+	task?: Promise<RlmRunResult>;
+	waiters: Set<() => void>;
+	abort: () => void;
+}
+
+type BackgroundRlmCompletionPolicy = "passive" | "wake" | "silent";
+
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+const BACKGROUND_RLM_COMPLETION_DEBOUNCE_MS = 250;
+
+function noopRlmChildAbort(): void {}
+
+function parseBackgroundRlmCompletionPolicy(value: unknown): BackgroundRlmCompletionPolicy {
+	if (value === undefined) {
+		return "passive";
+	}
+	if (value === true) {
+		return "wake";
+	}
+	if (value === false || value === null) {
+		return "silent";
+	}
+	if (value === "passive" || value === "wake" || value === "silent") {
+		return value;
+	}
+	throw new Error("rlm.background notify must be 'passive', 'wake', 'silent', true, or false");
+}
+
+function extractBackgroundRlmOptions(kwargs: Record<string, unknown>): {
+	childKwargs: Record<string, unknown>;
+	completionPolicy: BackgroundRlmCompletionPolicy;
+} {
+	const { notify, ...childKwargs } = kwargs;
+	return {
+		childKwargs,
+		completionPolicy: parseBackgroundRlmCompletionPolicy(notify),
+	};
+}
 
 function parseDepth(value: string | undefined, fallback: number, name: string): number {
 	if (value === undefined || value === "") {
@@ -329,6 +412,17 @@ function parseDepth(value: string | undefined, fallback: number, name: string): 
 		throw new Error(`${name} must be a non-negative integer`);
 	}
 	return parsed;
+}
+
+function parseGoalBudgetValue(value: string): number {
+	if (!/^[1-9]\d*$/.test(value)) {
+		throw new Error("Goal token budget must be a positive integer.");
+	}
+	const budget = validateGoalBudget(Number(value));
+	if (budget === undefined) {
+		throw new Error("Goal token budget must be a positive integer.");
+	}
+	return budget;
 }
 
 function emptyRlmUsage(): RlmUsage {
@@ -571,6 +665,11 @@ export class AgentSession {
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
+	private _goalState: GoalState = emptyGoalState();
+	private _goalAccountingStartedAt: number | undefined = undefined;
+	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
+	private _goalAbortInProgress = false;
+
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
@@ -600,6 +699,8 @@ export class AgentSession {
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
+	private _includeGoalTools: boolean;
+	private _autoActivateGoalTools: boolean;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -607,11 +708,16 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _disposed = false;
 	private _ipythonKernelManagerRef: { current?: KernelManager } = {};
 	private _rlmDepth: number;
 	private _rlmMaxDepth: number;
 	private _rlmSessionDir?: string;
 	private _rlmParentNodeId?: string;
+	private _backgroundRlmRuns = new Map<string, RlmChildRun>();
+	private _pendingBackgroundRlmCompletions: RlmChildRun[] = [];
+	private _backgroundRlmCompletionTimer?: ReturnType<typeof globalThis.setTimeout>;
+	private _backgroundRlmQueueDrainPromise?: Promise<void>;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -638,17 +744,25 @@ export class AgentSession {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
+		this._includeGoalTools = config.includeGoalTools ?? true;
+		this._autoActivateGoalTools = config.autoActivateGoalTools ?? true;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
 		this._rlmMaxDepth = config.rlmMaxDepth ?? parseDepth(process.env.RLM_MAX_DEPTH, 1, "RLM_MAX_DEPTH");
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
+		this._goalState = this._loadPersistedGoalState();
+		if (this._goalState.status === "active") {
+			this._goalAccountingStartedAt = Date.now();
+		}
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentTurnHook();
+		this._installAgentContinuationHook();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -747,6 +861,14 @@ export class AgentSession {
 		};
 	}
 
+	private _installAgentContinuationHook(): void {
+		this.agent.getContinuationMessages = (context, signal) => this._getGoalContinuationMessages(context, signal);
+	}
+
+	private _installAgentTurnHook(): void {
+		this.agent.shouldStopAfterTurn = (context) => this._shouldStopAfterGoalTurn(context);
+	}
+
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
@@ -764,6 +886,461 @@ export class AgentSession {
 			steering: [...this._steeringMessages],
 			followUp: [...this._followUpMessages],
 		});
+	}
+
+	private _emitGoalUpdate(): void {
+		this._emit({ type: "goal_update", goal: this.goalState });
+	}
+
+	private _loadPersistedGoalState(): GoalState {
+		const branch = this.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (
+				entry.type === "custom" &&
+				entry.customType === GOAL_STATE_CUSTOM_TYPE &&
+				isPersistedGoalState(entry.data)
+			) {
+				return normalizeGoalState(entry.data);
+			}
+		}
+		return emptyGoalState();
+	}
+
+	private _reloadGoalStateFromBranch(): void {
+		this._goalState = this._loadPersistedGoalState();
+		this._goalAccountingStartedAt = this._goalState.status === "active" ? Date.now() : undefined;
+		this._emitGoalUpdate();
+	}
+
+	private _persistGoalState(goal: GoalState): void {
+		this.sessionManager.appendCustomEntry(GOAL_STATE_CUSTOM_TYPE, goal);
+	}
+
+	private _setGoalState(next: GoalState, options: { persist?: boolean } = {}): void {
+		const normalized = normalizeGoalState({
+			...next,
+			updatedAt: Date.now(),
+		});
+		this._goalState = normalized;
+		if (normalized.status === "active") {
+			this._goalAccountingStartedAt ??= Date.now();
+		} else {
+			this._goalAccountingStartedAt = undefined;
+		}
+		if (options.persist !== false) {
+			this._persistGoalState(normalized);
+		}
+		this._emitGoalUpdate();
+	}
+
+	private _goalWithCurrentWallClock(now = Date.now()): GoalState {
+		if (this._goalState.status !== "active" || !this._goalAccountingStartedAt) {
+			return this._goalState;
+		}
+		const elapsedSeconds = Math.floor((now - this._goalAccountingStartedAt) / 1000);
+		if (elapsedSeconds <= 0) {
+			return this._goalState;
+		}
+		return {
+			...this._goalState,
+			timeUsedSeconds: this._goalState.timeUsedSeconds + elapsedSeconds,
+		};
+	}
+
+	private _goalWithAccountedWallClock(): GoalState {
+		const now = Date.now();
+		const goal = this._goalWithCurrentWallClock(now);
+		if (goal !== this._goalState) {
+			this._goalAccountingStartedAt = now;
+		}
+		return goal;
+	}
+
+	private _clearQueuedGoalContexts(): void {
+		this.agent.removeQueuedMessages(
+			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_CUSTOM_TYPE,
+		);
+	}
+
+	private _startGoal(objectiveText: string, tokenBudget: number | undefined): GoalState {
+		const objective = validateGoalObjective(objectiveText);
+		const budget = validateGoalBudget(tokenBudget);
+		const now = Date.now();
+		const goal: GoalState = {
+			active: true,
+			status: "active",
+			goalId: randomUUID(),
+			objective,
+			tokenBudget: budget,
+			tokensUsed: 0,
+			timeUsedSeconds: 0,
+			continuationsUsed: 0,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this._goalAccountingStartedAt = now;
+		this._setGoalState(goal);
+		return this._goalState;
+	}
+
+	private _clearGoal(): void {
+		this._clearQueuedGoalContexts();
+		this._setGoalState(emptyGoalState());
+	}
+
+	private _pauseGoal(reason = "Paused by user"): void {
+		this._clearQueuedGoalContexts();
+		if (this._goalState.status !== "active") {
+			this._emitGoalUpdate();
+			return;
+		}
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
+			active: false,
+			status: "paused",
+			lastReason: reason,
+			lastError: undefined,
+		});
+	}
+
+	private async _resumeGoal(): Promise<void> {
+		if (!this._goalState.objective) {
+			this._emitGoalUpdate();
+			return;
+		}
+		if (this._goalState.status !== "paused" && this._goalState.status !== "budget_limited") {
+			this._emitGoalUpdate();
+			return;
+		}
+		const exhausted =
+			this._goalState.tokenBudget !== undefined && this._goalState.tokensUsed >= this._goalState.tokenBudget;
+		const nextStatus: GoalStatus = exhausted ? "budget_limited" : "active";
+		this._setGoalState({
+			...this._goalState,
+			active: nextStatus === "active",
+			status: nextStatus,
+			lastReason: exhausted ? "Goal token budget already reached" : undefined,
+			lastError: undefined,
+		});
+		if (nextStatus === "active") {
+			await this._runOrQueueGoalContext("continuation");
+		}
+	}
+
+	private _finishGoalWithError(errorMessage: string): void {
+		if (!this._goalState.objective || this._goalState.status !== "active") {
+			return;
+		}
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
+			active: false,
+			status: "error",
+			lastReason: errorMessage,
+			lastError: errorMessage,
+		});
+	}
+
+	private _finishGoalForTerminalAssistantMessage(message: AssistantMessage): void {
+		if (this._goalState.status !== "active") {
+			return;
+		}
+
+		if (message.stopReason === "aborted") {
+			this._goalAbortInProgress = false;
+			return;
+		}
+
+		if (message.stopReason === "error") {
+			if (this._goalAbortInProgress) {
+				this._goalAbortInProgress = false;
+				return;
+			}
+			this._finishGoalWithError(message.errorMessage || "Assistant response failed");
+		}
+	}
+
+	private _stopGoalContinuationForTerminalMessage(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error" && message.stopReason !== "aborted") {
+			return false;
+		}
+		try {
+			this._finishGoalForTerminalAssistantMessage(message);
+		} catch {
+			// Goal hooks must not reject; listener failures should not crash the agent loop.
+		}
+		return true;
+	}
+
+	private _parseGoalSlashCommand(text: string): GoalSlashCommand | undefined {
+		if (text !== "/goal" && !text.startsWith("/goal ")) {
+			return undefined;
+		}
+
+		const rest = text.slice("/goal".length).trim();
+		const normalized = rest.toLowerCase();
+		if (!rest || normalized === "status") {
+			return { kind: "status" };
+		}
+		if (normalized === "clear" || normalized === "stop") {
+			return { kind: "clear" };
+		}
+		if (normalized === "pause") {
+			return { kind: "pause" };
+		}
+		if (normalized === "resume") {
+			return { kind: "resume" };
+		}
+
+		let tokenBudget: number | undefined;
+		let objective = rest;
+		const firstToken = rest.split(/\s+/, 1)[0] ?? "";
+		if (
+			firstToken === "--budget" ||
+			firstToken === "--token-budget" ||
+			firstToken.startsWith("--budget=") ||
+			firstToken.startsWith("--token-budget=")
+		) {
+			let valueText: string;
+			if (firstToken === "--budget" || firstToken === "--token-budget") {
+				const withoutFlag = rest.slice(firstToken.length).trimStart();
+				const nextSpace = withoutFlag.search(/\s/);
+				if (nextSpace < 0) {
+					throw new Error("Usage: /goal [--budget <tokens>] <objective>");
+				}
+				valueText = withoutFlag.slice(0, nextSpace);
+				objective = withoutFlag.slice(nextSpace + 1).trim();
+			} else {
+				const separator = firstToken.indexOf("=");
+				valueText = firstToken.slice(separator + 1);
+				objective = rest.slice(firstToken.length).trim();
+			}
+			tokenBudget = parseGoalBudgetValue(valueText);
+		}
+
+		return { kind: "start", objective: validateGoalObjective(objective), tokenBudget };
+	}
+
+	private async _validateCanStartAgentRun(): Promise<void> {
+		if (!this.model) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
+		if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+			if (isOAuth) {
+				throw new Error(
+					`Authentication failed for "${this.model.provider}". ` +
+						`Credentials may have expired or network is unavailable. ` +
+						`Run '/login ${this.model.provider}' to re-authenticate.`,
+				);
+			}
+			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+		}
+	}
+
+	private _ensureGoalToolsActive(context?: AgentContext): void {
+		const goalTools: AgentTool[] = [];
+		for (const toolName of GOAL_TOOL_NAMES) {
+			const tool = this._toolRegistry.get(toolName);
+			if (!tool) {
+				throw new Error("Goal tools are disabled. Enable goal tools before using /goal.");
+			}
+			goalTools.push(tool);
+		}
+		if (!this._includeGoalTools) {
+			throw new Error("Goal tools are disabled. Enable goal tools before using /goal.");
+		}
+		const activeToolNames = new Set(this.getActiveToolNames());
+		let changed = false;
+		for (const toolName of GOAL_TOOL_NAMES) {
+			if (!activeToolNames.has(toolName)) {
+				activeToolNames.add(toolName);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.setActiveToolsByName([...activeToolNames]);
+		}
+		if (context) {
+			const contextTools = [...(context.tools ?? [])];
+			const contextToolNames = new Set(contextTools.map((tool) => tool.name));
+			for (const tool of goalTools) {
+				if (!contextToolNames.has(tool.name)) {
+					contextTools.push(tool);
+				}
+			}
+			context.tools = contextTools;
+		}
+	}
+
+	private async _runOrQueueGoalContext(
+		kind: "continuation" | "budget_limit" | "objective_updated",
+		images?: ImageContent[],
+	): Promise<void> {
+		if (!this._goalState.objective) {
+			return;
+		}
+		this._ensureGoalToolsActive();
+		const message = createGoalContextMessage(this._goalState, kind, images);
+		if (this.isStreaming) {
+			if (kind === "budget_limit") {
+				this.agent.steer(message);
+			} else {
+				this.agent.followUp(message);
+			}
+			return;
+		}
+
+		await this._validateCanStartAgentRun();
+		await this.agent.prompt([message]);
+		await this.waitForRetry();
+	}
+
+	private async _handleGoalSlashCommand(text: string, images: ImageContent[] | undefined): Promise<boolean> {
+		const command = this._parseGoalSlashCommand(text);
+		if (!command) {
+			return false;
+		}
+
+		if (command.kind === "status") {
+			this._emitGoalUpdate();
+			return true;
+		}
+
+		if (command.kind === "clear") {
+			this._clearGoal();
+			return true;
+		}
+
+		if (command.kind === "pause") {
+			this._pauseGoal();
+			return true;
+		}
+
+		if (command.kind === "resume") {
+			await this._resumeGoal();
+			return true;
+		}
+
+		const previousWasActive = this._goalState.status === "active";
+		if (!this.isStreaming) {
+			await this._validateCanStartAgentRun();
+		}
+		this._ensureGoalToolsActive();
+		this._clearQueuedGoalContexts();
+		this._startGoal(command.objective, command.tokenBudget);
+		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
+		return true;
+	}
+
+	private _accountGoalUsageForAssistantMessage(message: AssistantMessage): boolean {
+		if (!this._goalState.objective) {
+			return false;
+		}
+		if (message.stopReason === "error" || message.stopReason === "aborted") {
+			return false;
+		}
+		if (this._goalAccountedAssistantMessages.has(message)) {
+			return false;
+		}
+		const updateGoalRequested = message.content.some(
+			(content) => content.type === "toolCall" && content.name === UPDATE_GOAL_TOOL_NAME,
+		);
+		if (this._goalState.status !== "active" && !(this._goalState.status === "complete" && updateGoalRequested)) {
+			return false;
+		}
+		this._goalAccountedAssistantMessages.add(message);
+		const tokenDelta = goalTokenDeltaForUsage(message.usage);
+		const goal = this._goalWithAccountedWallClock();
+		const nextGoal: GoalState = {
+			...goal,
+			tokensUsed: goal.tokensUsed + tokenDelta,
+		};
+		const budgetReached =
+			!updateGoalRequested && nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
+		if (!budgetReached) {
+			this._setGoalState(nextGoal);
+			return false;
+		}
+		this._setGoalState({
+			...nextGoal,
+			active: false,
+			status: "budget_limited",
+			lastReason: `Reached ${nextGoal.tokenBudget} token goal budget`,
+			lastError: undefined,
+		});
+		return true;
+	}
+
+	private _shouldStopAfterGoalTurn(context: ShouldStopAfterTurnContext): boolean {
+		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
+			return true;
+		}
+		try {
+			if (this._accountGoalUsageForAssistantMessage(context.message)) {
+				this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
+			}
+		} catch {
+			// Goal accounting must not interrupt the core agent loop.
+		}
+		return false;
+	}
+
+	private createGoalFromTool(objective: string, tokenBudget: number | undefined): GoalState {
+		if (this._goalState.status !== "idle") {
+			throw new Error(
+				"cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete",
+			);
+		}
+		return this._startGoal(objective, tokenBudget);
+	}
+
+	private completeGoalFromTool(): GoalState {
+		if (!this._goalState.objective || this._goalState.status === "idle") {
+			throw new Error("cannot update goal because this thread has no goal");
+		}
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
+			active: false,
+			status: "complete",
+			lastReason: "Goal achieved",
+			lastError: undefined,
+		});
+		return this._goalState;
+	}
+
+	private async _getGoalContinuationMessages(
+		context: GetContinuationMessagesContext,
+		signal?: AbortSignal,
+	): Promise<AgentMessage[]> {
+		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
+			return [];
+		}
+		if (signal?.aborted || this._goalState.status !== "active" || !this._goalState.objective) {
+			return [];
+		}
+		try {
+			this._ensureGoalToolsActive(context.context);
+			const nextGoal = {
+				...this._goalState,
+				continuationsUsed: this._goalState.continuationsUsed + 1,
+				lastReason: undefined,
+				lastError: undefined,
+			};
+			this._setGoalState(nextGoal);
+			return [createGoalContextMessage(this._goalState, "continuation")];
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			try {
+				this._finishGoalWithError(message);
+			} catch {
+				// The continuation hook must not reject; listener failures should not crash the agent loop.
+			}
+			return [];
+		}
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -886,6 +1463,9 @@ export class AgentSession {
 					});
 					this._retryAttempt = 0;
 				}
+				if (this._accountGoalUsageForAssistantMessage(assistantMsg)) {
+					this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
+				}
 			}
 		}
 
@@ -901,7 +1481,10 @@ export class AgentSession {
 			}
 
 			this._resolveRetry();
-			await this._checkCompaction(msg);
+			const compactionWillRetry = await this._checkCompaction(msg);
+			if (!compactionWillRetry) {
+				this._finishGoalForTerminalAssistantMessage(msg);
+			}
 		}
 	}
 
@@ -1068,6 +1651,27 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		if (this._disposed) {
+			return;
+		}
+		this._disposed = true;
+		for (const run of this._backgroundRlmRuns.values()) {
+			if (run.status === "running" || run.status === "queued") {
+				run.status = "cancelled";
+				run.error = "Parent session disposed";
+				run.abort();
+				this._resolveRlmChildRunWaiters(run);
+			}
+		}
+		if (this._backgroundRlmCompletionTimer) {
+			globalThis.clearTimeout(this._backgroundRlmCompletionTimer);
+			this._backgroundRlmCompletionTimer = undefined;
+		}
+		this._pendingBackgroundRlmCompletions = [];
+		this._pendingNextTurnMessages = [];
+		this._steeringMessages = [];
+		this._followUpMessages = [];
+		this.agent.clearAllQueues();
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
@@ -1196,6 +1800,10 @@ export class AgentSession {
 		return this.sessionManager.getSessionName();
 	}
 
+	get goalState(): GoalState {
+		return { ...this._goalWithCurrentWallClock() };
+	}
+
 	/** Scoped models for cycling (from --models flag) */
 	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
 		return this._scopedModels;
@@ -1292,10 +1900,21 @@ export class AgentSession {
 		let messages: AgentMessage[] | undefined;
 
 		try {
+			let currentText = text;
+			let currentImages = options?.images;
+
+			if (expandPromptTemplates) {
+				const handledGoalCommand = await this._handleGoalSlashCommand(currentText, currentImages);
+				if (handledGoalCommand) {
+					preflightResult?.(true);
+					return;
+				}
+			}
+
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
-			if (expandPromptTemplates && text.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(text);
+			if (expandPromptTemplates && currentText.startsWith("/")) {
+				const handled = await this._tryExecuteExtensionCommand(currentText);
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
@@ -1304,8 +1923,6 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion)
-			let currentText = text;
-			let currentImages = options?.images;
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
@@ -1374,6 +1991,12 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
+			// Inject any pending "nextTurn" messages as context before the user message.
+			for (const msg of this._pendingNextTurnMessages) {
+				messages.push(msg);
+			}
+			this._pendingNextTurnMessages = [];
+
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 			if (currentImages) {
@@ -1384,12 +2007,6 @@ export class AgentSession {
 				content: userContent,
 				timestamp: Date.now(),
 			});
-
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this._pendingNextTurnMessages) {
-				messages.push(msg);
-			}
-			this._pendingNextTurnMessages = [];
 
 			// Emit before_agent_start extension event
 			const result = await this._extensionRunner.emitBeforeAgentStart(
@@ -1708,8 +2325,14 @@ export class AgentSession {
 	 */
 	async abort(): Promise<void> {
 		this.abortRetry();
+		this._goalAbortInProgress = this._goalState.status === "active";
 		this.agent.abort();
-		await this.agent.waitForIdle();
+		try {
+			await this.agent.waitForIdle();
+			await this._agentEventQueue;
+		} finally {
+			this._goalAbortInProgress = false;
+		}
 	}
 
 	// =========================================================================
@@ -2090,12 +2713,12 @@ export class AgentSession {
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
-	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
-		if (!settings.enabled) return;
+		if (!settings.enabled) return false;
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
+		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
 
 		const contextWindow = this.model?.contextWindow ?? 0;
 
@@ -2113,7 +2736,7 @@ export class AgentSession {
 		const assistantIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
 		if (assistantIsFromBeforeCompaction) {
-			return;
+			return false;
 		}
 
 		// Case 1: Overflow - LLM returned context overflow error
@@ -2128,7 +2751,7 @@ export class AgentSession {
 					errorMessage:
 						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 				});
-				return;
+				return false;
 			}
 
 			this._overflowRecoveryAttempted = true;
@@ -2138,8 +2761,7 @@ export class AgentSession {
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.state.messages = messages.slice(0, -1);
 			}
-			await this._runAutoCompaction("overflow", true);
-			return;
+			return await this._runAutoCompaction("overflow", true);
 		}
 
 		// Case 2: Threshold - context is getting large
@@ -2149,7 +2771,7 @@ export class AgentSession {
 		if (assistantMessage.stopReason === "error") {
 			const messages = this.agent.state.messages;
 			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return; // No usage data at all
+			if (estimate.lastUsageIndex === null) return false; // No usage data at all
 			// Verify the usage source is post-compaction. Kept pre-compaction messages
 			// have stale usage reflecting the old (larger) context and would falsely
 			// trigger compaction right after one just finished.
@@ -2159,21 +2781,22 @@ export class AgentSession {
 				usageMsg.role === "assistant" &&
 				(usageMsg as AssistantMessage).timestamp <= new Date(compactionEntry.timestamp).getTime()
 			) {
-				return;
+				return false;
 			}
 			contextTokens = estimate.tokens;
 		} else {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			await this._runAutoCompaction("threshold", false);
+			return await this._runAutoCompaction("threshold", false);
 		}
+		return false;
 	}
 
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
+	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "compaction_start", reason });
@@ -2188,7 +2811,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
@@ -2200,7 +2823,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 			const { apiKey, headers } = authResult;
 
@@ -2215,7 +2838,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			let extensionCompaction: CompactionResult | undefined;
@@ -2238,7 +2861,7 @@ export class AgentSession {
 						aborted: true,
 						willRetry: false,
 					});
-					return;
+					return false;
 				}
 
 				if (extensionResult?.compaction) {
@@ -2283,7 +2906,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
@@ -2323,6 +2946,7 @@ export class AgentSession {
 				setTimeout(() => {
 					this.agent.continue().catch(() => {});
 				}, 100);
+				return true;
 			} else if (this.agent.hasQueuedMessages()) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
@@ -2330,6 +2954,7 @@ export class AgentSession {
 					this.agent.continue().catch(() => {});
 				}, 100);
 			}
+			return false;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			this._emit({
@@ -2343,6 +2968,7 @@ export class AgentSession {
 						? `Context overflow recovery failed: ${errorMessage}`
 						: `Auto-compaction failed: ${errorMessage}`,
 			});
+			return false;
 		} finally {
 			this._autoCompactionAbortController = undefined;
 		}
@@ -2661,7 +3287,7 @@ export class AgentSession {
 	}): void {
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
-		const baseToolDefinitions = this._baseToolsOverride
+		const configuredBaseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
 						name,
@@ -2674,9 +3300,24 @@ export class AgentSession {
 						env: this._rlmKernelEnv(),
 						sessionId: this.sessionId,
 						rlmRunHandler: ({ prompt, kwargs }) => this.runRlmChild(prompt, kwargs),
+						rlmBackgroundRunHandler: ({ prompt, kwargs }) =>
+							Promise.resolve(this.startBackgroundRlmChild(prompt, kwargs)),
+						rlmBackgroundStatusHandler: ({ id }) => Promise.resolve(this.getBackgroundRlmChildStatus(id)),
+						rlmBackgroundWaitHandler: ({ id, timeoutMs }) => this.waitForBackgroundRlmChild(id, timeoutMs),
 					},
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
 				});
+		const goalToolDefinitions = this._includeGoalTools
+			? createGoalToolDefinitions({
+					getGoalState: () => this.goalState,
+					createGoalFromTool: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
+					completeGoalFromTool: () => this.completeGoalFromTool(),
+				})
+			: [];
+		const baseToolDefinitions = {
+			...configuredBaseToolDefinitions,
+			...Object.fromEntries(goalToolDefinitions.map((definition) => [definition.name, definition])),
+		};
 
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
@@ -2703,9 +3344,15 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 
 		const defaultActiveToolNames = this._baseToolsOverride ? Object.keys(this._baseToolsOverride) : ["ipython"];
-		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+		if (this._includeGoalTools && this._autoActivateGoalTools) {
+			defaultActiveToolNames.push(...GOAL_TOOL_NAMES);
+		}
+		const baseActiveToolNames = [...(options.activeToolNames ?? defaultActiveToolNames)];
+		if (this._goalState.status === "active" && this._includeGoalTools) {
+			baseActiveToolNames.push(...GOAL_TOOL_NAMES);
+		}
 		this._refreshToolRegistry({
-			activeToolNames: baseActiveToolNames,
+			activeToolNames: [...new Set(baseActiveToolNames)],
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
 	}
@@ -2802,8 +3449,10 @@ export class AgentSession {
 			.find((entry): entry is SessionMessageEntry => entry.type === "message" && entry.message === message);
 	}
 
-	private _attributeRlmChildUsageToParent(childUsage: Usage): void {
-		const parentAssistant = this._findLastAssistantMessage();
+	private _attributeRlmChildUsageToParent(
+		childUsage: Usage,
+		parentAssistant = this._findLastAssistantMessage(),
+	): void {
 		if (!parentAssistant) {
 			return;
 		}
@@ -2818,7 +3467,14 @@ export class AgentSession {
 		return this.agent.state.messages.filter((message) => message.role === "assistant").length;
 	}
 
-	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}): Promise<RlmRunResult> {
+	private _startRlmChildRun(
+		prompt: string,
+		kwargs: Record<string, unknown> = {},
+		options: {
+			notifyParentOnCompletion?: boolean;
+			completionPolicy?: BackgroundRlmCompletionPolicy;
+		} = {},
+	): RlmChildRun {
 		const unsupportedKwargs = Object.keys(kwargs);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
@@ -2836,12 +3492,21 @@ export class AgentSession {
 		const childSessionDir = this._createChildRlmSessionDir();
 		const childNodeId = basename(childSessionDir);
 		const startedAt = Date.now();
+		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const transcript: RlmChildAgentTranscriptLine[] = [];
 		const structuredTranscript: RlmChildAgentStructuredTranscriptEntry[] = [];
 		const label = compactRlmText(prompt, 80) || "child agent";
-		let status: RlmChildAgentStatus = "running";
 		let answerPreview: string | undefined;
 		let durationMs: number | undefined;
+		const run: RlmChildRun = {
+			id: childNodeId,
+			prompt,
+			sessionDir: childSessionDir,
+			status: "running",
+			completionPolicy: options.completionPolicy ?? "passive",
+			waiters: new Set(),
+			abort: noopRlmChildAbort,
+		};
 		// Index of the assistant entry currently being streamed. Cleared whenever the
 		// conversation moves on (new assistant message, tool call) so subsequent assistant
 		// text appends a fresh entry in chronological order instead of overwriting in place.
@@ -2854,7 +3519,7 @@ export class AgentSession {
 					id: childNodeId,
 					parentId: this._rlmParentNodeId,
 					label,
-					status,
+					status: run.status,
 					durationMs,
 					answerPreview,
 					sessionDir: childSessionDir,
@@ -2976,12 +3641,17 @@ export class AgentSession {
 			modelRegistry: this._modelRegistry,
 			initialActiveToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
+			includeGoalTools: this._includeGoalTools,
+			autoActivateGoalTools: this._autoActivateGoalTools,
 			rlmDepth: this._rlmDepth + 1,
 			rlmMaxDepth: this._rlmMaxDepth,
 			rlmSessionDir: childSessionDir,
 			rlmParentNodeId: childNodeId,
 			sessionStartEvent: { type: "session_start", reason: "startup" },
 		});
+		run.abort = () => {
+			void child.abort();
+		};
 		const unsubscribeChild = child.subscribe((event) => {
 			if (event.type === "rlm_child_update") {
 				this._emit(event);
@@ -3070,44 +3740,287 @@ export class AgentSession {
 			}
 		});
 
-		try {
-			await child.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
-			await child.agent.waitForIdle();
-			const answer = child.getLastAssistantText() ?? "";
-			const usage = child._usageForCurrentMessages();
-			this._attributeRlmChildUsageToParent(child._assistantUsageForCurrentMessages());
-			status = "done";
-			durationMs = Date.now() - startedAt;
-			// Streaming events usually capture the final assistant text already. Only
-			// record again when it's missing — otherwise a child whose last streamed
-			// event was tool_execution_start would have currentAssistantIndex cleared,
-			// causing the final answer to be appended as a duplicate row.
-			const compactAnswer = compactRlmText(answer);
-			const lastAssistantText = [...transcript].reverse().find((line) => line.role === "assistant")?.text;
-			if (compactAnswer && compactAnswer !== lastAssistantText) {
-				const lastAssistant = child._findLastAssistantMessage();
-				recordAssistantText(answer, lastAssistant);
-			} else if (compactAnswer) {
-				answerPreview = compactAnswer;
+		const task = (async (): Promise<RlmRunResult> => {
+			try {
+				await child.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
+				await child.agent.waitForIdle();
+				if (run.status === "cancelled") {
+					throw new Error(run.error ?? "RLM child cancelled");
+				}
+				const answer = child.getLastAssistantText() ?? "";
+				const usage = child._usageForCurrentMessages();
+				this._attributeRlmChildUsageToParent(child._assistantUsageForCurrentMessages(), parentAssistantForUsage);
+				run.status = "done";
+				durationMs = Date.now() - startedAt;
+				// Streaming events usually capture the final assistant text already. Only
+				// record again when it's missing — otherwise a child whose last streamed
+				// event was tool_execution_start would have currentAssistantIndex cleared,
+				// causing the final answer to be appended as a duplicate row.
+				const compactAnswer = compactRlmText(answer);
+				const lastAssistantText = [...transcript].reverse().find((line) => line.role === "assistant")?.text;
+				if (compactAnswer && compactAnswer !== lastAssistantText) {
+					const lastAssistant = child._findLastAssistantMessage();
+					recordAssistantText(answer, lastAssistant);
+				} else if (compactAnswer) {
+					answerPreview = compactAnswer;
+				}
+				emitChildUpdate();
+				const result = {
+					answer,
+					usage,
+					turns: child._assistantTurnCount(),
+					session_dir: childSessionDir,
+				};
+				run.result = result;
+				return result;
+			} catch (error) {
+				if (run.status !== "cancelled") {
+					run.status = "error";
+				}
+				durationMs = Date.now() - startedAt;
+				run.error = error instanceof Error ? error.message : String(error);
+				transcript.push({ role: "system", text: run.error });
+				structuredTranscript.push({ type: "system", role: "system", text: run.error });
+				emitChildUpdate();
+				throw error;
+			} finally {
+				unsubscribeChild();
+				child.dispose();
+				run.abort = noopRlmChildAbort;
 			}
-			emitChildUpdate();
-			return {
-				answer,
-				usage,
-				turns: child._assistantTurnCount(),
-				session_dir: childSessionDir,
+		})();
+		run.task = task;
+		void task.then(
+			() => this._resolveRlmChildRunWaiters(run),
+			() => this._resolveRlmChildRunWaiters(run),
+		);
+		if (options.notifyParentOnCompletion) {
+			void task.then(
+				() => this._queueBackgroundRlmChildCompletion(run),
+				() => this._queueBackgroundRlmChildCompletion(run),
+			);
+		}
+		return run;
+	}
+
+	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}): Promise<RlmRunResult> {
+		const run = this._startRlmChildRun(prompt, kwargs);
+		if (!run.task) {
+			throw new Error("RLM child failed to start");
+		}
+		return await run.task;
+	}
+
+	startBackgroundRlmChild(prompt: string, kwargs: Record<string, unknown> = {}): RlmBackgroundRunStartResult {
+		const { childKwargs, completionPolicy } = extractBackgroundRlmOptions(kwargs);
+		const run = this._startRlmChildRun(prompt, childKwargs, {
+			notifyParentOnCompletion: completionPolicy !== "silent",
+			completionPolicy,
+		});
+		this._backgroundRlmRuns.set(run.id, run);
+		return {
+			id: run.id,
+			state: run.status,
+			session_dir: run.sessionDir,
+		};
+	}
+
+	getBackgroundRlmChildStatus(id: string): RlmBackgroundRunStatusResult {
+		return this._backgroundRlmChildSnapshot(this._getBackgroundRlmChildRun(id));
+	}
+
+	async waitForBackgroundRlmChild(id: string, timeoutMs?: number): Promise<RlmBackgroundRunStatusResult> {
+		const run = this._getBackgroundRlmChildRun(id);
+		if (run.status !== "running" && run.status !== "queued") {
+			return this._backgroundRlmChildSnapshot(run);
+		}
+
+		let timedOut = false;
+		await new Promise<void>((resolve) => {
+			let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+			const done = () => {
+				run.waiters.delete(done);
+				if (timeout) {
+					globalThis.clearTimeout(timeout);
+				}
+				resolve();
 			};
+			run.waiters.add(done);
+			if (run.status !== "running" && run.status !== "queued") {
+				done();
+				return;
+			}
+			if (timeoutMs !== undefined) {
+				timeout = globalThis.setTimeout(() => {
+					timedOut = true;
+					done();
+				}, timeoutMs);
+				if (timeout && typeof timeout === "object" && "unref" in timeout) {
+					timeout.unref();
+				}
+			}
+		});
+
+		return {
+			...this._backgroundRlmChildSnapshot(run),
+			timed_out: timedOut && (run.status === "running" || run.status === "queued"),
+		};
+	}
+
+	private _getBackgroundRlmChildRun(id: string): RlmChildRun {
+		const run = this._backgroundRlmRuns.get(id);
+		if (!run) {
+			throw new Error(`Unknown background rlm child: ${id}`);
+		}
+		return run;
+	}
+
+	private _backgroundRlmChildSnapshot(run: RlmChildRun): RlmBackgroundRunStatusResult {
+		return {
+			id: run.id,
+			state: run.status,
+			session_dir: run.sessionDir,
+			result: run.result,
+			error: run.error,
+		};
+	}
+
+	private _resolveRlmChildRunWaiters(run: RlmChildRun): void {
+		for (const waiter of run.waiters) {
+			waiter();
+		}
+		run.waiters.clear();
+	}
+
+	private _queueBackgroundRlmChildCompletion(run: RlmChildRun): void {
+		if (this._disposed || run.status === "cancelled") {
+			return;
+		}
+		this._pendingBackgroundRlmCompletions.push(run);
+		if (this._backgroundRlmCompletionTimer) {
+			return;
+		}
+		this._backgroundRlmCompletionTimer = globalThis.setTimeout(() => {
+			this._backgroundRlmCompletionTimer = undefined;
+			if (this._disposed) {
+				this._pendingBackgroundRlmCompletions = [];
+				return;
+			}
+			void this._flushBackgroundRlmChildCompletions();
+		}, BACKGROUND_RLM_COMPLETION_DEBOUNCE_MS);
+		if (
+			this._backgroundRlmCompletionTimer &&
+			typeof this._backgroundRlmCompletionTimer === "object" &&
+			"unref" in this._backgroundRlmCompletionTimer
+		) {
+			this._backgroundRlmCompletionTimer.unref();
+		}
+	}
+
+	private _formatBackgroundRlmCompletionNotice(runs: readonly RlmChildRun[]): string {
+		const plural = runs.length === 1 ? "child has" : "children have";
+		const lines = [
+			"Background RLM completion notice. This message is hidden from the user.",
+			"",
+			`${runs.length} background RLM ${plural} finished.`,
+			"",
+		];
+		for (const run of runs) {
+			const prompt = compactRlmText(run.prompt, 80);
+			if (run.result) {
+				const answer = compactRlmText(run.result.answer || "(empty)", 240);
+				lines.push(`- ${run.id} done: ${prompt}`);
+				lines.push(`  Answer preview: ${answer}`);
+			} else {
+				lines.push(`- ${run.id} failed: ${prompt}`);
+				lines.push(`  Error: ${compactRlmText(run.error ?? "unknown error", 240)}`);
+			}
+		}
+		lines.push(
+			"",
+			"If you told the user you would report background completions, send a concise update now. Otherwise keep this result in mind and avoid an unsolicited status reply.",
+			"Use the saved handle's status(), wait(), or result() methods when you need full details.",
+		);
+		return lines.join("\n");
+	}
+
+	private _ensureBackgroundRlmQueueDrain(): void {
+		if (this._disposed) {
+			return;
+		}
+		if (this._backgroundRlmQueueDrainPromise) {
+			return;
+		}
+		this._backgroundRlmQueueDrainPromise = (async () => {
+			try {
+				while (true) {
+					await this.agent.waitForIdle();
+					if (this._disposed) {
+						return;
+					}
+					if (!this.agent.hasQueuedMessages()) {
+						return;
+					}
+					try {
+						await this.agent.continue();
+						await this.waitForRetry();
+					} catch (error) {
+						if (this._disposed) {
+							return;
+						}
+						if (this.isStreaming) {
+							continue;
+						}
+						throw error;
+					}
+				}
+			} catch (error) {
+				console.error(`[rlm] failed to wake parent agent for background child completion: ${String(error)}`);
+			} finally {
+				this._backgroundRlmQueueDrainPromise = undefined;
+			}
+		})();
+	}
+
+	private async _flushBackgroundRlmChildCompletions(): Promise<void> {
+		if (this._disposed) {
+			this._pendingBackgroundRlmCompletions = [];
+			return;
+		}
+		const runs = this._pendingBackgroundRlmCompletions.splice(0);
+		if (runs.length === 0 || this._disposed) {
+			return;
+		}
+		const content = this._formatBackgroundRlmCompletionNotice(runs);
+		const shouldWakeParent = runs.some((run) => run.completionPolicy === "wake");
+		try {
+			await this.sendCustomMessage(
+				{
+					customType: "rlm_background_result",
+					content,
+					display: false,
+					details: {
+						runs: runs.map((run) => ({
+							id: run.id,
+							prompt: run.prompt,
+							status: run.status,
+							sessionDir: run.sessionDir,
+							result: run.result,
+							error: run.error,
+						})),
+					},
+				},
+				this.isStreaming
+					? { deliverAs: shouldWakeParent ? "followUp" : "nextTurn" }
+					: shouldWakeParent
+						? { triggerTurn: true }
+						: undefined,
+			);
+			if (this.isStreaming && shouldWakeParent) {
+				this._ensureBackgroundRlmQueueDrain();
+			}
 		} catch (error) {
-			status = "error";
-			durationMs = Date.now() - startedAt;
-			const text = error instanceof Error ? error.message : String(error);
-			transcript.push({ role: "system", text });
-			structuredTranscript.push({ type: "system", role: "system", text });
-			emitChildUpdate();
-			throw error;
-		} finally {
-			unsubscribeChild();
-			child.dispose();
+			console.error(`[rlm] failed to deliver background child completion notice: ${String(error)}`);
 		}
 	}
 
@@ -3554,6 +4467,7 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			this._reloadGoalStateFromBranch();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({
