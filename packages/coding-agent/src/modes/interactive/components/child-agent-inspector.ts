@@ -266,9 +266,6 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 	private node: ChildAgentInspectorNode | undefined;
 	private transcriptComponents: Component[] = [];
 	private readonly fallbackTui = { requestRender: () => {} } as TUI;
-	private scrollOffset = 0;
-	private lastMaxScrollOffset = 0;
-	private stickToBottom = true;
 
 	onCancel?: () => void;
 
@@ -278,19 +275,8 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 	) {}
 
 	setNode(node: ChildAgentInspectorNode | undefined): void {
-		const previousNodeId = this.node?.id;
 		this.node = node;
 		this.rebuildTranscriptComponents();
-		if (!node) {
-			this.scrollOffset = 0;
-			this.lastMaxScrollOffset = 0;
-			this.stickToBottom = true;
-			return;
-		}
-		if (node.id !== previousNodeId || this.stickToBottom) {
-			this.scrollOffset = Number.MAX_SAFE_INTEGER;
-			this.stickToBottom = true;
-		}
 	}
 
 	invalidate(): void {
@@ -298,16 +284,13 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 		for (const component of this.transcriptComponents) {
 			component.invalidate?.();
 		}
-		if (this.stickToBottom) {
-			this.scrollOffset = Number.MAX_SAFE_INTEGER;
-		}
 	}
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const targetHeight = Math.max(0, this.getViewportHeight());
 		const sections = this.renderDetail(safeWidth);
-		const lines = this.applyViewport(sections, targetHeight);
+		const lines = [...sections.headerLines, ...sections.bodyLines];
 		while (lines.length < targetHeight) {
 			lines.push(this.panelLine("", safeWidth));
 		}
@@ -318,22 +301,6 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.onCancel?.();
-			return;
-		}
-		if (kb.matches(data, "tui.select.up")) {
-			this.moveScroll(-1);
-			return;
-		}
-		if (kb.matches(data, "tui.select.down")) {
-			this.moveScroll(1);
-			return;
-		}
-		if (kb.matches(data, "tui.select.pageUp")) {
-			this.moveScroll(-this.pageScrollDelta());
-			return;
-		}
-		if (kb.matches(data, "tui.select.pageDown")) {
-			this.moveScroll(this.pageScrollDelta());
 		}
 	}
 
@@ -375,48 +342,6 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 			}
 		}
 		return { headerLines, bodyLines };
-	}
-
-	private applyViewport(sections: DetailSections, targetHeight: number): string[] {
-		if (targetHeight === 0) {
-			return [...sections.headerLines, ...sections.bodyLines];
-		}
-
-		const headerLines = sections.headerLines.slice(0, targetHeight);
-		const bodyHeight = Math.max(0, targetHeight - headerLines.length);
-		if (bodyHeight === 0) {
-			this.lastMaxScrollOffset = 0;
-			this.scrollOffset = 0;
-			return headerLines;
-		}
-
-		const maxScrollOffset = Math.max(0, sections.bodyLines.length - bodyHeight);
-		this.lastMaxScrollOffset = maxScrollOffset;
-		if (this.stickToBottom) {
-			this.scrollOffset = maxScrollOffset;
-		} else {
-			this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScrollOffset));
-			if (this.scrollOffset === maxScrollOffset) {
-				this.stickToBottom = true;
-			}
-		}
-
-		const visibleBodyLines = sections.bodyLines.slice(this.scrollOffset, this.scrollOffset + bodyHeight);
-		return [...headerLines, ...visibleBodyLines];
-	}
-
-	private moveScroll(delta: number): void {
-		const nextOffset = Math.max(0, Math.min(this.scrollOffset + delta, this.lastMaxScrollOffset));
-		if (nextOffset === this.scrollOffset) {
-			return;
-		}
-		this.scrollOffset = nextOffset;
-		this.stickToBottom = this.scrollOffset === this.lastMaxScrollOffset;
-		this.options.ui?.requestRender();
-	}
-
-	private pageScrollDelta(): number {
-		return Math.max(1, this.getViewportHeight() - 4);
 	}
 
 	private rebuildTranscriptComponents(): void {

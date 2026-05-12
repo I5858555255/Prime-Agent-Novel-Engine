@@ -3271,9 +3271,9 @@ export class InteractiveMode {
 		this.childAgentDetailOverlayHandle?.hide();
 		this.childAgentDetailOverlayHandle = this.ui.showOverlay(this.childAgentDetail, {
 			width: "100%",
-			maxHeight: "100%",
 			anchor: "top-left",
 			margin: 0,
+			scrollback: true,
 		});
 		this.ui.requestRender();
 	}

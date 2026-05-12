@@ -25,6 +25,14 @@ class HostComponent implements Component {
 	}
 }
 
+class EmptyComponent implements Component {
+	render(): string[] {
+		return [];
+	}
+
+	invalidate(): void {}
+}
+
 function createFakeTui(): TUI {
 	return {
 		requestRender: () => {},
@@ -269,8 +277,10 @@ describe("marquee TUI components", () => {
 		expect(narrow).toContain("inspect…");
 	});
 
-	test("opens child agent detail at the bottom and scrolls through the transcript", () => {
-		const detailComponent = new ChildAgentDetailComponent(() => 8);
+	test("opens child agent detail in terminal scrollback at the bottom", async () => {
+		const terminal = new VirtualTerminal(48, 8);
+		const tui = new TUI(terminal);
+		const detailComponent = new ChildAgentDetailComponent(() => terminal.rows, { ui: tui });
 		detailComponent.setNode({
 			id: "sub-scroll",
 			label: "inspect long output",
@@ -282,21 +292,25 @@ describe("marquee TUI components", () => {
 			})),
 		});
 
-		const bottom = stripAnsi(detailComponent.render(48).join("\n"));
-		expect(bottom).toContain("fallback transcript row 12");
-		expect(bottom).toContain("fallback transcript row 08");
-		expect(bottom).not.toContain("fallback transcript row 01");
+		tui.addChild(new EmptyComponent());
+		tui.showOverlay(detailComponent, {
+			width: "100%",
+			anchor: "top-left",
+			margin: 0,
+			scrollback: true,
+		});
+		tui.start();
+		await terminal.waitForRender();
 
-		detailComponent.handleInput("\x1b[5~");
-		const scrolledUp = stripAnsi(detailComponent.render(48).join("\n"));
-		expect(scrolledUp).toContain("fallback transcript row 04");
-		expect(scrolledUp).toContain("fallback transcript row 08");
-		expect(scrolledUp).not.toContain("fallback transcript row 12");
+		const viewport = stripAnsi(terminal.getViewport().join("\n"));
+		expect(viewport).toContain("fallback transcript row 12");
+		expect(viewport).toContain("fallback transcript row 08");
+		expect(viewport).not.toContain("fallback transcript row 01");
 
-		detailComponent.handleInput("\x1b[6~");
-		const scrolledDown = stripAnsi(detailComponent.render(48).join("\n"));
-		expect(scrolledDown).toContain("fallback transcript row 12");
-		expect(scrolledDown).not.toContain("fallback transcript row 01");
+		const scrollBuffer = stripAnsi(terminal.getScrollBuffer().join("\n"));
+		expect(scrollBuffer).toContain("fallback transcript row 01");
+		expect(scrollBuffer).toContain("fallback transcript row 12");
+		tui.stop();
 	});
 
 	test("routes built-in ipython tool rows through the cell renderer", () => {

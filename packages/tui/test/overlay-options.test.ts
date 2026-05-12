@@ -197,6 +197,30 @@ describe("TUI overlay options", () => {
 		});
 	});
 
+	describe("scrollback", () => {
+		it("should preserve full overlay content in terminal scrollback while showing the bottom", async () => {
+			const terminal = new VirtualTerminal(20, 5);
+			const tui = new TUI(terminal);
+			const overlay = new StaticOverlay(
+				Array.from({ length: 8 }, (_, index) => `line ${String(index + 1).padStart(2, "0")}`),
+			);
+
+			tui.addChild(new EmptyContent());
+			tui.showOverlay(overlay, { anchor: "top-left", width: "100%", scrollback: true });
+			tui.start();
+			await renderAndFlush(tui, terminal);
+
+			const viewport = terminal.getViewport().join("\n");
+			assert.ok(viewport.includes("line 08"), `Expected bottom overlay line in viewport, got:\n${viewport}`);
+			assert.ok(!viewport.includes("line 01"), `Expected top overlay line in scrollback only, got:\n${viewport}`);
+
+			const scrollBuffer = terminal.getScrollBuffer().join("\n");
+			assert.ok(scrollBuffer.includes("line 01"), "Expected first overlay line in scrollback");
+			assert.ok(scrollBuffer.includes("line 08"), "Expected final overlay line in scrollback");
+			tui.stop();
+		});
+	});
+
 	describe("anchor positioning", () => {
 		it("should position overlay at top-left", async () => {
 			const terminal = new VirtualTerminal(80, 24);
