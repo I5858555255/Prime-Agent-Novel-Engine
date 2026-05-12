@@ -21,6 +21,7 @@ import type {
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 	GetContinuationMessagesContext,
+	ShouldStopAfterTurnContext,
 	StreamFn,
 	ToolExecutionMode,
 } from "./types.js";
@@ -102,6 +103,7 @@ export interface AgentOptions {
 	onResponse?: SimpleStreamOptions["onResponse"];
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
 	getContinuationMessages?: (context: GetContinuationMessagesContext, signal?: AbortSignal) => Promise<AgentMessage[]>;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
@@ -191,6 +193,7 @@ export class Agent {
 		context: AfterToolCallContext,
 		signal?: AbortSignal,
 	) => Promise<AfterToolCallResult | undefined>;
+	public shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
 	public getContinuationMessages?: (
 		context: GetContinuationMessagesContext,
 		signal?: AbortSignal,
@@ -217,6 +220,7 @@ export class Agent {
 		this.onResponse = options.onResponse;
 		this.beforeToolCall = options.beforeToolCall;
 		this.afterToolCall = options.afterToolCall;
+		this.shouldStopAfterTurn = options.shouldStopAfterTurn;
 		this.getContinuationMessages = options.getContinuationMessages;
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
@@ -447,6 +451,7 @@ export class Agent {
 			toolExecution: this.toolExecution,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
+			shouldStopAfterTurn: async (context) => this.shouldStopAfterTurn?.(context) ?? false,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,

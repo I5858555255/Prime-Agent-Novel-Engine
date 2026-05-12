@@ -2,7 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext } from "../../src/core/extensions/types.js";
+import type { ExtensionContext, ExtensionFactory } from "../../src/core/extensions/types.js";
 import { GOAL_TOOL_NAMES } from "../../src/core/goals.js";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
@@ -29,6 +29,16 @@ function goalContextMessages(harness: Harness) {
 
 function visibleAssistantTexts(harness: Harness): string[] {
 	return getAssistantTexts(harness).filter(Boolean);
+}
+
+async function waitForCondition(predicate: () => boolean): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		if (predicate()) {
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	throw new Error("condition was not met");
 }
 
 function createWaitingTool(): {
@@ -529,8 +539,49 @@ describe("AgentSession goals", () => {
 			active: false,
 			status: "budget_limited",
 			tokenBudget: 10,
+			continuationsUsed: 0,
 		});
 		expect(harness.session.goalState.tokensUsed).toBeGreaterThanOrEqual(10);
+	});
+
+	it("checks goal budget before continuation while event processing is delayed", async () => {
+		let releaseMessageEnd: (() => void) | undefined;
+		const blockedMessageEnd = new Promise<void>((resolve) => {
+			releaseMessageEnd = resolve;
+		});
+		let didBlock = false;
+		const extension: ExtensionFactory = (pi) => {
+			pi.on("message_end", async (event) => {
+				if (event.message.role === "assistant" && !didBlock) {
+					didBlock = true;
+					await blockedMessageEnd;
+				}
+			});
+		};
+		const harness = await createHarness({ extensionFactories: [extension] });
+		harnesses.push(harness);
+		harness.setResponses([
+			assistantWithUsage("Spent the budget.", { input: 6, output: 5, totalTokens: 11 }),
+			fauxAssistantMessage("Wrapping up."),
+			fauxAssistantMessage("Should not continue."),
+		]);
+
+		const promptPromise = harness.session.prompt("/goal --budget 10 do work");
+		try {
+			await waitForCondition(() => harness.getPendingResponseCount() === 1);
+		} finally {
+			releaseMessageEnd?.();
+		}
+		await promptPromise;
+
+		expect(visibleAssistantTexts(harness)).toEqual(["Spent the budget.", "Wrapping up."]);
+		expect(harness.getPendingResponseCount()).toBe(1);
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "budget_limited",
+			tokenBudget: 10,
+			continuationsUsed: 0,
+		});
 	});
 
 	it.each(["/goal --budget=1abc task", "/goal --budget 1.5 task", "/goal --budget 1e6 task"])(

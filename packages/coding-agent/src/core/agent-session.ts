@@ -25,6 +25,7 @@ import {
 	type AgentState,
 	type AgentTool,
 	type GetContinuationMessagesContext,
+	type ShouldStopAfterTurnContext,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent, Usage } from "@earendil-works/pi-ai";
@@ -453,6 +454,7 @@ export class AgentSession {
 
 	private _goalState: GoalState = emptyGoalState();
 	private _goalAccountingStartedAt: number | undefined = undefined;
+	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
 	private _goalAbortInProgress = false;
 
 	// Compaction state
@@ -541,6 +543,7 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentTurnHook();
 		this._installAgentContinuationHook();
 
 		this._buildRuntime({
@@ -642,6 +645,10 @@ export class AgentSession {
 
 	private _installAgentContinuationHook(): void {
 		this.agent.getContinuationMessages = (context, signal) => this._getGoalContinuationMessages(context, signal);
+	}
+
+	private _installAgentTurnHook(): void {
+		this.agent.shouldStopAfterTurn = (context) => this._shouldStopAfterGoalTurn(context);
 	}
 
 	// =========================================================================
@@ -998,19 +1005,23 @@ export class AgentSession {
 		return true;
 	}
 
-	private _accountGoalUsageForAssistantMessage(message: AssistantMessage): void {
+	private _accountGoalUsageForAssistantMessage(message: AssistantMessage): boolean {
 		if (!this._goalState.objective) {
-			return;
+			return false;
 		}
 		if (message.stopReason === "error" || message.stopReason === "aborted") {
-			return;
+			return false;
+		}
+		if (this._goalAccountedAssistantMessages.has(message)) {
+			return false;
 		}
 		const updateGoalRequested = message.content.some(
 			(content) => content.type === "toolCall" && content.name === UPDATE_GOAL_TOOL_NAME,
 		);
 		if (this._goalState.status !== "active" && !(this._goalState.status === "complete" && updateGoalRequested)) {
-			return;
+			return false;
 		}
+		this._goalAccountedAssistantMessages.add(message);
 		const tokenDelta = goalTokenDeltaForUsage(message.usage);
 		const goal = this._goalWithAccountedWallClock();
 		const nextGoal: GoalState = {
@@ -1021,7 +1032,7 @@ export class AgentSession {
 			!updateGoalRequested && nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
 		if (!budgetReached) {
 			this._setGoalState(nextGoal);
-			return;
+			return false;
 		}
 		this._setGoalState({
 			...nextGoal,
@@ -1030,7 +1041,18 @@ export class AgentSession {
 			lastReason: `Reached ${nextGoal.tokenBudget} token goal budget`,
 			lastError: undefined,
 		});
-		this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
+		return true;
+	}
+
+	private _shouldStopAfterGoalTurn(context: ShouldStopAfterTurnContext): boolean {
+		try {
+			if (this._accountGoalUsageForAssistantMessage(context.message)) {
+				this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
+			}
+		} catch {
+			// Goal accounting must not interrupt the core agent loop.
+		}
+		return false;
 	}
 
 	private createGoalFromTool(objective: string, tokenBudget: number | undefined): GoalState {
@@ -1205,7 +1227,9 @@ export class AgentSession {
 					});
 					this._retryAttempt = 0;
 				}
-				this._accountGoalUsageForAssistantMessage(assistantMsg);
+				if (this._accountGoalUsageForAssistantMessage(assistantMsg)) {
+					this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
+				}
 			}
 		}
 
@@ -3062,7 +3086,7 @@ export class AgentSession {
 		if (this._includeGoalTools && this._autoActivateGoalTools) {
 			defaultActiveToolNames.push(...GOAL_TOOL_NAMES);
 		}
-		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+		const baseActiveToolNames = [...(options.activeToolNames ?? defaultActiveToolNames)];
 		if (this._goalState.status === "active" && this._includeGoalTools) {
 			baseActiveToolNames.push(...GOAL_TOOL_NAMES);
 		}
