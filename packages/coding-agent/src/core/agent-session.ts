@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	Agent,
+	type AgentContext,
 	type AgentEvent,
 	type AgentMessage,
 	type AgentState,
@@ -902,8 +903,16 @@ export class AgentSession {
 		}
 	}
 
-	private _ensureGoalToolsActive(): void {
-		if (!this._includeGoalTools || !GOAL_TOOL_NAMES.every((toolName) => this._toolRegistry.has(toolName))) {
+	private _ensureGoalToolsActive(context?: AgentContext): void {
+		const goalTools: AgentTool[] = [];
+		for (const toolName of GOAL_TOOL_NAMES) {
+			const tool = this._toolRegistry.get(toolName);
+			if (!tool) {
+				throw new Error("Goal tools are disabled. Enable goal tools before using /goal.");
+			}
+			goalTools.push(tool);
+		}
+		if (!this._includeGoalTools) {
 			throw new Error("Goal tools are disabled. Enable goal tools before using /goal.");
 		}
 		const activeToolNames = new Set(this.getActiveToolNames());
@@ -916,6 +925,16 @@ export class AgentSession {
 		}
 		if (changed) {
 			this.setActiveToolsByName([...activeToolNames]);
+		}
+		if (context) {
+			const contextTools = [...(context.tools ?? [])];
+			const contextToolNames = new Set(contextTools.map((tool) => tool.name));
+			for (const tool of goalTools) {
+				if (!contextToolNames.has(tool.name)) {
+					contextTools.push(tool);
+				}
+			}
+			context.tools = contextTools;
 		}
 	}
 
@@ -1039,14 +1058,14 @@ export class AgentSession {
 	}
 
 	private async _getGoalContinuationMessages(
-		_context: GetContinuationMessagesContext,
+		context: GetContinuationMessagesContext,
 		signal?: AbortSignal,
 	): Promise<AgentMessage[]> {
 		if (signal?.aborted || this._goalState.status !== "active" || !this._goalState.objective) {
 			return [];
 		}
 		try {
-			this._ensureGoalToolsActive();
+			this._ensureGoalToolsActive(context.context);
 			const nextGoal = {
 				...this._goalState,
 				continuationsUsed: this._goalState.continuationsUsed + 1,
@@ -2954,13 +2973,6 @@ export class AgentSession {
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
-		if (this._includeGoalTools && this._autoActivateGoalTools) {
-			for (const goalToolName of GOAL_TOOL_NAMES) {
-				if (isAllowedTool(goalToolName)) {
-					nextActiveToolNames.push(goalToolName);
-				}
-			}
-		}
 
 		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
@@ -3043,7 +3055,13 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 
 		const defaultActiveToolNames = this._baseToolsOverride ? Object.keys(this._baseToolsOverride) : ["ipython"];
-		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+		if (this._includeGoalTools && this._autoActivateGoalTools) {
+			defaultActiveToolNames.push(...GOAL_TOOL_NAMES);
+		}
+		const baseActiveToolNames =
+			this._goalState.status === "active" && this._includeGoalTools
+				? [...(options.activeToolNames ?? defaultActiveToolNames), ...GOAL_TOOL_NAMES]
+				: (options.activeToolNames ?? defaultActiveToolNames);
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
 			includeAllExtensionTools: options.includeAllExtensionTools,

@@ -3,6 +3,7 @@ import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Usage }
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "../../src/core/extensions/types.js";
+import { GOAL_TOOL_NAMES } from "../../src/core/goals.js";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
 function assistantWithUsage(message: string | AssistantMessage, usage: Partial<Usage>): AssistantMessage {
@@ -151,11 +152,53 @@ describe("AgentSession goals", () => {
 
 		await harness.session.prompt("/goal finish the task");
 
-		expect(harness.session.getActiveToolNames()).toEqual(["get_goal", "create_goal", "update_goal"]);
+		expect(harness.session.getActiveToolNames()).toEqual([...GOAL_TOOL_NAMES]);
 		expect(harness.session.goalState).toMatchObject({
 			active: false,
 			status: "complete",
 		});
+	});
+
+	it("adds goal tools to the live continuation context when inactive at run start", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const createGoalTool = harness.session.getToolDefinition("create_goal");
+		if (!createGoalTool) {
+			throw new Error("expected create_goal tool");
+		}
+		await createGoalTool.execute(
+			"create-goal",
+			{ objective: "finish the active goal" },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		harness.session.setActiveToolsByName([]);
+		harness.setResponses([
+			fauxAssistantMessage("Still working."),
+			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Goal complete."),
+		]);
+
+		await harness.session.prompt("continue");
+
+		expect(visibleAssistantTexts(harness)).toEqual(["Still working.", "Goal complete."]);
+		expect(harness.session.getActiveToolNames()).toEqual([...GOAL_TOOL_NAMES]);
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "complete",
+		});
+	});
+
+	it("does not re-add deactivated goal tools on runtime rebuild without an active goal", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython", ...GOAL_TOOL_NAMES]);
+
+		harness.session.setActiveToolsByName([]);
+		await harness.session.reload();
+
+		expect(harness.session.getActiveToolNames()).toEqual([]);
 	});
 
 	it("does not infer completion from an assistant claim without update_goal", async () => {
