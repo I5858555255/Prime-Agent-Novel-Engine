@@ -1,9 +1,10 @@
-import { getPiUserAgent } from "./pi-user-agent.js";
+import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, ENV_VERSION_CHECK_URL } from "../config.js";
+import { getPrimeAgentUserAgent } from "./prime-agent-user-agent.js";
 
-const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
+const DEFAULT_LATEST_VERSION_URL = "https://api.github.com/repos/PrimeIntellect-ai/prime-agent/releases/latest";
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
 
-export interface LatestPiRelease {
+export interface LatestPrimeAgentRelease {
 	version: string;
 	packageName?: string;
 }
@@ -52,40 +53,54 @@ export function isNewerPackageVersion(candidateVersion: string, currentVersion: 
 	return candidateVersion.trim() !== currentVersion.trim();
 }
 
-export async function getLatestPiRelease(
+export async function getLatestPrimeAgentRelease(
 	currentVersion: string,
 	options: { timeoutMs?: number } = {},
-): Promise<LatestPiRelease | undefined> {
-	if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
+): Promise<LatestPrimeAgentRelease | undefined> {
+	if (process.env[ENV_SKIP_VERSION_CHECK] || process.env[ENV_OFFLINE]) return undefined;
+	const latestVersionUrl = process.env[ENV_VERSION_CHECK_URL] || DEFAULT_LATEST_VERSION_URL;
 
-	const response = await fetch(LATEST_VERSION_URL, {
+	const response = await fetch(latestVersionUrl, {
 		headers: {
-			"User-Agent": getPiUserAgent(currentVersion),
+			"User-Agent": getPrimeAgentUserAgent(currentVersion),
 			accept: "application/json",
 		},
 		signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_VERSION_CHECK_TIMEOUT_MS),
 	});
 	if (!response.ok) return undefined;
 
-	const data = (await response.json()) as { packageName?: unknown; version?: unknown };
-	if (typeof data.version !== "string" || !data.version.trim()) {
+	const data = (await response.json()) as {
+		name?: unknown;
+		packageName?: unknown;
+		tag_name?: unknown;
+		version?: unknown;
+	};
+	const version =
+		typeof data.version === "string"
+			? data.version
+			: typeof data.tag_name === "string"
+				? data.tag_name
+				: typeof data.name === "string"
+					? data.name
+					: undefined;
+	if (typeof version !== "string" || !version.trim()) {
 		return undefined;
 	}
 	const packageName =
 		typeof data.packageName === "string" && data.packageName.trim() ? data.packageName.trim() : undefined;
-	return { version: data.version.trim(), packageName };
+	return { version: version.trim(), packageName };
 }
 
-export async function getLatestPiVersion(
+export async function getLatestPrimeAgentVersion(
 	currentVersion: string,
 	options: { timeoutMs?: number } = {},
 ): Promise<string | undefined> {
-	return (await getLatestPiRelease(currentVersion, options))?.version;
+	return (await getLatestPrimeAgentRelease(currentVersion, options))?.version;
 }
 
-export async function checkForNewPiVersion(currentVersion: string): Promise<string | undefined> {
+export async function checkForNewPrimeAgentVersion(currentVersion: string): Promise<string | undefined> {
 	try {
-		const latestVersion = await getLatestPiVersion(currentVersion);
+		const latestVersion = await getLatestPrimeAgentVersion(currentVersion);
 		if (latestVersion && isNewerPackageVersion(latestVersion, currentVersion)) {
 			return latestVersion;
 		}

@@ -1,7 +1,7 @@
 /**
  * DOOM Overlay Demo - Play DOOM as an overlay
  *
- * Usage: pi --extension ./examples/extensions/doom-overlay
+ * Usage: prime-agent --extension ./examples/extensions/doom-overlay
  *
  * Commands:
  *   /doom-overlay - Play DOOM in an overlay (Q to pause/exit)
@@ -9,7 +9,7 @@
  * This demonstrates that overlays can handle real-time game rendering at 35 FPS.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "prime-agent";
 import { DoomOverlayComponent } from "./doom-component.js";
 import { DoomEngine } from "./doom-engine.js";
 import { ensureWadFile } from "./wad-finder.js";
@@ -18,8 +18,8 @@ import { ensureWadFile } from "./wad-finder.js";
 let activeEngine: DoomEngine | null = null;
 let activeWadPath: string | null = null;
 
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("doom-overlay", {
+export default function (api: ExtensionAPI) {
+	api.registerCommand("doom-overlay", {
 		description: "Play DOOM as an overlay. Q to pause and exit.",
 
 		handler: async (args, ctx) => {

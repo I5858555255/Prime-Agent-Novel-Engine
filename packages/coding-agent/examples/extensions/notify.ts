@@ -8,7 +8,7 @@
  * - Windows toast: Windows Terminal (WSL)
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "prime-agent";
 
 function windowsToastScript(title: string, body: string): string {
 	const type = "Windows.UI.Notifications";
@@ -48,8 +48,8 @@ function notify(title: string, body: string): void {
 	}
 }
 
-export default function (pi: ExtensionAPI) {
-	pi.on("agent_end", async () => {
+export default function (api: ExtensionAPI) {
+	api.on("agent_end", async () => {
 		notify("Pi", "Ready for input");
 	});
 }

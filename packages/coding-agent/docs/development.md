@@ -5,8 +5,8 @@ See [AGENTS.md](../../../AGENTS.md) for additional guidelines.
 ## Setup
 
 ```bash
-git clone https://github.com/earendil-works/pi-mono
-cd pi-mono
+git clone https://github.com/PrimeIntellect-ai/prime-agent
+cd prime-agent
 npm install
 npm run build
 ```
@@ -14,10 +14,10 @@ npm run build
 Run from source:
 
 ```bash
-/path/to/pi-mono/pi-test.sh
+/path/to/prime-agent/prime-agent-test.sh
 ```
 
-The script can be run from any directory. Pi keeps the caller's current working directory.
+The script can be run from any directory. Prime Agent keeps the caller's current working directory.
 
 ## Forking / Rebranding
 
@@ -25,14 +25,14 @@ Configure via `package.json`:
 
 ```json
 {
-  "piConfig": {
-    "name": "pi",
-    "configDir": ".pi"
+  "primeAgentConfig": {
+    "name": "prime-agent",
+    "configDir": ".prime/agent"
   }
 }
 ```
 
-Change `name`, `configDir`, and `bin` field for your fork. Affects CLI banner, config paths, and environment variable names.
+Change `name`, `configDir`, and the `bin` field for your fork. This affects the CLI banner, config paths, and environment variable names.
 
 ## Path Resolution
 
@@ -48,7 +48,7 @@ Never use `__dirname` directly for package assets.
 
 ## Debug Command
 
-`/debug` (hidden) writes to `~/.pi/agent/pi-debug.log`:
+`/debug` (hidden) writes to `~/.prime/agent/prime-agent-debug.log`:
 - Rendered TUI lines with ANSI codes
 - Last messages sent to the LLM
 

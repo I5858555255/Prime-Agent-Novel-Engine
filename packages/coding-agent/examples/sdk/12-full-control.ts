@@ -13,10 +13,10 @@ import {
 	type ResourceLoader,
 	SessionManager,
 	SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+} from "prime-agent";
 
 // Custom auth storage location
-const authStorage = AuthStorage.create("/tmp/my-agent/auth.json");
+const authStorage = AuthStorage.create("/tmp/my-prime-agent/auth.json");
 
 // Runtime API key override (not persisted)
 if (process.env.MY_ANTHROPIC_KEY) {
@@ -52,7 +52,7 @@ Available: ipython, bash. Be concise.`,
 
 const { session } = await createAgentSession({
 	cwd,
-	agentDir: "/tmp/my-agent",
+	agentDir: "/tmp/my-prime-agent",
 	model,
 	thinkingLevel: "off",
 	authStorage,

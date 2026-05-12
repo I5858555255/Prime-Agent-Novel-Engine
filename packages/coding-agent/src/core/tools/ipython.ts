@@ -118,7 +118,7 @@ export function createIpythonToolDefinition(
 			"persist across calls. Shell commands available inside Python via `!cmd` (single-line) " +
 			"or `%%bash` (multi-line cells).",
 		promptSnippet: "ipython - execute Python in a persistent kernel; state survives across calls",
-		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
+		// The kernel is single-threaded; Prime Agent must not run two ipython calls in parallel within a batch.
 		executionMode: "sequential",
 		parameters: ipythonSchema,
 		execute: async (_toolCallId, params, signal, onUpdate) => {

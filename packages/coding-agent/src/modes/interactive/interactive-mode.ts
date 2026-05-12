@@ -50,6 +50,8 @@ import { spawn, spawnSync } from "child_process";
 import {
 	APP_NAME,
 	APP_TITLE,
+	ENV_INSTALL_TELEMETRY_URL,
+	ENV_OFFLINE,
 	getAgentDir,
 	getAuthPath,
 	getDebugLogPath,
@@ -95,10 +97,10 @@ import { copyToClipboard } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
 import { parseGitUrl } from "../../utils/git.js";
 import { getCwdRelativePath } from "../../utils/paths.js";
-import { getPiUserAgent } from "../../utils/pi-user-agent.js";
+import { getPrimeAgentUserAgent } from "../../utils/prime-agent-user-agent.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { ensureTool } from "../../utils/tools-manager.js";
-import { checkForNewPiVersion } from "../../utils/version-check.js";
+import { checkForNewPrimeAgentVersion } from "../../utils/version-check.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -116,7 +118,6 @@ import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
 import { DaxnutsComponent } from "./components/daxnuts.js";
 import { DynamicBorder } from "./components/dynamic-border.js";
-import { EarendilAnnouncementComponent } from "./components/earendil-announcement.js";
 import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
@@ -125,6 +126,7 @@ import { keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
 import { ModelSelectorComponent } from "./components/model-selector.js";
 import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.js";
+import { PrimeAgentAnnouncementComponent } from "./components/prime-agent-announcement.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -789,7 +791,7 @@ export class InteractiveMode {
 		// Brand splash: side-panel layout — white butterfly on the left, structured runtime
 		// metadata on the right. The mark carries the brand; no wordmark, no slogan.
 		// Cheatsheet behind --verbose. `quietStartup` suppresses the splash entirely
-		// (matches pi-mono's old behaviour for users who want a bare prompt).
+		// Matches the old bare-prompt behavior for users who want a minimal TUI.
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
 			// Verbose: include the full keybinding cheatsheet under the brand mark.
 			const hint = (keybinding: AppKeybinding, description: string) => keyHint(keybinding, description);
@@ -895,7 +897,7 @@ export class InteractiveMode {
 		await this.init();
 
 		// Start version check asynchronously
-		checkForNewPiVersion(this.version).then((newVersion) => {
+		checkForNewPrimeAgentVersion(this.version).then((newVersion) => {
 			if (newVersion) {
 				this.showNewVersionNotification(newVersion);
 			}
@@ -967,7 +969,7 @@ export class InteractiveMode {
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE) {
+		if (process.env[ENV_OFFLINE]) {
 			return [];
 		}
 
@@ -1025,7 +1027,7 @@ export class InteractiveMode {
 		}
 
 		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+			return "tmux extended-keys-format is xterm. Prime Agent works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
 		}
 
 		return undefined;
@@ -1063,7 +1065,7 @@ export class InteractiveMode {
 	}
 
 	private reportInstallTelemetry(version: string): void {
-		if (process.env.PI_OFFLINE) {
+		if (process.env[ENV_OFFLINE]) {
 			return;
 		}
 
@@ -1071,9 +1073,17 @@ export class InteractiveMode {
 			return;
 		}
 
-		void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
+		const telemetryUrl = process.env[ENV_INSTALL_TELEMETRY_URL];
+		if (!telemetryUrl) {
+			return;
+		}
+
+		const url = new URL(telemetryUrl);
+		url.searchParams.set("version", version);
+
+		void fetch(url, {
 			headers: {
-				"User-Agent": getPiUserAgent(version),
+				"User-Agent": getPrimeAgentUserAgent(version),
 			},
 			signal: AbortSignal.timeout(5000),
 		})
@@ -2657,7 +2667,7 @@ export class InteractiveMode {
 			// Write to temp file
 			const tmpDir = os.tmpdir();
 			const ext = extensionForImageMimeType(image.mimeType) ?? "png";
-			const fileName = `pi-clipboard-${crypto.randomUUID()}.${ext}`;
+			const fileName = `prime-agent-clipboard-${crypto.randomUUID()}.${ext}`;
 			const filePath = path.join(tmpDir, fileName);
 			fs.writeFileSync(filePath, Buffer.from(image.bytes));
 
@@ -2787,8 +2797,8 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/dementedelves") {
-				this.handleDementedDelves();
+			if (text === "/primeagent") {
+				this.handlePrimeAgentCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -3833,7 +3843,7 @@ export class InteractiveMode {
 		}
 
 		const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
-		const tmpFile = path.join(os.tmpdir(), `pi-editor-${Date.now()}.pi.md`);
+		const tmpFile = path.join(os.tmpdir(), `prime-agent-editor-${Date.now()}.md`);
 
 		try {
 			// Write current content to temp file
@@ -3898,7 +3908,7 @@ export class InteractiveMode {
 		const updateInstruction = theme.fg("muted", `New version ${newVersion} is available. Run `) + action;
 		const changelogUrl = theme.fg(
 			"accent",
-			"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md",
+			"https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/CHANGELOG.md",
 		);
 		const changelogLine = theme.fg("muted", "Changelog: ") + changelogUrl;
 
@@ -5733,9 +5743,9 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private handleDementedDelves(): void {
+	private handlePrimeAgentCommand(): void {
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new EarendilAnnouncementComponent());
+		this.chatContainer.addChild(new PrimeAgentAnnouncementComponent());
 		this.ui.requestRender();
 	}
 

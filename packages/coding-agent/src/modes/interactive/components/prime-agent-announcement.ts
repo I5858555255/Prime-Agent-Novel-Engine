@@ -4,7 +4,7 @@ import { getBundledInteractiveAssetPath } from "../../../config.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 
-const BLOG_URL = "https://mariozechner.at/posts/2026-04-08-ive-sold-out/";
+const PROJECT_URL = "https://github.com/PrimeIntellect-ai/prime-agent";
 const IMAGE_FILENAME = "clankolas.png";
 
 let cachedImageBase64: string | undefined;
@@ -24,15 +24,15 @@ function loadImageBase64(): string | undefined {
 	return cachedImageBase64;
 }
 
-export class EarendilAnnouncementComponent extends Container {
+export class PrimeAgentAnnouncementComponent extends Container {
 	constructor() {
 		super();
 
 		this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
-		this.addChild(new Text(theme.bold(theme.fg("accent", "pi has joined Earendil")), 1, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", "Prime Agent")), 1, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", "Read the blog post:"), 1, 0));
-		this.addChild(new Text(theme.fg("mdLink", BLOG_URL), 1, 0));
+		this.addChild(new Text(theme.fg("muted", "Project:"), 1, 0));
+		this.addChild(new Text(theme.fg("mdLink", PROJECT_URL), 1, 0));
 		this.addChild(new Spacer(1));
 
 		const imageBase64 = loadImageBase64();

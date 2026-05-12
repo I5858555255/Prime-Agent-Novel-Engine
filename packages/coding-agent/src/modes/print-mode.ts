@@ -2,8 +2,8 @@
  * Print mode (single-shot): Send prompts, output result, exit.
  *
  * Used for:
- * - `pi -p "prompt"` - text output
- * - `pi --mode json "prompt"` - JSON event stream
+ * - `prime-agent -p "prompt"` - text output
+ * - `prime-agent --mode json "prompt"` - JSON event stream
  */
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";

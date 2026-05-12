@@ -1,6 +1,6 @@
 # Kernel and RLM Recursion
 
-This document explains the IPython kernel transport and the recursive `rlm` sub-agent bridge.
+This document explains the IPython kernel transport and the recursive `rlm` subagent bridge.
 
 The important design constraint is that the Python `rlm` package in the kernel is only a shim. It preserves the model-facing API from `rlm-harness`, but it does not run a child agent loop in Python. Child agents are run by the TypeScript host through the same `AgentSession` machinery as the parent.
 
@@ -517,7 +517,7 @@ The answer is the child's final assistant text. This matches the RLM-1 training 
 For a persisted root session:
 
 ```text
-~/.pi/agent/sessions/<project>/
+~/.prime/agent/sessions/<project>/
   2026-..._<root-session-id>.jsonl
   2026-..._<root-session-id>/
     sub-dccb69c8/

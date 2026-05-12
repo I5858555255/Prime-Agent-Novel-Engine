@@ -23,7 +23,7 @@ describe("buildRlmPrompt", () => {
 	test("builds the rlm prompt without recursion", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
-			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			messagesPath: "/repo/.prime/agent/sessions/session.jsonl",
 			installedSkills: ["websearch"],
 			activeTools: ["ipython"],
 			allowRecursion: false,
@@ -36,7 +36,7 @@ describe("buildRlmPrompt", () => {
 				"A Python project's interpreter can be in `PATH`. If not use the appropriate `.venv`.",
 				"",
 				"Working directory: /repo",
-				"Conversation log: /repo/.pi/sessions/session.jsonl",
+				"Conversation log: /repo/.prime/agent/sessions/session.jsonl",
 				"",
 				"Installed skills (pre-imported): `websearch`.",
 				"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
@@ -52,7 +52,7 @@ describe("buildRlmPrompt", () => {
 	test("only documents ipython shell prefixes when ipython is active", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
-			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			messagesPath: "/repo/.prime/agent/sessions/session.jsonl",
 			activeTools: ["bash"],
 			allowRecursion: false,
 		});
@@ -68,12 +68,12 @@ describe("buildSystemPrompt", () => {
 			contextFiles: [],
 			skills: [],
 			cwd: "/repo",
-			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			messagesPath: "/repo/.prime/agent/sessions/session.jsonl",
 		});
 
 		expect(prompt).toContain("You are a coding agent.");
 		expect(prompt).toContain("Working directory: /repo");
-		expect(prompt).toContain("Conversation log: /repo/.pi/sessions/session.jsonl");
+		expect(prompt).toContain("Conversation log: /repo/.prime/agent/sessions/session.jsonl");
 		expect(prompt).toContain("await rlm('sub-task')");
 		expect(prompt).toContain("asyncio.gather");
 		expect(prompt).toContain("await rlm.background('sub-task')");

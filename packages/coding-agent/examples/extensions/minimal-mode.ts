@@ -11,15 +11,15 @@
  * - Minimal: Shows only tool call, no output (this extension's collapsed mode)
  *
  * Usage:
- *   pi -e ./minimal-mode.ts
+ *   prime-agent -e ./minimal-mode.ts
  *
  * Then use ctrl+o to toggle between minimal (collapsed) and full (expanded) views.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createBashTool, createEditTool } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { homedir } from "os";
+import type { ExtensionAPI } from "prime-agent";
+import { createBashTool, createEditTool } from "prime-agent";
 
 /**
  * Shorten a path by replacing home directory with ~
@@ -51,11 +51,11 @@ function getBuiltInTools(cwd: string) {
 	return tools;
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (api: ExtensionAPI) {
 	// =========================================================================
 	// Bash Tool
 	// =========================================================================
-	pi.registerTool({
+	api.registerTool({
 		name: "bash",
 		label: "bash",
 		description:
@@ -104,7 +104,7 @@ export default function (pi: ExtensionAPI) {
 	// =========================================================================
 	// Edit Tool
 	// =========================================================================
-	pi.registerTool({
+	api.registerTool({
 		name: "edit",
 		label: "edit",
 		description:

@@ -1,18 +1,18 @@
 /**
  * Input Transform Example - demonstrates the `input` event for intercepting user input.
  *
- * Start pi with this extension:
- *   pi -e ./examples/extensions/input-transform.ts
+ * Start Prime Agent with this extension:
+ *   prime-agent -e ./examples/extensions/input-transform.ts
  *
- * Then type these inside pi:
+ * Then type these inside Prime Agent:
  *   ?quick What is TypeScript?  → "Respond briefly: What is TypeScript?"
  *   ping                        → "pong" (instant, no LLM)
  *   time                        → current time (instant, no LLM)
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "prime-agent";
 
-export default function (pi: ExtensionAPI) {
-	pi.on("input", async (event, ctx) => {
+export default function (api: ExtensionAPI) {
+	api.on("input", async (event, ctx) => {
 		// Source-based logic: skip processing for extension-injected messages
 		if (event.source === "extension") {
 			return { action: "continue" };

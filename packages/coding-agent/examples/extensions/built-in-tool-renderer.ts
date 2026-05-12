@@ -22,19 +22,19 @@
  *   toggled the tool output open (via ctrl+e or clicking)
  *
  * Usage:
- *   pi -e ./built-in-tool-renderer.ts
+ *   prime-agent -e ./built-in-tool-renderer.ts
  */
 
-import type { BashToolDetails, EditToolDetails, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createBashTool, createEditTool } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import type { BashToolDetails, EditToolDetails, ExtensionAPI } from "prime-agent";
+import { createBashTool, createEditTool } from "prime-agent";
 
-export default function (pi: ExtensionAPI) {
+export default function (api: ExtensionAPI) {
 	const cwd = process.cwd();
 
 	// --- Bash tool: show command and exit code ---
 	const originalBash = createBashTool(cwd);
-	pi.registerTool({
+	api.registerTool({
 		name: "bash",
 		label: "bash",
 		description: originalBash.description,
@@ -93,7 +93,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Edit tool: show path and diff stats ---
 	const originalEdit = createEditTool(cwd);
-	pi.registerTool({
+	api.registerTool({
 		name: "edit",
 		label: "edit",
 		description: originalEdit.description,

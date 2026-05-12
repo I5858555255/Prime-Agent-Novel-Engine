@@ -1,13 +1,13 @@
 /**
- * Syncs pi theme with macOS system appearance (dark/light mode).
+ * Syncs the Prime Agent theme with macOS system appearance (dark/light mode).
  *
  * Usage:
- *   pi -e examples/extensions/mac-system-theme.ts
+ *   prime-agent -e examples/extensions/mac-system-theme.ts
  */
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "prime-agent";
 
 const execAsync = promisify(exec);
 
@@ -22,10 +22,10 @@ async function isDarkMode(): Promise<boolean> {
 	}
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (api: ExtensionAPI) {
 	let intervalId: ReturnType<typeof setInterval> | null = null;
 
-	pi.on("session_start", async (_event, ctx) => {
+	api.on("session_start", async (_event, ctx) => {
 		let currentTheme = (await isDarkMode()) ? "dark" : "light";
 		ctx.ui.setTheme(currentTheme);
 
@@ -38,7 +38,7 @@ export default function (pi: ExtensionAPI) {
 		}, 2000);
 	});
 
-	pi.on("session_shutdown", () => {
+	api.on("session_shutdown", () => {
 		if (intervalId) {
 			clearInterval(intervalId);
 			intervalId = null;

@@ -339,21 +339,21 @@ describe("InteractiveMode.showLoadedResources", () => {
 	function createExtensionFixtures(): ExtensionFixture[] {
 		return [
 			{
-				path: "/tmp/project/.pi/extensions/answer.ts",
-				sourceInfo: createSourceInfo("/tmp/project/.pi/extensions/answer.ts", {
+				path: "/tmp/project/.prime/agent/extensions/answer.ts",
+				sourceInfo: createSourceInfo("/tmp/project/.prime/agent/extensions/answer.ts", {
 					source: "local",
 					scope: "project",
 					origin: "top-level",
-					baseDir: "/tmp/project/.pi/extensions",
+					baseDir: "/tmp/project/.prime/agent/extensions",
 				}),
 			},
 			{
-				path: "/tmp/project/.pi/extensions/local-index/index.ts",
-				sourceInfo: createSourceInfo("/tmp/project/.pi/extensions/local-index/index.ts", {
+				path: "/tmp/project/.prime/agent/extensions/local-index/index.ts",
+				sourceInfo: createSourceInfo("/tmp/project/.prime/agent/extensions/local-index/index.ts", {
 					source: "local",
 					scope: "project",
 					origin: "top-level",
-					baseDir: "/tmp/project/.pi/extensions",
+					baseDir: "/tmp/project/.prime/agent/extensions",
 				}),
 			},
 			{
@@ -366,44 +366,50 @@ describe("InteractiveMode.showLoadedResources", () => {
 				}),
 			},
 			{
-				path: "/tmp/project/.pi/npm/node_modules/pi-markdown-preview/extensions/index.ts",
-				sourceInfo: createSourceInfo("/tmp/project/.pi/npm/node_modules/pi-markdown-preview/extensions/index.ts", {
-					source: "npm:pi-markdown-preview",
-					scope: "project",
-					origin: "package",
-					baseDir: "/tmp/project/.pi/npm/node_modules/pi-markdown-preview",
-				}),
-			},
-			{
-				path: "/tmp/project/.pi/npm/node_modules/@scope/pi-scoped/extensions/index.ts",
-				sourceInfo: createSourceInfo("/tmp/project/.pi/npm/node_modules/@scope/pi-scoped/extensions/index.ts", {
-					source: "npm:@scope/pi-scoped",
-					scope: "project",
-					origin: "package",
-					baseDir: "/tmp/project/.pi/npm/node_modules/@scope/pi-scoped",
-				}),
-			},
-			{
-				path: "/tmp/project/.pi/git/github.com/HazAT/pi-interactive-subagents/extensions/index.ts",
+				path: "/tmp/project/.prime/agent/npm/node_modules/pi-markdown-preview/extensions/index.ts",
 				sourceInfo: createSourceInfo(
-					"/tmp/project/.pi/git/github.com/HazAT/pi-interactive-subagents/extensions/index.ts",
+					"/tmp/project/.prime/agent/npm/node_modules/pi-markdown-preview/extensions/index.ts",
 					{
-						source: "git:github.com/HazAT/pi-interactive-subagents",
+						source: "npm:pi-markdown-preview",
 						scope: "project",
 						origin: "package",
-						baseDir: "/tmp/project/.pi/git/github.com/HazAT/pi-interactive-subagents",
+						baseDir: "/tmp/project/.prime/agent/npm/node_modules/pi-markdown-preview",
 					},
 				),
 			},
 			{
-				path: "/tmp/project/.pi/git/github.com/HazAT/pi-interactive-subagents/extensions/subagents/index.ts",
+				path: "/tmp/project/.prime/agent/npm/node_modules/@scope/pi-scoped/extensions/index.ts",
 				sourceInfo: createSourceInfo(
-					"/tmp/project/.pi/git/github.com/HazAT/pi-interactive-subagents/extensions/subagents/index.ts",
+					"/tmp/project/.prime/agent/npm/node_modules/@scope/pi-scoped/extensions/index.ts",
+					{
+						source: "npm:@scope/pi-scoped",
+						scope: "project",
+						origin: "package",
+						baseDir: "/tmp/project/.prime/agent/npm/node_modules/@scope/pi-scoped",
+					},
+				),
+			},
+			{
+				path: "/tmp/project/.prime/agent/git/github.com/HazAT/pi-interactive-subagents/extensions/index.ts",
+				sourceInfo: createSourceInfo(
+					"/tmp/project/.prime/agent/git/github.com/HazAT/pi-interactive-subagents/extensions/index.ts",
 					{
 						source: "git:github.com/HazAT/pi-interactive-subagents",
 						scope: "project",
 						origin: "package",
-						baseDir: "/tmp/project/.pi/git/github.com/HazAT/pi-interactive-subagents",
+						baseDir: "/tmp/project/.prime/agent/git/github.com/HazAT/pi-interactive-subagents",
+					},
+				),
+			},
+			{
+				path: "/tmp/project/.prime/agent/git/github.com/HazAT/pi-interactive-subagents/extensions/subagents/index.ts",
+				sourceInfo: createSourceInfo(
+					"/tmp/project/.prime/agent/git/github.com/HazAT/pi-interactive-subagents/extensions/subagents/index.ts",
+					{
+						source: "git:github.com/HazAT/pi-interactive-subagents",
+						scope: "project",
+						origin: "package",
+						baseDir: "/tmp/project/.prime/agent/git/github.com/HazAT/pi-interactive-subagents",
 					},
 				),
 			},
@@ -759,13 +765,16 @@ describe("InteractiveMode.showLoadedResources", () => {
 	test("package extensions still strip index.ts correctly (regression guard)", () => {
 		const extensions: ExtensionFixture[] = [
 			{
-				path: "/tmp/project/.pi/npm/node_modules/pi-markdown-preview/extensions/index.ts",
-				sourceInfo: createSourceInfo("/tmp/project/.pi/npm/node_modules/pi-markdown-preview/extensions/index.ts", {
-					source: "npm:pi-markdown-preview",
-					scope: "project",
-					origin: "package",
-					baseDir: "/tmp/project/.pi/npm/node_modules/pi-markdown-preview",
-				}),
+				path: "/tmp/project/.prime/agent/npm/node_modules/pi-markdown-preview/extensions/index.ts",
+				sourceInfo: createSourceInfo(
+					"/tmp/project/.prime/agent/npm/node_modules/pi-markdown-preview/extensions/index.ts",
+					{
+						source: "npm:pi-markdown-preview",
+						scope: "project",
+						origin: "package",
+						baseDir: "/tmp/project/.prime/agent/npm/node_modules/pi-markdown-preview",
+					},
+				),
 			},
 		];
 
@@ -798,8 +807,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
 "[Extensions]
   project
-    /tmp/project/.pi/extensions/answer.ts
-    /tmp/project/.pi/extensions/local-index
+    /tmp/project/.prime/agent/extensions/answer.ts
+    /tmp/project/.prime/agent/extensions/local-index
     git:github.com/HazAT/pi-interactive-subagents
       extensions
       extensions/subagents
@@ -819,7 +828,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: false,
 			cwd,
-			contextFiles: [{ path: path.join(home, ".pi", "agent", "AGENTS.md") }, { path: path.join(cwd, "AGENTS.md") }],
+			contextFiles: [
+				{ path: path.join(home, ".prime", "agent", "AGENTS.md") },
+				{ path: path.join(cwd, "AGENTS.md") },
+			],
 		});
 
 		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
@@ -828,7 +840,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
 		expect(output).toContain("[Context]");
-		expect(output).toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
+		expect(output).toContain("~/.prime/agent/AGENTS.md, AGENTS.md");
 		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
 	});
 
@@ -839,7 +851,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 			quietStartup: false,
 			toolOutputExpanded: true,
 			cwd,
-			contextFiles: [{ path: path.join(home, ".pi", "agent", "AGENTS.md") }, { path: path.join(cwd, "AGENTS.md") }],
+			contextFiles: [
+				{ path: path.join(home, ".prime", "agent", "AGENTS.md") },
+				{ path: path.join(cwd, "AGENTS.md") },
+			],
 		});
 
 		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
@@ -848,9 +863,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
 		expect(output).toContain("[Context]");
-		expect(output).toContain("~/.pi/agent/AGENTS.md");
+		expect(output).toContain("~/.prime/agent/AGENTS.md");
 		expect(output).toContain("~/Development/pi-mono/AGENTS.md");
-		expect(output).not.toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
+		expect(output).not.toContain("~/.prime/agent/AGENTS.md, AGENTS.md");
 	});
 
 	test("does not show verbose listing on quiet startup during reload", () => {
