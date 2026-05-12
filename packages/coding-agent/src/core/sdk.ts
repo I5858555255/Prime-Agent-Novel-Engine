@@ -22,7 +22,7 @@ import { createBashTool, createEditTool, createIpythonTool, withFileMutationQueu
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
-	/** Global config directory. Default: ~/.prime/agent */
+	/** Global config directory. Default: ~/.pi/agent */
 	agentDir?: string;
 
 	/** Auth storage for credentials. Default: AuthStorage.create(agentDir/auth.json) */
@@ -48,7 +48,7 @@ export interface CreateAgentSessionOptions {
 	/**
 	 * Optional allowlist of tool names.
 	 *
-	 * When omitted, Prime Agent enables the default built-in tool (ipython)
+	 * When omitted, pi enables the default built-in tool (ipython)
 	 * and leaves extension/custom tools enabled unless `noTools` changes that default.
 	 * When provided, only the listed tool names are enabled.
 	 */
@@ -118,8 +118,8 @@ function getAttributionHeaders(
 
 	if (model.provider === "openrouter" || model.baseUrl.includes("openrouter.ai")) {
 		return {
-			"HTTP-Referer": "https://github.com/PrimeIntellect-ai/prime-agent",
-			"X-OpenRouter-Title": "Prime Agent",
+			"HTTP-Referer": "https://pi.dev",
+			"X-OpenRouter-Title": "pi",
 			"X-OpenRouter-Categories": "cli-agent",
 		};
 	}
@@ -131,7 +131,7 @@ function getAttributionHeaders(
 		model.baseUrl.includes("gateway.ai.cloudflare.com")
 	) {
 		return {
-			"User-Agent": "prime-agent",
+			"User-Agent": "pi-coding-agent",
 		};
 	}
 

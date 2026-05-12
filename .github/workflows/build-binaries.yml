@@ -64,16 +64,16 @@ jobs:
           gh release create "${RELEASE_TAG}" \
             --title "${RELEASE_TAG}" \
             --notes-file /tmp/release-notes.md \
-            prime-agent-darwin-arm64.tar.gz \
-            prime-agent-darwin-x64.tar.gz \
-            prime-agent-linux-x64.tar.gz \
-            prime-agent-linux-arm64.tar.gz \
-            prime-agent-windows-x64.zip \
+            pi-darwin-arm64.tar.gz \
+            pi-darwin-x64.tar.gz \
+            pi-linux-x64.tar.gz \
+            pi-linux-arm64.tar.gz \
+            pi-windows-x64.zip \
             2>/dev/null || \
           gh release upload "${RELEASE_TAG}" \
-            prime-agent-darwin-arm64.tar.gz \
-            prime-agent-darwin-x64.tar.gz \
-            prime-agent-linux-x64.tar.gz \
-            prime-agent-linux-arm64.tar.gz \
-            prime-agent-windows-x64.zip \
+            pi-darwin-arm64.tar.gz \
+            pi-darwin-x64.tar.gz \
+            pi-linux-x64.tar.gz \
+            pi-linux-arm64.tar.gz \
+            pi-windows-x64.zip \
             --clobber
