@@ -40,7 +40,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 pi
 ```
 
-You can also run `/login` and select an API-key provider to store the key in `~/.pi/agent/auth.json`.
+You can also run `/login` and select an API-key provider to store the key in `~/.prime/agent/auth.json`.
 
 See [Providers](providers.md) for all supported providers, environment variables, and cloud-provider setup.
 
@@ -72,7 +72,7 @@ Pi loads context files at startup. Add an `AGENTS.md` file to tell it how to wor
 
 Pi loads:
 
-- `~/.pi/agent/AGENTS.md` for global instructions
+- `~/.prime/agent/AGENTS.md` for global instructions
 - `AGENTS.md` or `CLAUDE.md` from parent directories and the current directory
 
 Restart pi, or run `/reload`, after changing context files.

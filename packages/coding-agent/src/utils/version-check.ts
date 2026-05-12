@@ -1,6 +1,7 @@
+import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK } from "../config.js";
 import { getPiUserAgent } from "./pi-user-agent.js";
 
-const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
+const LATEST_VERSION_URL = "https://api.github.com/repos/PrimeIntellect-ai/prime-agent/releases/latest";
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
 
 export interface LatestPiRelease {
@@ -56,7 +57,7 @@ export async function getLatestPiRelease(
 	currentVersion: string,
 	options: { timeoutMs?: number } = {},
 ): Promise<LatestPiRelease | undefined> {
-	if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
+	if (process.env[ENV_SKIP_VERSION_CHECK] || process.env[ENV_OFFLINE]) return undefined;
 
 	const response = await fetch(LATEST_VERSION_URL, {
 		headers: {
@@ -67,13 +68,14 @@ export async function getLatestPiRelease(
 	});
 	if (!response.ok) return undefined;
 
-	const data = (await response.json()) as { packageName?: unknown; version?: unknown };
-	if (typeof data.version !== "string" || !data.version.trim()) {
+	const data = (await response.json()) as { packageName?: unknown; tag_name?: unknown; version?: unknown };
+	const version = typeof data.version === "string" ? data.version : data.tag_name;
+	if (typeof version !== "string" || !version.trim()) {
 		return undefined;
 	}
 	const packageName =
 		typeof data.packageName === "string" && data.packageName.trim() ? data.packageName.trim() : undefined;
-	return { version: data.version.trim(), packageName };
+	return { version: version.trim().replace(/^v/, ""), packageName };
 }
 
 export async function getLatestPiVersion(

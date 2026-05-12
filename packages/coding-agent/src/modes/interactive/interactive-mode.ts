@@ -50,6 +50,8 @@ import { spawn, spawnSync } from "child_process";
 import {
 	APP_NAME,
 	APP_TITLE,
+	ENV_INSTALL_TELEMETRY_URL,
+	ENV_OFFLINE,
 	getAgentDir,
 	getAuthPath,
 	getDebugLogPath,
@@ -980,7 +982,7 @@ export class InteractiveMode {
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE) {
+		if (process.env[ENV_OFFLINE]) {
 			return [];
 		}
 
@@ -1038,7 +1040,7 @@ export class InteractiveMode {
 		}
 
 		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+			return "tmux extended-keys-format is xterm. Prime Agent works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
 		}
 
 		return undefined;
@@ -1076,7 +1078,12 @@ export class InteractiveMode {
 	}
 
 	private reportInstallTelemetry(version: string): void {
-		if (process.env.PI_OFFLINE) {
+		if (process.env[ENV_OFFLINE]) {
+			return;
+		}
+
+		const telemetryUrl = process.env[ENV_INSTALL_TELEMETRY_URL];
+		if (!telemetryUrl) {
 			return;
 		}
 
@@ -1084,7 +1091,9 @@ export class InteractiveMode {
 			return;
 		}
 
-		void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
+		const url = new URL(telemetryUrl);
+		url.searchParams.set("version", version);
+		void fetch(url, {
 			headers: {
 				"User-Agent": getPiUserAgent(version),
 			},
@@ -3849,7 +3858,7 @@ export class InteractiveMode {
 		}
 
 		const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
-		const tmpFile = path.join(os.tmpdir(), `pi-editor-${Date.now()}.pi.md`);
+		const tmpFile = path.join(os.tmpdir(), `prime-agent-editor-${Date.now()}.md`);
 
 		try {
 			// Write current content to temp file
@@ -3914,7 +3923,7 @@ export class InteractiveMode {
 		const updateInstruction = theme.fg("muted", `New version ${newVersion} is available. Run `) + action;
 		const changelogUrl = theme.fg(
 			"accent",
-			"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md",
+			"https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/CHANGELOG.md",
 		);
 		const changelogLine = theme.fg("muted", "Changelog: ") + changelogUrl;
 

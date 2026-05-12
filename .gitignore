@@ -25,7 +25,6 @@ packages/*/dist-firefox/
 .npm/
 coverage/
 .nyc_output/
-.pi_config/
 tui-debug.log
 compaction-results/
 .opencode/
@@ -36,8 +35,8 @@ out.html
 packages/coding-agent/binaries/
 todo.md
 plans/
-.pi/hf-sessions/
-.pi/hf-sessions-backup/
+.prime/agent/hf-sessions/
+.prime/agent/hf-sessions-backup/
 collect.sh
 .kernel-venv/
 .worktrees/

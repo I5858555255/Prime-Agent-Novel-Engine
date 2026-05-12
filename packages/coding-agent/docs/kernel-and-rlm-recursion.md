@@ -517,7 +517,7 @@ The answer is the child's final assistant text. This matches the RLM-1 training 
 For a persisted root session:
 
 ```text
-~/.pi/agent/sessions/<project>/
+~/.prime/agent/sessions/<project>/
   2026-..._<root-session-id>.jsonl
   2026-..._<root-session-id>/
     sub-dccb69c8/

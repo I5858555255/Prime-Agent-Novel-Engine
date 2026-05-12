@@ -19,7 +19,7 @@ Use `/login` in interactive mode, then select a provider:
 - Claude Pro/Max
 - GitHub Copilot
 
-Use `/logout` to clear credentials. Tokens are stored in `~/.pi/agent/auth.json` and auto-refresh when expired.
+Use `/logout` to clear credentials. Tokens are stored in `~/.prime/agent/auth.json` and auto-refresh when expired.
 
 ### OpenAI Codex
 
@@ -78,7 +78,7 @@ Reference for environment variables and `auth.json` keys: [`const envMap`](https
 
 #### Auth File
 
-Store credentials in `~/.pi/agent/auth.json`:
+Store credentials in `~/.prime/agent/auth.json`:
 
 ```json
 {

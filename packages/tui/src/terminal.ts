@@ -9,6 +9,7 @@ const cjsRequire = createRequire(import.meta.url);
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
+const ENV_TUI_WRITE_LOG = "PRIME_AGENT_TUI_WRITE_LOG";
 
 /**
  * Minimal terminal interface for TUI
@@ -70,7 +71,7 @@ export class ProcessTerminal implements Terminal {
 	private stdinDataHandler?: (data: string) => void;
 	private progressInterval?: ReturnType<typeof setInterval>;
 	private writeLogPath = (() => {
-		const env = process.env.PI_TUI_WRITE_LOG || "";
+		const env = process.env[ENV_TUI_WRITE_LOG] || "";
 		if (!env) return "";
 		try {
 			if (fs.statSync(env).isDirectory()) {

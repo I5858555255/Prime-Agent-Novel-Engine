@@ -27,7 +27,7 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME } from "../config.js";
+import { CONFIG_DIR_NAME, ENV_OFFLINE } from "../config.js";
 import { shouldUseWindowsShell } from "../utils/child-process.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
@@ -39,7 +39,7 @@ const UPDATE_CHECK_CONCURRENCY = 4;
 const GIT_UPDATE_CONCURRENCY = 4;
 
 function isOfflineModeEnabled(): boolean {
-	const value = process.env.PI_OFFLINE;
+	const value = process.env[ENV_OFFLINE];
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
@@ -144,7 +144,7 @@ interface GitUpdateTarget extends ConfiguredUpdateSource {
 	parsed: GitSource;
 }
 
-interface PiManifest {
+interface PrimeAgentManifest {
 	extensions?: string[];
 	skills?: string[];
 	prompts?: string[];
@@ -325,7 +325,7 @@ function collectFiles(
 	return files;
 }
 
-type SkillDiscoveryMode = "pi" | "agents";
+type SkillDiscoveryMode = "primeAgent" | "agents";
 
 function collectSkillEntries(
 	dir: string,
@@ -384,7 +384,7 @@ function collectSkillEntries(
 			}
 
 			const relPath = toPosixPath(relative(root, fullPath));
-			if (mode === "pi" && dir === root && isFile && entry.name.endsWith(".md") && !ig.ignores(relPath)) {
+			if (mode === "primeAgent" && dir === root && isFile && entry.name.endsWith(".md") && !ig.ignores(relPath)) {
 				entries.push(fullPath);
 				continue;
 			}
@@ -514,11 +514,11 @@ function collectAutoThemeEntries(dir: string): string[] {
 	return entries;
 }
 
-function readPiManifestFile(packageJsonPath: string): PiManifest | null {
+function readPrimeAgentManifestFile(packageJsonPath: string): PrimeAgentManifest | null {
 	try {
 		const content = readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content) as { pi?: PiManifest };
-		return pkg.pi ?? null;
+		const pkg = JSON.parse(content) as { primeAgent?: PrimeAgentManifest };
+		return pkg.primeAgent ?? null;
 	} catch {
 		return null;
 	}
@@ -527,7 +527,7 @@ function readPiManifestFile(packageJsonPath: string): PiManifest | null {
 function resolveExtensionEntries(dir: string): string[] | null {
 	const packageJsonPath = join(dir, "package.json");
 	if (existsSync(packageJsonPath)) {
-		const manifest = readPiManifestFile(packageJsonPath);
+		const manifest = readPrimeAgentManifestFile(packageJsonPath);
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -614,7 +614,7 @@ function collectAutoExtensionEntries(dir: string): string[] {
  */
 function collectResourceFiles(dir: string, resourceType: ResourceType): string[] {
 	if (resourceType === "skills") {
-		return collectSkillEntries(dir, "pi");
+		return collectSkillEntries(dir, "primeAgent");
 	}
 	if (resourceType === "extensions") {
 		return collectAutoExtensionEntries(dir);
@@ -1813,7 +1813,7 @@ export class DefaultPackageManager implements PackageManager {
 		this.ensureGitIgnore(installRoot);
 		const packageJsonPath = join(installRoot, "package.json");
 		if (!existsSync(packageJsonPath)) {
-			const pkgJson = { name: "pi-extensions", private: true };
+			const pkgJson = { name: "prime-agent-extensions", private: true };
 			writeFileSync(packageJsonPath, JSON.stringify(pkgJson, null, 2), "utf-8");
 		}
 	}
@@ -1890,7 +1890,7 @@ export class DefaultPackageManager implements PackageManager {
 			.update(`${prefix}-${suffix ?? ""}`)
 			.digest("hex")
 			.slice(0, 8);
-		return join(tmpdir(), "pi-extensions", prefix, hash, suffix ?? "");
+		return join(tmpdir(), "prime-agent-extensions", prefix, hash, suffix ?? "");
 	}
 
 	private getBaseDirForScope(scope: SourceScope): string {
@@ -1938,10 +1938,10 @@ export class DefaultPackageManager implements PackageManager {
 			return true;
 		}
 
-		const manifest = this.readPiManifest(packageRoot);
+		const manifest = this.readPrimeAgentManifest(packageRoot);
 		if (manifest) {
 			for (const resourceType of RESOURCE_TYPES) {
-				const entries = manifest[resourceType as keyof PiManifest];
+				const entries = manifest[resourceType as keyof PrimeAgentManifest];
 				this.addManifestEntries(
 					entries,
 					packageRoot,
@@ -1974,8 +1974,8 @@ export class DefaultPackageManager implements PackageManager {
 		target: Map<string, { metadata: PathMetadata; enabled: boolean }>,
 		metadata: PathMetadata,
 	): void {
-		const manifest = this.readPiManifest(packageRoot);
-		const entries = manifest?.[resourceType as keyof PiManifest];
+		const manifest = this.readPrimeAgentManifest(packageRoot);
+		const entries = manifest?.[resourceType as keyof PrimeAgentManifest];
 		if (entries) {
 			this.addManifestEntries(entries, packageRoot, resourceType, target, metadata);
 			return;
@@ -2025,8 +2025,8 @@ export class DefaultPackageManager implements PackageManager {
 		packageRoot: string,
 		resourceType: ResourceType,
 	): { allFiles: string[]; enabledByManifest: Set<string> } {
-		const manifest = this.readPiManifest(packageRoot);
-		const entries = manifest?.[resourceType as keyof PiManifest];
+		const manifest = this.readPrimeAgentManifest(packageRoot);
+		const entries = manifest?.[resourceType as keyof PrimeAgentManifest];
 		if (entries && entries.length > 0) {
 			const allFiles = this.collectFilesFromManifestEntries(entries, packageRoot, resourceType);
 			const manifestPatterns = entries.filter(isOverridePattern);
@@ -2043,7 +2043,7 @@ export class DefaultPackageManager implements PackageManager {
 		return { allFiles, enabledByManifest: new Set(allFiles) };
 	}
 
-	private readPiManifest(packageRoot: string): PiManifest | null {
+	private readPrimeAgentManifest(packageRoot: string): PrimeAgentManifest | null {
 		const packageJsonPath = join(packageRoot, "package.json");
 		if (!existsSync(packageJsonPath)) {
 			return null;
@@ -2051,8 +2051,8 @@ export class DefaultPackageManager implements PackageManager {
 
 		try {
 			const content = readFileSync(packageJsonPath, "utf-8");
-			const pkg = JSON.parse(content) as { pi?: PiManifest };
-			return pkg.pi ?? null;
+			const pkg = JSON.parse(content) as { primeAgent?: PrimeAgentManifest };
+			return pkg.primeAgent ?? null;
 		} catch {
 			return null;
 		}
@@ -2192,7 +2192,7 @@ export class DefaultPackageManager implements PackageManager {
 		addResources(
 			"skills",
 			[
-				...collectAutoSkillEntries(projectDirs.skills, "pi"),
+				...collectAutoSkillEntries(projectDirs.skills, "primeAgent"),
 				...projectAgentsSkillDirs.flatMap((dir) => collectAutoSkillEntries(dir, "agents")),
 			],
 			projectMetadata,
@@ -2223,7 +2223,10 @@ export class DefaultPackageManager implements PackageManager {
 		);
 		addResources(
 			"skills",
-			[...collectAutoSkillEntries(userDirs.skills, "pi"), ...collectAutoSkillEntries(userAgentsSkillsDir, "agents")],
+			[
+				...collectAutoSkillEntries(userDirs.skills, "primeAgent"),
+				...collectAutoSkillEntries(userAgentsSkillsDir, "agents"),
+			],
 			userMetadata,
 			userOverrides.skills,
 			globalBaseDir,
