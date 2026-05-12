@@ -213,6 +213,8 @@ export interface AgentSessionConfig {
 	allowedToolNames?: string[];
 	/** Whether the built-in long-running goal tools are exposed. Default: true. */
 	includeGoalTools?: boolean;
+	/** Whether goal tools are automatically active without an explicit goal. Default: true. */
+	autoActivateGoalTools?: boolean;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -482,6 +484,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _includeGoalTools: boolean;
+	private _autoActivateGoalTools: boolean;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -521,6 +524,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._includeGoalTools = config.includeGoalTools ?? true;
+		this._autoActivateGoalTools = config.autoActivateGoalTools ?? true;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
@@ -898,6 +902,23 @@ export class AgentSession {
 		}
 	}
 
+	private _ensureGoalToolsActive(): void {
+		if (!this._includeGoalTools || !GOAL_TOOL_NAMES.every((toolName) => this._toolRegistry.has(toolName))) {
+			throw new Error("Goal tools are disabled. Enable goal tools before using /goal.");
+		}
+		const activeToolNames = new Set(this.getActiveToolNames());
+		let changed = false;
+		for (const toolName of GOAL_TOOL_NAMES) {
+			if (!activeToolNames.has(toolName)) {
+				activeToolNames.add(toolName);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.setActiveToolsByName([...activeToolNames]);
+		}
+	}
+
 	private async _runOrQueueGoalContext(
 		kind: "continuation" | "budget_limit" | "objective_updated",
 		images?: ImageContent[],
@@ -905,6 +926,7 @@ export class AgentSession {
 		if (!this._goalState.objective) {
 			return;
 		}
+		this._ensureGoalToolsActive();
 		const message = createGoalContextMessage(this._goalState, kind, images);
 		if (this.isStreaming) {
 			if (kind === "budget_limit") {
@@ -950,6 +972,7 @@ export class AgentSession {
 		if (!this.isStreaming) {
 			await this._validateCanStartAgentRun();
 		}
+		this._ensureGoalToolsActive();
 		this._clearQueuedGoalContexts();
 		this._startGoal(command.objective, command.tokenBudget);
 		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
@@ -1023,6 +1046,7 @@ export class AgentSession {
 			return [];
 		}
 		try {
+			this._ensureGoalToolsActive();
 			const nextGoal = {
 				...this._goalState,
 				continuationsUsed: this._goalState.continuationsUsed + 1,
@@ -2930,7 +2954,7 @@ export class AgentSession {
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
-		if (this._includeGoalTools) {
+		if (this._includeGoalTools && this._autoActivateGoalTools) {
 			for (const goalToolName of GOAL_TOOL_NAMES) {
 				if (isAllowedTool(goalToolName)) {
 					nextActiveToolNames.push(goalToolName);
@@ -3230,6 +3254,7 @@ export class AgentSession {
 			initialActiveToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
 			includeGoalTools: this._includeGoalTools,
+			autoActivateGoalTools: this._autoActivateGoalTools,
 			rlmDepth: this._rlmDepth + 1,
 			rlmMaxDepth: this._rlmMaxDepth,
 			rlmSessionDir: childSessionDir,

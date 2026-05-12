@@ -258,7 +258,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const defaultActiveToolNames: ToolName[] = ["ipython"];
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
-	const includeGoalTools = options.tools !== undefined || !options.noTools;
+	const includeGoalTools = options.tools !== undefined || options.noTools !== "all";
+	const autoActivateGoalTools = options.tools === undefined && !options.noTools;
 	const initialActiveToolNames: string[] = options.tools
 		? [...options.tools]
 		: options.noTools
@@ -390,6 +391,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		initialActiveToolNames,
 		allowedToolNames,
 		includeGoalTools,
+		autoActivateGoalTools,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 	});

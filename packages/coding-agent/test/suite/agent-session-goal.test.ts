@@ -140,6 +140,24 @@ describe("AgentSession goals", () => {
 		expect(harness.session.goalState.tokensUsed).toBeGreaterThan(0);
 	});
 
+	it("activates goal tools when a slash goal starts from an inactive tool set", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.session.setActiveToolsByName([]);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Goal complete."),
+		]);
+
+		await harness.session.prompt("/goal finish the task");
+
+		expect(harness.session.getActiveToolNames()).toEqual(["get_goal", "create_goal", "update_goal"]);
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "complete",
+		});
+	});
+
 	it("does not infer completion from an assistant claim without update_goal", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
