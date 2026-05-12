@@ -1,4 +1,4 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentContext, AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,15 @@ function goalContextMessages(harness: Harness) {
 
 function visibleAssistantTexts(harness: Harness): string[] {
 	return getAssistantTexts(harness).filter(Boolean);
+}
+
+function currentAgentContext(harness: Harness): AgentContext {
+	const state = harness.session.agent.state;
+	return {
+		systemPrompt: state.systemPrompt,
+		messages: [...state.messages],
+		tools: [...state.tools],
+	};
 }
 
 async function waitForCondition(predicate: () => boolean): Promise<void> {
@@ -614,6 +623,37 @@ describe("AgentSession goals", () => {
 			lastError: "invalid_api_key",
 		});
 		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("does not continue when a terminal error reaches the continuation hook", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const createGoalTool = harness.session.getToolDefinition("create_goal");
+		if (!createGoalTool) {
+			throw new Error("expected create_goal tool");
+		}
+		await createGoalTool.execute(
+			"create-goal",
+			{ objective: "finish the active goal" },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		const errorMessage = fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid_api_key" });
+
+		const continuationMessages = await harness.session.agent.getContinuationMessages?.({
+			message: errorMessage,
+			toolResults: [],
+			context: currentAgentContext(harness),
+			newMessages: [errorMessage],
+		});
+
+		expect(continuationMessages).toEqual([]);
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "error",
+			lastError: "invalid_api_key",
+		});
 	});
 
 	it("keeps the goal active on aborted provider turns", async () => {

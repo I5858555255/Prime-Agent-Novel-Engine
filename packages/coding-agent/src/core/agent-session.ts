@@ -844,6 +844,18 @@ export class AgentSession {
 		}
 	}
 
+	private _stopGoalContinuationForTerminalMessage(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error" && message.stopReason !== "aborted") {
+			return false;
+		}
+		try {
+			this._finishGoalForTerminalAssistantMessage(message);
+		} catch {
+			// Goal hooks must not reject; listener failures should not crash the agent loop.
+		}
+		return true;
+	}
+
 	private _parseGoalSlashCommand(text: string): GoalSlashCommand | undefined {
 		if (text !== "/goal" && !text.startsWith("/goal ")) {
 			return undefined;
@@ -1045,6 +1057,9 @@ export class AgentSession {
 	}
 
 	private _shouldStopAfterGoalTurn(context: ShouldStopAfterTurnContext): boolean {
+		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
+			return true;
+		}
 		try {
 			if (this._accountGoalUsageForAssistantMessage(context.message)) {
 				this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
@@ -1083,6 +1098,9 @@ export class AgentSession {
 		context: GetContinuationMessagesContext,
 		signal?: AbortSignal,
 	): Promise<AgentMessage[]> {
+		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
+			return [];
+		}
 		if (signal?.aborted || this._goalState.status !== "active" || !this._goalState.objective) {
 			return [];
 		}
