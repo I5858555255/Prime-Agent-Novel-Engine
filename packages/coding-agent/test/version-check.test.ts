@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK } from "../src/config.js";
 import {
 	checkForNewPiVersion,
 	comparePackageVersions,
@@ -7,20 +8,20 @@ import {
 	isNewerPackageVersion,
 } from "../src/utils/version-check.js";
 
-const originalSkipVersionCheck = process.env.PRIME_AGENT_SKIP_VERSION_CHECK;
-const originalOffline = process.env.PRIME_AGENT_OFFLINE;
+const originalSkipVersionCheck = process.env[ENV_SKIP_VERSION_CHECK];
+const originalOffline = process.env[ENV_OFFLINE];
 
 afterEach(() => {
 	vi.unstubAllGlobals();
 	if (originalSkipVersionCheck === undefined) {
-		delete process.env.PRIME_AGENT_SKIP_VERSION_CHECK;
+		delete process.env[ENV_SKIP_VERSION_CHECK];
 	} else {
-		process.env.PRIME_AGENT_SKIP_VERSION_CHECK = originalSkipVersionCheck;
+		process.env[ENV_SKIP_VERSION_CHECK] = originalSkipVersionCheck;
 	}
 	if (originalOffline === undefined) {
-		delete process.env.PRIME_AGENT_OFFLINE;
+		delete process.env[ENV_OFFLINE];
 	} else {
-		process.env.PRIME_AGENT_OFFLINE = originalOffline;
+		process.env[ENV_OFFLINE] = originalOffline;
 	}
 });
 
@@ -68,7 +69,7 @@ describe("version checks", () => {
 	});
 
 	it("skips api calls when version checks are disabled", async () => {
-		process.env.PRIME_AGENT_SKIP_VERSION_CHECK = "1";
+		process.env[ENV_SKIP_VERSION_CHECK] = "1";
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 
