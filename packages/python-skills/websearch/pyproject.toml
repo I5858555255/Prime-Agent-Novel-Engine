@@ -8,10 +8,9 @@ version = "0.1.0"
 description = "RLM skill for web search."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["rlm"]
 
 [project.scripts]
-websearch = "rlm.skill:cli"
+websearch = "websearch.websearch:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

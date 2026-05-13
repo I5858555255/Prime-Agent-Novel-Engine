@@ -9,4 +9,4 @@ results = await websearch.run(queries=["latest jupyter_client release"], max_res
 ```
 
 The package exposes a single async `run(...)` entrypoint and a `websearch`
-console script through `rlm.skill:cli`.
+console script that prints JSON results.

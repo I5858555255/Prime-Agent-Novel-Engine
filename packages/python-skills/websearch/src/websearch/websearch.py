@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import html
+import json
+import sys
 from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
@@ -158,3 +161,56 @@ async def run(
         ]
     )
     return {"queries": results}
+
+
+def _create_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="websearch",
+        description="Search the web and print structured JSON results.",
+    )
+    parser.add_argument(
+        "--queries",
+        nargs="+",
+        required=True,
+        help="One or more search queries.",
+    )
+    parser.add_argument(
+        "--max-results",
+        type=int,
+        default=5,
+        help="Maximum number of results per query.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["duckduckgo"],
+        default="duckduckgo",
+        help="Search backend to use.",
+    )
+    parser.add_argument(
+        "--region",
+        default="us-en",
+        help="DuckDuckGo region code.",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=10.0,
+        help="Per-query network timeout in seconds.",
+    )
+    return parser
+
+
+def cli() -> None:
+    parser = _create_parser()
+    args = parser.parse_args()
+    result = asyncio.run(
+        run(
+            queries=args.queries,
+            max_results=args.max_results,
+            backend=args.backend,
+            region=args.region,
+            timeout_seconds=args.timeout_seconds,
+        )
+    )
+    json.dump(result, sys.stdout)
+    sys.stdout.write("\n")
