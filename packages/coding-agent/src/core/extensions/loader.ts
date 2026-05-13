@@ -4,7 +4,7 @@
  */
 
 import * as fs from "node:fs";
-import { createRequire, findPackageJSON } from "node:module";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +68,25 @@ const ESM_ONLY_PACKAGE_ENTRIES: Record<string, string> = {
 	"@earendil-works/pi-ai/oauth": "dist/oauth.js",
 };
 
+function getPackageName(specifier: string): string {
+	const parts = specifier.split("/");
+	if (specifier.startsWith("@")) {
+		return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : specifier;
+	}
+	return parts[0] || specifier;
+}
+
+function findPackageRoot(specifier: string): string | undefined {
+	const packageName = getPackageName(specifier);
+	for (const lookupPath of require.resolve.paths(specifier) ?? []) {
+		const packageJsonPath = path.join(lookupPath, packageName, "package.json");
+		if (fs.existsSync(packageJsonPath)) {
+			return path.dirname(packageJsonPath);
+		}
+	}
+	return undefined;
+}
+
 function resolveImportEntry(specifier: string): string {
 	const importMetaResolve = import.meta.resolve;
 	if (typeof importMetaResolve === "function") {
@@ -82,12 +101,12 @@ function resolveImportEntry(specifier: string): string {
 			throw error;
 		}
 
-		const packageJsonPath = findPackageJSON(specifier, import.meta.url);
-		if (!packageJsonPath) {
+		const packageRoot = findPackageRoot(specifier);
+		if (!packageRoot) {
 			throw error;
 		}
 
-		return path.join(path.dirname(packageJsonPath), entry);
+		return path.join(packageRoot, entry);
 	}
 }
 
