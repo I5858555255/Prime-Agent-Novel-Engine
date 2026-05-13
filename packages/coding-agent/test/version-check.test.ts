@@ -34,7 +34,7 @@ describe("version checks", () => {
 	});
 
 	it("returns only newer versions", async () => {
-		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.3" }));
+		const fetchMock = vi.fn(async () => Response.json({ tag_name: "v1.2.3" }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
@@ -42,7 +42,7 @@ describe("version checks", () => {
 	});
 
 	it("uses the GitHub releases api with a prime-agent user agent", async () => {
-		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
+		const fetchMock = vi.fn(async () => Response.json({ tag_name: "v1.2.4" }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(getLatestPiVersion("1.2.3")).resolves.toBe("1.2.4");
@@ -58,7 +58,7 @@ describe("version checks", () => {
 	});
 
 	it("returns the active package name from the version check api", async () => {
-		const fetchMock = vi.fn(async () => Response.json({ packageName: "prime-agent-next", version: "1.2.4" }));
+		const fetchMock = vi.fn(async () => Response.json({ packageName: "prime-agent-next", tag_name: "v1.2.4" }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(getLatestPiRelease("1.2.3")).resolves.toEqual({
