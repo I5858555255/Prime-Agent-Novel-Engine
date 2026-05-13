@@ -4,7 +4,7 @@
  */
 
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, findPackageJSON } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,34 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 
 const require = createRequire(import.meta.url);
 
+const ESM_ONLY_PACKAGE_ENTRIES: Record<string, string> = {
+	"@earendil-works/pi-ai": "dist/index.js",
+	"@earendil-works/pi-ai/oauth": "dist/oauth.js",
+};
+
+function resolveImportEntry(specifier: string): string {
+	const importMetaResolve = import.meta.resolve;
+	if (typeof importMetaResolve === "function") {
+		return fileURLToPath(importMetaResolve(specifier));
+	}
+
+	try {
+		return require.resolve(specifier);
+	} catch (error) {
+		const entry = ESM_ONLY_PACKAGE_ENTRIES[specifier];
+		if (!entry) {
+			throw error;
+		}
+
+		const packageJsonPath = findPackageJSON(specifier, import.meta.url);
+		if (!packageJsonPath) {
+			throw error;
+		}
+
+		return path.join(path.dirname(packageJsonPath), entry);
+	}
+}
+
 /**
  * Get aliases for jiti (used in Node.js/development mode).
  * In Bun binary mode, virtualModules is used instead.
@@ -85,7 +113,7 @@ function getAliases(): Record<string, string> {
 		if (fs.existsSync(workspacePath)) {
 			return workspacePath;
 		}
-		return fileURLToPath(import.meta.resolve(specifier));
+		return resolveImportEntry(specifier);
 	};
 
 	const piCodingAgentEntry = packageIndex;
