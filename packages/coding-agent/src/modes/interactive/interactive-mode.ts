@@ -43,6 +43,7 @@ import {
 	Text,
 	TruncatedText,
 	TUI,
+	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
@@ -56,7 +57,13 @@ import {
 	getShareViewerUrl,
 	VERSION,
 } from "../../config.js";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type GoalState,
+	parseSkillBlock,
+	type RlmChildAgentSnapshot,
+} from "../../core/agent-session.js";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.js";
 import type {
 	AutocompleteProviderFactory,
@@ -69,6 +76,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
+import { formatGoalUsage } from "../../core/goals.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
@@ -81,6 +89,7 @@ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
+import { PRIME_LOGO_SMALL } from "../../themes/prime-logo.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
@@ -95,6 +104,13 @@ import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
+import {
+	ChildAgentDetailComponent,
+	ChildAgentInspectorComponent,
+	type ChildAgentInspectorNode,
+	type ChildAgentStructuredTranscriptEntry,
+	type ChildAgentTranscriptLine,
+} from "./components/child-agent-inspector.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
 import { CountdownTimer } from "./components/countdown-timer.js";
 import { CustomEditor } from "./components/custom-editor.js";
@@ -157,6 +173,181 @@ class ExpandableText extends Text implements Expandable {
 
 	setExpanded(expanded: boolean): void {
 		this.setText(expanded ? this.getExpandedText() : this.getCollapsedText());
+	}
+}
+
+function formatSplashCwd(cwd: string): string {
+	const normalized = cwd.replace(/\\/g, "/");
+	const worktreeMarker = "/.worktrees/";
+	const worktreeIndex = normalized.indexOf(worktreeMarker);
+	if (worktreeIndex >= 0) {
+		const repoRoot = normalized.slice(0, worktreeIndex);
+		const rest = normalized.slice(worktreeIndex + worktreeMarker.length);
+		const repoName = path.basename(repoRoot);
+		return `${repoName}/${rest}`;
+	}
+
+	const home = os.homedir().replace(/\\/g, "/");
+	if (home && normalized === home) {
+		return "~";
+	}
+	if (home && normalized.startsWith(`${home}/`)) {
+		return `~${normalized.slice(home.length)}`;
+	}
+
+	return normalized;
+}
+
+export function truncatePathMiddle(value: string, width: number): string {
+	if (visibleWidth(value) <= width) {
+		return value;
+	}
+	if (width <= 1) {
+		return truncateToWidth(value, width, "");
+	}
+
+	const ellipsis = "…";
+	const normalized = value.replace(/\\/g, "/");
+	const prefix = normalized.startsWith("~/") ? "~/" : normalized.startsWith("/") ? "/" : "";
+	const body = prefix ? normalized.slice(prefix.length) : normalized;
+	const parts = body.split("/").filter((part) => part.length > 0);
+	const last = parts.pop() ?? "";
+	const previous = parts.pop();
+	const suffix = previous ? `${previous}/${last}` : last;
+	const candidate = `${prefix}${ellipsis}/${suffix}`;
+	if (visibleWidth(candidate) <= width) {
+		return candidate;
+	}
+
+	return truncateToWidth(candidate, width);
+}
+
+class BrandSplashHeader implements Component {
+	private readonly logoRaw = PRIME_LOGO_SMALL.split("\n");
+	private readonly logoCanvasWidth = this.logoRaw.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+	private readonly gutter = 4;
+	private readonly labelWidth = 9;
+
+	constructor(
+		private readonly version: string,
+		private readonly getModelId: () => string | undefined,
+		private readonly getCwd: () => string,
+		private readonly verboseInstructions?: string,
+	) {}
+
+	invalidate(): void {
+		// Render output is derived from current theme/session state.
+	}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		const paddingX = safeWidth > 1 ? 1 : 0;
+		const contentWidth = Math.max(1, safeWidth - paddingX * 2);
+		const metaWidth = contentWidth - this.logoCanvasWidth - this.gutter;
+		const showMeta = metaWidth >= this.labelWidth + 8;
+		const valueWidth = Math.max(1, metaWidth - this.labelWidth);
+		const labelled = (label: string, value: string) => {
+			const displayValue =
+				label === "cwd" ? truncatePathMiddle(value, valueWidth) : truncateToWidth(value, valueWidth);
+			return theme.fg("dim", label.padEnd(this.labelWidth)) + theme.fg("muted", displayValue);
+		};
+		const metaLines = showMeta
+			? [
+					labelled("version", `v${this.version}`),
+					labelled("model", this.getModelId() ?? "—"),
+					labelled("cwd", formatSplashCwd(this.getCwd())),
+					"",
+					theme.fg("dim", "type to start"),
+				]
+			: [];
+		const metaStart = Math.max(0, Math.floor((this.logoRaw.length - metaLines.length) / 2));
+		const lines = this.logoRaw.map((line, index) => {
+			const colored = theme.fg("text", line);
+			const meta = index >= metaStart && index < metaStart + metaLines.length ? metaLines[index - metaStart] : "";
+			const padding = showMeta
+				? " ".repeat(Math.max(0, this.logoCanvasWidth - visibleWidth(line) + this.gutter))
+				: "";
+			const content = truncateToWidth(colored + padding + meta, contentWidth, "");
+			return " ".repeat(paddingX) + content + " ".repeat(Math.max(0, safeWidth - paddingX - visibleWidth(content)));
+		});
+
+		if (this.verboseInstructions) {
+			lines.push(" ".repeat(safeWidth));
+			for (const instruction of this.verboseInstructions.split("\n")) {
+				const content = truncateToWidth(instruction, contentWidth);
+				lines.push(
+					" ".repeat(paddingX) + content + " ".repeat(Math.max(0, safeWidth - paddingX - visibleWidth(content))),
+				);
+			}
+		}
+
+		return lines;
+	}
+}
+
+function isTerminalImageLine(line: string): boolean {
+	return line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
+}
+
+class RightSidebarLayoutComponent implements Component {
+	private readonly preferredSidebarWidth = 34;
+	private readonly minSidebarWidth = 28;
+	private readonly minSideBySideWidth = 88;
+	private readonly gapWidth = 1;
+
+	constructor(
+		private readonly main: Component,
+		private readonly sidebar: Component,
+		private readonly getViewportHeight: () => number,
+	) {}
+
+	invalidate(): void {
+		this.main.invalidate?.();
+		this.sidebar.invalidate?.();
+	}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		const probeSidebarLines = this.sidebar.render(1);
+		if (probeSidebarLines.length === 0) {
+			return this.main.render(safeWidth);
+		}
+
+		if (safeWidth < this.minSideBySideWidth) {
+			const sidebarHeight = Math.min(8, Math.max(1, this.getViewportHeight()));
+			const sidebarLines = this.sidebar.render(safeWidth).slice(0, sidebarHeight);
+			return [...sidebarLines, ...this.main.render(safeWidth)];
+		}
+
+		const sidebarWidth = Math.min(
+			this.preferredSidebarWidth,
+			Math.max(this.minSidebarWidth, Math.floor(safeWidth * 0.28)),
+		);
+		const mainWidth = Math.max(1, safeWidth - sidebarWidth - this.gapWidth);
+		const mainLines = this.main.render(mainWidth);
+		const viewportHeight = Math.max(1, this.getViewportHeight());
+		const sidebarLines = this.sidebar.render(sidebarWidth).slice(0, viewportHeight);
+		const height = Math.max(mainLines.length, viewportHeight);
+		const sidebarStart = Math.max(0, height - viewportHeight);
+		const blankSidebarLine = theme.bg("customMessageBg", " ".repeat(sidebarWidth));
+		const lines: string[] = [];
+
+		for (let index = 0; index < height; index++) {
+			const rawMainLine = mainLines[index] ?? "";
+			if (isTerminalImageLine(rawMainLine)) {
+				lines.push(rawMainLine);
+				continue;
+			}
+			const mainLine = truncateToWidth(rawMainLine, mainWidth, "");
+			const paddedMainLine = mainLine + " ".repeat(Math.max(0, mainWidth - visibleWidth(mainLine)));
+			const sidebarLine =
+				index >= sidebarStart
+					? truncateToWidth(sidebarLines[index - sidebarStart] ?? blankSidebarLine, sidebarWidth, "")
+					: blankSidebarLine;
+			lines.push(`${paddedMainLine}${" ".repeat(this.gapWidth)}${sidebarLine}`);
+		}
+
+		return lines;
 	}
 }
 
@@ -238,7 +429,9 @@ export class InteractiveMode {
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
 	private fdPath: string | undefined;
+	private mainContainer: Container;
 	private editorContainer: Container;
+	private shellLayout: RightSidebarLayoutComponent;
 	private footer: FooterComponent;
 	private footerDataProvider: FooterDataProvider;
 	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
@@ -250,6 +443,8 @@ export class InteractiveMode {
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
 	private workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
+	private workingStartedAt: number | undefined = undefined;
+	private workingTimer: NodeJS.Timeout | undefined = undefined;
 	private readonly defaultWorkingMessage = "Working...";
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
@@ -270,6 +465,14 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
+
+	// RLM child-agent inspector, kept as a right sidebar instead of chat-flow content.
+	private childAgentInspector: ChildAgentInspectorComponent;
+	private childAgentDetail: ChildAgentDetailComponent;
+	private childAgentDetailOverlayHandle: OverlayHandle | undefined;
+	private childAgentSnapshots = new Map<string, RlmChildAgentSnapshot>();
+	private childAgentNodes: ChildAgentInspectorNode[] = [];
+	private childAgentDetailNodeId: string | undefined;
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -364,6 +567,23 @@ export class InteractiveMode {
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
+		this.childAgentInspector = new ChildAgentInspectorComponent(() => this.ui.terminal.rows);
+		this.childAgentInspector.onCancel = () => this.unfocusChildAgentInspector();
+		this.childAgentInspector.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
+		this.childAgentDetail = new ChildAgentDetailComponent(() => this.ui.terminal.rows, {
+			ui: this.ui,
+			getCwd: () => this.sessionManager.getCwd(),
+			getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
+			getToolOptions: () => ({
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+			}),
+			getMarkdownTheme: () => this.getMarkdownThemeWithSettings(),
+			getToolsExpanded: () => this.toolOutputExpanded,
+			getHideThinkingBlock: () => this.hideThinkingBlock,
+			getHiddenThinkingLabel: () => this.hiddenThinkingLabel,
+		});
+		this.childAgentDetail.onCancel = () => this.closeChildAgentDetail();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
 		this.keybindings = KeybindingsManager.create();
@@ -375,8 +595,14 @@ export class InteractiveMode {
 			autocompleteMaxVisible,
 		});
 		this.editor = this.defaultEditor;
+		this.mainContainer = new Container();
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
+		this.shellLayout = new RightSidebarLayoutComponent(
+			this.mainContainer,
+			this.childAgentInspector,
+			() => this.ui.terminal.rows,
+		);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
@@ -573,75 +799,63 @@ export class InteractiveMode {
 		// Add header container as first child
 		this.ui.addChild(this.headerContainer);
 
-		// Add header with keybindings from config (unless silenced)
+		// Brand splash: side-panel layout — white butterfly on the left, structured runtime
+		// metadata on the right. The mark carries the brand; no wordmark, no slogan.
+		// Cheatsheet behind --verbose. `quietStartup` suppresses the splash entirely
+		// (matches pi-mono's old behaviour for users who want a bare prompt).
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${this.version}`);
-
-			// Build startup instructions using keybinding hint helpers
+			// Verbose: include the full keybinding cheatsheet under the brand mark.
 			const hint = (keybinding: AppKeybinding, description: string) => keyHint(keybinding, description);
-
-			const expandedInstructions = [
-				hint("app.interrupt", "to interrupt"),
-				hint("app.clear", "to clear"),
-				rawKeyHint(`${keyText("app.clear")} twice`, "to exit"),
-				hint("app.exit", "to exit (empty)"),
-				hint("app.suspend", "to suspend"),
-				keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
-				hint("app.thinking.cycle", "to cycle thinking level"),
-				rawKeyHint(`${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`, "to cycle models"),
-				hint("app.model.select", "to select model"),
-				hint("app.tools.expand", "to expand tools"),
-				hint("app.thinking.toggle", "to expand thinking"),
-				hint("app.editor.external", "for external editor"),
-				rawKeyHint("/", "for commands"),
-				rawKeyHint("!", "to run bash"),
-				rawKeyHint("!!", "to run bash (no context)"),
-				hint("app.message.followUp", "to queue follow-up"),
-				hint("app.message.dequeue", "to edit all queued messages"),
-				hint("app.clipboard.pasteImage", "to paste image"),
-				rawKeyHint("drop files", "to attach"),
-			].join("\n");
-			const compactInstructions = [
-				hint("app.interrupt", "interrupt"),
-				rawKeyHint(`${keyText("app.clear")}/${keyText("app.exit")}`, "clear/exit"),
-				rawKeyHint("/", "commands"),
-				rawKeyHint("!", "bash"),
-				hint("app.tools.expand", "more"),
-			].join(theme.fg("muted", " · "));
-			const compactOnboarding = theme.fg(
-				"dim",
-				`Press ${keyText("app.tools.expand")} to show full startup help and loaded resources.`,
+			const verboseInstructions = this.options.verbose
+				? [
+						hint("app.interrupt", "to interrupt"),
+						hint("app.clear", "to clear"),
+						rawKeyHint(`${keyText("app.clear")} twice`, "to exit"),
+						hint("app.exit", "to exit (empty)"),
+						hint("app.suspend", "to suspend"),
+						keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
+						hint("app.thinking.cycle", "to cycle thinking level"),
+						rawKeyHint(
+							`${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`,
+							"to cycle models",
+						),
+						hint("app.model.select", "to select model"),
+						hint("app.tools.expand", "to expand tools"),
+						hint("app.thinking.toggle", "to expand thinking"),
+						hint("app.editor.external", "for external editor"),
+						rawKeyHint("/", "for commands"),
+						rawKeyHint("!", "to run bash"),
+						rawKeyHint("!!", "to run bash (no context)"),
+						hint("app.message.followUp", "to queue follow-up"),
+						hint("app.message.dequeue", "to edit all queued messages"),
+						hint("app.clipboard.pasteImage", "to paste image"),
+						rawKeyHint("drop files", "to attach"),
+					].join("\n")
+				: undefined;
+			this.builtInHeader = new BrandSplashHeader(
+				this.version,
+				() => this.session.state.model?.id,
+				() => this.sessionManager.getCwd(),
+				verboseInstructions,
 			);
-			const onboarding = theme.fg(
-				"dim",
-				`Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`,
-			);
-			this.builtInHeader = new ExpandableText(
-				() => `${logo}\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}`,
-				() => `${logo}\n${expandedInstructions}\n\n${onboarding}`,
-				this.getStartupExpansionState(),
-				1,
-				0,
-			);
-
-			// Setup UI layout
 			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
 			this.headerContainer.addChild(new Spacer(1));
 		} else {
-			// Minimal header when silenced
+			// Quiet startup: skip the splash and surrounding padding entirely.
 			this.builtInHeader = new Text("", 0, 0);
 			this.headerContainer.addChild(this.builtInHeader);
 		}
 
-		this.ui.addChild(this.chatContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.statusContainer);
+		this.mainContainer.addChild(this.chatContainer);
+		this.mainContainer.addChild(this.pendingMessagesContainer);
+		this.mainContainer.addChild(this.statusContainer);
 		this.renderWidgets(); // Initialize with default spacer
-		this.ui.addChild(this.widgetContainerAbove);
-		this.ui.addChild(this.editorContainer);
-		this.ui.addChild(this.widgetContainerBelow);
-		this.ui.addChild(this.footer);
+		this.mainContainer.addChild(this.widgetContainerAbove);
+		this.mainContainer.addChild(this.editorContainer);
+		this.mainContainer.addChild(this.widgetContainerBelow);
+		this.mainContainer.addChild(this.footer);
+		this.ui.addChild(this.shellLayout);
 		this.ui.setFocus(this.editor);
 
 		this.setupKeyHandlers();
@@ -1261,7 +1475,7 @@ export class InteractiveMode {
 		force?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
 	}): void {
-		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
+		const showListing = options?.force === true || this.options.verbose === true;
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 		if (!showListing && !showDiagnostics) {
 			return;
@@ -1464,11 +1678,7 @@ export class InteractiveMode {
 			commandContextActions: {
 				waitForIdle: () => this.session.agent.waitForIdle(),
 				newSession: async (options) => {
-					if (this.loadingAnimation) {
-						this.loadingAnimation.stop();
-						this.loadingAnimation = undefined;
-					}
-					this.statusContainer.clear();
+					this.stopWorkingLoader();
 					try {
 						const result = await this.runtimeHost.newSession(options);
 						if (!result.cancelled) {
@@ -1583,6 +1793,7 @@ export class InteractiveMode {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
+		this.resetChildAgentInspector();
 		this.renderInitialMessages();
 	}
 
@@ -1655,7 +1866,11 @@ export class InteractiveMode {
 	}
 
 	private getWorkingLoaderMessage(): string {
-		return this.workingMessage ?? this.defaultWorkingMessage;
+		const message = this.workingMessage ?? this.defaultWorkingMessage;
+		if (this.workingStartedAt === undefined) {
+			return message;
+		}
+		return `${message} ${this.formatWorkingElapsed(Date.now() - this.workingStartedAt)}`;
 	}
 
 	private createWorkingLoader(): Loader {
@@ -1668,7 +1883,42 @@ export class InteractiveMode {
 		);
 	}
 
+	private formatWorkingElapsed(elapsedMs: number): string {
+		const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+		if (totalSeconds < 60) {
+			return `${totalSeconds}s`;
+		}
+		const minutes = Math.floor(totalSeconds / 60);
+		const seconds = totalSeconds % 60;
+		return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+	}
+
+	private updateWorkingLoaderMessage(): void {
+		this.loadingAnimation?.setMessage(this.getWorkingLoaderMessage());
+	}
+
+	private startWorkingTimer(): void {
+		if (this.workingTimer) {
+			clearInterval(this.workingTimer);
+		}
+		this.workingTimer = setInterval(() => this.updateWorkingLoaderMessage(), 1000);
+		this.workingTimer.unref?.();
+	}
+
+	private startWorkingLoader(): void {
+		this.stopWorkingLoader();
+		this.workingStartedAt = Date.now();
+		this.loadingAnimation = this.createWorkingLoader();
+		this.statusContainer.addChild(this.loadingAnimation);
+		this.startWorkingTimer();
+	}
+
 	private stopWorkingLoader(): void {
+		if (this.workingTimer) {
+			clearInterval(this.workingTimer);
+			this.workingTimer = undefined;
+		}
+		this.workingStartedAt = undefined;
 		if (this.loadingAnimation) {
 			this.loadingAnimation.stop();
 			this.loadingAnimation = undefined;
@@ -1685,8 +1935,7 @@ export class InteractiveMode {
 		}
 		if (this.session.isStreaming && !this.loadingAnimation) {
 			this.statusContainer.clear();
-			this.loadingAnimation = this.createWorkingLoader();
-			this.statusContainer.addChild(this.loadingAnimation);
+			this.startWorkingLoader();
 		}
 		this.ui.requestRender();
 	}
@@ -1793,7 +2042,7 @@ export class InteractiveMode {
 		this.workingVisible = true;
 		this.setWorkingIndicator();
 		if (this.loadingAnimation) {
-			this.loadingAnimation.setMessage(`${this.defaultWorkingMessage} (${keyText("app.interrupt")} to interrupt)`);
+			this.updateWorkingLoaderMessage();
 		}
 		this.setHiddenThinkingLabel();
 	}
@@ -1943,7 +2192,7 @@ export class InteractiveMode {
 			setWorkingMessage: (message) => {
 				this.workingMessage = message;
 				if (this.loadingAnimation) {
-					this.loadingAnimation.setMessage(message ?? this.defaultWorkingMessage);
+					this.updateWorkingLoaderMessage();
 				}
 			},
 			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
@@ -2388,6 +2637,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
+		this.defaultEditor.onAction("app.subagents.focus", () => this.focusChildAgentInspector());
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
@@ -2481,6 +2731,11 @@ export class InteractiveMode {
 			}
 			if (text === "/session") {
 				this.handleSessionCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/usage") {
+				this.handleUsageCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -2648,8 +2903,7 @@ export class InteractiveMode {
 				}
 				this.stopWorkingLoader();
 				if (this.workingVisible) {
-					this.loadingAnimation = this.createWorkingLoader();
-					this.statusContainer.addChild(this.loadingAnimation);
+					this.startWorkingLoader();
 				}
 				this.ui.requestRender();
 				break;
@@ -2813,11 +3067,7 @@ export class InteractiveMode {
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}
-				if (this.loadingAnimation) {
-					this.loadingAnimation.stop();
-					this.loadingAnimation = undefined;
-					this.statusContainer.clear();
-				}
+				this.stopWorkingLoader();
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = undefined;
@@ -2847,7 +3097,7 @@ export class InteractiveMode {
 						: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
 				this.autoCompactionLoader = new Loader(
 					this.ui,
-					(spinner) => theme.fg("accent", spinner),
+					(spinner) => theme.fg("muted", spinner),
 					(text) => theme.fg("muted", text),
 					label,
 				);
@@ -2912,7 +3162,7 @@ export class InteractiveMode {
 					`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} to cancel)`;
 				this.retryLoader = new Loader(
 					this.ui,
-					(spinner) => theme.fg("warning", spinner),
+					(spinner) => theme.fg("muted", spinner),
 					(text) => theme.fg("muted", text),
 					retryMessage(Math.ceil(event.delayMs / 1000)),
 				);
@@ -2954,7 +3204,151 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 			}
+
+			case "rlm_child_update":
+				this.updateChildAgentInspector(event.child);
+				break;
+
+			case "goal_update":
+				this.showStatus(this.formatGoalStatus(event.goal));
+				break;
 		}
+	}
+
+	private formatGoalStatus(goal: GoalState): string {
+		const objective = goal.objective ? `: ${goal.objective}` : "";
+		const usage = formatGoalUsage(goal);
+		const usageText = usage ? ` (${usage})` : "";
+		switch (goal.status) {
+			case "idle":
+				return "No active goal";
+			case "active":
+				return `Pursuing goal${usageText}${objective}`;
+			case "paused":
+				return goal.lastReason ? `Goal paused: ${goal.lastReason}` : "Goal paused (/goal resume)";
+			case "budget_limited":
+				return goal.lastReason
+					? `Goal budget limited${usageText}: ${goal.lastReason}`
+					: `Goal budget limited${usageText}`;
+			case "complete":
+				return goal.lastReason ? `Goal complete: ${goal.lastReason}` : "Goal complete";
+			case "error":
+				return goal.lastError ? `Goal error: ${goal.lastError}` : "Goal error";
+			default: {
+				const _exhaustive: never = goal.status;
+				return _exhaustive;
+			}
+		}
+	}
+
+	private updateChildAgentInspector(child: RlmChildAgentSnapshot): void {
+		this.childAgentSnapshots.set(child.id, child);
+		this.childAgentNodes = this.buildChildAgentInspectorNodes();
+		this.childAgentInspector.setNodes(this.childAgentNodes);
+		if (this.childAgentDetailNodeId) {
+			this.childAgentDetail.setNode(this.findChildAgentInspectorNode(this.childAgentDetailNodeId));
+		}
+		this.ui.requestRender();
+	}
+
+	private resetChildAgentInspector(): void {
+		this.childAgentSnapshots.clear();
+		this.childAgentNodes = [];
+		this.childAgentInspector.setNodes([]);
+		this.childAgentDetail.setNode(undefined);
+		this.childAgentDetailNodeId = undefined;
+		this.childAgentDetailOverlayHandle?.hide();
+		this.childAgentDetailOverlayHandle = undefined;
+	}
+
+	private openChildAgentDetail(nodeId: string): void {
+		const node = this.findChildAgentInspectorNode(nodeId);
+		if (!node) {
+			return;
+		}
+		this.childAgentDetailNodeId = nodeId;
+		this.childAgentDetail.setNode(node);
+		this.childAgentDetailOverlayHandle?.hide();
+		this.childAgentDetailOverlayHandle = this.ui.showOverlay(this.childAgentDetail, {
+			width: "100%",
+			anchor: "top-left",
+			margin: 0,
+			scrollback: true,
+		});
+		this.ui.requestRender();
+	}
+
+	private focusChildAgentInspector(): void {
+		if (this.childAgentSnapshots.size === 0) {
+			return;
+		}
+		this.ui.setFocus(this.childAgentInspector);
+		this.ui.requestRender();
+	}
+
+	private unfocusChildAgentInspector(): void {
+		this.closeChildAgentDetail(false);
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
+	}
+
+	private closeChildAgentDetail(focusInspector = true): void {
+		this.childAgentDetailOverlayHandle?.hide();
+		this.childAgentDetailOverlayHandle = undefined;
+		this.childAgentDetailNodeId = undefined;
+		this.childAgentDetail.setNode(undefined);
+		if (focusInspector && this.childAgentSnapshots.size > 0) {
+			this.ui.setFocus(this.childAgentInspector);
+		} else {
+			this.ui.setFocus(this.editor);
+		}
+		this.ui.requestRender();
+	}
+
+	private buildChildAgentInspectorNodes(): ChildAgentInspectorNode[] {
+		const childrenByParent = new Map<string | undefined, RlmChildAgentSnapshot[]>();
+		for (const child of this.childAgentSnapshots.values()) {
+			const siblings = childrenByParent.get(child.parentId) ?? [];
+			siblings.push(child);
+			childrenByParent.set(child.parentId, siblings);
+		}
+
+		const build = (child: RlmChildAgentSnapshot): ChildAgentInspectorNode => ({
+			id: child.id,
+			label: child.label,
+			status: child.status,
+			durationMs: child.durationMs,
+			answerPreview: child.answerPreview,
+			sessionDir: child.sessionDir,
+			transcript: child.transcript.map(
+				(line): ChildAgentTranscriptLine => ({
+					role: line.role,
+					text: line.text,
+				}),
+			),
+			structuredTranscript: child.structuredTranscript?.map(
+				(entry): ChildAgentStructuredTranscriptEntry => ({ ...entry }),
+			),
+			children: childrenByParent.get(child.id)?.map(build),
+		});
+
+		return (childrenByParent.get(undefined) ?? []).map(build);
+	}
+
+	private findChildAgentInspectorNode(nodeId: string): ChildAgentInspectorNode | undefined {
+		const visit = (nodes: readonly ChildAgentInspectorNode[]): ChildAgentInspectorNode | undefined => {
+			for (const node of nodes) {
+				if (node.id === nodeId) {
+					return node;
+				}
+				const child = visit(node.children ?? []);
+				if (child) {
+					return child;
+				}
+			}
+			return undefined;
+		};
+		return visit(this.childAgentNodes);
 	}
 
 	/** Extract text content from a user message */
@@ -3368,11 +3762,14 @@ export class InteractiveMode {
 	}
 
 	private updateEditorBorderColor(): void {
+		// Bash mode keeps a green accent. Otherwise the input surface stays neutral so the
+		// focus indicator doesn't fight the splash.
 		if (this.isBashMode) {
 			this.editor.borderColor = theme.getBashModeBorderColor();
+			this.editor.backgroundColor = (str: string) => theme.bg("toolSuccessBg", str);
 		} else {
-			const level = this.session.thinkingLevel || "off";
-			this.editor.borderColor = theme.getThinkingBorderColor(level);
+			this.editor.borderColor = (str: string) => theme.fg("text", str);
+			this.editor.backgroundColor = (str: string) => theme.bg("userMessageBg", str);
 		}
 		this.ui.requestRender();
 	}
@@ -3768,7 +4165,7 @@ export class InteractiveMode {
 					transport: this.settingsManager.getTransport(),
 					thinkingLevel: this.session.thinkingLevel,
 					availableThinkingLevels: this.session.getAvailableThinkingLevels(),
-					currentTheme: this.settingsManager.getTheme() || "dark",
+					currentTheme: this.settingsManager.getTheme() || "prime",
 					availableThemes: getAvailableThemes(),
 					hideThinkingBlock: this.hideThinkingBlock,
 					collapseChangelog: this.settingsManager.getCollapseChangelog(),
@@ -4232,7 +4629,7 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Spacer(1));
 						summaryLoader = new Loader(
 							this.ui,
-							(spinner) => theme.fg("accent", spinner),
+							(spinner) => theme.fg("muted", spinner),
 							(text) => theme.fg("muted", text),
 							`Summarizing branch... (${keyText("app.interrupt")} to cancel)`,
 						);
@@ -4329,11 +4726,7 @@ export class InteractiveMode {
 		sessionPath: string,
 		options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
-		this.statusContainer.clear();
+		this.stopWorkingLoader();
 		try {
 			const result = await this.runtimeHost.switchSession(sessionPath, {
 				withSession: options?.withSession,
@@ -4912,11 +5305,7 @@ export class InteractiveMode {
 		}
 
 		try {
-			if (this.loadingAnimation) {
-				this.loadingAnimation.stop();
-				this.loadingAnimation = undefined;
-			}
-			this.statusContainer.clear();
+			this.stopWorkingLoader();
 			const result = await this.runtimeHost.importFromJsonl(inputPath);
 			if (result.cancelled) {
 				this.showStatus("Import cancelled");
@@ -5093,6 +5482,21 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}\n`;
 		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
 		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
+		info += theme.fg("dim", "Use /usage for token, cost, and context usage.");
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleUsageCommand(): void {
+		const stats = this.session.getSessionStats();
+		const model = this.session.model;
+
+		let info = `${theme.bold("Usage")}\n\n`;
+		if (model) {
+			info += `${theme.fg("dim", "Model:")} ${model.provider}/${model.id}\n\n`;
+		}
 		info += `${theme.bold("Tokens")}\n`;
 		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
 		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
@@ -5106,11 +5510,22 @@ export class InteractiveMode {
 
 		if (stats.cost > 0) {
 			info += `\n${theme.bold("Cost")}\n`;
-			info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}`;
+			info += `${theme.fg("dim", "Total:")} $${stats.cost.toFixed(4)}\n`;
+		}
+
+		const contextUsage = stats.contextUsage;
+		if (contextUsage) {
+			info += `\n${theme.bold("Context")}\n`;
+			if (contextUsage.tokens === null || contextUsage.percent === null) {
+				info += `${theme.fg("dim", "Current:")} unknown after compaction\n`;
+			} else {
+				const percent = `${Math.round(contextUsage.percent * 10) / 10}%`;
+				info += `${theme.fg("dim", "Current:")} ${contextUsage.tokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} (${percent})\n`;
+			}
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.chatContainer.addChild(new Text(info.trimEnd(), 1, 0));
 		this.ui.requestRender();
 	}
 
@@ -5280,11 +5695,7 @@ export class InteractiveMode {
 	}
 
 	private async handleClearCommand(): Promise<void> {
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
-		this.statusContainer.clear();
+		this.stopWorkingLoader();
 		try {
 			const result = await this.runtimeHost.newSession();
 			if (result.cancelled) {
@@ -5452,11 +5863,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
-		this.statusContainer.clear();
+		this.stopWorkingLoader();
 
 		try {
 			await this.session.compact(customInstructions);
@@ -5470,10 +5877,7 @@ export class InteractiveMode {
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
+		this.stopWorkingLoader();
 		this.clearExtensionTerminalInputListeners();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();

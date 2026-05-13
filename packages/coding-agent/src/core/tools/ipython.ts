@@ -2,14 +2,50 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.js";
-import { KernelManager, resolveKernelPython } from "../kernel/index.js";
+import { KernelManager } from "../kernel/index.js";
+import type {
+	RlmBackgroundRunHandler,
+	RlmBackgroundRunStatusHandler,
+	RlmBackgroundRunWaitHandler,
+	RlmRunHandler,
+} from "../rlm-runtime.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
+
+const RLM_BOOTSTRAP_CODE = `
+try:
+    import rlm as _prime_agent_rlm_module
+    rlm = _prime_agent_rlm_module.rlm
+except Exception as _prime_agent_rlm_error:
+    _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
+
+    class _PrimeAgentMissingRlm:
+        async def run(self, prompt, **kwargs):
+            raise RuntimeError(
+                "prime-agent-runtime is not installed in this IPython kernel. "
+                "Remove ~/.prime/agent/kernel-venv so prime-agent can rebuild it, or set "
+                "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
+                f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
+            )
+
+        async def background(self, prompt, **kwargs):
+            raise RuntimeError(
+                "prime-agent-runtime is not installed in this IPython kernel. "
+                "Remove ~/.prime/agent/kernel-venv so prime-agent can rebuild it, or set "
+                "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
+                f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
+            )
+
+        async def __call__(self, prompt, **kwargs):
+            return await self.run(prompt, **kwargs)
+
+    rlm = _PrimeAgentMissingRlm()
+`.trim();
 
 const ipythonSchema = Type.Object({
 	code: Type.String({
 		description:
-			"Python code to execute. State (variables, imports, loaded data) persists across calls. " +
-			"Shell commands available via `!cmd` (single-line) or `%%bash` (multi-line cell).",
+			"Python or IPython shell code to execute. State (variables, imports, loaded data) persists across calls. " +
+			"Prefer `!cmd` for ordinary single-line shell commands and `%%bash` for multi-line shell scripts.",
 	}),
 });
 
@@ -22,8 +58,16 @@ export interface IpythonToolDetails {
 }
 
 export interface IpythonToolOptions {
-	/** Defaults to {@link resolveKernelPython}. Must have `ipykernel` installed. */
+	/** Python override. Must have `ipykernel` installed. */
 	python?: string;
+	env?: Record<string, string>;
+	sessionId?: string;
+	rlmRunHandler?: RlmRunHandler;
+	rlmBackgroundRunHandler?: RlmBackgroundRunHandler;
+	rlmBackgroundStatusHandler?: RlmBackgroundRunStatusHandler;
+	rlmBackgroundWaitHandler?: RlmBackgroundRunWaitHandler;
+	/** Filled after the first kernel start so the owning session can restart it after compaction. */
+	kernelManagerRef?: { current?: KernelManager };
 }
 
 export function createIpythonToolDefinition(
@@ -34,18 +78,32 @@ export function createIpythonToolDefinition(
 	// same in-flight startup instead of creating two managers or skipping the
 	// not-yet-finished start().
 	let managerPromise: Promise<KernelManager> | undefined;
+	if (options?.kernelManagerRef) {
+		options.kernelManagerRef.current = undefined;
+	}
 
 	function getManager(): Promise<KernelManager> {
 		if (!managerPromise) {
 			managerPromise = (async () => {
-				const python = options?.python ?? resolveKernelPython();
-				if (!python) {
-					throw new Error(
-						"No Python interpreter with `ipykernel` was found. Run `./scripts/setup-kernel-venv.sh` from the repo root, or set PRIME_AGENT_KERNEL_PYTHON to point at a python that has ipykernel installed.",
-					);
-				}
-				const m = new KernelManager({ python, cwd });
+				const m = new KernelManager({
+					python: options?.python,
+					cwd,
+					env: options?.env,
+					sessionId: options?.sessionId,
+					rlmRunHandler: options?.rlmRunHandler,
+					rlmBackgroundRunHandler: options?.rlmBackgroundRunHandler,
+					rlmBackgroundStatusHandler: options?.rlmBackgroundStatusHandler,
+					rlmBackgroundWaitHandler: options?.rlmBackgroundWaitHandler,
+				});
 				await m.start();
+				const bootstrap = await m.execute(RLM_BOOTSTRAP_CODE);
+				if (bootstrap.status !== "ok") {
+					const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
+					throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+				}
+				if (options?.kernelManagerRef) {
+					options.kernelManagerRef.current = m;
+				}
 				return m;
 			})();
 		}
@@ -56,10 +114,11 @@ export function createIpythonToolDefinition(
 		name: "ipython",
 		label: "ipython",
 		description:
-			"Execute Python code in a persistent IPython kernel. Variables, imports, and loaded data " +
-			"persist across calls. Shell commands available inside Python via `!cmd` (single-line) " +
-			"or `%%bash` (multi-line cells).",
-		promptSnippet: "ipython - execute Python in a persistent kernel; state survives across calls",
+			"Execute Python and shell commands in a persistent IPython kernel. Variables, imports, and loaded data " +
+			"persist across calls. Prefer `!cmd` for ordinary single-line shell commands and `%%bash` " +
+			"for multi-line shell scripts.",
+		promptSnippet:
+			"ipython - execute Python and shell commands in a persistent kernel; prefer `!cmd` and `%%bash` for shell work",
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
 		executionMode: "sequential",
 		parameters: ipythonSchema,

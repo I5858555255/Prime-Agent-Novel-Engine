@@ -13,17 +13,30 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
-import type {
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import {
 	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	ThinkingLevel,
+	type AgentContext,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type GetContinuationMessagesContext,
+	type ShouldStopAfterTurnContext,
+	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	ImageContent,
+	Message,
+	Model,
+	TextContent,
+	Usage,
+	UserMessage,
+} from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -76,12 +89,40 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import {
+	createGoalContextMessage,
+	createGoalToolDefinitions,
+	emptyGoalState,
+	GOAL_CONTEXT_CUSTOM_TYPE,
+	GOAL_STATE_CUSTOM_TYPE,
+	GOAL_TOOL_NAMES,
+	type GoalState,
+	type GoalStatus,
+	goalTokenDeltaForUsage,
+	isPersistedGoalState,
+	normalizeGoalState,
+	UPDATE_GOAL_TOOL_NAME,
+	validateGoalBudget,
+	validateGoalObjective,
+} from "./goals.js";
+import type { KernelManager } from "./kernel/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
-import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.js";
+import type {
+	RlmBackgroundRunStartResult,
+	RlmBackgroundRunStatusResult,
+	RlmRunResult,
+	RlmUsage,
+} from "./rlm-runtime.js";
+import type { BranchSummaryEntry, CompactionEntry, SessionMessageEntry } from "./session-manager.js";
+import {
+	CURRENT_SESSION_VERSION,
+	getLatestCompactionEntry,
+	type SessionHeader,
+	SessionManager,
+} from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
@@ -89,6 +130,9 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions } from "./tools/index.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
+import { cloneUsage, emptyUsage } from "./usage.js";
+
+export type { GoalState, GoalStatus } from "./goals.js";
 
 // ============================================================================
 // Skill Block Parsing
@@ -117,6 +161,62 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	};
 }
 
+export type RlmChildAgentStatus = "queued" | "running" | "done" | "error" | "cancelled";
+
+export interface RlmChildAgentTranscriptLine {
+	role: "user" | "assistant" | "tool" | "system";
+	text: string;
+}
+
+export interface RlmChildAgentToolResult {
+	content: (TextContent | ImageContent)[];
+	details?: unknown;
+	isError: boolean;
+}
+
+export interface RlmChildAgentMessageTranscriptEntry {
+	type: "message";
+	role: "user" | "assistant";
+	text: string;
+	message: UserMessage | AssistantMessage;
+}
+
+export interface RlmChildAgentToolTranscriptEntry {
+	type: "tool";
+	role: "tool";
+	text: string;
+	toolCallId: string;
+	toolName: string;
+	args: unknown;
+	result?: RlmChildAgentToolResult;
+	isPartial: boolean;
+	executionStarted: boolean;
+	argsComplete: boolean;
+}
+
+export interface RlmChildAgentSystemTranscriptEntry {
+	type: "system";
+	role: "system";
+	text: string;
+}
+
+export type RlmChildAgentStructuredTranscriptEntry =
+	| RlmChildAgentMessageTranscriptEntry
+	| RlmChildAgentToolTranscriptEntry
+	| RlmChildAgentSystemTranscriptEntry;
+
+export interface RlmChildAgentSnapshot {
+	id: string;
+	parentId?: string;
+	label: string;
+	status: RlmChildAgentStatus;
+	durationMs?: number;
+	answerPreview?: string;
+	sessionDir: string;
+	transcript: readonly RlmChildAgentTranscriptLine[];
+	structuredTranscript?: readonly RlmChildAgentStructuredTranscriptEntry[];
+}
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
@@ -137,7 +237,9 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
+	| { type: "goal_update"; goal: GoalState };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -163,6 +265,10 @@ export interface AgentSessionConfig {
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
+	/** Whether the built-in long-running goal tools are exposed. Default: true. */
+	includeGoalTools?: boolean;
+	/** Whether goal tools are automatically active without an explicit goal. Default: true. */
+	autoActivateGoalTools?: boolean;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -174,6 +280,14 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Current RLM recursion depth. Root sessions default to RLM_DEPTH or 0. */
+	rlmDepth?: number;
+	/** Maximum RLM recursion depth. Defaults to RLM_MAX_DEPTH or 1. */
+	rlmMaxDepth?: number;
+	/** Directory exposed to the kernel as RLM_SESSION_DIR. */
+	rlmSessionDir?: string;
+	/** Node id for this session when it is itself an RLM child. */
+	rlmParentNodeId?: string;
 }
 
 export interface ExtensionBindings {
@@ -205,7 +319,7 @@ export interface ModelCycleResult {
 	isScoped: boolean;
 }
 
-/** Session statistics for /session command */
+/** Session statistics for /session and /usage commands */
 export interface SessionStats {
 	sessionFile: string | undefined;
 	sessionId: string;
@@ -230,12 +344,303 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+type GoalSlashCommand =
+	| { kind: "status" }
+	| { kind: "clear" }
+	| { kind: "pause" }
+	| { kind: "resume" }
+	| { kind: "start"; objective: string; tokenBudget?: number };
+
+interface RlmChildRun {
+	id: string;
+	prompt: string;
+	sessionDir: string;
+	status: RlmChildAgentStatus;
+	completionPolicy: BackgroundRlmCompletionPolicy;
+	result?: RlmRunResult;
+	error?: string;
+	task?: Promise<RlmRunResult>;
+	waiters: Set<() => void>;
+	abort: () => void;
+}
+
+type BackgroundRlmCompletionPolicy = "passive" | "wake" | "silent";
+
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+const BACKGROUND_RLM_COMPLETION_DEBOUNCE_MS = 250;
+
+function noopRlmChildAbort(): void {}
+
+function parseBackgroundRlmCompletionPolicy(value: unknown): BackgroundRlmCompletionPolicy {
+	if (value === undefined) {
+		return "passive";
+	}
+	if (value === true) {
+		return "wake";
+	}
+	if (value === false || value === null) {
+		return "silent";
+	}
+	if (value === "passive" || value === "wake" || value === "silent") {
+		return value;
+	}
+	throw new Error("rlm.background notify must be 'passive', 'wake', 'silent', true, or false");
+}
+
+function extractBackgroundRlmOptions(kwargs: Record<string, unknown>): {
+	childKwargs: Record<string, unknown>;
+	completionPolicy: BackgroundRlmCompletionPolicy;
+} {
+	const { notify, ...childKwargs } = kwargs;
+	return {
+		childKwargs,
+		completionPolicy: parseBackgroundRlmCompletionPolicy(notify),
+	};
+}
+
+function parseDepth(value: string | undefined, fallback: number, name: string): number {
+	if (value === undefined || value === "") {
+		return fallback;
+	}
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed < 0) {
+		throw new Error(`${name} must be a non-negative integer`);
+	}
+	return parsed;
+}
+
+function parseGoalBudgetValue(value: string): number {
+	if (!/^[1-9]\d*$/.test(value)) {
+		throw new Error("Goal token budget must be a positive integer.");
+	}
+	const budget = validateGoalBudget(Number(value));
+	if (budget === undefined) {
+		throw new Error("Goal token budget must be a positive integer.");
+	}
+	return budget;
+}
+
+function emptyRlmUsage(): RlmUsage {
+	return { prompt_tokens: 0, completion_tokens: 0 };
+}
+
+function addUsage(total: RlmUsage, usage: Usage): void {
+	total.prompt_tokens += usage.input + usage.cacheRead + usage.cacheWrite;
+	total.completion_tokens += usage.output;
+}
+
+function addAssistantUsage(total: Usage, usage: Usage): void {
+	total.input += usage.input;
+	total.output += usage.output;
+	total.cacheRead += usage.cacheRead;
+	total.cacheWrite += usage.cacheWrite;
+	total.totalTokens += usage.totalTokens;
+	total.cost.input += usage.cost.input;
+	total.cost.output += usage.cost.output;
+	total.cost.cacheRead += usage.cost.cacheRead;
+	total.cost.cacheWrite += usage.cost.cacheWrite;
+	total.cost.total += usage.cost.total;
+}
+
+function compactRlmText(text: string, maxLength = 160): string {
+	const compact = text.replace(/\s+/g, " ").trim();
+	if (compact.length <= maxLength) {
+		return compact;
+	}
+	return `${compact.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function readTextBlocks(content: string | Array<{ type: string; text?: string }>): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	return content
+		.filter((block) => block.type === "text" && typeof block.text === "string")
+		.map((block) => block.text ?? "")
+		.join("\n");
+}
+
+function readAssistantText(message: AssistantMessage): string {
+	return message.content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+}
+
+function readAssistantThinking(message: AssistantMessage): string {
+	return message.content
+		.filter((block) => block.type === "thinking")
+		.map((block) => block.thinking)
+		.join("");
+}
+
+function cloneTextImageContentBlock(block: TextContent | ImageContent): TextContent | ImageContent {
+	if (block.type === "text") {
+		return {
+			type: "text",
+			text: block.text,
+			...(block.textSignature !== undefined ? { textSignature: block.textSignature } : {}),
+		};
+	}
+	return {
+		type: "image",
+		data: block.data,
+		mimeType: block.mimeType,
+	};
+}
+
+function cloneUserMessage(message: UserMessage): UserMessage {
+	return {
+		role: "user",
+		content:
+			typeof message.content === "string"
+				? message.content
+				: message.content.map((block) => cloneTextImageContentBlock(block)),
+		timestamp: message.timestamp,
+	};
+}
+
+function cloneAssistantContentBlock(block: AssistantMessage["content"][number]): AssistantMessage["content"][number] {
+	switch (block.type) {
+		case "text":
+			return {
+				type: "text",
+				text: block.text,
+				...(block.textSignature !== undefined ? { textSignature: block.textSignature } : {}),
+			};
+		case "thinking":
+			return {
+				type: "thinking",
+				thinking: block.thinking,
+				...(block.thinkingSignature !== undefined ? { thinkingSignature: block.thinkingSignature } : {}),
+				...(block.redacted !== undefined ? { redacted: block.redacted } : {}),
+			};
+		case "toolCall":
+			return {
+				type: "toolCall",
+				id: block.id,
+				name: block.name,
+				arguments: { ...block.arguments },
+				...(block.thoughtSignature !== undefined ? { thoughtSignature: block.thoughtSignature } : {}),
+			};
+	}
+}
+
+function cloneAssistantMessage(message: AssistantMessage): AssistantMessage {
+	return {
+		role: "assistant",
+		content: message.content.map((block) => cloneAssistantContentBlock(block)),
+		api: message.api,
+		provider: message.provider,
+		model: message.model,
+		...(message.responseModel !== undefined ? { responseModel: message.responseModel } : {}),
+		...(message.responseId !== undefined ? { responseId: message.responseId } : {}),
+		...(message.diagnostics !== undefined
+			? { diagnostics: message.diagnostics.map((diagnostic) => ({ ...diagnostic })) }
+			: {}),
+		usage: cloneUsage(message.usage),
+		stopReason: message.stopReason,
+		...(message.errorMessage !== undefined ? { errorMessage: message.errorMessage } : {}),
+		timestamp: message.timestamp,
+	};
+}
+
+function createAssistantTextMessage(text: string, model: Model<any>, timestamp = Date.now()): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: emptyUsage(),
+		stopReason: "stop",
+		timestamp,
+	};
+}
+
+function cloneUnknownTextImageContentBlock(block: unknown): TextContent | ImageContent | undefined {
+	if (!block || typeof block !== "object" || !("type" in block)) {
+		return undefined;
+	}
+	const typedBlock = block as { type?: unknown; text?: unknown; data?: unknown; mimeType?: unknown };
+	if (typedBlock.type === "text" && typeof typedBlock.text === "string") {
+		return { type: "text", text: typedBlock.text };
+	}
+	if (typedBlock.type === "image" && typeof typedBlock.data === "string" && typeof typedBlock.mimeType === "string") {
+		return { type: "image", data: typedBlock.data, mimeType: typedBlock.mimeType };
+	}
+	return undefined;
+}
+
+function cloneRlmToolResult(result: unknown, isError: boolean): RlmChildAgentToolResult | undefined {
+	if (!result || typeof result !== "object" || !("content" in result)) {
+		return undefined;
+	}
+	const resultRecord = result as { content?: unknown; details?: unknown };
+	if (!Array.isArray(resultRecord.content)) {
+		return undefined;
+	}
+	const content: (TextContent | ImageContent)[] = [];
+	for (const block of resultRecord.content) {
+		const cloned = cloneUnknownTextImageContentBlock(block);
+		if (cloned) {
+			content.push(cloned);
+		}
+	}
+	return {
+		content,
+		...(resultRecord.details !== undefined ? { details: resultRecord.details } : {}),
+		isError,
+	};
+}
+
+function readToolResultText(result: unknown): string | undefined {
+	if (!result || typeof result !== "object" || !("content" in result)) {
+		return undefined;
+	}
+	const content = (result as { content?: unknown }).content;
+	if (!Array.isArray(content)) {
+		return undefined;
+	}
+	const text = content
+		.filter(
+			(block): block is { type: string; text: string } =>
+				!!block &&
+				typeof block === "object" &&
+				"type" in block &&
+				"text" in block &&
+				block.type === "text" &&
+				typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
+	return text.trim() ? text : undefined;
+}
+
+function formatRlmToolArgs(args: unknown): string | undefined {
+	try {
+		const text = JSON.stringify(args);
+		return text && text !== "{}" ? compactRlmText(text, 96) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function attributeChildUsage(parentUsage: Usage, childUsage: Usage): void {
+	const parentContextTokens =
+		parentUsage.totalTokens ||
+		parentUsage.input + parentUsage.output + parentUsage.cacheRead + parentUsage.cacheWrite;
+	// Recursive children are launched from an assistant tool call, so the parent assistant
+	// message carries their billable usage for session-level cost totals.
+	addAssistantUsage(parentUsage, childUsage);
+	// Child work affects session-level billable totals, not the parent's model-facing context size.
+	parentUsage.totalTokens = parentContextTokens;
+}
 
 // ============================================================================
 // AgentSession Class
@@ -259,6 +664,11 @@ export class AgentSession {
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
+
+	private _goalState: GoalState = emptyGoalState();
+	private _goalAccountingStartedAt: number | undefined = undefined;
+	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
+	private _goalAbortInProgress = false;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -289,6 +699,8 @@ export class AgentSession {
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
+	private _includeGoalTools: boolean;
+	private _autoActivateGoalTools: boolean;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -296,6 +708,16 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _disposed = false;
+	private _ipythonKernelManagerRef: { current?: KernelManager } = {};
+	private _rlmDepth: number;
+	private _rlmMaxDepth: number;
+	private _rlmSessionDir?: string;
+	private _rlmParentNodeId?: string;
+	private _backgroundRlmRuns = new Map<string, RlmChildRun>();
+	private _pendingBackgroundRlmCompletions: RlmChildRun[] = [];
+	private _backgroundRlmCompletionTimer?: ReturnType<typeof globalThis.setTimeout>;
+	private _backgroundRlmQueueDrainPromise?: Promise<void>;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -322,13 +744,25 @@ export class AgentSession {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
+		this._includeGoalTools = config.includeGoalTools ?? true;
+		this._autoActivateGoalTools = config.autoActivateGoalTools ?? true;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
+		this._rlmMaxDepth = config.rlmMaxDepth ?? parseDepth(process.env.RLM_MAX_DEPTH, 1, "RLM_MAX_DEPTH");
+		this._rlmSessionDir = config.rlmSessionDir;
+		this._rlmParentNodeId = config.rlmParentNodeId;
+		this._goalState = this._loadPersistedGoalState();
+		if (this._goalState.status === "active") {
+			this._goalAccountingStartedAt = Date.now();
+		}
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentTurnHook();
+		this._installAgentContinuationHook();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -427,6 +861,14 @@ export class AgentSession {
 		};
 	}
 
+	private _installAgentContinuationHook(): void {
+		this.agent.getContinuationMessages = (context, signal) => this._getGoalContinuationMessages(context, signal);
+	}
+
+	private _installAgentTurnHook(): void {
+		this.agent.shouldStopAfterTurn = (context) => this._shouldStopAfterGoalTurn(context);
+	}
+
 	// =========================================================================
 	// Event Subscription
 	// =========================================================================
@@ -444,6 +886,461 @@ export class AgentSession {
 			steering: [...this._steeringMessages],
 			followUp: [...this._followUpMessages],
 		});
+	}
+
+	private _emitGoalUpdate(): void {
+		this._emit({ type: "goal_update", goal: this.goalState });
+	}
+
+	private _loadPersistedGoalState(): GoalState {
+		const branch = this.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (
+				entry.type === "custom" &&
+				entry.customType === GOAL_STATE_CUSTOM_TYPE &&
+				isPersistedGoalState(entry.data)
+			) {
+				return normalizeGoalState(entry.data);
+			}
+		}
+		return emptyGoalState();
+	}
+
+	private _reloadGoalStateFromBranch(): void {
+		this._goalState = this._loadPersistedGoalState();
+		this._goalAccountingStartedAt = this._goalState.status === "active" ? Date.now() : undefined;
+		this._emitGoalUpdate();
+	}
+
+	private _persistGoalState(goal: GoalState): void {
+		this.sessionManager.appendCustomEntry(GOAL_STATE_CUSTOM_TYPE, goal);
+	}
+
+	private _setGoalState(next: GoalState, options: { persist?: boolean } = {}): void {
+		const normalized = normalizeGoalState({
+			...next,
+			updatedAt: Date.now(),
+		});
+		this._goalState = normalized;
+		if (normalized.status === "active") {
+			this._goalAccountingStartedAt ??= Date.now();
+		} else {
+			this._goalAccountingStartedAt = undefined;
+		}
+		if (options.persist !== false) {
+			this._persistGoalState(normalized);
+		}
+		this._emitGoalUpdate();
+	}
+
+	private _goalWithCurrentWallClock(now = Date.now()): GoalState {
+		if (this._goalState.status !== "active" || !this._goalAccountingStartedAt) {
+			return this._goalState;
+		}
+		const elapsedSeconds = Math.floor((now - this._goalAccountingStartedAt) / 1000);
+		if (elapsedSeconds <= 0) {
+			return this._goalState;
+		}
+		return {
+			...this._goalState,
+			timeUsedSeconds: this._goalState.timeUsedSeconds + elapsedSeconds,
+		};
+	}
+
+	private _goalWithAccountedWallClock(): GoalState {
+		const now = Date.now();
+		const goal = this._goalWithCurrentWallClock(now);
+		if (goal !== this._goalState) {
+			this._goalAccountingStartedAt = now;
+		}
+		return goal;
+	}
+
+	private _clearQueuedGoalContexts(): void {
+		this.agent.removeQueuedMessages(
+			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_CUSTOM_TYPE,
+		);
+	}
+
+	private _startGoal(objectiveText: string, tokenBudget: number | undefined): GoalState {
+		const objective = validateGoalObjective(objectiveText);
+		const budget = validateGoalBudget(tokenBudget);
+		const now = Date.now();
+		const goal: GoalState = {
+			active: true,
+			status: "active",
+			goalId: randomUUID(),
+			objective,
+			tokenBudget: budget,
+			tokensUsed: 0,
+			timeUsedSeconds: 0,
+			continuationsUsed: 0,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this._goalAccountingStartedAt = now;
+		this._setGoalState(goal);
+		return this._goalState;
+	}
+
+	private _clearGoal(): void {
+		this._clearQueuedGoalContexts();
+		this._setGoalState(emptyGoalState());
+	}
+
+	private _pauseGoal(reason = "Paused by user"): void {
+		this._clearQueuedGoalContexts();
+		if (this._goalState.status !== "active") {
+			this._emitGoalUpdate();
+			return;
+		}
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
+			active: false,
+			status: "paused",
+			lastReason: reason,
+			lastError: undefined,
+		});
+	}
+
+	private async _resumeGoal(): Promise<void> {
+		if (!this._goalState.objective) {
+			this._emitGoalUpdate();
+			return;
+		}
+		if (this._goalState.status !== "paused" && this._goalState.status !== "budget_limited") {
+			this._emitGoalUpdate();
+			return;
+		}
+		const exhausted =
+			this._goalState.tokenBudget !== undefined && this._goalState.tokensUsed >= this._goalState.tokenBudget;
+		const nextStatus: GoalStatus = exhausted ? "budget_limited" : "active";
+		this._setGoalState({
+			...this._goalState,
+			active: nextStatus === "active",
+			status: nextStatus,
+			lastReason: exhausted ? "Goal token budget already reached" : undefined,
+			lastError: undefined,
+		});
+		if (nextStatus === "active") {
+			await this._runOrQueueGoalContext("continuation");
+		}
+	}
+
+	private _finishGoalWithError(errorMessage: string): void {
+		if (!this._goalState.objective || this._goalState.status !== "active") {
+			return;
+		}
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
+			active: false,
+			status: "error",
+			lastReason: errorMessage,
+			lastError: errorMessage,
+		});
+	}
+
+	private _finishGoalForTerminalAssistantMessage(message: AssistantMessage): void {
+		if (this._goalState.status !== "active") {
+			return;
+		}
+
+		if (message.stopReason === "aborted") {
+			this._goalAbortInProgress = false;
+			return;
+		}
+
+		if (message.stopReason === "error") {
+			if (this._goalAbortInProgress) {
+				this._goalAbortInProgress = false;
+				return;
+			}
+			this._finishGoalWithError(message.errorMessage || "Assistant response failed");
+		}
+	}
+
+	private _stopGoalContinuationForTerminalMessage(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error" && message.stopReason !== "aborted") {
+			return false;
+		}
+		try {
+			this._finishGoalForTerminalAssistantMessage(message);
+		} catch {
+			// Goal hooks must not reject; listener failures should not crash the agent loop.
+		}
+		return true;
+	}
+
+	private _parseGoalSlashCommand(text: string): GoalSlashCommand | undefined {
+		if (text !== "/goal" && !text.startsWith("/goal ")) {
+			return undefined;
+		}
+
+		const rest = text.slice("/goal".length).trim();
+		const normalized = rest.toLowerCase();
+		if (!rest || normalized === "status") {
+			return { kind: "status" };
+		}
+		if (normalized === "clear" || normalized === "stop") {
+			return { kind: "clear" };
+		}
+		if (normalized === "pause") {
+			return { kind: "pause" };
+		}
+		if (normalized === "resume") {
+			return { kind: "resume" };
+		}
+
+		let tokenBudget: number | undefined;
+		let objective = rest;
+		const firstToken = rest.split(/\s+/, 1)[0] ?? "";
+		if (
+			firstToken === "--budget" ||
+			firstToken === "--token-budget" ||
+			firstToken.startsWith("--budget=") ||
+			firstToken.startsWith("--token-budget=")
+		) {
+			let valueText: string;
+			if (firstToken === "--budget" || firstToken === "--token-budget") {
+				const withoutFlag = rest.slice(firstToken.length).trimStart();
+				const nextSpace = withoutFlag.search(/\s/);
+				if (nextSpace < 0) {
+					throw new Error("Usage: /goal [--budget <tokens>] <objective>");
+				}
+				valueText = withoutFlag.slice(0, nextSpace);
+				objective = withoutFlag.slice(nextSpace + 1).trim();
+			} else {
+				const separator = firstToken.indexOf("=");
+				valueText = firstToken.slice(separator + 1);
+				objective = rest.slice(firstToken.length).trim();
+			}
+			tokenBudget = parseGoalBudgetValue(valueText);
+		}
+
+		return { kind: "start", objective: validateGoalObjective(objective), tokenBudget };
+	}
+
+	private async _validateCanStartAgentRun(): Promise<void> {
+		if (!this.model) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
+		if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+			if (isOAuth) {
+				throw new Error(
+					`Authentication failed for "${this.model.provider}". ` +
+						`Credentials may have expired or network is unavailable. ` +
+						`Run '/login ${this.model.provider}' to re-authenticate.`,
+				);
+			}
+			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+		}
+	}
+
+	private _ensureGoalToolsActive(context?: AgentContext): void {
+		const goalTools: AgentTool[] = [];
+		for (const toolName of GOAL_TOOL_NAMES) {
+			const tool = this._toolRegistry.get(toolName);
+			if (!tool) {
+				throw new Error("Goal tools are disabled. Enable goal tools before using /goal.");
+			}
+			goalTools.push(tool);
+		}
+		if (!this._includeGoalTools) {
+			throw new Error("Goal tools are disabled. Enable goal tools before using /goal.");
+		}
+		const activeToolNames = new Set(this.getActiveToolNames());
+		let changed = false;
+		for (const toolName of GOAL_TOOL_NAMES) {
+			if (!activeToolNames.has(toolName)) {
+				activeToolNames.add(toolName);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.setActiveToolsByName([...activeToolNames]);
+		}
+		if (context) {
+			const contextTools = [...(context.tools ?? [])];
+			const contextToolNames = new Set(contextTools.map((tool) => tool.name));
+			for (const tool of goalTools) {
+				if (!contextToolNames.has(tool.name)) {
+					contextTools.push(tool);
+				}
+			}
+			context.tools = contextTools;
+		}
+	}
+
+	private async _runOrQueueGoalContext(
+		kind: "continuation" | "budget_limit" | "objective_updated",
+		images?: ImageContent[],
+	): Promise<void> {
+		if (!this._goalState.objective) {
+			return;
+		}
+		this._ensureGoalToolsActive();
+		const message = createGoalContextMessage(this._goalState, kind, images);
+		if (this.isStreaming) {
+			if (kind === "budget_limit") {
+				this.agent.steer(message);
+			} else {
+				this.agent.followUp(message);
+			}
+			return;
+		}
+
+		await this._validateCanStartAgentRun();
+		await this.agent.prompt([message]);
+		await this.waitForRetry();
+	}
+
+	private async _handleGoalSlashCommand(text: string, images: ImageContent[] | undefined): Promise<boolean> {
+		const command = this._parseGoalSlashCommand(text);
+		if (!command) {
+			return false;
+		}
+
+		if (command.kind === "status") {
+			this._emitGoalUpdate();
+			return true;
+		}
+
+		if (command.kind === "clear") {
+			this._clearGoal();
+			return true;
+		}
+
+		if (command.kind === "pause") {
+			this._pauseGoal();
+			return true;
+		}
+
+		if (command.kind === "resume") {
+			await this._resumeGoal();
+			return true;
+		}
+
+		const previousWasActive = this._goalState.status === "active";
+		if (!this.isStreaming) {
+			await this._validateCanStartAgentRun();
+		}
+		this._ensureGoalToolsActive();
+		this._clearQueuedGoalContexts();
+		this._startGoal(command.objective, command.tokenBudget);
+		await this._runOrQueueGoalContext(previousWasActive ? "objective_updated" : "continuation", images);
+		return true;
+	}
+
+	private _accountGoalUsageForAssistantMessage(message: AssistantMessage): boolean {
+		if (!this._goalState.objective) {
+			return false;
+		}
+		if (message.stopReason === "error" || message.stopReason === "aborted") {
+			return false;
+		}
+		if (this._goalAccountedAssistantMessages.has(message)) {
+			return false;
+		}
+		const updateGoalRequested = message.content.some(
+			(content) => content.type === "toolCall" && content.name === UPDATE_GOAL_TOOL_NAME,
+		);
+		if (this._goalState.status !== "active" && !(this._goalState.status === "complete" && updateGoalRequested)) {
+			return false;
+		}
+		this._goalAccountedAssistantMessages.add(message);
+		const tokenDelta = goalTokenDeltaForUsage(message.usage);
+		const goal = this._goalWithAccountedWallClock();
+		const nextGoal: GoalState = {
+			...goal,
+			tokensUsed: goal.tokensUsed + tokenDelta,
+		};
+		const budgetReached =
+			!updateGoalRequested && nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
+		if (!budgetReached) {
+			this._setGoalState(nextGoal);
+			return false;
+		}
+		this._setGoalState({
+			...nextGoal,
+			active: false,
+			status: "budget_limited",
+			lastReason: `Reached ${nextGoal.tokenBudget} token goal budget`,
+			lastError: undefined,
+		});
+		return true;
+	}
+
+	private _shouldStopAfterGoalTurn(context: ShouldStopAfterTurnContext): boolean {
+		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
+			return true;
+		}
+		try {
+			if (this._accountGoalUsageForAssistantMessage(context.message)) {
+				this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
+			}
+		} catch {
+			// Goal accounting must not interrupt the core agent loop.
+		}
+		return false;
+	}
+
+	private createGoalFromTool(objective: string, tokenBudget: number | undefined): GoalState {
+		if (this._goalState.status !== "idle") {
+			throw new Error(
+				"cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete",
+			);
+		}
+		return this._startGoal(objective, tokenBudget);
+	}
+
+	private completeGoalFromTool(): GoalState {
+		if (!this._goalState.objective || this._goalState.status === "idle") {
+			throw new Error("cannot update goal because this thread has no goal");
+		}
+		const goal = this._goalWithAccountedWallClock();
+		this._setGoalState({
+			...goal,
+			active: false,
+			status: "complete",
+			lastReason: "Goal achieved",
+			lastError: undefined,
+		});
+		return this._goalState;
+	}
+
+	private async _getGoalContinuationMessages(
+		context: GetContinuationMessagesContext,
+		signal?: AbortSignal,
+	): Promise<AgentMessage[]> {
+		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
+			return [];
+		}
+		if (signal?.aborted || this._goalState.status !== "active" || !this._goalState.objective) {
+			return [];
+		}
+		try {
+			this._ensureGoalToolsActive(context.context);
+			const nextGoal = {
+				...this._goalState,
+				continuationsUsed: this._goalState.continuationsUsed + 1,
+				lastReason: undefined,
+				lastError: undefined,
+			};
+			this._setGoalState(nextGoal);
+			return [createGoalContextMessage(this._goalState, "continuation")];
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			try {
+				this._finishGoalWithError(message);
+			} catch {
+				// The continuation hook must not reject; listener failures should not crash the agent loop.
+			}
+			return [];
+		}
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -566,6 +1463,9 @@ export class AgentSession {
 					});
 					this._retryAttempt = 0;
 				}
+				if (this._accountGoalUsageForAssistantMessage(assistantMsg)) {
+					this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
+				}
 			}
 		}
 
@@ -581,7 +1481,10 @@ export class AgentSession {
 			}
 
 			this._resolveRetry();
-			await this._checkCompaction(msg);
+			const compactionWillRetry = await this._checkCompaction(msg);
+			if (!compactionWillRetry) {
+				this._finishGoalForTerminalAssistantMessage(msg);
+			}
 		}
 	}
 
@@ -748,6 +1651,27 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		if (this._disposed) {
+			return;
+		}
+		this._disposed = true;
+		for (const run of this._backgroundRlmRuns.values()) {
+			if (run.status === "running" || run.status === "queued") {
+				run.status = "cancelled";
+				run.error = "Parent session disposed";
+				run.abort();
+				this._resolveRlmChildRunWaiters(run);
+			}
+		}
+		if (this._backgroundRlmCompletionTimer) {
+			globalThis.clearTimeout(this._backgroundRlmCompletionTimer);
+			this._backgroundRlmCompletionTimer = undefined;
+		}
+		this._pendingBackgroundRlmCompletions = [];
+		this._pendingNextTurnMessages = [];
+		this._steeringMessages = [];
+		this._followUpMessages = [];
+		this.agent.clearAllQueues();
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
@@ -876,6 +1800,10 @@ export class AgentSession {
 		return this.sessionManager.getSessionName();
 	}
 
+	get goalState(): GoalState {
+		return { ...this._goalWithCurrentWallClock() };
+	}
+
 	/** Scoped models for cycling (from --models flag) */
 	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
 		return this._scopedModels;
@@ -948,6 +1876,7 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			allowRecursion: this._rlmDepth < this._rlmMaxDepth,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -971,10 +1900,21 @@ export class AgentSession {
 		let messages: AgentMessage[] | undefined;
 
 		try {
+			let currentText = text;
+			let currentImages = options?.images;
+
+			if (expandPromptTemplates) {
+				const handledGoalCommand = await this._handleGoalSlashCommand(currentText, currentImages);
+				if (handledGoalCommand) {
+					preflightResult?.(true);
+					return;
+				}
+			}
+
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
-			if (expandPromptTemplates && text.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(text);
+			if (expandPromptTemplates && currentText.startsWith("/")) {
+				const handled = await this._tryExecuteExtensionCommand(currentText);
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
@@ -983,8 +1923,6 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion)
-			let currentText = text;
-			let currentImages = options?.images;
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
@@ -1053,6 +1991,12 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
+			// Inject any pending "nextTurn" messages as context before the user message.
+			for (const msg of this._pendingNextTurnMessages) {
+				messages.push(msg);
+			}
+			this._pendingNextTurnMessages = [];
+
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 			if (currentImages) {
@@ -1063,12 +2007,6 @@ export class AgentSession {
 				content: userContent,
 				timestamp: Date.now(),
 			});
-
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this._pendingNextTurnMessages) {
-				messages.push(msg);
-			}
-			this._pendingNextTurnMessages = [];
 
 			// Emit before_agent_start extension event
 			const result = await this._extensionRunner.emitBeforeAgentStart(
@@ -1387,8 +2325,14 @@ export class AgentSession {
 	 */
 	async abort(): Promise<void> {
 		this.abortRetry();
+		this._goalAbortInProgress = this._goalState.status === "active";
 		this.agent.abort();
-		await this.agent.waitForIdle();
+		try {
+			await this.agent.waitForIdle();
+			await this._agentEventQueue;
+		} finally {
+			this._goalAbortInProgress = false;
+		}
 	}
 
 	// =========================================================================
@@ -1577,6 +2521,10 @@ export class AgentSession {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
+	private async _restartIpythonKernelAfterCompaction(): Promise<void> {
+		await this._ipythonKernelManagerRef.current?.restart();
+	}
+
 	// =========================================================================
 	// Queue Mode Management
 	// =========================================================================
@@ -1705,6 +2653,7 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
+			await this._restartIpythonKernelAfterCompaction();
 
 			const compactionResult = {
 				summary,
@@ -1764,12 +2713,12 @@ export class AgentSession {
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
-	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
-		if (!settings.enabled) return;
+		if (!settings.enabled) return false;
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
+		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
 
 		const contextWindow = this.model?.contextWindow ?? 0;
 
@@ -1787,7 +2736,7 @@ export class AgentSession {
 		const assistantIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
 		if (assistantIsFromBeforeCompaction) {
-			return;
+			return false;
 		}
 
 		// Case 1: Overflow - LLM returned context overflow error
@@ -1802,7 +2751,7 @@ export class AgentSession {
 					errorMessage:
 						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 				});
-				return;
+				return false;
 			}
 
 			this._overflowRecoveryAttempted = true;
@@ -1812,8 +2761,7 @@ export class AgentSession {
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.state.messages = messages.slice(0, -1);
 			}
-			await this._runAutoCompaction("overflow", true);
-			return;
+			return await this._runAutoCompaction("overflow", true);
 		}
 
 		// Case 2: Threshold - context is getting large
@@ -1823,7 +2771,7 @@ export class AgentSession {
 		if (assistantMessage.stopReason === "error") {
 			const messages = this.agent.state.messages;
 			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return; // No usage data at all
+			if (estimate.lastUsageIndex === null) return false; // No usage data at all
 			// Verify the usage source is post-compaction. Kept pre-compaction messages
 			// have stale usage reflecting the old (larger) context and would falsely
 			// trigger compaction right after one just finished.
@@ -1833,21 +2781,22 @@ export class AgentSession {
 				usageMsg.role === "assistant" &&
 				(usageMsg as AssistantMessage).timestamp <= new Date(compactionEntry.timestamp).getTime()
 			) {
-				return;
+				return false;
 			}
 			contextTokens = estimate.tokens;
 		} else {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			await this._runAutoCompaction("threshold", false);
+			return await this._runAutoCompaction("threshold", false);
 		}
+		return false;
 	}
 
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
+	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "compaction_start", reason });
@@ -1862,7 +2811,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
@@ -1874,7 +2823,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 			const { apiKey, headers } = authResult;
 
@@ -1889,7 +2838,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			let extensionCompaction: CompactionResult | undefined;
@@ -1912,7 +2861,7 @@ export class AgentSession {
 						aborted: true,
 						willRetry: false,
 					});
-					return;
+					return false;
 				}
 
 				if (extensionResult?.compaction) {
@@ -1957,7 +2906,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
-				return;
+				return false;
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
@@ -1977,6 +2926,7 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
+			await this._restartIpythonKernelAfterCompaction();
 
 			const result: CompactionResult = {
 				summary,
@@ -1996,6 +2946,7 @@ export class AgentSession {
 				setTimeout(() => {
 					this.agent.continue().catch(() => {});
 				}, 100);
+				return true;
 			} else if (this.agent.hasQueuedMessages()) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
@@ -2003,6 +2954,7 @@ export class AgentSession {
 					this.agent.continue().catch(() => {});
 				}, 100);
 			}
+			return false;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			this._emit({
@@ -2016,6 +2968,7 @@ export class AgentSession {
 						? `Context overflow recovery failed: ${errorMessage}`
 						: `Auto-compaction failed: ${errorMessage}`,
 			});
+			return false;
 		} finally {
 			this._autoCompactionAbortController = undefined;
 		}
@@ -2334,7 +3287,7 @@ export class AgentSession {
 	}): void {
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
-		const baseToolDefinitions = this._baseToolsOverride
+		const configuredBaseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
 						name,
@@ -2342,8 +3295,29 @@ export class AgentSession {
 					]),
 				)
 			: createAllToolDefinitions(this._cwd, {
+					ipython: {
+						kernelManagerRef: this._ipythonKernelManagerRef,
+						env: this._rlmKernelEnv(),
+						sessionId: this.sessionId,
+						rlmRunHandler: ({ prompt, kwargs }) => this.runRlmChild(prompt, kwargs),
+						rlmBackgroundRunHandler: ({ prompt, kwargs }) =>
+							Promise.resolve(this.startBackgroundRlmChild(prompt, kwargs)),
+						rlmBackgroundStatusHandler: ({ id }) => Promise.resolve(this.getBackgroundRlmChildStatus(id)),
+						rlmBackgroundWaitHandler: ({ id, timeoutMs }) => this.waitForBackgroundRlmChild(id, timeoutMs),
+					},
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
 				});
+		const goalToolDefinitions = this._includeGoalTools
+			? createGoalToolDefinitions({
+					getGoalState: () => this.goalState,
+					createGoalFromTool: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
+					completeGoalFromTool: () => this.completeGoalFromTool(),
+				})
+			: [];
+		const baseToolDefinitions = {
+			...configuredBaseToolDefinitions,
+			...Object.fromEntries(goalToolDefinitions.map((definition) => [definition.name, definition])),
+		};
 
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
@@ -2370,9 +3344,15 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 
 		const defaultActiveToolNames = this._baseToolsOverride ? Object.keys(this._baseToolsOverride) : ["ipython"];
-		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+		if (this._includeGoalTools && this._autoActivateGoalTools) {
+			defaultActiveToolNames.push(...GOAL_TOOL_NAMES);
+		}
+		const baseActiveToolNames = [...(options.activeToolNames ?? defaultActiveToolNames)];
+		if (this._goalState.status === "active" && this._includeGoalTools) {
+			baseActiveToolNames.push(...GOAL_TOOL_NAMES);
+		}
 		this._refreshToolRegistry({
-			activeToolNames: baseActiveToolNames,
+			activeToolNames: [...new Set(baseActiveToolNames)],
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
 	}
@@ -2397,6 +3377,650 @@ export class AgentSession {
 		if (hasBindings) {
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
+		}
+	}
+
+	private _rlmKernelEnv(): Record<string, string> {
+		return {
+			RLM_DEPTH: String(this._rlmDepth),
+			RLM_MAX_DEPTH: String(this._rlmMaxDepth),
+			RLM_SESSION_DIR: this._ensureRlmSessionDir(),
+		};
+	}
+
+	private _ensureRlmSessionDir(): string {
+		if (this._rlmSessionDir) {
+			mkdirSync(this._rlmSessionDir, { recursive: true });
+			return this._rlmSessionDir;
+		}
+
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (sessionFile) {
+			const dir = sessionFile.endsWith(".jsonl") ? sessionFile.slice(0, -".jsonl".length) : `${sessionFile}.rlm`;
+			mkdirSync(dir, { recursive: true });
+			this._rlmSessionDir = dir;
+			return dir;
+		}
+
+		this._rlmSessionDir = mkdtempSync(join(tmpdir(), "prime-agent-rlm-"));
+		return this._rlmSessionDir;
+	}
+
+	private _createChildRlmSessionDir(): string {
+		const parentDir = this._ensureRlmSessionDir();
+		for (let i = 0; i < 100; i++) {
+			const childDir = join(parentDir, `sub-${randomUUID().slice(0, 8)}`);
+			try {
+				mkdirSync(childDir);
+				return childDir;
+			} catch (error) {
+				if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+					continue;
+				}
+				throw error;
+			}
+		}
+		throw new Error("Unable to create unique RLM child session directory");
+	}
+
+	private _usageForCurrentMessages(): RlmUsage {
+		const usage = emptyRlmUsage();
+		for (const message of this.agent.state.messages) {
+			if (message.role === "assistant") {
+				addUsage(usage, (message as AssistantMessage).usage);
+			}
+		}
+		return usage;
+	}
+
+	private _assistantUsageForCurrentMessages(): Usage {
+		const usage = emptyUsage();
+		for (const message of this.agent.state.messages) {
+			if (message.role === "assistant") {
+				addAssistantUsage(usage, (message as AssistantMessage).usage);
+			}
+		}
+		return usage;
+	}
+
+	private _findAssistantEntryForMessage(message: AssistantMessage): SessionMessageEntry | undefined {
+		return this.sessionManager
+			.getEntries()
+			.find((entry): entry is SessionMessageEntry => entry.type === "message" && entry.message === message);
+	}
+
+	private _attributeRlmChildUsageToParent(
+		childUsage: Usage,
+		parentAssistant = this._findLastAssistantMessage(),
+	): void {
+		if (!parentAssistant) {
+			return;
+		}
+		const parentEntry = this._findAssistantEntryForMessage(parentAssistant);
+		attributeChildUsage(parentAssistant.usage, childUsage);
+		if (parentEntry) {
+			this.sessionManager.appendChildUsageAttribution(parentEntry.id, childUsage, parentAssistant.usage);
+		}
+	}
+
+	private _assistantTurnCount(): number {
+		return this.agent.state.messages.filter((message) => message.role === "assistant").length;
+	}
+
+	private _startRlmChildRun(
+		prompt: string,
+		kwargs: Record<string, unknown> = {},
+		options: {
+			notifyParentOnCompletion?: boolean;
+			completionPolicy?: BackgroundRlmCompletionPolicy;
+		} = {},
+	): RlmChildRun {
+		const unsupportedKwargs = Object.keys(kwargs);
+		if (unsupportedKwargs.length > 0) {
+			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
+		}
+		if (this._rlmDepth >= this._rlmMaxDepth) {
+			throw new Error(
+				`RLM recursion depth limit reached (RLM_DEPTH=${this._rlmDepth}, RLM_MAX_DEPTH=${this._rlmMaxDepth})`,
+			);
+		}
+		const model = this.model;
+		if (!model) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
+
+		const childSessionDir = this._createChildRlmSessionDir();
+		const childNodeId = basename(childSessionDir);
+		const startedAt = Date.now();
+		const parentAssistantForUsage = this._findLastAssistantMessage();
+		const transcript: RlmChildAgentTranscriptLine[] = [];
+		const structuredTranscript: RlmChildAgentStructuredTranscriptEntry[] = [];
+		const label = compactRlmText(prompt, 80) || "child agent";
+		let answerPreview: string | undefined;
+		let durationMs: number | undefined;
+		const run: RlmChildRun = {
+			id: childNodeId,
+			prompt,
+			sessionDir: childSessionDir,
+			status: "running",
+			completionPolicy: options.completionPolicy ?? "passive",
+			waiters: new Set(),
+			abort: noopRlmChildAbort,
+		};
+		// Index of the assistant entry currently being streamed. Cleared whenever the
+		// conversation moves on (new assistant message, tool call) so subsequent assistant
+		// text appends a fresh entry in chronological order instead of overwriting in place.
+		let currentAssistantIndex: number | undefined;
+		let lastToolTranscriptIndex: number | undefined;
+		const emitChildUpdate = () => {
+			this._emit({
+				type: "rlm_child_update",
+				child: {
+					id: childNodeId,
+					parentId: this._rlmParentNodeId,
+					label,
+					status: run.status,
+					durationMs,
+					answerPreview,
+					sessionDir: childSessionDir,
+					transcript: [...transcript],
+					structuredTranscript: [...structuredTranscript],
+				},
+			});
+		};
+		const recordAssistantMessage = (message: AssistantMessage) => {
+			const text = compactRlmText(readAssistantText(message));
+			const thinking = compactRlmText(readAssistantThinking(message));
+			const compact = text || thinking;
+			if (!compact) {
+				return;
+			}
+			if (text) {
+				answerPreview = text;
+			}
+			const entry: RlmChildAgentMessageTranscriptEntry = {
+				type: "message",
+				role: "assistant",
+				text: compact,
+				message: cloneAssistantMessage(message),
+			};
+			if (currentAssistantIndex === undefined) {
+				currentAssistantIndex = transcript.length;
+				transcript.push({ role: "assistant", text: compact });
+				structuredTranscript.push(entry);
+			} else {
+				transcript[currentAssistantIndex] = { role: "assistant", text: compact };
+				structuredTranscript[currentAssistantIndex] = entry;
+			}
+		};
+		const recordAssistantText = (text: string, sourceMessage?: AssistantMessage) => {
+			const compact = compactRlmText(text);
+			if (!compact) {
+				return;
+			}
+			const sourceCompact = sourceMessage
+				? compactRlmText(readAssistantText(sourceMessage)) || compactRlmText(readAssistantThinking(sourceMessage))
+				: undefined;
+			const message =
+				sourceMessage && sourceCompact === compact
+					? sourceMessage
+					: createAssistantTextMessage(text, model, sourceMessage?.timestamp);
+			recordAssistantMessage(message);
+		};
+		const recordUserMessage = (message: UserMessage) => {
+			const text = compactRlmText(readTextBlocks(message.content));
+			if (!text) {
+				return;
+			}
+			transcript.push({ role: "user", text });
+			structuredTranscript.push({
+				type: "message",
+				role: "user",
+				text,
+				message: cloneUserMessage(message),
+			});
+		};
+		const createToolTranscriptEntry = (
+			event: { toolCallId: string; toolName: string; args?: unknown },
+			text: string,
+			result: RlmChildAgentToolResult | undefined,
+			isPartial: boolean,
+		): RlmChildAgentToolTranscriptEntry => {
+			const entry: RlmChildAgentToolTranscriptEntry = {
+				type: "tool",
+				role: "tool",
+				text,
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+				isPartial,
+				executionStarted: true,
+				argsComplete: true,
+			};
+			if (result) {
+				entry.result = result;
+			}
+			return entry;
+		};
+		emitChildUpdate();
+
+		const childSessionManager = SessionManager.create(this._cwd, childSessionDir);
+		childSessionManager.appendModelChange(model.provider, model.id);
+		childSessionManager.appendThinkingLevelChange(this.thinkingLevel);
+
+		const childAgent = new Agent({
+			initialState: {
+				systemPrompt: "",
+				model,
+				thinkingLevel: this.thinkingLevel,
+				tools: [],
+			},
+			convertToLlm: this.agent.convertToLlm,
+			transformContext: this.agent.transformContext,
+			streamFn: this.agent.streamFn,
+			getApiKey: this.agent.getApiKey,
+			onPayload: this.agent.onPayload,
+			onResponse: this.agent.onResponse,
+			steeringMode: this.settingsManager.getSteeringMode(),
+			followUpMode: this.settingsManager.getFollowUpMode(),
+			sessionId: childSessionManager.getSessionId(),
+			thinkingBudgets: this.settingsManager.getThinkingBudgets(),
+			transport: this.settingsManager.getTransport(),
+			maxRetryDelayMs: this.settingsManager.getProviderRetrySettings().maxRetryDelayMs,
+			toolExecution: this.agent.toolExecution,
+		});
+
+		const child = new AgentSession({
+			agent: childAgent,
+			sessionManager: childSessionManager,
+			settingsManager: this.settingsManager,
+			cwd: this._cwd,
+			scopedModels: this._scopedModels,
+			resourceLoader: this._resourceLoader,
+			customTools: this._customTools,
+			modelRegistry: this._modelRegistry,
+			initialActiveToolNames: this.getActiveToolNames(),
+			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
+			includeGoalTools: this._includeGoalTools,
+			autoActivateGoalTools: this._autoActivateGoalTools,
+			rlmDepth: this._rlmDepth + 1,
+			rlmMaxDepth: this._rlmMaxDepth,
+			rlmSessionDir: childSessionDir,
+			rlmParentNodeId: childNodeId,
+			sessionStartEvent: { type: "session_start", reason: "startup" },
+		});
+		run.abort = () => {
+			void child.abort();
+		};
+		const unsubscribeChild = child.subscribe((event) => {
+			if (event.type === "rlm_child_update") {
+				this._emit(event);
+				return;
+			}
+			switch (event.type) {
+				case "message_start": {
+					if (event.message.role === "user") {
+						recordUserMessage(event.message);
+						currentAssistantIndex = undefined;
+					} else if (event.message.role === "assistant") {
+						// New assistant turn: append a fresh entry so prior text isn't overwritten.
+						currentAssistantIndex = undefined;
+						recordAssistantMessage(event.message as AssistantMessage);
+					}
+					emitChildUpdate();
+					break;
+				}
+				case "message_update":
+				case "message_end": {
+					if (event.message.role === "assistant") {
+						recordAssistantMessage(event.message as AssistantMessage);
+						emitChildUpdate();
+					}
+					break;
+				}
+				case "tool_execution_start": {
+					const args = formatRlmToolArgs(event.args);
+					const text = args ? `${event.toolName} running ${args}` : `${event.toolName} running`;
+					// Tool break: next assistant text starts a new entry after this tool row.
+					currentAssistantIndex = undefined;
+					lastToolTranscriptIndex = transcript.length;
+					transcript.push({ role: "tool", text });
+					structuredTranscript.push(createToolTranscriptEntry(event, text, undefined, true));
+					emitChildUpdate();
+					break;
+				}
+				case "tool_execution_update": {
+					const text = readToolResultText(event.partialResult);
+					if (lastToolTranscriptIndex !== undefined) {
+						const previous = structuredTranscript[lastToolTranscriptIndex];
+						const summary = text
+							? `${event.toolName} running: ${compactRlmText(text)}`
+							: transcript[lastToolTranscriptIndex]?.text || `${event.toolName} running`;
+						transcript[lastToolTranscriptIndex] = { role: "tool", text: summary };
+						structuredTranscript[lastToolTranscriptIndex] = createToolTranscriptEntry(
+							{
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								args: previous?.type === "tool" ? previous.args : event.args,
+							},
+							summary,
+							cloneRlmToolResult(event.partialResult, false),
+							true,
+						);
+						emitChildUpdate();
+					}
+					break;
+				}
+				case "tool_execution_end": {
+					const text = readToolResultText(event.result);
+					const summary = text ? `${event.toolName}: ${compactRlmText(text)}` : `${event.toolName} done`;
+					const previous =
+						lastToolTranscriptIndex === undefined ? undefined : structuredTranscript[lastToolTranscriptIndex];
+					const entry = createToolTranscriptEntry(
+						{
+							toolCallId: event.toolCallId,
+							toolName: event.toolName,
+							args: previous?.type === "tool" ? previous.args : undefined,
+						},
+						summary,
+						cloneRlmToolResult(event.result, event.isError),
+						false,
+					);
+					if (lastToolTranscriptIndex === undefined) {
+						lastToolTranscriptIndex = transcript.length;
+						transcript.push({ role: "tool", text: summary });
+						structuredTranscript.push(entry);
+					} else {
+						transcript[lastToolTranscriptIndex] = { role: "tool", text: summary };
+						structuredTranscript[lastToolTranscriptIndex] = entry;
+					}
+					emitChildUpdate();
+					break;
+				}
+			}
+		});
+
+		const task = (async (): Promise<RlmRunResult> => {
+			try {
+				await child.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
+				await child.agent.waitForIdle();
+				if (run.status === "cancelled") {
+					throw new Error(run.error ?? "RLM child cancelled");
+				}
+				const answer = child.getLastAssistantText() ?? "";
+				const usage = child._usageForCurrentMessages();
+				this._attributeRlmChildUsageToParent(child._assistantUsageForCurrentMessages(), parentAssistantForUsage);
+				run.status = "done";
+				durationMs = Date.now() - startedAt;
+				// Streaming events usually capture the final assistant text already. Only
+				// record again when it's missing — otherwise a child whose last streamed
+				// event was tool_execution_start would have currentAssistantIndex cleared,
+				// causing the final answer to be appended as a duplicate row.
+				const compactAnswer = compactRlmText(answer);
+				const lastAssistantText = [...transcript].reverse().find((line) => line.role === "assistant")?.text;
+				if (compactAnswer && compactAnswer !== lastAssistantText) {
+					const lastAssistant = child._findLastAssistantMessage();
+					recordAssistantText(answer, lastAssistant);
+				} else if (compactAnswer) {
+					answerPreview = compactAnswer;
+				}
+				emitChildUpdate();
+				const result = {
+					answer,
+					usage,
+					turns: child._assistantTurnCount(),
+					session_dir: childSessionDir,
+				};
+				run.result = result;
+				return result;
+			} catch (error) {
+				if (run.status !== "cancelled") {
+					run.status = "error";
+				}
+				durationMs = Date.now() - startedAt;
+				run.error = error instanceof Error ? error.message : String(error);
+				transcript.push({ role: "system", text: run.error });
+				structuredTranscript.push({ type: "system", role: "system", text: run.error });
+				emitChildUpdate();
+				throw error;
+			} finally {
+				unsubscribeChild();
+				child.dispose();
+				run.abort = noopRlmChildAbort;
+			}
+		})();
+		run.task = task;
+		void task.then(
+			() => this._resolveRlmChildRunWaiters(run),
+			() => this._resolveRlmChildRunWaiters(run),
+		);
+		if (options.notifyParentOnCompletion) {
+			void task.then(
+				() => this._queueBackgroundRlmChildCompletion(run),
+				() => this._queueBackgroundRlmChildCompletion(run),
+			);
+		}
+		return run;
+	}
+
+	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}): Promise<RlmRunResult> {
+		const run = this._startRlmChildRun(prompt, kwargs);
+		if (!run.task) {
+			throw new Error("RLM child failed to start");
+		}
+		return await run.task;
+	}
+
+	startBackgroundRlmChild(prompt: string, kwargs: Record<string, unknown> = {}): RlmBackgroundRunStartResult {
+		const { childKwargs, completionPolicy } = extractBackgroundRlmOptions(kwargs);
+		const run = this._startRlmChildRun(prompt, childKwargs, {
+			notifyParentOnCompletion: completionPolicy !== "silent",
+			completionPolicy,
+		});
+		this._backgroundRlmRuns.set(run.id, run);
+		return {
+			id: run.id,
+			state: run.status,
+			session_dir: run.sessionDir,
+		};
+	}
+
+	getBackgroundRlmChildStatus(id: string): RlmBackgroundRunStatusResult {
+		return this._backgroundRlmChildSnapshot(this._getBackgroundRlmChildRun(id));
+	}
+
+	async waitForBackgroundRlmChild(id: string, timeoutMs?: number): Promise<RlmBackgroundRunStatusResult> {
+		const run = this._getBackgroundRlmChildRun(id);
+		if (run.status !== "running" && run.status !== "queued") {
+			return this._backgroundRlmChildSnapshot(run);
+		}
+
+		let timedOut = false;
+		await new Promise<void>((resolve) => {
+			let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+			const done = () => {
+				run.waiters.delete(done);
+				if (timeout) {
+					globalThis.clearTimeout(timeout);
+				}
+				resolve();
+			};
+			run.waiters.add(done);
+			if (run.status !== "running" && run.status !== "queued") {
+				done();
+				return;
+			}
+			if (timeoutMs !== undefined) {
+				timeout = globalThis.setTimeout(() => {
+					timedOut = true;
+					done();
+				}, timeoutMs);
+				if (timeout && typeof timeout === "object" && "unref" in timeout) {
+					timeout.unref();
+				}
+			}
+		});
+
+		return {
+			...this._backgroundRlmChildSnapshot(run),
+			timed_out: timedOut && (run.status === "running" || run.status === "queued"),
+		};
+	}
+
+	private _getBackgroundRlmChildRun(id: string): RlmChildRun {
+		const run = this._backgroundRlmRuns.get(id);
+		if (!run) {
+			throw new Error(`Unknown background rlm child: ${id}`);
+		}
+		return run;
+	}
+
+	private _backgroundRlmChildSnapshot(run: RlmChildRun): RlmBackgroundRunStatusResult {
+		return {
+			id: run.id,
+			state: run.status,
+			session_dir: run.sessionDir,
+			result: run.result,
+			error: run.error,
+		};
+	}
+
+	private _resolveRlmChildRunWaiters(run: RlmChildRun): void {
+		for (const waiter of run.waiters) {
+			waiter();
+		}
+		run.waiters.clear();
+	}
+
+	private _queueBackgroundRlmChildCompletion(run: RlmChildRun): void {
+		if (this._disposed || run.status === "cancelled") {
+			return;
+		}
+		this._pendingBackgroundRlmCompletions.push(run);
+		if (this._backgroundRlmCompletionTimer) {
+			return;
+		}
+		this._backgroundRlmCompletionTimer = globalThis.setTimeout(() => {
+			this._backgroundRlmCompletionTimer = undefined;
+			if (this._disposed) {
+				this._pendingBackgroundRlmCompletions = [];
+				return;
+			}
+			void this._flushBackgroundRlmChildCompletions();
+		}, BACKGROUND_RLM_COMPLETION_DEBOUNCE_MS);
+		if (
+			this._backgroundRlmCompletionTimer &&
+			typeof this._backgroundRlmCompletionTimer === "object" &&
+			"unref" in this._backgroundRlmCompletionTimer
+		) {
+			this._backgroundRlmCompletionTimer.unref();
+		}
+	}
+
+	private _formatBackgroundRlmCompletionNotice(runs: readonly RlmChildRun[]): string {
+		const plural = runs.length === 1 ? "child has" : "children have";
+		const lines = [
+			"Background RLM completion notice. This message is hidden from the user.",
+			"",
+			`${runs.length} background RLM ${plural} finished.`,
+			"",
+		];
+		for (const run of runs) {
+			const prompt = compactRlmText(run.prompt, 80);
+			if (run.result) {
+				const answer = compactRlmText(run.result.answer || "(empty)", 240);
+				lines.push(`- ${run.id} done: ${prompt}`);
+				lines.push(`  Answer preview: ${answer}`);
+			} else {
+				lines.push(`- ${run.id} failed: ${prompt}`);
+				lines.push(`  Error: ${compactRlmText(run.error ?? "unknown error", 240)}`);
+			}
+		}
+		lines.push(
+			"",
+			"If you told the user you would report background completions, send a concise update now. Otherwise keep this result in mind and avoid an unsolicited status reply.",
+			"Use the saved handle's status(), wait(), or result() methods when you need full details.",
+		);
+		return lines.join("\n");
+	}
+
+	private _ensureBackgroundRlmQueueDrain(): void {
+		if (this._disposed) {
+			return;
+		}
+		if (this._backgroundRlmQueueDrainPromise) {
+			return;
+		}
+		this._backgroundRlmQueueDrainPromise = (async () => {
+			try {
+				while (true) {
+					await this.agent.waitForIdle();
+					if (this._disposed) {
+						return;
+					}
+					if (!this.agent.hasQueuedMessages()) {
+						return;
+					}
+					try {
+						await this.agent.continue();
+						await this.waitForRetry();
+					} catch (error) {
+						if (this._disposed) {
+							return;
+						}
+						if (this.isStreaming) {
+							continue;
+						}
+						throw error;
+					}
+				}
+			} catch (error) {
+				console.error(`[rlm] failed to wake parent agent for background child completion: ${String(error)}`);
+			} finally {
+				this._backgroundRlmQueueDrainPromise = undefined;
+			}
+		})();
+	}
+
+	private async _flushBackgroundRlmChildCompletions(): Promise<void> {
+		if (this._disposed) {
+			this._pendingBackgroundRlmCompletions = [];
+			return;
+		}
+		const runs = this._pendingBackgroundRlmCompletions.splice(0);
+		if (runs.length === 0 || this._disposed) {
+			return;
+		}
+		const content = this._formatBackgroundRlmCompletionNotice(runs);
+		const shouldWakeParent = runs.some((run) => run.completionPolicy === "wake");
+		try {
+			await this.sendCustomMessage(
+				{
+					customType: "rlm_background_result",
+					content,
+					display: false,
+					details: {
+						runs: runs.map((run) => ({
+							id: run.id,
+							prompt: run.prompt,
+							status: run.status,
+							sessionDir: run.sessionDir,
+							result: run.result,
+							error: run.error,
+						})),
+					},
+				},
+				this.isStreaming
+					? { deliverAs: shouldWakeParent ? "followUp" : "nextTurn" }
+					: shouldWakeParent
+						? { triggerTurn: true }
+						: undefined,
+			);
+			if (this.isStreaming && shouldWakeParent) {
+				this._ensureBackgroundRlmQueueDrain();
+			}
+		} catch (error) {
+			console.error(`[rlm] failed to deliver background child completion notice: ${String(error)}`);
 		}
 	}
 
@@ -2843,6 +4467,7 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			this._reloadGoalStateFromBranch();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({

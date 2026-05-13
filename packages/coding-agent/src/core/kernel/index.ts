@@ -1,24 +1,42 @@
 // TODO: reconsider persistent kernel vs stateless `python -c` once RLM-1 weights land.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
+import type {
+	RlmBackgroundRunHandler,
+	RlmBackgroundRunStatusHandler,
+	RlmBackgroundRunStatusResult,
+	RlmBackgroundRunWaitHandler,
+	RlmRunHandler,
+	RlmRunResult,
+} from "../rlm-runtime.js";
+import { ensureKernelPython } from "./bootstrap.js";
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
-const STARTUP_DELAY_MS = 500;
+const PORTS_RESOLVE_TIMEOUT_MS = 5000;
 const READY_TIMEOUT_MS = 5000;
+// Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
+const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
+const RLM_DISPOSE_TIMEOUT_MS = 5000;
 
 export interface KernelManagerOptions {
-	/** Python interpreter that has `ipykernel` available. */
-	python: string;
+	/** Python interpreter that has `ipykernel` available. Defaults to the auto-bootstrapped kernel. */
+	python?: string;
 	cwd?: string;
+	env?: Record<string, string>;
+	sessionId?: string;
+	rlmRunHandler?: RlmRunHandler;
+	rlmBackgroundRunHandler?: RlmBackgroundRunHandler;
+	rlmBackgroundStatusHandler?: RlmBackgroundRunStatusHandler;
+	rlmBackgroundWaitHandler?: RlmBackgroundRunWaitHandler;
 	/** Default: "prime-agent". */
 	username?: string;
 }
@@ -41,6 +59,8 @@ export interface ExecuteResult {
 	durationMs: number;
 }
 
+type RlmCommResult = RlmRunResult | RlmBackgroundRunStatusResult;
+
 interface ConnectionInfo {
 	ip: string;
 	transport: "tcp";
@@ -51,7 +71,7 @@ interface ConnectionInfo {
 	hb_port: number;
 	signature_scheme: "hmac-sha256";
 	key: string;
-	kernel_name: "python3";
+	kernel_name: string;
 }
 
 interface JupyterMessage {
@@ -66,6 +86,24 @@ interface JupyterMessage {
 	parent_header: Record<string, unknown>;
 	metadata: Record<string, unknown>;
 	content: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function parseOptionalTimeoutMs(value: unknown): number | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+		throw new Error("rlm.run background wait timeout_ms must be a non-negative number");
+	}
+	return value;
 }
 
 // ---- wire format ---------------------------------------------------------
@@ -125,31 +163,67 @@ function decode(frames: Buffer[]): JupyterMessage | null {
 
 // ---- connection setup ----------------------------------------------------
 
-function pickPorts(n: number): number[] {
-	// Bind-to-0 + zeromq across all five sockets is fiddly. Random high
-	// ports are sufficient given kernel sessions are local and short-lived.
-	// Collisions surface on socket connect.
-	const start = 50000 + Math.floor(Math.random() * 5000);
-	return Array.from({ length: n }, (_, i) => start + i);
+const CONNECTION_PORT_KEYS = ["shell_port", "iopub_port", "stdin_port", "control_port", "hb_port"] as const;
+
+function hasResolvedPorts(info: ConnectionInfo): boolean {
+	return CONNECTION_PORT_KEYS.every((key) => Number.isInteger(info[key]) && info[key] > 0);
+}
+
+function parseConnectionInfo(value: unknown): ConnectionInfo | null {
+	if (!isRecord(value)) return null;
+	if (value.ip !== "127.0.0.1") return null;
+	if (value.transport !== "tcp") return null;
+	if (value.signature_scheme !== "hmac-sha256") return null;
+	if (typeof value.key !== "string") return null;
+	const shellPort = value.shell_port;
+	const iopubPort = value.iopub_port;
+	const stdinPort = value.stdin_port;
+	const controlPort = value.control_port;
+	const hbPort = value.hb_port;
+	if (typeof shellPort !== "number" || !Number.isInteger(shellPort)) return null;
+	if (typeof iopubPort !== "number" || !Number.isInteger(iopubPort)) return null;
+	if (typeof stdinPort !== "number" || !Number.isInteger(stdinPort)) return null;
+	if (typeof controlPort !== "number" || !Number.isInteger(controlPort)) return null;
+	if (typeof hbPort !== "number" || !Number.isInteger(hbPort)) return null;
+	const kernelName = typeof value.kernel_name === "string" ? value.kernel_name : "python3";
+	return {
+		ip: value.ip,
+		transport: value.transport,
+		shell_port: shellPort,
+		iopub_port: iopubPort,
+		stdin_port: stdinPort,
+		control_port: controlPort,
+		hb_port: hbPort,
+		signature_scheme: value.signature_scheme,
+		key: value.key,
+		kernel_name: kernelName,
+	};
+}
+
+function readConnectionInfo(path: string): ConnectionInfo | null {
+	try {
+		return parseConnectionInfo(JSON.parse(readFileSync(path, "utf8")));
+	} catch {
+		return null;
+	}
 }
 
 function makeConnection(): { info: ConnectionInfo; path: string; tempDir: string } {
-	const [shell_port, iopub_port, stdin_port, control_port, hb_port] = pickPorts(5);
 	const info: ConnectionInfo = {
 		ip: "127.0.0.1",
 		transport: "tcp",
-		shell_port,
-		iopub_port,
-		stdin_port,
-		control_port,
-		hb_port,
+		shell_port: 0,
+		iopub_port: 0,
+		stdin_port: 0,
+		control_port: 0,
+		hb_port: 0,
 		signature_scheme: "hmac-sha256",
 		key: randomBytes(16).toString("hex"),
 		kernel_name: "python3",
 	};
 	const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-kernel-"));
 	const path = join(tempDir, "connection.json");
-	writeFileSync(path, JSON.stringify(info, null, 2));
+	writeFileSync(path, JSON.stringify(info, null, 2), { mode: 0o600 });
 	return { info, path, tempDir };
 }
 
@@ -158,8 +232,12 @@ function makeConnection(): { info: ConnectionInfo; path: string; tempDir: string
 const liveKernels = new Set<KernelManager>();
 let signalHandlersInstalled = false;
 
-registerSessionResourceCleanup(() => {
-	for (const k of liveKernels) k.dispose();
+registerSessionResourceCleanup((sessionId) => {
+	for (const k of liveKernels) {
+		if (!sessionId || k.ownerSessionId === sessionId) {
+			void k.dispose();
+		}
+	}
 });
 
 function installSignalHandlersOnce(): void {
@@ -172,7 +250,7 @@ function installSignalHandlersOnce(): void {
 
 	// `beforeExit` and signal handlers can await async cleanup. `exit`
 	// can only do sync work (Node won't run pending microtasks past it),
-	// so it falls back to `dispose()` which kills the child synchronously.
+	// so it falls back to `disposeSync()` which kills the child synchronously.
 	process.on("beforeExit", () => {
 		void asyncShutdown();
 	});
@@ -183,15 +261,28 @@ function installSignalHandlersOnce(): void {
 		void asyncShutdown().finally(() => process.exit(143));
 	});
 	process.on("exit", () => {
-		for (const k of liveKernels) k.dispose();
+		for (const k of liveKernels) k.disposeSync();
 	});
 }
 
 // ---- kernel manager ------------------------------------------------------
 
 export class KernelManager {
-	private readonly options: Required<Omit<KernelManagerOptions, "cwd">> & { cwd?: string };
+	private readonly options: Pick<
+		KernelManagerOptions,
+		| "python"
+		| "cwd"
+		| "env"
+		| "sessionId"
+		| "rlmRunHandler"
+		| "rlmBackgroundRunHandler"
+		| "rlmBackgroundStatusHandler"
+		| "rlmBackgroundWaitHandler"
+	> &
+		Required<Pick<KernelManagerOptions, "username">>;
 	private readonly session = uuid();
+	private readonly commTargets = new Map<string, string>();
+	private readonly handledRlmCommIds = new Set<string>();
 	private kernel?: ChildProcess;
 	private shell?: Dealer;
 	private iopub?: Subscriber;
@@ -201,19 +292,27 @@ export class KernelManager {
 	private kernelStderr = "";
 	/** Serializes execute() calls — Jupyter shell channel is request/reply. */
 	private executionQueue: Promise<unknown> = Promise.resolve();
+	private readonly inFlightRlmRuns = new Set<Promise<void>>();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
 	/** Memoized so concurrent callers all await the same in-flight startup. */
 	private startPromise?: Promise<void>;
 
 	constructor(options: KernelManagerOptions) {
-		if (!existsSync(options.python)) {
-			throw new Error(`Python interpreter not found: ${options.python}`);
-		}
 		this.options = {
 			python: options.python,
 			cwd: options.cwd,
+			env: options.env,
+			sessionId: options.sessionId,
+			rlmRunHandler: options.rlmRunHandler,
+			rlmBackgroundRunHandler: options.rlmBackgroundRunHandler,
+			rlmBackgroundStatusHandler: options.rlmBackgroundStatusHandler,
+			rlmBackgroundWaitHandler: options.rlmBackgroundWaitHandler,
 			username: options.username ?? "prime-agent",
 		};
+	}
+
+	get ownerSessionId(): string | undefined {
+		return this.options.sessionId;
 	}
 
 	async start(): Promise<void> {
@@ -228,28 +327,40 @@ export class KernelManager {
 		this.state = "starting";
 		installSignalHandlersOnce();
 
-		const { info, path: connectionPath, tempDir } = makeConnection();
-		this.connection = info;
+		let python: string;
+		try {
+			python = this.options.python ?? (await ensureKernelPython());
+			this.options.python = python;
+		} catch (error) {
+			this.state = "idle";
+			throw error;
+		}
+
+		const { path: connectionPath, tempDir } = makeConnection();
 		this.tempDir = tempDir;
 
-		this.kernel = spawn(this.options.python, ["-m", "ipykernel_launcher", "-f", connectionPath], {
+		const kernel = spawn(python, ["-m", "ipykernel_launcher", "-f", connectionPath], {
 			cwd: this.options.cwd,
+			env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		this.kernel = kernel;
 
-		this.kernel.stderr?.on("data", (buf: Buffer) => {
+		kernel.stderr?.on("data", (buf: Buffer) => {
 			const s = buf.toString();
 			this.kernelStderr += s;
 			process.stderr.write(`[kernel] ${s}`);
 		});
 
-		this.kernel.on("error", (err) => {
+		kernel.on("error", (err) => {
+			if (this.kernel !== kernel) return;
 			console.error(`[kernel] spawn error: ${err.message}`);
 			this.state = "shutdown";
 			liveKernels.delete(this);
 		});
 
-		this.kernel.on("exit", (code, signal) => {
+		kernel.on("exit", (code, signal) => {
+			if (this.kernel !== kernel) return;
 			if (this.state !== "shutdown") {
 				console.error(`[kernel] unexpected exit code=${code} signal=${signal}`);
 			}
@@ -257,26 +368,61 @@ export class KernelManager {
 			liveKernels.delete(this);
 		});
 
+		let conn: ConnectionInfo;
+		try {
+			conn = await this.waitForResolvedConnection(connectionPath);
+			this.connection = conn;
+		} catch (e) {
+			const canRetryStartup = (this.state as string) !== "shutdown";
+			await this.shutdown();
+			if (canRetryStartup) this.state = "idle";
+			throw e;
+		}
+
 		this.shell = new Dealer();
 		this.iopub = new Subscriber();
 		this.control = new Dealer();
-		this.shell.connect(`${info.transport}://${info.ip}:${info.shell_port}`);
-		this.iopub.connect(`${info.transport}://${info.ip}:${info.iopub_port}`);
-		this.control.connect(`${info.transport}://${info.ip}:${info.control_port}`);
+		this.shell.connect(`${conn.transport}://${conn.ip}:${conn.shell_port}`);
+		this.iopub.connect(`${conn.transport}://${conn.ip}:${conn.iopub_port}`);
+		this.control.connect(`${conn.transport}://${conn.ip}:${conn.control_port}`);
 		this.iopub.subscribe("");
 
-		// ZMQ slow-joiner: give the kernel time to bind ports before publishing.
-		await sleep(STARTUP_DELAY_MS);
+		// ZMQ PUB/SUB slow-joiner: give the subscription a brief chance to reach the kernel before first execute.
+		await sleep(IOPUB_SUBSCRIBE_DELAY_MS);
 
 		try {
 			await this.probeReady();
 		} catch (e) {
+			const canRetryStartup = (this.state as string) !== "shutdown";
 			await this.shutdown();
+			if (canRetryStartup) this.state = "idle";
 			throw e;
 		}
 
 		liveKernels.add(this);
 		this.state = "running";
+	}
+
+	private async waitForResolvedConnection(connectionPath: string): Promise<ConnectionInfo> {
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < PORTS_RESOLVE_TIMEOUT_MS) {
+			if ((this.state as string) === "shutdown") {
+				const tail = this.kernelStderr.slice(-1024);
+				throw new Error(`Kernel exited before resolving ports. stderr:\n${tail || "(empty)"}`);
+			}
+
+			const info = readConnectionInfo(connectionPath);
+			if (info && hasResolvedPorts(info)) {
+				return info;
+			}
+
+			await sleep(25);
+		}
+
+		const tail = this.kernelStderr.slice(-1024);
+		throw new Error(
+			`Kernel did not resolve connection ports within ${PORTS_RESOLVE_TIMEOUT_MS}ms. stderr tail:\n${tail || "(empty)"}`,
+		);
 	}
 
 	private async probeReady(): Promise<void> {
@@ -388,9 +534,13 @@ export class KernelManager {
 			for await (const frames of iopub) {
 				const incoming = decode(frames);
 				if (!incoming) continue;
+				const t = incoming.header.msg_type;
+				if (t === "comm_open" || t === "comm_msg" || t === "comm_close") {
+					this.handleCommMessage(incoming);
+					continue;
+				}
 				if ((incoming.parent_header as { msg_id?: string }).msg_id !== requestMsgId) continue;
 
-				const t = incoming.header.msg_type;
 				if (t === "stream") {
 					const c = incoming.content as { name: "stdout" | "stderr"; text: string };
 					if (c.name === "stdout") {
@@ -438,15 +588,183 @@ export class KernelManager {
 		return { stdout, stderr, result, error, status, durationMs: Date.now() - started };
 	}
 
+	private handleCommMessage(incoming: JupyterMessage): void {
+		const msgType = incoming.header.msg_type;
+		const content = incoming.content;
+		const commId = content.comm_id;
+		if (typeof commId !== "string") {
+			return;
+		}
+
+		if (msgType === "comm_close") {
+			this.commTargets.delete(commId);
+			this.handledRlmCommIds.delete(commId);
+			return;
+		}
+
+		if (msgType === "comm_open") {
+			const targetName = content.target_name;
+			if (typeof targetName !== "string") {
+				return;
+			}
+			this.commTargets.set(commId, targetName);
+			if (targetName === "rlm.run") {
+				this.startRlmRunFromComm(commId, content.data);
+			}
+			return;
+		}
+
+		const targetName = this.commTargets.get(commId);
+		if (msgType === "comm_msg" && targetName === "rlm.run") {
+			this.startRlmRunFromComm(commId, content.data);
+		}
+	}
+
+	private startRlmRunFromComm(commId: string, data: unknown): void {
+		if (this.handledRlmCommIds.has(commId)) {
+			return;
+		}
+		this.handledRlmCommIds.add(commId);
+
+		const task = (async () => {
+			try {
+				const result = await this.handleRlmCommRequest(data);
+				try {
+					await this.sendCommMessage(commId, { status: "ok", ...result });
+				} catch (replyError) {
+					console.error(
+						`[kernel] failed to send rlm.run ok reply for comm ${commId}: ${errorMessage(replyError)}`,
+					);
+				}
+			} catch (error) {
+				console.error(`[kernel] rlm.run failed for comm ${commId}: ${errorMessage(error)}`);
+				try {
+					await this.sendCommMessage(commId, { status: "error", error: errorMessage(error) });
+				} catch (replyError) {
+					console.error(
+						`[kernel] failed to send rlm.run error reply for comm ${commId}: ${errorMessage(replyError)}`,
+					);
+				}
+			}
+		})();
+		this.inFlightRlmRuns.add(task);
+		void task.finally(() => {
+			this.inFlightRlmRuns.delete(task);
+		});
+	}
+
+	private async handleRlmCommRequest(data: unknown): Promise<RlmCommResult> {
+		if (!isRecord(data)) {
+			throw new Error("rlm.run comm payload must be an object");
+		}
+
+		if (data.type === "run") {
+			const handler = this.options.rlmRunHandler;
+			if (!handler) {
+				throw new Error("rlm.run is not available in this session");
+			}
+			if (typeof data.prompt !== "string") {
+				throw new Error("rlm.run prompt must be a string");
+			}
+			const kwargs = isRecord(data.kwargs) ? data.kwargs : {};
+			return handler({ prompt: data.prompt, kwargs });
+		}
+
+		if (data.type === "background") {
+			const handler = this.options.rlmBackgroundRunHandler;
+			if (!handler) {
+				throw new Error("rlm.background is not available in this session");
+			}
+			if (typeof data.prompt !== "string") {
+				throw new Error("rlm.background prompt must be a string");
+			}
+			const kwargs = isRecord(data.kwargs) ? data.kwargs : {};
+			return handler({ prompt: data.prompt, kwargs });
+		}
+
+		if (data.type === "background_status") {
+			const handler = this.options.rlmBackgroundStatusHandler;
+			if (!handler) {
+				throw new Error("rlm.background status is not available in this session");
+			}
+			if (typeof data.id !== "string") {
+				throw new Error("rlm.background status id must be a string");
+			}
+			return handler({ id: data.id });
+		}
+
+		if (data.type === "background_wait") {
+			const handler = this.options.rlmBackgroundWaitHandler;
+			if (!handler) {
+				throw new Error("rlm.background wait is not available in this session");
+			}
+			if (typeof data.id !== "string") {
+				throw new Error("rlm.background wait id must be a string");
+			}
+			return handler({ id: data.id, timeoutMs: parseOptionalTimeoutMs(data.timeout_ms) });
+		}
+
+		throw new Error("rlm.run comm payload must have a supported type");
+	}
+
+	private async sendCommMessage(commId: string, data: Record<string, unknown>): Promise<void> {
+		const channel = this.control ?? this.shell;
+		if (!channel || !this.connection) {
+			throw new Error("Kernel channel is not connected");
+		}
+		const msg = buildMessage("comm_msg", { comm_id: commId, data }, this.session, this.options.username);
+		await channel.send(encode(msg, this.connection.key));
+	}
+
 	private async interrupt(): Promise<void> {
 		if (!this.control || !this.connection) return;
 		const msg = buildMessage("interrupt_request", {}, this.session, this.options.username);
 		await this.control.send(encode(msg, this.connection.key));
 	}
 
+	private cleanupResources(): void {
+		this.shell?.close();
+		this.iopub?.close();
+		this.control?.close();
+		this.shell = undefined;
+		this.iopub = undefined;
+		this.control = undefined;
+		try {
+			this.kernel?.kill("SIGTERM");
+		} catch {}
+		this.kernel = undefined;
+		this.connection = undefined;
+		if (this.tempDir) {
+			try {
+				rmSync(this.tempDir, { recursive: true, force: true });
+			} catch {}
+		}
+		this.tempDir = undefined;
+		this.startPromise = undefined;
+	}
+
+	private async waitForRlmRunsToSettle(tasks: Promise<void>[], timeoutMs: number): Promise<void> {
+		let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+		const timeoutPromise = new Promise<"timeout">((resolve) => {
+			timeout = globalThis.setTimeout(() => resolve("timeout"), timeoutMs);
+			if (timeout && typeof timeout === "object" && "unref" in timeout) {
+				timeout.unref();
+			}
+		});
+
+		const result = await Promise.race([Promise.allSettled(tasks).then(() => "settled" as const), timeoutPromise]);
+		if (timeout) {
+			globalThis.clearTimeout(timeout);
+		}
+		if (result === "timeout") {
+			console.error(`[kernel] timed out waiting ${timeoutMs}ms for ${tasks.length} rlm.run task(s) during dispose`);
+		}
+	}
+
 	async shutdown(): Promise<void> {
 		if (this.state === "shutdown") {
 			liveKernels.delete(this);
+			this.cleanupResources();
 			return;
 		}
 		this.state = "shutdown";
@@ -460,63 +778,56 @@ export class KernelManager {
 			}
 		} catch {}
 
-		this.shell?.close();
-		this.iopub?.close();
-		this.control?.close();
+		this.cleanupResources();
+	}
+
+	async restart(): Promise<void> {
+		const prev = this.executionQueue;
+		let resolveNext: () => void = () => {};
+		this.executionQueue = new Promise<void>((r) => {
+			resolveNext = r;
+		});
+		await prev;
+
 		try {
-			this.kernel?.kill("SIGTERM");
-		} catch {}
-		if (this.tempDir) {
-			try {
-				rmSync(this.tempDir, { recursive: true, force: true });
-			} catch {}
+			await this.shutdown();
+			this.state = "idle";
+			this.kernelStderr = "";
+			await this.start();
+		} finally {
+			resolveNext();
 		}
 	}
 
-	/** Synchronous best-effort cleanup. Safe to call from `process.on('exit')`. */
-	dispose(): void {
+	/** Graceful cleanup. Waits briefly for in-flight rlm.run handlers before closing sockets. */
+	dispose(): Promise<void> {
 		this.state = "shutdown";
 		liveKernels.delete(this);
-		this.shell?.close();
-		this.iopub?.close();
-		this.control?.close();
-		try {
-			this.kernel?.kill("SIGTERM");
-		} catch {}
-		if (this.tempDir) {
-			try {
-				rmSync(this.tempDir, { recursive: true, force: true });
-			} catch {}
+		const inFlightRlmRuns = [...this.inFlightRlmRuns];
+		if (inFlightRlmRuns.length === 0) {
+			this.cleanupResources();
+			return Promise.resolve();
 		}
+
+		return (async () => {
+			// TODO: plumb AbortSignal through AgentSession.prompt so disposal can cancel long-running child loops.
+			try {
+				await this.waitForRlmRunsToSettle(inFlightRlmRuns, RLM_DISPOSE_TIMEOUT_MS);
+			} finally {
+				this.cleanupResources();
+			}
+		})();
+	}
+
+	/** Synchronous best-effort cleanup. Safe to call from `process.on('exit')`. */
+	disposeSync(): void {
+		this.state = "shutdown";
+		liveKernels.delete(this);
+		// TODO: replace this best-effort hard-exit path if Node exposes an awaitable process-exit cleanup hook.
+		this.cleanupResources();
 	}
 
 	get isRunning(): boolean {
 		return this.state === "running";
 	}
-}
-
-// ---- Python interpreter resolution ---------------------------------------
-
-/**
- * Resolve the Python interpreter to use for the kernel. Searched in order:
- *   1. PRIME_AGENT_KERNEL_PYTHON env var
- *   2. ~/.prime-agent/kernel-venv/bin/python (canonical user-install location)
- *   3. <repo>/.kernel-venv/bin/python (development; created by scripts/setup-kernel-venv.sh)
- */
-export function resolveKernelPython(): string | null {
-	const envOverride = process.env.PRIME_AGENT_KERNEL_PYTHON;
-	if (envOverride && existsSync(envOverride)) return envOverride;
-
-	const home = process.env.HOME;
-	if (home) {
-		const canonical = join(home, ".prime-agent", "kernel-venv", "bin", "python");
-		if (existsSync(canonical)) return canonical;
-	}
-
-	for (let dir = process.cwd(); dir !== "/"; dir = join(dir, "..")) {
-		const candidate = join(dir, ".kernel-venv", "bin", "python");
-		if (existsSync(candidate)) return candidate;
-	}
-
-	return null;
 }

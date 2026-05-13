@@ -20,12 +20,13 @@ function skill(name: string): Skill {
 }
 
 describe("buildRlmPrompt", () => {
-	test("matches the rlm harness prompt without recursion", () => {
+	test("builds the rlm prompt without recursion", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
 			installedSkills: ["websearch"],
 			activeTools: ["ipython"],
+			allowRecursion: false,
 		});
 
 		expect(prompt).toBe(
@@ -41,9 +42,22 @@ describe("buildRlmPrompt", () => {
 				"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
 				"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 				"",
+				"Use `ipython` for both Python and shell work. For repository shell commands, prefer IPython shell syntax: `!rg ...`, `!npm run check`, or `%%bash` for multi-line scripts. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
+				"",
 				"Call at most one built-in tool per turn.",
 			].join("\n"),
 		);
+	});
+
+	test("only documents ipython shell prefixes when ipython is active", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			activeTools: ["bash"],
+			allowRecursion: false,
+		});
+
+		expect(prompt).not.toContain("Use `ipython` for both Python and shell work");
 	});
 });
 
@@ -60,6 +74,14 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("You are a coding agent.");
 		expect(prompt).toContain("Working directory: /repo");
 		expect(prompt).toContain("Conversation log: /repo/.pi/sessions/session.jsonl");
+		expect(prompt).toContain("await rlm('sub-task')");
+		expect(prompt).toContain("asyncio.gather");
+		expect(prompt).toContain("await rlm.background('sub-task')");
+		expect(prompt).toContain("notify='wake'");
+		expect(prompt).toContain("notify='silent'");
+		expect(prompt).toContain("Use `ipython` for both Python and shell work");
+		expect(prompt).toContain("prefer IPython shell syntax");
+		expect(prompt).toContain("Do not wrap ordinary shell commands in Python subprocesses");
 		expect(prompt).toContain("Call at most one built-in tool per turn.");
 		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("Available tools:");

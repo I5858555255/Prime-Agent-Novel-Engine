@@ -2,14 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added automatic IPython kernel runtime bootstrap with uv-managed Python, `ipykernel`, and `prime-agent-runtime`.
+- Added `/goal` for long-running objectives that continue after early no-tool stops until the model marks the goal complete.
+- Added `/usage` to show token, cost, and context usage on demand.
+
 ### Changed
 
 - Changed the default active built-in tool set to `ipython`.
+- Changed the interactive startup screen to hide loaded resources by default unless verbose startup is enabled.
+- Changed the interactive prompt input to render as a larger filled surface instead of a bordered frame.
+- Changed user messages to use the same filled treatment as the prompt input.
+- Changed the interactive working indicator to show elapsed time while the agent is running.
 - Replaced the default system prompt with the model-agnostic RLM harness prompt.
+- Changed IPython prompt guidance to prefer `!cmd` and `%%bash` for shell commands.
+
+### Fixed
+
+- Fixed long cwd values in the startup splash from wrapping through the brand mark.
+- Fixed IPython kernel startup to let `ipykernel` bind OS-assigned ports instead of randomly selecting fixed ports.
+- Fixed RLM child usage aggregation so parent session totals include recursive child runs after session reloads.
+- Fixed the RLM child-agent detail viewer to render messages, thinking, and tool output with the main chat presentation, open at the latest transcript output, and use terminal scrollback for native scrolling.
+- Fixed `rlm.run` comm handlers to log failures and drain in-flight child runs during kernel disposal.
 
 ### Removed
 
 - Removed the legacy `read`, `write`, `grep`, `find`, and `ls` built-in tools.
+- Removed the local TPS extension that posted token/cache stats after each agent response.
 
 ## [0.74.0] - 2026-05-07
 
