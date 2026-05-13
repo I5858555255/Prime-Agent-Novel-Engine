@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 import unittest
 from unittest.mock import patch
 
 import websearch
-from websearch.websearch import _decode_duckduckgo_url, _parse_duckduckgo_html, cli
+from websearch.websearch import (
+    _decode_duckduckgo_url,
+    _parse_duckduckgo_html,
+    cli,
+)
 
 
 SAMPLE_HTML = """
@@ -67,26 +70,53 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "queries"):
             await websearch.run(queries=["  "])
 
+    async def test_run_accepts_single_query_string(self) -> None:
+        with patch(
+            "websearch.websearch._fetch_duckduckgo_html",
+            return_value=SAMPLE_HTML,
+        ):
+            result = await websearch.run("rlm harness", max_results=1)
+
+        self.assertEqual(len(result["queries"]), 1)
+        self.assertEqual(result["queries"][0]["query"], "rlm harness")
+
+    async def test_run_rejects_non_string_queries(self) -> None:
+        with self.assertRaisesRegex(TypeError, r"queries\[1\]"):
+            await websearch.run(["good", 3])
+
+    async def test_run_rejects_empty_region(self) -> None:
+        with self.assertRaisesRegex(ValueError, "region"):
+            await websearch.run("rlm harness", region=" ")
+
 
 class CliTests(unittest.TestCase):
     def test_cli_prints_json_results(self) -> None:
         stdout = io.StringIO()
-        argv = ["websearch", "--queries", "rlm harness", "--max-results", "1"]
 
         with (
-            patch.object(sys, "argv", argv),
             patch("sys.stdout", stdout),
             patch(
                 "websearch.websearch._fetch_duckduckgo_html",
                 return_value=SAMPLE_HTML,
             ),
         ):
-            cli()
+            exit_code = cli(["--queries", "rlm harness", "--max-results", "1"])
 
         result = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
         self.assertEqual(len(result["queries"]), 1)
         self.assertEqual(result["queries"][0]["query"], "rlm harness")
         self.assertEqual(len(result["queries"][0]["results"]), 1)
+
+    def test_cli_exits_cleanly_on_validation_error(self) -> None:
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            with self.assertRaises(SystemExit) as raised:
+                cli(["--queries", "rlm harness", "--max-results", "0"])
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("max_results", stderr.getvalue())
 
 
 if __name__ == "__main__":

@@ -1,3 +1,8 @@
+---
+name: websearch
+description: Search the web from Prime Agent's Python kernel and return structured source results. Use when current web search results are needed before choosing pages to inspect.
+---
+
 # websearch
 
 Use `websearch` when the agent needs current web search results before deciding
@@ -12,6 +17,12 @@ results = await websearch.run(
     queries=["latest jupyter_client release"],
     max_results=5,
 )
+```
+
+For a single query, a string is accepted:
+
+```python
+results = await websearch.run("latest jupyter_client release")
 ```
 
 `run(...)` returns a dictionary with one `queries` entry per input query. Each

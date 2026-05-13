@@ -1,3 +1,3 @@
-from .websearch import run
+from .websearch import SearchResponse, SearchResult, SearchResultSet, cli, run
 
-__all__ = ["run"]
+__all__ = ["SearchResponse", "SearchResult", "SearchResultSet", "cli", "run"]

@@ -5,16 +5,35 @@ import asyncio
 import html
 import json
 import sys
+from collections.abc import Iterable, Sequence
 from html.parser import HTMLParser
-from typing import Literal
+from typing import Literal, TypedDict
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
+
+Backend = Literal["duckduckgo"]
+
+
+class SearchResult(TypedDict):
+    title: str
+    url: str
+    snippet: str | None
+
+
+class SearchResultSet(TypedDict):
+    query: str
+    backend: Backend
+    results: list[SearchResult]
+
+
+class SearchResponse(TypedDict):
+    queries: list[SearchResultSet]
 
 
 class _DuckDuckGoParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.results: list[dict[str, str | None]] = []
+        self.results: list[SearchResult] = []
         self._in_title = False
         self._in_snippet = False
         self._title_parts: list[str] = []
@@ -76,7 +95,7 @@ def _decode_duckduckgo_url(href: str) -> str:
     return absolute
 
 
-def _parse_duckduckgo_html(document: str, max_results: int) -> list[dict[str, str | None]]:
+def _parse_duckduckgo_html(document: str, max_results: int) -> list[SearchResult]:
     parser = _DuckDuckGoParser()
     parser.feed(document)
     return parser.results[:max_results]
@@ -94,7 +113,7 @@ def _fetch_duckduckgo_html(
         url,
         headers={
             "User-Agent": (
-                "Mozilla/5.0 (compatible; rlm-skill-websearch/0.1; "
+                "Mozilla/5.0 (compatible; prime-agent-skill-websearch/0.1; "
                 "+https://primeintellect.ai)"
             )
         },
@@ -106,7 +125,7 @@ def _fetch_duckduckgo_html(
 
 async def _search_duckduckgo(
     query: str, *, max_results: int, region: str, timeout_seconds: float
-) -> dict[str, object]:
+) -> SearchResultSet:
     document = await asyncio.to_thread(
         _fetch_duckduckgo_html,
         query,
@@ -120,17 +139,35 @@ async def _search_duckduckgo(
     }
 
 
+def _clean_queries(queries: Iterable[str] | str) -> list[str]:
+    if isinstance(queries, str):
+        raw_queries: Iterable[str] = [queries]
+    else:
+        raw_queries = queries
+
+    cleaned_queries: list[str] = []
+    for index, query in enumerate(raw_queries):
+        if not isinstance(query, str):
+            raise TypeError(
+                f"queries[{index}] must be str, got {type(query).__name__}"
+            )
+        stripped = query.strip()
+        if stripped:
+            cleaned_queries.append(stripped)
+    return cleaned_queries
+
+
 async def run(
-    queries: list[str],
+    queries: Iterable[str] | str,
     max_results: int = 5,
-    backend: Literal["duckduckgo"] = "duckduckgo",
+    backend: Backend = "duckduckgo",
     region: str = "us-en",
     timeout_seconds: float = 10.0,
-) -> dict[str, object]:
+) -> SearchResponse:
     """Search the web and return ranked results for each query.
 
     Args:
-        queries: Search query strings to run.
+        queries: Search query string or iterable of search query strings to run.
         max_results: Maximum number of results per query.
         backend: Search backend. Only `duckduckgo` is currently supported.
         region: DuckDuckGo region code such as `us-en`.
@@ -139,13 +176,15 @@ async def run(
     Returns:
         A dictionary containing one structured result set per query.
     """
-    cleaned_queries = [query.strip() for query in queries if query.strip()]
+    cleaned_queries = _clean_queries(queries)
     if not cleaned_queries:
         raise ValueError("queries must contain at least one non-empty query")
     if max_results < 1:
         raise ValueError("max_results must be at least 1")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
+    if not region.strip():
+        raise ValueError("region must be non-empty")
     if backend != "duckduckgo":
         raise ValueError(f"unsupported backend: {backend}")
 
@@ -200,17 +239,21 @@ def _create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cli() -> None:
+def cli(argv: Sequence[str] | None = None) -> int:
     parser = _create_parser()
-    args = parser.parse_args()
-    result = asyncio.run(
-        run(
-            queries=args.queries,
-            max_results=args.max_results,
-            backend=args.backend,
-            region=args.region,
-            timeout_seconds=args.timeout_seconds,
+    args = parser.parse_args(argv)
+    try:
+        result = asyncio.run(
+            run(
+                queries=args.queries,
+                max_results=args.max_results,
+                backend=args.backend,
+                region=args.region,
+                timeout_seconds=args.timeout_seconds,
+            )
         )
-    )
+    except Exception as exc:
+        parser.exit(1, f"websearch: error: {exc}\n")
     json.dump(result, sys.stdout)
     sys.stdout.write("\n")
+    return 0
