@@ -1091,7 +1091,12 @@ export class InteractiveMode {
 			return;
 		}
 
-		const url = new URL(telemetryUrl);
+		let url: URL;
+		try {
+			url = new URL(telemetryUrl);
+		} catch {
+			return;
+		}
 		url.searchParams.set("version", version);
 		void fetch(url, {
 			headers: {

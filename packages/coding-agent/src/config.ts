@@ -18,9 +18,6 @@ export const ENV_SESSION_DIR = "PRIME_AGENT_SESSION_DIR";
 export const ENV_CODING_AGENT = "PRIME_AGENT";
 export const ENV_CLEAR_ON_SHRINK = "PRIME_AGENT_CLEAR_ON_SHRINK";
 export const ENV_HARDWARE_CURSOR = "PRIME_AGENT_HARDWARE_CURSOR";
-export const ENV_TUI_WRITE_LOG = "PRIME_AGENT_TUI_WRITE_LOG";
-export const ENV_TUI_DEBUG = "PRIME_AGENT_TUI_DEBUG";
-export const ENV_DEBUG_REDRAW = "PRIME_AGENT_DEBUG_REDRAW";
 
 // =============================================================================
 // Package Detection
