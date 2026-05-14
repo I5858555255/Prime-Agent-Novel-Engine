@@ -22,7 +22,7 @@ import { createBashTool, createEditTool, createIpythonTool, withFileMutationQueu
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
-	/** Global config directory. Default: ~/.prime/agent */
+	/** Global config directory. Default: ~/.pi/agent */
 	agentDir?: string;
 
 	/** Auth storage for credentials. Default: AuthStorage.create(agentDir/auth.json) */

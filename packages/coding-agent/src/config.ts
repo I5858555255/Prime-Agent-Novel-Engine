@@ -442,10 +442,10 @@ export function getShareViewerUrl(gistId: string): string {
 }
 
 // =============================================================================
-// User Config Paths (~/.prime/agent/*)
+// User Config Paths (~/.pi/agent/*)
 // =============================================================================
 
-/** Get the agent config directory (e.g., ~/.prime/agent/) */
+/** Get the agent config directory (e.g., ~/.pi/agent/) */
 export function getAgentDir(): string {
 	const envDir = process.env[ENV_AGENT_DIR];
 	if (envDir) {

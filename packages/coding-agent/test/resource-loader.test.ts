@@ -317,7 +317,7 @@ Content`,
 			expect(agentsFiles).toEqual([]);
 		});
 
-		it("should discover SYSTEM.md from cwd/.prime/agent", async () => {
+		it("should discover SYSTEM.md from cwd/.pi", async () => {
 			const piDir = join(cwd, ".prime", "agent");
 			mkdirSync(piDir, { recursive: true });
 			writeFileSync(join(piDir, "SYSTEM.md"), "You are a helpful assistant.");

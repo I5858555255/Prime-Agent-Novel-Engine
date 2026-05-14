@@ -119,7 +119,7 @@ Content`,
 			expect(result.skills.some((r) => r.path === skillFile && r.enabled)).toBe(true);
 		});
 
-		it("should auto-discover root markdown skills from .prime/agent skill dirs", async () => {
+		it("should auto-discover root markdown skills from .pi skill dirs", async () => {
 			const skillFile = join(agentDir, "skills", "single-file.md");
 			mkdirSync(join(agentDir, "skills"), { recursive: true });
 			writeFileSync(
@@ -135,7 +135,7 @@ Content`,
 			expect(result.skills.some((r) => r.path === skillFile && r.enabled)).toBe(true);
 		});
 
-		it("should resolve project paths relative to .prime/agent", async () => {
+		it("should resolve project paths relative to .pi", async () => {
 			const extDir = join(tempDir, ".prime", "agent", "extensions");
 			mkdirSync(extDir, { recursive: true });
 			const extPath = join(extDir, "project-ext.ts");
@@ -385,7 +385,7 @@ Content`,
 			}
 		});
 
-		it("should dedupe user skill entries when ~/.prime/agent/skills is a symlink to ~/.agents/skills", async () => {
+		it("should dedupe user skill entries when ~/.pi/agent/skills is a symlink to ~/.agents/skills", async () => {
 			const previousHome = process.env.HOME;
 			process.env.HOME = tempDir;
 
@@ -436,7 +436,7 @@ Content`,
 			expect(result.skills.some((r) => r.path.includes("venv") && r.enabled)).toBe(false);
 		});
 
-		it("should not apply parent .gitignore to .prime/agent auto-discovery", async () => {
+		it("should not apply parent .gitignore to .pi auto-discovery", async () => {
 			writeFileSync(join(tempDir, ".gitignore"), ".prime/agent\n");
 
 			const skillDir = join(tempDir, ".prime", "agent", "skills", "auto-skill");
@@ -795,7 +795,7 @@ Content`,
 			expect(settings.packages?.[0]).toBe(expected);
 		});
 
-		it("should store project local packages relative to .prime/agent settings base", () => {
+		it("should store project local packages relative to .pi settings base", () => {
 			const projectPkgDir = join(tempDir, "project-local-pkg");
 			mkdirSync(join(projectPkgDir, "extensions"), { recursive: true });
 			writeFileSync(join(projectPkgDir, "extensions", "index.ts"), "export default function() {}");
