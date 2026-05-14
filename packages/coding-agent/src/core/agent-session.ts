@@ -105,10 +105,10 @@ import {
 	validateGoalBudget,
 	validateGoalObjective,
 } from "./goals.js";
-import type { KernelManager } from "./kernel/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
+import type { PythonExecutionBackend } from "./python-backend/types.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type {
 	RlmBackgroundRunStartResult,
@@ -709,7 +709,7 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _disposed = false;
-	private _ipythonKernelManagerRef: { current?: KernelManager } = {};
+	private _ipythonKernelManagerRef: { current?: PythonExecutionBackend } = {};
 	private _rlmDepth: number;
 	private _rlmMaxDepth: number;
 	private _rlmSessionDir?: string;

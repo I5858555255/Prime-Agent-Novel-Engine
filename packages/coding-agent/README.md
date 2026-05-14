@@ -93,7 +93,7 @@ pi
 
 Then just talk to pi. By default, pi gives the model one tool: `ipython`. The model uses the persistent kernel to read files, run commands, edit code, and inspect data. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [pi packages](#pi-packages).
 
-The Python kernel runtime is set up automatically on first invocation. Set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
+The Python kernel runtime is set up automatically on first invocation. Set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`. The default Python backend is the Jupyter/ZMQ IPython kernel; `PRIME_AGENT_PYTHON_BACKEND=prime-worker` enables the experimental stdio worker backend that keeps IPython but removes the Jupyter/ZMQ transport path.
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
@@ -634,6 +634,7 @@ pi --thinking high "Solve this complex problem"
 | `PI_SKIP_VERSION_CHECK` | Skip the Pi version update check at startup. This prevents the `pi.dev` latest-version request |
 | `PI_TELEMETRY` | Override install/update telemetry. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
+| `PRIME_AGENT_PYTHON_BACKEND` | Python execution backend: `jupyter-zmq` (default) or `prime-worker` (experimental) |
 | `PRIME_AGENT_KERNEL_PYTHON` | Use an existing Python environment with `ipykernel` instead of auto-bootstrapping `~/.prime/agent/kernel-venv` |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |
 

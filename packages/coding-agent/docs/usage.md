@@ -268,6 +268,8 @@ pi --tools bash,edit -p "Review the code"
 | `PI_SKIP_VERSION_CHECK` | Skip the Pi version update check at startup. This prevents the `pi.dev` latest-version request |
 | `PI_TELEMETRY` | Override install/update telemetry: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache where supported |
+| `PRIME_AGENT_PYTHON_BACKEND` | Python execution backend: `jupyter-zmq` (default) or `prime-worker` (experimental) |
+| `PRIME_AGENT_KERNEL_PYTHON` | Use an existing Python environment with `ipykernel` instead of auto-bootstrapping `~/.prime/agent/kernel-venv` |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |
 
 ## Design Principles

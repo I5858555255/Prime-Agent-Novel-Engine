@@ -3,6 +3,8 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.js";
 import { KernelManager } from "../kernel/index.js";
+import { PrimeWorkerManager } from "../python-backend/prime-worker.js";
+import type { PythonExecutionBackend } from "../python-backend/types.js";
 import type {
 	RlmBackgroundRunHandler,
 	RlmBackgroundRunStatusHandler,
@@ -67,7 +69,17 @@ export interface IpythonToolOptions {
 	rlmBackgroundStatusHandler?: RlmBackgroundRunStatusHandler;
 	rlmBackgroundWaitHandler?: RlmBackgroundRunWaitHandler;
 	/** Filled after the first kernel start so the owning session can restart it after compaction. */
-	kernelManagerRef?: { current?: KernelManager };
+	kernelManagerRef?: { current?: PythonExecutionBackend };
+}
+
+type PythonBackendName = "jupyter-zmq" | "prime-worker";
+
+function getPythonBackendName(): PythonBackendName {
+	const value = process.env.PRIME_AGENT_PYTHON_BACKEND ?? "jupyter-zmq";
+	if (value === "jupyter-zmq" || value === "prime-worker") return value;
+	throw new Error(
+		`Unsupported PRIME_AGENT_PYTHON_BACKEND=${JSON.stringify(value)}. Expected "jupyter-zmq" or "prime-worker".`,
+	);
 }
 
 export function createIpythonToolDefinition(
@@ -77,15 +89,16 @@ export function createIpythonToolDefinition(
 	// Memoize the entire create+start so concurrent first calls all await the
 	// same in-flight startup instead of creating two managers or skipping the
 	// not-yet-finished start().
-	let managerPromise: Promise<KernelManager> | undefined;
+	let managerPromise: Promise<PythonExecutionBackend> | undefined;
 	if (options?.kernelManagerRef) {
 		options.kernelManagerRef.current = undefined;
 	}
 
-	function getManager(): Promise<KernelManager> {
+	function getManager(): Promise<PythonExecutionBackend> {
 		if (!managerPromise) {
 			managerPromise = (async () => {
-				const m = new KernelManager({
+				const backendName = getPythonBackendName();
+				const commonOptions = {
 					python: options?.python,
 					cwd,
 					env: options?.env,
@@ -94,12 +107,18 @@ export function createIpythonToolDefinition(
 					rlmBackgroundRunHandler: options?.rlmBackgroundRunHandler,
 					rlmBackgroundStatusHandler: options?.rlmBackgroundStatusHandler,
 					rlmBackgroundWaitHandler: options?.rlmBackgroundWaitHandler,
-				});
+				};
+				const m: PythonExecutionBackend =
+					backendName === "prime-worker"
+						? new PrimeWorkerManager(commonOptions)
+						: new KernelManager(commonOptions);
 				await m.start();
-				const bootstrap = await m.execute(RLM_BOOTSTRAP_CODE);
-				if (bootstrap.status !== "ok") {
-					const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
-					throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+				if (backendName === "jupyter-zmq") {
+					const bootstrap = await m.execute(RLM_BOOTSTRAP_CODE);
+					if (bootstrap.status !== "ok") {
+						const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
+						throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+					}
 				}
 				if (options?.kernelManagerRef) {
 					options.kernelManagerRef.current = m;

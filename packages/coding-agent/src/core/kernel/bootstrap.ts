@@ -6,11 +6,12 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-const BOOTSTRAP_SCHEMA = 1;
+const BOOTSTRAP_SCHEMA = 2;
 const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
-const RUNTIME_READY_CHECK = "import rlm; assert hasattr(rlm, 'background'); assert hasattr(rlm.rlm, 'background')";
+const RUNTIME_READY_CHECK =
+	"import rlm; import prime_agent_worker; assert hasattr(rlm, 'background'); assert hasattr(rlm.rlm, 'background')";
 const BOOTSTRAP_VERSION_FILE = ".bootstrap-version";
 const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS = 100;

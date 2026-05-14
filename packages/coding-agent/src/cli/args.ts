@@ -349,6 +349,8 @@ ${chalk.bold("Environment Variables:")}
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
   PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
+  PRIME_AGENT_PYTHON_BACKEND       - Python backend: jupyter-zmq (default) or prime-worker (experimental)
+  PRIME_AGENT_KERNEL_PYTHON        - Existing Python with ipykernel and prime-agent-runtime
 
 ${chalk.bold("Built-in Tool Names:")}
   ipython - Execute Python in a persistent IPython kernel

@@ -15,14 +15,18 @@ function writeExecutable(filePath: string, content: string): void {
 function writeBootstrapVersion(venv: string): void {
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
-		`${JSON.stringify({ schema: 1, ipykernel: "ipykernel", runtime: "prime-agent-runtime" })}\n`,
+		`${JSON.stringify({ schema: 2, ipykernel: "ipykernel", runtime: "prime-agent-runtime" })}\n`,
 	);
 }
 
 function writeFakePython(filePath: string, importableModules: readonly string[]): void {
-	const rlmRuntimeCheck = "import rlm; assert hasattr(rlm, 'background'); assert hasattr(rlm.rlm, 'background')";
+	const rlmRuntimeCheck =
+		"import rlm; import prime_agent_worker; assert hasattr(rlm, 'background'); assert hasattr(rlm.rlm, 'background')";
 	const cases = importableModules.map((moduleName) => `    "import ${moduleName}") exit 0 ;;`).join("\n");
-	const runtimeCase = importableModules.includes("rlm") ? `    "${rlmRuntimeCheck}") exit 0 ;;` : "";
+	const runtimeCase =
+		importableModules.includes("rlm") && importableModules.includes("prime_agent_worker")
+			? `    "${rlmRuntimeCheck}") exit 0 ;;`
+			: "";
 	writeExecutable(
 		filePath,
 		[
@@ -46,7 +50,8 @@ function installFakeUv(): string {
 	const logPath = join(tempDir, "uv.log");
 	process.env.UV_LOG = logPath;
 	process.env.PATH = `${binDir}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
-	const rlmRuntimeCheck = "import rlm; assert hasattr(rlm, 'background'); assert hasattr(rlm.rlm, 'background')";
+	const rlmRuntimeCheck =
+		"import rlm; import prime_agent_worker; assert hasattr(rlm, 'background'); assert hasattr(rlm.rlm, 'background')";
 	writeExecutable(
 		join(binDir, "uv"),
 		[
@@ -63,7 +68,7 @@ function installFakeUv(): string {
 			"#!/bin/sh",
 			'if [ "$1" = "-c" ]; then',
 			'  case "$2" in',
-			'    "import ipykernel"|"import rlm") exit 0 ;;',
+			'    "import ipykernel"|"import rlm"|"import prime_agent_worker") exit 0 ;;',
 			`    "${rlmRuntimeCheck}") exit 0 ;;`,
 			"    *) exit 1 ;;",
 			"  esac",
@@ -122,7 +127,7 @@ describe("kernel bootstrap", () => {
 		expect(log).toContain("pip install --python");
 		expect(log).toContain("ipykernel");
 		expect(log).toContain("prime-agent-runtime");
-		expect(readFileSync(join(venv, ".bootstrap-version"), "utf8")).toContain('"schema":1');
+		expect(readFileSync(join(venv, ".bootstrap-version"), "utf8")).toContain('"schema":2');
 	});
 
 	it("shares concurrent bootstrap work in one process", async () => {
@@ -141,7 +146,7 @@ describe("kernel bootstrap", () => {
 		const venv = join(tempDir, "kernel-venv");
 		const python = join(venv, "bin", "python");
 		mkdirSync(join(venv, "bin"), { recursive: true });
-		writeFakePython(python, ["ipykernel", "rlm"]);
+		writeFakePython(python, ["ipykernel", "rlm", "prime_agent_worker"]);
 		writeBootstrapVersion(venv);
 		process.env.PRIME_AGENT_KERNEL_VENV = venv;
 
@@ -189,7 +194,7 @@ describe("kernel bootstrap", () => {
 
 	it("uses PRIME_AGENT_KERNEL_PYTHON as an override contract", async () => {
 		const overridePython = join(tempDir, "override-python");
-		writeFakePython(overridePython, ["ipykernel", "rlm"]);
+		writeFakePython(overridePython, ["ipykernel", "rlm", "prime_agent_worker"]);
 		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
 
 		await expect(ensureKernelPython()).resolves.toBe(overridePython);

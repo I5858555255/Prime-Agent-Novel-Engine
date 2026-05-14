@@ -8,6 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
+import type { PythonExecutionBackend } from "../python-backend/types.js";
 import type {
 	RlmBackgroundRunHandler,
 	RlmBackgroundRunStatusHandler,
@@ -267,7 +268,7 @@ function installSignalHandlersOnce(): void {
 
 // ---- kernel manager ------------------------------------------------------
 
-export class KernelManager {
+export class KernelManager implements PythonExecutionBackend {
 	private readonly options: Pick<
 		KernelManagerOptions,
 		| "python"

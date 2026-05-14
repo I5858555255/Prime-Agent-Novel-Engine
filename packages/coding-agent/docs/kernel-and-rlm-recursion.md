@@ -4,7 +4,18 @@ This document explains the IPython kernel transport and the recursive `rlm` sub-
 
 The important design constraint is that the Python `rlm` package in the kernel is only a shim. It preserves the model-facing API from `rlm-harness`, but it does not run a child agent loop in Python. Child agents are run by the TypeScript host through the same `AgentSession` machinery as the parent.
 
+Prime Agent has two Python execution backends:
+
+```text
+PRIME_AGENT_PYTHON_BACKEND=jupyter-zmq  # default
+PRIME_AGENT_PYTHON_BACKEND=prime-worker # experimental
+```
+
+`jupyter-zmq` is the existing Jupyter protocol backend described below. `prime-worker` keeps IPython as the execution engine but replaces local TCP ports, Jupyter connection files, and Node `zeromq` sockets with a long-lived Python worker process over stdio JSON-RPC.
+
 ## High-Level Shape
+
+Default Jupyter/ZMQ backend:
 
 ```text
 AgentSession (TypeScript)
@@ -18,6 +29,24 @@ KernelManager (TypeScript)
 IPython kernel process (Python)
   |
   | has prime-agent-runtime installed as module "rlm"
+  v
+model-executed Python code
+```
+
+Experimental Prime worker backend:
+
+```text
+AgentSession (TypeScript)
+  |
+  | owns an ipython tool
+  v
+PrimeWorkerManager (TypeScript)
+  |
+  | newline-delimited JSON-RPC over child process stdio
+  v
+prime_agent_worker (Python)
+  |
+  | embedded IPython InteractiveShell
   v
 model-executed Python code
 ```
@@ -72,9 +101,54 @@ prime-agent-runtime/src/rlm/__init__.py
   Python shim installed into ~/.prime/agent/kernel-venv. Exposes rlm, rlm.run(),
   RLMResult, and TokenUsage.
 
+prime-agent-runtime/src/prime_agent_worker/__main__.py
+  Experimental stdio JSON-RPC worker. Embeds IPython and injects a host-backed
+  rlm object without using Jupyter comms.
+
 scripts/setup-kernel-venv.sh
   Thin wrapper around the automatic kernel bootstrap.
 ```
+
+## Backend Selection
+
+`packages/coding-agent/src/core/tools/ipython.ts` selects the backend lazily on the first `ipython` tool call.
+
+The default is:
+
+```bash
+PRIME_AGENT_PYTHON_BACKEND=jupyter-zmq
+```
+
+This starts `KernelManager` and uses the Jupyter protocol over ZeroMQ. It is the production path.
+
+The experimental worker is enabled with:
+
+```bash
+PRIME_AGENT_PYTHON_BACKEND=prime-worker
+```
+
+This starts `PrimeWorkerManager`, which spawns:
+
+```bash
+python -m prime_agent_worker
+```
+
+The worker backend still uses the same automatic Python bootstrap and the same persistent IPython semantics: variables persist across cells, IPython shell escapes such as `!pwd` work, cell magics such as `%%bash` work, top-level `await` works, and `rlm` remains the defining model-facing API. What changes is only the transport between TypeScript and Python.
+
+The worker backend does not use:
+
+- local TCP ports
+- Jupyter connection files
+- Jupyter comm messages
+- Node `zeromq`
+
+It does still use:
+
+- `prime-agent-runtime`
+- IPython
+- the TypeScript `AgentSession.runRlmChild()` implementation for recursive children
+
+Abort behavior differs by transport. `jupyter-zmq` sends a Jupyter `interrupt_request` on the control channel. `prime-worker` terminates the Python worker on abort and starts a fresh worker on the next execution. This is intentionally conservative for cross-platform local installs.
 
 ## ZeroMQ Jupyter Kernel Setup
 
@@ -290,6 +364,8 @@ await rlm.run("subtask")
 Both delegate to the same shim implementation.
 
 If `prime-agent-runtime` is missing from the kernel environment, startup remains non-fatal. The fallback `rlm` object raises a clear `RuntimeError` only when code actually calls `rlm.run(...)` or `rlm(...)`.
+
+With `PRIME_AGENT_PYTHON_BACKEND=prime-worker`, `prime_agent_worker` injects the callable `rlm` object directly into the IPython namespace and also installs a host-backed `rlm` module for `import rlm`. No Jupyter comms are involved in this path; RLM calls are JSON-RPC requests from the worker back to `PrimeWorkerManager`.
 
 ## Python RLM Shim
 
