@@ -529,7 +529,7 @@ export class KernelManager {
 				await shell.send(encode(msg, conn.key));
 			} catch (error) {
 				this.rejectActiveExecution(error instanceof Error ? error : new Error(String(error)));
-				throw error;
+				return await resultPromise;
 			}
 			return await resultPromise;
 		} finally {
