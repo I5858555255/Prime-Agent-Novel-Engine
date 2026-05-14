@@ -2353,6 +2353,8 @@ export class InteractiveMode {
 		this.editorComponentFactory = factory;
 		if (this.childAgentPanelMode) {
 			this.restoreMainAgentView();
+			this.childAgentDetailNodeId = undefined;
+			this.childAgentDetail.setNode(undefined);
 		}
 		this.childAgentPanelMode = undefined;
 		this.childAgentSummary.setHidden(false);
