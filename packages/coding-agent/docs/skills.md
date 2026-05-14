@@ -23,6 +23,7 @@ Pi implements the [Agent Skills standard](https://agentskills.io/specification),
 
 Pi loads skills from:
 
+- Built-in: `websearch`
 - Global:
   - `~/.pi/agent/skills/`
   - `~/.agents/skills/`
@@ -38,7 +39,7 @@ Discovery rules:
 - In all skill locations, directories containing `SKILL.md` are discovered recursively
 - In `~/.agents/skills/` and project `.agents/skills/`, root `.md` files are ignored
 
-Disable discovery with `--no-skills` (explicit `--skill` paths still load).
+Disable discovery with `--no-skills` (explicit `--skill` paths still load). This also disables built-in skills.
 
 ### Using Skills from Other Harnesses
 
@@ -75,6 +76,7 @@ This is progressive disclosure: only descriptions are always in context, full in
 Skills register as `/skill:name` commands:
 
 ```bash
+/skill:websearch              # Load the built-in web search skill
 /skill:brave-search           # Load and execute the skill
 /skill:pdf-tools extract      # Load skill with arguments
 ```
@@ -191,38 +193,24 @@ Name collisions (same name from different locations) warn and keep the first ski
 ## Example
 
 ```
-brave-search/
+docs-check/
 ├── SKILL.md
-├── search.js
-└── content.js
+└── check-links.sh
 ```
 
 **SKILL.md:**
 ````markdown
 ---
-name: brave-search
-description: Web search and content extraction via Brave Search API. Use for searching documentation, facts, or any web content.
+name: docs-check
+description: Check Markdown documentation for stale links and formatting issues. Use when reviewing docs changes.
 ---
 
-# Brave Search
+# Docs Check
 
-## Setup
-
-```bash
-cd /path/to/brave-search && npm install
-```
-
-## Search
+## Usage
 
 ```bash
-./search.js "query"              # Basic search
-./search.js "query" --content    # Include page content
-```
-
-## Extract Page Content
-
-```bash
-./content.js https://example.com
+./check-links.sh docs/
 ```
 ````
 

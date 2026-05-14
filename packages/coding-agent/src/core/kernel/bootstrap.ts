@@ -5,8 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import {
+	BUILTIN_PYTHON_SKILL_IMPORTS,
+	BUILTIN_PYTHON_SKILL_PACKAGES,
+	getBuiltinPythonSkillRequirements,
+} from "../builtin-python-skills.js";
 
-const BOOTSTRAP_SCHEMA = 1;
+const BOOTSTRAP_SCHEMA = 2;
 const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
@@ -22,6 +27,7 @@ interface BootstrapVersion {
 	schema: number;
 	ipykernel?: string;
 	runtime?: string;
+	pythonSkills?: string[];
 }
 
 function errorMessage(error: unknown): string {
@@ -144,6 +150,15 @@ async function hasPrimeAgentRuntime(python: string): Promise<boolean> {
 	}
 }
 
+async function hasBuiltinPythonSkills(python: string): Promise<boolean> {
+	for (const importName of BUILTIN_PYTHON_SKILL_IMPORTS) {
+		if (!(await pythonImports(python, importName))) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function bootstrapLockDir(venv: string): string {
 	return path.join(path.dirname(venv), `${path.basename(venv)}${BOOTSTRAP_LOCK_NAME}`);
 }
@@ -244,17 +259,26 @@ async function readBootstrapVersion(venv: string): Promise<BootstrapVersion | nu
 			schema: parsed.schema,
 			ipykernel: typeof parsed.ipykernel === "string" ? parsed.ipykernel : undefined,
 			runtime: typeof parsed.runtime === "string" ? parsed.runtime : undefined,
+			pythonSkills: Array.isArray(parsed.pythonSkills)
+				? parsed.pythonSkills.filter((value): value is string => typeof value === "string")
+				: undefined,
 		};
 	} catch {
 		return null;
 	}
 }
 
+function sameStringArray(left: string[] | undefined, right: string[]): boolean {
+	if (!left || left.length !== right.length) return false;
+	return left.every((value, index) => value === right[index]);
+}
+
 function bootstrapVersionCurrent(version: BootstrapVersion | null): boolean {
 	return (
 		version?.schema === BOOTSTRAP_SCHEMA &&
 		version.ipykernel === IPYKERNEL_REQUIREMENT &&
-		version.runtime === RUNTIME_REQUIREMENT
+		version.runtime === RUNTIME_REQUIREMENT &&
+		sameStringArray(version.pythonSkills, BUILTIN_PYTHON_SKILL_PACKAGES)
 	);
 }
 
@@ -263,6 +287,7 @@ async function writeBootstrapVersion(venv: string): Promise<void> {
 		schema: BOOTSTRAP_SCHEMA,
 		ipykernel: IPYKERNEL_REQUIREMENT,
 		runtime: RUNTIME_REQUIREMENT,
+		pythonSkills: BUILTIN_PYTHON_SKILL_PACKAGES,
 	};
 	await writeFile(path.join(venv, BOOTSTRAP_VERSION_FILE), `${JSON.stringify(version)}\n`, "utf8");
 }
@@ -289,10 +314,19 @@ async function bootstrapVenv(venv: string): Promise<void> {
 	const uv = await ensureUv();
 	const python = path.join(venv, "bin", "python");
 	const runtimeRequirement = await resolveRuntimeRequirement();
+	const builtinSkillRequirements = getBuiltinPythonSkillRequirements();
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
-	await run(uv, ["pip", "install", "--python", python, IPYKERNEL_REQUIREMENT, runtimeRequirement]);
+	await run(uv, [
+		"pip",
+		"install",
+		"--python",
+		python,
+		IPYKERNEL_REQUIREMENT,
+		runtimeRequirement,
+		...builtinSkillRequirements,
+	]);
 	await writeBootstrapVersion(venv);
 }
 
@@ -300,6 +334,7 @@ async function kernelReady(python: string, venv: string): Promise<boolean> {
 	return (
 		(await hasIpykernel(python)) &&
 		(await hasPrimeAgentRuntime(python)) &&
+		(await hasBuiltinPythonSkills(python)) &&
 		bootstrapVersionCurrent(await readBootstrapVersion(venv))
 	);
 }
@@ -307,7 +342,7 @@ async function kernelReady(python: string, venv: string): Promise<boolean> {
 function formatBootstrapFailure(error: unknown): Error {
 	return new Error(
 		`Failed to set up the Python kernel runtime. ${errorMessage(error)}\n` +
-			"First-time setup needs internet to install uv, Python, ipykernel, and prime-agent-runtime; once set up, prime-agent runs offline. " +
+			"First-time setup needs internet to install uv, Python, ipykernel, prime-agent-runtime, and built-in Python skills; once set up, prime-agent runs offline. " +
 			"Set PRIME_AGENT_KERNEL_PYTHON to a Python with ipykernel and a current prime-agent-runtime installed to skip auto-bootstrap.",
 	);
 }
@@ -319,6 +354,9 @@ async function ensureKernelPythonUncached(): Promise<string> {
 		const missing: string[] = [];
 		if (!(await hasIpykernel(python))) missing.push("ipykernel");
 		if (!(await hasPrimeAgentRuntime(python))) missing.push("a current prime-agent-runtime with rlm.background");
+		for (const importName of BUILTIN_PYTHON_SKILL_IMPORTS) {
+			if (!(await pythonImports(python, importName))) missing.push(`the ${importName} built-in Python skill`);
+		}
 		if (missing.length === 0) return python;
 		throw new Error(`PRIME_AGENT_KERNEL_PYTHON points to a Python missing ${missing.join(" and ")}: ${python}`);
 	}
