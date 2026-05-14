@@ -1,11 +1,9 @@
 /**
  * Central timing instrumentation for startup profiling.
- * Enable with PRIME_AGENT_TIMING=1 environment variable.
+ * Enable with PI_TIMING=1 environment variable.
  */
 
-import { ENV_TIMING } from "../config.js";
-
-const ENABLED = process.env[ENV_TIMING] === "1";
+const ENABLED = process.env.PI_TIMING === "1";
 const timings: Array<{ label: string; ms: number }> = [];
 let lastTime = Date.now();
 

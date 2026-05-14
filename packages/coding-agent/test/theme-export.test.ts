@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.js";
 import { getThemeExportColors } from "../src/modes/interactive/theme/theme.js";
 
 type ThemeFile = {
@@ -21,18 +20,18 @@ describe("getThemeExportColors", () => {
 	let previousAgentDir: string | undefined;
 
 	beforeEach(() => {
-		tempRoot = mkdtempSync(join(tmpdir(), "prime-agent-theme-export-"));
-		previousAgentDir = process.env[ENV_AGENT_DIR];
-		process.env[ENV_AGENT_DIR] = join(tempRoot, "agent");
-		mkdirSync(join(process.env[ENV_AGENT_DIR], "themes"), { recursive: true });
+		tempRoot = mkdtempSync(join(tmpdir(), "pi-theme-export-"));
+		previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = join(tempRoot, "agent");
+		mkdirSync(join(process.env.PI_CODING_AGENT_DIR, "themes"), { recursive: true });
 	});
 
 	afterEach(() => {
 		rmSync(tempRoot, { recursive: true, force: true });
 		if (previousAgentDir === undefined) {
-			delete process.env[ENV_AGENT_DIR];
+			delete process.env.PI_CODING_AGENT_DIR;
 		} else {
-			process.env[ENV_AGENT_DIR] = previousAgentDir;
+			process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		}
 	});
 
@@ -59,7 +58,7 @@ describe("getThemeExportColors", () => {
 		};
 
 		writeFileSync(
-			join(process.env[ENV_AGENT_DIR]!, "themes", "custom-export-vars.json"),
+			join(process.env.PI_CODING_AGENT_DIR!, "themes", "custom-export-vars.json"),
 			JSON.stringify(customTheme, null, 2),
 		);
 
@@ -92,7 +91,7 @@ describe("getThemeExportColors", () => {
 		};
 
 		writeFileSync(
-			join(process.env[ENV_AGENT_DIR]!, "themes", "custom-export-recursive.json"),
+			join(process.env.PI_CODING_AGENT_DIR!, "themes", "custom-export-recursive.json"),
 			JSON.stringify(customTheme, null, 2),
 		);
 

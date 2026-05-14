@@ -6,11 +6,11 @@
  * Test with: npx tsx src/cli-new.ts [args...]
  */
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
-import { APP_NAME, ENV_CODING_AGENT } from "./config.js";
+import { APP_NAME } from "./config.js";
 import { main } from "./main.js";
 
 process.title = APP_NAME;
-process.env[ENV_CODING_AGENT] = "true";
+process.env.PI_CODING_AGENT = "true";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 // bodyTimeout/headersTimeout default to 300s in undici; long local-LLM stalls

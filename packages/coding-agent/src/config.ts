@@ -5,20 +5,6 @@ import { basename, dirname, join, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
 import { shouldUseWindowsShell } from "./utils/child-process.js";
 
-export const ENV_PACKAGE_DIR = "PRIME_AGENT_PACKAGE_DIR";
-export const ENV_OFFLINE = "PRIME_AGENT_OFFLINE";
-export const ENV_SKIP_VERSION_CHECK = "PRIME_AGENT_SKIP_VERSION_CHECK";
-export const ENV_TELEMETRY = "PRIME_AGENT_TELEMETRY";
-export const ENV_SHARE_VIEWER_URL = "PRIME_AGENT_SHARE_VIEWER_URL";
-export const ENV_INSTALL_TELEMETRY_URL = "PRIME_AGENT_INSTALL_TELEMETRY_URL";
-export const ENV_STARTUP_BENCHMARK = "PRIME_AGENT_STARTUP_BENCHMARK";
-export const ENV_TIMING = "PRIME_AGENT_TIMING";
-export const ENV_AGENT_DIR = "PRIME_AGENT_DIR";
-export const ENV_SESSION_DIR = "PRIME_AGENT_SESSION_DIR";
-export const ENV_CODING_AGENT = "PRIME_AGENT";
-export const ENV_CLEAR_ON_SHRINK = "PRIME_AGENT_CLEAR_ON_SHRINK";
-export const ENV_HARDWARE_CURSOR = "PRIME_AGENT_HARDWARE_CURSOR";
-
 // =============================================================================
 // Package Detection
 // =============================================================================
@@ -283,7 +269,7 @@ export function getSelfUpdateUnavailableInstruction(
 ): string {
 	const method = detectInstallMethod();
 	if (method === "bun-binary") {
-		return `Download from: https://github.com/PrimeIntellect-ai/prime-agent/releases/latest`;
+		return `Download from: https://github.com/earendil-works/pi-mono/releases/latest`;
 	}
 	const command = getSelfUpdateCommandForMethod(method, packageName, updatePackageName, npmCommand);
 	if (command) {
@@ -316,7 +302,7 @@ export function getUpdateInstruction(packageName: string): string {
  */
 export function getPackageDir(): string {
 	// Allow override via environment variable (useful for Nix/Guix where store paths tokenize poorly)
-	const envDir = process.env[ENV_PACKAGE_DIR];
+	const envDir = process.env.PI_PACKAGE_DIR;
 	if (envDir) {
 		if (envDir === "~") return homedir();
 		if (envDir.startsWith("~/")) return homedir() + envDir.slice(1);
@@ -416,26 +402,30 @@ export function getBundledInteractiveAssetPath(name: string): string {
 }
 
 // =============================================================================
-// App Config (from package.json primeAgentConfig)
+// App Config (from package.json piConfig)
 // =============================================================================
 
 interface PackageJson {
 	name?: string;
 	version?: string;
-	primeAgentConfig?: {
+	piConfig?: {
 		name?: string;
-		title?: string;
 		configDir?: string;
 	};
 }
 
 const pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
 
-export const PACKAGE_NAME: string = pkg.name || "prime-agent";
-export const APP_NAME: string = pkg.primeAgentConfig?.name || "prime-agent";
-export const APP_TITLE: string = pkg.primeAgentConfig?.title || "Prime Agent";
-export const CONFIG_DIR_NAME: string = pkg.primeAgentConfig?.configDir || ".prime/agent";
+const piConfigName: string | undefined = pkg.piConfig?.name;
+export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent";
+export const APP_NAME: string = piConfigName || "pi";
+export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
+export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".prime/agent";
 export const VERSION: string = pkg.version || "0.0.0";
+
+// e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
+export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+export const ENV_SESSION_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`;
 
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
@@ -443,11 +433,11 @@ export function expandTildePath(path: string): string {
 	return path;
 }
 
-const DEFAULT_SHARE_VIEWER_URL = "https://primeintellect.ai/prime-agent/session/";
+const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
 
 /** Get the share viewer URL for a gist ID */
 export function getShareViewerUrl(gistId: string): string {
-	const baseUrl = process.env[ENV_SHARE_VIEWER_URL] || DEFAULT_SHARE_VIEWER_URL;
+	const baseUrl = process.env.PI_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
 	return `${baseUrl}#${gistId}`;
 }
 

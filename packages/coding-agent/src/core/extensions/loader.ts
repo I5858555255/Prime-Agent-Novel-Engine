@@ -22,7 +22,7 @@ import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.js";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-// avoiding a circular dependency. Extensions can import from prime-agent.
+// avoiding a circular dependency. Extensions can import from @earendil-works/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.js";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
@@ -52,7 +52,6 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@earendil-works/pi-tui": _bundledPiTui,
 	"@earendil-works/pi-ai": _bundledPiAi,
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
-	"prime-agent": _bundledPiCodingAgent,
 	"@earendil-works/pi-coding-agent": _bundledPiCodingAgent,
 	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
 	"@mariozechner/pi-tui": _bundledPiTui,
@@ -62,53 +61,6 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 };
 
 const require = createRequire(import.meta.url);
-
-const ESM_ONLY_PACKAGE_ENTRIES: Record<string, string> = {
-	"@earendil-works/pi-ai": "dist/index.js",
-	"@earendil-works/pi-ai/oauth": "dist/oauth.js",
-};
-
-function getPackageName(specifier: string): string {
-	const parts = specifier.split("/");
-	if (specifier.startsWith("@")) {
-		return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : specifier;
-	}
-	return parts[0] || specifier;
-}
-
-function findPackageRoot(specifier: string): string | undefined {
-	const packageName = getPackageName(specifier);
-	for (const lookupPath of require.resolve.paths(specifier) ?? []) {
-		const packageJsonPath = path.join(lookupPath, packageName, "package.json");
-		if (fs.existsSync(packageJsonPath)) {
-			return path.dirname(packageJsonPath);
-		}
-	}
-	return undefined;
-}
-
-function resolveImportEntry(specifier: string): string {
-	const importMetaResolve = import.meta.resolve;
-	if (typeof importMetaResolve === "function") {
-		return fileURLToPath(importMetaResolve(specifier));
-	}
-
-	try {
-		return require.resolve(specifier);
-	} catch (error) {
-		const entry = ESM_ONLY_PACKAGE_ENTRIES[specifier];
-		if (!entry) {
-			throw error;
-		}
-
-		const packageRoot = findPackageRoot(specifier);
-		if (!packageRoot) {
-			throw error;
-		}
-
-		return path.join(packageRoot, entry);
-	}
-}
 
 /**
  * Get aliases for jiti (used in Node.js/development mode).
@@ -132,7 +84,7 @@ function getAliases(): Record<string, string> {
 		if (fs.existsSync(workspacePath)) {
 			return workspacePath;
 		}
-		return resolveImportEntry(specifier);
+		return fileURLToPath(import.meta.resolve(specifier));
 	};
 
 	const piCodingAgentEntry = packageIndex;
@@ -142,7 +94,6 @@ function getAliases(): Record<string, string> {
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
 
 	_aliases = {
-		"prime-agent": piCodingAgentEntry,
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
@@ -228,7 +179,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		invalidate: (message) => {
 			state.staleMessage ??=
 				message ??
-				"This extension ctx is stale after session replacement or reload. Do not use a captured extension API or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
 		},
 		// Pre-bind: queue registrations so bindCore() can flush them once the
 		// model registry is available. bindCore() replaces both with direct calls.
@@ -509,19 +460,19 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	};
 }
 
-interface PrimeAgentManifest {
+interface PiManifest {
 	extensions?: string[];
 	themes?: string[];
 	skills?: string[];
 	prompts?: string[];
 }
 
-function readPrimeAgentManifest(packageJsonPath: string): PrimeAgentManifest | null {
+function readPiManifest(packageJsonPath: string): PiManifest | null {
 	try {
 		const content = fs.readFileSync(packageJsonPath, "utf-8");
 		const pkg = JSON.parse(content);
-		if (pkg.primeAgent && typeof pkg.primeAgent === "object") {
-			return pkg.primeAgent as PrimeAgentManifest;
+		if (pkg.pi && typeof pkg.pi === "object") {
+			return pkg.pi as PiManifest;
 		}
 		return null;
 	} catch {
@@ -537,16 +488,16 @@ function isExtensionFile(name: string): boolean {
  * Resolve extension entry points from a directory.
  *
  * Checks for:
- * 1. package.json with "primeAgent.extensions" field -> returns declared paths
+ * 1. package.json with "pi.extensions" field -> returns declared paths
  * 2. index.ts or index.js -> returns the index file
  *
  * Returns resolved paths or null if no entry points found.
  */
 function resolveExtensionEntries(dir: string): string[] | null {
-	// Check for package.json with "primeAgent" field first
+	// Check for package.json with "pi" field first
 	const packageJsonPath = path.join(dir, "package.json");
 	if (fs.existsSync(packageJsonPath)) {
-		const manifest = readPrimeAgentManifest(packageJsonPath);
+		const manifest = readPiManifest(packageJsonPath);
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -580,7 +531,7 @@ function resolveExtensionEntries(dir: string): string[] | null {
  * Discovery rules:
  * 1. Direct files: `extensions/*.ts` or `*.js` → load
  * 2. Subdirectory with index: `extensions/* /index.ts` or `index.js` → load
- * 3. Subdirectory with package.json: `extensions/* /package.json` with "primeAgent" field -> load what it declares
+ * 3. Subdirectory with package.json: `extensions/* /package.json` with "pi" field → load what it declares
  *
  * No recursion beyond one level. Complex packages must use package.json manifest.
  */
@@ -652,7 +603,7 @@ export async function discoverAndLoadExtensions(
 	for (const p of configuredPaths) {
 		const resolved = resolvePath(p, cwd);
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-			// Check for package.json with Prime Agent manifest or index.ts
+			// Check for package.json with pi manifest or index.ts
 			const entries = resolveExtensionEntries(resolved);
 			if (entries) {
 				addPaths(entries);
