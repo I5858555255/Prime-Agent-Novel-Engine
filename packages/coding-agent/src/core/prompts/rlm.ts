@@ -44,8 +44,8 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"",
 			"A callable `rlm` is already in your global namespace — call it directly with `await rlm('sub-task')` to spawn a recursive sub-agent. Returns an `RLMResult` with `.answer` (string), `.usage`, `.turns`, and `.session_dir`.",
 			"For parallel sub-agents, use normal Python async patterns such as `await asyncio.gather(rlm('task1'), rlm('task2'))`.",
-			"For long-running sub-agents that should not block your own work, use `handle = await rlm.background('sub-task')`. The returned handle has `.id`, `.session_dir`, `await handle.status()`, `await handle.wait(timeout=30)`, and `await handle.result(timeout=30)`. By default, completion notices are kept passive and become context on a later turn.",
-			"Use `await rlm.background('sub-task', notify='wake')` only when the user explicitly asked to be told as soon as background work finishes. Wake notifications are batched, hidden from the user, and may start a later assistant turn so you can send a concise update. Use `notify='silent'` when you only want to poll the handle yourself.",
+			"For long-running sub-agents that should not block your own Python work, create normal asyncio tasks such as `task = asyncio.create_task(rlm('sub-task'))`, continue locally, then use `task.done()` or `result = await task` when you need the result.",
+			"Do not use a special background RLM API. `await rlm(...)` is the ground-truth result path; background behavior is ordinary Python task scheduling.",
 		);
 	}
 
