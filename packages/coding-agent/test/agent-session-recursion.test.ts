@@ -102,6 +102,28 @@ interface KernelPumpTestApi {
 	startIopubPump(): void;
 }
 
+interface KernelExecuteTestApi {
+	start: () => Promise<void>;
+	state: "idle" | "starting" | "running" | "shutdown";
+	activeExecution?: unknown;
+	shell?: {
+		send(frames: Buffer[]): Promise<void>;
+		close(): void;
+	};
+	connection?: {
+		ip: string;
+		transport: "tcp";
+		shell_port: number;
+		iopub_port: number;
+		stdin_port: number;
+		control_port: number;
+		hb_port: number;
+		signature_scheme: "hmac-sha256";
+		key: string;
+		kernel_name: string;
+	};
+}
+
 function rlmCommOpenData(commId: string, data: Record<string, unknown>): TestCommMessage {
 	return {
 		header: { msg_type: "comm_open" },
@@ -494,6 +516,39 @@ print(_result.answer)
 
 			expect(finished.status).toBe("ok");
 			expect(finished.stdout.trim()).toBe("answer:detached child after idle");
+		} finally {
+			await manager.dispose();
+		}
+	});
+
+	it("clears active execution when execute_request send fails", async () => {
+		const manager = new KernelManager({ python: process.execPath });
+		const kernel = manager as unknown as KernelExecuteTestApi;
+		const sendError = new Error("send failed");
+		kernel.start = async () => {};
+		kernel.state = "running";
+		kernel.shell = {
+			send: async (_frames: Buffer[]) => {
+				throw sendError;
+			},
+			close: () => {},
+		};
+		kernel.connection = {
+			ip: "127.0.0.1",
+			transport: "tcp",
+			shell_port: 1,
+			iopub_port: 2,
+			stdin_port: 3,
+			control_port: 4,
+			hb_port: 5,
+			signature_scheme: "hmac-sha256",
+			key: "",
+			kernel_name: "python3",
+		};
+
+		try {
+			await expect(manager.execute("print('hello')")).rejects.toThrow("send failed");
+			expect(kernel.activeExecution).toBeUndefined();
 		} finally {
 			await manager.dispose();
 		}

@@ -94,12 +94,28 @@ interface ActiveExecution {
 	reject: (error: Error) => void;
 }
 
+interface Deferred<T> {
+	promise: Promise<T>;
+	resolve: (value: T) => void;
+	reject: (error: Error) => void;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function createDeferred<T>(): Deferred<T> {
+	let resolve!: (value: T) => void;
+	let reject!: (error: Error) => void;
+	const promise = new Promise<T>((promiseResolve, promiseReject) => {
+		resolve = promiseResolve;
+		reject = promiseReject;
+	});
+	return { promise, resolve, reject };
 }
 
 // ---- wire format ---------------------------------------------------------
@@ -510,28 +526,30 @@ export class KernelManager {
 		opts.signal?.addEventListener("abort", onAbort);
 
 		try {
-			const resultPromise = new Promise<ExecuteResult>((resolve, reject) => {
-				this.activeExecution = {
-					requestMsgId,
-					started,
-					maxChars,
-					opts,
-					stdout: "",
-					stderr: "",
-					stdoutTruncated: false,
-					stderrTruncated: false,
-					status: "ok",
-					resolve,
-					reject,
-				};
-			});
+			const result = createDeferred<ExecuteResult>();
+			const execution: ActiveExecution = {
+				requestMsgId,
+				started,
+				maxChars,
+				opts,
+				stdout: "",
+				stderr: "",
+				stdoutTruncated: false,
+				stderrTruncated: false,
+				status: "ok",
+				resolve: result.resolve,
+				reject: result.reject,
+			};
+			this.activeExecution = execution;
 			try {
 				await shell.send(encode(msg, conn.key));
 			} catch (error) {
-				this.rejectActiveExecution(error instanceof Error ? error : new Error(String(error)));
-				return await resultPromise;
+				if (this.activeExecution === execution) {
+					this.activeExecution = undefined;
+				}
+				throw error instanceof Error ? error : new Error(String(error));
 			}
-			return await resultPromise;
+			return await result.promise;
 		} finally {
 			opts.signal?.removeEventListener("abort", onAbort);
 		}
