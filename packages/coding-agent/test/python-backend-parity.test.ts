@@ -103,6 +103,19 @@ describe("Python backend parity", () => {
 					'import subprocess, sys\nsubprocess.run([sys.executable, "-c", "print(\'subprocess-ok\')"], check=True)',
 				);
 				expect(subprocess.text).toContain("subprocess-ok");
+				const stdin = await execute(
+					tool,
+					[
+						"try:",
+						'    input("blocked")',
+						"except Exception as error:",
+						'    print("stdin-blocked", type(error).__name__)',
+						"import subprocess, sys",
+						"subprocess.run([sys.executable, \"-c\", \"import sys; print('stdin-empty', sys.stdin.read() == '')\"], check=True)",
+					].join("\n"),
+				);
+				expect(stdin.text).toContain("stdin-blocked");
+				expect(stdin.text).toContain("stdin-empty True");
 
 				const streams = await execute(tool, 'import sys\nprint("out")\nprint("err", file=sys.stderr)');
 				expect(streams.text).toContain("out");
@@ -116,6 +129,9 @@ describe("Python backend parity", () => {
 
 				const longOutput = await execute(tool, 'print("x" * 70000)');
 				expect(longOutput.text).toContain("[... output truncated at 65536 chars ...]");
+				const longResult = await execute(tool, '"x" * 70000');
+				expect(longResult.text).toContain("[... output truncated at 65536 chars ...]");
+				expect(longResult.text.length).toBeLessThan(66000);
 			}, 120_000);
 
 			it("restarts with a clean namespace", async () => {
@@ -158,6 +174,10 @@ describe("Python backend parity", () => {
 						"print(s.state)",
 						"r = await h.result(timeout=1)",
 						"print(r.answer)",
+						"s2 = await h.wait()",
+						"print(s2.state)",
+						"r2 = await h.result()",
+						"print(r2.answer)",
 					].join("\n"),
 				);
 				expect(background.text).toContain("bg:job");

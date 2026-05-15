@@ -105,7 +105,7 @@ function parseOptionalString(value: unknown, name: string): string | undefined {
 }
 
 function parseOptionalNumber(value: unknown, name: string): number | undefined {
-	if (value === undefined) return undefined;
+	if (value === undefined || value === null) return undefined;
 	return parseNumber(value, name);
 }
 

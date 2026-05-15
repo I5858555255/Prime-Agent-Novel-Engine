@@ -37,11 +37,66 @@ def duplicate_protocol_stdout() -> Any:
 		return sys.stdout
 
 
+def duplicate_protocol_stdin() -> Any:
+	try:
+		fd = os.dup(sys.stdin.fileno())
+		return os.fdopen(
+			fd,
+			"r",
+			encoding=getattr(sys.stdin, "encoding", None) or "utf-8",
+			errors="replace",
+			buffering=1,
+		)
+	except Exception:
+		return sys.stdin
+
+
+def truncate_text(value: str, max_chars: int) -> str:
+	if len(value) <= max_chars:
+		return value
+	return value[:max_chars] + f"\n[... output truncated at {max_chars} chars ...]"
+
+
 def strip_ipython_displayhook(stdout: str, result_text: str | None) -> str:
 	if result_text is None:
 		return stdout
 	pattern = re.compile(rf"^Out\[\d+\]: {re.escape(result_text)}\n?", re.MULTILINE)
-	return pattern.sub("", stdout, count=1)
+	stripped = pattern.sub("", stdout, count=1)
+	if stripped != stdout:
+		return stripped
+
+	matches = list(re.finditer(r"(^|\n)Out\[\d+\]: ", stdout))
+	if not matches:
+		return stdout
+	match = matches[-1]
+	return stdout[: match.start() + (1 if match.group(1) else 0)]
+
+
+class RedirectedStdin:
+	def __init__(self) -> None:
+		self._saved_fd: int | None = None
+		self._old_stdin: Any | None = None
+		self._stdin: Any | None = None
+
+	def __enter__(self) -> None:
+		self._old_stdin = sys.stdin
+		self._saved_fd = os.dup(0)
+		devnull_fd = os.open(os.devnull, os.O_RDONLY)
+		try:
+			os.dup2(devnull_fd, 0)
+		finally:
+			os.close(devnull_fd)
+		self._stdin = open(os.devnull, "r", encoding=getattr(self._old_stdin, "encoding", None) or "utf-8")
+		sys.stdin = self._stdin
+
+	def __exit__(self, exc_type: Any, exc_value: Any, traceback_value: Any) -> None:
+		if self._stdin is not None:
+			self._stdin.close()
+		if self._old_stdin is not None:
+			sys.stdin = self._old_stdin
+		if self._saved_fd is not None:
+			os.dup2(self._saved_fd, 0)
+			os.close(self._saved_fd)
 
 
 class RpcError(Exception):
@@ -53,7 +108,7 @@ class RpcError(Exception):
 class JsonRpcPeer:
 	def __init__(self) -> None:
 		self._stdout = duplicate_protocol_stdout()
-		self._stdin = sys.stdin
+		self._stdin = duplicate_protocol_stdin()
 		self._write_lock = threading.Lock()
 		self._next_id = 1
 		self._pending: dict[str, asyncio.Future[Any]] = {}
@@ -214,7 +269,8 @@ def capture_output(peer: JsonRpcPeer, execute_id: Any, max_chars: int) -> Iterat
 	sys.stdout = stdout
 	sys.stderr = stderr
 	try:
-		yield stdout, stderr
+		with RedirectedStdin():
+			yield stdout, stderr
 	finally:
 		try:
 			sys.stdout.flush()
@@ -416,6 +472,7 @@ class PrimeWorker:
 				}
 			elif execution_result.result is not None:
 				result_text = repr(execution_result.result)
+				result_text = truncate_text(result_text, max_chars)
 
 		return {
 			"stdout": strip_ipython_displayhook(stdout.getvalue(), result_text),
