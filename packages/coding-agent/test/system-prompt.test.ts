@@ -79,7 +79,11 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("asyncio.create_task");
 		expect(prompt).toContain("sub-agent work that can run in the background");
 		expect(prompt).toContain("do not block the main execution path");
-		expect(prompt).toContain("check or await the task later");
+		expect(prompt).toContain("keep the task handle");
+		expect(prompt).toContain("normal task callbacks");
+		expect(prompt).toContain("task.done()");
+		expect(prompt).toContain("await task");
+		expect(prompt).toContain("RLMResult.answer");
 		expect(prompt).not.toContain("simple named task dictionary");
 		expect(prompt).not.toContain("rlm_tasks");
 		expect(prompt).not.toContain("globals().setdefault");
