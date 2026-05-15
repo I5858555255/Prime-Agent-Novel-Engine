@@ -50,6 +50,7 @@ import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
+import { BUILTIN_PYTHON_SKILLS } from "./builtin-python-skills.js";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -3287,6 +3288,10 @@ export class AgentSession {
 	}): void {
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		const builtinPythonSkillNames = new Set(BUILTIN_PYTHON_SKILLS.map((skill) => skill.name));
+		const builtinPythonSkills = this._resourceLoader
+			.getSkills()
+			.skills.some((skill) => skill.sourceInfo.source === "builtin" && builtinPythonSkillNames.has(skill.name));
 		const configuredBaseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -3297,6 +3302,7 @@ export class AgentSession {
 			: createAllToolDefinitions(this._cwd, {
 					ipython: {
 						kernelManagerRef: this._ipythonKernelManagerRef,
+						builtinPythonSkills,
 						env: this._rlmKernelEnv(),
 						sessionId: this.sessionId,
 						rlmRunHandler: ({ prompt, kwargs }) => this.runRlmChild(prompt, kwargs),

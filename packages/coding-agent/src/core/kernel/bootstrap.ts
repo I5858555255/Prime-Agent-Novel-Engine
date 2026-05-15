@@ -30,6 +30,10 @@ interface BootstrapVersion {
 	pythonSkills?: string[];
 }
 
+export interface EnsureKernelPythonOptions {
+	builtinPythonSkills?: boolean;
+}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -66,12 +70,17 @@ function expandHome(filePath: string): string {
 	return filePath;
 }
 
-function ensureKernelPythonKey(): string {
+function includeBuiltinPythonSkills(options?: EnsureKernelPythonOptions): boolean {
+	return options?.builtinPythonSkills ?? true;
+}
+
+function ensureKernelPythonKey(options?: EnsureKernelPythonOptions): string {
 	return [
 		process.env.PRIME_AGENT_KERNEL_PYTHON ?? "",
 		process.env.PRIME_AGENT_KERNEL_VENV ?? "",
 		process.env.HOME ?? "",
 		process.env.XDG_DATA_HOME ?? "",
+		includeBuiltinPythonSkills(options) ? "python-skills" : "no-python-skills",
 	].join("\0");
 }
 
@@ -273,21 +282,22 @@ function sameStringArray(left: string[] | undefined, right: string[]): boolean {
 	return left.every((value, index) => value === right[index]);
 }
 
-function bootstrapVersionCurrent(version: BootstrapVersion | null): boolean {
+function bootstrapVersionCurrent(version: BootstrapVersion | null, builtinPythonSkills: boolean): boolean {
+	const expectedPythonSkills = builtinPythonSkills ? BUILTIN_PYTHON_SKILL_PACKAGES : undefined;
 	return (
 		version?.schema === BOOTSTRAP_SCHEMA &&
 		version.ipykernel === IPYKERNEL_REQUIREMENT &&
 		version.runtime === RUNTIME_REQUIREMENT &&
-		sameStringArray(version.pythonSkills, BUILTIN_PYTHON_SKILL_PACKAGES)
+		(!expectedPythonSkills || sameStringArray(version.pythonSkills, expectedPythonSkills))
 	);
 }
 
-async function writeBootstrapVersion(venv: string): Promise<void> {
+async function writeBootstrapVersion(venv: string, builtinPythonSkills: boolean): Promise<void> {
 	const version: BootstrapVersion = {
 		schema: BOOTSTRAP_SCHEMA,
 		ipykernel: IPYKERNEL_REQUIREMENT,
 		runtime: RUNTIME_REQUIREMENT,
-		pythonSkills: BUILTIN_PYTHON_SKILL_PACKAGES,
+		pythonSkills: builtinPythonSkills ? BUILTIN_PYTHON_SKILL_PACKAGES : [],
 	};
 	await writeFile(path.join(venv, BOOTSTRAP_VERSION_FILE), `${JSON.stringify(version)}\n`, "utf8");
 }
@@ -309,12 +319,12 @@ async function resolveRuntimeRequirement(): Promise<string> {
 	return RUNTIME_REQUIREMENT;
 }
 
-async function bootstrapVenv(venv: string): Promise<void> {
+async function bootstrapVenv(venv: string, builtinPythonSkills: boolean): Promise<void> {
 	await mkdir(path.dirname(venv), { recursive: true });
 	const uv = await ensureUv();
 	const python = path.join(venv, "bin", "python");
 	const runtimeRequirement = await resolveRuntimeRequirement();
-	const builtinSkillRequirements = getBuiltinPythonSkillRequirements();
+	const builtinSkillRequirements = builtinPythonSkills ? getBuiltinPythonSkillRequirements() : [];
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
@@ -327,15 +337,15 @@ async function bootstrapVenv(venv: string): Promise<void> {
 		runtimeRequirement,
 		...builtinSkillRequirements,
 	]);
-	await writeBootstrapVersion(venv);
+	await writeBootstrapVersion(venv, builtinPythonSkills);
 }
 
-async function kernelReady(python: string, venv: string): Promise<boolean> {
+async function kernelReady(python: string, venv: string, builtinPythonSkills: boolean): Promise<boolean> {
 	return (
 		(await hasIpykernel(python)) &&
 		(await hasPrimeAgentRuntime(python)) &&
-		(await hasBuiltinPythonSkills(python)) &&
-		bootstrapVersionCurrent(await readBootstrapVersion(venv))
+		(!builtinPythonSkills || (await hasBuiltinPythonSkills(python))) &&
+		bootstrapVersionCurrent(await readBootstrapVersion(venv), builtinPythonSkills)
 	);
 }
 
@@ -347,15 +357,18 @@ function formatBootstrapFailure(error: unknown): Error {
 	);
 }
 
-async function ensureKernelPythonUncached(): Promise<string> {
+async function ensureKernelPythonUncached(options?: EnsureKernelPythonOptions): Promise<string> {
+	const builtinPythonSkills = includeBuiltinPythonSkills(options);
 	const override = process.env.PRIME_AGENT_KERNEL_PYTHON;
 	if (override) {
 		const python = path.resolve(expandHome(override));
 		const missing: string[] = [];
 		if (!(await hasIpykernel(python))) missing.push("ipykernel");
 		if (!(await hasPrimeAgentRuntime(python))) missing.push("a current prime-agent-runtime with rlm.background");
-		for (const importName of BUILTIN_PYTHON_SKILL_IMPORTS) {
-			if (!(await pythonImports(python, importName))) missing.push(`the ${importName} built-in Python skill`);
+		if (builtinPythonSkills) {
+			for (const importName of BUILTIN_PYTHON_SKILL_IMPORTS) {
+				if (!(await pythonImports(python, importName))) missing.push(`the ${importName} built-in Python skill`);
+			}
 		}
 		if (missing.length === 0) return python;
 		throw new Error(`PRIME_AGENT_KERNEL_PYTHON points to a Python missing ${missing.join(" and ")}: ${python}`);
@@ -363,11 +376,11 @@ async function ensureKernelPythonUncached(): Promise<string> {
 
 	const venv = await resolveWritableKernelVenvDir();
 	const python = path.join(venv, "bin", "python");
-	if (await kernelReady(python, venv)) return python;
+	if (await kernelReady(python, venv, builtinPythonSkills)) return python;
 
 	const releaseLock = await acquireBootstrapLock(venv);
 	try {
-		if (await kernelReady(python, venv)) return python;
+		if (await kernelReady(python, venv, builtinPythonSkills)) return python;
 
 		const hadVenv = existsSync(venv);
 		process.stderr.write("› setting up python kernel (one-time, ~30s)…\n");
@@ -376,7 +389,7 @@ async function ensureKernelPythonUncached(): Promise<string> {
 			await rm(venv, { recursive: true, force: true });
 		}
 
-		await bootstrapVenv(venv);
+		await bootstrapVenv(venv, builtinPythonSkills);
 	} catch (error) {
 		throw formatBootstrapFailure(error);
 	} finally {
@@ -387,11 +400,11 @@ async function ensureKernelPythonUncached(): Promise<string> {
 	return python;
 }
 
-export function ensureKernelPython(): Promise<string> {
-	const key = ensureKernelPythonKey();
+export function ensureKernelPython(options?: EnsureKernelPythonOptions): Promise<string> {
+	const key = ensureKernelPythonKey(options);
 	if (inFlightEnsureKernelPython?.key === key) return inFlightEnsureKernelPython.promise;
 
-	const promise = ensureKernelPythonUncached().finally(() => {
+	const promise = ensureKernelPythonUncached(options).finally(() => {
 		if (inFlightEnsureKernelPython?.promise === promise) inFlightEnsureKernelPython = null;
 	});
 	inFlightEnsureKernelPython = { key, promise };
