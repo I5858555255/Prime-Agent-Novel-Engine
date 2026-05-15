@@ -41,6 +41,11 @@ Title: Docs
 URL: https://example.com/docs
 Text:
 Use &lt;web_search&gt; for current facts.
+---
+Title: Malformed Entity
+URL: https://example.com/entity
+Text:
+Broken &#xD800; entity remains encoded.
 `);
 
 		expect(results).toEqual([
@@ -55,6 +60,11 @@ Use &lt;web_search&gt; for current facts.
 				title: "Docs",
 				url: "https://example.com/docs",
 				snippet: "Use <web_search> for current facts.",
+			},
+			{
+				title: "Malformed Entity",
+				url: "https://example.com/entity",
+				snippet: "Broken &#xD800; entity remains encoded.",
 			},
 		]);
 	});
@@ -114,6 +124,36 @@ Use &lt;web_search&gt; for current facts.
 				},
 			],
 		});
+	});
+
+	test("deduplicates queries before enforcing the per-call query limit", async () => {
+		const requests: unknown[] = [];
+		const fetchMock: typeof fetch = async (_input, init) => {
+			if (typeof init?.body !== "string") {
+				throw new Error("expected string request body");
+			}
+			requests.push(JSON.parse(init.body));
+			return new Response(
+				`event: message\ndata: ${exaPayload("Title: Result\nURL: https://example.com\nHighlights:\nFound it.")}\n\n`,
+				{
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				},
+			);
+		};
+		vi.stubGlobal("fetch", fetchMock);
+
+		const tool = createWebSearchToolDefinition();
+		const result = await tool.execute(
+			"tool-call",
+			{ query: "prime agent", queries: Array(5).fill(" prime agent ") },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(requests).toHaveLength(1);
+		expect(result.details.queries.map((query) => query.query)).toEqual(["prime agent"]);
 	});
 
 	test("rejects empty queries before searching", async () => {

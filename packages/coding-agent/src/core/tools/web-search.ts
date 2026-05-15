@@ -155,7 +155,7 @@ function decodeHtmlEntities(text: string): string {
 }
 
 function isValidCodePoint(value: number): boolean {
-	return Number.isInteger(value) && value >= 0 && value <= 0x10ffff;
+	return Number.isInteger(value) && value >= 0 && value <= 0x10ffff && (value < 0xd800 || value > 0xdfff);
 }
 
 function cleanText(text: string): string {
@@ -264,10 +264,14 @@ export function parseExaMcpResults(text: string): WebSearchResult[] {
 }
 
 function normalizeQueries(params: WebSearchToolInput): string[] {
-	const queries = [params.query, ...(params.queries ?? [])]
-		.filter((query): query is string => typeof query === "string")
-		.map((query) => query.trim())
-		.filter((query) => query.length > 0);
+	const queries = Array.from(
+		new Set(
+			[params.query, ...(params.queries ?? [])]
+				.filter((query): query is string => typeof query === "string")
+				.map((query) => query.trim())
+				.filter((query) => query.length > 0),
+		),
+	);
 
 	if (queries.length === 0) {
 		throw new Error("web_search requires `query` or `queries`.");
@@ -276,7 +280,7 @@ function normalizeQueries(params: WebSearchToolInput): string[] {
 		throw new Error(`web_search supports at most ${MAX_QUERIES} queries per call.`);
 	}
 
-	return Array.from(new Set(queries));
+	return queries;
 }
 
 function normalizeMaxResults(value: number | undefined): number {
