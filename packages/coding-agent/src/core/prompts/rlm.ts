@@ -44,7 +44,8 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"",
 			"A callable `rlm` is already in your global namespace — call it directly with `await rlm('sub-task')` to spawn a recursive sub-agent. Returns an `RLMResult` with `.answer` (string), `.usage`, `.turns`, and `.session_dir`.",
 			"For parallel sub-agents, use normal Python async patterns such as `await asyncio.gather(rlm('task1'), rlm('task2'))`.",
-			"For long-running sub-agents that should not block your own Python work, create normal asyncio tasks such as `task = asyncio.create_task(rlm('sub-task'))`, continue locally, then use `task.done()` or `result = await task` when you need the result.",
+			"For long-running sub-agents that should keep the conversation responsive, start and store asyncio tasks, then return from the IPython call immediately, e.g. `tasks = globals().setdefault('rlm_tasks', {}); tasks['name'] = asyncio.create_task(rlm('sub-task'))`.",
+			"Use a later IPython call to check `tasks['name'].done()` or collect results with `result = await tasks['name']` when you need the `RLMResult`.",
 		);
 	}
 

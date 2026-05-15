@@ -77,7 +77,10 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("await rlm('sub-task')");
 		expect(prompt).toContain("asyncio.gather");
 		expect(prompt).toContain("asyncio.create_task");
-		expect(prompt).toContain("await task");
+		expect(prompt).toContain("return from the IPython call immediately");
+		expect(prompt).toContain("globals().setdefault('rlm_tasks', {})");
+		expect(prompt).toContain("Use a later IPython call");
+		expect(prompt).toContain("await tasks['name']");
 		expect(prompt).not.toContain("rlm.background");
 		expect(prompt).not.toContain("notify='wake'");
 		expect(prompt).not.toContain("notify='silent'");
