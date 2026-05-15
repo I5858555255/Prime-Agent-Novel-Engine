@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.js";
-import { getModel, getSupportedThinkingLevels } from "../src/models.js";
+import { getModel, getModels, getSupportedThinkingLevels } from "../src/models.js";
 
 const originalPrimeApiKey = process.env.PRIME_API_KEY;
 
@@ -13,6 +13,23 @@ afterEach(() => {
 });
 
 describe("Prime Inference models", () => {
+	it("registers the Prime Inference catalog snapshot", () => {
+		const modelIds = getModels("prime-inference").map((model) => model.id);
+
+		expect(modelIds.length).toBeGreaterThanOrEqual(100);
+		expect(modelIds).toEqual(
+			expect.arrayContaining([
+				"anthropic/claude-opus-4.7",
+				"openai/gpt-5.2-pro",
+				"openai/gpt-5.4",
+				"openai/gpt-5.5",
+				"prime-intellect/intellect-3",
+				"qwen/qwen3-vl-235b-a22b-thinking",
+				"z-ai/glm-5.1",
+			]),
+		);
+	});
+
 	it("registers the default OpenAI-compatible model", () => {
 		const model = getModel("prime-inference", "openai/gpt-5.5");
 
