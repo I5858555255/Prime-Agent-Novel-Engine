@@ -1079,7 +1079,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	return {
 		supportsStore: !isNonStandard,
 		supportsDeveloperRole: !isNonStandard,
-		supportsReasoningEffort: !isGrok && !isZai && !isMoonshot && !isCloudflareAiGateway && !isPrimeInference,
+		supportsReasoningEffort: !isGrok && !isZai && !isMoonshot && !isCloudflareAiGateway,
 		supportsUsageInStreaming: true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: false,

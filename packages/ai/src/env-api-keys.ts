@@ -19,6 +19,8 @@ type NodeProcessWithBuiltinModule = typeof process & {
 	getBuiltinModule?: (specifier: string) => unknown;
 };
 
+// This module is imported by browser builds, so Node builtins must stay behind
+// runtime guards instead of top-level imports.
 function getNodeBuiltin<T>(specifier: string): T | undefined {
 	if (typeof process === "undefined" || !(process.versions?.node || process.versions?.bun)) {
 		return undefined;

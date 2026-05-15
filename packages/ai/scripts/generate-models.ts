@@ -90,7 +90,7 @@ const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
 const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
 	supportsDeveloperRole: false,
-	supportsReasoningEffort: false,
+	supportsReasoningEffort: true,
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
@@ -195,8 +195,10 @@ function getBedrockBaseUrl(modelId: string): string {
 function createPrimeInferenceModel(params: {
 	id: string;
 	name: string;
+	cost: Model<"openai-completions">["cost"];
 	contextWindow?: number;
 	maxTokens?: number;
+	reasoning?: boolean;
 }): Model<"openai-completions"> {
 	return {
 		id: params.id,
@@ -204,14 +206,9 @@ function createPrimeInferenceModel(params: {
 		api: "openai-completions",
 		provider: "prime-inference",
 		baseUrl: PRIME_INFERENCE_BASE_URL,
-		reasoning: false,
+		reasoning: params.reasoning ?? false,
 		input: ["text"],
-		cost: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-		},
+		cost: params.cost,
 		contextWindow: params.contextWindow ?? 128000,
 		maxTokens: params.maxTokens ?? 8192,
 		compat: PRIME_INFERENCE_COMPAT,
@@ -1603,52 +1600,62 @@ async function generateModels() {
 	// Prime Inference exposes an authenticated OpenAI-compatible model catalog.
 	// Keep a small documented seed list so pi can offer the provider out of the box;
 	// users can still pass any Prime model id explicitly with --provider prime-inference.
+	// Costs are USD per million tokens from the Prime Inference /models catalog.
 	const primeInferenceModels: Model<"openai-completions">[] = [
 		createPrimeInferenceModel({
 			id: "openai/gpt-5.5",
 			name: "GPT-5.5",
+			reasoning: true,
+			cost: { input: 5, output: 30, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
 		}),
 		createPrimeInferenceModel({
 			id: "openai/gpt-4.1-mini",
 			name: "GPT-4.1 Mini",
+			cost: { input: 0.4, output: 1.6, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 1047576,
 			maxTokens: 32768,
 		}),
 		createPrimeInferenceModel({
 			id: "openai/gpt-4.1",
 			name: "GPT-4.1",
+			cost: { input: 2, output: 8, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 1047576,
 			maxTokens: 32768,
 		}),
 		createPrimeInferenceModel({
 			id: "anthropic/claude-sonnet-4.5",
 			name: "Claude Sonnet 4.5",
+			cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 200000,
 			maxTokens: 64000,
 		}),
 		createPrimeInferenceModel({
 			id: "meta-llama/llama-3.3-70b-instruct",
 			name: "Llama 3.3 70B Instruct",
+			cost: { input: 0.9, output: 0.9, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 128000,
 			maxTokens: 8192,
 		}),
 		createPrimeInferenceModel({
 			id: "deepseek/deepseek-r1-0528",
 			name: "DeepSeek R1 0528",
+			cost: { input: 3, output: 7, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 128000,
 			maxTokens: 8192,
 		}),
 		createPrimeInferenceModel({
 			id: "qwen/qwen3-235b-a22b-instruct-2507",
 			name: "Qwen3 235B A22B Instruct 2507",
+			cost: { input: 0.22, output: 0.88, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 128000,
 			maxTokens: 8192,
 		}),
 		createPrimeInferenceModel({
 			id: "google/gemini-2.5-flash",
 			name: "Gemini 2.5 Flash",
+			cost: { input: 0.3, output: 2.5, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 1048576,
 			maxTokens: 65536,
 		}),
