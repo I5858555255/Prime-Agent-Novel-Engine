@@ -99,6 +99,8 @@ interface PrimeInferenceCatalogEntry {
 	id: string;
 	input: number;
 	output: number;
+	contextWindow?: number;
+	maxTokens?: number;
 }
 
 const PRIME_INFERENCE_CATALOG_SNAPSHOT = [
@@ -330,6 +332,10 @@ function getNumber(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function getOptionalNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function getPrimeInferenceDisplayName(modelId: string): string {
 	const rawName = modelId.split("/").at(-1) ?? modelId;
 	return rawName
@@ -341,24 +347,6 @@ function getPrimeInferenceDisplayName(modelId: string): string {
 			return part.charAt(0).toUpperCase() + part.slice(1);
 		})
 		.join(" ");
-}
-
-function getPrimeInferenceContextWindow(modelId: string): number {
-	const id = modelId.toLowerCase();
-	if (id.startsWith("openai/gpt-4.1")) return 1047576;
-	if (id.includes("gemini-2.5") || id.includes("gemini-3")) return 1048576;
-	if (id.startsWith("anthropic/")) return 200000;
-	if (id.startsWith("openai/gpt-5")) return 272000;
-	return 128000;
-}
-
-function getPrimeInferenceMaxTokens(modelId: string): number {
-	const id = modelId.toLowerCase();
-	if (id === "openai/gpt-5.5" || id.includes("gpt-5.4") || id.includes("gpt-5.2")) return 128000;
-	if (id.startsWith("openai/gpt-4.1")) return 32768;
-	if (id.includes("gemini-2.5") || id.includes("gemini-3")) return 65536;
-	if (id.startsWith("anthropic/claude") && !id.includes("haiku")) return 64000;
-	return 8192;
 }
 
 function isPrimeInferenceReasoningModel(modelId: string): boolean {
@@ -377,20 +365,27 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 		}
 
 		const pricing = isRecord(item.pricing) ? item.pricing : {};
+		const limit = isRecord(item.limit) ? item.limit : {};
 		return [
 			{
 				id: item.id,
 				input: getNumber(pricing.input_usd_per_mtok),
 				output: getNumber(pricing.output_usd_per_mtok),
+				contextWindow: getOptionalNumber(item.context_window ?? item.contextWindow ?? limit.context),
+				maxTokens: getOptionalNumber(item.max_tokens ?? item.maxTokens ?? limit.output),
 			},
 		];
 	});
 }
 
-async function fetchPrimeInferenceCatalog(): Promise<PrimeInferenceCatalogEntry[]> {
+function createPrimeInferenceSnapshotModels(): Model<"openai-completions">[] {
+	return PRIME_INFERENCE_CATALOG_SNAPSHOT.map(createPrimeInferenceModel);
+}
+
+async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
 	const apiKey = process.env.PRIME_API_KEY;
 	if (!apiKey) {
-		return [...PRIME_INFERENCE_CATALOG_SNAPSHOT];
+		return createPrimeInferenceSnapshotModels();
 	}
 
 	try {
@@ -401,13 +396,13 @@ async function fetchPrimeInferenceCatalog(): Promise<PrimeInferenceCatalogEntry[
 		const catalog = parsePrimeInferenceCatalog(await response.json());
 		if (catalog.length > 0) {
 			console.log(`Fetched ${catalog.length} models from Prime Inference`);
-			return catalog;
+			return catalog.map(createPrimeInferenceModel);
 		}
 	} catch (error) {
 		console.error("Failed to fetch Prime Inference models:", error);
 	}
 
-	return [...PRIME_INFERENCE_CATALOG_SNAPSHOT];
+	return createPrimeInferenceSnapshotModels();
 }
 
 function createPrimeInferenceModel(entry: PrimeInferenceCatalogEntry): Model<"openai-completions"> {
@@ -425,8 +420,8 @@ function createPrimeInferenceModel(entry: PrimeInferenceCatalogEntry): Model<"op
 			cacheRead: 0,
 			cacheWrite: 0,
 		},
-		contextWindow: getPrimeInferenceContextWindow(entry.id),
-		maxTokens: getPrimeInferenceMaxTokens(entry.id),
+		contextWindow: entry.contextWindow ?? 0,
+		maxTokens: entry.maxTokens ?? 0,
 		compat: PRIME_INFERENCE_COMPAT,
 	};
 }
@@ -1813,7 +1808,7 @@ async function generateModels() {
 		});
 	}
 
-	const primeInferenceModels = (await fetchPrimeInferenceCatalog()).map(createPrimeInferenceModel);
+	const primeInferenceModels = await fetchPrimeInferenceModels();
 	allModels.push(...primeInferenceModels);
 
 	const VERTEX_BASE_URL = "https://{location}-aiplatform.googleapis.com";

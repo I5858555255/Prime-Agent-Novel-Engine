@@ -41,6 +41,8 @@ describe("Prime Inference models", () => {
 		expect(model.thinkingLevelMap).toEqual({ xhigh: "xhigh" });
 		expect(getSupportedThinkingLevels(model)).toContain("xhigh");
 		expect(model.input).toEqual(["text"]);
+		expect(model.contextWindow).toBe(0);
+		expect(model.maxTokens).toBe(0);
 		expect(model.cost).toEqual({
 			input: 5,
 			output: 30,
