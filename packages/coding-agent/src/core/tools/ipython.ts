@@ -54,34 +54,37 @@ class _PrimeAgentCallableModule(_prime_agent_types.ModuleType):
     async def __call__(self, *args, **kwargs):
         return await self.run(*args, **kwargs)
 
+class _PrimeAgentMissingSkill:
+    def __init__(self, name, error):
+        self._name = name
+        self._error = error
+
+    async def run(self, *args, **kwargs):
+        raise RuntimeError(
+            f"The built-in Python skill '{self._name}' is not available in this IPython kernel. "
+            "Set PI_PACKAGE_DIR to the package asset directory or reinstall prime-agent. "
+            f"Import error: {self._error}"
+        )
+
+    async def __call__(self, *args, **kwargs):
+        return await self.run(*args, **kwargs)
+
 def _prime_agent_wrap_callable_module(mod):
     wrapped = _PrimeAgentCallableModule(mod.__name__)
     wrapped.__dict__.update(mod.__dict__)
     _prime_agent_sys.modules[mod.__name__] = wrapped
     return wrapped
-${BUILTIN_PYTHON_SKILL_IMPORTS.map(
-	(importName) => `
-try:
-    import ${importName} as _prime_agent_${importName}_module
-    ${importName} = _prime_agent_wrap_callable_module(_prime_agent_${importName}_module)
-except Exception as _prime_agent_${importName}_error:
-    class _PrimeAgentMissing${importName}:
-        def __init__(self, error):
-            self._error = error
 
-        async def run(self, *args, **kwargs):
-            raise RuntimeError(
-                "The built-in Python skill '${importName}' is not available in this IPython kernel. "
-                "Set PI_PACKAGE_DIR to the package asset directory or reinstall prime-agent. "
-                f"Import error: {self._error}"
-            )
-
-        async def __call__(self, *args, **kwargs):
-            return await self.run(*args, **kwargs)
-
-    ${importName} = _PrimeAgentMissing${importName}(str(_prime_agent_${importName}_error))
-`,
-).join("\n")}`;
+for _prime_agent_skill_name in ${JSON.stringify(BUILTIN_PYTHON_SKILL_IMPORTS)}:
+    try:
+        _prime_agent_skill_module = __import__(_prime_agent_skill_name)
+        globals()[_prime_agent_skill_name] = _prime_agent_wrap_callable_module(_prime_agent_skill_module)
+    except Exception as _prime_agent_skill_error:
+        globals()[_prime_agent_skill_name] = _PrimeAgentMissingSkill(
+            _prime_agent_skill_name,
+            str(_prime_agent_skill_error),
+        )
+`;
 }
 
 const ipythonSchema = Type.Object({
