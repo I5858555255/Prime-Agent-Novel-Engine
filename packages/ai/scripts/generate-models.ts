@@ -86,6 +86,15 @@ const DEEPSEEK_V4_THINKING_LEVEL_MAP = {
 	xhigh: "max",
 } as const;
 
+const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
+const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: false,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: false,
+};
+
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
 	"gpt-5.2",
@@ -181,6 +190,32 @@ function getBedrockBaseUrl(modelId: string): string {
 	return modelId.startsWith("eu.")
 		? "https://bedrock-runtime.eu-central-1.amazonaws.com"
 		: "https://bedrock-runtime.us-east-1.amazonaws.com";
+}
+
+function createPrimeInferenceModel(params: {
+	id: string;
+	name: string;
+	contextWindow?: number;
+	maxTokens?: number;
+}): Model<"openai-completions"> {
+	return {
+		id: params.id,
+		name: `${params.name} (Prime Inference)`,
+		api: "openai-completions",
+		provider: "prime-inference",
+		baseUrl: PRIME_INFERENCE_BASE_URL,
+		reasoning: false,
+		input: ["text"],
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: params.contextWindow ?? 128000,
+		maxTokens: params.maxTokens ?? 8192,
+		compat: PRIME_INFERENCE_COMPAT,
+	};
 }
 
 async function fetchOpenRouterModels(): Promise<Model<any>[]> {
@@ -1564,6 +1599,61 @@ async function generateModels() {
 			maxTokens: 30000,
 		});
 	}
+
+	// Prime Inference exposes an authenticated OpenAI-compatible model catalog.
+	// Keep a small documented seed list so pi can offer the provider out of the box;
+	// users can still pass any Prime model id explicitly with --provider prime-inference.
+	const primeInferenceModels: Model<"openai-completions">[] = [
+		createPrimeInferenceModel({
+			id: "openai/gpt-5.5",
+			name: "GPT-5.5",
+			contextWindow: 272000,
+			maxTokens: 128000,
+		}),
+		createPrimeInferenceModel({
+			id: "openai/gpt-4.1-mini",
+			name: "GPT-4.1 Mini",
+			contextWindow: 1047576,
+			maxTokens: 32768,
+		}),
+		createPrimeInferenceModel({
+			id: "openai/gpt-4.1",
+			name: "GPT-4.1",
+			contextWindow: 1047576,
+			maxTokens: 32768,
+		}),
+		createPrimeInferenceModel({
+			id: "anthropic/claude-sonnet-4.5",
+			name: "Claude Sonnet 4.5",
+			contextWindow: 200000,
+			maxTokens: 64000,
+		}),
+		createPrimeInferenceModel({
+			id: "meta-llama/llama-3.3-70b-instruct",
+			name: "Llama 3.3 70B Instruct",
+			contextWindow: 128000,
+			maxTokens: 8192,
+		}),
+		createPrimeInferenceModel({
+			id: "deepseek/deepseek-r1-0528",
+			name: "DeepSeek R1 0528",
+			contextWindow: 128000,
+			maxTokens: 8192,
+		}),
+		createPrimeInferenceModel({
+			id: "qwen/qwen3-235b-a22b-instruct-2507",
+			name: "Qwen3 235B A22B Instruct 2507",
+			contextWindow: 128000,
+			maxTokens: 8192,
+		}),
+		createPrimeInferenceModel({
+			id: "google/gemini-2.5-flash",
+			name: "Gemini 2.5 Flash",
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		}),
+	];
+	allModels.push(...primeInferenceModels);
 
 	const VERTEX_BASE_URL = "https://{location}-aiplatform.googleapis.com";
 	const vertexModels: Model<"google-vertex">[] = [

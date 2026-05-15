@@ -449,6 +449,39 @@ describe("AuthStorage", () => {
 			expect(JSON.stringify(authStorage.getAuthStatus("openai"))).not.toContain("secret-access-token");
 			expect(JSON.stringify(authStorage.getAuthStatus("openai"))).not.toContain("secret-refresh-token");
 		});
+
+		test("reports Prime CLI config without exposing the key", () => {
+			const originalPrimeApiKey = process.env.PRIME_API_KEY;
+			const originalHome = process.env.HOME;
+
+			try {
+				delete process.env.PRIME_API_KEY;
+				mkdirSync(join(tempDir, ".prime"), { recursive: true });
+				writeFileSync(join(tempDir, ".prime", "config.json"), JSON.stringify({ api_key: "secret-prime-key" }));
+				process.env.HOME = tempDir;
+
+				authStorage = AuthStorage.inMemory();
+
+				expect(authStorage.getAuthStatus("prime-inference")).toEqual({
+					configured: false,
+					source: "fallback",
+					label: "~/.prime/config.json",
+				});
+				expect(JSON.stringify(authStorage.getAuthStatus("prime-inference"))).not.toContain("secret-prime-key");
+			} finally {
+				if (originalPrimeApiKey === undefined) {
+					delete process.env.PRIME_API_KEY;
+				} else {
+					process.env.PRIME_API_KEY = originalPrimeApiKey;
+				}
+
+				if (originalHome === undefined) {
+					delete process.env.HOME;
+				} else {
+					process.env.HOME = originalHome;
+				}
+			}
+		});
 	});
 
 	describe("runtime overrides", () => {

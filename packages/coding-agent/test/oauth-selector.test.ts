@@ -99,6 +99,24 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).not.toContain("unconfigured");
 	});
 
+	it("shows fallback API key labels from status resolver", () => {
+		const authStorage = AuthStorage.inMemory();
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			[{ id: "prime-inference", name: "Prime Inference", authType: "api_key" }],
+			() => {},
+			() => {},
+			() => ({ configured: false, source: "fallback", label: "~/.prime/config.json" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+
+		expect(output).toContain("Prime Inference");
+		expect(output).toContain("✓ ~/.prime/config.json");
+		expect(output).not.toContain("unconfigured");
+	});
+
 	it("shows models.json API key auth as configured", () => {
 		const authStorage = AuthStorage.inMemory();
 		const selector = new OAuthSelectorComponent(

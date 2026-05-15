@@ -1,7 +1,12 @@
-// NEVER convert to top-level imports - breaks browser/Vite builds (web-ui)
-let _existsSync: typeof import("node:fs").existsSync | null = null;
-let _homedir: typeof import("node:os").homedir | null = null;
-let _join: typeof import("node:path").join | null = null;
+import type { existsSync, readFileSync } from "node:fs";
+import type { homedir } from "node:os";
+import type { join } from "node:path";
+import type { KnownProvider } from "./types.js";
+
+// NEVER convert to top-level runtime imports - breaks browser/Vite builds (web-ui)
+let _existsSync: typeof existsSync | null = null;
+let _homedir: typeof homedir | null = null;
+let _join: typeof join | null = null;
 
 type DynamicImport = (specifier: string) => Promise<unknown>;
 
@@ -13,17 +18,15 @@ const NODE_PATH_SPECIFIER = "node:" + "path";
 // Eagerly load in Node.js/Bun environment only
 if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
 	dynamicImport(NODE_FS_SPECIFIER).then((m) => {
-		_existsSync = (m as typeof import("node:fs")).existsSync;
+		_existsSync = (m as { existsSync: typeof existsSync }).existsSync;
 	});
 	dynamicImport(NODE_OS_SPECIFIER).then((m) => {
-		_homedir = (m as typeof import("node:os")).homedir;
+		_homedir = (m as { homedir: typeof homedir }).homedir;
 	});
 	dynamicImport(NODE_PATH_SPECIFIER).then((m) => {
-		_join = (m as typeof import("node:path")).join;
+		_join = (m as { join: typeof join }).join;
 	});
 }
-
-import type { KnownProvider } from "./types.js";
 
 let _procEnvCache: Map<string, string> | null = null;
 
@@ -42,8 +45,8 @@ function getProcEnv(key: string): string | undefined {
 	if (_procEnvCache === null) {
 		_procEnvCache = new Map();
 		try {
-			const { readFileSync } = require("node:fs") as typeof import("node:fs");
-			const data = readFileSync("/proc/self/environ", "utf-8");
+			const { readFileSync: readProcEnvFile } = require("node:fs") as { readFileSync: typeof readFileSync };
+			const data = readProcEnvFile("/proc/self/environ", "utf-8");
 			for (const entry of data.split("\0")) {
 				const idx = entry.indexOf("=");
 				if (idx > 0) {
@@ -88,6 +91,30 @@ function hasVertexAdcCredentials(): boolean {
 	return cachedVertexAdcCredentialsExists;
 }
 
+function getPrimeCliApiKey(): string | undefined {
+	if (typeof process === "undefined" || !(process.versions?.node || process.versions?.bun)) {
+		return undefined;
+	}
+
+	try {
+		const { readFileSync: readPrimeConfigFile } = require("node:fs") as { readFileSync: typeof readFileSync };
+		const { homedir: getHomeDir } = require("node:os") as { homedir: typeof homedir };
+		const { join: joinPath } = require("node:path") as { join: typeof join };
+		const raw = readPrimeConfigFile(joinPath(getHomeDir(), ".prime", "config.json"), "utf-8");
+		const config = JSON.parse(raw) as { api_key?: unknown; apiKey?: unknown };
+		const apiKey =
+			typeof config.api_key === "string"
+				? config.api_key
+				: typeof config.apiKey === "string"
+					? config.apiKey
+					: undefined;
+		const trimmed = apiKey?.trim();
+		return trimmed ? trimmed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
 	if (provider === "github-copilot") {
 		return ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
@@ -101,6 +128,7 @@ function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
 	const envMap: Record<string, string> = {
 		openai: "OPENAI_API_KEY",
 		"azure-openai-responses": "AZURE_OPENAI_API_KEY",
+		"prime-inference": "PRIME_API_KEY",
 		deepseek: "DEEPSEEK_API_KEY",
 		google: "GEMINI_API_KEY",
 		"google-vertex": "GOOGLE_CLOUD_API_KEY",
@@ -160,6 +188,10 @@ export function getEnvApiKey(provider: string): string | undefined {
 	const envKeys = findEnvKeys(provider);
 	if (envKeys?.[0]) {
 		return process.env[envKeys[0]] || getProcEnv(envKeys[0]);
+	}
+
+	if (provider === "prime-inference") {
+		return getPrimeCliApiKey();
 	}
 
 	// Vertex AI supports either an explicit API key or Application Default Credentials.
