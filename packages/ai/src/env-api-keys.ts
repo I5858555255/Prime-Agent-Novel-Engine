@@ -34,7 +34,8 @@ function getNodeBuiltin<T>(specifier: string): T | undefined {
 				return builtin as T;
 			}
 		} catch {
-			return undefined;
+			// Fall through to require for runtimes that expose getBuiltinModule but
+			// reject a specific specifier.
 		}
 	}
 

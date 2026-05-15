@@ -100,4 +100,26 @@ describe("Prime Inference models", () => {
 
 		expect(JSON.parse(output.toString())).toEqual({ hasKey: true });
 	});
+
+	it("falls back to require when process.getBuiltinModule rejects a specifier", () => {
+		delete process.env.PRIME_API_KEY;
+		tempHome = join(tmpdir(), `pi-test-prime-config-require-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(join(tempHome, ".prime"), { recursive: true });
+		writeFileSync(join(tempHome, ".prime", "config.json"), JSON.stringify({ api_key: "test-prime-cli-key" }));
+		process.env.HOME = tempHome;
+
+		const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: tempHome };
+		delete childEnv.PRIME_API_KEY;
+
+		const output = execFileSync(
+			process.execPath,
+			[
+				"-e",
+				"process.getBuiltinModule = () => { throw new Error('forced failure'); }; const { getEnvApiKey } = require('./src/env-api-keys.ts'); const key = getEnvApiKey('prime-inference'); console.log(JSON.stringify({ hasKey: key === 'test-prime-cli-key' }));",
+			],
+			{ cwd: packageRoot, env: childEnv },
+		);
+
+		expect(JSON.parse(output.toString())).toEqual({ hasKey: true });
+	});
 });
