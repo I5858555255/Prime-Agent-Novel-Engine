@@ -15,6 +15,38 @@ const NODE_FS_SPECIFIER = "node:" + "fs";
 const NODE_OS_SPECIFIER = "node:" + "os";
 const NODE_PATH_SPECIFIER = "node:" + "path";
 
+type NodeProcessWithBuiltinModule = typeof process & {
+	getBuiltinModule?: (specifier: string) => unknown;
+};
+
+function getNodeBuiltin<T>(specifier: string): T | undefined {
+	if (typeof process === "undefined" || !(process.versions?.node || process.versions?.bun)) {
+		return undefined;
+	}
+
+	const getBuiltinModule = (process as NodeProcessWithBuiltinModule).getBuiltinModule;
+	if (getBuiltinModule) {
+		try {
+			const builtin = getBuiltinModule(specifier);
+			if (builtin) {
+				return builtin as T;
+			}
+		} catch {
+			return undefined;
+		}
+	}
+
+	try {
+		if (typeof require !== "undefined") {
+			return require(specifier) as T;
+		}
+	} catch {
+		return undefined;
+	}
+
+	return undefined;
+}
+
 // Eagerly load in Node.js/Bun environment only
 if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
 	dynamicImport(NODE_FS_SPECIFIER).then((m) => {
@@ -36,8 +68,7 @@ let _procEnvCache: Map<string, string> | null = null;
  * environments on Linux. We can recover the env from `/proc/self/environ`.
  */
 function getProcEnv(key: string): string | undefined {
-	if (!process.versions?.bun) return undefined;
-	if (typeof process === "undefined") return undefined;
+	if (typeof process === "undefined" || !process.versions?.bun) return undefined;
 
 	// If process.env already has entries, the bug is not triggered.
 	if (Object.keys(process.env).length > 0) return undefined;
@@ -45,8 +76,11 @@ function getProcEnv(key: string): string | undefined {
 	if (_procEnvCache === null) {
 		_procEnvCache = new Map();
 		try {
-			const { readFileSync: readProcEnvFile } = require("node:fs") as { readFileSync: typeof readFileSync };
-			const data = readProcEnvFile("/proc/self/environ", "utf-8");
+			const fsModule = getNodeBuiltin<{ readFileSync: typeof readFileSync }>(NODE_FS_SPECIFIER);
+			if (!fsModule) {
+				return undefined;
+			}
+			const data = fsModule.readFileSync("/proc/self/environ", "utf-8");
 			for (const entry of data.split("\0")) {
 				const idx = entry.indexOf("=");
 				if (idx > 0) {
@@ -97,10 +131,13 @@ function getPrimeCliApiKey(): string | undefined {
 	}
 
 	try {
-		const { readFileSync: readPrimeConfigFile } = require("node:fs") as { readFileSync: typeof readFileSync };
-		const { homedir: getHomeDir } = require("node:os") as { homedir: typeof homedir };
-		const { join: joinPath } = require("node:path") as { join: typeof join };
-		const raw = readPrimeConfigFile(joinPath(getHomeDir(), ".prime", "config.json"), "utf-8");
+		const fsModule = getNodeBuiltin<{ readFileSync: typeof readFileSync }>(NODE_FS_SPECIFIER);
+		const osModule = getNodeBuiltin<{ homedir: typeof homedir }>(NODE_OS_SPECIFIER);
+		const pathModule = getNodeBuiltin<{ join: typeof join }>(NODE_PATH_SPECIFIER);
+		if (!fsModule || !osModule || !pathModule) {
+			return undefined;
+		}
+		const raw = fsModule.readFileSync(pathModule.join(osModule.homedir(), ".prime", "config.json"), "utf-8");
 		const config = JSON.parse(raw) as { api_key?: unknown; apiKey?: unknown };
 		const apiKey =
 			typeof config.api_key === "string"

@@ -1,12 +1,15 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.js";
 import { getModel } from "../src/models.js";
 
 const originalPrimeApiKey = process.env.PRIME_API_KEY;
 const originalHome = process.env.HOME;
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 let tempHome: string | undefined;
 
 afterEach(() => {
@@ -62,5 +65,30 @@ describe("Prime Inference models", () => {
 
 		expect(findEnvKeys("prime-inference")).toBeUndefined();
 		expect(getEnvApiKey("prime-inference")).toBe("test-prime-cli-key");
+	});
+
+	it("falls back to the Prime CLI config file from ESM entrypoints", () => {
+		delete process.env.PRIME_API_KEY;
+		tempHome = join(tmpdir(), `pi-test-prime-config-esm-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(join(tempHome, ".prime"), { recursive: true });
+		writeFileSync(join(tempHome, ".prime", "config.json"), JSON.stringify({ api_key: "test-prime-cli-key" }));
+		process.env.HOME = tempHome;
+
+		const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: tempHome };
+		delete childEnv.PRIME_API_KEY;
+
+		const output = execFileSync(
+			process.execPath,
+			[
+				"--import",
+				"tsx",
+				"--input-type=module",
+				"-e",
+				"import { getEnvApiKey } from './src/env-api-keys.ts'; const key = getEnvApiKey('prime-inference'); console.log(JSON.stringify({ hasKey: key === 'test-prime-cli-key' }));",
+			],
+			{ cwd: packageRoot, env: childEnv },
+		);
+
+		expect(JSON.parse(output.toString())).toEqual({ hasKey: true });
 	});
 });
