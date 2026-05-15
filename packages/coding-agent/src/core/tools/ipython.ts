@@ -1,7 +1,6 @@
 // TODO: reconsider whether the persistent kernel is needed once RLM-1 weights land.
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
-import { BUILTIN_PYTHON_SKILL_IMPORTS } from "../builtin-python-skills.js";
 import type { ToolDefinition } from "../extensions/types.js";
 import { KernelManager } from "../kernel/index.js";
 import type {
@@ -12,8 +11,7 @@ import type {
 } from "../rlm-runtime.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
-function createRlmBootstrapCode(builtinPythonSkills: boolean): string {
-	return `
+const RLM_BOOTSTRAP_CODE = `
 try:
     import rlm as _prime_agent_rlm_module
     rlm = _prime_agent_rlm_module.rlm
@@ -41,35 +39,7 @@ except Exception as _prime_agent_rlm_error:
             return await self.run(prompt, **kwargs)
 
     rlm = _PrimeAgentMissingRlm()
-${builtinPythonSkills ? createBuiltinPythonSkillBootstrapCode() : ""}
 `.trim();
-}
-
-function createBuiltinPythonSkillBootstrapCode(): string {
-	return BUILTIN_PYTHON_SKILL_IMPORTS.map(
-		(importName) => `
-try:
-    import ${importName} as ${importName}
-except Exception as _prime_agent_${importName}_error:
-    class _PrimeAgentMissing${importName}:
-        def __init__(self, error):
-            self._error = error
-
-        async def run(self, *args, **kwargs):
-            raise RuntimeError(
-                "The built-in Python skill '${importName}' is not installed in this IPython kernel. "
-                "Remove ~/.prime/agent/kernel-venv so prime-agent can rebuild it, or set "
-                "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with the built-in skills installed. "
-                f"Import error: {self._error}"
-            )
-
-        async def __call__(self, *args, **kwargs):
-            return await self.run(*args, **kwargs)
-
-    ${importName} = _PrimeAgentMissing${importName}(str(_prime_agent_${importName}_error))
-`,
-	).join("\n");
-}
 
 const ipythonSchema = Type.Object({
 	code: Type.String({
@@ -90,8 +60,6 @@ export interface IpythonToolDetails {
 export interface IpythonToolOptions {
 	/** Python override. Must have `ipykernel` installed. */
 	python?: string;
-	/** Install and import built-in Python skills in the kernel. Default: true. */
-	builtinPythonSkills?: boolean;
 	env?: Record<string, string>;
 	sessionId?: string;
 	rlmRunHandler?: RlmRunHandler;
@@ -119,7 +87,6 @@ export function createIpythonToolDefinition(
 			managerPromise = (async () => {
 				const m = new KernelManager({
 					python: options?.python,
-					builtinPythonSkills: options?.builtinPythonSkills,
 					cwd,
 					env: options?.env,
 					sessionId: options?.sessionId,
@@ -129,7 +96,7 @@ export function createIpythonToolDefinition(
 					rlmBackgroundWaitHandler: options?.rlmBackgroundWaitHandler,
 				});
 				await m.start();
-				const bootstrap = await m.execute(createRlmBootstrapCode(options?.builtinPythonSkills ?? true));
+				const bootstrap = await m.execute(RLM_BOOTSTRAP_CODE);
 				if (bootstrap.status !== "ok") {
 					const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
 					throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);

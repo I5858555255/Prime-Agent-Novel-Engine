@@ -56,6 +56,10 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		);
 	}
 
+	if (activeTools.includes("web_search")) {
+		parts.push("", "Use `web_search` for current or external web facts, and cite source URLs in the final answer.");
+	}
+
 	if (activeTools.length > 0) {
 		parts.push("", "Call at most one built-in tool per turn.");
 	}

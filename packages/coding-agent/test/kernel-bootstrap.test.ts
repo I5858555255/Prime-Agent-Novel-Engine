@@ -15,12 +15,7 @@ function writeExecutable(filePath: string, content: string): void {
 function writeBootstrapVersion(venv: string): void {
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
-		`${JSON.stringify({
-			schema: 2,
-			ipykernel: "ipykernel",
-			runtime: "prime-agent-runtime",
-			pythonSkills: ["prime-agent-skill-websearch"],
-		})}\n`,
+		`${JSON.stringify({ schema: 1, ipykernel: "ipykernel", runtime: "prime-agent-runtime" })}\n`,
 	);
 }
 
@@ -68,7 +63,7 @@ function installFakeUv(): string {
 			"#!/bin/sh",
 			'if [ "$1" = "-c" ]; then',
 			'  case "$2" in',
-			'    "import ipykernel"|"import rlm"|"import websearch") exit 0 ;;',
+			'    "import ipykernel"|"import rlm") exit 0 ;;',
 			`    "${rlmRuntimeCheck}") exit 0 ;;`,
 			"    *) exit 1 ;;",
 			"  esac",
@@ -114,7 +109,7 @@ describe("kernel bootstrap", () => {
 		expect(getKernelVenvDir()).toBe(venv);
 	});
 
-	it("bootstraps a missing venv with uv, ipykernel, prime-agent-runtime, and built-in Python skills", async () => {
+	it("bootstraps a missing venv with uv, ipykernel, and prime-agent-runtime", async () => {
 		const logPath = installFakeUv();
 		const venv = join(tempDir, "kernel-venv");
 		process.env.PRIME_AGENT_KERNEL_VENV = venv;
@@ -127,14 +122,7 @@ describe("kernel bootstrap", () => {
 		expect(log).toContain("pip install --python");
 		expect(log).toContain("ipykernel");
 		expect(log).toContain("prime-agent-runtime");
-		expect(log).toContain("websearch");
-		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
-		expect(version).toMatchObject({
-			schema: 2,
-			ipykernel: "ipykernel",
-			runtime: "prime-agent-runtime",
-			pythonSkills: ["prime-agent-skill-websearch"],
-		});
+		expect(readFileSync(join(venv, ".bootstrap-version"), "utf8")).toContain('"schema":1');
 	});
 
 	it("shares concurrent bootstrap work in one process", async () => {
@@ -153,7 +141,7 @@ describe("kernel bootstrap", () => {
 		const venv = join(tempDir, "kernel-venv");
 		const python = join(venv, "bin", "python");
 		mkdirSync(join(venv, "bin"), { recursive: true });
-		writeFakePython(python, ["ipykernel", "rlm", "websearch"]);
+		writeFakePython(python, ["ipykernel", "rlm"]);
 		writeBootstrapVersion(venv);
 		process.env.PRIME_AGENT_KERNEL_VENV = venv;
 
@@ -171,7 +159,7 @@ describe("kernel bootstrap", () => {
 				"#!/bin/sh",
 				'if [ "$1" = "-c" ]; then',
 				'  case "$2" in',
-				'    "import ipykernel"|"import rlm"|"import websearch") exit 0 ;;',
+				'    "import ipykernel"|"import rlm") exit 0 ;;',
 				"    *) exit 1 ;;",
 				"  esac",
 				"fi",
@@ -201,18 +189,10 @@ describe("kernel bootstrap", () => {
 
 	it("uses PRIME_AGENT_KERNEL_PYTHON as an override contract", async () => {
 		const overridePython = join(tempDir, "override-python");
-		writeFakePython(overridePython, ["ipykernel", "rlm", "websearch"]);
-		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
-
-		await expect(ensureKernelPython()).resolves.toBe(overridePython);
-	});
-
-	it("does not require built-in Python skills when disabled", async () => {
-		const overridePython = join(tempDir, "override-python");
 		writeFakePython(overridePython, ["ipykernel", "rlm"]);
 		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
 
-		await expect(ensureKernelPython({ builtinPythonSkills: false })).resolves.toBe(overridePython);
+		await expect(ensureKernelPython()).resolves.toBe(overridePython);
 	});
 
 	it("rejects PRIME_AGENT_KERNEL_PYTHON with a stale rlm runtime", async () => {

@@ -9,7 +9,6 @@ import type { ResourceDiagnostic } from "./diagnostics.js";
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.js";
 
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
-import { getBuiltinPythonSkillsRoot } from "./builtin-python-skills.js";
 import { createEventBus, type EventBus } from "./event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } from "./extensions/loader.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.js";
@@ -375,15 +374,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		};
 
 		const enabledSkills = enabledSkillResources.map(mapSkillPath);
-		const builtinPythonSkillsRoot = this.noSkills ? undefined : getBuiltinPythonSkillsRoot();
-		if (builtinPythonSkillsRoot && !metadataByPath.has(builtinPythonSkillsRoot)) {
-			metadataByPath.set(builtinPythonSkillsRoot, {
-				source: "builtin",
-				scope: "temporary",
-				origin: "top-level",
-				baseDir: builtinPythonSkillsRoot,
-			});
-		}
 
 		// Add CLI paths metadata
 		for (const r of cliExtensionPaths.extensions) {
@@ -428,10 +418,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		const skillPaths = this.noSkills
 			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
-			: this.mergePaths(
-					[...cliEnabledSkills, ...enabledSkills, ...(builtinPythonSkillsRoot ? [builtinPythonSkillsRoot] : [])],
-					this.additionalSkillPaths,
-				);
+			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
 
 		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);

@@ -30,8 +30,6 @@ const RLM_DISPOSE_TIMEOUT_MS = 5000;
 export interface KernelManagerOptions {
 	/** Python interpreter that has `ipykernel` available. Defaults to the auto-bootstrapped kernel. */
 	python?: string;
-	/** Install and require built-in Python skills in the auto-bootstrapped kernel. Default: true. */
-	builtinPythonSkills?: boolean;
 	cwd?: string;
 	env?: Record<string, string>;
 	sessionId?: string;
@@ -273,7 +271,6 @@ export class KernelManager {
 	private readonly options: Pick<
 		KernelManagerOptions,
 		| "python"
-		| "builtinPythonSkills"
 		| "cwd"
 		| "env"
 		| "sessionId"
@@ -303,7 +300,6 @@ export class KernelManager {
 	constructor(options: KernelManagerOptions) {
 		this.options = {
 			python: options.python,
-			builtinPythonSkills: options.builtinPythonSkills,
 			cwd: options.cwd,
 			env: options.env,
 			sessionId: options.sessionId,
@@ -333,11 +329,7 @@ export class KernelManager {
 
 		let python: string;
 		try {
-			python =
-				this.options.python ??
-				(await ensureKernelPython({
-					builtinPythonSkills: this.options.builtinPythonSkills,
-				}));
+			python = this.options.python ?? (await ensureKernelPython());
 			this.options.python = python;
 		} catch (error) {
 			this.state = "idle";
