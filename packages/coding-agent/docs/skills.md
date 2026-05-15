@@ -193,24 +193,24 @@ Name collisions (same name from different locations) warn and keep the first ski
 ## Example
 
 ```
-docs-check/
+my-skill/
 ├── SKILL.md
-└── check-links.sh
+└── process.sh
 ```
 
 **SKILL.md:**
 ````markdown
 ---
-name: docs-check
-description: Check Markdown documentation for stale links and formatting issues. Use when reviewing docs changes.
+name: my-skill
+description: Process project files with a reusable local workflow. Use when the user asks to run this project-specific process.
 ---
 
-# Docs Check
+# My Skill
 
 ## Usage
 
 ```bash
-./check-links.sh docs/
+./process.sh <input>
 ```
 ````
 
