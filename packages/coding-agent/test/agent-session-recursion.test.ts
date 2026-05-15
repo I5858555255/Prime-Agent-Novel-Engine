@@ -455,6 +455,50 @@ describe("AgentSession rlm recursion", () => {
 		}
 	});
 
+	it("handles rlm calls from asyncio tasks after the scheduling cell is idle", async () => {
+		const prompts: string[] = [];
+		const manager = new KernelManager({
+			cwd: tempDir,
+			rlmRunHandler: async ({ prompt }) => {
+				prompts.push(prompt);
+				return {
+					answer: `answer:${prompt}`,
+					usage: { prompt_tokens: 1, completion_tokens: 1 },
+					turns: 1,
+					session_dir: null,
+				};
+			},
+		});
+
+		try {
+			const scheduled = await manager.execute(`
+import asyncio
+import rlm
+
+async def _delayed_rlm():
+    await asyncio.sleep(0.05)
+    return await rlm.run("detached child after idle")
+
+_task = asyncio.create_task(_delayed_rlm())
+print("scheduled")
+`);
+
+			expect(scheduled.status).toBe("ok");
+			expect(scheduled.stdout.trim()).toBe("scheduled");
+			await waitFor(() => prompts.includes("detached child after idle"));
+
+			const finished = await manager.execute(`
+_result = await _task
+print(_result.answer)
+`);
+
+			expect(finished.status).toBe("ok");
+			expect(finished.stdout.trim()).toBe("answer:detached child after idle");
+		} finally {
+			await manager.dispose();
+		}
+	});
+
 	it("rejects removed background rlm comm request types", async () => {
 		const replies: CapturedCommReply[] = [];
 		const manager = new KernelManager({
