@@ -6,7 +6,7 @@
 
 - Added automatic IPython kernel runtime bootstrap with uv-managed Python, `ipykernel`, and `prime-agent-runtime`.
 - Added `/goal` for long-running objectives that continue after early no-tool stops until the model marks the goal complete.
-- Added Prime Inference as a selectable built-in provider with `PRIME_API_KEY`, `~/.prime/config.json`, and `/login` API-key authentication.
+- Added Prime Inference as a selectable built-in provider with `PRIME_API_KEY` and `/login` API-key authentication.
 - Added `/usage` to show token, cost, and context usage on demand.
 
 ### Changed

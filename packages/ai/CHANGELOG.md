@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added Prime Inference as an OpenAI-compatible built-in provider using `PRIME_API_KEY` or `~/.prime/config.json` authentication.
+- Added Prime Inference as an OpenAI-compatible built-in provider using `PRIME_API_KEY` authentication.
 
 ### Fixed
 

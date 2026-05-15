@@ -51,7 +51,7 @@ pi
 | Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |
-| Prime Inference | `PRIME_API_KEY` (or `~/.prime/config.json`) | `prime-inference` |
+| Prime Inference | `PRIME_API_KEY` | `prime-inference` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
 | Google Gemini | `GEMINI_API_KEY` | `google` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
@@ -121,7 +121,7 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 
 ### Prime Inference
 
-Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY`, store an API key for `prime-inference` via `/login`, or log in with the Prime CLI; pi will read `api_key` from `~/.prime/config.json` when no env var or auth file key is configured.
+Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or store an API key for `prime-inference` via `/login`.
 
 ## Cloud Providers
 
@@ -244,5 +244,4 @@ When resolving credentials for a provider:
 1. CLI `--api-key` flag
 2. `auth.json` entry (API key or OAuth token)
 3. Environment variable
-4. Prime CLI config at `~/.prime/config.json` for `prime-inference`
-5. Custom provider keys from `models.json`
+4. Custom provider keys from `models.json`

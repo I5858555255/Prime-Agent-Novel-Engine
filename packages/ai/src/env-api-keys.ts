@@ -15,41 +15,6 @@ const NODE_FS_SPECIFIER = "node:" + "fs";
 const NODE_OS_SPECIFIER = "node:" + "os";
 const NODE_PATH_SPECIFIER = "node:" + "path";
 
-type NodeProcessWithBuiltinModule = typeof process & {
-	getBuiltinModule?: (specifier: string) => unknown;
-};
-
-// This module is imported by browser builds, so Node builtins must stay behind
-// runtime guards instead of top-level imports.
-function getNodeBuiltin<T>(specifier: string): T | undefined {
-	if (typeof process === "undefined" || !(process.versions?.node || process.versions?.bun)) {
-		return undefined;
-	}
-
-	const getBuiltinModule = (process as NodeProcessWithBuiltinModule).getBuiltinModule;
-	if (getBuiltinModule) {
-		try {
-			const builtin = getBuiltinModule(specifier);
-			if (builtin) {
-				return builtin as T;
-			}
-		} catch {
-			// Fall through to require for runtimes that expose getBuiltinModule but
-			// reject a specific specifier.
-		}
-	}
-
-	try {
-		if (typeof require !== "undefined") {
-			return require(specifier) as T;
-		}
-	} catch {
-		return undefined;
-	}
-
-	return undefined;
-}
-
 // Eagerly load in Node.js/Bun environment only
 if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
 	dynamicImport(NODE_FS_SPECIFIER).then((m) => {
@@ -79,11 +44,8 @@ function getProcEnv(key: string): string | undefined {
 	if (_procEnvCache === null) {
 		_procEnvCache = new Map();
 		try {
-			const fsModule = getNodeBuiltin<{ readFileSync: typeof readFileSync }>(NODE_FS_SPECIFIER);
-			if (!fsModule) {
-				return undefined;
-			}
-			const data = fsModule.readFileSync("/proc/self/environ", "utf-8");
+			const { readFileSync: readProcEnvFile } = require("node:fs") as { readFileSync: typeof readFileSync };
+			const data = readProcEnvFile("/proc/self/environ", "utf-8");
 			for (const entry of data.split("\0")) {
 				const idx = entry.indexOf("=");
 				if (idx > 0) {
@@ -126,33 +88,6 @@ function hasVertexAdcCredentials(): boolean {
 		}
 	}
 	return cachedVertexAdcCredentialsExists;
-}
-
-function getPrimeCliApiKey(): string | undefined {
-	if (typeof process === "undefined" || !(process.versions?.node || process.versions?.bun)) {
-		return undefined;
-	}
-
-	try {
-		const fsModule = getNodeBuiltin<{ readFileSync: typeof readFileSync }>(NODE_FS_SPECIFIER);
-		const osModule = getNodeBuiltin<{ homedir: typeof homedir }>(NODE_OS_SPECIFIER);
-		const pathModule = getNodeBuiltin<{ join: typeof join }>(NODE_PATH_SPECIFIER);
-		if (!fsModule || !osModule || !pathModule) {
-			return undefined;
-		}
-		const raw = fsModule.readFileSync(pathModule.join(osModule.homedir(), ".prime", "config.json"), "utf-8");
-		const config = JSON.parse(raw) as { api_key?: unknown; apiKey?: unknown };
-		const apiKey =
-			typeof config.api_key === "string"
-				? config.api_key
-				: typeof config.apiKey === "string"
-					? config.apiKey
-					: undefined;
-		const trimmed = apiKey?.trim();
-		return trimmed ? trimmed : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
@@ -228,10 +163,6 @@ export function getEnvApiKey(provider: string): string | undefined {
 	const envKeys = findEnvKeys(provider);
 	if (envKeys?.[0]) {
 		return process.env[envKeys[0]] || getProcEnv(envKeys[0]);
-	}
-
-	if (provider === "prime-inference") {
-		return getPrimeCliApiKey();
 	}
 
 	// Vertex AI supports either an explicit API key or Application Default Credentials.

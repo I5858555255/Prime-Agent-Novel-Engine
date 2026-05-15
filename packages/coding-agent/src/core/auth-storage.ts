@@ -353,10 +353,6 @@ export class AuthStorage {
 			return { configured: false, source: "environment", label: envKeys[0] };
 		}
 
-		if (provider === "prime-inference" && getEnvApiKey(provider)) {
-			return { configured: false, source: "fallback", label: "~/.prime/config.json" };
-		}
-
 		if (this.fallbackResolver?.(provider)) {
 			return { configured: false, source: "fallback", label: "custom provider config" };
 		}
