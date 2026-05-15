@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import inspect
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -114,5 +117,17 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([entry["query"] for entry in result["queries"]], ["same"])
 
 
+class RlmHarnessContractTests(unittest.TestCase):
+    def test_pyproject_matches_rlm_harness_skill_contract(self) -> None:
+        pyproject_path = Path(__file__).parents[1] / "pyproject.toml"
+        pyproject = tomllib.loads(pyproject_path.read_text())
+
+        self.assertEqual(pyproject["project"]["name"], "rlm-skill-websearch")
+        self.assertEqual(pyproject["project"]["scripts"]["websearch"], "rlm.skill:cli")
+        self.assertIn("rlm", pyproject["project"]["dependencies"])
+        self.assertEqual(pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"], ["src/websearch"])
+        self.assertEqual(inspect.signature(websearch.run).parameters["queries"].annotation, "list[str]")
+
+
 if __name__ == "__main__":
-	unittest.main()
+    unittest.main()

@@ -223,14 +223,14 @@ def _clean_queries(queries: Iterable[str] | str) -> list[str]:
 
 
 async def run(
-    queries: Iterable[str] | str,
+    queries: list[str],
     max_results: int = 5,
     timeout_seconds: float = 10.0,
 ) -> SearchResponse:
     """Search the web with keyless Exa MCP and return ranked results.
 
     Args:
-        queries: Search query string or iterable of search query strings to run.
+        queries: Search query strings to run.
         max_results: Maximum number of results per query, capped at 10.
         timeout_seconds: Per-query network timeout in seconds.
 

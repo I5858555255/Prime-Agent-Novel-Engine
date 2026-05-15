@@ -51,7 +51,7 @@ export interface Args {
 }
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls", "web_search"]);
+const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
 const BUILTIN_TOOL_NAMES = ["ipython", "bash", "edit"];
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {

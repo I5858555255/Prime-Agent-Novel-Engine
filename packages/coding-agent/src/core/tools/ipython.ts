@@ -46,10 +46,24 @@ ${builtinPythonSkills ? createBuiltinPythonSkillBootstrapCode() : ""}
 }
 
 function createBuiltinPythonSkillBootstrapCode(): string {
-	return BUILTIN_PYTHON_SKILL_IMPORTS.map(
-		(importName) => `
+	return `
+import sys as _prime_agent_sys
+import types as _prime_agent_types
+
+class _PrimeAgentCallableModule(_prime_agent_types.ModuleType):
+    async def __call__(self, *args, **kwargs):
+        return await self.run(*args, **kwargs)
+
+def _prime_agent_wrap_callable_module(mod):
+    wrapped = _PrimeAgentCallableModule(mod.__name__)
+    wrapped.__dict__.update(mod.__dict__)
+    _prime_agent_sys.modules[mod.__name__] = wrapped
+    return wrapped
+${BUILTIN_PYTHON_SKILL_IMPORTS.map(
+	(importName) => `
 try:
-    import ${importName} as ${importName}
+    import ${importName} as _prime_agent_${importName}_module
+    ${importName} = _prime_agent_wrap_callable_module(_prime_agent_${importName}_module)
 except Exception as _prime_agent_${importName}_error:
     class _PrimeAgentMissing${importName}:
         def __init__(self, error):
@@ -67,7 +81,7 @@ except Exception as _prime_agent_${importName}_error:
 
     ${importName} = _PrimeAgentMissing${importName}(str(_prime_agent_${importName}_error))
 `,
-	).join("\n");
+).join("\n")}`;
 }
 
 const ipythonSchema = Type.Object({

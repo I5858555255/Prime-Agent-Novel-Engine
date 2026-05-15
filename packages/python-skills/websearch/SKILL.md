@@ -11,7 +11,7 @@ to read next.
 ## Python
 
 ```python
-results = await websearch.run(
+results = await websearch(
     queries=["latest jupyter_client release"],
     max_results=5,
 )
@@ -20,15 +20,16 @@ results = await websearch.run(
 For a single query, a string is accepted:
 
 ```python
-results = await websearch.run("latest jupyter_client release")
+results = await websearch("latest jupyter_client release")
 ```
 
 No API key or account setup is required. The skill uses Exa's public MCP search
 endpoint.
 
-`run(...)` returns a dictionary with one `queries` entry per input query. Each
-entry includes the `backend` used and ranked `results` with `title`, `url`, and
-`snippet` fields when the search backend provides them.
+The skill also exposes `await websearch.run(...)`. The call returns a dictionary
+with one `queries` entry per input query. Each entry includes the `backend` used
+and ranked `results` with `title`, `url`, and `snippet` fields when the search
+backend provides them.
 
 Prefer targeted queries. Use search results to identify sources, then fetch and
 inspect the original pages before relying on specific facts.
