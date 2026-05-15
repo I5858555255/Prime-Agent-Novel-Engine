@@ -51,8 +51,8 @@ export interface Args {
 }
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
-const BUILTIN_TOOL_NAMES = ["ipython", "web_search", "bash", "edit"];
+const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls", "web_search"]);
+const BUILTIN_TOOL_NAMES = ["ipython", "bash", "edit"];
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
@@ -352,7 +352,6 @@ ${chalk.bold("Environment Variables:")}
 
 ${chalk.bold("Built-in Tool Names:")}
   ipython - Execute Python in a persistent IPython kernel
-  web_search - Search the web with keyless Exa MCP
   bash    - Execute bash commands (off by default)
   edit    - Edit files with find/replace (off by default)
 `);

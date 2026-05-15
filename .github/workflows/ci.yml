@@ -40,3 +40,6 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Python skill tests
+        run: PYTHONPATH=packages/python-skills/websearch/src python3 -m unittest discover -s packages/python-skills/websearch/tests

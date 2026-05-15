@@ -35,25 +35,17 @@ export {
 	truncateLine,
 	truncateTail,
 } from "./truncate.js";
-export {
-	createWebSearchTool,
-	createWebSearchToolDefinition,
-	type WebSearchResult,
-	type WebSearchToolDetails,
-	type WebSearchToolInput,
-} from "./web-search.js";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.js";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.js";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.js";
 import { createIpythonTool, createIpythonToolDefinition, type IpythonToolOptions } from "./ipython.js";
-import { createWebSearchTool, createWebSearchToolDefinition } from "./web-search.js";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "ipython" | "bash" | "edit" | "web_search";
-export const allToolNames: Set<ToolName> = new Set(["ipython", "bash", "edit", "web_search"]);
+export type ToolName = "ipython" | "bash" | "edit";
+export const allToolNames: Set<ToolName> = new Set(["ipython", "bash", "edit"]);
 
 export interface ToolsOptions {
 	ipython?: IpythonToolOptions;
@@ -69,8 +61,6 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createBashToolDefinition(cwd, options?.bash);
 		case "edit":
 			return createEditToolDefinition(cwd, options?.edit);
-		case "web_search":
-			return createWebSearchToolDefinition();
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -84,8 +74,6 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createBashTool(cwd, options?.bash);
 		case "edit":
 			return createEditTool(cwd, options?.edit);
-		case "web_search":
-			return createWebSearchTool();
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -96,7 +84,6 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		ipython: createIpythonToolDefinition(cwd, options?.ipython),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		edit: createEditToolDefinition(cwd, options?.edit),
-		web_search: createWebSearchToolDefinition(),
 	};
 }
 
@@ -105,6 +92,5 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		ipython: createIpythonTool(cwd, options?.ipython),
 		bash: createBashTool(cwd, options?.bash),
 		edit: createEditTool(cwd, options?.edit),
-		web_search: createWebSearchTool(),
 	};
 }

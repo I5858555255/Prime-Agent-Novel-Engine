@@ -146,8 +146,6 @@ export type {
 	// Events - User Bash
 	UserBashEvent,
 	UserBashEventResult,
-	WebSearchToolCallEvent,
-	WebSearchToolResultEvent,
 	WidgetPlacement,
 	WorkingIndicatorOptions,
 } from "./types.js";
@@ -158,6 +156,5 @@ export {
 	isEditToolResult,
 	isIpythonToolResult,
 	isToolCallEventType,
-	isWebSearchToolResult,
 } from "./types.js";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.js";

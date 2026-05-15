@@ -67,8 +67,6 @@ import type {
 	EditToolInput,
 	IpythonToolDetails,
 	IpythonToolInput,
-	WebSearchToolDetails,
-	WebSearchToolInput,
 } from "../tools/index.js";
 
 export type { ExecOptions, ExecResult } from "../exec.js";
@@ -783,11 +781,6 @@ export interface IpythonToolCallEvent extends ToolCallEventBase {
 	input: IpythonToolInput;
 }
 
-export interface WebSearchToolCallEvent extends ToolCallEventBase {
-	toolName: "web_search";
-	input: WebSearchToolInput;
-}
-
 export interface CustomToolCallEvent extends ToolCallEventBase {
 	toolName: string;
 	input: Record<string, unknown>;
@@ -799,12 +792,7 @@ export interface CustomToolCallEvent extends ToolCallEventBase {
  * `event.input` is mutable. Mutate it in place to patch tool arguments before execution.
  * Later `tool_call` handlers see earlier mutations. No re-validation is performed after mutation.
  */
-export type ToolCallEvent =
-	| BashToolCallEvent
-	| EditToolCallEvent
-	| IpythonToolCallEvent
-	| WebSearchToolCallEvent
-	| CustomToolCallEvent;
+export type ToolCallEvent = BashToolCallEvent | EditToolCallEvent | IpythonToolCallEvent | CustomToolCallEvent;
 
 interface ToolResultEventBase {
 	type: "tool_result";
@@ -829,11 +817,6 @@ export interface IpythonToolResultEvent extends ToolResultEventBase {
 	details: IpythonToolDetails | undefined;
 }
 
-export interface WebSearchToolResultEvent extends ToolResultEventBase {
-	toolName: "web_search";
-	details: WebSearchToolDetails | undefined;
-}
-
 export interface CustomToolResultEvent extends ToolResultEventBase {
 	toolName: string;
 	details: unknown;
@@ -844,7 +827,6 @@ export type ToolResultEvent =
 	| BashToolResultEvent
 	| EditToolResultEvent
 	| IpythonToolResultEvent
-	| WebSearchToolResultEvent
 	| CustomToolResultEvent;
 
 // Type guards for ToolResultEvent
@@ -856,9 +838,6 @@ export function isEditToolResult(e: ToolResultEvent): e is EditToolResultEvent {
 }
 export function isIpythonToolResult(e: ToolResultEvent): e is IpythonToolResultEvent {
 	return e.toolName === "ipython";
-}
-export function isWebSearchToolResult(e: ToolResultEvent): e is WebSearchToolResultEvent {
-	return e.toolName === "web_search";
 }
 
 /**
@@ -884,7 +863,6 @@ export function isWebSearchToolResult(e: ToolResultEvent): e is WebSearchToolRes
 export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): event is BashToolCallEvent;
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
 export function isToolCallEventType(toolName: "ipython", event: ToolCallEvent): event is IpythonToolCallEvent;
-export function isToolCallEventType(toolName: "web_search", event: ToolCallEvent): event is WebSearchToolCallEvent;
 export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(
 	toolName: TName,
 	event: ToolCallEvent,

@@ -50,6 +50,7 @@ import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
+import { BUILTIN_PYTHON_SKILLS } from "./builtin-python-skills.js";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -261,7 +262,7 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Model registry for API key resolution and model discovery */
 	modelRegistry: ModelRegistry;
-	/** Initial active built-in tool names. Default: [ipython, web_search] */
+	/** Initial active built-in tool names. Default: [ipython] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
@@ -3287,6 +3288,10 @@ export class AgentSession {
 	}): void {
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		const builtinPythonSkillNames = new Set(BUILTIN_PYTHON_SKILLS.map((skill) => skill.name));
+		const builtinPythonSkills = this._resourceLoader
+			.getSkills()
+			.skills.some((skill) => skill.sourceInfo.source === "builtin" && builtinPythonSkillNames.has(skill.name));
 		const configuredBaseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -3297,6 +3302,7 @@ export class AgentSession {
 			: createAllToolDefinitions(this._cwd, {
 					ipython: {
 						kernelManagerRef: this._ipythonKernelManagerRef,
+						builtinPythonSkills,
 						env: this._rlmKernelEnv(),
 						sessionId: this.sessionId,
 						rlmRunHandler: ({ prompt, kwargs }) => this.runRlmChild(prompt, kwargs),
@@ -3343,9 +3349,7 @@ export class AgentSession {
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 
-		const defaultActiveToolNames = this._baseToolsOverride
-			? Object.keys(this._baseToolsOverride)
-			: ["ipython", "web_search"];
+		const defaultActiveToolNames = this._baseToolsOverride ? Object.keys(this._baseToolsOverride) : ["ipython"];
 		if (this._includeGoalTools && this._autoActivateGoalTools) {
 			defaultActiveToolNames.push(...GOAL_TOOL_NAMES);
 		}

@@ -17,13 +17,7 @@ import { getDefaultSessionDir, SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 import { isInstallTelemetryEnabled } from "./telemetry.js";
 import { time } from "./timings.js";
-import {
-	createBashTool,
-	createEditTool,
-	createIpythonTool,
-	createWebSearchTool,
-	withFileMutationQueue,
-} from "./tools/index.js";
+import { createBashTool, createEditTool, createIpythonTool, withFileMutationQueue } from "./tools/index.js";
 
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
@@ -47,14 +41,14 @@ export interface CreateAgentSessionOptions {
 	 * Optional default tool suppression mode when no explicit allowlist is provided.
 	 *
 	 * - "all": start with no tools enabled
-	 * - "builtin": disable the default built-in tools (ipython and web_search)
+	 * - "builtin": disable the default built-in tool (ipython)
 	 *   but keep extension/custom tools enabled
 	 */
 	noTools?: "all" | "builtin";
 	/**
 	 * Optional allowlist of tool names.
 	 *
-	 * When omitted, pi enables the default built-in tools (ipython and web_search)
+	 * When omitted, pi enables the default built-in tool (ipython)
 	 * and leaves extension/custom tools enabled unless `noTools` changes that default.
 	 * When provided, only the listed tool names are enabled.
 	 */
@@ -106,7 +100,6 @@ export {
 	createIpythonTool,
 	createBashTool,
 	createEditTool,
-	createWebSearchTool,
 };
 
 // Helper Functions
@@ -262,9 +255,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const includeGoalTools = options.tools !== undefined || options.noTools !== "all";
 	const autoActivateGoalTools = options.tools === undefined && !options.noTools;
 	const defaultActiveToolNames: string[] =
-		includeGoalTools && autoActivateGoalTools
-			? ["ipython", "web_search", ...GOAL_TOOL_NAMES]
-			: ["ipython", "web_search"];
+		includeGoalTools && autoActivateGoalTools ? ["ipython", ...GOAL_TOOL_NAMES] : ["ipython"];
 	const initialActiveToolNames: string[] = options.tools
 		? [...options.tools]
 		: options.noTools

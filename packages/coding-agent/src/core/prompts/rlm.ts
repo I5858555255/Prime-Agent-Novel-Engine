@@ -29,10 +29,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		const installed = installedSkills.map((skill) => `\`${skill}\``).join(", ");
 		skillLines.push(`Installed skills (pre-imported): ${installed}.`);
 		skillLines.push(
-			"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
-		);
-		skillLines.push(
-			"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
+			"Each skill is pre-imported by name. Call `await <skill>.run(...)`, and inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
 		);
 	}
 	if (skillLines.length > 0) {
@@ -54,10 +51,6 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"",
 			"Use `ipython` for both Python and shell work. For repository shell commands, prefer IPython shell syntax: `!rg ...`, `!npm run check`, or `%%bash` for multi-line scripts. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
 		);
-	}
-
-	if (activeTools.includes("web_search")) {
-		parts.push("", "Use `web_search` for current or external web facts, and cite source URLs in the final answer.");
 	}
 
 	if (activeTools.length > 0) {

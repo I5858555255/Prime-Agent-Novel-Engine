@@ -320,7 +320,16 @@ describe("parseArgs", () => {
 			expect(result.tools).toEqual(["read", "bash"]);
 			expect(result.diagnostics).toContainEqual({
 				type: "error",
-				message: "Unknown built-in tool(s): read. Available built-in tools: ipython, web_search, bash, edit",
+				message: "Unknown built-in tool(s): read. Available built-in tools: ipython, bash, edit",
+			});
+		});
+
+		test("rejects web_search as a built-in tool", () => {
+			const result = parseArgs(["--tools", "web_search"]);
+			expect(result.tools).toEqual(["web_search"]);
+			expect(result.diagnostics).toContainEqual({
+				type: "error",
+				message: "Unknown built-in tool(s): web_search. Available built-in tools: ipython, bash, edit",
 			});
 		});
 	});

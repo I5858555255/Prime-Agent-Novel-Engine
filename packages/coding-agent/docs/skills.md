@@ -32,6 +32,7 @@ Pi loads skills from:
 - Packages: `skills/` directories or `pi.skills` entries in `package.json`
 - Settings: `skills` array with files or directories
 - CLI: `--skill <path>` (repeatable, additive even with `--no-skills`)
+- Built-in: the bundled `websearch` Python skill is loaded by default and pre-imported into IPython
 
 Discovery rules:
 - In `~/.pi/agent/skills/` and `.pi/skills/`, direct root `.md` files are discovered as individual skills

@@ -54,7 +54,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
-	const tools = selectedTools ?? ["ipython", "web_search"];
+	const tools = selectedTools ?? ["ipython"];
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -90,9 +90,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		cwd: promptCwd,
 		messagesPath: promptMessagesPath,
 		installedSkills: skills.filter((skill) => !skill.disableModelInvocation).map((skill) => skill.name),
-		activeTools: tools.filter(
-			(name) => name === "ipython" || name === "bash" || name === "edit" || name === "web_search",
-		),
+		activeTools: tools.filter((name) => name === "ipython" || name === "bash" || name === "edit"),
 		allowRecursion,
 	});
 

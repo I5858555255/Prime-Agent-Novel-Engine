@@ -212,7 +212,7 @@ describe("AgentSession goals", () => {
 	it("does not re-add deactivated goal tools on runtime rebuild without an active goal", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		expect(harness.session.getActiveToolNames()).toEqual(["ipython", "web_search", ...GOAL_TOOL_NAMES]);
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython", ...GOAL_TOOL_NAMES]);
 
 		harness.session.setActiveToolsByName([]);
 		await harness.session.reload();
@@ -237,7 +237,7 @@ describe("AgentSession goals", () => {
 
 		await harness.session.reload();
 
-		expect(harness.session.getActiveToolNames()).toEqual(["ipython", "web_search", ...GOAL_TOOL_NAMES]);
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython", ...GOAL_TOOL_NAMES]);
 	});
 
 	it("does not reject continuation when goal error update listeners throw", async () => {
