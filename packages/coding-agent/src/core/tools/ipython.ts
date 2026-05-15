@@ -106,7 +106,7 @@ export interface IpythonToolDetails {
 export interface IpythonToolOptions {
 	/** Python override. Must have `ipykernel` installed. */
 	python?: string;
-	/** Import built-in Python skills in the kernel. Default: true. */
+	/** Import built-in Python skills in the kernel. AgentSession enables this when bundled skills are loaded. */
 	builtinPythonSkills?: boolean;
 	env?: Record<string, string>;
 	sessionId?: string;
@@ -133,7 +133,7 @@ export function createIpythonToolDefinition(
 	function getManager(): Promise<KernelManager> {
 		if (!managerPromise) {
 			managerPromise = (async () => {
-				const builtinPythonSkills = options?.builtinPythonSkills ?? true;
+				const builtinPythonSkills = options?.builtinPythonSkills ?? false;
 				const m = new KernelManager({
 					python: options?.python,
 					cwd,
