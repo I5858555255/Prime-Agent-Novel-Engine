@@ -52,13 +52,22 @@ main() {
 	fi
 
 	version="$(resolve_prime_agent_version "$@")"
-	tarball_url="$prime_agent_base_url/releases/v$version/$prime_agent_package-$version.tgz"
+	tarball_name="$prime_agent_package-$version.tgz"
+	tarball_url="$prime_agent_base_url/releases/v$version/$tarball_name"
 
-	printf 'This will run:\n\n  npm install -g %s\n\n' "$tarball_url"
+	printf 'This will download, verify, and install:\n\n  %s\n\n' "$tarball_url"
 	confirm_install
 
+	download_dir=$(create_temp_dir)
+	trap 'rm -rf "$download_dir"' EXIT
+	tarball_path="$download_dir/$tarball_name"
+
 	printf '\n'
-	install_prime_agent_package "$tarball_url"
+	download_prime_agent_package "$version" "$tarball_url" "$tarball_path"
+	printf '\n'
+	install_prime_agent_package "$tarball_path"
+	rm -rf "$download_dir"
+	trap - EXIT
 	printf '\nPrime Agent was installed successfully.\n'
 
 	if command -v "$prime_agent_cmd" >/dev/null 2>&1; then
@@ -77,6 +86,20 @@ Check npm's global bin directory with:
 Then add that directory to your shell PATH.
 EOF
 	fi
+}
+
+create_temp_dir() {
+	if command -v mktemp >/dev/null 2>&1; then
+		if tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/prime-agent-install.XXXXXX" 2>/dev/null); then
+			printf '%s' "$tmp_dir"
+			return
+		fi
+	fi
+
+	tmp_dir="${TMPDIR:-/tmp}/prime-agent-install.$$"
+	rm -rf "$tmp_dir"
+	mkdir -p "$tmp_dir"
+	printf '%s' "$tmp_dir"
 }
 
 run_preflight_checks() {
@@ -415,6 +438,53 @@ run_with_sudo() {
 	fi
 }
 
+download_prime_agent_package() {
+	version="$1"
+	tarball_url="$2"
+	tarball_path="$3"
+	download_dir=$(dirname "$tarball_path")
+	checksums_url="$prime_agent_base_url/releases/v$version/SHA256SUMS"
+	checksums_path="$download_dir/SHA256SUMS"
+
+	if ! command -v curl >/dev/null 2>&1; then
+		printf 'error: curl is required to download Prime Agent.\n' >&2
+		exit 1
+	fi
+
+	printf 'Downloading checksums...\n'
+	curl -fsSL "$checksums_url" -o "$checksums_path"
+
+	printf 'Downloading Prime Agent...\n'
+	curl -fL "$tarball_url" -o "$tarball_path"
+
+	verify_prime_agent_package_checksum "$checksums_path" "$tarball_path"
+}
+
+verify_prime_agent_package_checksum() {
+	checksums_path="$1"
+	tarball_path="$2"
+	checksum_dir=$(dirname "$tarball_path")
+	tarball_name=$(basename "$tarball_path")
+	selected_checksums_path="$checksum_dir/SHA256SUMS.selected"
+
+	if ! awk -v file="$tarball_name" '$2 == file { print; found = 1; exit } END { if (!found) exit 1 }' \
+		"$checksums_path" >"$selected_checksums_path"; then
+		printf 'error: checksum for %s was not found in %s\n' "$tarball_name" "$checksums_path" >&2
+		exit 1
+	fi
+
+	if command -v sha256sum >/dev/null 2>&1; then
+		printf 'Verifying Prime Agent download\n'
+		(cd "$checksum_dir" && sha256sum -c "$(basename "$selected_checksums_path")")
+	elif command -v shasum >/dev/null 2>&1; then
+		printf 'Verifying Prime Agent download\n'
+		(cd "$checksum_dir" && shasum -a 256 -c "$(basename "$selected_checksums_path")")
+	else
+		printf 'error: sha256sum or shasum is required to verify the Prime Agent download.\n' >&2
+		exit 1
+	fi
+}
+
 confirm_install() {
 	if ! ( : <>/dev/tty ) 2>/dev/null; then
 		printf 'No terminal detected; continuing without confirmation.\n'
@@ -436,9 +506,9 @@ confirm_install() {
 }
 
 install_prime_agent_package() {
-	tarball_url="$1"
+	tarball_path="$1"
 	printf 'Installing Prime Agent...\n\n'
-	npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_url"
+	npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
 }
 
 main "$@"
