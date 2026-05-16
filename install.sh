@@ -2,15 +2,16 @@
 
 set -eu
 
+prime_agent_unconfigured_base_url="__PRIME_AGENT_DOWNLOAD_BASE""_URL__"
 prime_agent_base_url="${PRIME_AGENT_DOWNLOAD_BASE_URL:-__PRIME_AGENT_DOWNLOAD_BASE_URL__}"
 prime_agent_base_url="${prime_agent_base_url%/}"
 prime_agent_package="${PRIME_AGENT_PACKAGE:-prime-agent}"
 prime_agent_cmd="${PRIME_AGENT_CMD:-prime-agent}"
 prime_agent_esc=$(printf '\033')
-readonly prime_agent_base_url prime_agent_package prime_agent_cmd prime_agent_esc
+readonly prime_agent_unconfigured_base_url prime_agent_base_url prime_agent_package prime_agent_cmd prime_agent_esc
 
 main() {
-	if [ "$prime_agent_base_url" = "__PRIME_AGENT_DOWNLOAD_BASE_URL__" ]; then
+	if [ "$prime_agent_base_url" = "$prime_agent_unconfigured_base_url" ]; then
 		printf 'error: installer download URL is not configured.\n' >&2
 		printf 'Set PRIME_AGENT_DOWNLOAD_BASE_URL or use the installer published by the release workflow.\n' >&2
 		exit 1
