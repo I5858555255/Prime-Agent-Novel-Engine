@@ -144,6 +144,13 @@ function rewriteInternalDependencies(dependencies, internalPackageUrls) {
 	return rewritten;
 }
 
+function releaseScripts(sourceScripts) {
+	if (!sourceScripts?.postinstall) return undefined;
+	return {
+		postinstall: sourceScripts.postinstall,
+	};
+}
+
 function createReleasePackageJson(sourcePackage, packageName, releaseVersion, internalPackageUrls) {
 	const packageJson = {
 		...sourcePackage,
@@ -151,10 +158,10 @@ function createReleasePackageJson(sourcePackage, packageName, releaseVersion, in
 		version: releaseVersion,
 		dependencies: rewriteInternalDependencies(sourcePackage.dependencies, internalPackageUrls),
 		optionalDependencies: rewriteInternalDependencies(sourcePackage.optionalDependencies, internalPackageUrls),
+		scripts: releaseScripts(sourcePackage.scripts),
 	};
 
 	delete packageJson.devDependencies;
-	delete packageJson.scripts;
 	delete packageJson.overrides;
 	delete packageJson.private;
 

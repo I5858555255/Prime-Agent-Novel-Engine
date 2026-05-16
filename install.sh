@@ -29,9 +29,7 @@ main() {
 		check_status=$?
 	fi
 
-	if [ "$check_status" -eq 0 ]; then
-		cat "$check_file"
-	fi
+	cat "$check_file"
 	rm -f "$check_file"
 
 	if [ "$check_status" -ne 0 ]; then
@@ -161,6 +159,10 @@ install_node_npm_interactive() {
 		apt) label="apt" ;;
 		apk) label="apk" ;;
 		standalone) label="standalone Node.js" ;;
+		*)
+			method=standalone
+			label="standalone Node.js"
+			;;
 	esac
 
 	if ! ( : <>/dev/tty ) 2>/dev/null; then
@@ -342,6 +344,9 @@ verify_node_standalone_download() {
 	elif command -v shasum >/dev/null 2>&1; then
 		printf 'Verifying Node.js download\n'
 		(cd "$checksum_dir" && shasum -a 256 -c SHASUMS256.selected)
+	else
+		printf 'error: sha256sum or shasum is required to verify the Node.js download.\n'
+		return 1
 	fi
 }
 
