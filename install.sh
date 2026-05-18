@@ -8,7 +8,8 @@ prime_agent_base_url="${prime_agent_base_url%/}"
 prime_agent_package="${PRIME_AGENT_PACKAGE:-prime-agent}"
 prime_agent_cmd="${PRIME_AGENT_CMD:-prime-agent}"
 prime_agent_esc=$(printf '\033')
-readonly prime_agent_unconfigured_base_url prime_agent_base_url prime_agent_package prime_agent_cmd prime_agent_esc
+prime_agent_original_path="${PATH:-}"
+readonly prime_agent_unconfigured_base_url prime_agent_base_url prime_agent_package prime_agent_cmd prime_agent_esc prime_agent_original_path
 
 main() {
 	if [ "$prime_agent_base_url" = "$prime_agent_unconfigured_base_url" ]; then
@@ -70,12 +71,10 @@ main() {
 	trap - EXIT
 	printf '\nPrime Agent was installed successfully.\n'
 
-	if command -v "$prime_agent_cmd" >/dev/null 2>&1; then
+	if [ "${PRIME_AGENT_NODE_INSTALLED_STANDALONE:-0}" = 1 ]; then
+		configure_standalone_node_path
+	elif command -v "$prime_agent_cmd" >/dev/null 2>&1; then
 		printf '\nRun it with: %s\n' "$prime_agent_cmd"
-		if [ "${PRIME_AGENT_NODE_INSTALLED_STANDALONE:-0}" = 1 ]; then
-			printf 'If %s is not found in your shell yet, add this to your shell profile:\n\n' "$prime_agent_cmd"
-			printf '  export PATH="%s:$PATH"\n' "$PRIME_AGENT_STANDALONE_NODE_BIN"
-		fi
 	else
 		cat <<EOF
 The $prime_agent_cmd command was installed, but it is not on your PATH yet.
@@ -436,6 +435,121 @@ run_with_sudo() {
 	else
 		sudo "$@"
 	fi
+}
+
+configure_standalone_node_path() {
+	if original_prime_agent_path=$(resolve_prime_agent_with_original_path); then
+		case "$original_prime_agent_path" in
+			"$PRIME_AGENT_STANDALONE_NODE_BIN/"*)
+				printf '\nRun it with: %s\n' "$prime_agent_cmd"
+				return 0
+				;;
+		esac
+		printf '%s was installed, but your shell is not using that install yet.\n' "$prime_agent_cmd"
+		printf 'Your shell currently resolves %s to: %s\n' "$prime_agent_cmd" "$original_prime_agent_path"
+	else
+		printf '%s was installed, but your shell is not using that install yet.\n' "$prime_agent_cmd"
+	fi
+
+	profile=$(detect_shell_profile) || {
+		print_standalone_path_manual_instructions
+		return 0
+	}
+
+	if shell_profile_has_standalone_node_path "$profile"; then
+		printf '%s already contains %s.\n' "$profile" "$PRIME_AGENT_STANDALONE_NODE_BIN"
+		printf 'Restart your shell or run: . %s\n' "$profile"
+		return 0
+	fi
+
+	prompt_add_standalone_node_path "$profile"
+}
+
+resolve_prime_agent_with_original_path() {
+	saved_path=$PATH
+	PATH=$prime_agent_original_path
+	if command -v "$prime_agent_cmd" 2>/dev/null; then
+		status=0
+	else
+		status=$?
+	fi
+	PATH=$saved_path
+	return "$status"
+}
+
+detect_shell_profile() {
+	if [ -n "${PRIME_AGENT_SHELL_PROFILE:-}" ]; then
+		printf '%s' "$PRIME_AGENT_SHELL_PROFILE"
+		return 0
+	fi
+	if [ -z "${HOME:-}" ]; then
+		return 1
+	fi
+
+	shell_name="${SHELL:-}"
+	shell_name="${shell_name##*/}"
+	case "$shell_name" in
+		zsh)
+			printf '%s/.zshrc' "${ZDOTDIR:-$HOME}"
+			;;
+		bash)
+			printf '%s/.bashrc' "$HOME"
+			;;
+		*)
+			if [ -f "$HOME/.zshrc" ]; then
+				printf '%s/.zshrc' "$HOME"
+			elif [ -f "$HOME/.bashrc" ]; then
+				printf '%s/.bashrc' "$HOME"
+			else
+				printf '%s/.profile' "$HOME"
+			fi
+			;;
+	esac
+}
+
+shell_profile_has_standalone_node_path() {
+	profile="$1"
+	[ -f "$profile" ] && grep -F "$PRIME_AGENT_STANDALONE_NODE_BIN" "$profile" >/dev/null 2>&1
+}
+
+prompt_add_standalone_node_path() {
+	profile="$1"
+	path_line=$(standalone_node_path_line)
+
+	if ! ( : <>/dev/tty ) 2>/dev/null; then
+		print_standalone_path_manual_instructions
+		return 0
+	fi
+	exec 3<>/dev/tty
+
+	printf 'Add %s to your PATH in %s now? [Y/n] ' "$PRIME_AGENT_STANDALONE_NODE_BIN" "$profile" >&3
+	if ! IFS= read -r answer <&3; then
+		answer=
+	fi
+	exec 3>&-
+	case "$answer" in
+		n|N|no|NO)
+			print_standalone_path_manual_instructions
+			return 0
+			;;
+	esac
+
+	mkdir -p "$(dirname "$profile")"
+	{
+		printf '\n# Prime Agent standalone Node.js\n'
+		printf '%s\n' "$path_line"
+	} >>"$profile"
+	printf 'Added %s to %s.\n' "$PRIME_AGENT_STANDALONE_NODE_BIN" "$profile"
+	printf 'Restart your shell or run: . %s\n' "$profile"
+}
+
+print_standalone_path_manual_instructions() {
+	printf 'Add this to your shell profile to use %s from new shells:\n\n' "$prime_agent_cmd"
+	printf '  %s\n' "$(standalone_node_path_line)"
+}
+
+standalone_node_path_line() {
+	printf 'export PATH="%s:$PATH"' "$PRIME_AGENT_STANDALONE_NODE_BIN"
 }
 
 download_prime_agent_package() {
