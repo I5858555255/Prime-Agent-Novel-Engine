@@ -18,34 +18,27 @@ main() {
 		exit 1
 	fi
 
-	check_file="${TMPDIR:-/tmp}/prime-agent-installer-checks.$$"
-	run_preflight_checks >"$check_file" &
-	check_pid=$!
+	start_preflight_checks
 
 	printf '\n\033[1m  Prime Agent Installer\033[0m\n\033[2m  Installing Prime Agent with npm.\033[0m\n\n'
 
-	if wait "$check_pid"; then
+	if finish_preflight_checks; then
 		check_status=0
 	else
 		check_status=$?
 	fi
-
-	cat "$check_file"
-	rm -f "$check_file"
 
 	if [ "$check_status" -ne 0 ]; then
 		if ! install_node_npm_interactive; then
 			exit "$check_status"
 		fi
 
-		check_file="${TMPDIR:-/tmp}/prime-agent-installer-checks.$$"
-		if run_preflight_checks >"$check_file"; then
+		start_preflight_checks
+		if finish_preflight_checks; then
 			check_status=0
 		else
 			check_status=$?
 		fi
-		cat "$check_file"
-		rm -f "$check_file"
 
 		if [ "$check_status" -ne 0 ]; then
 			exit "$check_status"
@@ -95,10 +88,27 @@ create_temp_dir() {
 		fi
 	fi
 
-	tmp_dir="${TMPDIR:-/tmp}/prime-agent-install.$$"
-	rm -rf "$tmp_dir"
-	mkdir -p "$tmp_dir"
-	printf '%s' "$tmp_dir"
+	printf 'error: mktemp is required to create a secure temporary directory.\n' >&2
+	exit 1
+}
+
+start_preflight_checks() {
+	preflight_dir=$(create_temp_dir)
+	preflight_file="$preflight_dir/preflight"
+	run_preflight_checks >"$preflight_file" &
+	preflight_pid=$!
+}
+
+finish_preflight_checks() {
+	if wait "$preflight_pid"; then
+		preflight_status=0
+	else
+		preflight_status=$?
+	fi
+
+	cat "$preflight_file"
+	rm -rf "$preflight_dir"
+	return "$preflight_status"
 }
 
 run_preflight_checks() {
@@ -324,9 +334,8 @@ install_node_standalone() {
 	}
 	node_dist_base="https://nodejs.org/dist/latest-v22.x"
 	node_base_dir=$(node_standalone_base_dir)
-	node_tmp_dir="${TMPDIR:-/tmp}/prime-agent-node.$$"
+	node_tmp_dir=$(create_temp_dir)
 
-	rm -rf "$node_tmp_dir"
 	mkdir -p "$node_tmp_dir" "$node_base_dir"
 
 	printf 'Resolving Node.js binary for %s-%s\n' "$node_platform" "$node_arch"
