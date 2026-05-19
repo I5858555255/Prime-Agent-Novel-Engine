@@ -46,7 +46,6 @@ type ExpandHintFormatter = (label: string) => string;
 const MAGIC_LINE_PATTERN = /^\s*!/;
 const CELL_MAGIC_PATTERN = /^\s*%%bash\b/;
 
-// Mirrors Codex's compact tool-call rendering so long cells don't flood the chat.
 const OUTPUT_PREVIEW_LINES = 5;
 const INPUT_PREVIEW_LINES = 3;
 
