@@ -64,7 +64,12 @@ describe("Prime Inference models", () => {
 
 	it("marks known reasoning-capable Prime Inference model families", () => {
 		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").reasoning).toBe(true);
-		expect(getModel("prime-inference", "deepseek/deepseek-v4-flash").reasoning).toBe(true);
+		const deepseekV4Flash = getModel("prime-inference", "deepseek/deepseek-v4-flash");
+		expect(deepseekV4Flash.reasoning).toBe(true);
+		expect(deepseekV4Flash.compat).toMatchObject({
+			requiresReasoningContentOnAssistantMessages: true,
+			thinkingFormat: "deepseek",
+		});
 		expect(getModel("prime-inference", "qwen/qwen3-coder-next").reasoning).toBe(false);
 		expect(getModel("prime-inference", "x-ai/grok-4.20").reasoning).toBe(true);
 		expect(getModel("prime-inference", "x-ai/grok-code-fast-1").reasoning).toBe(false);

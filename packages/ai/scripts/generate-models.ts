@@ -86,6 +86,11 @@ const DEEPSEEK_V4_THINKING_LEVEL_MAP = {
 	xhigh: "max",
 } as const;
 
+const DEEPSEEK_V4_COMPAT: OpenAICompletionsCompat = {
+	requiresReasoningContentOnAssistantMessages: true,
+	thinkingFormat: "deepseek",
+};
+
 const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
 const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
@@ -319,6 +324,17 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 	);
 }
 
+function getPrimeInferenceCompat(modelId: string): OpenAICompletionsCompat {
+	if (modelId.toLowerCase().includes("deepseek-v4")) {
+		return {
+			...PRIME_INFERENCE_COMPAT,
+			...DEEPSEEK_V4_COMPAT,
+		};
+	}
+
+	return PRIME_INFERENCE_COMPAT;
+}
+
 function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[] {
 	if (!isRecord(data) || !Array.isArray(data.data)) {
 		return [];
@@ -389,7 +405,7 @@ function createPrimeInferenceModel(
 		},
 		contextWindow: entry.contextWindow ?? metadata.contextWindow,
 		maxTokens: entry.maxTokens ?? metadata.maxTokens,
-		compat: PRIME_INFERENCE_COMPAT,
+		compat: getPrimeInferenceCompat(entry.id),
 	};
 }
 
@@ -1498,10 +1514,6 @@ async function generateModels() {
 		});
 	}
 
-	const deepseekCompat: OpenAICompletionsCompat = {
-		requiresReasoningContentOnAssistantMessages: true,
-		thinkingFormat: "deepseek",
-	};
 	const deepseekV4Models: Model<"openai-completions">[] = [
 		{
 			id: "deepseek-v4-flash",
@@ -1519,7 +1531,7 @@ async function generateModels() {
 			},
 			contextWindow: 1000000,
 			maxTokens: 384000,
-			compat: deepseekCompat,
+			compat: DEEPSEEK_V4_COMPAT,
 		},
 		{
 			id: "deepseek-v4-pro",
@@ -1537,7 +1549,7 @@ async function generateModels() {
 			},
 			contextWindow: 1000000,
 			maxTokens: 384000,
-			compat: deepseekCompat,
+			compat: DEEPSEEK_V4_COMPAT,
 		},
 	];
 	allModels.push(...deepseekV4Models);
@@ -1549,10 +1561,10 @@ async function generateModels() {
 				...(candidate.provider === "openrouter"
 					? {
 							requiresReasoningContentOnAssistantMessages:
-								deepseekCompat.requiresReasoningContentOnAssistantMessages,
-							thinkingFormat: deepseekCompat.thinkingFormat,
+								DEEPSEEK_V4_COMPAT.requiresReasoningContentOnAssistantMessages,
+							thinkingFormat: DEEPSEEK_V4_COMPAT.thinkingFormat,
 						}
-					: deepseekCompat),
+					: DEEPSEEK_V4_COMPAT),
 			};
 			mergeThinkingLevelMap(candidate, DEEPSEEK_V4_THINKING_LEVEL_MAP);
 		}
