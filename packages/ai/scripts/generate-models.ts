@@ -114,6 +114,9 @@ interface PrimeInferenceModelMetadata {
 	maxTokens: number;
 }
 
+// Prime Inference intentionally exposes a curated subset of the catalog in the
+// model picker. Add new model IDs here, then rerun this script to refresh
+// src/models.generated.ts.
 const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata> = {
 	"anthropic/claude-haiku-4.5": { contextWindow: 200000, maxTokens: 64000 },
 	"anthropic/claude-opus-4.6": { contextWindow: 1000000, maxTokens: 128000 },
@@ -241,10 +244,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function getNumber(value: unknown): number {
-	return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
 function getOptionalNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -340,12 +339,18 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 		}
 
 		const pricing = isRecord(item.pricing) ? item.pricing : {};
+		const input = getOptionalNumber(pricing.input_usd_per_mtok);
+		const output = getOptionalNumber(pricing.output_usd_per_mtok);
+		if (input === undefined || output === undefined) {
+			return [];
+		}
+
 		const limit = isRecord(item.limit) ? item.limit : {};
 		return [
 			{
 				id: item.id,
-				input: getNumber(pricing.input_usd_per_mtok),
-				output: getNumber(pricing.output_usd_per_mtok),
+				input,
+				output,
 				contextWindow: getOptionalNumber(item.context_window ?? item.contextWindow ?? limit.context),
 				maxTokens: getOptionalNumber(item.max_tokens ?? item.maxTokens ?? limit.output),
 				reasoning: getPrimeInferenceCatalogReasoning(item),
