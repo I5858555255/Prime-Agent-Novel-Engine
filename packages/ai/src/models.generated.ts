@@ -12798,7 +12798,7 @@ export const MODELS = {
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
-			contextWindow: 1000000,
+			contextWindow: 200000,
 			maxTokens: 64000,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-sonnet-4.6": {
@@ -12890,7 +12890,7 @@ export const MODELS = {
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
-			contextWindow: 262144,
+			contextWindow: 1000000,
 			maxTokens: 228000,
 		} satisfies Model<"openai-completions">,
 		"nvidia/nemotron-3-super-120b-a12b": {
@@ -12946,7 +12946,7 @@ export const MODELS = {
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
-			contextWindow: 272000,
+			contextWindow: 1050000,
 			maxTokens: 128000,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-5.4-mini": {
@@ -13003,7 +13003,7 @@ export const MODELS = {
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
-			contextWindow: 272000,
+			contextWindow: 1050000,
 			maxTokens: 128000,
 		} satisfies Model<"openai-completions">,
 		"prime-intellect/intellect-3": {
@@ -13058,7 +13058,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 262144,
-			maxTokens: 262144,
+			maxTokens: 65536,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3-max": {
 			id: "qwen/qwen3-max",
@@ -13076,7 +13076,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 262144,
-			maxTokens: 32768,
+			maxTokens: 65536,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3-vl-235b-a22b-thinking": {
 			id: "qwen/qwen3-vl-235b-a22b-thinking",
@@ -13093,7 +13093,7 @@ export const MODELS = {
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
-			contextWindow: 131072,
+			contextWindow: 262144,
 			maxTokens: 32768,
 		} satisfies Model<"openai-completions">,
 		"x-ai/grok-4.20": {
