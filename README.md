@@ -59,7 +59,7 @@ Then start Prime Agent:
 prime-agent
 ```
 
-From this repository, use the source runner:
+Alternatively, to test local changes, clone this repository and use the source runner:
 
 ```bash
 npm ci
