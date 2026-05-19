@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -324,6 +324,57 @@ else {
 			expect(errorSpy).not.toHaveBeenCalled();
 			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
 			expect(recordedCalls).toEqual([expect.arrayContaining(["install", "-g", `${baseUrl}/${tarballPath}`])]);
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("does not self-update when the same-version manifest uses the Prime Agent package alias", async () => {
+		const globalPrefix = join(tempDir, "global-prefix");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "prime-agent");
+		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
+		const recordPath = join(tempDir, "self-update.json");
+		const baseUrl = "https://downloads.example.test/prime-agent";
+		mkdirSync(selfPackageDir, { recursive: true });
+		writeFileSync(
+			fakeNpmPath,
+			`const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),prefix=args[args.indexOf("--prefix")+1];
+if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
+else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
+`,
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ npmCommand: [originalExecPath, fakeNpmPath, "--prefix", globalPrefix] }, null, 2),
+		);
+		process.env.PI_PACKAGE_DIR = selfPackageDir;
+		process.env.PRIME_AGENT_DOWNLOAD_BASE_URL = baseUrl;
+		Object.defineProperty(process, "execPath", {
+			value: join(selfPackageDir, "dist", "cli.js"),
+			configurable: true,
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				Response.json({
+					package: "prime-agent",
+					tarball: "releases/current/prime-agent.tgz",
+					version: VERSION,
+				}),
+			),
+		);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["update", "--self"])).resolves.toBeUndefined();
+
+			expect(process.exitCode).toBeUndefined();
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain("is already up to date");
+			expect(existsSync(recordPath)).toBe(false);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();

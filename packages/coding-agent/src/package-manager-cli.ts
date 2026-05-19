@@ -309,7 +309,8 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 		const packageName = latestRelease?.packageName ?? PACKAGE_NAME;
 		const installSpec = latestRelease?.installSpec ?? packageName;
 		const updatePackageName = latestRelease?.installSpec ? PACKAGE_NAME : packageName;
-		if (!latestRelease || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, VERSION)) {
+		const packageRenameRequiresUpdate = !latestRelease?.installSpec && packageName !== PACKAGE_NAME;
+		if (!latestRelease || packageRenameRequiresUpdate || isNewerPackageVersion(latestRelease.version, VERSION)) {
 			return { installSpec, packageName: updatePackageName, shouldRun: true };
 		}
 	} catch {
