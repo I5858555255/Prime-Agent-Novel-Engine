@@ -2,6 +2,8 @@
 
 set -eu
 
+# Keep this sentinel split so release publishing only rewrites the install URL
+# below; local or unpublished copies still need an unreplaced value to compare.
 prime_agent_unconfigured_base_url="__PRIME_AGENT_DOWNLOAD_BASE""_URL__"
 prime_agent_base_url="${PRIME_AGENT_DOWNLOAD_BASE_URL:-__PRIME_AGENT_DOWNLOAD_BASE_URL__}"
 prime_agent_base_url="${prime_agent_base_url%/}"
