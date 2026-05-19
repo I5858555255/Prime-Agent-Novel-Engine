@@ -311,16 +311,10 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 	const id = modelId.toLowerCase();
 	return (
 		id.includes("thinking") ||
-		id.includes("/deepseek-r1") ||
 		id.includes("deepseek-v4") ||
-		id.startsWith("z-ai/glm-") ||
-		id.startsWith("zai-org/glm-") ||
 		id.startsWith("x-ai/grok-4") ||
-		id === "x-ai/grok-3-mini" ||
 		(id.startsWith("openai/gpt-5") && !id.includes("-chat")) ||
-		/^anthropic\/claude-(?:3\.7-sonnet|opus-4|sonnet-4)/.test(id) ||
-		/^google\/gemini-(?:2\.5|3)/.test(id) ||
-		supportsOpenAiXhigh(id)
+		/^anthropic\/claude-(?:opus-4|sonnet-4)/.test(id)
 	);
 }
 
