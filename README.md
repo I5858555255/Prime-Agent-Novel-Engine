@@ -2,6 +2,26 @@
 
 Prime Agent is a hard fork of [pi](https://github.com/badlogic/pi-mono) rebuilt around an RLM-native coding and research harness. The TypeScript host keeps pi's terminal UI, provider layer, sessions, and extension machinery, while the model-facing runtime is centered on a persistent IPython kernel and recursive subagents.
 
+## Install
+
+Install the latest stable Prime Agent release:
+
+```sh
+curl -fsSL https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/install.sh | sh
+```
+
+The installer downloads the published release tarball from R2, verifies its checksum, installs the `prime-agent` command with npm, and offers to install standalone Node.js if Node.js 20.6.0 or newer is not available.
+
+Start Prime Agent:
+
+```sh
+prime-agent
+```
+
+On first run, authenticate with `/login`.
+
+To update, rerun the install command. Releases are created from the root `package.json` version when changes merge to `main`; if the matching Git tag already exists, the release workflow skips publishing.
+
 ## Architecture
 
 Prime Agent keeps the core pieces that make pi a strong terminal agent: the TypeScript CLI, custom TUI renderer, model provider layer, session tree, slash commands, and extension/resource system. The main change is the model-facing runtime: instead of a large set of file and shell tools, the agent is centered on a persistent Python kernel.
