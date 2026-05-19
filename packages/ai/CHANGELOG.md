@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Prime Inference as an OpenAI-compatible built-in provider using `PRIME_API_KEY` authentication.
+- Added GLM 5 and GLM 5.1 to the Prime Inference model catalog.
+
 ### Fixed
 
 - Fixed OpenAI Responses requests for models that support disabling reasoning to send `reasoning.effort: "none"` when thinking is off.

@@ -111,6 +111,7 @@ For each built-in provider, pi maintains a list of tool-capable models, updated 
 **API keys:**
 - Anthropic
 - OpenAI
+- Prime Inference
 - Azure OpenAI
 - DeepSeek
 - Google Gemini
@@ -631,6 +632,7 @@ pi --thinking high "Solve this complex problem"
 | `PI_SKIP_VERSION_CHECK` | Skip the Prime Agent version update check at startup. This prevents the release manifest request |
 | `PRIME_AGENT_DOWNLOAD_BASE_URL` | Override the Prime Agent release manifest and tarball base URL |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
+| `PRIME_API_KEY` | Prime Inference API key |
 | `PRIME_AGENT_KERNEL_PYTHON` | Use an existing Python environment with `ipykernel` instead of auto-bootstrapping `~/.prime/agent/kernel-venv` |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |
 
