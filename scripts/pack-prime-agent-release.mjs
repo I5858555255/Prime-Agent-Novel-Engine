@@ -14,7 +14,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -111,6 +111,14 @@ function writeJson(path, value) {
 
 function packagePath(packageDir) {
 	return join(root, "packages", packageDir);
+}
+
+function assertSafeOutputDir(outDir) {
+	const relativeToReleaseRoot = relative(defaultOutputDir, outDir);
+	if (relativeToReleaseRoot === "" || (!relativeToReleaseRoot.startsWith("..") && !isAbsolute(relativeToReleaseRoot))) {
+		return;
+	}
+	throw new Error(`Refusing to remove output directory outside ${defaultOutputDir}: ${outDir}`);
 }
 
 function packageJsonPath(packageDir) {
@@ -244,6 +252,7 @@ function main() {
 
 	const stagingRoot = join(args.outDir, "packages");
 	const artifactsDir = join(args.outDir, "artifacts");
+	assertSafeOutputDir(args.outDir);
 	rmSync(args.outDir, { force: true, recursive: true });
 	mkdirSync(stagingRoot, { recursive: true });
 	mkdirSync(artifactsDir, { recursive: true });

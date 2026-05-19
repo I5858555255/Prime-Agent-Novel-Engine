@@ -138,7 +138,6 @@ run_preflight_checks() {
 
 	if prime_agent_path=$(command -v "$prime_agent_cmd" 2>/dev/null); then
 		printf '%sExisting %s found at: %s%s\n' "$yellow" "$prime_agent_cmd" "$prime_agent_path" "$reset"
-		"$prime_agent_cmd" --version 2>/dev/null | sed "s/^/${yellow}/; s/\$/${reset}/" || true
 		printf '\n'
 	fi
 
@@ -348,6 +347,19 @@ install_node_standalone() {
 		rm -rf "$node_tmp_dir"
 		return 1
 	fi
+	case "$node_file" in
+		*/*|*\\*|*..*)
+			printf 'Unsafe Node.js archive name in checksum manifest: %s\n' "$node_file"
+			rm -rf "$node_tmp_dir"
+			return 1
+			;;
+		node-v*-"$node_platform"-"$node_arch".tar.xz) ;;
+		*)
+			printf 'Unexpected Node.js archive name in checksum manifest: %s\n' "$node_file"
+			rm -rf "$node_tmp_dir"
+			return 1
+			;;
+	esac
 
 	printf 'Downloading Node.js %s\n' "${node_file%.tar.xz}"
 	curl -fsSL "$node_dist_base/$node_file" -o "$node_tmp_dir/$node_file"
