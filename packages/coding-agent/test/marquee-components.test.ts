@@ -192,6 +192,21 @@ describe("marquee TUI components", () => {
 		expect(collapsed.match(/to expand/g)?.length).toBe(1);
 	});
 
+	test("pluralizes singular collapsed ipython line markers", () => {
+		const component = new IPythonCellComponent({
+			code: Array.from({ length: 4 }, (_, index) => `line_${index} = ${index}`).join("\n"),
+			content: [{ type: "text", text: Array.from({ length: 6 }, (_, index) => `out_${index}`).join("\n") }],
+			details: { status: "ok", durationMs: 15 },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		});
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed.match(/… \+1 line\b/g)?.length).toBe(2);
+		expect(collapsed).not.toContain("… +1 lines");
+	});
+
 	test("reflows cached ipython cells when terminal width changes", () => {
 		const state: IPythonCellState = {
 			code: "result = 'this is a deliberately long line that should wrap differently by terminal width'",

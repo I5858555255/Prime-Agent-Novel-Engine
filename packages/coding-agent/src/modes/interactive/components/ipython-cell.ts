@@ -83,6 +83,10 @@ function formatDuration(durationMs: number | undefined): string | undefined {
 	return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
+function hiddenLinesLabel(hidden: number): string {
+	return `… +${hidden} line${hidden === 1 ? "" : "s"}`;
+}
+
 function isImageBlock(block: IPythonCellContentBlock): boolean {
 	return block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string";
 }
@@ -221,7 +225,7 @@ export class IPythonCellComponent implements Component {
 
 		if (showCollapsed) {
 			const hidden = rawLines.length - INPUT_PREVIEW_LINES;
-			this.addWrapped(lines, "", withExpandHint(`… +${hidden} lines`), width);
+			this.addWrapped(lines, "", withExpandHint(hiddenLinesLabel(hidden)), width);
 			return true;
 		}
 
@@ -308,7 +312,7 @@ export class IPythonCellComponent implements Component {
 
 		if (showCollapsed) {
 			const hidden = allLines.length - OUTPUT_PREVIEW_LINES;
-			this.addWrapped(lines, "", withExpandHint(`… +${hidden} lines`), width);
+			this.addWrapped(lines, "", withExpandHint(hiddenLinesLabel(hidden)), width);
 		}
 
 		for (const line of visibleLines) {
