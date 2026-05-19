@@ -41,8 +41,16 @@ export interface SelfUpdateCommand extends SelfUpdateCommandStep {
 function makeSelfUpdateCommand(
 	installStep: SelfUpdateCommandStep,
 	uninstallStep?: SelfUpdateCommandStep,
+	options: { uninstallAfterInstall?: boolean } = {},
 ): SelfUpdateCommand {
 	if (!uninstallStep) return installStep;
+	if (options.uninstallAfterInstall) {
+		return {
+			...installStep,
+			display: `${installStep.display} && ${uninstallStep.display}`,
+			steps: [installStep, uninstallStep],
+		};
+	}
 	return {
 		...installStep,
 		display: `${uninstallStep.display} && ${installStep.display}`,
@@ -100,15 +108,19 @@ function getInferredNpmInstall(): { root: string; prefix: string } | undefined {
 	return undefined;
 }
 
-function getDefaultUpdatePackageName(installedPackageName: string, updateSpec: string): string {
+function isDirectPackageArtifactSpec(updateSpec: string): boolean {
 	const spec = updateSpec.trim().toLowerCase();
-	if (
+	return (
 		spec.startsWith("http://") ||
 		spec.startsWith("https://") ||
 		spec.startsWith("file:") ||
 		spec.endsWith(".tgz") ||
 		spec.endsWith(".tar.gz")
-	) {
+	);
+}
+
+function getDefaultUpdatePackageName(installedPackageName: string, updateSpec: string): string {
+	if (isDirectPackageArtifactSpec(updateSpec)) {
 		return installedPackageName;
 	}
 	return updateSpec;
@@ -121,6 +133,7 @@ function getSelfUpdateCommandForMethod(
 	npmCommand?: string[],
 	updatePackageName = getDefaultUpdatePackageName(installedPackageName, updateSpec),
 ): SelfUpdateCommand | undefined {
+	const uninstallAfterInstall = isDirectPackageArtifactSpec(updateSpec);
 	switch (method) {
 		case "bun-binary":
 			return undefined;
@@ -130,6 +143,7 @@ function getSelfUpdateCommandForMethod(
 				updatePackageName === installedPackageName
 					? undefined
 					: makeSelfUpdateCommandStep("pnpm", ["remove", "-g", installedPackageName]),
+				{ uninstallAfterInstall },
 			);
 		case "yarn":
 			return makeSelfUpdateCommand(
@@ -137,6 +151,7 @@ function getSelfUpdateCommandForMethod(
 				updatePackageName === installedPackageName
 					? undefined
 					: makeSelfUpdateCommandStep("yarn", ["global", "remove", installedPackageName]),
+				{ uninstallAfterInstall },
 			);
 		case "bun":
 			return makeSelfUpdateCommand(
@@ -144,6 +159,7 @@ function getSelfUpdateCommandForMethod(
 				updatePackageName === installedPackageName
 					? undefined
 					: makeSelfUpdateCommandStep("bun", ["uninstall", "-g", installedPackageName]),
+				{ uninstallAfterInstall },
 			);
 		case "npm": {
 			const [command = "npm", ...npmArgs] = npmCommand ?? [];
@@ -154,7 +170,7 @@ function getSelfUpdateCommandForMethod(
 				updatePackageName === installedPackageName
 					? undefined
 					: makeSelfUpdateCommandStep(command, [...prefixArgs, "uninstall", "-g", installedPackageName]);
-			return makeSelfUpdateCommand(installStep, uninstallStep);
+			return makeSelfUpdateCommand(installStep, uninstallStep, { uninstallAfterInstall });
 		}
 		case "unknown":
 			return undefined;

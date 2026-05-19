@@ -304,7 +304,6 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 		const latestRelease = await getLatestPiRelease(VERSION);
 		const packageName = latestRelease?.packageName ?? PACKAGE_NAME;
 		const installSpec = latestRelease?.installSpec ?? packageName;
-		const updatePackageName = latestRelease?.installSpec ? PACKAGE_NAME : packageName;
 		const packageRenameRequiresUpdate = !latestRelease?.installSpec && packageName !== PACKAGE_NAME;
 		if (
 			force ||
@@ -312,7 +311,7 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 			packageRenameRequiresUpdate ||
 			isNewerPackageVersion(latestRelease.version, VERSION)
 		) {
-			return { installSpec, packageName: updatePackageName, shouldRun: true };
+			return { installSpec, packageName, shouldRun: true };
 		}
 	} catch {
 		return { installSpec: PACKAGE_NAME, packageName: PACKAGE_NAME, shouldRun: true };

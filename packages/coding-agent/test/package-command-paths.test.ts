@@ -166,9 +166,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const fetchMock = vi.fn(async () =>
-			Response.json({ package: "prime-agent", tarball: tarballUrl, version: VERSION }),
-		);
+		const fetchMock = vi.fn(async () => Response.json({ tarball: tarballUrl, version: VERSION }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -285,7 +283,7 @@ else {
 
 	it("installs the Prime Agent tarball from the update manifest during self-update", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "prime-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		const baseUrl = "https://downloads.example.test/prime-agent";
@@ -326,7 +324,10 @@ else {
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
 			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
-			expect(recordedCalls).toEqual([expect.arrayContaining(["install", "-g", `${baseUrl}/${tarballPath}`])]);
+			expect(recordedCalls).toEqual([
+				expect.arrayContaining(["install", "-g", `${baseUrl}/${tarballPath}`]),
+				expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
+			]);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
@@ -335,7 +336,7 @@ else {
 
 	it("does not self-update when the same-version manifest uses the Prime Agent package alias", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "prime-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		const baseUrl = "https://downloads.example.test/prime-agent";
