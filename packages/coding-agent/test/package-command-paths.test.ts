@@ -137,12 +137,13 @@ describe("package commands", () => {
 		}
 	});
 
-	it("uses global npmCommand and current package name for forced self updates without checking the api", async () => {
+	it("uses global npmCommand and the release manifest install spec for forced self updates", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const projectPrefix = join(tempDir, "project-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
+		const tarballUrl = "https://downloads.example.test/prime-agent/prime-agent-current.tgz";
 		mkdirSync(selfPackageDir, { recursive: true });
 		mkdirSync(join(projectDir, ".prime", "agent"), { recursive: true });
 		writeFileSync(
@@ -165,7 +166,9 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const fetchMock = vi.fn();
+		const fetchMock = vi.fn(async () =>
+			Response.json({ package: "prime-agent", tarball: tarballUrl, version: VERSION }),
+		);
 		vi.stubGlobal("fetch", fetchMock);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -176,10 +179,10 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
-			expect(fetchMock).not.toHaveBeenCalled();
+			expect(fetchMock).toHaveBeenCalledOnce();
 			const recordedArgs = JSON.parse(readFileSync(recordPath, "utf-8")) as string[];
 			expect(recordedArgs).toContain(globalPrefix);
-			expect(recordedArgs).toContain(PACKAGE_NAME);
+			expect(recordedArgs).toContain(tarballUrl);
 			expect(recordedArgs).not.toContain(projectPrefix);
 		} finally {
 			logSpy.mockRestore();

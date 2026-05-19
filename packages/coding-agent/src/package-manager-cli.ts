@@ -300,17 +300,18 @@ interface SelfUpdatePlan {
 }
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
-	if (force) {
-		return { installSpec: PACKAGE_NAME, packageName: PACKAGE_NAME, shouldRun: true };
-	}
-
 	try {
 		const latestRelease = await getLatestPiRelease(VERSION);
 		const packageName = latestRelease?.packageName ?? PACKAGE_NAME;
 		const installSpec = latestRelease?.installSpec ?? packageName;
 		const updatePackageName = latestRelease?.installSpec ? PACKAGE_NAME : packageName;
 		const packageRenameRequiresUpdate = !latestRelease?.installSpec && packageName !== PACKAGE_NAME;
-		if (!latestRelease || packageRenameRequiresUpdate || isNewerPackageVersion(latestRelease.version, VERSION)) {
+		if (
+			force ||
+			!latestRelease ||
+			packageRenameRequiresUpdate ||
+			isNewerPackageVersion(latestRelease.version, VERSION)
+		) {
 			return { installSpec, packageName: updatePackageName, shouldRun: true };
 		}
 	} catch {
