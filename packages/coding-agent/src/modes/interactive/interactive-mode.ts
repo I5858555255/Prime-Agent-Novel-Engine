@@ -3936,20 +3936,20 @@ export class InteractiveMode {
 		const updateInstruction = theme.fg("muted", `New version ${newVersion} is available. Run `) + action;
 		const changelogUrl = theme.fg(
 			"accent",
-			"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md",
+			"https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/CHANGELOG.md",
 		);
 		const changelogLine = theme.fg("muted", "Changelog: ") + changelogUrl;
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
 		this.chatContainer.addChild(
 			new Text(
-				`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}\n${changelogLine}`,
+				`${theme.bold(theme.fg("accent", "Update Available"))}\n${updateInstruction}\n${changelogLine}`,
 				1,
 				0,
 			),
 		);
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
 		this.ui.requestRender();
 	}
 

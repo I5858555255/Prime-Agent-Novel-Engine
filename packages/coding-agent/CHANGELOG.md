@@ -18,6 +18,8 @@
 - Changed the interactive working indicator to show elapsed time while the agent is running.
 - Replaced the default system prompt with the model-agnostic RLM harness prompt.
 - Changed IPython prompt guidance to prefer `!cmd` and `%%bash` for shell commands.
+- Changed the app update check to read the Prime Agent release manifest instead of the Pi version endpoint.
+- Changed the app update notification to use the Prime accent color instead of the warning color.
 
 ### Fixed
 
