@@ -104,6 +104,56 @@ interface PrimeInferenceCatalogEntry {
 	reasoning?: boolean;
 }
 
+interface PrimeInferenceModelMetadata {
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
+interface PrimeInferenceMetadataMatch {
+	metadata: PrimeInferenceModelMetadata;
+	priority: number;
+}
+
+const PRIME_INFERENCE_METADATA_PROVIDER_PRIORITIES: Record<string, number | undefined> = {
+	openai: 100,
+	anthropic: 100,
+	google: 100,
+	xai: 100,
+	deepseek: 100,
+	zai: 100,
+	mistral: 100,
+	moonshotai: 100,
+	minimax: 100,
+	xiaomi: 100,
+	"google-vertex": 90,
+	"vercel-ai-gateway": 80,
+	openrouter: 70,
+};
+
+const PRIME_INFERENCE_PROVIDER_ID_PREFIXES: Record<string, readonly string[] | undefined> = {
+	openai: ["openai"],
+	anthropic: ["anthropic"],
+	google: ["google"],
+	"google-vertex": ["google"],
+	xai: ["x-ai"],
+	deepseek: ["deepseek"],
+	zai: ["z-ai", "zai-org"],
+	mistral: ["mistralai"],
+	moonshotai: ["moonshotai"],
+	"moonshotai-cn": ["moonshotai"],
+	minimax: ["minimax"],
+	"minimax-cn": ["minimax"],
+	xiaomi: ["xiaomi"],
+	"xiaomi-token-plan-cn": ["xiaomi"],
+	"xiaomi-token-plan-ams": ["xiaomi"],
+	"xiaomi-token-plan-sgp": ["xiaomi"],
+};
+
+const PRIME_INFERENCE_PROVIDER_PREFIX_ALIASES: readonly [from: string, to: string][] = [
+	["meta/", "meta-llama/"],
+	["xai/", "x-ai/"],
+];
+
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
@@ -218,6 +268,56 @@ function getOptionalBoolean(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
 }
 
+function getPositiveOptionalNumber(value: number): number | undefined {
+	return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function normalizePrimeInferenceModelId(modelId: string): string {
+	const normalized = modelId.trim().toLowerCase();
+	for (const [from, to] of PRIME_INFERENCE_PROVIDER_PREFIX_ALIASES) {
+		if (normalized.startsWith(from)) {
+			return `${to}${normalized.slice(from.length)}`;
+		}
+	}
+	return normalized;
+}
+
+function getPrimeInferenceMetadataKeys(model: Model<Api>): string[] {
+	const normalizedId = normalizePrimeInferenceModelId(model.id);
+	const keys = new Set<string>([normalizedId]);
+	const prefixes = PRIME_INFERENCE_PROVIDER_ID_PREFIXES[model.provider] ?? [];
+
+	for (const prefix of prefixes) {
+		keys.add(`${prefix}/${normalizedId}`);
+	}
+
+	return [...keys];
+}
+
+function createPrimeInferenceMetadataIndex(models: readonly Model<Api>[]): Map<string, PrimeInferenceModelMetadata> {
+	const matches = new Map<string, PrimeInferenceMetadataMatch>();
+
+	for (const model of models) {
+		const contextWindow = getPositiveOptionalNumber(model.contextWindow);
+		const maxTokens = getPositiveOptionalNumber(model.maxTokens);
+		if (contextWindow === undefined && maxTokens === undefined) {
+			continue;
+		}
+
+		const priority = PRIME_INFERENCE_METADATA_PROVIDER_PRIORITIES[model.provider] ?? 0;
+		const metadata = { contextWindow, maxTokens };
+
+		for (const key of getPrimeInferenceMetadataKeys(model)) {
+			const existing = matches.get(key);
+			if (existing === undefined || priority > existing.priority) {
+				matches.set(key, { metadata, priority });
+			}
+		}
+	}
+
+	return new Map([...matches].map(([key, match]) => [key, match.metadata]));
+}
+
 function includesCatalogCapability(value: unknown, capabilities: readonly string[]): boolean {
 	if (!Array.isArray(value)) {
 		return false;
@@ -314,7 +414,9 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 	});
 }
 
-async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
+async function fetchPrimeInferenceModels(
+	metadataIndex: ReadonlyMap<string, PrimeInferenceModelMetadata>,
+): Promise<Model<"openai-completions">[]> {
 	const apiKey = process.env.PRIME_API_KEY;
 
 	try {
@@ -325,8 +427,13 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 		});
 		const catalog = parsePrimeInferenceCatalog(await response.json());
 		if (catalog.length > 0) {
-			console.log(`Fetched ${catalog.length} models from Prime Inference`);
-			return catalog.map(createPrimeInferenceModel);
+			const models = catalog.map((entry) => createPrimeInferenceModel(entry, metadataIndex));
+			const enrichedCount = models.filter((model, index) => {
+				const entry = catalog[index];
+				return entry.contextWindow === undefined && model.contextWindow > 0;
+			}).length;
+			console.log(`Fetched ${catalog.length} models from Prime Inference (${enrichedCount} enriched)`);
+			return models;
 		}
 	} catch (error) {
 		console.error("Failed to fetch Prime Inference models:", error);
@@ -335,7 +442,12 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 	return [];
 }
 
-function createPrimeInferenceModel(entry: PrimeInferenceCatalogEntry): Model<"openai-completions"> {
+function createPrimeInferenceModel(
+	entry: PrimeInferenceCatalogEntry,
+	metadataIndex: ReadonlyMap<string, PrimeInferenceModelMetadata>,
+): Model<"openai-completions"> {
+	const metadata = metadataIndex.get(normalizePrimeInferenceModelId(entry.id));
+
 	return {
 		id: entry.id,
 		name: `${getPrimeInferenceDisplayName(entry.id)} (Prime Inference)`,
@@ -350,8 +462,8 @@ function createPrimeInferenceModel(entry: PrimeInferenceCatalogEntry): Model<"op
 			cacheRead: 0,
 			cacheWrite: 0,
 		},
-		contextWindow: entry.contextWindow ?? 0,
-		maxTokens: entry.maxTokens ?? 0,
+		contextWindow: entry.contextWindow ?? metadata?.contextWindow ?? 0,
+		maxTokens: entry.maxTokens ?? metadata?.maxTokens ?? 0,
 		compat: PRIME_INFERENCE_COMPAT,
 	};
 }
@@ -1738,9 +1850,6 @@ async function generateModels() {
 		});
 	}
 
-	const primeInferenceModels = await fetchPrimeInferenceModels();
-	allModels.push(...primeInferenceModels);
-
 	const VERTEX_BASE_URL = "https://{location}-aiplatform.googleapis.com";
 	const vertexModels: Model<"google-vertex">[] = [
 		{
@@ -1901,6 +2010,10 @@ async function generateModels() {
 		},
 	];
 	allModels.push(...vertexModels);
+
+	const primeInferenceMetadataIndex = createPrimeInferenceMetadataIndex(allModels);
+	const primeInferenceModels = await fetchPrimeInferenceModels(primeInferenceMetadataIndex);
+	allModels.push(...primeInferenceModels);
 
 	const azureOpenAiModels: Model<Api>[] = allModels
 		.filter((model) => model.provider === "openai" && model.api === "openai-responses")
