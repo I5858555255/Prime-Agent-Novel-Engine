@@ -167,7 +167,7 @@ export class IPythonCellComponent implements Component {
 		};
 
 		lines.push(this.panelLine(this.header(details), safeWidth));
-		const hasCode = this.renderCode(lines, safeWidth);
+		const hasCode = this.renderCode(lines, safeWidth, withExpandHint);
 		this.renderOutput(lines, safeWidth, details, hasCode, withExpandHint);
 		return this.renderCache.set(safeWidth, this.stateVersion, lines);
 	}
@@ -199,7 +199,7 @@ export class IPythonCellComponent implements Component {
 		return { label: theme.fg("success", "done") };
 	}
 
-	private renderCode(lines: string[], width: number): boolean {
+	private renderCode(lines: string[], width: number, withExpandHint: ExpandHintFormatter): boolean {
 		const code = this.state.code.trimEnd();
 		if (!code) {
 			this.addBlank(lines, width);
@@ -221,7 +221,7 @@ export class IPythonCellComponent implements Component {
 
 		if (showCollapsed) {
 			const hidden = rawLines.length - INPUT_PREVIEW_LINES;
-			this.addWrapped(lines, "", theme.fg("muted", `… +${hidden} lines`), width);
+			this.addWrapped(lines, "", withExpandHint(`… +${hidden} lines`), width);
 			return true;
 		}
 

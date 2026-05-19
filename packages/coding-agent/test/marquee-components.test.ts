@@ -149,10 +149,9 @@ describe("marquee TUI components", () => {
 
 	test("collapses long ipython input until tool expansion is enabled", () => {
 		const code = Array.from({ length: 8 }, (_, index) => `line_${index} = ${index}`).join("\n");
-		const output = Array.from({ length: 8 }, (_, index) => `out_${index}`).join("\n");
 		const state: IPythonCellState = {
 			code,
-			content: [{ type: "text", text: output }],
+			content: [{ type: "text", text: "done" }],
 			details: { status: "ok", durationMs: 15 },
 			executionStarted: true,
 			argsComplete: true,
@@ -167,13 +166,30 @@ describe("marquee TUI components", () => {
 		expect(collapsed).not.toContain("line_4 = 4");
 		expect(collapsed).not.toContain("line_7 = 7");
 		expect(collapsed).toContain("… +5 lines");
-		expect(collapsed).toContain("… +3 lines");
 		expect(collapsed.match(/to expand/g)?.length).toBe(1);
 
 		component.update({ ...state, expanded: true });
 		const expanded = stripAnsi(component.render(100).join("\n"));
 		expect(expanded).toContain("line_7 = 7");
-		expect(expanded).not.toContain("input lines hidden");
+		expect(expanded).not.toContain("… +5 lines");
+	});
+
+	test("shows one expand hint when ipython input and output are both collapsed", () => {
+		const code = Array.from({ length: 8 }, (_, index) => `line_${index} = ${index}`).join("\n");
+		const output = Array.from({ length: 8 }, (_, index) => `out_${index}`).join("\n");
+		const component = new IPythonCellComponent({
+			code,
+			content: [{ type: "text", text: output }],
+			details: { status: "ok", durationMs: 15 },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		});
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("… +5 lines");
+		expect(collapsed).toContain("… +3 lines");
+		expect(collapsed.match(/to expand/g)?.length).toBe(1);
 	});
 
 	test("reflows cached ipython cells when terminal width changes", () => {
