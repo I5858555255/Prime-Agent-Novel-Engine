@@ -101,6 +101,7 @@ interface PrimeInferenceCatalogEntry {
 	output: number;
 	contextWindow?: number;
 	maxTokens?: number;
+	reasoning?: boolean;
 }
 
 
@@ -213,6 +214,24 @@ function getOptionalNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function getOptionalBoolean(value: unknown): boolean | undefined {
+	return typeof value === "boolean" ? value : undefined;
+}
+
+function includesCatalogCapability(value: unknown, capabilities: readonly string[]): boolean {
+	if (!Array.isArray(value)) {
+		return false;
+	}
+
+	return value.some((item) => {
+		if (typeof item !== "string") {
+			return false;
+		}
+		const normalized = item.toLowerCase();
+		return capabilities.some((capability) => normalized.includes(capability));
+	});
+}
+
 function getPrimeInferenceDisplayName(modelId: string): string {
 	const rawName = modelId.split("/").at(-1) ?? modelId;
 	return rawName
@@ -226,9 +245,48 @@ function getPrimeInferenceDisplayName(modelId: string): string {
 		.join(" ");
 }
 
-function isPrimeInferenceReasoningModel(modelId: string): boolean {
+function getPrimeInferenceCatalogReasoning(item: Record<string, unknown>): boolean | undefined {
+	const metadata = isRecord(item.metadata) ? item.metadata : {};
+	const direct =
+		getOptionalBoolean(item.reasoning) ??
+		getOptionalBoolean(item.supports_reasoning) ??
+		getOptionalBoolean(item.supportsReasoning) ??
+		getOptionalBoolean(metadata.reasoning) ??
+		getOptionalBoolean(metadata.supports_reasoning) ??
+		getOptionalBoolean(metadata.supportsReasoning);
+	if (direct !== undefined) {
+		return direct;
+	}
+
+	return includesCatalogCapability(item.supported_parameters, ["reasoning", "thinking"]) ||
+		includesCatalogCapability(item.capabilities, ["reasoning", "thinking"]) ||
+		includesCatalogCapability(item.tags, ["reasoning", "thinking"]) ||
+		includesCatalogCapability(metadata.supported_parameters, ["reasoning", "thinking"]) ||
+		includesCatalogCapability(metadata.capabilities, ["reasoning", "thinking"]) ||
+		includesCatalogCapability(metadata.tags, ["reasoning", "thinking"])
+		? true
+		: undefined;
+}
+
+function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: boolean): boolean {
+	if (catalogReasoning !== undefined) {
+		return catalogReasoning;
+	}
+
 	const id = modelId.toLowerCase();
-	return supportsOpenAiXhigh(id) || id.includes("thinking") || id.includes("/deepseek-r1");
+	return (
+		id.includes("thinking") ||
+		id.includes("/deepseek-r1") ||
+		id.includes("deepseek-v4") ||
+		id.startsWith("z-ai/glm-") ||
+		id.startsWith("zai-org/glm-") ||
+		id.startsWith("x-ai/grok-4") ||
+		id === "x-ai/grok-3-mini" ||
+		(id.startsWith("openai/gpt-5") && !id.includes("-chat")) ||
+		/^anthropic\/claude-(?:3\.7-sonnet|opus-4|sonnet-4)/.test(id) ||
+		/^google\/gemini-(?:2\.5|3)/.test(id) ||
+		supportsOpenAiXhigh(id)
+	);
 }
 
 function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[] {
@@ -250,6 +308,7 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 				output: getNumber(pricing.output_usd_per_mtok),
 				contextWindow: getOptionalNumber(item.context_window ?? item.contextWindow ?? limit.context),
 				maxTokens: getOptionalNumber(item.max_tokens ?? item.maxTokens ?? limit.output),
+				reasoning: getPrimeInferenceCatalogReasoning(item),
 			},
 		];
 	});
@@ -283,7 +342,7 @@ function createPrimeInferenceModel(entry: PrimeInferenceCatalogEntry): Model<"op
 		api: "openai-completions",
 		provider: "prime-inference",
 		baseUrl: PRIME_INFERENCE_BASE_URL,
-		reasoning: isPrimeInferenceReasoningModel(entry.id),
+		reasoning: isPrimeInferenceReasoningModel(entry.id, entry.reasoning),
 		input: ["text"],
 		cost: {
 			input: entry.input,

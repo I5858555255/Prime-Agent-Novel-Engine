@@ -13086,7 +13086,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 3,
@@ -13122,7 +13122,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 15,
@@ -13140,7 +13140,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 15,
@@ -13158,7 +13158,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 5,
@@ -13176,7 +13176,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			thinkingLevelMap: {"xhigh":"max"},
 			input: ["text"],
 			cost: {
@@ -13195,7 +13195,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			thinkingLevelMap: {"xhigh":"xhigh"},
 			input: ["text"],
 			cost: {
@@ -13214,7 +13214,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 3,
@@ -13232,7 +13232,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 3,
@@ -13250,7 +13250,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 3,
@@ -13448,7 +13448,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max"},
 			input: ["text"],
 			cost: {
@@ -13467,7 +13467,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max"},
 			input: ["text"],
 			cost: {
@@ -13486,7 +13486,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.3,
@@ -13504,7 +13504,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.1,
@@ -13522,7 +13522,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 1.25,
@@ -13540,7 +13540,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.5,
@@ -13558,7 +13558,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 2,
@@ -14044,7 +14044,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 1.25,
@@ -14080,7 +14080,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 1.25,
@@ -14098,7 +14098,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.25,
@@ -14116,7 +14116,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.05,
@@ -14134,7 +14134,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 1.25,
@@ -14170,7 +14170,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 1.25,
@@ -14188,7 +14188,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.25,
@@ -14737,7 +14737,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.6,
@@ -14755,7 +14755,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 3,
@@ -14773,7 +14773,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.2,
@@ -14791,7 +14791,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.2,
@@ -14809,7 +14809,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 2,
@@ -14827,7 +14827,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 2,
@@ -14917,7 +14917,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.6,
@@ -14935,7 +14935,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.2,
@@ -14953,7 +14953,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.6,
@@ -14971,7 +14971,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.6,
@@ -14989,7 +14989,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.1,
@@ -15007,7 +15007,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 1.2,
@@ -15025,7 +15025,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 1.75,
@@ -15043,7 +15043,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: {
 				input: 0.6,

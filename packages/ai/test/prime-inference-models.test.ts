@@ -58,6 +58,15 @@ describe("Prime Inference models", () => {
 		});
 	});
 
+	it("marks known reasoning-capable Prime Inference model families", () => {
+		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").reasoning).toBe(true);
+		expect(getModel("prime-inference", "deepseek/deepseek-v4-flash").reasoning).toBe(true);
+		expect(getModel("prime-inference", "google/gemini-2.5-pro").reasoning).toBe(true);
+		expect(getModel("prime-inference", "x-ai/grok-4").reasoning).toBe(true);
+		expect(getModel("prime-inference", "z-ai/glm-5.1").reasoning).toBe(true);
+		expect(getModel("prime-inference", "mistralai/mistral-nemo").reasoning).toBe(false);
+	});
+
 	it("resolves PRIME_API_KEY from the environment", () => {
 		process.env.PRIME_API_KEY = "test-prime-key";
 
