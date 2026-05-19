@@ -198,6 +198,19 @@ describe("detectInstallMethod", () => {
 		});
 	});
 
+	test("self-updates tarball specs without uninstalling the same logical package first", () => {
+		const { prefix } = createNpmPrefixInstall();
+		const tarballUrl = "https://downloads.example.test/prime-agent/prime-agent-0.73.0.tgz";
+
+		const command = getSelfUpdateCommand("@earendil-works/pi-coding-agent", undefined, tarballUrl);
+
+		expect(command).toEqual({
+			command: "npm",
+			args: ["--prefix", prefix, "install", "-g", tarballUrl],
+			display: `npm --prefix ${prefix} install -g ${tarballUrl}`,
+		});
+	});
+
 	test("self-update respects configured npmCommand", () => {
 		const { prefix } = createNpmPrefixInstall();
 

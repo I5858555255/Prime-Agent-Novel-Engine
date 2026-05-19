@@ -12,23 +12,19 @@ const originalSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
 const originalOffline = process.env.PI_OFFLINE;
 const originalPrimeAgentDownloadBaseUrl = process.env.PRIME_AGENT_DOWNLOAD_BASE_URL;
 
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[name];
+		return;
+	}
+	process.env[name] = value;
+}
+
 afterEach(() => {
 	vi.unstubAllGlobals();
-	if (originalSkipVersionCheck === undefined) {
-		delete process.env.PI_SKIP_VERSION_CHECK;
-	} else {
-		process.env.PI_SKIP_VERSION_CHECK = originalSkipVersionCheck;
-	}
-	if (originalOffline === undefined) {
-		delete process.env.PI_OFFLINE;
-	} else {
-		process.env.PI_OFFLINE = originalOffline;
-	}
-	if (originalPrimeAgentDownloadBaseUrl === undefined) {
-		delete process.env.PRIME_AGENT_DOWNLOAD_BASE_URL;
-	} else {
-		process.env.PRIME_AGENT_DOWNLOAD_BASE_URL = originalPrimeAgentDownloadBaseUrl;
-	}
+	restoreEnv("PI_SKIP_VERSION_CHECK", originalSkipVersionCheck);
+	restoreEnv("PI_OFFLINE", originalOffline);
+	restoreEnv("PRIME_AGENT_DOWNLOAD_BASE_URL", originalPrimeAgentDownloadBaseUrl);
 });
 
 describe("version checks", () => {

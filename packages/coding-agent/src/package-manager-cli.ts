@@ -274,9 +274,13 @@ function updateTargetIncludesExtensions(target: UpdateTarget): boolean {
 	return target.type === "all" || target.type === "extensions";
 }
 
-function printSelfUpdateUnavailable(npmCommand?: string[], updatePackageName = PACKAGE_NAME): void {
+function printSelfUpdateUnavailable(
+	npmCommand?: string[],
+	updateSpec = PACKAGE_NAME,
+	updatePackageName = updateSpec,
+): void {
 	console.error(`error: ${APP_NAME} cannot self-update this installation.`);
-	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updatePackageName));
+	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updateSpec, updatePackageName));
 
 	const entrypoint = process.argv[1];
 	if (entrypoint) {
@@ -291,27 +295,29 @@ function printSelfUpdateFallback(command: SelfUpdateCommand): void {
 
 interface SelfUpdatePlan {
 	installSpec: string;
+	packageName: string;
 	shouldRun: boolean;
 }
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 	if (force) {
-		return { installSpec: PACKAGE_NAME, shouldRun: true };
+		return { installSpec: PACKAGE_NAME, packageName: PACKAGE_NAME, shouldRun: true };
 	}
 
 	try {
 		const latestRelease = await getLatestPiRelease(VERSION);
 		const packageName = latestRelease?.packageName ?? PACKAGE_NAME;
 		const installSpec = latestRelease?.installSpec ?? packageName;
+		const updatePackageName = latestRelease?.installSpec ? PACKAGE_NAME : packageName;
 		if (!latestRelease || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, VERSION)) {
-			return { installSpec, shouldRun: true };
+			return { installSpec, packageName: updatePackageName, shouldRun: true };
 		}
 	} catch {
-		return { installSpec: PACKAGE_NAME, shouldRun: true };
+		return { installSpec: PACKAGE_NAME, packageName: PACKAGE_NAME, shouldRun: true };
 	}
 
 	console.log(chalk.green(`${APP_NAME} is already up to date (v${VERSION})`));
-	return { installSpec: PACKAGE_NAME, shouldRun: false };
+	return { installSpec: PACKAGE_NAME, packageName: PACKAGE_NAME, shouldRun: false };
 }
 
 async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
@@ -496,9 +502,14 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						PACKAGE_NAME,
 						selfUpdateNpmCommand,
 						selfUpdatePlan.installSpec,
+						selfUpdatePlan.packageName,
 					);
 					if (!selfUpdateCommand) {
-						printSelfUpdateUnavailable(selfUpdateNpmCommand, selfUpdatePlan.installSpec);
+						printSelfUpdateUnavailable(
+							selfUpdateNpmCommand,
+							selfUpdatePlan.installSpec,
+							selfUpdatePlan.packageName,
+						);
 						process.exitCode = 1;
 						return true;
 					}

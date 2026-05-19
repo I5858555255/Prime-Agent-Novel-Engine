@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.js";
 import { main } from "../src/main.js";
 
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[name];
+		return;
+	}
+	process.env[name] = value;
+}
+
 describe("package commands", () => {
 	let tempDir: string;
 	let agentDir: string;
@@ -46,21 +54,9 @@ describe("package commands", () => {
 		vi.unstubAllGlobals();
 		process.chdir(originalCwd);
 		process.exitCode = originalExitCode;
-		if (originalAgentDir === undefined) {
-			delete process.env[ENV_AGENT_DIR];
-		} else {
-			process.env[ENV_AGENT_DIR] = originalAgentDir;
-		}
-		if (originalPiPackageDir === undefined) {
-			delete process.env.PI_PACKAGE_DIR;
-		} else {
-			process.env.PI_PACKAGE_DIR = originalPiPackageDir;
-		}
-		if (originalPrimeAgentDownloadBaseUrl === undefined) {
-			delete process.env.PRIME_AGENT_DOWNLOAD_BASE_URL;
-		} else {
-			process.env.PRIME_AGENT_DOWNLOAD_BASE_URL = originalPrimeAgentDownloadBaseUrl;
-		}
+		restoreEnv(ENV_AGENT_DIR, originalAgentDir);
+		restoreEnv("PI_PACKAGE_DIR", originalPiPackageDir);
+		restoreEnv("PRIME_AGENT_DOWNLOAD_BASE_URL", originalPrimeAgentDownloadBaseUrl);
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
 		rmSync(tempDir, { recursive: true, force: true });
 	});
@@ -327,10 +323,7 @@ else {
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
 			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
-			expect(recordedCalls).toEqual([
-				expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
-				expect.arrayContaining(["install", "-g", `${baseUrl}/${tarballPath}`]),
-			]);
+			expect(recordedCalls).toEqual([expect.arrayContaining(["install", "-g", `${baseUrl}/${tarballPath}`])]);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();

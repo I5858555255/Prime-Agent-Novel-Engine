@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- Fixed tarball self-updates to install the tarball without first uninstalling the same logical package.
 - Fixed long cwd values in the startup splash from wrapping through the brand mark.
 - Fixed IPython kernel startup to let `ipykernel` bind OS-assigned ports instead of randomly selecting fixed ports.
 - Fixed RLM child usage aggregation so parent session totals include recursive child runs after session reloads.
@@ -31,6 +32,7 @@
 
 ### Removed
 
+- Removed install/update telemetry pings to `pi.dev` and the related setting and environment override.
 - Removed the RLM background API; recursive agents now use `rlm()`/`rlm.run()` with normal Python async tasks for background work.
 - Removed the legacy `read`, `write`, `grep`, `find`, and `ls` built-in tools.
 - Removed the local TPS extension that posted token/cache stats after each agent response.
