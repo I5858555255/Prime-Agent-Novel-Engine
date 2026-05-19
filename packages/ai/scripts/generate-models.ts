@@ -103,129 +103,6 @@ interface PrimeInferenceCatalogEntry {
 	maxTokens?: number;
 }
 
-const PRIME_INFERENCE_CATALOG_SNAPSHOT = [
-	{ id: "allenai/olmo-3.1-32b-instruct", input: 0.2, output: 0.6 },
-	{ id: "anthropic/claude-3.5-haiku", input: 0.8, output: 4 },
-	{ id: "anthropic/claude-3.7-sonnet", input: 3, output: 15 },
-	{ id: "anthropic/claude-haiku-4.5", input: 1, output: 5 },
-	{ id: "anthropic/claude-opus-4", input: 15, output: 75 },
-	{ id: "anthropic/claude-opus-4.1", input: 15, output: 75 },
-	{ id: "anthropic/claude-opus-4.5", input: 5, output: 25 },
-	{ id: "anthropic/claude-opus-4.6", input: 5, output: 25 },
-	{ id: "anthropic/claude-opus-4.7", input: 5, output: 25 },
-	{ id: "anthropic/claude-sonnet-4", input: 3, output: 15 },
-	{ id: "anthropic/claude-sonnet-4.5", input: 3, output: 15 },
-	{ id: "anthropic/claude-sonnet-4.6", input: 3, output: 15 },
-	{ id: "arcee-ai/trinity-large-thinking", input: 0.3125, output: 1.125 },
-	{ id: "arcee-ai/trinity-mini", input: 0.045, output: 0.15 },
-	{ id: "deepseek/deepseek-chat", input: 0.5, output: 1.5 },
-	{ id: "deepseek/deepseek-chat-v3-0324", input: 1.25, output: 1.5 },
-	{ id: "deepseek/deepseek-chat-v3.1", input: 0.56, output: 1.68 },
-	{ id: "deepseek/deepseek-r1-0528", input: 3, output: 7 },
-	{ id: "deepseek/deepseek-v3.1-terminus", input: 0.45, output: 1.5 },
-	{ id: "deepseek/deepseek-v3.2", input: 0.28, output: 0.42 },
-	{ id: "deepseek/deepseek-v3.2-exp", input: 0.28, output: 0.42 },
-	{ id: "deepseek/deepseek-v3.2-speciale", input: 0.28, output: 0.42 },
-	{ id: "deepseek/deepseek-v4-flash", input: 0.14, output: 0.28 },
-	{ id: "deepseek/deepseek-v4-pro", input: 2.1, output: 4.4 },
-	{ id: "google/gemini-2.5-flash", input: 0.3, output: 2.5 },
-	{ id: "google/gemini-2.5-flash-lite", input: 0.1, output: 0.4 },
-	{ id: "google/gemini-2.5-pro", input: 1.25, output: 10 },
-	{ id: "google/gemini-3.1-pro-preview", input: 2, output: 12 },
-	{ id: "google/gemini-3-flash-preview", input: 0.5, output: 3 },
-	{ id: "google/gemma-3-27b-it", input: 0.119, output: 0.3 },
-	{ id: "meta-llama/Llama-3.2-1B-Instruct", input: 0.027, output: 0.2 },
-	{ id: "meta-llama/Llama-3.2-3B-Instruct", input: 0.1, output: 0.34 },
-	{ id: "meta-llama/llama-3.3-70b-instruct", input: 0.9, output: 0.9 },
-	{ id: "meta-llama/llama-4-maverick", input: 0.27, output: 0.88 },
-	{ id: "minimax/minimax-m2.5", input: 0.3, output: 1.2 },
-	{ id: "minimax/minimax-m2.7", input: 0.6, output: 2.4 },
-	{ id: "mistralai/mistral-large-2512", input: 0.5, output: 1.5 },
-	{ id: "mistralai/mistral-nemo", input: 0.1, output: 0.25 },
-	{ id: "mistralai/mistral-small-24b-instruct-2501", input: 0.8, output: 0.8 },
-	{ id: "mistralai/mistral-small-2603", input: 0.1875, output: 0.75 },
-	{ id: "mistralai/mistral-small-3.2-24b-instruct", input: 0.2, output: 0.5 },
-	{ id: "mistralai/mixtral-8x22b-instruct", input: 2, output: 6 },
-	{ id: "mistralai/mixtral-8x7b-instruct", input: 0.6, output: 0.6 },
-	{ id: "moonshotai/kimi-k2-0905", input: 1.2, output: 5 },
-	{ id: "moonshotai/kimi-k2.5", input: 0.6, output: 3.2 },
-	{ id: "moonshotai/kimi-k2.6", input: 0.95, output: 4 },
-	{ id: "nvidia/nemotron-3-nano-30b-a3b", input: 0.05, output: 0.2 },
-	{ id: "nvidia/nemotron-3-super-120b-a12b", input: 0.3, output: 0.9 },
-	{ id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", input: 0.1, output: 0.3 },
-	{ id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", input: 0.35, output: 1.05 },
-	{ id: "openai/gpt-4.1", input: 2, output: 8 },
-	{ id: "openai/gpt-4.1-mini", input: 0.4, output: 1.6 },
-	{ id: "openai/gpt-4.1-nano", input: 0.1, output: 0.4 },
-	{ id: "openai/gpt-4o", input: 2.5, output: 10 },
-	{ id: "openai/gpt-4o-mini", input: 0.15, output: 0.6 },
-	{ id: "openai/gpt-5", input: 1.25, output: 10 },
-	{ id: "openai/gpt-5.1", input: 1.25, output: 10 },
-	{ id: "openai/gpt-5.1-chat", input: 1.25, output: 10 },
-	{ id: "openai/gpt-5.1-codex", input: 1.25, output: 10 },
-	{ id: "openai/gpt-5.1-codex-mini", input: 0.25, output: 2 },
-	{ id: "openai/gpt-5.2", input: 1.75, output: 14 },
-	{ id: "openai/gpt-5.2-chat", input: 1.75, output: 14 },
-	{ id: "openai/gpt-5.2-pro", input: 21, output: 168 },
-	{ id: "openai/gpt-5.3-codex", input: 1.75, output: 14 },
-	{ id: "openai/gpt-5.4", input: 2.5, output: 15 },
-	{ id: "openai/gpt-5.4-mini", input: 0.75, output: 4.5 },
-	{ id: "openai/gpt-5.4-nano", input: 0.2, output: 1.25 },
-	{ id: "openai/gpt-5.4-pro", input: 30, output: 180 },
-	{ id: "openai/gpt-5.5", input: 5, output: 30 },
-	{ id: "openai/gpt-5-chat", input: 1.25, output: 10 },
-	{ id: "openai/gpt-5-codex", input: 1.25, output: 10 },
-	{ id: "openai/gpt-5-mini", input: 0.25, output: 2 },
-	{ id: "openai/gpt-5-nano", input: 0.05, output: 0.4 },
-	{ id: "openai/gpt-oss-120b", input: 0.15, output: 0.6 },
-	{ id: "openai/gpt-oss-20b", input: 0.07, output: 0.3 },
-	{ id: "prime-intellect/intellect-3", input: 0.2, output: 1.1 },
-	{ id: "qwen/qwen3-235b-a22b-2507", input: 0.22, output: 0.88 },
-	{ id: "qwen/qwen3-235b-a22b-instruct-2507", input: 0.22, output: 0.88 },
-	{ id: "qwen/qwen3-235b-a22b-thinking-2507", input: 0.65, output: 3 },
-	{ id: "qwen/qwen3-30b-a3b-instruct-2507", input: 0.2, output: 0.8 },
-	{ id: "qwen/qwen3-30b-a3b-thinking-2507", input: 0.2, output: 2.4 },
-	{ id: "Qwen/Qwen3-30B-A3B-Thinking-2507", input: 0.1, output: 0.2 },
-	{ id: "Qwen/Qwen3-4B-Instruct-2507", input: 0.1, output: 0.2 },
-	{ id: "Qwen/Qwen3-4B-Thinking-2507", input: 0.1, output: 0.2 },
-	{ id: "Qwen/Qwen3.5-0.8B", input: 0.04, output: 0.08 },
-	{ id: "Qwen/Qwen3.5-122B-A10B", input: 0.3, output: 0.9 },
-	{ id: "Qwen/Qwen3.5-2B", input: 0.06, output: 0.18 },
-	{ id: "qwen/qwen3.5-35b-a3b", input: 0.3125, output: 1.8 },
-	{ id: "qwen/qwen3.5-397b-a17b", input: 0.6, output: 3.6 },
-	{ id: "Qwen/Qwen3.5-4B", input: 0.1, output: 0.3 },
-	{ id: "Qwen/Qwen3.5-9B", input: 0.18, output: 0.54 },
-	{ id: "qwen/qwen3.6-35b-a3b", input: 0.23, output: 1.8 },
-	{ id: "qwen/qwen3-8b", input: 0.117, output: 0.455 },
-	{ id: "qwen/qwen3-coder", input: 2, output: 4.875 },
-	{ id: "qwen/qwen3-coder-next", input: 0.5, output: 1.5 },
-	{ id: "qwen/qwen3-max", input: 1.2, output: 6 },
-	{ id: "qwen/qwen3-vl-235b-a22b-instruct", input: 0.4, output: 1.9 },
-	{ id: "qwen/qwen3-vl-235b-a22b-thinking", input: 0.784, output: 3.16 },
-	{ id: "qwen/qwen3-vl-30b-a3b-instruct", input: 0.25, output: 1 },
-	{ id: "qwen/qwen3-vl-30b-a3b-thinking", input: 0.16, output: 0.8 },
-	{ id: "Qwen/Qwen3-VL-30B-A3B-Thinking", input: 0.1, output: 0.2 },
-	{ id: "Qwen/Qwen3-VL-4B-Instruct", input: 0.1, output: 0.2 },
-	{ id: "qwen/qwen3-vl-8b-instruct", input: 0.18, output: 0.7 },
-	{ id: "x-ai/grok-3-mini", input: 0.6, output: 4 },
-	{ id: "x-ai/grok-4", input: 3, output: 15 },
-	{ id: "x-ai/grok-4.1-fast", input: 0.2, output: 0.5 },
-	{ id: "x-ai/grok-4.20", input: 2, output: 6 },
-	{ id: "x-ai/grok-4.20-multi-agent", input: 2, output: 6 },
-	{ id: "x-ai/grok-4-fast", input: 0.2, output: 0.5 },
-	{ id: "x-ai/grok-code-fast-1", input: 0.2, output: 1.5 },
-	{ id: "xiaomi/mimo-v2.5", input: 0.4, output: 2 },
-	{ id: "xiaomi/mimo-v2.5-pro", input: 1, output: 3 },
-	{ id: "xiaomi/mimo-v2-pro", input: 1, output: 3 },
-	{ id: "z-ai/glm-4.5", input: 0.6, output: 2.2 },
-	{ id: "z-ai/glm-4.5-air", input: 0.2, output: 1.1 },
-	{ id: "z-ai/glm-4.6", input: 0.6, output: 2.2 },
-	{ id: "z-ai/glm-4.7", input: 0.6, output: 2.65 },
-	{ id: "z-ai/glm-4.7-flash", input: 0.1, output: 0.43 },
-	{ id: "z-ai/glm-5", input: 1.2, output: 3.5 },
-	{ id: "z-ai/glm-5.1", input: 1.75, output: 5.5 },
-	{ id: "zai-org/GLM-4.7", input: 0.6, output: 2.65 },
-] as const satisfies readonly PrimeInferenceCatalogEntry[];
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
@@ -378,20 +255,14 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 	});
 }
 
-function createPrimeInferenceSnapshotModels(): Model<"openai-completions">[] {
-	return PRIME_INFERENCE_CATALOG_SNAPSHOT.map(createPrimeInferenceModel);
-}
-
 async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
 	const apiKey = process.env.PRIME_API_KEY;
-	if (!apiKey) {
-		return createPrimeInferenceSnapshotModels();
-	}
 
 	try {
 		console.log("Fetching models from Prime Inference API...");
+		const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
 		const response = await fetch(`${PRIME_INFERENCE_BASE_URL}/models`, {
-			headers: { Authorization: `Bearer ${apiKey}` },
+			headers,
 		});
 		const catalog = parsePrimeInferenceCatalog(await response.json());
 		if (catalog.length > 0) {
@@ -402,7 +273,7 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 		console.error("Failed to fetch Prime Inference models:", error);
 	}
 
-	return createPrimeInferenceSnapshotModels();
+	return [];
 }
 
 function createPrimeInferenceModel(entry: PrimeInferenceCatalogEntry): Model<"openai-completions"> {

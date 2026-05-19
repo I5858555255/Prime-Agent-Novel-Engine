@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("Prime Inference models", () => {
-	it("registers the Prime Inference catalog snapshot", () => {
+	it("registers the Prime Inference catalog", () => {
 		const modelIds = getModels("prime-inference").map((model) => model.id);
 
 		expect(modelIds.length).toBeGreaterThanOrEqual(100);
