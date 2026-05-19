@@ -120,6 +120,26 @@ describe("InteractiveMode goal status announcements", () => {
 			}),
 		).toBe(false);
 	});
+
+	test("announces a transition back to idle when a goal is cleared", () => {
+		type GoalAnnouncementHarness = {
+			setGoalAnnouncementBaseline(goal: GoalState): void;
+			shouldAnnounceGoalUpdate(goal: GoalState): boolean;
+		};
+		const fakeThis = Object.create(InteractiveMode.prototype) as GoalAnnouncementHarness;
+		fakeThis.setGoalAnnouncementBaseline({
+			active: true,
+			status: "active",
+			goalId: "goal-1",
+			objective: "ship the feature",
+			tokensUsed: 10,
+			timeUsedSeconds: 5,
+			continuationsUsed: 1,
+		});
+
+		expect(fakeThis.shouldAnnounceGoalUpdate(emptyGoalState())).toBe(true);
+		expect(fakeThis.shouldAnnounceGoalUpdate(emptyGoalState())).toBe(false);
+	});
 });
 
 describe("InteractiveMode tray goal label", () => {

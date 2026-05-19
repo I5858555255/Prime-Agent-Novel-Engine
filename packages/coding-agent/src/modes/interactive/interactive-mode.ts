@@ -3243,7 +3243,7 @@ export class InteractiveMode {
 			return goal.status !== "idle";
 		}
 		if (previous.status !== next.status) {
-			return goal.status !== "idle";
+			return true;
 		}
 		if (previous.goalId !== next.goalId) {
 			return goal.status !== "idle";
