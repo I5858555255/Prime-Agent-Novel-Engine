@@ -16,18 +16,22 @@ describe("Prime Inference models", () => {
 	it("registers the Prime Inference catalog", () => {
 		const modelIds = getModels("prime-inference").map((model) => model.id);
 
-		expect(modelIds.length).toBeGreaterThanOrEqual(100);
+		expect(modelIds.length).toBe(23);
 		expect(modelIds).toEqual(
 			expect.arrayContaining([
 				"anthropic/claude-opus-4.7",
-				"openai/gpt-5.2-pro",
+				"deepseek/deepseek-v4-pro",
+				"nvidia/nemotron-3-super-120b-a12b",
 				"openai/gpt-5.4",
 				"openai/gpt-5.5",
 				"prime-intellect/intellect-3",
+				"qwen/qwen3-coder-next",
 				"qwen/qwen3-vl-235b-a22b-thinking",
-				"z-ai/glm-5.1",
+				"x-ai/grok-4.20",
 			]),
 		);
+		expect(modelIds).not.toContain("google/gemini-2.5-pro");
+		expect(modelIds).not.toContain("z-ai/glm-5.1");
 	});
 
 	it("registers the default OpenAI-compatible model", () => {
@@ -41,8 +45,8 @@ describe("Prime Inference models", () => {
 		expect(model.thinkingLevelMap).toEqual({ xhigh: "xhigh" });
 		expect(getSupportedThinkingLevels(model)).toContain("xhigh");
 		expect(model.input).toEqual(["text"]);
-		expect(model.contextWindow).toBe(0);
-		expect(model.maxTokens).toBe(0);
+		expect(model.contextWindow).toBe(272000);
+		expect(model.maxTokens).toBe(128000);
 		expect(model.cost).toEqual({
 			input: 5,
 			output: 30,
@@ -61,10 +65,9 @@ describe("Prime Inference models", () => {
 	it("marks known reasoning-capable Prime Inference model families", () => {
 		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").reasoning).toBe(true);
 		expect(getModel("prime-inference", "deepseek/deepseek-v4-flash").reasoning).toBe(true);
-		expect(getModel("prime-inference", "google/gemini-2.5-pro").reasoning).toBe(true);
-		expect(getModel("prime-inference", "x-ai/grok-4").reasoning).toBe(true);
-		expect(getModel("prime-inference", "z-ai/glm-5.1").reasoning).toBe(true);
-		expect(getModel("prime-inference", "mistralai/mistral-nemo").reasoning).toBe(false);
+		expect(getModel("prime-inference", "qwen/qwen3-coder-next").reasoning).toBe(false);
+		expect(getModel("prime-inference", "x-ai/grok-4.20").reasoning).toBe(true);
+		expect(getModel("prime-inference", "x-ai/grok-code-fast-1").reasoning).toBe(false);
 	});
 
 	it("resolves PRIME_API_KEY from the environment", () => {
