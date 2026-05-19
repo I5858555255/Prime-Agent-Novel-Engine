@@ -199,12 +199,13 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 
 	private renderSplitLine(left: string, right: string, width: number): string {
 		const contentWidth = Math.max(1, width - this.paddingX);
-		const rightWidth = visibleWidth(right);
+		const renderedRight = this.truncate(right, contentWidth);
+		const rightWidth = visibleWidth(renderedRight);
 		const gapWidth = left ? 2 : 0;
 		const leftWidth = Math.max(0, contentWidth - rightWidth - gapWidth);
 		const renderedLeft = leftWidth > 0 ? this.truncate(left, leftWidth) : "";
 		const gap = Math.max(0, contentWidth - visibleWidth(renderedLeft) - rightWidth);
-		return `${" ".repeat(this.paddingX)}${renderedLeft}${" ".repeat(gap)}${right}`;
+		return `${" ".repeat(this.paddingX)}${renderedLeft}${" ".repeat(gap)}${renderedRight}`;
 	}
 
 	private subagentSummary(flat: readonly FlatChildAgentNode[], selected: boolean): string {
