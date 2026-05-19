@@ -192,6 +192,7 @@ jobs:
           TARBALL="release-artifacts/prime-agent-${VERSION}.tgz"
           INSTALL_BASE_URL="${R2_PUBLIC_BASE_URL}"
           INSTALL_BASE_URL="${INSTALL_BASE_URL%/}"
+          export INSTALL_BASE_URL
 
           test -f "${TARBALL}"
           test -f release-artifacts/SHA256SUMS
