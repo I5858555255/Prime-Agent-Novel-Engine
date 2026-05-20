@@ -109,6 +109,19 @@ describe("Prime Inference auth", () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
+	it("throws contextual errors for invalid Prime whoami JSON", async () => {
+		const fetchMock = vi.fn(async (): Promise<Response> => {
+			return new Response("not json", {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+
+		await expect(
+			checkPrimeInferenceAccess("prime-key", "https://prime-api.example", { fetchFn: fetchMock }),
+		).rejects.toThrow("Prime whoami returned an invalid response");
+	});
+
 	it("imports a valid Prime CLI key", async () => {
 		writeFileSync(configPath, JSON.stringify({ api_key: "prime-cli-key" }));
 		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -123,6 +136,29 @@ describe("Prime Inference auth", () => {
 		expect(result).toEqual({ apiKey: "prime-cli-key", source: "prime-cli" });
 		expect(onAuth).not.toHaveBeenCalled();
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("honors cancellation before returning an imported Prime CLI key", async () => {
+		writeFileSync(configPath, JSON.stringify({ api_key: "prime-cli-key" }));
+		const controller = new AbortController();
+		const fetchMock = vi.fn(async (): Promise<Response> => {
+			const response = jsonResponse({ data: { scope: { inference: { write: true } } } });
+			vi.spyOn(response, "json").mockImplementation(async () => {
+				controller.abort();
+				return { data: { scope: { inference: { write: true } } } };
+			});
+			return response;
+		});
+
+		await expect(
+			loginPrimeInference(
+				{
+					onAuth: () => {},
+					signal: controller.signal,
+				},
+				{ configPath, fetchFn: fetchMock, requestTimeoutMs: 1000 },
+			),
+		).rejects.toThrow("Login cancelled");
 	});
 
 	it("falls back to browser login when the Prime CLI key cannot access inference", async () => {

@@ -5192,6 +5192,11 @@ export class InteractiveMode {
 				signal: dialog.signal,
 			});
 
+			if (dialog.signal.aborted) {
+				restoreEditor();
+				return;
+			}
+
 			this.session.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, {
 				type: "api_key",
 				key: result.apiKey,

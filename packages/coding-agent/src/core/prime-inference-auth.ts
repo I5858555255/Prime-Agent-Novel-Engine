@@ -189,7 +189,12 @@ async function readResponseMessage(response: Response): Promise<string> {
 }
 
 async function readJsonObject(response: Response, context: string): Promise<Record<string, unknown>> {
-	const parsed = (await response.json()) as unknown;
+	let parsed: unknown;
+	try {
+		parsed = (await response.json()) as unknown;
+	} catch {
+		throw new Error(`${context} returned an invalid response`);
+	}
 	if (!isRecord(parsed)) {
 		throw new Error(`${context} returned an invalid response`);
 	}
@@ -392,6 +397,7 @@ export async function loginPrimeInference(
 			signal: callbacks.signal,
 		});
 		if (access.ok) {
+			throwIfCancelled(callbacks.signal);
 			return { apiKey: config.apiKey, source: "prime-cli" };
 		}
 		callbacks.onProgress?.(
@@ -402,6 +408,7 @@ export async function loginPrimeInference(
 	}
 
 	const apiKey = await runPrimeBrowserLogin(config, callbacks, fetchFn, requestTimeoutMs, pollIntervalMs);
+	throwIfCancelled(callbacks.signal);
 	callbacks.onProgress?.("Checking Prime Inference access...");
 	const access = await checkPrimeInferenceAccess(apiKey, config.baseUrl, {
 		fetchFn,
@@ -412,5 +419,6 @@ export async function loginPrimeInference(
 		throw new Error(`Prime API key does not have Prime Inference access (${formatAccessFailure(access)})`);
 	}
 
+	throwIfCancelled(callbacks.signal);
 	return { apiKey, source: "browser" };
 }
