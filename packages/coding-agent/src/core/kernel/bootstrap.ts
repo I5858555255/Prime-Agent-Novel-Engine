@@ -8,10 +8,23 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-const BOOTSTRAP_SCHEMA = 2;
+const BOOTSTRAP_SCHEMA = 3;
 const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
+const EXTRA_REQUIREMENTS = [
+	"requests",
+	"pyyaml",
+	"toml",
+	"pydantic",
+	"beautifulsoup4",
+	"lxml",
+	"jinja2",
+	"pandas",
+	"matplotlib",
+	"scipy",
+	"openai",
+];
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 const RUNTIME_READY_CHECK =
 	"import rlm; assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')";
@@ -26,6 +39,7 @@ interface BootstrapVersion {
 	schema: number;
 	ipykernel?: string;
 	runtime?: string;
+	extra?: string;
 }
 
 function errorMessage(error: unknown): string {
@@ -277,10 +291,12 @@ async function readBootstrapVersion(venv: string): Promise<BootstrapVersion | nu
 }
 
 function bootstrapVersionCurrent(version: BootstrapVersion | null): boolean {
+	const extraKey = EXTRA_REQUIREMENTS.join(",");
 	return (
 		version?.schema === BOOTSTRAP_SCHEMA &&
 		version.ipykernel === IPYKERNEL_REQUIREMENT &&
-		version.runtime === RUNTIME_REQUIREMENT
+		version.runtime === RUNTIME_REQUIREMENT &&
+		version.extra === extraKey
 	);
 }
 
@@ -289,6 +305,7 @@ async function writeBootstrapVersion(venv: string): Promise<void> {
 		schema: BOOTSTRAP_SCHEMA,
 		ipykernel: IPYKERNEL_REQUIREMENT,
 		runtime: RUNTIME_REQUIREMENT,
+		extra: EXTRA_REQUIREMENTS.join(","),
 	};
 	await writeFile(path.join(venv, BOOTSTRAP_VERSION_FILE), `${JSON.stringify(version)}\n`, "utf8");
 }
@@ -318,7 +335,15 @@ async function bootstrapVenv(venv: string): Promise<void> {
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
-	await run(uv, ["pip", "install", "--python", python, IPYKERNEL_REQUIREMENT, runtimeRequirement]);
+	await run(uv, [
+		"pip",
+		"install",
+		"--python",
+		python,
+		IPYKERNEL_REQUIREMENT,
+		runtimeRequirement,
+		...EXTRA_REQUIREMENTS,
+	]);
 	await writeBootstrapVersion(venv);
 }
 
