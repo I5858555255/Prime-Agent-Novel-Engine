@@ -244,8 +244,8 @@ export class SettingsSelectorComponent extends Container {
 			},
 			{
 				id: "collapse-changelog",
-				label: "Collapse changelog",
-				description: "Show condensed changelog after updates",
+				label: "Hide changelog on startup",
+				description: "Hide changelog notices on startup (use /changelog to view)",
 				currentValue: config.collapseChangelog ? "true" : "false",
 				values: ["true", "false"],
 			},

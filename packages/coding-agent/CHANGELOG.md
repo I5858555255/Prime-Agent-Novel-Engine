@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the default for "Hide changelog on startup" to enabled. Changelog notices no longer appear on startup by default; use `/changelog` to view them.
+
 ## [0.0.2] - 2026-05-20
 
 ### Added
