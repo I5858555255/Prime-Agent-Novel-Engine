@@ -5,18 +5,6 @@
  * Re-render at any width: `uv run scripts/render-logo.py --width N`
  */
 
-/** ~10 rows × 32 cols. The default brand mark — half-block butterfly, splash-ready. */
-export const PRIME_LOGO_SMALL = `                          ▄▄███▀
-    ▄▄▄▄▄              ▄█████▀
-    ██████▄         ▄██████▀
-   ▄███▀███▄     ▄███▀▄██▀
-   ███ ▄████▄▄▄████▀▄▄██
-  ▀██  ▀█████████▀▀▀▀▀▀
-  ▄██   ██████▀▀ ▄███
- █████    ▀█▄▄▄█████▀
-███████▄  ████████▀
-▀███▀▀    █████▀`;
-
 /** ~20 rows × 60 cols. Welcome screen / first-run greet. */
 export const PRIME_LOGO_MEDIUM = `                                                        ▄▄▄▄
                                                   ▄▄███████▀

@@ -78,7 +78,7 @@ import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/
 import { formatGoalUsage } from "../../core/goals.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
-import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
+import { findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
 import { DefaultPackageManager } from "../../core/package-manager.js";
 import {
 	loginPrimeInference,
@@ -92,7 +92,7 @@ import { type SessionContext, SessionManager } from "../../core/session-manager.
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
-import { PRIME_LOGO_SMALL } from "../../themes/prime-logo.js";
+import { PRIME_LOGO_MEDIUM } from "../../themes/prime-logo.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
@@ -129,6 +129,7 @@ import { keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
 import { ModelSelectorComponent } from "./components/model-selector.js";
 import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.js";
+import { type OnboardingAuthChoice, OnboardingSplashComponent } from "./components/onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -226,7 +227,7 @@ export function truncatePathMiddle(value: string, width: number): string {
 }
 
 class BrandSplashHeader implements Component {
-	private readonly logoRaw = PRIME_LOGO_SMALL.split("\n");
+	private readonly logoRaw = PRIME_LOGO_MEDIUM.split("\n");
 	private readonly logoCanvasWidth = this.logoRaw.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 	private readonly gutter = 4;
 	private readonly labelWidth = 9;
@@ -301,6 +302,16 @@ type GoalAnnouncementSnapshot = {
 	lastError?: string;
 };
 
+type AuthenticationResult =
+	| {
+			status: "success";
+			providerId: string;
+			providerName: string;
+			authType: "oauth" | "api_key";
+	  }
+	| { status: "cancelled" }
+	| { status: "failed" };
+
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 
 function isDeadTerminalError(error: unknown): boolean {
@@ -316,14 +327,6 @@ const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
 
 function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
-}
-
-function isUnknownModel(model: Model<any> | undefined): boolean {
-	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
-}
-
-function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
-	return providerId in defaultModelPerProvider;
 }
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
@@ -752,11 +755,9 @@ export class InteractiveMode {
 		// Add header container as first child
 		this.ui.addChild(this.headerContainer);
 
-		// Brand splash: side-panel layout — white butterfly on the left, structured runtime
-		// metadata on the right. The mark carries the brand; no wordmark, no slogan.
-		// Cheatsheet behind --verbose. `quietStartup` suppresses the splash entirely
-		// (matches pi-mono's old behaviour for users who want a bare prompt).
-		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
+		// Brand splash: side-panel layout with structured runtime metadata on the right.
+		// When onboarding is required, the guided onboarding splash owns the first screen.
+		if (!this.shouldRunOnboarding() && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
 			// Verbose: include the full keybinding cheatsheet under the brand mark.
 			const hint = (keybinding: AppKeybinding, description: string) => keyHint(keybinding, description);
 			const verboseInstructions = this.options.verbose
@@ -892,14 +893,23 @@ export class InteractiveMode {
 			this.showError(`models.json error: ${modelsJsonError}`);
 		}
 
-		if (modelFallbackMessage) {
+		const needsOnboarding = this.shouldRunOnboarding();
+
+		if (modelFallbackMessage && !needsOnboarding) {
 			this.showWarning(modelFallbackMessage);
 		}
 
-		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		let promptReady = !needsOnboarding;
+		if (needsOnboarding) {
+			promptReady = await this.runOnboardingFlow();
+		}
+
+		if (promptReady) {
+			void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		}
 
 		// Process initial messages
-		if (initialMessage) {
+		if (initialMessage && promptReady) {
 			try {
 				await this.session.prompt(initialMessage, { images: initialImages });
 			} catch (error: unknown) {
@@ -908,7 +918,7 @@ export class InteractiveMode {
 			}
 		}
 
-		if (initialMessages) {
+		if (initialMessages && promptReady) {
 			for (const message of initialMessages) {
 				try {
 					await this.session.prompt(message);
@@ -922,6 +932,9 @@ export class InteractiveMode {
 		// Main interactive loop
 		while (true) {
 			const userInput = await this.getUserInput();
+			if (!(await this.ensurePromptReady())) {
+				continue;
+			}
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
@@ -929,6 +942,35 @@ export class InteractiveMode {
 				this.showError(errorMessage);
 			}
 		}
+	}
+
+	private shouldRunOnboarding(): boolean {
+		this.session.modelRegistry.refresh();
+		const model = this.session.model;
+		return !model || !this.session.modelRegistry.hasConfiguredAuth(model);
+	}
+
+	private async ensurePromptReady(): Promise<boolean> {
+		if (!this.shouldRunOnboarding()) {
+			return true;
+		}
+		return this.runOnboardingFlow();
+	}
+
+	private async runOnboardingFlow(): Promise<boolean> {
+		const authResult = await this.showLoginAuthTypeSelector();
+		if (authResult.status !== "success") {
+			this.showStatus("Login required. Use /login to continue.");
+			return false;
+		}
+
+		const selectedModel = await this.promptForModelSelection(authResult.providerId);
+		if (selectedModel || !this.shouldRunOnboarding()) {
+			return true;
+		}
+
+		this.showStatus("Model selection required. Use /model to continue.");
+		return false;
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
@@ -2716,13 +2758,13 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/login") {
-				this.showOAuthSelector("login");
 				this.editor.setText("");
+				await this.showOAuthSelector("login");
 				return;
 			}
 			if (text === "/logout") {
-				this.showOAuthSelector("logout");
 				this.editor.setText("");
+				await this.showOAuthSelector("logout");
 				return;
 			}
 			if (text === "/new") {
@@ -4529,34 +4571,65 @@ export class InteractiveMode {
 	}
 
 	private showModelSelector(initialSearchInput?: string): void {
-		this.showSelector((done) => {
-			const selector = new ModelSelectorComponent(
-				this.ui,
-				this.session.model,
-				this.settingsManager,
-				this.session.modelRegistry,
-				this.session.scopedModels,
-				async (model) => {
-					try {
-						await this.session.setModel(model);
-						this.footer.invalidate();
-						this.updateEditorBorderColor();
+		void this.showModelSelectorAsync(initialSearchInput);
+	}
+
+	private async promptForModelSelection(providerId?: string): Promise<boolean> {
+		this.session.modelRegistry.refresh();
+		const availableModels = this.session.modelRegistry.getAvailable();
+		if (availableModels.length === 0) {
+			this.showStatus("No models available. Add credentials with /login.");
+			return false;
+		}
+
+		this.showStatus("Select a model to continue.");
+		const hasProviderModels = providerId ? availableModels.some((model) => model.provider === providerId) : false;
+		return this.showModelSelectorAsync(hasProviderModels ? providerId : undefined);
+	}
+
+	private showModelSelectorAsync(initialSearchInput?: string): Promise<boolean> {
+		return new Promise((resolve) => {
+			let settled = false;
+			const settle = (selected: boolean) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				resolve(selected);
+			};
+
+			this.showSelector((done) => {
+				const selector = new ModelSelectorComponent(
+					this.ui,
+					this.session.model,
+					this.settingsManager,
+					this.session.modelRegistry,
+					this.session.scopedModels,
+					async (model) => {
+						try {
+							await this.session.setModel(model);
+							this.footer.invalidate();
+							this.updateEditorBorderColor();
+							done();
+							this.showStatus(`Model: ${model.id}`);
+							void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+							this.checkDaxnutsEasterEgg(model);
+							settle(true);
+						} catch (error) {
+							done();
+							this.showError(error instanceof Error ? error.message : String(error));
+							settle(false);
+						}
+					},
+					() => {
 						done();
-						this.showStatus(`Model: ${model.id}`);
-						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
-						this.checkDaxnutsEasterEgg(model);
-					} catch (error) {
-						done();
-						this.showError(error instanceof Error ? error.message : String(error));
-					}
-				},
-				() => {
-					done();
-					this.ui.requestRender();
-				},
-				initialSearchInput,
-			);
-			return { component: selector, focus: selector };
+						this.ui.requestRender();
+						settle(false);
+					},
+					initialSearchInput,
+				);
+				return { component: selector, focus: selector };
+			});
 		});
 	}
 
@@ -4946,76 +5019,79 @@ export class InteractiveMode {
 		return options.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
-	private showLoginAuthTypeSelector(): void {
-		const primeInferenceLabel = "Use Prime Inference";
-		const subscriptionLabel = "Use a subscription";
-		const apiKeyLabel = "Use an API key";
-
-		this.showSelector((done) => {
-			const selector = new ExtensionSelectorComponent(
-				"Select authentication method:",
-				[primeInferenceLabel, subscriptionLabel, apiKeyLabel],
-				(option) => {
-					done();
-					if (option === primeInferenceLabel) {
-						void this.showPrimeInferenceLoginDialog();
-						return;
-					}
-					const authType = option === subscriptionLabel ? "oauth" : "api_key";
-					this.showLoginProviderSelector(authType);
-				},
-				() => {
-					done();
-					this.ui.requestRender();
-				},
-			);
-			return { component: selector, focus: selector };
+	private showLoginAuthTypeSelector(): Promise<AuthenticationResult> {
+		return new Promise((resolve) => {
+			this.showSelector((done) => {
+				const selector = new OnboardingSplashComponent(
+					(choice: OnboardingAuthChoice) => {
+						done();
+						if (choice === "prime") {
+							void this.showPrimeInferenceLoginDialog().then(resolve);
+							return;
+						}
+						const authType = choice === "subscription" ? "oauth" : "api_key";
+						void this.showLoginProviderSelector(authType).then(resolve);
+					},
+					() => {
+						done();
+						this.ui.requestRender();
+						resolve({ status: "cancelled" });
+					},
+				);
+				return { component: selector, focus: selector };
+			});
 		});
 	}
 
-	private showLoginProviderSelector(authType: "oauth" | "api_key"): void {
+	private showLoginProviderSelector(authType: "oauth" | "api_key"): Promise<AuthenticationResult> {
 		const providerOptions = this.getLoginProviderOptions(authType);
 		if (providerOptions.length === 0) {
 			this.showStatus(
 				authType === "oauth" ? "No subscription providers available." : "No API key providers available.",
 			);
-			return;
+			return Promise.resolve({ status: "failed" });
 		}
 
-		this.showSelector((done) => {
-			const selector = new OAuthSelectorComponent(
-				"login",
-				this.session.modelRegistry.authStorage,
-				providerOptions,
-				async (providerId: string) => {
-					done();
+		return new Promise((resolve) => {
+			this.showSelector((done) => {
+				const selector = new OAuthSelectorComponent(
+					"login",
+					this.session.modelRegistry.authStorage,
+					providerOptions,
+					async (providerId: string) => {
+						done();
 
-					const providerOption = providerOptions.find((provider) => provider.id === providerId);
-					if (!providerOption) {
-						return;
-					}
+						const providerOption = providerOptions.find((provider) => provider.id === providerId);
+						if (!providerOption) {
+							resolve({ status: "failed" });
+							return;
+						}
 
-					if (providerOption.authType === "oauth") {
-						await this.showLoginDialog(providerOption.id, providerOption.name);
-					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
-						this.showBedrockSetupDialog(providerOption.id, providerOption.name);
-					} else {
-						await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);
-					}
-				},
-				() => {
-					done();
-					this.showLoginAuthTypeSelector();
-				},
-				(providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
-			);
-			return { component: selector, focus: selector };
+						if (providerOption.authType === "oauth") {
+							resolve(await this.showLoginDialog(providerOption.id, providerOption.name));
+						} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
+							resolve(await this.showBedrockSetupDialog(providerOption.id, providerOption.name));
+						} else {
+							resolve(await this.showApiKeyLoginDialog(providerOption.id, providerOption.name));
+						}
+					},
+					() => {
+						done();
+						void this.showLoginAuthTypeSelector().then(resolve);
+					},
+					(providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
+				);
+				return { component: selector, focus: selector };
+			});
 		});
 	}
 
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
 		if (mode === "login") {
-			this.showLoginAuthTypeSelector();
+			const authResult = await this.showLoginAuthTypeSelector();
+			if (authResult.status === "success") {
+				await this.promptForModelSelection(authResult.providerId);
+			}
 			return;
 		}
 
@@ -5066,85 +5142,55 @@ export class InteractiveMode {
 		providerId: string,
 		providerName: string,
 		authType: "oauth" | "api_key",
-		previousModel: Model<any> | undefined,
-	): Promise<void> {
+	): Promise<AuthenticationResult> {
 		this.session.modelRegistry.refresh();
 
 		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
-
-		let selectedModel: Model<any> | undefined;
-		let selectionError: string | undefined;
-		if (isUnknownModel(previousModel)) {
-			const availableModels = this.session.modelRegistry.getAvailable();
-			const providerModels = availableModels.filter((model) => model.provider === providerId);
-			if (!hasDefaultModelProvider(providerId)) {
-				selectionError = `${actionLabel}, but no default model is configured for provider "${providerId}". Use /model to select a model.`;
-			} else if (providerModels.length === 0) {
-				selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
-			} else {
-				const defaultModelId = defaultModelPerProvider[providerId];
-				selectedModel = providerModels.find((model) => model.id === defaultModelId);
-				if (!selectedModel) {
-					selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
-				} else {
-					try {
-						await this.session.setModel(selectedModel);
-					} catch (error: unknown) {
-						selectedModel = undefined;
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						selectionError = `${actionLabel}, but selecting its default model failed: ${errorMessage}. Use /model to select a model.`;
-					}
-				}
-			}
-		}
-
 		await this.updateAvailableProviderCount();
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
-		if (selectedModel) {
-			this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
-			void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
-			this.checkDaxnutsEasterEgg(selectedModel);
-		} else {
-			this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
-			if (selectionError) {
-				this.showError(selectionError);
-			} else {
-				void this.maybeWarnAboutAnthropicSubscriptionAuth();
-			}
-		}
-	}
-
-	private showBedrockSetupDialog(providerId: string, providerName: string): void {
-		const restoreEditor = () => {
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.ui.setFocus(this.editor);
-			this.ui.requestRender();
-		};
-
-		const dialog = new LoginDialogComponent(
-			this.ui,
+		this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
+		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		return {
+			status: "success",
 			providerId,
-			() => restoreEditor(),
 			providerName,
-			"Amazon Bedrock setup",
-		);
-		dialog.showInfo([
-			theme.fg("text", "Amazon Bedrock uses AWS credentials instead of a single API key."),
-			theme.fg("text", "Configure an AWS profile, IAM keys, bearer token, or role-based credentials."),
-			theme.fg("muted", "See:"),
-			theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
-		]);
-
-		this.editorContainer.clear();
-		this.editorContainer.addChild(dialog);
-		this.ui.setFocus(dialog);
-		this.ui.requestRender();
+			authType,
+		};
 	}
 
-	private async showPrimeInferenceLoginDialog(): Promise<void> {
-		const previousModel = this.session.model;
+	private showBedrockSetupDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
+		return new Promise((resolve) => {
+			const restoreEditor = () => {
+				this.editorContainer.clear();
+				this.editorContainer.addChild(this.editor);
+				this.ui.setFocus(this.editor);
+				this.ui.requestRender();
+				resolve({ status: "failed" });
+			};
+
+			const dialog = new LoginDialogComponent(
+				this.ui,
+				providerId,
+				() => restoreEditor(),
+				providerName,
+				"Amazon Bedrock setup",
+			);
+			dialog.showInfo([
+				theme.fg("text", "Amazon Bedrock uses AWS credentials instead of a single API key."),
+				theme.fg("text", "Configure an AWS profile, IAM keys, bearer token, or role-based credentials."),
+				theme.fg("muted", "See:"),
+				theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
+			]);
+
+			this.editorContainer.clear();
+			this.editorContainer.addChild(dialog);
+			this.ui.setFocus(dialog);
+			this.ui.requestRender();
+		});
+	}
+
+	private async showPrimeInferenceLoginDialog(): Promise<AuthenticationResult> {
 		const dialog = new LoginDialogComponent(
 			this.ui,
 			PRIME_INFERENCE_PROVIDER_ID,
@@ -5180,7 +5226,7 @@ export class InteractiveMode {
 
 			if (dialog.signal.aborted) {
 				restoreEditor();
-				return;
+				return { status: "cancelled" };
 			}
 
 			this.session.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, {
@@ -5189,24 +5235,23 @@ export class InteractiveMode {
 			});
 
 			restoreEditor();
-			await this.completeProviderAuthentication(
+			return await this.completeProviderAuthentication(
 				PRIME_INFERENCE_PROVIDER_ID,
 				PRIME_INFERENCE_PROVIDER_NAME,
 				"api_key",
-				previousModel,
 			);
 		} catch (error: unknown) {
 			restoreEditor();
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to login to ${PRIME_INFERENCE_PROVIDER_NAME}: ${errorMsg}`);
+				return { status: "failed" };
 			}
+			return { status: "cancelled" };
 		}
 	}
 
-	private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<void> {
-		const previousModel = this.session.model;
-
+	private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
 		const dialog = new LoginDialogComponent(
 			this.ui,
 			providerId,
@@ -5237,13 +5282,15 @@ export class InteractiveMode {
 			this.session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
 
 			restoreEditor();
-			await this.completeProviderAuthentication(providerId, providerName, "api_key", previousModel);
+			return await this.completeProviderAuthentication(providerId, providerName, "api_key");
 		} catch (error: unknown) {
 			restoreEditor();
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
+				return { status: "failed" };
 			}
+			return { status: "cancelled" };
 		}
 	}
 
@@ -5275,11 +5322,10 @@ export class InteractiveMode {
 		});
 	}
 
-	private async showLoginDialog(providerId: string, providerName: string): Promise<void> {
+	private async showLoginDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
 		const providerInfo = this.session.modelRegistry.authStorage
 			.getOAuthProviders()
 			.find((provider) => provider.id === providerId);
-		const previousModel = this.session.model;
 
 		// Providers that use callback servers (can paste redirect URL)
 		const usesCallbackServer = providerInfo?.usesCallbackServer ?? false;
@@ -5361,13 +5407,15 @@ export class InteractiveMode {
 
 			// Success
 			restoreEditor();
-			await this.completeProviderAuthentication(providerId, providerName, "oauth", previousModel);
+			return await this.completeProviderAuthentication(providerId, providerName, "oauth");
 		} catch (error: unknown) {
 			restoreEditor();
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
+				return { status: "failed" };
 			}
+			return { status: "cancelled" };
 		}
 	}
 
