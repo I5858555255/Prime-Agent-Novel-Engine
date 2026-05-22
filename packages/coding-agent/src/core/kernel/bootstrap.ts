@@ -8,10 +8,26 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-const BOOTSTRAP_SCHEMA = 2;
+const BOOTSTRAP_SCHEMA = 3;
 const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
+const DEFAULT_RLM_EXTRA_PACKAGES = [
+	{ uvArg: "requests", importName: "requests", promptLabel: "requests" },
+	{ uvArg: "httpx", importName: "httpx", promptLabel: "httpx" },
+	{ uvArg: "pyyaml", importName: "yaml", promptLabel: "yaml (PyYAML)" },
+	{ uvArg: "tomli", importName: "tomli", promptLabel: "tomli" },
+	{ uvArg: "python-dotenv", importName: "dotenv", promptLabel: "dotenv (python-dotenv)" },
+	{ uvArg: "pandas", importName: "pandas", promptLabel: "pandas" },
+	{ uvArg: "numpy", importName: "numpy", promptLabel: "numpy" },
+	{ uvArg: "scipy", importName: "scipy", promptLabel: "scipy" },
+	{ uvArg: "beautifulsoup4", importName: "bs4", promptLabel: "bs4 (Beautiful Soup)" },
+	{ uvArg: "lxml", importName: "lxml", promptLabel: "lxml" },
+	{ uvArg: "pydantic", importName: "pydantic", promptLabel: "pydantic" },
+];
+export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.uvArg);
+export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
+export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 const RUNTIME_READY_CHECK =
 	"import rlm; assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')";
@@ -26,6 +42,7 @@ interface BootstrapVersion {
 	schema: number;
 	ipykernel?: string;
 	runtime?: string;
+	extraUvArgs?: string[];
 }
 
 function errorMessage(error: unknown): string {
@@ -148,6 +165,16 @@ async function hasPrimeAgentRuntime(python: string): Promise<boolean> {
 	}
 }
 
+async function missingRlmExtraImportLabels(python: string): Promise<string[]> {
+	const missing: string[] = [];
+	for (const pkg of DEFAULT_RLM_EXTRA_PACKAGES) {
+		if (!(await pythonImports(python, pkg.importName))) {
+			missing.push(pkg.promptLabel);
+		}
+	}
+	return missing;
+}
+
 function bootstrapLockDir(venv: string): string {
 	return path.join(path.dirname(venv), `${path.basename(venv)}${BOOTSTRAP_LOCK_NAME}`);
 }
@@ -266,21 +293,35 @@ async function readBootstrapVersion(venv: string): Promise<BootstrapVersion | nu
 		const raw = await readFile(path.join(venv, BOOTSTRAP_VERSION_FILE), "utf8");
 		const parsed: unknown = JSON.parse(raw);
 		if (!isRecord(parsed) || typeof parsed.schema !== "number") return null;
+		const extraUvArgs =
+			Array.isArray(parsed.extraUvArgs) &&
+			parsed.extraUvArgs.every((v: unknown): v is string => typeof v === "string")
+				? (parsed.extraUvArgs as string[])
+				: undefined;
 		return {
 			schema: parsed.schema,
 			ipykernel: typeof parsed.ipykernel === "string" ? parsed.ipykernel : undefined,
 			runtime: typeof parsed.runtime === "string" ? parsed.runtime : undefined,
+			extraUvArgs,
 		};
 	} catch {
 		return null;
 	}
 }
 
+function extraUvArgsMatch(a: string[] | undefined, b: string[] | undefined): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	if (a.length !== b.length) return false;
+	return a.every((v, i) => v === b[i]);
+}
+
 function bootstrapVersionCurrent(version: BootstrapVersion | null): boolean {
 	return (
 		version?.schema === BOOTSTRAP_SCHEMA &&
 		version.ipykernel === IPYKERNEL_REQUIREMENT &&
-		version.runtime === RUNTIME_REQUIREMENT
+		version.runtime === RUNTIME_REQUIREMENT &&
+		extraUvArgsMatch(version.extraUvArgs, DEFAULT_RLM_EXTRA_UV_ARGS)
 	);
 }
 
@@ -289,6 +330,7 @@ async function writeBootstrapVersion(venv: string): Promise<void> {
 		schema: BOOTSTRAP_SCHEMA,
 		ipykernel: IPYKERNEL_REQUIREMENT,
 		runtime: RUNTIME_REQUIREMENT,
+		extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 	};
 	await writeFile(path.join(venv, BOOTSTRAP_VERSION_FILE), `${JSON.stringify(version)}\n`, "utf8");
 }
@@ -318,7 +360,15 @@ async function bootstrapVenv(venv: string): Promise<void> {
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
-	await run(uv, ["pip", "install", "--python", python, IPYKERNEL_REQUIREMENT, runtimeRequirement]);
+	await run(uv, [
+		"pip",
+		"install",
+		"--python",
+		python,
+		IPYKERNEL_REQUIREMENT,
+		runtimeRequirement,
+		...DEFAULT_RLM_EXTRA_UV_ARGS,
+	]);
 	await writeBootstrapVersion(venv);
 }
 
@@ -333,8 +383,8 @@ async function kernelReady(python: string, venv: string): Promise<boolean> {
 function formatBootstrapFailure(error: unknown): Error {
 	return new Error(
 		`Failed to set up the Python kernel runtime. ${errorMessage(error)}\n` +
-			"First-time setup needs internet to install uv, Python, ipykernel, and prime-agent-runtime; once set up, prime-agent runs offline. " +
-			"Set PRIME_AGENT_KERNEL_PYTHON to a Python with ipykernel and a current prime-agent-runtime installed to skip auto-bootstrap.",
+			"First-time setup needs internet to install uv, Python, ipykernel, prime-agent-runtime, and default Python packages; once set up, prime-agent runs offline. " +
+			"Set PRIME_AGENT_KERNEL_PYTHON to a Python with ipykernel, a current prime-agent-runtime, and default Python packages installed to skip auto-bootstrap.",
 	);
 }
 
@@ -345,6 +395,12 @@ async function ensureKernelPythonUncached(): Promise<string> {
 		const missing: string[] = [];
 		if (!(await hasIpykernel(python))) missing.push("ipykernel");
 		if (!(await hasPrimeAgentRuntime(python))) missing.push("a current prime-agent-runtime with callable rlm.run");
+		if (missing.length === 0) {
+			const missingExtraImports = await missingRlmExtraImportLabels(python);
+			if (missingExtraImports.length > 0) {
+				missing.push(`default Python packages (${missingExtraImports.join(", ")})`);
+			}
+		}
 		if (missing.length === 0) return python;
 		throw new Error(`PRIME_AGENT_KERNEL_PYTHON points to a Python missing ${missing.join(" and ")}: ${python}`);
 	}
