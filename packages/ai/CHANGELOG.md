@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed OAuth callback pages to use Prime Intellect branding on a black background.
+- Fixed OAuth callback pages to use Prime butterfly branding on a black background.
 
 ## [0.0.4] - 2026-05-21
 

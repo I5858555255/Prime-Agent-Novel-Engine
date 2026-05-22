@@ -23,7 +23,6 @@ function renderPage(options: { title: string; heading: string; message: string; 
   <title>${title}</title>
   <style>
     :root {
-      --accent: #6409d0;
       --text: #ffffff;
       --text-dim: #a1a1aa;
       --page-bg: #000000;
@@ -52,30 +51,17 @@ function renderPage(options: { title: string; heading: string; message: string; 
       align-items: center;
       justify-content: center;
     }
-    .brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 28px;
-      color: var(--text);
-      font-size: 15px;
-      font-weight: 650;
-      line-height: 1;
-    }
     .logo {
-      width: 48px;
-      height: 48px;
+      width: 72px;
+      height: 72px;
       display: block;
+      margin-bottom: 28px;
       color: var(--text);
     }
     .logo svg {
       width: 100%;
       height: 100%;
       display: block;
-    }
-    .brand-name {
-      padding-left: 12px;
-      border-left: 1px solid var(--accent);
     }
     h1 {
       margin: 0 0 10px;
@@ -102,10 +88,7 @@ function renderPage(options: { title: string; heading: string; message: string; 
 </head>
 <body>
   <main>
-    <div class="brand" aria-label="Prime Intellect">
-      <div class="logo">${PRIME_BUTTERFLY_SVG}</div>
-      <div class="brand-name">Prime Intellect</div>
-    </div>
+    <div class="logo" aria-label="Prime Intellect">${PRIME_BUTTERFLY_SVG}</div>
     <h1>${heading}</h1>
     <p>${message}</p>
     ${details ? `<div class="details">${details}</div>` : ""}
