@@ -23,6 +23,10 @@ describe("terminal color utilities", () => {
 			kind: "foreground",
 			rgb: { r: 255, g: 128, b: 0 },
 		});
+		assert.deepStrictEqual(parseOscColorResponse("\x1b]10;rgb:fff/800/000\x1b\\"), {
+			kind: "foreground",
+			rgb: { r: 255, g: 128, b: 0 },
+		});
 		assert.deepStrictEqual(parseOscColorResponse("\x1b]11;rgb:00/5f/87\x07"), {
 			kind: "background",
 			rgb: { r: 0, g: 95, b: 135 },

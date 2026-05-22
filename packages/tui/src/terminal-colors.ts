@@ -42,7 +42,8 @@ function normalizeHexChannel(value: string): number | undefined {
 	if (value.length <= 2) {
 		return parsed;
 	}
-	return Math.round((parsed / 0xffff) * 255);
+	const max = 16 ** value.length - 1;
+	return Math.round((parsed / max) * 255);
 }
 
 function parseRgbPayload(payload: string): Rgb | undefined {
