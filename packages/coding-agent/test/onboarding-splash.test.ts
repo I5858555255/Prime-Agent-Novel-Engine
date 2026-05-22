@@ -7,7 +7,7 @@ import {
 	OnboardingSplashComponent,
 } from "../src/modes/interactive/components/onboarding-splash.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
-import { PRIME_LOGO_MEDIUM } from "../src/themes/prime-logo.js";
+import { PRIME_BUTTERFLY_LOGO } from "../src/themes/prime-logo.js";
 
 describe("OnboardingSplashComponent", () => {
 	beforeAll(() => {
@@ -18,7 +18,7 @@ describe("OnboardingSplashComponent", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("renders the centered welcome flow with the medium butterfly logo and login choices", () => {
+	it("renders the centered welcome flow with the butterfly logo and login choices", () => {
 		const component = new OnboardingSplashComponent(
 			() => {},
 			() => {},
@@ -32,7 +32,7 @@ describe("OnboardingSplashComponent", () => {
 		expect(output).toContain("Prime Intellect");
 		expect(output).toContain("Subscription");
 		expect(output).toContain("API key");
-		expect(output).toContain(PRIME_LOGO_MEDIUM.split("\n")[0].trim());
+		expect(output).toContain(PRIME_BUTTERFLY_LOGO.split("\n")[0].trim());
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(100);
 		}
@@ -44,8 +44,8 @@ describe("OnboardingSplashComponent", () => {
 			() => {},
 		);
 		const rendered = stripAnsi(component.render(100).join("\n")).split("\n");
-		const logoStart = rendered.findIndex((line) => line.includes("▄▄▄▄"));
-		const originalLogoLines = PRIME_LOGO_MEDIUM.split("\n");
+		const originalLogoLines = PRIME_BUTTERFLY_LOGO.split("\n");
+		const logoStart = rendered.findIndex((line) => line.includes(originalLogoLines[0]?.trim() ?? ""));
 		const firstLogoIndent = rendered[logoStart]?.search(/\S/) ?? -1;
 		const secondLogoIndent = rendered[logoStart + 1]?.search(/\S/) ?? -1;
 		const originalFirstIndent = originalLogoLines[0]?.search(/\S/) ?? -1;

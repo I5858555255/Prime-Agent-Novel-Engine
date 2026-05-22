@@ -1,5 +1,5 @@
 import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { PRIME_LOGO_MEDIUM } from "../../../themes/prime-logo.js";
+import { PRIME_BUTTERFLY_LOGO } from "../../../themes/prime-logo.js";
 import { theme } from "../theme/theme.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
@@ -21,7 +21,7 @@ const ONBOARDING_OPTIONS: readonly OnboardingOption[] = [
 	{ id: "api_key", label: "API key", description: "paste a provider key" },
 ];
 
-const LOGO_LINES = PRIME_LOGO_MEDIUM.split("\n");
+const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 const OPTION_LABEL_WIDTH = ONBOARDING_OPTIONS.reduce((max, option) => Math.max(max, visibleWidth(option.label)), 0);
 

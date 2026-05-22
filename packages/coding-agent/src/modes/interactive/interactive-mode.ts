@@ -92,7 +92,7 @@ import { type SessionContext, SessionManager } from "../../core/session-manager.
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
-import { PRIME_LOGO_MEDIUM } from "../../themes/prime-logo.js";
+import { PRIME_BUTTERFLY_LOGO } from "../../themes/prime-logo.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
@@ -227,7 +227,7 @@ export function truncatePathMiddle(value: string, width: number): string {
 }
 
 class BrandSplashHeader implements Component {
-	private readonly logoRaw = PRIME_LOGO_MEDIUM.split("\n");
+	private readonly logoRaw = PRIME_BUTTERFLY_LOGO.split("\n");
 	private readonly logoCanvasWidth = this.logoRaw.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 	private readonly gutter = 4;
 	private readonly labelWidth = 9;
