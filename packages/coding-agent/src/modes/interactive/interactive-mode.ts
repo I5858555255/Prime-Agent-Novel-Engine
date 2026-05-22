@@ -5021,24 +5021,40 @@ export class InteractiveMode {
 
 	private showLoginAuthTypeSelector(): Promise<AuthenticationResult> {
 		return new Promise((resolve) => {
-			this.showSelector((done) => {
-				const selector = new OnboardingSplashComponent(
-					(choice: OnboardingAuthChoice) => {
-						done();
-						if (choice === "prime") {
-							void this.showPrimeInferenceLoginDialog().then(resolve);
-							return;
-						}
-						const authType = choice === "subscription" ? "oauth" : "api_key";
-						void this.showLoginProviderSelector(authType).then(resolve);
-					},
-					() => {
-						done();
-						this.ui.requestRender();
-						resolve({ status: "cancelled" });
-					},
-				);
-				return { component: selector, focus: selector };
+			let settled = false;
+			let handle: OverlayHandle | undefined;
+			const settle = (result: AuthenticationResult) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				resolve(result);
+			};
+			const close = () => {
+				handle?.hide();
+				this.ui.requestRender();
+			};
+			const selector = new OnboardingSplashComponent(
+				(choice: OnboardingAuthChoice) => {
+					close();
+					if (choice === "prime") {
+						void this.showPrimeInferenceLoginDialog().then(settle);
+						return;
+					}
+					const authType = choice === "subscription" ? "oauth" : "api_key";
+					void this.showLoginProviderSelector(authType).then(settle);
+				},
+				() => {
+					close();
+					settle({ status: "cancelled" });
+				},
+				{ getRows: () => this.ui.terminal.rows },
+			);
+			handle = this.ui.showOverlay(selector, {
+				width: "100%",
+				maxHeight: "100%",
+				row: 0,
+				col: 0,
 			});
 		});
 	}

@@ -11,13 +11,19 @@ interface OnboardingOption {
 	description: string;
 }
 
+interface OnboardingSplashOptions {
+	getRows?: () => number;
+}
+
 const ONBOARDING_OPTIONS: readonly OnboardingOption[] = [
-	{ id: "prime", label: "Prime", description: "Prime Inference" },
+	{ id: "prime", label: "Prime Intellect", description: "managed inference login" },
 	{ id: "subscription", label: "Subscription", description: "browser sign-in" },
 	{ id: "api_key", label: "API key", description: "paste a provider key" },
 ];
 
 const LOGO_LINES = PRIME_LOGO_MEDIUM.split("\n");
+const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+const OPTION_LABEL_WIDTH = ONBOARDING_OPTIONS.reduce((max, option) => Math.max(max, visibleWidth(option.label)), 0);
 
 export class OnboardingSplashComponent implements Component {
 	private selectedIndex = 0;
@@ -25,6 +31,7 @@ export class OnboardingSplashComponent implements Component {
 	constructor(
 		private readonly onSelect: (choice: OnboardingAuthChoice) => void,
 		private readonly onCancel: () => void,
+		private readonly options: OnboardingSplashOptions = {},
 	) {}
 
 	invalidate(): void {
@@ -33,23 +40,25 @@ export class OnboardingSplashComponent implements Component {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const lines: string[] = [];
+		const contentLines: string[] = [];
 
-		lines.push("");
-		for (const line of LOGO_LINES) {
-			lines.push(this.center(theme.fg("text", line), safeWidth));
+		contentLines.push("");
+		for (const line of this.renderLogoLines(safeWidth)) {
+			contentLines.push(line);
 		}
-		lines.push("");
-		lines.push(this.center(theme.bold(theme.fg("accent", "Prime Agent")), safeWidth));
-		lines.push(this.center(theme.fg("muted", "Sign in to choose a model and start using the agent."), safeWidth));
-		lines.push("");
+		contentLines.push("");
+		contentLines.push(this.center(theme.bold(theme.fg("accent", "Prime Agent")), safeWidth));
+		contentLines.push(
+			this.center(theme.fg("muted", "Sign in to choose a model and start using the agent."), safeWidth),
+		);
+		contentLines.push("");
 
-		for (const [index, option] of ONBOARDING_OPTIONS.entries()) {
-			lines.push(this.center(this.formatOption(option, index === this.selectedIndex), safeWidth));
+		for (const optionLine of this.renderOptionLines(safeWidth)) {
+			contentLines.push(optionLine);
 		}
 
-		lines.push("");
-		lines.push(
+		contentLines.push("");
+		contentLines.push(
 			this.center(
 				rawKeyHint("↑↓", "navigate") +
 					"  " +
@@ -60,7 +69,7 @@ export class OnboardingSplashComponent implements Component {
 			),
 		);
 
-		return lines;
+		return this.withVerticalSpace(contentLines, safeWidth);
 	}
 
 	handleInput(keyData: string): void {
@@ -87,16 +96,65 @@ export class OnboardingSplashComponent implements Component {
 
 	private formatOption(option: OnboardingOption, selected: boolean): string {
 		const marker = selected ? "→ " : "  ";
-		const label = option.label.padEnd(14);
+		const label = option.label.padEnd(OPTION_LABEL_WIDTH);
 		if (selected) {
 			return theme.fg("accent", marker + label) + theme.fg("text", option.description);
 		}
 		return theme.fg("muted", marker + label) + theme.fg("muted", option.description);
 	}
 
+	private renderLogoLines(width: number): string[] {
+		const logoWidth = Math.min(LOGO_WIDTH, width);
+		const left = Math.max(0, Math.floor((width - logoWidth) / 2));
+		return LOGO_LINES.map((line) => {
+			const paddedLine = line + " ".repeat(Math.max(0, LOGO_WIDTH - visibleWidth(line)));
+			const content = theme.fg("text", truncateToWidth(paddedLine, logoWidth, ""));
+			return this.place(content, width, left);
+		});
+	}
+
+	private renderOptionLines(width: number): string[] {
+		const optionLines = ONBOARDING_OPTIONS.map((option, index) =>
+			this.formatOption(option, index === this.selectedIndex),
+		);
+		const optionWidth = Math.min(
+			width,
+			optionLines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0),
+		);
+		const left = Math.max(0, Math.floor((width - optionWidth) / 2));
+		return optionLines.map((line) => this.place(line, width, left));
+	}
+
 	private center(text: string, width: number): string {
 		const content = truncateToWidth(text, width, "");
 		const padding = Math.max(0, Math.floor((width - visibleWidth(content)) / 2));
-		return " ".repeat(padding) + content;
+		return this.place(content, width, padding);
+	}
+
+	private place(text: string, width: number, left: number): string {
+		const safeLeft = Math.max(0, Math.min(left, width));
+		const contentWidth = Math.max(0, width - safeLeft);
+		const content = truncateToWidth(text, contentWidth, "");
+		const right = Math.max(0, width - safeLeft - visibleWidth(content));
+		return " ".repeat(safeLeft) + content + " ".repeat(right);
+	}
+
+	private blank(width: number): string {
+		return " ".repeat(width);
+	}
+
+	private withVerticalSpace(contentLines: string[], width: number): string[] {
+		const requestedRows = this.options.getRows?.();
+		const targetRows =
+			requestedRows && Number.isFinite(requestedRows)
+				? Math.max(contentLines.length, Math.floor(requestedRows))
+				: contentLines.length;
+		const topPadding = Math.max(0, Math.floor((targetRows - contentLines.length) / 2));
+		const bottomPadding = Math.max(0, targetRows - contentLines.length - topPadding);
+		return [
+			...Array.from({ length: topPadding }, () => this.blank(width)),
+			...contentLines.map((line) => this.place(line, width, 0)),
+			...Array.from({ length: bottomPadding }, () => this.blank(width)),
+		];
 	}
 }

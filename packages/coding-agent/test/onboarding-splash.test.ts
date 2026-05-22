@@ -22,18 +22,45 @@ describe("OnboardingSplashComponent", () => {
 		const component = new OnboardingSplashComponent(
 			() => {},
 			() => {},
+			{ getRows: () => 36 },
 		);
 		const lines = component.render(100);
 		const output = stripAnsi(lines.join("\n"));
 
+		expect(lines).toHaveLength(36);
 		expect(output).toContain("Prime Agent");
-		expect(output).toContain("Prime");
+		expect(output).toContain("Prime Intellect");
 		expect(output).toContain("Subscription");
 		expect(output).toContain("API key");
 		expect(output).toContain(PRIME_LOGO_MEDIUM.split("\n")[0].trim());
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(100);
 		}
+	});
+
+	it("preserves logo canvas alignment and aligns auth choices as a text block", () => {
+		const component = new OnboardingSplashComponent(
+			() => {},
+			() => {},
+		);
+		const rendered = stripAnsi(component.render(100).join("\n")).split("\n");
+		const logoStart = rendered.findIndex((line) => line.includes("▄▄▄▄"));
+		const originalLogoLines = PRIME_LOGO_MEDIUM.split("\n");
+		const firstLogoIndent = rendered[logoStart]?.search(/\S/) ?? -1;
+		const secondLogoIndent = rendered[logoStart + 1]?.search(/\S/) ?? -1;
+		const originalFirstIndent = originalLogoLines[0]?.search(/\S/) ?? -1;
+		const originalSecondIndent = originalLogoLines[1]?.search(/\S/) ?? -1;
+
+		expect(firstLogoIndent - secondLogoIndent).toBe(originalFirstIndent - originalSecondIndent);
+
+		const primeLine = rendered.find((line) => line.includes("Prime Intellect")) ?? "";
+		const subscriptionLine = rendered.find((line) => line.includes("Subscription")) ?? "";
+		const apiKeyLine = rendered.find((line) => line.includes("API key")) ?? "";
+
+		expect(primeLine.indexOf("Prime Intellect")).toBe(subscriptionLine.indexOf("Subscription"));
+		expect(subscriptionLine.indexOf("Subscription")).toBe(apiKeyLine.indexOf("API key"));
+		expect(primeLine.indexOf("managed inference login")).toBe(subscriptionLine.indexOf("browser sign-in"));
+		expect(subscriptionLine.indexOf("browser sign-in")).toBe(apiKeyLine.indexOf("paste a provider key"));
 	});
 
 	it("selects the highlighted login option", () => {
