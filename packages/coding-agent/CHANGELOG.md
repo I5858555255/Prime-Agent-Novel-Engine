@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed update notifications and package docs to point at `prime-agent update` and use compact one-line alerts.
+
 ## [0.0.2] - 2026-05-20
 
 ### Added
