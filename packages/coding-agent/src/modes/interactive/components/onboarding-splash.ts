@@ -24,7 +24,7 @@ const ONBOARDING_OPTIONS: readonly OnboardingOption[] = [
 const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 const OPTION_LABEL_WIDTH = ONBOARDING_OPTIONS.reduce((max, option) => Math.max(max, visibleWidth(option.label)), 0);
-const OPTION_COLUMN_GAP = "  ";
+const OPTION_COLUMN_GAP = "    ";
 
 export class OnboardingSplashComponent implements Component {
 	private selectedIndex = 0;
@@ -48,14 +48,17 @@ export class OnboardingSplashComponent implements Component {
 			contentLines.push(line);
 		}
 		contentLines.push("");
-		contentLines.push(this.center(theme.bold(theme.fg("text", "Welcome to Prime Agent")), safeWidth));
+		contentLines.push("");
+		contentLines.push(this.center(this.formatTitle(), safeWidth));
 		contentLines.push(this.center(theme.fg("muted", "Let's connect your account and choose a model."), safeWidth));
+		contentLines.push("");
 		contentLines.push("");
 
 		for (const optionLine of this.renderOptionLines(safeWidth)) {
 			contentLines.push(optionLine);
 		}
 
+		contentLines.push("");
 		contentLines.push("");
 		contentLines.push(
 			this.center(
@@ -98,10 +101,14 @@ export class OnboardingSplashComponent implements Component {
 		const label = option.label.padEnd(OPTION_LABEL_WIDTH) + OPTION_COLUMN_GAP;
 		if (selected) {
 			return (
-				theme.fg("warning", marker) + theme.bold(theme.fg("text", label)) + theme.fg("muted", option.description)
+				theme.fg("accent", marker) + theme.bold(theme.fg("text", label)) + theme.fg("muted", option.description)
 			);
 		}
 		return theme.fg("dim", marker) + theme.fg("text", label) + theme.fg("muted", option.description);
+	}
+
+	private formatTitle(): string {
+		return theme.bold(theme.fg("text", "Welcome to ") + theme.fg("accent", "Prime") + theme.fg("text", " Agent"));
 	}
 
 	private renderLogoLines(width: number): string[] {
