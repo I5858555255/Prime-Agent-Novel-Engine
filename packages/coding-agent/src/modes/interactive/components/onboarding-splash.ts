@@ -26,7 +26,7 @@ const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 const OPTION_LABEL_WIDTH = ONBOARDING_OPTIONS.reduce((max, option) => Math.max(max, visibleWidth(option.label)), 0);
 const OPTION_COLUMN_GAP = "    ";
-const SPLASH_BRAND_PURPLE = "#8f79c6";
+const SPLASH_BRAND_PURPLE = "#7f5bd5";
 
 function brandPurple(text: string): string {
 	return chalk.hex(SPLASH_BRAND_PURPLE)(text);
