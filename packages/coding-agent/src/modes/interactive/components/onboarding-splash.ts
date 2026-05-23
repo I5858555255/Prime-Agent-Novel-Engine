@@ -16,14 +16,15 @@ interface OnboardingSplashOptions {
 }
 
 const ONBOARDING_OPTIONS: readonly OnboardingOption[] = [
-	{ id: "prime", label: "Prime Intellect", description: "managed inference login" },
-	{ id: "subscription", label: "Subscription", description: "browser sign-in" },
-	{ id: "api_key", label: "API key", description: "paste a provider key" },
+	{ id: "prime", label: "Use Prime Intellect", description: "managed inference with your Prime account" },
+	{ id: "subscription", label: "Use a subscription", description: "sign in through a supported provider" },
+	{ id: "api_key", label: "Use an API key", description: "paste a provider key" },
 ];
 
 const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 const OPTION_LABEL_WIDTH = ONBOARDING_OPTIONS.reduce((max, option) => Math.max(max, visibleWidth(option.label)), 0);
+const OPTION_COLUMN_GAP = "  ";
 
 export class OnboardingSplashComponent implements Component {
 	private selectedIndex = 0;
@@ -47,10 +48,8 @@ export class OnboardingSplashComponent implements Component {
 			contentLines.push(line);
 		}
 		contentLines.push("");
-		contentLines.push(this.center(theme.bold(theme.fg("accent", "Prime Agent")), safeWidth));
-		contentLines.push(
-			this.center(theme.fg("muted", "Sign in to choose a model and start using the agent."), safeWidth),
-		);
+		contentLines.push(this.center(theme.bold(theme.fg("text", "Welcome to Prime Agent")), safeWidth));
+		contentLines.push(this.center(theme.fg("muted", "Let's connect your account and choose a model."), safeWidth));
 		contentLines.push("");
 
 		for (const optionLine of this.renderOptionLines(safeWidth)) {
@@ -96,11 +95,13 @@ export class OnboardingSplashComponent implements Component {
 
 	private formatOption(option: OnboardingOption, selected: boolean): string {
 		const marker = selected ? "→ " : "  ";
-		const label = option.label.padEnd(OPTION_LABEL_WIDTH);
+		const label = option.label.padEnd(OPTION_LABEL_WIDTH) + OPTION_COLUMN_GAP;
 		if (selected) {
-			return theme.fg("accent", marker + label) + theme.fg("text", option.description);
+			return (
+				theme.fg("warning", marker) + theme.bold(theme.fg("text", label)) + theme.fg("muted", option.description)
+			);
 		}
-		return theme.fg("muted", marker + label) + theme.fg("muted", option.description);
+		return theme.fg("dim", marker) + theme.fg("text", label) + theme.fg("muted", option.description);
 	}
 
 	private renderLogoLines(width: number): string[] {

@@ -28,10 +28,11 @@ describe("OnboardingSplashComponent", () => {
 		const output = stripAnsi(lines.join("\n"));
 
 		expect(lines).toHaveLength(36);
-		expect(output).toContain("Prime Agent");
-		expect(output).toContain("Prime Intellect");
-		expect(output).toContain("Subscription");
-		expect(output).toContain("API key");
+		expect(output).toContain("Welcome to Prime Agent");
+		expect(output).toContain("Let's connect your account and choose a model.");
+		expect(output).toContain("Use Prime Intellect");
+		expect(output).toContain("Use a subscription");
+		expect(output).toContain("Use an API key");
 		expect(output).toContain(PRIME_BUTTERFLY_LOGO.split("\n")[0].trim());
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(100);
@@ -53,14 +54,16 @@ describe("OnboardingSplashComponent", () => {
 
 		expect(firstLogoIndent - secondLogoIndent).toBe(originalFirstIndent - originalSecondIndent);
 
-		const primeLine = rendered.find((line) => line.includes("Prime Intellect")) ?? "";
-		const subscriptionLine = rendered.find((line) => line.includes("Subscription")) ?? "";
-		const apiKeyLine = rendered.find((line) => line.includes("API key")) ?? "";
+		const primeLine = rendered.find((line) => line.includes("Use Prime Intellect")) ?? "";
+		const subscriptionLine = rendered.find((line) => line.includes("Use a subscription")) ?? "";
+		const apiKeyLine = rendered.find((line) => line.includes("Use an API key")) ?? "";
 
-		expect(primeLine.indexOf("Prime Intellect")).toBe(subscriptionLine.indexOf("Subscription"));
-		expect(subscriptionLine.indexOf("Subscription")).toBe(apiKeyLine.indexOf("API key"));
-		expect(primeLine.indexOf("managed inference login")).toBe(subscriptionLine.indexOf("browser sign-in"));
-		expect(subscriptionLine.indexOf("browser sign-in")).toBe(apiKeyLine.indexOf("paste a provider key"));
+		expect(primeLine.indexOf("Use Prime Intellect")).toBe(subscriptionLine.indexOf("Use a subscription"));
+		expect(subscriptionLine.indexOf("Use a subscription")).toBe(apiKeyLine.indexOf("Use an API key"));
+		expect(primeLine).toContain("  managed inference with your Prime account");
+		expect(subscriptionLine.indexOf("sign in through a supported provider")).toBe(
+			apiKeyLine.indexOf("paste a provider key"),
+		);
 	});
 
 	it("selects the highlighted login option", () => {
