@@ -1,4 +1,5 @@
 import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import chalk from "chalk";
 import { PRIME_BUTTERFLY_LOGO } from "../../../themes/prime-logo.js";
 import { theme } from "../theme/theme.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
@@ -25,6 +26,11 @@ const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 const OPTION_LABEL_WIDTH = ONBOARDING_OPTIONS.reduce((max, option) => Math.max(max, visibleWidth(option.label)), 0);
 const OPTION_COLUMN_GAP = "    ";
+const SPLASH_BRAND_PURPLE = "#8f79c6";
+
+function brandPurple(text: string): string {
+	return chalk.hex(SPLASH_BRAND_PURPLE)(text);
+}
 
 export class OnboardingSplashComponent implements Component {
 	private selectedIndex = 0;
@@ -100,15 +106,13 @@ export class OnboardingSplashComponent implements Component {
 		const marker = selected ? "→ " : "  ";
 		const label = option.label.padEnd(OPTION_LABEL_WIDTH) + OPTION_COLUMN_GAP;
 		if (selected) {
-			return (
-				theme.fg("accent", marker) + theme.bold(theme.fg("text", label)) + theme.fg("muted", option.description)
-			);
+			return brandPurple(marker) + theme.bold(theme.fg("text", label)) + theme.fg("muted", option.description);
 		}
 		return theme.fg("dim", marker) + theme.fg("text", label) + theme.fg("muted", option.description);
 	}
 
 	private formatTitle(): string {
-		return theme.bold(theme.fg("text", "Welcome to ") + theme.fg("accent", "Prime") + theme.fg("text", " Agent"));
+		return theme.bold(theme.fg("text", "Welcome to Prime Agent"));
 	}
 
 	private renderLogoLines(width: number): string[] {
@@ -116,7 +120,7 @@ export class OnboardingSplashComponent implements Component {
 		const left = Math.max(0, Math.floor((width - logoWidth) / 2));
 		return LOGO_LINES.map((line) => {
 			const paddedLine = line + " ".repeat(Math.max(0, LOGO_WIDTH - visibleWidth(line)));
-			const content = theme.fg("text", truncateToWidth(paddedLine, logoWidth, ""));
+			const content = brandPurple(truncateToWidth(paddedLine, logoWidth, ""));
 			return this.place(content, width, left);
 		});
 	}
