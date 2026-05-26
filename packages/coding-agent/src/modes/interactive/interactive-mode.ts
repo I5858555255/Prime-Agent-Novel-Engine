@@ -106,6 +106,7 @@ import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
+import { CenteredOverlayComponent } from "./components/centered-overlay.js";
 import {
 	ChildAgentDetailComponent,
 	ChildAgentInspectorComponent,
@@ -4338,6 +4339,21 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private showFullPaneOverlay(component: Component, maxContentWidth = 80): OverlayHandle {
+		return this.ui.showOverlay(
+			new CenteredOverlayComponent(component, {
+				getRows: () => this.ui.terminal.rows,
+				maxContentWidth,
+			}),
+			{
+				width: "100%",
+				maxHeight: "100%",
+				row: 0,
+				col: 0,
+			},
+		);
+	}
+
 	private showSettingsSelector(): void {
 		this.showSelector((done) => {
 			const selector = new SettingsSelectorComponent(
@@ -5069,36 +5085,39 @@ export class InteractiveMode {
 		}
 
 		return new Promise((resolve) => {
-			this.showSelector((done) => {
-				const selector = new OAuthSelectorComponent(
-					"login",
-					this.session.modelRegistry.authStorage,
-					providerOptions,
-					async (providerId: string) => {
-						done();
+			let handle: OverlayHandle | undefined;
+			const close = () => {
+				handle?.hide();
+				this.ui.requestRender();
+			};
+			const selector = new OAuthSelectorComponent(
+				"login",
+				this.session.modelRegistry.authStorage,
+				providerOptions,
+				async (providerId: string) => {
+					close();
 
-						const providerOption = providerOptions.find((provider) => provider.id === providerId);
-						if (!providerOption) {
-							resolve({ status: "failed" });
-							return;
-						}
+					const providerOption = providerOptions.find((provider) => provider.id === providerId);
+					if (!providerOption) {
+						resolve({ status: "failed" });
+						return;
+					}
 
-						if (providerOption.authType === "oauth") {
-							resolve(await this.showLoginDialog(providerOption.id, providerOption.name));
-						} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
-							resolve(await this.showBedrockSetupDialog(providerOption.id, providerOption.name));
-						} else {
-							resolve(await this.showApiKeyLoginDialog(providerOption.id, providerOption.name));
-						}
-					},
-					() => {
-						done();
-						void this.showLoginAuthTypeSelector().then(resolve);
-					},
-					(providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
-				);
-				return { component: selector, focus: selector };
-			});
+					if (providerOption.authType === "oauth") {
+						resolve(await this.showLoginDialog(providerOption.id, providerOption.name));
+					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
+						resolve(await this.showBedrockSetupDialog(providerOption.id, providerOption.name));
+					} else {
+						resolve(await this.showApiKeyLoginDialog(providerOption.id, providerOption.name));
+					}
+				},
+				() => {
+					close();
+					void this.showLoginAuthTypeSelector().then(resolve);
+				},
+				(providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
+			);
+			handle = this.showFullPaneOverlay(selector, 78);
 		});
 	}
 
@@ -5177,10 +5196,9 @@ export class InteractiveMode {
 
 	private showBedrockSetupDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
 		return new Promise((resolve) => {
-			const restoreEditor = () => {
-				this.editorContainer.clear();
-				this.editorContainer.addChild(this.editor);
-				this.ui.setFocus(this.editor);
+			let handle: OverlayHandle | undefined;
+			const closeDialog = () => {
+				handle?.hide();
 				this.ui.requestRender();
 				resolve({ status: "failed" });
 			};
@@ -5188,7 +5206,7 @@ export class InteractiveMode {
 			const dialog = new LoginDialogComponent(
 				this.ui,
 				providerId,
-				() => restoreEditor(),
+				() => closeDialog(),
 				providerName,
 				"Amazon Bedrock setup",
 			);
@@ -5199,10 +5217,7 @@ export class InteractiveMode {
 				theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
 			]);
 
-			this.editorContainer.clear();
-			this.editorContainer.addChild(dialog);
-			this.ui.setFocus(dialog);
-			this.ui.requestRender();
+			handle = this.showFullPaneOverlay(dialog, 88);
 		});
 	}
 
@@ -5216,15 +5231,10 @@ export class InteractiveMode {
 			PRIME_INFERENCE_PROVIDER_NAME,
 		);
 
-		this.editorContainer.clear();
-		this.editorContainer.addChild(dialog);
-		this.ui.setFocus(dialog);
-		this.ui.requestRender();
+		const handle = this.showFullPaneOverlay(dialog, 88);
 
-		const restoreEditor = () => {
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.ui.setFocus(this.editor);
+		const closeDialog = () => {
+			handle.hide();
 			this.ui.requestRender();
 		};
 
@@ -5241,7 +5251,7 @@ export class InteractiveMode {
 			});
 
 			if (dialog.signal.aborted) {
-				restoreEditor();
+				closeDialog();
 				return { status: "cancelled" };
 			}
 
@@ -5250,14 +5260,14 @@ export class InteractiveMode {
 				key: result.apiKey,
 			});
 
-			restoreEditor();
+			closeDialog();
 			return await this.completeProviderAuthentication(
 				PRIME_INFERENCE_PROVIDER_ID,
 				PRIME_INFERENCE_PROVIDER_NAME,
 				"api_key",
 			);
 		} catch (error: unknown) {
-			restoreEditor();
+			closeDialog();
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to login to ${PRIME_INFERENCE_PROVIDER_NAME}: ${errorMsg}`);
@@ -5277,15 +5287,10 @@ export class InteractiveMode {
 			providerName,
 		);
 
-		this.editorContainer.clear();
-		this.editorContainer.addChild(dialog);
-		this.ui.setFocus(dialog);
-		this.ui.requestRender();
+		const handle = this.showFullPaneOverlay(dialog, 88);
 
-		const restoreEditor = () => {
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.ui.setFocus(this.editor);
+		const closeDialog = () => {
+			handle.hide();
 			this.ui.requestRender();
 		};
 
@@ -5297,10 +5302,10 @@ export class InteractiveMode {
 
 			this.session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
 
-			restoreEditor();
+			closeDialog();
 			return await this.completeProviderAuthentication(providerId, providerName, "api_key");
 		} catch (error: unknown) {
-			restoreEditor();
+			closeDialog();
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
@@ -5310,12 +5315,14 @@ export class InteractiveMode {
 		}
 	}
 
-	private showOAuthLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined> {
+	private showOAuthLoginSelect(dialogHandle: OverlayHandle, prompt: OAuthSelectPrompt): Promise<string | undefined> {
 		return new Promise((resolve) => {
+			dialogHandle.setHidden(true);
+			let selectorHandle: OverlayHandle | undefined;
 			const restoreDialog = () => {
-				this.editorContainer.clear();
-				this.editorContainer.addChild(dialog);
-				this.ui.setFocus(dialog);
+				selectorHandle?.hide();
+				dialogHandle.setHidden(false);
+				dialogHandle.focus();
 				this.ui.requestRender();
 			};
 			const labels = prompt.options.map((option) => option.label);
@@ -5331,10 +5338,7 @@ export class InteractiveMode {
 					resolve(undefined);
 				},
 			);
-			this.editorContainer.clear();
-			this.editorContainer.addChild(selector);
-			this.ui.setFocus(selector);
-			this.ui.requestRender();
+			selectorHandle = this.showFullPaneOverlay(selector, 76);
 		});
 	}
 
@@ -5356,11 +5360,7 @@ export class InteractiveMode {
 			providerName,
 		);
 
-		// Show dialog in editor container
-		this.editorContainer.clear();
-		this.editorContainer.addChild(dialog);
-		this.ui.setFocus(dialog);
-		this.ui.requestRender();
+		const dialogHandle = this.showFullPaneOverlay(dialog, 88);
 
 		// Promise for manual code input (racing with callback server)
 		let manualCodeResolve: ((code: string) => void) | undefined;
@@ -5370,11 +5370,9 @@ export class InteractiveMode {
 			manualCodeReject = reject;
 		});
 
-		// Restore editor helper
-		const restoreEditor = () => {
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.ui.setFocus(this.editor);
+		// Close dialog overlay helper.
+		const closeDialog = () => {
+			dialogHandle.hide();
 			this.ui.requestRender();
 		};
 
@@ -5414,7 +5412,7 @@ export class InteractiveMode {
 					dialog.showProgress(message);
 				},
 
-				onSelect: (prompt: OAuthSelectPrompt) => this.showOAuthLoginSelect(dialog, prompt),
+				onSelect: (prompt: OAuthSelectPrompt) => this.showOAuthLoginSelect(dialogHandle, prompt),
 
 				onManualCodeInput: () => manualCodePromise,
 
@@ -5422,10 +5420,10 @@ export class InteractiveMode {
 			});
 
 			// Success
-			restoreEditor();
+			closeDialog();
 			return await this.completeProviderAuthentication(providerId, providerName, "oauth");
 		} catch (error: unknown) {
-			restoreEditor();
+			closeDialog();
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
