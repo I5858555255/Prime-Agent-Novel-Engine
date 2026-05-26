@@ -4650,6 +4650,7 @@ export class InteractiveMode {
 		options?: { actions?: ReadonlyArray<ModelSelectorAction>; subtitle?: string },
 	): Promise<ModelSelectionResult> {
 		return new Promise((resolve) => {
+			let handle: OverlayHandle | undefined;
 			let settled = false;
 			const settle = (result: ModelSelectionResult) => {
 				if (settled) {
@@ -4658,48 +4659,48 @@ export class InteractiveMode {
 				settled = true;
 				resolve(result);
 			};
+			const close = () => {
+				handle?.hide();
+				this.ui.requestRender();
+			};
 
-			this.showSelector((done) => {
-				const selector = new ModelSelectorComponent(
-					this.ui,
-					this.session.model,
-					this.settingsManager,
-					this.session.modelRegistry,
-					this.session.scopedModels,
-					async (model) => {
-						try {
-							await this.session.setModel(model);
-							this.footer.invalidate();
-							this.updateEditorBorderColor();
-							done();
-							this.showStatus(`Model: ${model.id}`);
-							void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
-							this.checkDaxnutsEasterEgg(model);
-							settle({ status: "selected" });
-						} catch (error) {
-							done();
-							this.showError(error instanceof Error ? error.message : String(error));
-							settle({ status: "cancelled" });
-						}
-					},
-					() => {
-						done();
-						this.ui.requestRender();
+			const selector = new ModelSelectorComponent(
+				this.ui,
+				this.session.model,
+				this.settingsManager,
+				this.session.modelRegistry,
+				this.session.scopedModels,
+				async (model) => {
+					try {
+						await this.session.setModel(model);
+						this.footer.invalidate();
+						this.updateEditorBorderColor();
+						close();
+						this.showStatus(`Model: ${model.id}`);
+						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+						this.checkDaxnutsEasterEgg(model);
+						settle({ status: "selected" });
+					} catch (error) {
+						close();
+						this.showError(error instanceof Error ? error.message : String(error));
 						settle({ status: "cancelled" });
+					}
+				},
+				() => {
+					close();
+					settle({ status: "cancelled" });
+				},
+				initialSearchInput,
+				{
+					actions: options?.actions,
+					onAction: (actionId) => {
+						close();
+						settle({ status: "action", actionId });
 					},
-					initialSearchInput,
-					{
-						actions: options?.actions,
-						onAction: (actionId) => {
-							done();
-							this.ui.requestRender();
-							settle({ status: "action", actionId });
-						},
-						subtitle: options?.subtitle,
-					},
-				);
-				return { component: selector, focus: selector };
-			});
+					subtitle: options?.subtitle,
+				},
+			);
+			handle = this.showFullPaneOverlay(selector, 96);
 		});
 	}
 
