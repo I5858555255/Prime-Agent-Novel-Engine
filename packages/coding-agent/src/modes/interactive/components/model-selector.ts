@@ -1,19 +1,10 @@
 import { type Model, modelsAreEqual } from "@earendil-works/pi-ai";
-import {
-	Container,
-	type Focusable,
-	fuzzyFilter,
-	getKeybindings,
-	Input,
-	Spacer,
-	Text,
-	type TUI,
-} from "@earendil-works/pi-tui";
+import { Container, type Focusable, fuzzyFilter, getKeybindings, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import type { ModelRegistry } from "../../../core/model-registry.js";
 import type { SettingsManager } from "../../../core/settings-manager.js";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
-import { MenuPanel } from "./menu-panel.js";
+import { MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
 
 interface ModelItem {
 	provider: string;
@@ -32,7 +23,7 @@ type ModelScope = "all" | "scoped";
  * Component that renders a model selector with search
  */
 export class ModelSelectorComponent extends Container implements Focusable {
-	private searchInput: Input;
+	private searchInput: MenuSearchInput;
 
 	// Focusable implementation - propagate to searchInput for IME cursor positioning
 	private _focused = false;
@@ -101,7 +92,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		panel.addChild(new Spacer(1));
 
 		// Create search input
-		this.searchInput = new Input();
+		this.searchInput = new MenuSearchInput("Search models");
 		if (initialSearchInput) {
 			this.searchInput.setValue(initialSearchInput);
 		}
@@ -111,7 +102,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				this.handleSelect(this.filteredModels[this.selectedIndex].model);
 			}
 		};
-		panel.addChild(new Text(theme.fg("dim", "Filter"), 0, 0));
 		panel.addChild(this.searchInput);
 
 		panel.addChild(new Spacer(1));
@@ -243,21 +233,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 
-			let line = "";
-			if (isSelected) {
-				const prefix = theme.fg("accent", "› ");
-				const modelText = theme.bold(theme.fg("text", item.id));
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${prefix + modelText} ${providerBadge}${checkmark}`;
-			} else {
-				const modelText = `  ${item.id}`;
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${modelText} ${providerBadge}${checkmark}`;
-			}
-
-			this.listContainer.addChild(new Text(line, 0, 0));
+			this.listContainer.addChild(
+				new MenuRow({
+					primary: item.id,
+					secondary: item.provider,
+					meta: isCurrent ? theme.fg("success", "current") : undefined,
+					selected: isSelected,
+				}),
+			);
 		}
 
 		// Add scroll indicator if needed
@@ -274,11 +257,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				this.listContainer.addChild(new Text(theme.fg("error", line), 0, 0));
 			}
 		} else if (this.filteredModels.length === 0) {
-			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching models"), 0, 0));
+			this.listContainer.addChild(new Text(theme.fg("muted", "No matching models"), 0, 0));
 		} else {
 			const selected = this.filteredModels[this.selectedIndex];
 			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
+			this.listContainer.addChild(new Text(theme.fg("muted", selected.model.name), 0, 0));
 		}
 	}
 
@@ -330,7 +313,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.onSelectCallback(model);
 	}
 
-	getSearchInput(): Input {
+	getSearchInput(): MenuSearchInput {
 		return this.searchInput;
 	}
 }

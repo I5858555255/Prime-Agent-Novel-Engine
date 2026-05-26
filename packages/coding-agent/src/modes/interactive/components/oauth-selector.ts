@@ -1,16 +1,7 @@
-import {
-	Container,
-	type Focusable,
-	fuzzyFilter,
-	getKeybindings,
-	Input,
-	Spacer,
-	Text,
-	TruncatedText,
-} from "@earendil-works/pi-tui";
+import { Container, type Focusable, fuzzyFilter, getKeybindings, Spacer, TruncatedText } from "@earendil-works/pi-tui";
 import type { AuthStatus, AuthStorage } from "../../../core/auth-storage.js";
 import { theme } from "../theme/theme.js";
-import { MenuPanel } from "./menu-panel.js";
+import { MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
 
 export type AuthSelectorProvider = {
 	id: string;
@@ -22,7 +13,7 @@ export type AuthSelectorProvider = {
  * Component that renders an auth provider selector
  */
 export class OAuthSelectorComponent extends Container implements Focusable {
-	private searchInput: Input;
+	private searchInput: MenuSearchInput;
 
 	// Focusable implementation - propagate to search input for IME cursor positioning
 	private _focused = false;
@@ -68,14 +59,13 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		});
 		this.addChild(panel);
 
-		this.searchInput = new Input();
+		this.searchInput = new MenuSearchInput("Search providers");
 		this.searchInput.onSubmit = () => {
 			const selectedProvider = this.filteredProviders[this.selectedIndex];
 			if (selectedProvider) {
 				this.onSelectCallback(selectedProvider.id);
 			}
 		};
-		panel.addChild(new Text(theme.fg("dim", "Filter"), 0, 0));
 		panel.addChild(this.searchInput);
 		panel.addChild(new Spacer(1));
 
@@ -111,18 +101,14 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 			const isSelected = i === this.selectedIndex;
 
-			const statusIndicator = this.formatStatusIndicator(provider);
-			let line = "";
-			if (isSelected) {
-				const prefix = theme.fg("accent", "› ");
-				const text = theme.bold(theme.fg("text", provider.name));
-				line = prefix + text + statusIndicator;
-			} else {
-				const text = `  ${theme.fg("text", provider.name)}`;
-				line = text + statusIndicator;
-			}
-
-			this.listContainer.addChild(new TruncatedText(line, 1, 0));
+			this.listContainer.addChild(
+				new MenuRow({
+					primary: provider.name,
+					secondary: provider.authType === "oauth" ? "subscription" : "api key",
+					meta: this.formatStatusIndicator(provider),
+					selected: isSelected,
+				}),
+			);
 		}
 
 		if (startIndex > 0 || endIndex < this.filteredProviders.length) {
@@ -138,33 +124,33 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 						? "No providers available"
 						: "No providers logged in. Use /login first."
 					: "No matching providers";
-			this.listContainer.addChild(new TruncatedText(theme.fg("muted", `  ${message}`), 1, 0));
+			this.listContainer.addChild(new TruncatedText(theme.fg("muted", message), 1, 0));
 		}
 	}
 
 	private formatStatusIndicator(provider: AuthSelectorProvider): string {
 		const credential = this.authStorage.get(provider.id);
-		if (credential?.type === provider.authType) return theme.fg("success", " ✓ configured");
+		if (credential?.type === provider.authType) return theme.fg("success", "configured");
 		if (credential) {
 			const label = credential.type === "oauth" ? "subscription configured" : "API key configured";
-			return theme.fg("muted", " • ") + theme.fg("warning", label);
+			return theme.fg("warning", label);
 		}
-		if (provider.authType !== "api_key") return theme.fg("muted", " • unconfigured");
+		if (provider.authType !== "api_key") return theme.fg("muted", "unconfigured");
 
 		const status = this.getAuthStatus(provider.id);
 		switch (status.source) {
 			case "environment":
-				return theme.fg("success", ` ✓ env: ${status.label ?? "API key"}`);
+				return theme.fg("success", `env: ${status.label ?? "API key"}`);
 			case "runtime":
-				return theme.fg("success", " ✓ runtime API key");
+				return theme.fg("success", "runtime API key");
 			case "fallback":
-				return theme.fg("success", " ✓ custom API key");
+				return theme.fg("success", "custom API key");
 			case "models_json_key":
-				return theme.fg("success", " ✓ key in models.json");
+				return theme.fg("success", "key in models.json");
 			case "models_json_command":
-				return theme.fg("success", " ✓ command in models.json");
+				return theme.fg("success", "command in models.json");
 			default:
-				return theme.fg("muted", " • unconfigured");
+				return theme.fg("muted", "unconfigured");
 		}
 	}
 

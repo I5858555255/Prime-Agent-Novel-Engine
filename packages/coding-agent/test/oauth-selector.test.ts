@@ -77,7 +77,7 @@ describe("OAuthSelectorComponent", () => {
 		const output = stripAnsi(selector.render(120).join("\n"));
 
 		expect(output).toContain("OpenAI");
-		expect(output).toContain("✓ env: OPENAI_API_KEY");
+		expect(output).toContain("env: OPENAI_API_KEY");
 		expect(output).not.toContain("unconfigured");
 	});
 
@@ -95,7 +95,7 @@ describe("OAuthSelectorComponent", () => {
 		const output = stripAnsi(selector.render(120).join("\n"));
 
 		expect(output).toContain("ollama");
-		expect(output).toContain("✓ env: OLLAMA_API_KEY");
+		expect(output).toContain("env: OLLAMA_API_KEY");
 		expect(output).not.toContain("unconfigured");
 	});
 
@@ -113,7 +113,7 @@ describe("OAuthSelectorComponent", () => {
 		const output = stripAnsi(selector.render(120).join("\n"));
 
 		expect(output).toContain("local-proxy");
-		expect(output).toContain("✓ key in models.json");
+		expect(output).toContain("key in models.json");
 		expect(output).not.toContain("unconfigured");
 	});
 
@@ -131,7 +131,7 @@ describe("OAuthSelectorComponent", () => {
 		const output = stripAnsi(selector.render(120).join("\n"));
 
 		expect(output).toContain("op-proxy");
-		expect(output).toContain("✓ command in models.json");
+		expect(output).toContain("command in models.json");
 		expect(output).not.toContain("unconfigured");
 	});
 });

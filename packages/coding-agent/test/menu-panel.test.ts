@@ -1,7 +1,7 @@
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, it } from "vitest";
-import { MenuPanel } from "../src/modes/interactive/components/menu-panel.js";
+import { MenuPanel, MenuRow, MenuSearchInput } from "../src/modes/interactive/components/menu-panel.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 class StaticComponent implements Component {
@@ -38,5 +38,30 @@ describe("MenuPanel", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBe(24);
 		}
+	});
+
+	it("renders search fields without the shell prompt", () => {
+		const field = new MenuSearchInput("Search models");
+		const output = stripAnsi(field.render(24).join("\n"));
+
+		expect(output).toContain("Search models");
+		expect(output).not.toContain("> ");
+		expect(visibleWidth(output)).toBe(24);
+	});
+
+	it("renders selected rows as full-width surfaces without a cursor glyph", () => {
+		const row = new MenuRow({
+			primary: "openai/gpt-5",
+			secondary: "openai",
+			meta: "current",
+			selected: true,
+		});
+		const output = stripAnsi(row.render(40).join("\n"));
+
+		expect(output).toContain("openai/gpt-5");
+		expect(output).toContain("openai");
+		expect(output).toContain("current");
+		expect(output).not.toContain("›");
+		expect(visibleWidth(output)).toBe(40);
 	});
 });

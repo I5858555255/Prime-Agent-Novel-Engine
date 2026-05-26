@@ -4,10 +4,9 @@
  */
 
 import { Container, getKeybindings, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import { theme } from "../theme/theme.js";
 import { CountdownTimer } from "./countdown-timer.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
-import { MenuPanel } from "./menu-panel.js";
+import { MenuPanel, MenuRow } from "./menu-panel.js";
 
 export interface ExtensionSelectorOptions {
 	tui?: TUI;
@@ -75,10 +74,12 @@ export class ExtensionSelectorComponent extends Container {
 		this.listContainer.clear();
 		for (let i = 0; i < this.options.length; i++) {
 			const isSelected = i === this.selectedIndex;
-			const text = isSelected
-				? theme.fg("accent", "› ") + theme.bold(theme.fg("text", this.options[i]))
-				: `  ${theme.fg("text", this.options[i])}`;
-			this.listContainer.addChild(new Text(text, 1, 0));
+			this.listContainer.addChild(
+				new MenuRow({
+					primary: this.options[i] ?? "",
+					selected: isSelected,
+				}),
+			);
 		}
 	}
 
