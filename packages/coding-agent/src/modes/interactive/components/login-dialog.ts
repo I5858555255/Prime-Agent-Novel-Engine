@@ -1,9 +1,56 @@
 import { getOAuthProviders } from "@earendil-works/pi-ai/oauth";
-import { Container, type Focusable, getKeybindings, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	type Focusable,
+	getKeybindings,
+	Spacer,
+	Text,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { exec } from "child_process";
+import { PRIME_BUTTERFLY_LOGO } from "../../../themes/prime-logo.js";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
 import { MenuPanel, MenuSearchInput } from "./menu-panel.js";
+
+const PRIME_INFERENCE_PROVIDER_ID = "prime-inference";
+const PRIME_LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
+const PRIME_LOGO_WIDTH = PRIME_LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+
+function centeredLine(text: string, width: number): string {
+	const safeWidth = Math.max(1, width);
+	const content = truncateToWidth(text, safeWidth, "");
+	const padding = Math.max(0, safeWidth - visibleWidth(content));
+	const left = Math.floor(padding / 2);
+	return " ".repeat(left) + content + " ".repeat(padding - left);
+}
+
+class PrimeLoginHeader implements Component {
+	invalidate(): void {
+		// Header render is derived from the current theme.
+	}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		const logoWidth = Math.min(PRIME_LOGO_WIDTH, safeWidth);
+		const logoLines = PRIME_LOGO_LINES.map((line) => {
+			const paddedLogoLine = line + " ".repeat(Math.max(0, PRIME_LOGO_WIDTH - visibleWidth(line)));
+			return centeredLine(theme.fg("text", truncateToWidth(paddedLogoLine, logoWidth, "")), safeWidth);
+		});
+		return [
+			...logoLines,
+			centeredLine("", safeWidth),
+			centeredLine(theme.bold(theme.fg("text", "Login to Prime Inference")), safeWidth),
+			centeredLine(
+				theme.fg("muted", "Connect your Prime Intellect account to enable Prime Inference models."),
+				safeWidth,
+			),
+		];
+	}
+}
 
 /**
  * Login dialog component - replaces editor during OAuth login flow
@@ -12,6 +59,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private contentContainer: Container;
 	private input: MenuSearchInput;
 	private tui: TUI;
+	private readonly isPrimeInference: boolean;
 	private abortController = new AbortController();
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
@@ -38,11 +86,12 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 		const providerInfo = getOAuthProviders().find((p) => p.id === providerId);
 		const providerName = providerNameOverride || providerInfo?.name || providerId;
+		this.isPrimeInference = providerId === PRIME_INFERENCE_PROVIDER_ID;
 		const title = titleOverride ?? `Login to ${providerName}`;
 
 		const panel = new MenuPanel({
-			title,
-			subtitle: "Complete this step to continue setup.",
+			title: this.isPrimeInference ? "" : title,
+			subtitle: this.isPrimeInference ? undefined : "Complete this step to continue setup.",
 		});
 		this.addChild(panel);
 
@@ -79,18 +128,13 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Called by onAuth callback - show URL and optional instructions
 	 */
 	showAuth(url: string, instructions?: string): void {
-		this.contentContainer.clear();
-		this.contentContainer.addChild(new Spacer(1));
+		this.startContent();
 		this.addSectionTitle("Browser sign-in");
 		this.addMutedText("The sign-in page should already be opening. If it did not open, use the link below.");
 		this.contentContainer.addChild(new Spacer(1));
 		this.addLabel("Sign-in link");
 		const linkedUrl = `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("text", linkedUrl), 0, 0));
-
-		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
-		const hyperlink = `\x1b]8;;${url}\x07${clickHint}\x1b]8;;\x07`;
-		this.contentContainer.addChild(new Text(theme.fg("muted", hyperlink), 0, 0));
 
 		if (instructions) {
 			this.contentContainer.addChild(new Spacer(1));
@@ -108,7 +152,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Show input for manual code/URL entry (for callback server providers)
 	 */
 	showManualInput(prompt: string): Promise<string> {
-		this.contentContainer.addChild(new Spacer(1));
+		this.addSectionSpacer();
 		this.addSectionTitle("Manual fallback");
 		this.addMutedText(prompt);
 		this.contentContainer.addChild(this.input);
@@ -126,7 +170,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Note: Does NOT clear content, appends to existing (preserves URL from showAuth)
 	 */
 	showPrompt(message: string, placeholder?: string): Promise<string> {
-		this.contentContainer.addChild(new Spacer(1));
+		this.addSectionSpacer();
 		this.addSectionTitle(message);
 		if (placeholder) {
 			this.contentContainer.addChild(new Text(theme.fg("muted", `e.g., ${placeholder}`), 0, 0));
@@ -152,8 +196,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Show informational text without prompting for input.
 	 */
 	showInfo(lines: string[]): void {
-		this.contentContainer.clear();
-		this.contentContainer.addChild(new Spacer(1));
+		this.startContent();
 		for (const line of lines) {
 			this.contentContainer.addChild(new Text(line, 0, 0));
 		}
@@ -166,7 +209,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Show waiting message (for polling flows like GitHub Copilot)
 	 */
 	showWaiting(message: string): void {
-		this.contentContainer.addChild(new Spacer(1));
+		this.addSectionSpacer();
 		this.contentContainer.addChild(new Text(theme.fg("accent", message), 0, 0));
 		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
 		this.tui.requestRender();
@@ -176,8 +219,30 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Called by onProgress callback
 	 */
 	showProgress(message: string): void {
+		if (this.contentContainer.children.length === 0) {
+			this.startContent();
+			this.addSectionTitle("Preparing authentication");
+		}
 		this.contentContainer.addChild(new Text(theme.fg("muted", message), 0, 0));
 		this.tui.requestRender();
+	}
+
+	private startContent(): void {
+		this.contentContainer.clear();
+		if (this.isPrimeInference) {
+			this.contentContainer.addChild(new PrimeLoginHeader());
+			this.contentContainer.addChild(new Spacer(1));
+			return;
+		}
+		this.contentContainer.addChild(new Spacer(1));
+	}
+
+	private addSectionSpacer(): void {
+		if (this.contentContainer.children.length === 0) {
+			this.startContent();
+			return;
+		}
+		this.contentContainer.addChild(new Spacer(1));
 	}
 
 	private addInstructions(instructions: string): void {

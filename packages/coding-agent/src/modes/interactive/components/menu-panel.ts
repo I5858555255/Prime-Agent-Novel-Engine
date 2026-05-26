@@ -62,11 +62,17 @@ export class MenuPanel extends Container {
 		for (let i = 0; i < PANEL_PADDING_Y; i++) {
 			lines.push(surfaceLine("", safeWidth));
 		}
-		lines.push(surfaceLine(theme.bold(theme.fg("text", this.title)), safeWidth));
+		const hasTitle = this.title.trim().length > 0;
+		const hasHeader = hasTitle || this.options.subtitle !== undefined;
+		if (hasTitle) {
+			lines.push(surfaceLine(theme.bold(theme.fg("text", this.title)), safeWidth));
+		}
 		if (this.options.subtitle) {
 			lines.push(surfaceLine(theme.fg("muted", this.options.subtitle), safeWidth));
 		}
-		lines.push(surfaceLine("", safeWidth));
+		if (hasHeader) {
+			lines.push(surfaceLine("", safeWidth));
+		}
 
 		for (const child of this.children) {
 			const childLines = fillsMenuPanel(child) ? child.render(safeWidth) : child.render(innerWidth);
