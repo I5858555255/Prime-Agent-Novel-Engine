@@ -19,7 +19,7 @@ describe("MenuPanel", () => {
 		initTheme("dark");
 	});
 
-	it("renders a framed menu panel with padded rows", () => {
+	it("renders a surface-style menu panel with padded rows", () => {
 		const panel = new MenuPanel({ title: "Menu", subtitle: "Pick one." });
 		panel.addChild(new StaticComponent());
 
@@ -30,8 +30,11 @@ describe("MenuPanel", () => {
 		expect(output).toContain("Pick one.");
 		expect(output).toContain("first");
 		expect(output).toContain("second");
-		expect(stripAnsi(lines[0] ?? "")).toMatch(/^╭─+ Menu ─+╮$/);
-		expect(stripAnsi(lines.at(-1) ?? "")).toBe("╰──────────────────────╯");
+		expect(output).not.toContain("╭");
+		expect(output).not.toContain("│");
+		expect(output).not.toContain("╰");
+		expect(stripAnsi(lines[0] ?? "").trim()).toBe("");
+		expect(stripAnsi(lines.at(-1) ?? "").trim()).toBe("");
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBe(24);
 		}

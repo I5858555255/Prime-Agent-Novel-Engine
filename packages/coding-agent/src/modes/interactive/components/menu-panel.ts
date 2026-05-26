@@ -6,6 +6,9 @@ interface MenuPanelOptions {
 	subtitle?: string;
 }
 
+const PANEL_PADDING_X = 2;
+const PANEL_PADDING_Y = 1;
+
 export class MenuPanel extends Container {
 	private title: string;
 
@@ -19,45 +22,35 @@ export class MenuPanel extends Container {
 	}
 
 	override render(width: number): string[] {
-		const safeWidth = Math.max(4, width);
-		const innerWidth = Math.max(1, safeWidth - 4);
-		const lines: string[] = [this.topBorder(safeWidth)];
+		const safeWidth = Math.max(PANEL_PADDING_X * 2 + 1, width);
+		const innerWidth = Math.max(1, safeWidth - PANEL_PADDING_X * 2);
+		const lines: string[] = [];
 
-		if (this.options.subtitle) {
-			lines.push(this.wrap(theme.fg("muted", this.options.subtitle), innerWidth));
-			lines.push(this.wrap("", innerWidth));
+		for (let i = 0; i < PANEL_PADDING_Y; i++) {
+			lines.push(this.surfaceLine("", innerWidth));
 		}
+		lines.push(this.surfaceLine(theme.bold(theme.fg("text", this.title)), innerWidth));
+		if (this.options.subtitle) {
+			lines.push(this.surfaceLine(theme.fg("muted", this.options.subtitle), innerWidth));
+		}
+		lines.push(this.surfaceLine("", innerWidth));
 
 		for (const child of this.children) {
 			for (const line of child.render(innerWidth)) {
-				lines.push(this.wrap(line, innerWidth));
+				lines.push(this.surfaceLine(line, innerWidth));
 			}
 		}
 
-		lines.push(this.bottomBorder(safeWidth));
+		for (let i = 0; i < PANEL_PADDING_Y; i++) {
+			lines.push(this.surfaceLine("", innerWidth));
+		}
 		return lines;
 	}
 
-	private topBorder(width: number): string {
-		const title = ` ${this.title} `;
-		const titleWidth = visibleWidth(title);
-		const remaining = Math.max(0, width - titleWidth - 2);
-		const left = Math.floor(remaining / 2);
-		const right = remaining - left;
-		return (
-			theme.fg("border", `╭${"─".repeat(left)}`) +
-			theme.bold(theme.fg("text", title)) +
-			theme.fg("border", `${"─".repeat(right)}╮`)
-		);
-	}
-
-	private bottomBorder(width: number): string {
-		return theme.fg("border", `╰${"─".repeat(Math.max(0, width - 2))}╯`);
-	}
-
-	private wrap(text: string, innerWidth: number): string {
+	private surfaceLine(text: string, innerWidth: number): string {
 		const content = truncateToWidth(text, innerWidth, "");
-		const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
-		return theme.fg("border", "│ ") + content + padding + theme.fg("border", " │");
+		const rightPadding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
+		const line = " ".repeat(PANEL_PADDING_X) + content + rightPadding + " ".repeat(PANEL_PADDING_X);
+		return theme.getEditorBackgroundColor()?.(line) ?? line;
 	}
 }
