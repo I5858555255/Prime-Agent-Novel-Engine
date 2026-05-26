@@ -139,11 +139,6 @@ interface MenuRowOptions {
 	selected: boolean;
 }
 
-interface MenuRowRenderOptions {
-	includeTopPadding: boolean;
-	includeBottomPadding: boolean;
-}
-
 export class MenuRow implements Component, FullWidthMenuComponent {
 	readonly fillsMenuPanel = true;
 
@@ -158,13 +153,15 @@ export class MenuRow implements Component, FullWidthMenuComponent {
 	}
 
 	render(width: number): string[] {
-		return this.renderWithPadding(width, {
-			includeTopPadding: true,
-			includeBottomPadding: true,
-		});
+		const safeWidth = Math.max(ROW_PADDING_X * 2 + 1, width);
+		return [
+			...this.renderPadding(safeWidth, this.selected),
+			...this.renderContent(safeWidth),
+			...this.renderPadding(safeWidth, this.selected),
+		];
 	}
 
-	renderWithPadding(width: number, options: MenuRowRenderOptions): string[] {
+	renderContent(width: number): string[] {
 		const safeWidth = Math.max(ROW_PADDING_X * 2 + 1, width);
 		const meta = this.options.meta ? theme.fg("muted", this.options.meta) : "";
 		const secondary = this.options.secondary ? theme.fg("muted", this.options.secondary) : "";
@@ -178,26 +175,25 @@ export class MenuRow implements Component, FullWidthMenuComponent {
 		const primaryText = truncateToWidth(primary, primaryWidth, "", true);
 		const primaryLine = meta ? primaryText + " ".repeat(gap) + meta : primaryText;
 		const lines: string[] = [];
-		if (options.includeTopPadding) {
-			for (let i = 0; i < ROW_PADDING_Y; i++) {
-				lines.push(this.rowLine("", safeWidth));
-			}
-		}
-		lines.push(this.rowLine(primaryLine, safeWidth));
+		lines.push(this.rowLine(primaryLine, safeWidth, this.selected));
 		if (secondary) {
-			lines.push(this.rowLine(truncateToWidth(secondary, innerWidth, "", true), safeWidth));
-		}
-		if (options.includeBottomPadding) {
-			for (let i = 0; i < ROW_PADDING_Y; i++) {
-				lines.push(this.rowLine("", safeWidth));
-			}
+			lines.push(this.rowLine(truncateToWidth(secondary, innerWidth, "", true), safeWidth, this.selected));
 		}
 		return lines;
 	}
 
-	private rowLine(text: string, width: number): string {
+	renderPadding(width: number, selected: boolean): string[] {
+		const safeWidth = Math.max(ROW_PADDING_X * 2 + 1, width);
+		const lines: string[] = [];
+		for (let i = 0; i < ROW_PADDING_Y; i++) {
+			lines.push(this.rowLine("", safeWidth, selected));
+		}
+		return lines;
+	}
+
+	private rowLine(text: string, width: number, selected: boolean): string {
 		const line = padLine(text, width, ROW_PADDING_X);
-		if (this.options.selected) {
+		if (selected) {
 			return theme.bg("selectedBg", line);
 		}
 		return theme.getEditorBackgroundColor()?.(line) ?? line;
@@ -216,12 +212,11 @@ export class MenuList extends Container implements FullWidthMenuComponent {
 				const nextChild = this.children[index + 1];
 				const previousRow = previousChild instanceof MenuRow ? previousChild : undefined;
 				const nextRow = nextChild instanceof MenuRow ? nextChild : undefined;
-				lines.push(
-					...child.renderWithPadding(width, {
-						includeTopPadding: child.selected && previousRow?.selected !== true,
-						includeBottomPadding: child.selected || nextRow?.selected !== true,
-					}),
-				);
+				lines.push(...child.renderPadding(width, child.selected || previousRow?.selected === true));
+				lines.push(...child.renderContent(width));
+				if (!nextRow) {
+					lines.push(...child.renderPadding(width, child.selected));
+				}
 				continue;
 			}
 			const childLines = fillsMenuPanel(child)

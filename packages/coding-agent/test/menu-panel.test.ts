@@ -72,26 +72,31 @@ describe("MenuPanel", () => {
 	});
 
 	it("collapses adjacent row padding around the selected row", () => {
-		const list = new MenuList();
-		list.addChild(
-			new MenuRow({
-				primary: "first",
-				secondary: "provider",
-				selected: false,
-			}),
-		);
-		list.addChild(
-			new MenuRow({
-				primary: "second",
-				secondary: "provider",
-				selected: true,
-			}),
-		);
+		const createList = (selectedIndex: number): MenuList => {
+			const list = new MenuList();
+			list.addChild(
+				new MenuRow({
+					primary: "first",
+					secondary: "provider",
+					selected: selectedIndex === 0,
+				}),
+			);
+			list.addChild(
+				new MenuRow({
+					primary: "second",
+					secondary: "provider",
+					selected: selectedIndex === 1,
+				}),
+			);
+			return list;
+		};
 
-		const lines = list.render(40);
+		const firstSelectedLines = createList(0).render(40);
+		const lines = createList(1).render(40);
 		const output = lines.map((line) => stripAnsi(line));
 		const selectedIndex = output.findIndex((line) => line.includes("second"));
 
+		expect(lines).toHaveLength(firstSelectedLines.length);
 		expect(selectedIndex).toBeGreaterThan(0);
 		expect(output[selectedIndex - 1]?.trim()).toBe("");
 		expect(output[selectedIndex - 2]?.trim()).not.toBe("");
