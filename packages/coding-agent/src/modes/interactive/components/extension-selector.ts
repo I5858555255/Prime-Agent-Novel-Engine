@@ -6,8 +6,8 @@
 import { Container, getKeybindings, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.js";
 import { CountdownTimer } from "./countdown-timer.js";
-import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
+import { MenuPanel } from "./menu-panel.js";
 
 export interface ExtensionSelectorOptions {
 	tui?: TUI;
@@ -20,9 +20,9 @@ export class ExtensionSelectorComponent extends Container {
 	private listContainer: Container;
 	private onSelectCallback: (option: string) => void;
 	private onCancelCallback: () => void;
-	private titleText: Text;
 	private baseTitle: string;
 	private countdown: CountdownTimer | undefined;
+	private panel: MenuPanel;
 
 	constructor(
 		title: string,
@@ -38,26 +38,25 @@ export class ExtensionSelectorComponent extends Container {
 		this.onCancelCallback = onCancel;
 		this.baseTitle = title;
 
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-
-		this.titleText = new Text(theme.fg("accent", theme.bold(title)), 1, 0);
-		this.addChild(this.titleText);
-		this.addChild(new Spacer(1));
+		this.panel = new MenuPanel({
+			title,
+			subtitle: "Choose an option.",
+		});
+		this.addChild(this.panel);
 
 		if (opts?.timeout && opts.timeout > 0 && opts.tui) {
 			this.countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				(s) => this.titleText.setText(theme.fg("accent", theme.bold(`${this.baseTitle} (${s}s)`))),
+				(s) => this.panel.setTitle(`${this.baseTitle} (${s}s)`),
 				() => this.onCancelCallback(),
 			);
 		}
 
 		this.listContainer = new Container();
-		this.addChild(this.listContainer);
-		this.addChild(new Spacer(1));
-		this.addChild(
+		this.panel.addChild(this.listContainer);
+		this.panel.addChild(new Spacer(1));
+		this.panel.addChild(
 			new Text(
 				rawKeyHint("↑↓", "navigate") +
 					"  " +
@@ -68,8 +67,6 @@ export class ExtensionSelectorComponent extends Container {
 				0,
 			),
 		);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
 
 		this.updateList();
 	}
@@ -79,7 +76,7 @@ export class ExtensionSelectorComponent extends Container {
 		for (let i = 0; i < this.options.length; i++) {
 			const isSelected = i === this.selectedIndex;
 			const text = isSelected
-				? theme.fg("accent", "→ ") + theme.fg("accent", this.options[i])
+				? theme.fg("accent", "› ") + theme.bold(theme.fg("text", this.options[i]))
 				: `  ${theme.fg("text", this.options[i])}`;
 			this.listContainer.addChild(new Text(text, 1, 0));
 		}

@@ -12,8 +12,8 @@ import {
 import type { ModelRegistry } from "../../../core/model-registry.js";
 import type { SettingsManager } from "../../../core/settings-manager.js";
 import { theme } from "../theme/theme.js";
-import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint } from "./keybinding-hints.js";
+import { MenuPanel } from "./menu-panel.js";
 
 interface ModelItem {
 	provider: string;
@@ -82,21 +82,23 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 
-		// Add top border
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
+		const panel = new MenuPanel({
+			title: "Choose Model",
+			subtitle: "Type to filter, then press enter.",
+		});
+		this.addChild(panel);
 
 		// Add hint about model filtering
 		if (scopedModels.length > 0) {
 			this.scopeText = new Text(this.getScopeText(), 0, 0);
-			this.addChild(this.scopeText);
+			panel.addChild(this.scopeText);
 			this.scopeHintText = new Text(this.getScopeHintText(), 0, 0);
-			this.addChild(this.scopeHintText);
+			panel.addChild(this.scopeHintText);
 		} else {
 			const hintText = "Only showing models from configured providers. Use /login to add providers.";
-			this.addChild(new Text(theme.fg("warning", hintText), 0, 0));
+			panel.addChild(new Text(theme.fg("warning", hintText), 0, 0));
 		}
-		this.addChild(new Spacer(1));
+		panel.addChild(new Spacer(1));
 
 		// Create search input
 		this.searchInput = new Input();
@@ -109,18 +111,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				this.handleSelect(this.filteredModels[this.selectedIndex].model);
 			}
 		};
-		this.addChild(this.searchInput);
+		panel.addChild(new Text(theme.fg("dim", "Filter"), 0, 0));
+		panel.addChild(this.searchInput);
 
-		this.addChild(new Spacer(1));
+		panel.addChild(new Spacer(1));
 
 		// Create list container
 		this.listContainer = new Container();
-		this.addChild(this.listContainer);
-
-		this.addChild(new Spacer(1));
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
+		panel.addChild(this.listContainer);
 
 		// Load models and do initial render
 		this.loadModels().then(() => {
@@ -247,11 +245,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 			let line = "";
 			if (isSelected) {
-				const prefix = theme.fg("accent", "→ ");
-				const modelText = `${item.id}`;
+				const prefix = theme.fg("accent", "› ");
+				const modelText = theme.bold(theme.fg("text", item.id));
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
+				line = `${prefix + modelText} ${providerBadge}${checkmark}`;
 			} else {
 				const modelText = `  ${item.id}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);

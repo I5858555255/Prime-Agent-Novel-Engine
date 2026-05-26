@@ -5,11 +5,12 @@ import {
 	getKeybindings,
 	Input,
 	Spacer,
+	Text,
 	TruncatedText,
 } from "@earendil-works/pi-tui";
 import type { AuthStatus, AuthStorage } from "../../../core/auth-storage.js";
 import { theme } from "../theme/theme.js";
-import { DynamicBorder } from "./dynamic-border.js";
+import { MenuPanel } from "./menu-panel.js";
 
 export type AuthSelectorProvider = {
 	id: string;
@@ -61,14 +62,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 
-		// Add top border
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-
-		// Add title
-		const title = mode === "login" ? "Select provider to configure:" : "Select provider to logout:";
-		this.addChild(new TruncatedText(theme.fg("accent", theme.bold(title)), 1, 0));
-		this.addChild(new Spacer(1));
+		const panel = new MenuPanel({
+			title: mode === "login" ? "Choose Provider" : "Remove Provider",
+			subtitle: mode === "login" ? "Type to filter, then press enter." : "Choose a stored credential to remove.",
+		});
+		this.addChild(panel);
 
 		this.searchInput = new Input();
 		this.searchInput.onSubmit = () => {
@@ -77,17 +75,13 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 				this.onSelectCallback(selectedProvider.id);
 			}
 		};
-		this.addChild(this.searchInput);
-		this.addChild(new Spacer(1));
+		panel.addChild(new Text(theme.fg("dim", "Filter"), 0, 0));
+		panel.addChild(this.searchInput);
+		panel.addChild(new Spacer(1));
 
 		// Create list container
 		this.listContainer = new Container();
-		this.addChild(this.listContainer);
-
-		this.addChild(new Spacer(1));
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
+		panel.addChild(this.listContainer);
 
 		// Initial render
 		this.filterProviders("");
@@ -120,8 +114,8 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			const statusIndicator = this.formatStatusIndicator(provider);
 			let line = "";
 			if (isSelected) {
-				const prefix = theme.fg("accent", "→ ");
-				const text = theme.fg("accent", provider.name);
+				const prefix = theme.fg("accent", "› ");
+				const text = theme.bold(theme.fg("text", provider.name));
 				line = prefix + text + statusIndicator;
 			} else {
 				const text = `  ${theme.fg("text", provider.name)}`;
