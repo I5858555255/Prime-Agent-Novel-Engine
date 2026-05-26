@@ -26,8 +26,12 @@ describe("PrimeOnboardingSplashComponent", () => {
 
 		expect(lines).toHaveLength(36);
 		expect(output).toContain("Prime Agent");
-		expect(output).toContain("Start with your Prime Intellect account.");
-		expect(output).toContain("Log in with Prime Intellect");
+		expect(output).toContain("Prime Intellect");
+		expect(output).toContain("Login");
+		expect(output).not.toContain("required for first-time setup");
+		expect(output).not.toContain("Start with your Prime Intellect account.");
+		expect(output).not.toContain("Log in with Prime Intellect");
+		expect(output).not.toContain("→");
 		expect(output).not.toContain("Use a subscription");
 		expect(output).not.toContain("Use an API key");
 		expect(output).toContain(PRIME_BUTTERFLY_LOGO.split("\n")[0].trim());

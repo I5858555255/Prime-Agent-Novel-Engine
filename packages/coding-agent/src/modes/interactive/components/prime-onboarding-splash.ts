@@ -9,9 +9,7 @@ interface PrimeOnboardingSplashOptions {
 
 const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
-const BRAND_COLUMN_GAP = "    ";
-const ACTION_LABEL = "Log in with Prime Intellect";
-const ACTION_DESCRIPTION = "required for first-time setup";
+const LOGIN_LABEL = "  Login  ";
 
 export class PrimeOnboardingSplashComponent implements Component {
 	constructor(
@@ -28,8 +26,12 @@ export class PrimeOnboardingSplashComponent implements Component {
 		const safeWidth = Math.max(1, width);
 		const contentLines = [
 			"",
-			...this.renderBrandLines(safeWidth),
+			...this.renderLogoLines(safeWidth),
 			"",
+			this.center(theme.bold(theme.fg("text", "Prime Agent")), safeWidth),
+			this.center(theme.fg("muted", "Prime Intellect"), safeWidth),
+			"",
+			this.center(this.formatLoginButton(), safeWidth),
 			"",
 			this.center(
 				`${keyHint("tui.select.confirm", "continue")}  ${keyHint("tui.select.cancel", "cancel")}`,
@@ -51,36 +53,8 @@ export class PrimeOnboardingSplashComponent implements Component {
 		}
 	}
 
-	private renderBrandLines(width: number): string[] {
-		const textLines = this.formatTextLines();
-		const textWidth = textLines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
-		const horizontalWidth = LOGO_WIDTH + visibleWidth(BRAND_COLUMN_GAP) + textWidth;
-		if (horizontalWidth > width) {
-			return [
-				...this.renderLogoLines(width),
-				"",
-				...textLines.map((line) => (line === "" ? this.blank(width) : this.center(line, width))),
-			];
-		}
-
-		const left = Math.max(0, Math.floor((width - horizontalWidth) / 2));
-		const textTopPadding = Math.max(0, Math.floor((LOGO_LINES.length - textLines.length) / 2));
-		return LOGO_LINES.map((logoLine, index) => {
-			const paddedLogo = logoLine + " ".repeat(Math.max(0, LOGO_WIDTH - visibleWidth(logoLine)));
-			const textLine = textLines[index - textTopPadding] ?? "";
-			const line = theme.fg("text", paddedLogo) + BRAND_COLUMN_GAP + textLine;
-			return this.place(line, width, left);
-		});
-	}
-
-	private formatTextLines(): string[] {
-		const actionLabel = theme.bold(theme.fg("text", ACTION_LABEL));
-		return [
-			theme.bold(theme.fg("text", "Prime Agent")),
-			theme.fg("muted", "Start with your Prime Intellect account."),
-			"",
-			`${theme.fg("accent", "→ ")}${actionLabel}   ${theme.fg("muted", ACTION_DESCRIPTION)}`,
-		];
+	private formatLoginButton(): string {
+		return theme.bg("selectedBg", theme.bold(theme.fg("text", LOGIN_LABEL)));
 	}
 
 	private renderLogoLines(width: number): string[] {
