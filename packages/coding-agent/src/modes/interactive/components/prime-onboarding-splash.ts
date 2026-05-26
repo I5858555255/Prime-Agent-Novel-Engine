@@ -334,9 +334,16 @@ export class PrimeOnboardingSplashComponent implements Component {
 				: x > quietZone.right
 					? this.smoothStep((end - x) / horizontalFade)
 					: 1;
+		const routeProgress = (x - start) / Math.max(1, end - start);
+		const baseAmplitude = Math.max(2, Math.min(5, rows * 0.075));
+		const arch = Math.sin(routeProgress * Math.PI);
+		const ripple =
+			Math.sin(routeProgress * Math.PI * 2.4 + traceIndex * 1.1) * Math.max(1, Math.min(2, rows * 0.022));
 		const clearance = traceIndex === 2 ? 1 : 2;
 		const targetY =
-			traceIndex === 1 ? Math.min(rows - 1, quietZone.bottom + clearance) : Math.max(0, quietZone.top - clearance);
+			traceIndex === 1
+				? Math.min(rows - 1, quietZone.bottom + clearance + arch * baseAmplitude * 1.25 + ripple)
+				: Math.max(0, quietZone.top - clearance - arch * baseAmplitude * (traceIndex === 2 ? 0.45 : 0.7) + ripple);
 		return Math.round(baseY * (1 - blend) + targetY * blend);
 	}
 
