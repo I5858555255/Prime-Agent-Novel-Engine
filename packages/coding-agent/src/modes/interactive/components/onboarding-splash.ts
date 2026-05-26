@@ -56,7 +56,7 @@ export class OnboardingSplashComponent implements Component {
 		contentLines.push("");
 		contentLines.push("");
 		contentLines.push(this.center(this.formatTitle(), safeWidth));
-		contentLines.push(this.center(theme.fg("muted", "Choose how to sign in."), safeWidth));
+		contentLines.push(this.center(theme.fg("muted", "Sign in or add a key to choose a model."), safeWidth));
 		contentLines.push("");
 		contentLines.push("");
 
@@ -113,7 +113,7 @@ export class OnboardingSplashComponent implements Component {
 	}
 
 	private formatTitle(): string {
-		return theme.bold(theme.fg("text", "Welcome to Prime Agent"));
+		return theme.bold(theme.fg("text", "Prime Agent"));
 	}
 
 	private renderLogoLines(width: number): string[] {

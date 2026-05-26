@@ -18,7 +18,7 @@ describe("OnboardingSplashComponent", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("renders a spaced centered welcome flow with the butterfly logo and login choices", () => {
+	it("renders a spaced centered onboarding flow with the butterfly logo and login choices", () => {
 		const component = new OnboardingSplashComponent(
 			() => {},
 			() => {},
@@ -28,9 +28,10 @@ describe("OnboardingSplashComponent", () => {
 		const output = stripAnsi(lines.join("\n"));
 
 		expect(lines).toHaveLength(36);
-		expect(output).toContain("Welcome to Prime Agent");
+		expect(output).toContain("Prime Agent");
+		expect(output).not.toContain("Welcome to Prime Agent");
 		expect(output).not.toContain("Let's connect your account and choose a model.");
-		expect(output).toContain("Choose how to sign in.");
+		expect(output).toContain("Sign in or add a key to choose a model.");
 		expect(output).toContain("Use Prime Intellect");
 		expect(output).toContain("Use a subscription");
 		expect(output).toContain("Use an API key");
