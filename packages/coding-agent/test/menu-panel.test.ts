@@ -1,7 +1,7 @@
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, it } from "vitest";
-import { MenuPanel, MenuRow, MenuSearchInput } from "../src/modes/interactive/components/menu-panel.js";
+import { MenuList, MenuPanel, MenuRow, MenuSearchInput } from "../src/modes/interactive/components/menu-panel.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 class StaticComponent implements Component {
@@ -63,8 +63,38 @@ describe("MenuPanel", () => {
 		expect(output).toContain("openai");
 		expect(output).toContain("current");
 		expect(output).not.toContain("›");
-		expect(lines).toHaveLength(3);
+		expect(lines).toHaveLength(4);
+		expect(stripAnsi(lines[0] ?? "").trim()).toBe("");
 		expect(stripAnsi(lines.at(-1) ?? "").trim()).toBe("");
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBe(40);
+		}
+	});
+
+	it("collapses adjacent row padding around the selected row", () => {
+		const list = new MenuList();
+		list.addChild(
+			new MenuRow({
+				primary: "first",
+				secondary: "provider",
+				selected: false,
+			}),
+		);
+		list.addChild(
+			new MenuRow({
+				primary: "second",
+				secondary: "provider",
+				selected: true,
+			}),
+		);
+
+		const lines = list.render(40);
+		const output = lines.map((line) => stripAnsi(line));
+		const selectedIndex = output.findIndex((line) => line.includes("second"));
+
+		expect(selectedIndex).toBeGreaterThan(0);
+		expect(output[selectedIndex - 1]?.trim()).toBe("");
+		expect(output[selectedIndex - 2]?.trim()).not.toBe("");
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBe(40);
 		}

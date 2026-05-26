@@ -139,16 +139,32 @@ interface MenuRowOptions {
 	selected: boolean;
 }
 
+interface MenuRowRenderOptions {
+	includeTopPadding: boolean;
+	includeBottomPadding: boolean;
+}
+
 export class MenuRow implements Component, FullWidthMenuComponent {
 	readonly fillsMenuPanel = true;
 
 	constructor(private readonly options: MenuRowOptions) {}
+
+	get selected(): boolean {
+		return this.options.selected;
+	}
 
 	invalidate(): void {
 		// Row render is derived from constructor options.
 	}
 
 	render(width: number): string[] {
+		return this.renderWithPadding(width, {
+			includeTopPadding: true,
+			includeBottomPadding: true,
+		});
+	}
+
+	renderWithPadding(width: number, options: MenuRowRenderOptions): string[] {
 		const safeWidth = Math.max(ROW_PADDING_X * 2 + 1, width);
 		const meta = this.options.meta ? theme.fg("muted", this.options.meta) : "";
 		const secondary = this.options.secondary ? theme.fg("muted", this.options.secondary) : "";
@@ -161,12 +177,20 @@ export class MenuRow implements Component, FullWidthMenuComponent {
 		const primaryWidth = Math.max(1, innerWidth - metaWidth - gap);
 		const primaryText = truncateToWidth(primary, primaryWidth, "", true);
 		const primaryLine = meta ? primaryText + " ".repeat(gap) + meta : primaryText;
-		const lines = [this.rowLine(primaryLine, safeWidth)];
+		const lines: string[] = [];
+		if (options.includeTopPadding) {
+			for (let i = 0; i < ROW_PADDING_Y; i++) {
+				lines.push(this.rowLine("", safeWidth));
+			}
+		}
+		lines.push(this.rowLine(primaryLine, safeWidth));
 		if (secondary) {
 			lines.push(this.rowLine(truncateToWidth(secondary, innerWidth, "", true), safeWidth));
 		}
-		for (let i = 0; i < ROW_PADDING_Y; i++) {
-			lines.push(this.rowLine("", safeWidth));
+		if (options.includeBottomPadding) {
+			for (let i = 0; i < ROW_PADDING_Y; i++) {
+				lines.push(this.rowLine("", safeWidth));
+			}
 		}
 		return lines;
 	}
@@ -185,7 +209,21 @@ export class MenuList extends Container implements FullWidthMenuComponent {
 
 	override render(width: number): string[] {
 		const lines: string[] = [];
-		for (const child of this.children) {
+		for (let index = 0; index < this.children.length; index++) {
+			const child = this.children[index];
+			if (child instanceof MenuRow) {
+				const previousChild = this.children[index - 1];
+				const nextChild = this.children[index + 1];
+				const previousRow = previousChild instanceof MenuRow ? previousChild : undefined;
+				const nextRow = nextChild instanceof MenuRow ? nextChild : undefined;
+				lines.push(
+					...child.renderWithPadding(width, {
+						includeTopPadding: child.selected && previousRow?.selected !== true,
+						includeBottomPadding: child.selected || nextRow?.selected !== true,
+					}),
+				);
+				continue;
+			}
 			const childLines = fillsMenuPanel(child)
 				? child.render(width)
 				: child.render(Math.max(1, width - PANEL_PADDING_X * 2));
