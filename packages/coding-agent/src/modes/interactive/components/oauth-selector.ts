@@ -1,7 +1,7 @@
 import { Container, type Focusable, fuzzyFilter, getKeybindings, Spacer, TruncatedText } from "@earendil-works/pi-tui";
 import type { AuthStatus, AuthStorage } from "../../../core/auth-storage.js";
 import { theme } from "../theme/theme.js";
-import { MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
+import { MenuList, MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
 
 export type AuthSelectorProvider = {
 	id: string;
@@ -54,8 +54,8 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.onCancelCallback = onCancel;
 
 		const panel = new MenuPanel({
-			title: mode === "login" ? "Choose Provider" : "Remove Provider",
-			subtitle: mode === "login" ? "Type to filter, then press enter." : "Choose a stored credential to remove.",
+			title: mode === "login" ? "Providers" : "Saved Credentials",
+			subtitle: mode === "login" ? "Connect with a subscription or API key." : "Choose a credential to remove.",
 		});
 		this.addChild(panel);
 
@@ -70,7 +70,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		panel.addChild(new Spacer(1));
 
 		// Create list container
-		this.listContainer = new Container();
+		this.listContainer = new MenuList();
 		panel.addChild(this.listContainer);
 
 		// Initial render

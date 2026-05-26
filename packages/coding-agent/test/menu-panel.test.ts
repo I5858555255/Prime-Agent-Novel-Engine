@@ -56,12 +56,16 @@ describe("MenuPanel", () => {
 			meta: "current",
 			selected: true,
 		});
-		const output = stripAnsi(row.render(40).join("\n"));
+		const lines = row.render(40);
+		const output = stripAnsi(lines.join("\n"));
 
 		expect(output).toContain("openai/gpt-5");
 		expect(output).toContain("openai");
 		expect(output).toContain("current");
 		expect(output).not.toContain("›");
-		expect(visibleWidth(output)).toBe(40);
+		expect(lines).toHaveLength(2);
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBe(40);
+		}
 	});
 });

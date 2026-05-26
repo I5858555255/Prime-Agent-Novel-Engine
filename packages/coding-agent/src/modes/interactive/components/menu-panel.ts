@@ -16,6 +16,30 @@ interface MenuPanelOptions {
 const PANEL_PADDING_X = 2;
 const PANEL_PADDING_Y = 1;
 const FIELD_PADDING_X = 2;
+const ROW_PADDING_X = 2;
+
+interface FullWidthMenuComponent {
+	readonly fillsMenuPanel: true;
+}
+
+function fillsMenuPanel(component: Component): component is Component & FullWidthMenuComponent {
+	return (component as { fillsMenuPanel?: unknown }).fillsMenuPanel === true;
+}
+
+function surfaceLine(text: string, width: number, paddingX = PANEL_PADDING_X): string {
+	const innerWidth = Math.max(1, width - paddingX * 2);
+	const content = truncateToWidth(text, innerWidth, "");
+	const rightPadding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
+	const line = " ".repeat(paddingX) + content + rightPadding + " ".repeat(paddingX);
+	return theme.getEditorBackgroundColor()?.(line) ?? line;
+}
+
+function padLine(text: string, width: number, paddingX: number): string {
+	const innerWidth = Math.max(1, width - paddingX * 2);
+	const content = truncateToWidth(text, innerWidth, "");
+	const rightPadding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
+	return " ".repeat(paddingX) + content + rightPadding + " ".repeat(paddingX);
+}
 
 export class MenuPanel extends Container {
 	private title: string;
@@ -35,35 +59,30 @@ export class MenuPanel extends Container {
 		const lines: string[] = [];
 
 		for (let i = 0; i < PANEL_PADDING_Y; i++) {
-			lines.push(this.surfaceLine("", innerWidth));
+			lines.push(surfaceLine("", safeWidth));
 		}
-		lines.push(this.surfaceLine(theme.bold(theme.fg("text", this.title)), innerWidth));
+		lines.push(surfaceLine(theme.bold(theme.fg("text", this.title)), safeWidth));
 		if (this.options.subtitle) {
-			lines.push(this.surfaceLine(theme.fg("muted", this.options.subtitle), innerWidth));
+			lines.push(surfaceLine(theme.fg("muted", this.options.subtitle), safeWidth));
 		}
-		lines.push(this.surfaceLine("", innerWidth));
+		lines.push(surfaceLine("", safeWidth));
 
 		for (const child of this.children) {
-			for (const line of child.render(innerWidth)) {
-				lines.push(this.surfaceLine(line, innerWidth));
+			const childLines = fillsMenuPanel(child) ? child.render(safeWidth) : child.render(innerWidth);
+			for (const line of childLines) {
+				lines.push(fillsMenuPanel(child) ? line : surfaceLine(line, safeWidth));
 			}
 		}
 
 		for (let i = 0; i < PANEL_PADDING_Y; i++) {
-			lines.push(this.surfaceLine("", innerWidth));
+			lines.push(surfaceLine("", safeWidth));
 		}
 		return lines;
 	}
-
-	private surfaceLine(text: string, innerWidth: number): string {
-		const content = truncateToWidth(text, innerWidth, "");
-		const rightPadding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
-		const line = " ".repeat(PANEL_PADDING_X) + content + rightPadding + " ".repeat(PANEL_PADDING_X);
-		return theme.getEditorBackgroundColor()?.(line) ?? line;
-	}
 }
 
-export class MenuSearchInput implements Component, Focusable {
+export class MenuSearchInput implements Component, Focusable, FullWidthMenuComponent {
+	readonly fillsMenuPanel = true;
 	private readonly input = new Input();
 
 	constructor(private readonly placeholder: string) {}
@@ -103,18 +122,12 @@ export class MenuSearchInput implements Component, Focusable {
 			this.getValue() === "" && !this.focused
 				? theme.fg("dim", this.placeholder)
 				: this.stripInputPrompt(this.input.render(innerWidth + 2)[0] ?? "");
-		const field = this.padLine(content, innerWidth, FIELD_PADDING_X);
+		const field = padLine(content, safeWidth, FIELD_PADDING_X);
 		return [theme.getEditorBackgroundColor()?.(field) ?? field];
 	}
 
 	private stripInputPrompt(line: string): string {
 		return line.startsWith("> ") ? line.slice(2) : line;
-	}
-
-	private padLine(text: string, innerWidth: number, paddingX: number): string {
-		const content = truncateToWidth(text, innerWidth, "");
-		const rightPadding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
-		return " ".repeat(paddingX) + content + rightPadding + " ".repeat(paddingX);
 	}
 }
 
@@ -125,7 +138,9 @@ interface MenuRowOptions {
 	selected: boolean;
 }
 
-export class MenuRow implements Component {
+export class MenuRow implements Component, FullWidthMenuComponent {
+	readonly fillsMenuPanel = true;
+
 	constructor(private readonly options: MenuRowOptions) {}
 
 	invalidate(): void {
@@ -133,19 +148,44 @@ export class MenuRow implements Component {
 	}
 
 	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
+		const safeWidth = Math.max(ROW_PADDING_X * 2 + 1, width);
 		const meta = this.options.meta ? theme.fg("muted", this.options.meta) : "";
 		const secondary = this.options.secondary ? theme.fg("muted", this.options.secondary) : "";
 		const primary = this.options.selected
 			? theme.bold(theme.fg("text", this.options.primary))
 			: theme.fg("text", this.options.primary);
-		const left = secondary ? `${primary}  ${secondary}` : primary;
+		const innerWidth = Math.max(1, safeWidth - ROW_PADDING_X * 2);
 		const metaWidth = visibleWidth(meta);
 		const gap = meta ? 2 : 0;
-		const leftWidth = Math.max(1, safeWidth - metaWidth - gap);
-		const leftText = truncateToWidth(left, leftWidth, "", true);
-		const line = meta ? leftText + " ".repeat(gap) + meta : leftText;
-		const padded = truncateToWidth(line, safeWidth, "", true);
-		return [this.options.selected ? theme.bg("selectedBg", padded) : padded];
+		const primaryWidth = Math.max(1, innerWidth - metaWidth - gap);
+		const primaryText = truncateToWidth(primary, primaryWidth, "", true);
+		const primaryLine = meta ? primaryText + " ".repeat(gap) + meta : primaryText;
+		const secondaryLine = secondary ? truncateToWidth(secondary, innerWidth, "", true) : " ".repeat(innerWidth);
+		return [this.rowLine(primaryLine, safeWidth), this.rowLine(secondaryLine, safeWidth)];
+	}
+
+	private rowLine(text: string, width: number): string {
+		const line = padLine(text, width, ROW_PADDING_X);
+		if (this.options.selected) {
+			return theme.bg("selectedBg", line);
+		}
+		return theme.getEditorBackgroundColor()?.(line) ?? line;
+	}
+}
+
+export class MenuList extends Container implements FullWidthMenuComponent {
+	readonly fillsMenuPanel = true;
+
+	override render(width: number): string[] {
+		const lines: string[] = [];
+		for (const child of this.children) {
+			const childLines = fillsMenuPanel(child)
+				? child.render(width)
+				: child.render(Math.max(1, width - PANEL_PADDING_X * 2));
+			for (const line of childLines) {
+				lines.push(fillsMenuPanel(child) ? line : surfaceLine(line, width));
+			}
+		}
+		return lines;
 	}
 }

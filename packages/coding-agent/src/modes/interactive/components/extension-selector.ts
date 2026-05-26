@@ -6,7 +6,7 @@
 import { Container, getKeybindings, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { CountdownTimer } from "./countdown-timer.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
-import { MenuPanel, MenuRow } from "./menu-panel.js";
+import { MenuList, MenuPanel, MenuRow } from "./menu-panel.js";
 
 export interface ExtensionSelectorOptions {
 	tui?: TUI;
@@ -39,7 +39,6 @@ export class ExtensionSelectorComponent extends Container {
 
 		this.panel = new MenuPanel({
 			title,
-			subtitle: "Choose an option.",
 		});
 		this.addChild(this.panel);
 
@@ -52,7 +51,7 @@ export class ExtensionSelectorComponent extends Container {
 			);
 		}
 
-		this.listContainer = new Container();
+		this.listContainer = new MenuList();
 		this.panel.addChild(this.listContainer);
 		this.panel.addChild(new Spacer(1));
 		this.panel.addChild(

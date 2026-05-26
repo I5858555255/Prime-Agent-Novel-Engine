@@ -4,7 +4,7 @@ import type { ModelRegistry } from "../../../core/model-registry.js";
 import type { SettingsManager } from "../../../core/settings-manager.js";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
-import { MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
+import { MenuList, MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
 
 interface ModelItem {
 	provider: string;
@@ -74,8 +74,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.onCancelCallback = onCancel;
 
 		const panel = new MenuPanel({
-			title: "Choose Model",
-			subtitle: "Type to filter, then press enter.",
+			title: "Models",
+			subtitle: "Available from configured providers.",
 		});
 		this.addChild(panel);
 
@@ -107,7 +107,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		panel.addChild(new Spacer(1));
 
 		// Create list container
-		this.listContainer = new Container();
+		this.listContainer = new MenuList();
 		panel.addChild(this.listContainer);
 
 		// Load models and do initial render
