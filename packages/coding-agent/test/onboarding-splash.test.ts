@@ -66,6 +66,11 @@ describe("OnboardingSplashComponent", () => {
 		expect(subscriptionLine.indexOf("provider sign-in")).toBe(apiKeyLine.indexOf("bring your own key"));
 		expect(rendered.some((line) => line.includes("─".repeat(10)))).toBe(false);
 
+		const titleIndex = rendered.findIndex((line) => line.includes("Prime Agent"));
+		const subtitleIndex = rendered.findIndex((line) => line.includes("Sign in or add a key to choose a model."));
+		expect(rendered[titleIndex + 1]?.trim()).toBe("");
+		expect(subtitleIndex - titleIndex).toBe(2);
+
 		const primeIndex = rendered.findIndex((line) => line.includes("Use Prime Intellect"));
 		const subscriptionIndex = rendered.findIndex((line) => line.includes("Use a subscription"));
 		const apiKeyIndex = rendered.findIndex((line) => line.includes("Use an API key"));

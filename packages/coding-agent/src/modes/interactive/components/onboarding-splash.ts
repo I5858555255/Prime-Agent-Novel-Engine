@@ -56,6 +56,7 @@ export class OnboardingSplashComponent implements Component {
 		contentLines.push("");
 		contentLines.push("");
 		contentLines.push(this.center(this.formatTitle(), safeWidth));
+		contentLines.push("");
 		contentLines.push(this.center(theme.fg("muted", "Sign in or add a key to choose a model."), safeWidth));
 		contentLines.push("");
 		contentLines.push("");
