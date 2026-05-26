@@ -128,9 +128,10 @@ import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
 import { keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
-import { ModelSelectorComponent } from "./components/model-selector.js";
+import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
 import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.js";
 import { type OnboardingAuthChoice, OnboardingSplashComponent } from "./components/onboarding-splash.js";
+import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -312,6 +313,13 @@ type AuthenticationResult =
 	  }
 	| { status: "cancelled" }
 	| { status: "failed" };
+
+type ModelSelectionResult = { status: "selected" } | { status: "cancelled" } | { status: "action"; actionId: string };
+
+const ONBOARDING_MODEL_ACTIONS: readonly ModelSelectorAction[] = [
+	{ id: "subscription", label: "Use a subscription", description: "sign in with another provider" },
+	{ id: "api_key", label: "Use an API key", description: "bring your own provider key" },
+];
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 
@@ -959,13 +967,15 @@ export class InteractiveMode {
 	}
 
 	private async runOnboardingFlow(): Promise<boolean> {
-		const authResult = await this.showLoginAuthTypeSelector();
+		const authResult = await this.showOnboardingPrimeLogin();
 		if (authResult.status !== "success") {
-			this.showStatus("Login required. Use /login to continue.");
+			this.showStatus(
+				"Prime Intellect login required for onboarding. Use /login to configure other providers later.",
+			);
 			return false;
 		}
 
-		const selectedModel = await this.promptForModelSelection(authResult.providerId);
+		const selectedModel = await this.promptForModelSelection(authResult.providerId, { allowProviderSetup: true });
 		if (selectedModel || !this.shouldRunOnboarding()) {
 			return true;
 		}
@@ -4590,28 +4600,63 @@ export class InteractiveMode {
 		void this.showModelSelectorAsync(initialSearchInput);
 	}
 
-	private async promptForModelSelection(providerId?: string): Promise<boolean> {
+	private async promptForModelSelection(
+		providerId?: string,
+		options: { allowProviderSetup?: boolean } = {},
+	): Promise<boolean> {
 		this.session.modelRegistry.refresh();
 		const availableModels = this.session.modelRegistry.getAvailable();
-		if (availableModels.length === 0) {
+		if (availableModels.length === 0 && !options.allowProviderSetup) {
 			this.showStatus("No models available. Add credentials with /login.");
 			return false;
 		}
 
-		this.showStatus("Select a model to continue.");
-		const hasProviderModels = providerId ? availableModels.some((model) => model.provider === providerId) : false;
-		return this.showModelSelectorAsync(hasProviderModels ? providerId : undefined);
+		let preferredProviderId = providerId;
+		while (true) {
+			this.session.modelRegistry.refresh();
+			const refreshedModels = this.session.modelRegistry.getAvailable();
+			const hasProviderModels = preferredProviderId
+				? refreshedModels.some((model) => model.provider === preferredProviderId)
+				: false;
+			const initialSearchInput = hasProviderModels ? preferredProviderId : undefined;
+
+			this.showStatus("Select a model to continue.");
+			const result = await this.showModelSelectorAsync(
+				initialSearchInput,
+				options.allowProviderSetup
+					? {
+							actions: ONBOARDING_MODEL_ACTIONS,
+							subtitle: "Choose a Prime model, or add another provider.",
+						}
+					: undefined,
+			);
+			if (result.status === "selected") {
+				return true;
+			}
+			if (result.status !== "action") {
+				return false;
+			}
+
+			const authType = result.actionId === "subscription" ? "oauth" : "api_key";
+			const authResult = await this.showLoginProviderSelector(authType, { returnToAuthTypeSelectorOnCancel: false });
+			if (authResult.status === "success") {
+				preferredProviderId = authResult.providerId;
+			}
+		}
 	}
 
-	private showModelSelectorAsync(initialSearchInput?: string): Promise<boolean> {
+	private showModelSelectorAsync(
+		initialSearchInput?: string,
+		options?: { actions?: ReadonlyArray<ModelSelectorAction>; subtitle?: string },
+	): Promise<ModelSelectionResult> {
 		return new Promise((resolve) => {
 			let settled = false;
-			const settle = (selected: boolean) => {
+			const settle = (result: ModelSelectionResult) => {
 				if (settled) {
 					return;
 				}
 				settled = true;
-				resolve(selected);
+				resolve(result);
 			};
 
 			this.showSelector((done) => {
@@ -4630,19 +4675,28 @@ export class InteractiveMode {
 							this.showStatus(`Model: ${model.id}`);
 							void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 							this.checkDaxnutsEasterEgg(model);
-							settle(true);
+							settle({ status: "selected" });
 						} catch (error) {
 							done();
 							this.showError(error instanceof Error ? error.message : String(error));
-							settle(false);
+							settle({ status: "cancelled" });
 						}
 					},
 					() => {
 						done();
 						this.ui.requestRender();
-						settle(false);
+						settle({ status: "cancelled" });
 					},
 					initialSearchInput,
+					{
+						actions: options?.actions,
+						onAction: (actionId) => {
+							done();
+							this.ui.requestRender();
+							settle({ status: "action", actionId });
+						},
+						subtitle: options?.subtitle,
+					},
 				);
 				return { component: selector, focus: selector };
 			});
@@ -5035,6 +5089,41 @@ export class InteractiveMode {
 		return options.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
+	private showOnboardingPrimeLogin(): Promise<AuthenticationResult> {
+		return new Promise((resolve) => {
+			let settled = false;
+			let handle: OverlayHandle | undefined;
+			const settle = (result: AuthenticationResult) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				resolve(result);
+			};
+			const close = () => {
+				handle?.hide();
+				this.ui.requestRender();
+			};
+			const selector = new PrimeOnboardingSplashComponent(
+				() => {
+					close();
+					void this.showPrimeInferenceLoginDialog().then(settle);
+				},
+				() => {
+					close();
+					settle({ status: "cancelled" });
+				},
+				{ getRows: () => this.ui.terminal.rows },
+			);
+			handle = this.ui.showOverlay(selector, {
+				width: "100%",
+				maxHeight: "100%",
+				row: 0,
+				col: 0,
+			});
+		});
+	}
+
 	private showLoginAuthTypeSelector(): Promise<AuthenticationResult> {
 		return new Promise((resolve) => {
 			let settled = false;
@@ -5075,7 +5164,10 @@ export class InteractiveMode {
 		});
 	}
 
-	private showLoginProviderSelector(authType: "oauth" | "api_key"): Promise<AuthenticationResult> {
+	private showLoginProviderSelector(
+		authType: "oauth" | "api_key",
+		options: { returnToAuthTypeSelectorOnCancel?: boolean } = { returnToAuthTypeSelectorOnCancel: true },
+	): Promise<AuthenticationResult> {
 		const providerOptions = this.getLoginProviderOptions(authType);
 		if (providerOptions.length === 0) {
 			this.showStatus(
@@ -5113,7 +5205,11 @@ export class InteractiveMode {
 				},
 				() => {
 					close();
-					void this.showLoginAuthTypeSelector().then(resolve);
+					if (options.returnToAuthTypeSelectorOnCancel ?? true) {
+						void this.showLoginAuthTypeSelector().then(resolve);
+						return;
+					}
+					resolve({ status: "cancelled" });
 				},
 				(providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
 			);
