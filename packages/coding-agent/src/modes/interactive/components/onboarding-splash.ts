@@ -17,15 +17,15 @@ interface OnboardingSplashOptions {
 }
 
 const ONBOARDING_OPTIONS: readonly OnboardingOption[] = [
-	{ id: "prime", label: "Use Prime Intellect", description: "managed inference with your Prime account" },
-	{ id: "subscription", label: "Use a subscription", description: "sign in through a supported provider" },
-	{ id: "api_key", label: "Use an API key", description: "paste a provider key" },
+	{ id: "prime", label: "Use Prime Intellect", description: "managed inference" },
+	{ id: "subscription", label: "Use a subscription", description: "provider sign-in" },
+	{ id: "api_key", label: "Use an API key", description: "bring your own key" },
 ];
 
 const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 const OPTION_LABEL_WIDTH = ONBOARDING_OPTIONS.reduce((max, option) => Math.max(max, visibleWidth(option.label)), 0);
-const OPTION_COLUMN_GAP = "    ";
+const OPTION_COLUMN_GAP = "   ";
 const SPLASH_BRAND_PURPLE = "#7f5bd5";
 
 function brandPurple(text: string): string {
@@ -56,8 +56,7 @@ export class OnboardingSplashComponent implements Component {
 		contentLines.push("");
 		contentLines.push("");
 		contentLines.push(this.center(this.formatTitle(), safeWidth));
-		contentLines.push(this.center(theme.fg("muted", "Let's connect your account and choose a model."), safeWidth));
-		contentLines.push("");
+		contentLines.push(this.center(theme.fg("muted", "Choose how to sign in."), safeWidth));
 		contentLines.push("");
 
 		for (const optionLine of this.renderOptionLines(safeWidth)) {
@@ -120,7 +119,7 @@ export class OnboardingSplashComponent implements Component {
 		const left = Math.max(0, Math.floor((width - logoWidth) / 2));
 		return LOGO_LINES.map((line) => {
 			const paddedLine = line + " ".repeat(Math.max(0, LOGO_WIDTH - visibleWidth(line)));
-			const content = brandPurple(truncateToWidth(paddedLine, logoWidth, ""));
+			const content = theme.fg("text", truncateToWidth(paddedLine, logoWidth, ""));
 			return this.place(content, width, left);
 		});
 	}
@@ -129,10 +128,7 @@ export class OnboardingSplashComponent implements Component {
 		const optionLines = ONBOARDING_OPTIONS.map((option, index) =>
 			this.formatOption(option, index === this.selectedIndex),
 		);
-		const optionWidth = Math.min(
-			width,
-			optionLines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0),
-		);
+		const optionWidth = optionLines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 		const left = Math.max(0, Math.floor((width - optionWidth) / 2));
 		return optionLines.map((line) => this.place(line, width, left));
 	}

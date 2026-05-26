@@ -18,7 +18,7 @@ describe("OnboardingSplashComponent", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("renders the centered welcome flow with the butterfly logo and login choices", () => {
+	it("renders a compact centered welcome flow with the butterfly logo and login choices", () => {
 		const component = new OnboardingSplashComponent(
 			() => {},
 			() => {},
@@ -29,7 +29,8 @@ describe("OnboardingSplashComponent", () => {
 
 		expect(lines).toHaveLength(36);
 		expect(output).toContain("Welcome to Prime Agent");
-		expect(output).toContain("Let's connect your account and choose a model.");
+		expect(output).not.toContain("Let's connect your account and choose a model.");
+		expect(output).toContain("Choose how to sign in.");
 		expect(output).toContain("Use Prime Intellect");
 		expect(output).toContain("Use a subscription");
 		expect(output).toContain("Use an API key");
@@ -60,10 +61,9 @@ describe("OnboardingSplashComponent", () => {
 
 		expect(primeLine.indexOf("Use Prime Intellect")).toBe(subscriptionLine.indexOf("Use a subscription"));
 		expect(subscriptionLine.indexOf("Use a subscription")).toBe(apiKeyLine.indexOf("Use an API key"));
-		expect(primeLine).toContain("  managed inference with your Prime account");
-		expect(subscriptionLine.indexOf("sign in through a supported provider")).toBe(
-			apiKeyLine.indexOf("paste a provider key"),
-		);
+		expect(primeLine).toContain("  managed inference");
+		expect(subscriptionLine.indexOf("provider sign-in")).toBe(apiKeyLine.indexOf("bring your own key"));
+		expect(rendered.some((line) => line.includes("─".repeat(10)))).toBe(false);
 	});
 
 	it("selects the highlighted login option", () => {
