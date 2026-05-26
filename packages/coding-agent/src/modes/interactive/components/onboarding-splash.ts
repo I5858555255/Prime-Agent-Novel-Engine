@@ -58,11 +58,13 @@ export class OnboardingSplashComponent implements Component {
 		contentLines.push(this.center(this.formatTitle(), safeWidth));
 		contentLines.push(this.center(theme.fg("muted", "Choose how to sign in."), safeWidth));
 		contentLines.push("");
+		contentLines.push("");
 
 		for (const optionLine of this.renderOptionLines(safeWidth)) {
 			contentLines.push(optionLine);
 		}
 
+		contentLines.push("");
 		contentLines.push("");
 		contentLines.push("");
 		contentLines.push(
@@ -130,7 +132,10 @@ export class OnboardingSplashComponent implements Component {
 		);
 		const optionWidth = optionLines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 		const left = Math.max(0, Math.floor((width - optionWidth) / 2));
-		return optionLines.map((line) => this.place(line, width, left));
+		return optionLines.flatMap((line, index) => {
+			const renderedLine = this.place(line, width, left);
+			return index < optionLines.length - 1 ? [renderedLine, this.blank(width)] : [renderedLine];
+		});
 	}
 
 	private center(text: string, width: number): string {

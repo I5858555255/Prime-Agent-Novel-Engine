@@ -18,7 +18,7 @@ describe("OnboardingSplashComponent", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("renders a compact centered welcome flow with the butterfly logo and login choices", () => {
+	it("renders a spaced centered welcome flow with the butterfly logo and login choices", () => {
 		const component = new OnboardingSplashComponent(
 			() => {},
 			() => {},
@@ -64,6 +64,14 @@ describe("OnboardingSplashComponent", () => {
 		expect(primeLine).toContain("  managed inference");
 		expect(subscriptionLine.indexOf("provider sign-in")).toBe(apiKeyLine.indexOf("bring your own key"));
 		expect(rendered.some((line) => line.includes("─".repeat(10)))).toBe(false);
+
+		const primeIndex = rendered.findIndex((line) => line.includes("Use Prime Intellect"));
+		const subscriptionIndex = rendered.findIndex((line) => line.includes("Use a subscription"));
+		const apiKeyIndex = rendered.findIndex((line) => line.includes("Use an API key"));
+		expect(rendered[primeIndex + 1]?.trim()).toBe("");
+		expect(rendered[subscriptionIndex + 1]?.trim()).toBe("");
+		expect(subscriptionIndex - primeIndex).toBe(2);
+		expect(apiKeyIndex - subscriptionIndex).toBe(2);
 	});
 
 	it("selects the highlighted login option", () => {
