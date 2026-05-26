@@ -17,6 +17,7 @@ const PANEL_PADDING_X = 2;
 const PANEL_PADDING_Y = 1;
 const FIELD_PADDING_X = 2;
 const ROW_PADDING_X = 2;
+const ROW_PADDING_Y = 1;
 
 interface FullWidthMenuComponent {
 	readonly fillsMenuPanel: true;
@@ -160,8 +161,14 @@ export class MenuRow implements Component, FullWidthMenuComponent {
 		const primaryWidth = Math.max(1, innerWidth - metaWidth - gap);
 		const primaryText = truncateToWidth(primary, primaryWidth, "", true);
 		const primaryLine = meta ? primaryText + " ".repeat(gap) + meta : primaryText;
-		const secondaryLine = secondary ? truncateToWidth(secondary, innerWidth, "", true) : " ".repeat(innerWidth);
-		return [this.rowLine(primaryLine, safeWidth), this.rowLine(secondaryLine, safeWidth)];
+		const lines = [this.rowLine(primaryLine, safeWidth)];
+		if (secondary) {
+			lines.push(this.rowLine(truncateToWidth(secondary, innerWidth, "", true), safeWidth));
+		}
+		for (let i = 0; i < ROW_PADDING_Y; i++) {
+			lines.push(this.rowLine("", safeWidth));
+		}
+		return lines;
 	}
 
 	private rowLine(text: string, width: number): string {

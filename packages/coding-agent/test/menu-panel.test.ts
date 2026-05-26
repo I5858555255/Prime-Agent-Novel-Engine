@@ -63,7 +63,8 @@ describe("MenuPanel", () => {
 		expect(output).toContain("openai");
 		expect(output).toContain("current");
 		expect(output).not.toContain("›");
-		expect(lines).toHaveLength(2);
+		expect(lines).toHaveLength(3);
+		expect(stripAnsi(lines.at(-1) ?? "").trim()).toBe("");
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBe(40);
 		}
