@@ -34,12 +34,25 @@ describe("LoginDialogComponent", () => {
 		const output = stripAnsi(dialog.render(88).join("\n"));
 
 		expect(output).toContain("Login to Anthropic");
-		expect(output).toContain("Open the browser window to continue.");
+		expect(output).toContain("Browser sign-in");
+		expect(output).toContain("Sign-in link");
 		expect(output).toContain("https://example.com/oauth?client_id=test");
+		expect(output).toContain("Next step");
 		expect(output).toContain("Complete login in your browser.");
 		expect(output).not.toContain("─");
 		expect(output).not.toContain("> ");
 		expect(mocks.exec).toHaveBeenCalledOnce();
+	});
+
+	it("renders verification codes as a distinct field", () => {
+		const dialog = new LoginDialogComponent(createFakeTui(), "prime-inference", () => {}, "Prime Inference");
+
+		dialog.showAuth("https://example.com/challenge", "Code: abc-123");
+		const output = stripAnsi(dialog.render(88).join("\n"));
+
+		expect(output).toContain("Verification code");
+		expect(output).toContain("abc-123");
+		expect(output).not.toContain("Code: abc-123");
 	});
 
 	it("renders API key prompts without shell input markers", () => {

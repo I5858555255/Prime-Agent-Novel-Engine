@@ -9,6 +9,13 @@ export type AuthSelectorProvider = {
 	authType: "oauth" | "api_key";
 };
 
+export function compareAuthSelectorProviders(a: AuthSelectorProvider, b: AuthSelectorProvider): number {
+	if (a.authType !== b.authType) {
+		return a.authType === "oauth" ? -1 : 1;
+	}
+	return a.name.localeCompare(b.name);
+}
+
 /**
  * Component that renders an auth provider selector
  */
@@ -48,8 +55,8 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.mode = mode;
 		this.authStorage = authStorage;
 		this.getAuthStatus = getAuthStatus ?? ((providerId) => this.authStorage.getAuthStatus(providerId));
-		this.allProviders = providers;
-		this.filteredProviders = providers;
+		this.allProviders = this.sortProviders(providers);
+		this.filteredProviders = this.allProviders;
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 
@@ -83,6 +90,27 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			: this.allProviders;
 		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, Math.max(0, this.filteredProviders.length - 1)));
 		this.updateList();
+	}
+
+	private sortProviders(providers: AuthSelectorProvider[]): AuthSelectorProvider[] {
+		return [...providers].sort((a, b) => {
+			const configuredDelta = Number(this.isProviderConfigured(b)) - Number(this.isProviderConfigured(a));
+			if (configuredDelta !== 0) {
+				return configuredDelta;
+			}
+			return compareAuthSelectorProviders(a, b);
+		});
+	}
+
+	private isProviderConfigured(provider: AuthSelectorProvider): boolean {
+		const credential = this.authStorage.get(provider.id);
+		if (credential) {
+			return true;
+		}
+		if (provider.authType !== "api_key") {
+			return false;
+		}
+		return this.getAuthStatus(provider.id).source !== undefined;
 	}
 
 	private updateList(): void {

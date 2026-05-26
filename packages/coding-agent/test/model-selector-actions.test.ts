@@ -1,4 +1,4 @@
-import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import { type KeyId, setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -33,26 +33,28 @@ describe("ModelSelectorComponent provider actions", () => {
 		}
 	});
 
-	it("shows provider setup actions after models and emits the selected action", async () => {
+	it("shows provider setup shortcut in the warning and emits the selected action", async () => {
 		const harness = await createHarness({
 			models: [{ id: "faux-1", name: "One", reasoning: true }],
 		});
 		harnesses.push(harness);
 
 		let selectedAction: string | undefined;
+		let selectedModel: string | undefined;
+		setKeybindings(new KeybindingsManager({ "app.provider.add": "ctrl+x" as KeyId }));
 		const selector = new ModelSelectorComponent(
 			createFakeTui(),
 			harness.getModel("faux-1"),
 			harness.settingsManager,
 			harness.session.modelRegistry,
 			[],
-			() => {},
+			(model) => {
+				selectedModel = model.id;
+			},
 			() => {},
 			undefined,
 			{
-				actions: [
-					{ id: "subscription", label: "Use a subscription", description: "sign in with another provider" },
-				],
+				actions: [{ id: "add_provider", label: "Add provider...", description: "subscription or API key" }],
 				onAction: (actionId) => {
 					selectedAction = actionId;
 				},
@@ -64,12 +66,15 @@ describe("ModelSelectorComponent provider actions", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("Choose a Prime model, or add another provider.");
-		expect(output).toContain("Use a subscription");
-		expect(output).toContain("sign in with another provider");
+		expect(output).toContain("ctrl+x to add providers and access more models.");
+		expect(output.indexOf("add provider")).toBeLessThan(output.indexOf("Search models"));
+		expect(output.match(/add provider/g)).toHaveLength(1);
 
-		selector.handleInput("\x1b[B");
 		selector.handleInput("\r");
+		expect(selectedModel).toBe("faux-1");
 
-		expect(selectedAction).toBe("subscription");
+		selector.handleInput("\x18");
+
+		expect(selectedAction).toBe("add_provider");
 	});
 });

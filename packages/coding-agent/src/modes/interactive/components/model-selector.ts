@@ -3,7 +3,7 @@ import { Container, type Focusable, fuzzyFilter, getKeybindings, Spacer, Text, t
 import type { ModelRegistry } from "../../../core/model-registry.js";
 import type { SettingsManager } from "../../../core/settings-manager.js";
 import { theme } from "../theme/theme.js";
-import { keyHint } from "./keybinding-hints.js";
+import { keyHint, keyText } from "./keybinding-hints.js";
 import { MenuList, MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
 
 interface ModelItem {
@@ -103,7 +103,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.scopeHintText = new Text(this.getScopeHintText(), 0, 0);
 			panel.addChild(this.scopeHintText);
 		} else {
-			const hintText = "Only showing models from configured providers. Use /login to add providers.";
+			const hintText =
+				this.actions.length > 0
+					? `Only showing models from configured providers. ${keyText("app.provider.add")} to add providers and access more models.`
+					: "Only showing models from configured providers. Use /login to add providers and see more models.";
 			panel.addChild(new Text(theme.fg("warning", hintText), 0, 0));
 		}
 		panel.addChild(new Spacer(1));
@@ -264,22 +267,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.listContainer.addChild(new Text(scrollInfo, 0, 0));
 		}
 
-		if (this.actions.length > 0) {
-			this.listContainer.addChild(new Spacer(1));
-			for (let actionIndex = 0; actionIndex < this.actions.length; actionIndex++) {
-				const action = this.actions[actionIndex];
-				if (!action) continue;
-
-				this.listContainer.addChild(
-					new MenuRow({
-						primary: action.label,
-						secondary: action.description,
-						selected: this.selectedIndex === this.filteredModels.length + actionIndex,
-					}),
-				);
-			}
-		}
-
 		// Show error message or "no results" if empty
 		if (this.errorMessage) {
 			// Show error in red
@@ -300,6 +287,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
+		const addProviderAction = this.actions[0];
+		if (addProviderAction && kb.matches(keyData, "app.provider.add")) {
+			this.onActionCallback?.(addProviderAction.id);
+			return;
+		}
 		if (kb.matches(keyData, "tui.input.tab")) {
 			if (this.scopedModelItems.length > 0) {
 				const nextScope: ModelScope = this.scope === "all" ? "scoped" : "all";
@@ -351,15 +343,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.handleSelect(selectedModel.model);
 			return;
 		}
-
-		const selectedAction = this.actions[this.selectedIndex - this.filteredModels.length];
-		if (selectedAction) {
-			this.onActionCallback?.(selectedAction.id);
-		}
 	}
 
 	private getSelectableCount(): number {
-		return this.filteredModels.length + this.actions.length;
+		return this.filteredModels.length;
 	}
 
 	getSearchInput(): MenuSearchInput {

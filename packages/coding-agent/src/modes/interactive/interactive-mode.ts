@@ -129,8 +129,11 @@ import { FooterComponent } from "./components/footer.js";
 import { keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
 import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
-import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.js";
-import { type OnboardingAuthChoice, OnboardingSplashComponent } from "./components/onboarding-splash.js";
+import {
+	type AuthSelectorProvider,
+	compareAuthSelectorProviders,
+	OAuthSelectorComponent,
+} from "./components/oauth-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
@@ -316,9 +319,8 @@ type AuthenticationResult =
 
 type ModelSelectionResult = { status: "selected" } | { status: "cancelled" } | { status: "action"; actionId: string };
 
-const ONBOARDING_MODEL_ACTIONS: readonly ModelSelectorAction[] = [
-	{ id: "subscription", label: "Use a subscription", description: "sign in with another provider" },
-	{ id: "api_key", label: "Use an API key", description: "bring your own provider key" },
+const MODEL_SELECTOR_ACTIONS: readonly ModelSelectorAction[] = [
+	{ id: "add_provider", label: "Add provider...", description: "subscription or API key" },
 ];
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
@@ -975,7 +977,7 @@ export class InteractiveMode {
 			return false;
 		}
 
-		const selectedModel = await this.promptForModelSelection(authResult.providerId, { allowProviderSetup: true });
+		const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
 		if (selectedModel || !this.shouldRunOnboarding()) {
 			return true;
 		}
@@ -4597,13 +4599,24 @@ export class InteractiveMode {
 	}
 
 	private showModelSelector(initialSearchInput?: string): void {
-		void this.showModelSelectorAsync(initialSearchInput);
+		void this.showModelSelectorWithProviderSetup(initialSearchInput);
 	}
 
-	private async promptForModelSelection(
-		providerId?: string,
-		options: { allowProviderSetup?: boolean } = {},
-	): Promise<boolean> {
+	private async showModelSelectorWithProviderSetup(initialSearchInput?: string): Promise<void> {
+		let nextSearchInput = initialSearchInput;
+		while (true) {
+			const result = await this.showModelSelectorAsync(nextSearchInput, {
+				actions: MODEL_SELECTOR_ACTIONS,
+			});
+			if (result.status !== "action") {
+				return;
+			}
+			await this.showLoginProviderSelector();
+			nextSearchInput = undefined;
+		}
+	}
+
+	private async promptForModelSelection(options: { allowProviderSetup?: boolean } = {}): Promise<boolean> {
 		this.session.modelRegistry.refresh();
 		const availableModels = this.session.modelRegistry.getAvailable();
 		if (availableModels.length === 0 && !options.allowProviderSetup) {
@@ -4611,21 +4624,15 @@ export class InteractiveMode {
 			return false;
 		}
 
-		let preferredProviderId = providerId;
 		while (true) {
 			this.session.modelRegistry.refresh();
-			const refreshedModels = this.session.modelRegistry.getAvailable();
-			const hasProviderModels = preferredProviderId
-				? refreshedModels.some((model) => model.provider === preferredProviderId)
-				: false;
-			const initialSearchInput = hasProviderModels ? preferredProviderId : undefined;
 
 			this.showStatus("Select a model to continue.");
 			const result = await this.showModelSelectorAsync(
-				initialSearchInput,
+				undefined,
 				options.allowProviderSetup
 					? {
-							actions: ONBOARDING_MODEL_ACTIONS,
+							actions: MODEL_SELECTOR_ACTIONS,
 							subtitle: "Choose a Prime model, or add another provider.",
 						}
 					: undefined,
@@ -4637,11 +4644,7 @@ export class InteractiveMode {
 				return false;
 			}
 
-			const authType = result.actionId === "subscription" ? "oauth" : "api_key";
-			const authResult = await this.showLoginProviderSelector(authType, { returnToAuthTypeSelectorOnCancel: false });
-			if (authResult.status === "success") {
-				preferredProviderId = authResult.providerId;
-			}
+			await this.showLoginProviderSelector();
 		}
 	}
 
@@ -5068,7 +5071,7 @@ export class InteractiveMode {
 		}
 
 		const filteredOptions = authType ? options.filter((option) => option.authType === authType) : options;
-		return filteredOptions.sort((a, b) => a.name.localeCompare(b.name));
+		return filteredOptions.sort(compareAuthSelectorProviders);
 	}
 
 	private getLogoutProviderOptions(): AuthSelectorProvider[] {
@@ -5094,6 +5097,7 @@ export class InteractiveMode {
 		return new Promise((resolve) => {
 			let settled = false;
 			let handle: OverlayHandle | undefined;
+			let selector: PrimeOnboardingSplashComponent | undefined;
 			const settle = (result: AuthenticationResult) => {
 				if (settled) {
 					return;
@@ -5102,10 +5106,11 @@ export class InteractiveMode {
 				resolve(result);
 			};
 			const close = () => {
+				selector?.dispose();
 				handle?.hide();
 				this.ui.requestRender();
 			};
-			const selector = new PrimeOnboardingSplashComponent(
+			selector = new PrimeOnboardingSplashComponent(
 				() => {
 					close();
 					void this.showPrimeInferenceLoginDialog().then(settle);
@@ -5114,7 +5119,10 @@ export class InteractiveMode {
 					close();
 					settle({ status: "cancelled" });
 				},
-				{ getRows: () => this.ui.terminal.rows },
+				{
+					getRows: () => this.ui.terminal.rows,
+					requestRender: () => this.ui.requestRender(),
+				},
 			);
 			handle = this.ui.showOverlay(selector, {
 				width: "100%",
@@ -5125,54 +5133,15 @@ export class InteractiveMode {
 		});
 	}
 
-	private showLoginAuthTypeSelector(): Promise<AuthenticationResult> {
-		return new Promise((resolve) => {
-			let settled = false;
-			let handle: OverlayHandle | undefined;
-			const settle = (result: AuthenticationResult) => {
-				if (settled) {
-					return;
-				}
-				settled = true;
-				resolve(result);
-			};
-			const close = () => {
-				handle?.hide();
-				this.ui.requestRender();
-			};
-			const selector = new OnboardingSplashComponent(
-				(choice: OnboardingAuthChoice) => {
-					close();
-					if (choice === "prime") {
-						void this.showPrimeInferenceLoginDialog().then(settle);
-						return;
-					}
-					const authType = choice === "subscription" ? "oauth" : "api_key";
-					void this.showLoginProviderSelector(authType).then(settle);
-				},
-				() => {
-					close();
-					settle({ status: "cancelled" });
-				},
-				{ getRows: () => this.ui.terminal.rows },
-			);
-			handle = this.ui.showOverlay(selector, {
-				width: "100%",
-				maxHeight: "100%",
-				row: 0,
-				col: 0,
-			});
-		});
-	}
-
-	private showLoginProviderSelector(
-		authType: "oauth" | "api_key",
-		options: { returnToAuthTypeSelectorOnCancel?: boolean } = { returnToAuthTypeSelectorOnCancel: true },
-	): Promise<AuthenticationResult> {
+	private showLoginProviderSelector(authType?: "oauth" | "api_key"): Promise<AuthenticationResult> {
 		const providerOptions = this.getLoginProviderOptions(authType);
 		if (providerOptions.length === 0) {
 			this.showStatus(
-				authType === "oauth" ? "No subscription providers available." : "No API key providers available.",
+				authType === "oauth"
+					? "No subscription providers available."
+					: authType === "api_key"
+						? "No API key providers available."
+						: "No providers available.",
 			);
 			return Promise.resolve({ status: "failed" });
 		}
@@ -5198,6 +5167,8 @@ export class InteractiveMode {
 
 					if (providerOption.authType === "oauth") {
 						resolve(await this.showLoginDialog(providerOption.id, providerOption.name));
+					} else if (providerOption.id === PRIME_INFERENCE_PROVIDER_ID) {
+						resolve(await this.showPrimeInferenceLoginDialog());
 					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
 						resolve(await this.showBedrockSetupDialog(providerOption.id, providerOption.name));
 					} else {
@@ -5206,10 +5177,6 @@ export class InteractiveMode {
 				},
 				() => {
 					close();
-					if (options.returnToAuthTypeSelectorOnCancel ?? true) {
-						void this.showLoginAuthTypeSelector().then(resolve);
-						return;
-					}
 					resolve({ status: "cancelled" });
 				},
 				(providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
@@ -5220,9 +5187,9 @@ export class InteractiveMode {
 
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
 		if (mode === "login") {
-			const authResult = await this.showLoginAuthTypeSelector();
+			const authResult = await this.showLoginProviderSelector();
 			if (authResult.status === "success") {
-				await this.promptForModelSelection(authResult.providerId);
+				await this.promptForModelSelection();
 			}
 			return;
 		}

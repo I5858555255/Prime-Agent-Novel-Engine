@@ -81,8 +81,10 @@ export class LoginDialogComponent extends Container implements Focusable {
 	showAuth(url: string, instructions?: string): void {
 		this.contentContainer.clear();
 		this.contentContainer.addChild(new Spacer(1));
-		this.contentContainer.addChild(new Text(theme.fg("text", "Open the browser window to continue."), 0, 0));
+		this.addSectionTitle("Browser sign-in");
+		this.addMutedText("The sign-in page should already be opening. If it did not open, use the link below.");
 		this.contentContainer.addChild(new Spacer(1));
+		this.addLabel("Sign-in link");
 		const linkedUrl = `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("text", linkedUrl), 0, 0));
 
@@ -92,7 +94,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 		if (instructions) {
 			this.contentContainer.addChild(new Spacer(1));
-			this.contentContainer.addChild(new Text(theme.fg("text", instructions), 0, 0));
+			this.addInstructions(instructions);
 		}
 
 		// Try to open browser
@@ -107,7 +109,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 */
 	showManualInput(prompt: string): Promise<string> {
 		this.contentContainer.addChild(new Spacer(1));
-		this.contentContainer.addChild(new Text(theme.fg("muted", prompt), 0, 0));
+		this.addSectionTitle("Manual fallback");
+		this.addMutedText(prompt);
 		this.contentContainer.addChild(this.input);
 		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
 		this.tui.requestRender();
@@ -124,7 +127,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 */
 	showPrompt(message: string, placeholder?: string): Promise<string> {
 		this.contentContainer.addChild(new Spacer(1));
-		this.contentContainer.addChild(new Text(theme.fg("text", message), 0, 0));
+		this.addSectionTitle(message);
 		if (placeholder) {
 			this.contentContainer.addChild(new Text(theme.fg("muted", `e.g., ${placeholder}`), 0, 0));
 		}
@@ -164,7 +167,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 */
 	showWaiting(message: string): void {
 		this.contentContainer.addChild(new Spacer(1));
-		this.contentContainer.addChild(new Text(theme.fg("muted", message), 0, 0));
+		this.contentContainer.addChild(new Text(theme.fg("accent", message), 0, 0));
 		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
 		this.tui.requestRender();
 	}
@@ -175,6 +178,29 @@ export class LoginDialogComponent extends Container implements Focusable {
 	showProgress(message: string): void {
 		this.contentContainer.addChild(new Text(theme.fg("muted", message), 0, 0));
 		this.tui.requestRender();
+	}
+
+	private addInstructions(instructions: string): void {
+		const codeMatch = /^(?:Code|Enter code):\s*(.+)$/i.exec(instructions.trim());
+		if (codeMatch?.[1]) {
+			this.addLabel("Verification code");
+			this.contentContainer.addChild(new Text(theme.bold(theme.fg("text", codeMatch[1])), 0, 0));
+			return;
+		}
+		this.addLabel("Next step");
+		this.contentContainer.addChild(new Text(theme.fg("text", instructions), 0, 0));
+	}
+
+	private addSectionTitle(text: string): void {
+		this.contentContainer.addChild(new Text(theme.bold(theme.fg("text", text)), 0, 0));
+	}
+
+	private addLabel(text: string): void {
+		this.contentContainer.addChild(new Text(theme.fg("muted", text), 0, 0));
+	}
+
+	private addMutedText(text: string): void {
+		this.contentContainer.addChild(new Text(theme.fg("muted", text), 0, 0));
 	}
 
 	handleInput(data: string): void {
