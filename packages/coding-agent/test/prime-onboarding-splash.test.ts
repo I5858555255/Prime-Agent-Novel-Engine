@@ -26,8 +26,9 @@ describe("PrimeOnboardingSplashComponent", () => {
 
 		expect(lines).toHaveLength(36);
 		expect(output).toContain("Prime Agent");
-		expect(output).toContain("Prime Intellect");
-		expect(output).toContain("Login");
+		expect(output).toContain("A coding agent connected to Prime Intellect.");
+		expect(output).toContain("Continue with Prime Intellect");
+		expect(output).toContain("Use one account for managed inference, model access, and usage.");
 		expect(output).not.toContain("required for first-time setup");
 		expect(output).not.toContain("Start with your Prime Intellect account.");
 		expect(output).not.toContain("Log in with Prime Intellect");

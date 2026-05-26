@@ -9,7 +9,9 @@ interface PrimeOnboardingSplashOptions {
 
 const LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
 const LOGO_WIDTH = LOGO_LINES.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
-const LOGIN_LABEL = "  Login  ";
+const PANEL_WIDTH = 76;
+const PANEL_PADDING_X = 3;
+const BUTTON_LABEL = "Continue with Prime Intellect";
 
 export class PrimeOnboardingSplashComponent implements Component {
 	constructor(
@@ -24,20 +26,7 @@ export class PrimeOnboardingSplashComponent implements Component {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const contentLines = [
-			"",
-			...this.renderLogoLines(safeWidth),
-			"",
-			this.center(theme.bold(theme.fg("text", "Prime Agent")), safeWidth),
-			this.center(theme.fg("muted", "Prime Intellect"), safeWidth),
-			"",
-			this.center(this.formatLoginButton(), safeWidth),
-			"",
-			this.center(
-				`${keyHint("tui.select.confirm", "continue")}  ${keyHint("tui.select.cancel", "cancel")}`,
-				safeWidth,
-			),
-		];
+		const contentLines = ["", ...this.renderLogoLines(safeWidth), "", ...this.renderPanel(safeWidth)];
 
 		return this.withVerticalSpace(contentLines, safeWidth);
 	}
@@ -54,7 +43,56 @@ export class PrimeOnboardingSplashComponent implements Component {
 	}
 
 	private formatLoginButton(): string {
-		return theme.bg("selectedBg", theme.bold(theme.fg("text", LOGIN_LABEL)));
+		return theme.bg("selectedBg", `  ${theme.bold(theme.fg("text", BUTTON_LABEL))}  `);
+	}
+
+	private renderPanel(width: number): string[] {
+		const panelWidth = Math.min(PANEL_WIDTH, width);
+		const left = Math.max(0, Math.floor((width - panelWidth) / 2));
+		const headline = theme.bold(theme.fg("text", "Prime Agent"));
+		const subhead = theme.fg("muted", "A coding agent connected to Prime Intellect.");
+		const detail = theme.fg("muted", "Use one account for managed inference, model access, and usage.");
+		const hints = theme.fg(
+			"muted",
+			`${keyHint("tui.select.confirm", "continue")}  ${keyHint("tui.select.cancel", "cancel")}`,
+		);
+
+		return [
+			this.surfaceLine("", panelWidth, left, width),
+			this.surfaceLine(this.centerWithin(headline, this.panelInnerWidth(panelWidth)), panelWidth, left, width),
+			this.surfaceLine(this.centerWithin(subhead, this.panelInnerWidth(panelWidth)), panelWidth, left, width),
+			this.surfaceLine("", panelWidth, left, width),
+			this.surfaceLine(
+				this.centerWithin(this.formatLoginButton(), this.panelInnerWidth(panelWidth)),
+				panelWidth,
+				left,
+				width,
+			),
+			this.surfaceLine("", panelWidth, left, width),
+			this.surfaceLine(this.centerWithin(detail, this.panelInnerWidth(panelWidth)), panelWidth, left, width),
+			this.surfaceLine(this.centerWithin(hints, this.panelInnerWidth(panelWidth)), panelWidth, left, width),
+			this.surfaceLine("", panelWidth, left, width),
+		];
+	}
+
+	private panelInnerWidth(panelWidth: number): number {
+		return Math.max(1, panelWidth - PANEL_PADDING_X * 2);
+	}
+
+	private surfaceLine(text: string, panelWidth: number, left: number, width: number): string {
+		const innerWidth = this.panelInnerWidth(panelWidth);
+		const content = truncateToWidth(text, innerWidth, "");
+		const rightPadding = Math.max(0, innerWidth - visibleWidth(content));
+		const line = " ".repeat(PANEL_PADDING_X) + content + " ".repeat(rightPadding) + " ".repeat(PANEL_PADDING_X);
+		const surface = theme.getEditorBackgroundColor()?.(line) ?? line;
+		return this.place(surface, width, left);
+	}
+
+	private centerWithin(text: string, width: number): string {
+		const content = truncateToWidth(text, width, "");
+		const left = Math.max(0, Math.floor((width - visibleWidth(content)) / 2));
+		const right = Math.max(0, width - left - visibleWidth(content));
+		return " ".repeat(left) + content + " ".repeat(right);
 	}
 
 	private renderLogoLines(width: number): string[] {
@@ -65,12 +103,6 @@ export class PrimeOnboardingSplashComponent implements Component {
 			const content = theme.fg("text", truncateToWidth(paddedLine, logoWidth, ""));
 			return this.place(content, width, left);
 		});
-	}
-
-	private center(text: string, width: number): string {
-		const content = truncateToWidth(text, width, "");
-		const padding = Math.max(0, Math.floor((width - visibleWidth(content)) / 2));
-		return this.place(content, width, padding);
 	}
 
 	private place(text: string, width: number, left: number): string {
