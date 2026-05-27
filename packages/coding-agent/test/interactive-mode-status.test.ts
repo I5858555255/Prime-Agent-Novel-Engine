@@ -7,6 +7,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
+import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import type { SourceInfo } from "../src/core/source-info.js";
@@ -125,6 +126,43 @@ describe("InteractiveMode.showStatus", () => {
 		// adds spacer + text
 		expect(fakeThis.chatContainer.children).toHaveLength(5);
 		expect(renderLastLine(fakeThis.chatContainer)).toContain("STATUS_TWO");
+	});
+});
+
+describe("InteractiveMode startup onboarding warnings", () => {
+	type StartupWarningHarness = {
+		shouldRunOnboarding(): boolean;
+		shouldShowModelFallbackWarning(
+			modelFallbackMessage: string | undefined,
+			startupNeededOnboarding: boolean,
+		): modelFallbackMessage is string;
+	};
+
+	const shouldShowModelFallbackWarning = (InteractiveMode.prototype as unknown as StartupWarningHarness)
+		.shouldShowModelFallbackWarning;
+
+	test("suppresses the stale no-model warning after onboarding selects a model", () => {
+		const fakeThis: StartupWarningHarness = {
+			shouldRunOnboarding: vi.fn(() => false),
+			shouldShowModelFallbackWarning,
+		};
+
+		expect(shouldShowModelFallbackWarning.call(fakeThis, formatNoModelsAvailableMessage(), true)).toBe(false);
+	});
+
+	test("keeps real model restore fallback warnings after onboarding", () => {
+		const fakeThis: StartupWarningHarness = {
+			shouldRunOnboarding: vi.fn(() => false),
+			shouldShowModelFallbackWarning,
+		};
+
+		expect(
+			shouldShowModelFallbackWarning.call(
+				fakeThis,
+				"Could not restore model anthropic/claude-old. Using prime-inference/openai/gpt-5.5.",
+				true,
+			),
+		).toBe(true);
 	});
 });
 

@@ -64,6 +64,7 @@ import {
 	type RlmChildAgentSnapshot,
 } from "../../core/agent-session.js";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.js";
+import { formatNoModelsAvailableMessage } from "../../core/auth-guidance.js";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -81,9 +82,12 @@ import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
 import { DefaultPackageManager } from "../../core/package-manager.js";
 import {
+	fetchPrimeTeams,
+	loadPrimeCliConfig,
 	loginPrimeInference,
 	PRIME_INFERENCE_PROVIDER_ID,
 	PRIME_INFERENCE_PROVIDER_NAME,
+	type PrimeTeam,
 } from "../../core/prime-inference-auth.js";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
@@ -135,6 +139,7 @@ import {
 	OAuthSelectorComponent,
 } from "./components/oauth-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
+import { PrimeTeamSelectorComponent } from "./components/prime-team-selector.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -871,26 +876,9 @@ export class InteractiveMode {
 	async run(): Promise<void> {
 		await this.init();
 
-		// Start version check asynchronously
-		checkForNewPiVersion(this.version).then((newVersion) => {
-			if (newVersion) {
-				this.showNewVersionNotification(newVersion);
-			}
-		});
-
-		// Start package update check asynchronously
-		this.checkForPackageUpdates().then((updates) => {
-			if (updates.length > 0) {
-				this.showPackageUpdateNotification(updates);
-			}
-		});
-
-		// Check tmux keyboard setup asynchronously
-		this.checkTmuxKeyboardSetup().then((warning) => {
-			if (warning) {
-				this.showWarning(warning);
-			}
-		});
+		const newVersionPromise = checkForNewPiVersion(this.version);
+		const packageUpdatesPromise = this.checkForPackageUpdates();
+		const tmuxKeyboardWarningPromise = this.checkTmuxKeyboardSetup();
 
 		// Show startup warnings
 		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
@@ -933,9 +921,38 @@ export class InteractiveMode {
 		};
 
 		const needsOnboarding = this.shouldRunOnboarding();
+		let deferredStartupNotificationsShown = false;
+		const showDeferredStartupNotifications = () => {
+			if (deferredStartupNotificationsShown || this.shouldRunOnboarding()) {
+				return;
+			}
+			deferredStartupNotificationsShown = true;
+
+			newVersionPromise.then((newVersion) => {
+				if (newVersion) {
+					this.showNewVersionNotification(newVersion);
+				}
+			});
+
+			packageUpdatesPromise.then((updates) => {
+				if (updates.length > 0) {
+					this.showPackageUpdateNotification(updates);
+				}
+			});
+
+			tmuxKeyboardWarningPromise.then((warning) => {
+				if (warning) {
+					this.showWarning(warning);
+				}
+			});
+		};
+
 		let modelFallbackWarningShown = false;
 		const showModelFallbackWarning = () => {
-			if (!modelFallbackMessage || modelFallbackWarningShown) {
+			if (modelFallbackWarningShown) {
+				return;
+			}
+			if (!this.shouldShowModelFallbackWarning(modelFallbackMessage, needsOnboarding)) {
 				return;
 			}
 			modelFallbackWarningShown = true;
@@ -952,6 +969,7 @@ export class InteractiveMode {
 		}
 
 		if (promptReady) {
+			showDeferredStartupNotifications();
 			showModelFallbackWarning();
 			void this.maybeWarnAboutAnthropicSubscriptionAuth();
 			await sendInitialPrompts();
@@ -965,6 +983,7 @@ export class InteractiveMode {
 				this.showStatus("Complete onboarding to send the restored prompt.");
 				continue;
 			}
+			showDeferredStartupNotifications();
 			showModelFallbackWarning();
 			await sendInitialPrompts();
 			try {
@@ -974,6 +993,23 @@ export class InteractiveMode {
 				this.showError(errorMessage);
 			}
 		}
+	}
+
+	private shouldShowModelFallbackWarning(
+		modelFallbackMessage: string | undefined,
+		startupNeededOnboarding: boolean,
+	): modelFallbackMessage is string {
+		if (!modelFallbackMessage) {
+			return false;
+		}
+		if (
+			startupNeededOnboarding &&
+			modelFallbackMessage === formatNoModelsAvailableMessage() &&
+			!this.shouldRunOnboarding()
+		) {
+			return false;
+		}
+		return true;
 	}
 
 	private shouldRunOnboarding(): boolean {
@@ -5273,6 +5309,7 @@ export class InteractiveMode {
 		providerId: string,
 		providerName: string,
 		authType: "oauth" | "api_key",
+		statusSuffix?: string,
 	): Promise<AuthenticationResult> {
 		this.session.modelRegistry.refresh();
 
@@ -5280,7 +5317,9 @@ export class InteractiveMode {
 		await this.updateAvailableProviderCount();
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
-		this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
+		this.showStatus(
+			`${actionLabel}. Credentials saved to ${getAuthPath()}${statusSuffix ? `. ${statusSuffix}` : ""}`,
+		);
 		void this.maybeWarnAboutAnthropicSubscriptionAuth();
 		return {
 			status: "success",
@@ -5352,6 +5391,69 @@ export class InteractiveMode {
 		}
 	}
 
+	private showPrimeTeamSelector(
+		teams: PrimeTeam[],
+		currentTeamId: string | undefined,
+	): Promise<PrimeTeam | null | undefined> {
+		return new Promise((resolve) => {
+			let handle: OverlayHandle | undefined;
+			const close = () => {
+				handle?.hide();
+				this.ui.requestRender();
+			};
+			const selector = new PrimeTeamSelectorComponent(
+				teams,
+				currentTeamId,
+				(team) => {
+					close();
+					resolve(team);
+				},
+				() => {
+					close();
+					resolve(undefined);
+				},
+			);
+			handle = this.showFullPaneOverlay(selector, 78);
+		});
+	}
+
+	private async selectPrimeInferenceTeam(apiKey: string, dialog: LoginDialogComponent): Promise<string | undefined> {
+		const config = loadPrimeCliConfig();
+		if (config.teamIdFromEnv) {
+			this.session.modelRegistry.authStorage.reload();
+			return "Using team from PRIME_TEAM_ID.";
+		}
+
+		try {
+			dialog.showProgress("Loading Prime teams...");
+			const teams = await fetchPrimeTeams(apiKey, config.baseUrl, { signal: dialog.signal });
+			if (dialog.signal.aborted) {
+				return undefined;
+			}
+			if (teams.length === 0) {
+				this.session.modelRegistry.authStorage.setPrimeInferenceTeamSelection(null);
+				return "Using personal account.";
+			}
+
+			const storedTeam = this.session.modelRegistry.authStorage.getPrimeInferenceTeamSelection();
+			const selectedTeam = await this.showPrimeTeamSelector(teams, storedTeam?.teamId ?? config.teamId);
+			if (selectedTeam !== undefined) {
+				this.session.modelRegistry.authStorage.setPrimeInferenceTeamSelection(selectedTeam);
+			}
+			return selectedTeam
+				? `Using team "${selectedTeam.name}".`
+				: selectedTeam === null
+					? "Using personal account."
+					: undefined;
+		} catch {
+			if (dialog.signal.aborted) {
+				return undefined;
+			}
+			this.session.modelRegistry.authStorage.reload();
+			return undefined;
+		}
+	}
+
 	private async showPrimeInferenceLoginDialog(): Promise<AuthenticationResult> {
 		const dialog = new LoginDialogComponent(
 			this.ui,
@@ -5390,12 +5492,14 @@ export class InteractiveMode {
 				type: "api_key",
 				key: result.apiKey,
 			});
+			const teamStatus = await this.selectPrimeInferenceTeam(result.apiKey, dialog);
 
 			closeDialog();
 			return await this.completeProviderAuthentication(
 				PRIME_INFERENCE_PROVIDER_ID,
 				PRIME_INFERENCE_PROVIDER_NAME,
 				"api_key",
+				teamStatus,
 			);
 		} catch (error: unknown) {
 			closeDialog();
