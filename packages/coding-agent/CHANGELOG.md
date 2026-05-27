@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added proof-of-concept daemon mode and CLI controls for creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
+
 ### Changed
 
 - Changed the Prime Agent install script to use a bounded animated Prime Lab splash with centered progress and confirmation prompts.

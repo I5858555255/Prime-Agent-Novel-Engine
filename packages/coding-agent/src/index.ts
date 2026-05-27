@@ -249,6 +249,15 @@ export {
 export { type MainOptions, main } from "./main.js";
 // Run modes for programmatic SDK usage
 export {
+	DaemonClient,
+	type DaemonClientMessageListener,
+	type DaemonCommand,
+	type DaemonModeOptions,
+	type DaemonOutbound,
+	type DaemonResponse,
+	type DaemonSessionState,
+	type DaemonSessionSummary,
+	defaultDaemonSocketPath,
 	InteractiveMode,
 	type InteractiveModeOptions,
 	type ModelInfo,

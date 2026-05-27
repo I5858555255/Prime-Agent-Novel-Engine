@@ -7,7 +7,7 @@ import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.js";
 import type { ExtensionFlag } from "../core/extensions/types.js";
 
-export type Mode = "text" | "json" | "rpc";
+export type Mode = "text" | "json" | "rpc" | "daemon";
 
 export interface Args {
 	provider?: string;
@@ -21,6 +21,7 @@ export interface Args {
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
+	daemonSocket?: string;
 	noSession?: boolean;
 	session?: string;
 	fork?: string;
@@ -75,9 +76,11 @@ export function parseArgs(args: string[]): Args {
 			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (mode === "text" || mode === "json" || mode === "rpc") {
+			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "daemon") {
 				result.mode = mode;
 			}
+		} else if (arg === "--daemon-socket" && i + 1 < args.length) {
+			result.daemonSocket = args[++i];
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
@@ -220,7 +223,8 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} update [source|self|${APP_NAME}]   Update ${APP_NAME} and installed extensions
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config                    Open TUI to enable/disable package resources
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
+  ${APP_NAME} daemon <command>          Manage background daemon sessions
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/daemon
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
@@ -228,7 +232,8 @@ ${chalk.bold("Options:")}
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
-  --mode <mode>                  Output mode: text (default), json, or rpc
+  --mode <mode>                  Output mode: text (default), json, rpc, or daemon
+  --daemon-socket <path>         Socket path for daemon mode
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
@@ -307,6 +312,11 @@ ${chalk.bold("Examples:")}
   # Export a session file to HTML
   ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/--path--/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
+
+  # Start and control daemon sessions
+  ${APP_NAME} daemon start --socket /tmp/prime-agent.sock
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock list
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock prompt <session> "Say hello"
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_API_KEY                - Anthropic Claude API key
