@@ -5307,33 +5307,49 @@ export class InteractiveMode {
 		};
 	}
 
-	private showBedrockSetupDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
-		return new Promise((resolve) => {
-			let handle: OverlayHandle | undefined;
-			const closeDialog = async () => {
-				handle?.hide();
-				this.ui.requestRender();
-				resolve(await this.completeExternalProviderSetup(providerId, providerName));
-			};
+	private hasAvailableProviderModels(providerId: string): boolean {
+		this.session.modelRegistry.refresh();
+		return this.session.modelRegistry.getAvailable().some((model) => model.provider === providerId);
+	}
 
-			const dialog = new LoginDialogComponent(
-				this.ui,
-				providerId,
-				() => {
-					void closeDialog();
-				},
-				providerName,
-				"Amazon Bedrock setup",
-			);
-			dialog.showInfo([
+	private async showBedrockSetupDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			providerId,
+			() => {
+				// Completion handled below.
+			},
+			providerName,
+			"Amazon Bedrock setup",
+		);
+		const handle = this.showFullPaneOverlay(dialog, 88);
+		const closeDialog = () => {
+			handle.hide();
+			this.ui.requestRender();
+		};
+
+		try {
+			await dialog.showContinueInfo([
 				theme.fg("text", "Amazon Bedrock uses AWS credentials instead of a single API key."),
 				theme.fg("text", "Configure an AWS profile, IAM keys, bearer token, or role-based credentials."),
 				theme.fg("muted", "See:"),
 				theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
 			]);
-
-			handle = this.showFullPaneOverlay(dialog, 88);
-		});
+			closeDialog();
+			if (!this.hasAvailableProviderModels(providerId)) {
+				this.showStatus(`${providerName} credentials were not detected. Configure them, then reopen /model.`);
+				return { status: "cancelled" };
+			}
+			return await this.completeExternalProviderSetup(providerId, providerName);
+		} catch (error: unknown) {
+			closeDialog();
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			if (errorMsg !== "Login cancelled") {
+				this.showError(`Failed to set up ${providerName}: ${errorMsg}`);
+				return { status: "failed" };
+			}
+			return { status: "cancelled" };
+		}
 	}
 
 	private async showPrimeInferenceLoginDialog(): Promise<AuthenticationResult> {

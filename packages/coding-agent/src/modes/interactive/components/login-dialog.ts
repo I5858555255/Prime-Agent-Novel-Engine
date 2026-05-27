@@ -63,6 +63,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private abortController = new AbortController();
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
+	private continueResolver?: () => void;
+	private continueRejecter?: (error: Error) => void;
 
 	// Focusable implementation - propagate to input for IME cursor positioning
 	private _focused = false;
@@ -120,6 +122,11 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.inputRejecter(new Error("Login cancelled"));
 			this.inputResolver = undefined;
 			this.inputRejecter = undefined;
+		}
+		if (this.continueRejecter) {
+			this.continueRejecter(new Error("Login cancelled"));
+			this.continueResolver = undefined;
+			this.continueRejecter = undefined;
 		}
 		this.onComplete(false, "Login cancelled");
 	}
@@ -205,6 +212,30 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.tui.requestRender();
 	}
 
+	showContinueInfo(lines: string[]): Promise<void> {
+		this.startContent();
+		for (const line of lines) {
+			this.contentContainer.addChild(new Text(line, 0, 0));
+		}
+		this.contentContainer.addChild(new Spacer(1));
+		this.contentContainer.addChild(
+			new Text(
+				theme.fg(
+					"muted",
+					`${keyHint("tui.select.confirm", "continue")}  ${keyHint("tui.select.cancel", "cancel")}`,
+				),
+				0,
+				0,
+			),
+		);
+		this.tui.requestRender();
+
+		return new Promise((resolve, reject) => {
+			this.continueResolver = resolve;
+			this.continueRejecter = reject;
+		});
+	}
+
 	/**
 	 * Show waiting message (for polling flows like GitHub Copilot)
 	 */
@@ -273,6 +304,14 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.cancel();
+			return;
+		}
+
+		if (this.continueResolver && kb.matches(data, "tui.select.confirm")) {
+			const resolve = this.continueResolver;
+			this.continueResolver = undefined;
+			this.continueRejecter = undefined;
+			resolve();
 			return;
 		}
 
