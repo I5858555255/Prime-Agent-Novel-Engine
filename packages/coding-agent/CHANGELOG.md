@@ -5,10 +5,15 @@
 ### Changed
 
 - Changed the Prime Agent install script to use a bounded animated Prime Lab splash with centered progress and confirmation prompts.
+- Changed startup onboarding to guide unauthenticated users through login and model selection before the first agent turn.
 
 ### Fixed
 
 - Fixed update notifications and package docs to point at `prime-agent update` and use compact one-line alerts.
+
+### Removed
+
+- Removed the unused small Prime logo export.
 
 ## [0.0.4] - 2026-05-21
 
