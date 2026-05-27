@@ -629,10 +629,6 @@ prime_agent_animation_detail() {
 		*'
 '*)
 			detail_count=$(printf '%s\n' "$details" | wc -l | tr -d ' ')
-			if [ "$detail_count" -lt 1 ]; then
-				printf '%s' "$details"
-				return
-			fi
 			detail_index=$(((prime_agent_screen_frame / 12) % detail_count + 1))
 			printf '%s\n' "$details" | sed -n "${detail_index}p"
 			;;
