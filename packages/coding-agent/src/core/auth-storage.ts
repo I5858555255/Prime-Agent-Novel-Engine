@@ -200,6 +200,8 @@ export class AuthStorage {
 	private fallbackResolver?: (provider: string) => string | undefined;
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
+	private primeCliApiKeyCache: string | undefined;
+	private primeCliApiKeyCacheLoaded = false;
 
 	private constructor(
 		private storage: AuthStorageBackend,
@@ -262,6 +264,8 @@ export class AuthStorage {
 	 * Reload credentials from storage.
 	 */
 	reload(): void {
+		this.primeCliApiKeyCache = undefined;
+		this.primeCliApiKeyCacheLoaded = false;
 		let content: string | undefined;
 		try {
 			this.storage.withLock((current) => {
@@ -547,6 +551,10 @@ export class AuthStorage {
 		if (!this.options.usePrimeCliConfig && !this.options.primeCliConfigPath) {
 			return undefined;
 		}
-		return loadPrimeCliConfig(this.options.primeCliConfigPath).apiKey;
+		if (!this.primeCliApiKeyCacheLoaded) {
+			this.primeCliApiKeyCache = loadPrimeCliConfig(this.options.primeCliConfigPath).apiKey;
+			this.primeCliApiKeyCacheLoaded = true;
+		}
+		return this.primeCliApiKeyCache;
 	}
 }
