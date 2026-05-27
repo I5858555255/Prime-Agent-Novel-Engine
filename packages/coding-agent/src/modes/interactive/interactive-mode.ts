@@ -190,17 +190,8 @@ class ExpandableText extends Text implements Expandable {
 	}
 }
 
-function formatSplashCwd(cwd: string): string {
+export function formatSplashCwd(cwd: string): string {
 	const normalized = cwd.replace(/\\/g, "/");
-	const worktreeMarker = "/.worktrees/";
-	const worktreeIndex = normalized.indexOf(worktreeMarker);
-	if (worktreeIndex >= 0) {
-		const repoRoot = normalized.slice(0, worktreeIndex);
-		const rest = normalized.slice(worktreeIndex + worktreeMarker.length);
-		const repoName = path.basename(repoRoot);
-		return `${repoName}/${rest}`;
-	}
-
 	const home = os.homedir().replace(/\\/g, "/");
 	if (home && normalized === home) {
 		return "~";

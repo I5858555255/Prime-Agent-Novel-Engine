@@ -11,7 +11,7 @@ import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import type { SourceInfo } from "../src/core/source-info.js";
-import { InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
+import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 function renderLastLine(container: Container, width = 120): string {
@@ -163,6 +163,19 @@ describe("InteractiveMode startup onboarding warnings", () => {
 				true,
 			),
 		).toBe(true);
+	});
+});
+
+describe("InteractiveMode splash cwd display", () => {
+	test("formats home-relative cwd paths", () => {
+		expect(formatSplashCwd(homedir())).toBe("~");
+		expect(formatSplashCwd(path.join(homedir(), "pi", "prime-agent"))).toBe("~/pi/prime-agent");
+	});
+
+	test("keeps worktree paths as cwd paths instead of repo branch labels", () => {
+		expect(formatSplashCwd(path.join(homedir(), "pi", "prime-agent", ".worktrees", "improve-onboarding"))).toBe(
+			"~/pi/prime-agent/.worktrees/improve-onboarding",
+		);
 	});
 });
 
