@@ -100,6 +100,8 @@ main() {
 
 	if [ "${PRIME_AGENT_NODE_INSTALLED_STANDALONE:-0}" = 1 ]; then
 		prime_agent_screen "Prime Agent installed" "" "Checking your shell PATH." ""
+		prime_agent_restore_terminal
+		printf '\n'
 		configure_standalone_node_path
 	elif command -v "$prime_agent_cmd" >/dev/null 2>&1; then
 		if [ "$prime_agent_screen_enabled" = 1 ]; then
@@ -1142,10 +1144,14 @@ prompt_add_standalone_node_path() {
 		"Add standalone Node.js to your PATH?" \
 		"Updates $profile so future shells can run $prime_agent_cmd." \
 		"Update PATH? [Y/n]"; then
+		prime_agent_restore_terminal
+		printf '\n'
 		print_standalone_path_manual_instructions
 		return 0
 	fi
 
+	prime_agent_restore_terminal
+	printf '\n'
 	mkdir -p "$(dirname "$profile")"
 	{
 		printf '\n# Prime Agent standalone Node.js\n'
