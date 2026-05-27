@@ -5480,11 +5480,21 @@ export class InteractiveMode {
 				return { status: "cancelled" };
 			}
 
+			const previousPrimeCredential = this.session.modelRegistry.authStorage.get(PRIME_INFERENCE_PROVIDER_ID);
 			this.session.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, {
 				type: "api_key",
 				key: result.apiKey,
 			});
 			const teamStatus = await this.selectPrimeInferenceTeam(result.apiKey, dialog);
+			if (dialog.signal.aborted) {
+				if (previousPrimeCredential) {
+					this.session.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, previousPrimeCredential);
+				} else {
+					this.session.modelRegistry.authStorage.remove(PRIME_INFERENCE_PROVIDER_ID);
+				}
+				closeDialog();
+				return { status: "cancelled" };
+			}
 
 			closeDialog();
 			return await this.completeProviderAuthentication(
