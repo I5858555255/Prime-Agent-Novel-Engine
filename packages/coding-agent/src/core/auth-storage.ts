@@ -586,8 +586,13 @@ export class AuthStorage {
 
 		const credential = this.data[providerId];
 		if (credential?.type === "api_key") {
+			if (credential.primeTeam === null) {
+				return undefined;
+			}
 			const selectedTeamId = credential.primeTeam?.teamId;
-			return selectedTeamId ? { "X-Prime-Team-ID": selectedTeamId } : undefined;
+			if (selectedTeamId) {
+				return { "X-Prime-Team-ID": selectedTeamId };
+			}
 		}
 
 		const teamId = primeCliConfig?.teamId;

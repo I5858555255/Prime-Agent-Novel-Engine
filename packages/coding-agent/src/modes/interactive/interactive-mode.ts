@@ -5427,7 +5427,8 @@ export class InteractiveMode {
 			}
 
 			const storedTeam = this.session.modelRegistry.authStorage.getPrimeInferenceTeamSelection();
-			const selectedTeam = await this.showPrimeTeamSelector(teams, storedTeam?.teamId ?? config.teamId);
+			const currentTeamId = storedTeam === null ? undefined : (storedTeam?.teamId ?? config.teamId);
+			const selectedTeam = await this.showPrimeTeamSelector(teams, currentTeamId);
 			if (selectedTeam !== undefined) {
 				this.session.modelRegistry.authStorage.setPrimeInferenceTeamSelection(selectedTeam);
 			}

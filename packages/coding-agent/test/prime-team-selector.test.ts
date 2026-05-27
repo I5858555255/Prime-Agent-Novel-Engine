@@ -37,6 +37,22 @@ describe("PrimeTeamSelectorComponent", () => {
 		expect(output).toContain("current");
 	});
 
+	it("marks personal as current when no team id is active", () => {
+		const selector = new PrimeTeamSelectorComponent(
+			[{ teamId: "team-1", name: "Research", slug: "research", role: "admin" }],
+			undefined,
+			() => {},
+			() => {},
+		);
+
+		const lines = stripAnsi(selector.render(100).join("\n")).split("\n");
+		const personalLine = lines.find((line) => line.includes("Personal"));
+		const teamLine = lines.find((line) => line.includes("Research"));
+
+		expect(personalLine).toContain("current");
+		expect(teamLine).not.toContain("current");
+	});
+
 	it("selects a team from the menu", () => {
 		let selectedTeamId: string | undefined;
 		const selector = new PrimeTeamSelectorComponent(
