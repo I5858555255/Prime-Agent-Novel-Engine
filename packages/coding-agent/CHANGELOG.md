@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the Prime Agent install script to use a bounded animated Prime Lab splash with centered progress and confirmation prompts.
+
 ### Fixed
 
 - Fixed update notifications and package docs to point at `prime-agent update` and use compact one-line alerts.
