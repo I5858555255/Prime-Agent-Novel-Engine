@@ -904,6 +904,34 @@ export class InteractiveMode {
 			this.showError(`models.json error: ${modelsJsonError}`);
 		}
 
+		let initialPromptsSent = false;
+		const sendInitialPrompts = async () => {
+			if (initialPromptsSent) {
+				return;
+			}
+			initialPromptsSent = true;
+
+			if (initialMessage) {
+				try {
+					await this.session.prompt(initialMessage, { images: initialImages });
+				} catch (error: unknown) {
+					const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+					this.showError(errorMessage);
+				}
+			}
+
+			if (initialMessages) {
+				for (const message of initialMessages) {
+					try {
+						await this.session.prompt(message);
+					} catch (error: unknown) {
+						const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+						this.showError(errorMessage);
+					}
+				}
+			}
+		};
+
 		const needsOnboarding = this.shouldRunOnboarding();
 		let modelFallbackWarningShown = false;
 		const showModelFallbackWarning = () => {
@@ -926,27 +954,7 @@ export class InteractiveMode {
 		if (promptReady) {
 			showModelFallbackWarning();
 			void this.maybeWarnAboutAnthropicSubscriptionAuth();
-		}
-
-		// Process initial messages
-		if (initialMessage && promptReady) {
-			try {
-				await this.session.prompt(initialMessage, { images: initialImages });
-			} catch (error: unknown) {
-				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-				this.showError(errorMessage);
-			}
-		}
-
-		if (initialMessages && promptReady) {
-			for (const message of initialMessages) {
-				try {
-					await this.session.prompt(message);
-				} catch (error: unknown) {
-					const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-					this.showError(errorMessage);
-				}
-			}
+			await sendInitialPrompts();
 		}
 
 		// Main interactive loop
@@ -958,6 +966,7 @@ export class InteractiveMode {
 				continue;
 			}
 			showModelFallbackWarning();
+			await sendInitialPrompts();
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
