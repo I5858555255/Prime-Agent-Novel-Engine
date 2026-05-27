@@ -642,7 +642,7 @@ prime_agent_run_quiet_with_animation() {
 	detail="$3"
 	shift 3
 
-	prime_agent_run_quiet_with_animation_steps "$title" "$status" "$detail" "$@"
+	prime_agent_run_quiet_with_animation_command "$title" "$status" "$detail" pulse "$@"
 }
 
 prime_agent_run_quiet_with_animation_steps() {
@@ -650,6 +650,16 @@ prime_agent_run_quiet_with_animation_steps() {
 	status="$2"
 	details="$3"
 	shift 3
+
+	prime_agent_run_quiet_with_animation_command "$title" "$status" "$details" static "$@"
+}
+
+prime_agent_run_quiet_with_animation_command() {
+	title="$1"
+	status="$2"
+	details="$3"
+	status_mode="$4"
+	shift 4
 
 	if [ "$prime_agent_screen_enabled" != 1 ]; then
 		printf '%s\n' "$status" >&2
@@ -663,7 +673,11 @@ prime_agent_run_quiet_with_animation_steps() {
 	command_pid=$!
 
 	while kill -0 "$command_pid" 2>/dev/null; do
-		prime_agent_screen "$title" "$(prime_agent_static_progress_title "$status")" "$(prime_agent_animation_detail "$details")" ""
+		case "$status_mode" in
+			static) status_display=$(prime_agent_static_progress_title "$status") ;;
+			*) status_display="$status$(prime_agent_pulse)" ;;
+		esac
+		prime_agent_screen "$title" "$status_display" "$(prime_agent_animation_detail "$details")" ""
 		sleep 0.18
 	done
 
