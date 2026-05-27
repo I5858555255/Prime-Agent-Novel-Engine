@@ -905,9 +905,17 @@ export class InteractiveMode {
 		}
 
 		const needsOnboarding = this.shouldRunOnboarding();
-
-		if (modelFallbackMessage && !needsOnboarding) {
+		let modelFallbackWarningShown = false;
+		const showModelFallbackWarning = () => {
+			if (!modelFallbackMessage || modelFallbackWarningShown) {
+				return;
+			}
+			modelFallbackWarningShown = true;
 			this.showWarning(modelFallbackMessage);
+		};
+
+		if (!needsOnboarding) {
+			showModelFallbackWarning();
 		}
 
 		let promptReady = !needsOnboarding;
@@ -916,6 +924,7 @@ export class InteractiveMode {
 		}
 
 		if (promptReady) {
+			showModelFallbackWarning();
 			void this.maybeWarnAboutAnthropicSubscriptionAuth();
 		}
 
@@ -944,8 +953,11 @@ export class InteractiveMode {
 		while (true) {
 			const userInput = await this.getUserInput();
 			if (!(await this.ensurePromptReady())) {
+				this.editor.setText(userInput);
+				this.showStatus("Complete onboarding to send the restored prompt.");
 				continue;
 			}
+			showModelFallbackWarning();
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
@@ -969,6 +981,17 @@ export class InteractiveMode {
 	}
 
 	private async runOnboardingFlow(): Promise<boolean> {
+		this.session.modelRegistry.refresh();
+		if (this.session.modelRegistry.getAvailable().length > 0) {
+			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
+			if (selectedModel || !this.shouldRunOnboarding()) {
+				return true;
+			}
+
+			this.showStatus("Model selection required. Use /model to continue.");
+			return false;
+		}
+
 		const authResult = await this.showOnboardingPrimeLogin();
 		if (authResult.status !== "success") {
 			this.showStatus(
@@ -5258,19 +5281,38 @@ export class InteractiveMode {
 		};
 	}
 
+	private async completeExternalProviderSetup(
+		providerId: string,
+		providerName: string,
+	): Promise<AuthenticationResult> {
+		this.session.modelRegistry.refresh();
+		await this.updateAvailableProviderCount();
+		this.footer.invalidate();
+		this.updateEditorBorderColor();
+		this.showStatus(`${providerName} uses external credentials. Select a model after configuring them.`);
+		return {
+			status: "success",
+			providerId,
+			providerName,
+			authType: "api_key",
+		};
+	}
+
 	private showBedrockSetupDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
-			const closeDialog = () => {
+			const closeDialog = async () => {
 				handle?.hide();
 				this.ui.requestRender();
-				resolve({ status: "failed" });
+				resolve(await this.completeExternalProviderSetup(providerId, providerName));
 			};
 
 			const dialog = new LoginDialogComponent(
 				this.ui,
 				providerId,
-				() => closeDialog(),
+				() => {
+					void closeDialog();
+				},
 				providerName,
 				"Amazon Bedrock setup",
 			);
