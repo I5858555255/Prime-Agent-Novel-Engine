@@ -6,7 +6,6 @@ export { DaemonClient, type DaemonClientMessageListener } from "./daemon/daemon-
 export { runDaemonMode } from "./daemon/daemon-mode.js";
 export type {
 	ActiveSessionState,
-	ActiveSessionSummary,
 	DaemonCommand,
 	DaemonModeOptions,
 	DaemonOutbound,

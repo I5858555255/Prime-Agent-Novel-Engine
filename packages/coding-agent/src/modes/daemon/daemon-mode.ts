@@ -16,12 +16,7 @@ import { type SessionInfo, SessionManager } from "../../core/session-manager.js"
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { RpcSlashCommand } from "../rpc/rpc-types.js";
-import {
-	type ActiveSessionRecord,
-	type DaemonSocketClient,
-	stateForSession,
-	summaryForRecord,
-} from "./active-session-record.js";
+import { type ActiveSessionRecord, type DaemonSocketClient, stateForRecord } from "./active-session-record.js";
 import { bindActiveSessionRecord } from "./daemon-extension-binding.js";
 import {
 	type DaemonCommand,
@@ -35,7 +30,6 @@ import { cleanupDaemonSocketPath, defaultDaemonSocketPath, prepareDaemonSocketPa
 
 export type {
 	ActiveSessionState,
-	ActiveSessionSummary,
 	DaemonCommand,
 	DaemonModeOptions,
 	DaemonOutbound,
@@ -212,7 +206,7 @@ class AgentDaemon {
 	): Promise<DaemonResponse | undefined> {
 		switch (command.type) {
 			case "list":
-				return success(command.id, "list", { sessions: Array.from(this.sessions.values()).map(summaryForRecord) });
+				return success(command.id, "list", { sessions: Array.from(this.sessions.values()).map(stateForRecord) });
 
 			case "list_saved": {
 				const defaultConfig = this.options.defaultSessionConfig;
@@ -229,7 +223,7 @@ class AgentDaemon {
 
 			case "create": {
 				const record = await this.createRuntime(command);
-				return success(command.id, "create", summaryForRecord(record));
+				return success(command.id, "create", stateForRecord(record));
 			}
 
 			case "attach": {
@@ -239,10 +233,10 @@ class AgentDaemon {
 				this.write(client, {
 					type: "session_attached",
 					activeSessionId: record.activeSessionId,
-					state: stateForSession(record.runtime.session),
+					state: stateForRecord(record),
 					messages: record.runtime.session.messages,
 				});
-				return success(command.id, "attach", summaryForRecord(record));
+				return success(command.id, "attach", stateForRecord(record));
 			}
 
 			case "detach": {
@@ -268,7 +262,7 @@ class AgentDaemon {
 					throw new Error("Session name cannot be empty");
 				}
 				record.runtime.session.setSessionName(name);
-				return success(command.id, "rename", summaryForRecord(record));
+				return success(command.id, "rename", stateForRecord(record));
 			}
 
 			case "prompt": {
@@ -316,7 +310,7 @@ class AgentDaemon {
 
 			case "get_state": {
 				const record = this.getRecord(command.activeSessionId);
-				return success(command.id, "get_state", stateForSession(record.runtime.session));
+				return success(command.id, "get_state", stateForRecord(record));
 			}
 
 			case "get_messages": {

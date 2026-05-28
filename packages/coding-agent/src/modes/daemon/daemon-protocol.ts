@@ -10,28 +10,18 @@ export interface DaemonModeOptions {
 	createRuntime: CreateAgentSessionRuntimeFactory;
 }
 
-/** Compact active session projection returned by daemon list/create/rename commands. */
-export interface ActiveSessionSummary {
-	activeSessionId: string;
-	model?: Model<Api>;
-	sessionId: string;
-	sessionFile?: string;
-	sessionName?: string;
-	cwd: string;
-	isStreaming: boolean;
-	isCompacting: boolean;
-	attachedClients: number;
-	messageCount: number;
-}
-
+/** Active session projection returned by daemon list/create/rename/state/attach commands. */
 export interface ActiveSessionState {
+	activeSessionId: string;
 	model?: Model<Api>;
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
 	isCompacting: boolean;
-	sessionFile?: string;
 	sessionId: string;
+	sessionFile?: string;
 	sessionName?: string;
+	cwd: string;
+	attachedClients: number;
 	messageCount: number;
 	pendingMessageCount: number;
 	streamingMessage?: AgentMessage;

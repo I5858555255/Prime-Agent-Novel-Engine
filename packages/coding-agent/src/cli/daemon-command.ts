@@ -8,7 +8,7 @@ import { APP_NAME, expandTildePath } from "../config.js";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
-import type { ActiveSessionSummary, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
+import type { ActiveSessionState, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
@@ -254,7 +254,7 @@ async function runOpen(parsed: ParsedDaemonClientCommand): Promise<void> {
 			continueRecent: sessionArgs.continueRecent,
 		});
 		const data = requireSuccess(response);
-		if (!isSessionSummary(data)) {
+		if (!isActiveSessionState(data)) {
 			throw new Error("Daemon returned an invalid create response");
 		}
 		await runAttach(client, data.activeSessionId);
@@ -542,7 +542,7 @@ function resolvePathOption(value: string, cwd: string): string {
 	return isLocalPath(expanded) ? resolve(cwd, expanded) : expanded;
 }
 
-async function getLiveSessions(client: DaemonClient): Promise<ActiveSessionSummary[]> {
+async function getLiveSessions(client: DaemonClient): Promise<ActiveSessionState[]> {
 	const response = await client.request({ type: "list" });
 	const data = requireSuccess(response);
 	if (!isSessionListData(data)) {
@@ -551,7 +551,7 @@ async function getLiveSessions(client: DaemonClient): Promise<ActiveSessionSumma
 	return data.sessions;
 }
 
-function nextDefaultSessionName(sessions: ActiveSessionSummary[]): string {
+function nextDefaultSessionName(sessions: ActiveSessionState[]): string {
 	const existingNames = new Set(
 		sessions.map((session) => session.sessionName).filter((name): name is string => !!name),
 	);
@@ -644,7 +644,7 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 	const rows = data.sessions.map((session) => ({
 		name: session.sessionName ?? "",
 		id: session.activeSessionId,
-		model: formatSummaryModel(session.model),
+		model: formatSessionModel(session.model),
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
 		streaming: session.isStreaming ? "yes" : "no",
@@ -653,7 +653,7 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 	printTable(["name", "id", "model", "messages", "clients", "streaming", "cwd"], rows);
 }
 
-function formatSummaryModel(model: ActiveSessionSummary["model"]): string {
+function formatSessionModel(model: ActiveSessionState["model"]): string {
 	return model ? `${model.provider}/${model.id}` : "";
 }
 
@@ -672,7 +672,7 @@ async function runCreate(client: DaemonClient, args: string[], json: boolean): P
 		return;
 	}
 
-	if (isSessionSummary(data)) {
+	if (isActiveSessionState(data)) {
 		console.log(`Created ${data.activeSessionId}${data.sessionName ? ` (${data.sessionName})` : ""}`);
 		return;
 	}
@@ -703,7 +703,7 @@ async function runRename(client: DaemonClient, args: string[], json: boolean): P
 		return;
 	}
 
-	if (isSessionSummary(data)) {
+	if (isActiveSessionState(data)) {
 		console.log(`Renamed ${data.activeSessionId} to ${data.sessionName ?? name}`);
 		return;
 	}
@@ -1146,19 +1146,19 @@ function printTable<T extends Record<string, string>>(columns: Array<keyof T>, r
 	}
 }
 
-function isSessionListData(value: unknown): value is { sessions: ActiveSessionSummary[] } {
+function isSessionListData(value: unknown): value is { sessions: ActiveSessionState[] } {
 	if (!value || typeof value !== "object") {
 		return false;
 	}
 	const sessions = (value as { sessions?: unknown }).sessions;
-	return Array.isArray(sessions) && sessions.every(isSessionSummary);
+	return Array.isArray(sessions) && sessions.every(isActiveSessionState);
 }
 
-function isSessionSummary(value: unknown): value is ActiveSessionSummary {
+function isActiveSessionState(value: unknown): value is ActiveSessionState {
 	if (!value || typeof value !== "object") {
 		return false;
 	}
-	const candidate = value as Partial<ActiveSessionSummary>;
+	const candidate = value as Partial<ActiveSessionState>;
 	return (
 		typeof candidate.activeSessionId === "string" &&
 		typeof candidate.sessionId === "string" &&
@@ -1166,7 +1166,9 @@ function isSessionSummary(value: unknown): value is ActiveSessionSummary {
 		typeof candidate.isStreaming === "boolean" &&
 		typeof candidate.isCompacting === "boolean" &&
 		typeof candidate.attachedClients === "number" &&
-		typeof candidate.messageCount === "number"
+		typeof candidate.thinkingLevel === "string" &&
+		typeof candidate.messageCount === "number" &&
+		typeof candidate.pendingMessageCount === "number"
 	);
 }
 
