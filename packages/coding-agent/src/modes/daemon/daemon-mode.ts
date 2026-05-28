@@ -41,7 +41,7 @@ export interface DaemonModeOptions {
 }
 
 export interface DaemonSessionSummary {
-	daemonSessionId: string;
+	activeSessionId: string;
 	sessionId: string;
 	sessionFile?: string;
 	sessionName?: string;
@@ -77,25 +77,25 @@ export type DaemonCommand =
 			continueRecent?: boolean;
 			name?: string;
 	  }
-	| { id?: string; type: "attach"; daemonSessionId: string }
-	| { id?: string; type: "detach"; daemonSessionId?: string }
-	| { id?: string; type: "kill"; daemonSessionId: string }
-	| { id?: string; type: "rename"; daemonSessionId: string; name: string }
+	| { id?: string; type: "attach"; activeSessionId: string }
+	| { id?: string; type: "detach"; activeSessionId?: string }
+	| { id?: string; type: "kill"; activeSessionId: string }
+	| { id?: string; type: "rename"; activeSessionId: string; name: string }
 	| {
 			id?: string;
 			type: "prompt";
-			daemonSessionId: string;
+			activeSessionId: string;
 			message: string;
 			images?: ImageContent[];
 			streamingBehavior?: "steer" | "followUp";
 	  }
-	| { id?: string; type: "steer"; daemonSessionId: string; message: string; images?: ImageContent[] }
-	| { id?: string; type: "follow_up"; daemonSessionId: string; message: string; images?: ImageContent[] }
-	| { id?: string; type: "abort"; daemonSessionId: string }
-	| { id?: string; type: "get_state"; daemonSessionId: string }
-	| { id?: string; type: "get_messages"; daemonSessionId: string }
-	| { id?: string; type: "get_session_stats"; daemonSessionId: string }
-	| { id?: string; type: "get_commands"; daemonSessionId: string }
+	| { id?: string; type: "steer"; activeSessionId: string; message: string; images?: ImageContent[] }
+	| { id?: string; type: "follow_up"; activeSessionId: string; message: string; images?: ImageContent[] }
+	| { id?: string; type: "abort"; activeSessionId: string }
+	| { id?: string; type: "get_state"; activeSessionId: string }
+	| { id?: string; type: "get_messages"; activeSessionId: string }
+	| { id?: string; type: "get_session_stats"; activeSessionId: string }
+	| { id?: string; type: "get_commands"; activeSessionId: string }
 	| { id?: string; type: "shutdown" };
 
 type DaemonCommandName = DaemonCommand["type"];
@@ -107,27 +107,27 @@ export type DaemonResponse =
 export type DaemonOutbound =
 	| DaemonResponse
 	| { type: "daemon_hello"; socketPath: string }
-	| { type: "session_event"; daemonSessionId: string; event: AgentSessionEvent }
-	| { type: "session_attached"; daemonSessionId: string; state: DaemonSessionState; messages: AgentMessage[] }
-	| { type: "session_detached"; daemonSessionId: string }
-	| { type: "session_closed"; daemonSessionId: string; reason: "killed" | "shutdown" }
+	| { type: "session_event"; activeSessionId: string; event: AgentSessionEvent }
+	| { type: "session_attached"; activeSessionId: string; state: DaemonSessionState; messages: AgentMessage[] }
+	| { type: "session_detached"; activeSessionId: string }
+	| { type: "session_closed"; activeSessionId: string; reason: "killed" | "shutdown" }
 	| {
 			type: "extension_ui_request";
-			daemonSessionId: string;
+			activeSessionId: string;
 			method: string;
 			payload: Record<string, unknown>;
 	  }
-	| { type: "extension_error"; daemonSessionId: string; extensionPath: string; event: string; error: string };
+	| { type: "extension_error"; activeSessionId: string; extensionPath: string; event: string; error: string };
 
 interface DaemonClient {
 	id: string;
 	socket: Socket;
-	attachedSessionIds: Set<string>;
+	attachedActiveSessionIds: Set<string>;
 	detachInput: () => void;
 }
 
 interface DaemonSessionRecord {
-	daemonSessionId: string;
+	activeSessionId: string;
 	runtime: AgentSessionRuntime;
 	clients: Set<DaemonClient>;
 	unsubscribe?: () => void;
@@ -158,7 +158,7 @@ function stateForSession(session: AgentSession): DaemonSessionState {
 function summaryForRecord(record: DaemonSessionRecord): DaemonSessionSummary {
 	const session = record.runtime.session;
 	return {
-		daemonSessionId: record.daemonSessionId,
+		activeSessionId: record.activeSessionId,
 		sessionId: session.sessionId,
 		sessionFile: session.sessionFile,
 		sessionName: session.sessionName,
@@ -299,12 +299,12 @@ class AgentDaemon {
 
 	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<DaemonSessionRecord> {
 		const record: DaemonSessionRecord = {
-			daemonSessionId: randomUUID().slice(0, 8),
+			activeSessionId: randomUUID().slice(0, 8),
 			runtime,
 			clients: new Set(),
 		};
 		await this.bindRecord(record);
-		this.sessions.set(record.daemonSessionId, record);
+		this.sessions.set(record.activeSessionId, record);
 		if (name) {
 			record.runtime.session.setSessionName(name);
 		}
@@ -334,7 +334,7 @@ class AgentDaemon {
 		record.unsubscribe = session.subscribe((event) => {
 			this.broadcastToRecord(record, {
 				type: "session_event",
-				daemonSessionId: record.daemonSessionId,
+				activeSessionId: record.activeSessionId,
 				event,
 			});
 		});
@@ -352,7 +352,7 @@ class AgentDaemon {
 			onError: (error) => {
 				this.broadcastToRecord(record, {
 					type: "extension_error",
-					daemonSessionId: record.daemonSessionId,
+					activeSessionId: record.activeSessionId,
 					extensionPath: error.extensionPath,
 					event: error.event,
 					error: error.error,
@@ -389,7 +389,7 @@ class AgentDaemon {
 		const emitUiRequest = (method: string, payload: Record<string, unknown>): void => {
 			this.broadcastToRecord(record, {
 				type: "extension_ui_request",
-				daemonSessionId: record.daemonSessionId,
+				activeSessionId: record.activeSessionId,
 				method,
 				payload,
 			});
@@ -492,7 +492,7 @@ class AgentDaemon {
 		const client: DaemonClient = {
 			id: randomUUID().slice(0, 8),
 			socket,
-			attachedSessionIds: new Set(),
+			attachedActiveSessionIds: new Set(),
 			detachInput: () => {},
 		};
 		this.clients.add(client);
@@ -550,12 +550,12 @@ class AgentDaemon {
 			}
 
 			case "attach": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				record.clients.add(client);
-				client.attachedSessionIds.add(record.daemonSessionId);
+				client.attachedActiveSessionIds.add(record.activeSessionId);
 				this.write(client, {
 					type: "session_attached",
-					daemonSessionId: record.daemonSessionId,
+					activeSessionId: record.activeSessionId,
 					state: stateForSession(record.runtime.session),
 					messages: record.runtime.session.messages,
 				});
@@ -563,8 +563,8 @@ class AgentDaemon {
 			}
 
 			case "detach": {
-				if (command.daemonSessionId) {
-					const record = this.getRecord(command.daemonSessionId);
+				if (command.activeSessionId) {
+					const record = this.getRecord(command.activeSessionId);
 					this.detachClientFromRecord(client, record);
 				} else {
 					this.detachClient(client);
@@ -573,13 +573,13 @@ class AgentDaemon {
 			}
 
 			case "kill": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				await this.killRecord(record, "killed");
 				return success(command.id, "kill");
 			}
 
 			case "rename": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				const name = command.name.trim();
 				if (!name) {
 					throw new Error("Session name cannot be empty");
@@ -589,7 +589,7 @@ class AgentDaemon {
 			}
 
 			case "prompt": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				let preflightSucceeded = false;
 				void record.runtime.session
 					.prompt(command.message, {
@@ -614,41 +614,41 @@ class AgentDaemon {
 			}
 
 			case "steer": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				await record.runtime.session.steer(command.message, command.images);
 				return success(command.id, "steer");
 			}
 
 			case "follow_up": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				await record.runtime.session.followUp(command.message, command.images);
 				return success(command.id, "follow_up");
 			}
 
 			case "abort": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				await record.runtime.session.abort();
 				return success(command.id, "abort");
 			}
 
 			case "get_state": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				return success(command.id, "get_state", stateForSession(record.runtime.session));
 			}
 
 			case "get_messages": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				return success(command.id, "get_messages", { messages: record.runtime.session.messages });
 			}
 
 			case "get_session_stats": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				const stats: SessionStats = record.runtime.session.getSessionStats();
 				return success(command.id, "get_session_stats", stats);
 			}
 
 			case "get_commands": {
-				const record = this.getRecord(command.daemonSessionId);
+				const record = this.getRecord(command.activeSessionId);
 				const session = record.runtime.session;
 				const commands: RpcSlashCommand[] = [
 					...session.extensionRunner.getRegisteredCommands().map((entry) => ({
@@ -681,13 +681,13 @@ class AgentDaemon {
 
 	private detachClientFromRecord(client: DaemonClient, record: DaemonSessionRecord): void {
 		record.clients.delete(client);
-		client.attachedSessionIds.delete(record.daemonSessionId);
-		this.write(client, { type: "session_detached", daemonSessionId: record.daemonSessionId });
+		client.attachedActiveSessionIds.delete(record.activeSessionId);
+		this.write(client, { type: "session_detached", activeSessionId: record.activeSessionId });
 	}
 
 	private detachClient(client: DaemonClient): void {
-		for (const sessionId of [...client.attachedSessionIds]) {
-			const record = this.sessions.get(sessionId);
+		for (const activeSessionId of [...client.attachedActiveSessionIds]) {
+			const record = this.sessions.get(activeSessionId);
 			if (record) {
 				this.detachClientFromRecord(client, record);
 			}
@@ -697,10 +697,10 @@ class AgentDaemon {
 	private async killRecord(record: DaemonSessionRecord, reason: "killed" | "shutdown"): Promise<void> {
 		record.unsubscribe?.();
 		await record.runtime.dispose();
-		this.sessions.delete(record.daemonSessionId);
-		this.broadcastToRecord(record, { type: "session_closed", daemonSessionId: record.daemonSessionId, reason });
+		this.sessions.delete(record.activeSessionId);
+		this.broadcastToRecord(record, { type: "session_closed", activeSessionId: record.activeSessionId, reason });
 		for (const client of record.clients) {
-			client.attachedSessionIds.delete(record.daemonSessionId);
+			client.attachedActiveSessionIds.delete(record.activeSessionId);
 		}
 		record.clients.clear();
 	}

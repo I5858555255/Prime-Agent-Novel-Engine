@@ -6,6 +6,7 @@ const netMock = vi.hoisted(() => {
 
 	class MockSocket {
 		private readonly listeners = new Map<string, Set<Listener>>();
+		readonly writes: string[] = [];
 		destroyed = false;
 
 		constructor(readonly path: string) {}
@@ -50,7 +51,8 @@ const netMock = vi.hoisted(() => {
 			return this;
 		}
 
-		write(): boolean {
+		write(chunk: string | Buffer): boolean {
+			this.writes.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
 			return true;
 		}
 
@@ -128,6 +130,36 @@ describe("DaemonClient", () => {
 		netMock.sockets[1]!.emit("error", new Error("retry reached socket"));
 
 		await expect(secondAttempt).resolves.toMatchObject({ message: "retry reached socket" });
+	});
+
+	it("serializes activeSessionId for session commands", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+
+		const connect = client.connect();
+		expect(netMock.sockets).toHaveLength(1);
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+
+		const response = client.request({ type: "attach", activeSessionId: "active-1" });
+		expect(socket.writes).toHaveLength(1);
+		const command = JSON.parse(socket.writes[0]!.trim()) as {
+			id?: string;
+			type?: string;
+			activeSessionId?: string;
+			daemonSessionId?: unknown;
+		};
+
+		expect(command).toMatchObject({ type: "attach", activeSessionId: "active-1" });
+		expect(command).not.toHaveProperty("daemonSessionId");
+
+		socket.emit(
+			"data",
+			`${JSON.stringify({ id: command.id, type: "response", command: "attach", success: true })}\n`,
+		);
+		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
+
+		client.close();
 	});
 });
 

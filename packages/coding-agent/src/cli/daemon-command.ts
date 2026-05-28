@@ -167,22 +167,22 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 				return;
 			case "attach":
 				if (parsed.json) {
-					await runJsonAttach(client, requireSessionId(parsed.positionals));
+					await runJsonAttach(client, requireActiveSessionId(parsed.positionals));
 				} else {
-					await runAttach(client, requireSessionId(parsed.positionals));
+					await runAttach(client, requireActiveSessionId(parsed.positionals));
 				}
 				return;
 			case "detach":
 				await printResponseData(
 					client,
-					parsed.positionals[0] ? { type: "detach", daemonSessionId: parsed.positionals[0] } : { type: "detach" },
+					parsed.positionals[0] ? { type: "detach", activeSessionId: parsed.positionals[0] } : { type: "detach" },
 					parsed.json,
 				);
 				return;
 			case "kill":
 				await printResponseData(
 					client,
-					{ type: "kill", daemonSessionId: requireSessionId(parsed.positionals) },
+					{ type: "kill", activeSessionId: requireActiveSessionId(parsed.positionals) },
 					parsed.json,
 				);
 				return;
@@ -201,28 +201,28 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 			case "state":
 				await printResponseData(
 					client,
-					{ type: "get_state", daemonSessionId: requireSessionId(parsed.positionals) },
+					{ type: "get_state", activeSessionId: requireActiveSessionId(parsed.positionals) },
 					true,
 				);
 				return;
 			case "messages":
 				await printResponseData(
 					client,
-					{ type: "get_messages", daemonSessionId: requireSessionId(parsed.positionals) },
+					{ type: "get_messages", activeSessionId: requireActiveSessionId(parsed.positionals) },
 					true,
 				);
 				return;
 			case "stats":
 				await printResponseData(
 					client,
-					{ type: "get_session_stats", daemonSessionId: requireSessionId(parsed.positionals) },
+					{ type: "get_session_stats", activeSessionId: requireActiveSessionId(parsed.positionals) },
 					true,
 				);
 				return;
 			case "commands":
 				await printResponseData(
 					client,
-					{ type: "get_commands", daemonSessionId: requireSessionId(parsed.positionals) },
+					{ type: "get_commands", activeSessionId: requireActiveSessionId(parsed.positionals) },
 					true,
 				);
 				return;
@@ -251,7 +251,7 @@ async function runOpen(parsed: ParsedDaemonClientCommand): Promise<void> {
 		if (!isSessionSummary(data)) {
 			throw new Error("Daemon returned an invalid create response");
 		}
-		await runAttach(client, data.daemonSessionId);
+		await runAttach(client, data.activeSessionId);
 	} finally {
 		client.close();
 	}
@@ -429,7 +429,7 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 
 	const rows = data.sessions.map((session) => ({
 		name: session.sessionName ?? "",
-		id: session.daemonSessionId,
+		id: session.activeSessionId,
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
 		streaming: session.isStreaming ? "yes" : "no",
@@ -448,30 +448,30 @@ async function runCreate(client: DaemonClient, args: string[], json: boolean): P
 	}
 
 	if (isSessionSummary(data)) {
-		console.log(`Created ${data.daemonSessionId}${data.sessionName ? ` (${data.sessionName})` : ""}`);
+		console.log(`Created ${data.activeSessionId}${data.sessionName ? ` (${data.sessionName})` : ""}`);
 		return;
 	}
 	printJson(data);
 }
 
-async function runAttach(client: DaemonClient, daemonSessionId: string): Promise<void> {
-	const terminal = new DaemonAttachTerminal(client, daemonSessionId);
+async function runAttach(client: DaemonClient, activeSessionId: string): Promise<void> {
+	const terminal = new DaemonAttachTerminal(client, activeSessionId);
 	await terminal.run();
 }
 
-async function runJsonAttach(client: DaemonClient, daemonSessionId: string): Promise<void> {
+async function runJsonAttach(client: DaemonClient, activeSessionId: string): Promise<void> {
 	client.onMessage(printJsonLine);
-	await requireSuccessAsync(client.request({ type: "attach", daemonSessionId }));
+	await requireSuccessAsync(client.request({ type: "attach", activeSessionId }));
 	await waitUntilInterrupted();
 }
 
 async function runRename(client: DaemonClient, args: string[], json: boolean): Promise<void> {
-	const daemonSessionId = requireSessionId(args);
+	const activeSessionId = requireActiveSessionId(args);
 	const name = args.slice(1).join(" ").trim();
 	if (!name) {
 		throw new Error("Usage: daemon rename <session> <name>");
 	}
-	const response = await client.request({ type: "rename", daemonSessionId, name });
+	const response = await client.request({ type: "rename", activeSessionId, name });
 	const data = requireSuccess(response);
 	if (json) {
 		printJson(data);
@@ -479,23 +479,23 @@ async function runRename(client: DaemonClient, args: string[], json: boolean): P
 	}
 
 	if (isSessionSummary(data)) {
-		console.log(`Renamed ${data.daemonSessionId} to ${data.sessionName ?? name}`);
+		console.log(`Renamed ${data.activeSessionId} to ${data.sessionName ?? name}`);
 		return;
 	}
 	printJson(data);
 }
 
 async function runPrompt(client: DaemonClient, args: string[]): Promise<void> {
-	const daemonSessionId = requireSessionId(args);
+	const activeSessionId = requireActiveSessionId(args);
 	const message = args.slice(1).join(" ").trim();
 	if (!message) {
 		throw new Error("Usage: daemon prompt <session> <message>");
 	}
 
-	const finished = waitForSessionEnd(client, daemonSessionId);
+	const finished = waitForSessionEnd(client, activeSessionId);
 	client.onMessage(printJsonLine);
-	await requireSuccessAsync(client.request({ type: "attach", daemonSessionId }));
-	await requireSuccessAsync(client.request({ type: "prompt", daemonSessionId, message }));
+	await requireSuccessAsync(client.request({ type: "attach", activeSessionId }));
+	await requireSuccessAsync(client.request({ type: "prompt", activeSessionId, message }));
 	await finished;
 }
 
@@ -505,13 +505,13 @@ async function runMessageCommand(
 	args: string[],
 	json: boolean,
 ): Promise<void> {
-	const daemonSessionId = requireSessionId(args);
+	const activeSessionId = requireActiveSessionId(args);
 	const message = args.slice(1).join(" ").trim();
 	if (!message) {
 		const command = type === "follow_up" ? "follow-up" : type;
 		throw new Error(`Usage: daemon ${command} <session> <message>`);
 	}
-	await printResponseData(client, { type, daemonSessionId, message }, json);
+	await printResponseData(client, { type, activeSessionId, message }, json);
 }
 
 async function printResponseData(
@@ -528,12 +528,12 @@ async function printResponseData(
 	console.log("ok");
 }
 
-function requireSessionId(args: string[]): string {
-	const daemonSessionId = args[0];
-	if (!daemonSessionId) {
-		throw new Error("Missing daemon session id");
+function requireActiveSessionId(args: string[]): string {
+	const activeSessionId = args[0];
+	if (!activeSessionId) {
+		throw new Error("Missing active session id");
 	}
-	return daemonSessionId;
+	return activeSessionId;
 }
 
 function requireSuccess(response: DaemonResponse): unknown {
@@ -547,15 +547,15 @@ async function requireSuccessAsync(responsePromise: Promise<DaemonResponse>): Pr
 	return requireSuccess(await responsePromise);
 }
 
-function waitForSessionEnd(client: DaemonClient, daemonSessionId: string): Promise<void> {
+function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Promise<void> {
 	return new Promise((resolve) => {
 		const unsubscribe = client.onMessage((message) => {
-			if (message.type === "session_event" && message.daemonSessionId === daemonSessionId) {
+			if (message.type === "session_event" && message.activeSessionId === activeSessionId) {
 				if (message.event.type === "agent_end") {
 					unsubscribe();
 					resolve();
 				}
-			} else if (message.type === "session_closed" && message.daemonSessionId === daemonSessionId) {
+			} else if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {
 				unsubscribe();
 				resolve();
 			}
@@ -593,7 +593,7 @@ class DaemonAttachTerminal {
 
 	constructor(
 		private readonly client: DaemonClient,
-		private readonly daemonSessionId: string,
+		private readonly activeSessionId: string,
 	) {}
 
 	async run(): Promise<void> {
@@ -615,7 +615,7 @@ class DaemonAttachTerminal {
 		});
 
 		try {
-			await requireSuccessAsync(this.client.request({ type: "attach", daemonSessionId: this.daemonSessionId }));
+			await requireSuccessAsync(this.client.request({ type: "attach", activeSessionId: this.activeSessionId }));
 			await new Promise<void>((resolve) => {
 				this.rl?.once("close", resolve);
 			});
@@ -623,7 +623,7 @@ class DaemonAttachTerminal {
 			unsubscribe();
 			this.rl?.removeAllListeners();
 			this.rl = undefined;
-			await this.client.request({ type: "detach", daemonSessionId: this.daemonSessionId }).catch(() => undefined);
+			await this.client.request({ type: "detach", activeSessionId: this.activeSessionId }).catch(() => undefined);
 			process.stdin.pause();
 			process.stdout.write(`${chalk.dim("Detached.")}\n`);
 		}
@@ -648,19 +648,19 @@ class DaemonAttachTerminal {
 		}
 
 		if (input === "/abort") {
-			requireSuccess(await this.client.request({ type: "abort", daemonSessionId: this.daemonSessionId }));
+			requireSuccess(await this.client.request({ type: "abort", activeSessionId: this.activeSessionId }));
 			this.writeLine(chalk.dim("Abort requested."));
 			return;
 		}
 
 		if (input === "/state") {
-			const response = await this.client.request({ type: "get_state", daemonSessionId: this.daemonSessionId });
+			const response = await this.client.request({ type: "get_state", activeSessionId: this.activeSessionId });
 			this.writeLine(JSON.stringify(requireSuccess(response), null, 2));
 			return;
 		}
 
 		if (input === "/messages") {
-			const response = await this.client.request({ type: "get_messages", daemonSessionId: this.daemonSessionId });
+			const response = await this.client.request({ type: "get_messages", activeSessionId: this.activeSessionId });
 			const data = requireSuccess(response);
 			if (isMessagesData(data)) {
 				this.writeLine(chalk.bold("Transcript"));
@@ -673,14 +673,14 @@ class DaemonAttachTerminal {
 
 		if (this.isStreaming) {
 			requireSuccess(
-				await this.client.request({ type: "follow_up", daemonSessionId: this.daemonSessionId, message: input }),
+				await this.client.request({ type: "follow_up", activeSessionId: this.activeSessionId, message: input }),
 			);
 			this.writeLine(chalk.dim("Queued follow-up."));
 			return;
 		}
 
 		requireSuccess(
-			await this.client.request({ type: "prompt", daemonSessionId: this.daemonSessionId, message: input }),
+			await this.client.request({ type: "prompt", activeSessionId: this.activeSessionId, message: input }),
 		);
 	}
 
@@ -690,7 +690,7 @@ class DaemonAttachTerminal {
 				return;
 			case "session_attached":
 				this.isStreaming = message.state.isStreaming;
-				this.writeLine(chalk.bold(`Attached to ${message.state.sessionName ?? message.daemonSessionId}`));
+				this.writeLine(chalk.bold(`Attached to ${message.state.sessionName ?? message.activeSessionId}`));
 				if (message.state.model) {
 					this.writeLine(chalk.dim(`Model: ${message.state.model.provider}/${message.state.model.id}`));
 				}
@@ -935,7 +935,7 @@ function isSessionSummary(value: unknown): value is DaemonSessionSummary {
 	}
 	const candidate = value as Partial<DaemonSessionSummary>;
 	return (
-		typeof candidate.daemonSessionId === "string" &&
+		typeof candidate.activeSessionId === "string" &&
 		typeof candidate.sessionId === "string" &&
 		typeof candidate.cwd === "string" &&
 		typeof candidate.isStreaming === "boolean" &&
