@@ -37,6 +37,7 @@ export function summaryForRecord(record: ActiveSessionRecord): ActiveSessionSumm
 	const session = record.runtime.session;
 	return {
 		activeSessionId: record.activeSessionId,
+		model: session.model as Model<Api> | undefined,
 		sessionId: session.sessionId,
 		sessionFile: session.sessionFile,
 		sessionName: session.sessionName,

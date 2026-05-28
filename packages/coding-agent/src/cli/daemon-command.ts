@@ -644,12 +644,17 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 	const rows = data.sessions.map((session) => ({
 		name: session.sessionName ?? "",
 		id: session.activeSessionId,
+		model: formatSummaryModel(session.model),
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
 		streaming: session.isStreaming ? "yes" : "no",
 		cwd: session.cwd,
 	}));
-	printTable(["name", "id", "messages", "clients", "streaming", "cwd"], rows);
+	printTable(["name", "id", "model", "messages", "clients", "streaming", "cwd"], rows);
+}
+
+function formatSummaryModel(model: ActiveSessionSummary["model"]): string {
+	return model ? `${model.provider}/${model.id}` : "";
 }
 
 async function runCreate(client: DaemonClient, args: string[], json: boolean): Promise<void> {

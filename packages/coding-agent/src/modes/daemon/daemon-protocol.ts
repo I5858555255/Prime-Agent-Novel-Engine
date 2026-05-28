@@ -13,6 +13,7 @@ export interface DaemonModeOptions {
 /** Compact active session projection returned by daemon list/create/rename commands. */
 export interface ActiveSessionSummary {
 	activeSessionId: string;
+	model?: Model<Api>;
 	sessionId: string;
 	sessionFile?: string;
 	sessionName?: string;
