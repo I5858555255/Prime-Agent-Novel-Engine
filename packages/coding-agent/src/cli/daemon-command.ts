@@ -1,6 +1,8 @@
 import { clearLine, createInterface, cursorTo, type Interface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
+import { spawn } from "child_process";
 import { APP_NAME } from "../config.js";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
@@ -20,6 +22,7 @@ interface ParsedDaemonClientCommand {
 
 const DAEMON_CLIENT_COMMANDS = new Set([
 	"help",
+	"start",
 	"list",
 	"list-saved",
 	"create",
@@ -41,10 +44,16 @@ export function normalizeDaemonStartArgs(args: string[]): string[] | undefined {
 	if (args[0] !== "daemon" || args[1] !== "start") {
 		return undefined;
 	}
+	if (!args.slice(2).some((arg) => arg === "--foreground" || arg === "--no-detach")) {
+		return undefined;
+	}
 
 	const normalized = ["--mode", "daemon"];
 	for (let index = 2; index < args.length; index++) {
 		const arg = args[index];
+		if (arg === "--foreground" || arg === "--no-detach" || arg === "--background" || arg === "-d") {
+			continue;
+		}
 		normalized.push(arg === "--socket" ? "--daemon-socket" : arg);
 	}
 	return normalized;
@@ -76,6 +85,7 @@ function parseDaemonClientCommand(args: string[]): ParsedDaemonClientCommand {
 	let json = false;
 	const positionals: string[] = [];
 	let passthrough = false;
+	let command: string | undefined;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
@@ -91,7 +101,11 @@ function parseDaemonClientCommand(args: string[]): ParsedDaemonClientCommand {
 		}
 
 		if (arg === "--help" || arg === "-h") {
-			positionals.push("help");
+			if (!command) {
+				command = "help";
+			} else {
+				positionals.push("help");
+			}
 			continue;
 		}
 
@@ -110,11 +124,16 @@ function parseDaemonClientCommand(args: string[]): ParsedDaemonClientCommand {
 			continue;
 		}
 
+		if (!command && DAEMON_CLIENT_COMMANDS.has(arg)) {
+			command = arg;
+			continue;
+		}
+
 		positionals.push(arg);
 	}
 
-	const command = positionals.shift() ?? "help";
-	if (!DAEMON_CLIENT_COMMANDS.has(command)) {
+	command = command ?? "open";
+	if (command !== "open" && !DAEMON_CLIENT_COMMANDS.has(command)) {
 		throw new Error(`Unknown daemon command: ${command}`);
 	}
 
@@ -122,6 +141,16 @@ function parseDaemonClientCommand(args: string[]): ParsedDaemonClientCommand {
 }
 
 async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promise<void> {
+	if (parsed.command === "open") {
+		await runOpen(parsed);
+		return;
+	}
+
+	if (parsed.command === "start") {
+		await runStart(parsed);
+		return;
+	}
+
 	const client = new DaemonClient(parsed.socketPath);
 	await client.connect();
 
@@ -206,6 +235,180 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 	}
 }
 
+async function runOpen(parsed: ParsedDaemonClientCommand): Promise<void> {
+	const { daemonArgs, name } = parseOpenArgs(parsed.positionals);
+	if (!(await canConnectToDaemon(parsed.socketPath, 250))) {
+		await runStart({ ...parsed, command: "start", positionals: daemonArgs });
+	}
+
+	const client = new DaemonClient(parsed.socketPath);
+	await client.connect();
+	try {
+		const sessions = await getLiveSessions(client);
+		const sessionName = name ?? nextDefaultSessionName(sessions);
+		const response = await client.request({ type: "create", name: sessionName });
+		const data = requireSuccess(response);
+		if (!isSessionSummary(data)) {
+			throw new Error("Daemon returned an invalid create response");
+		}
+		await runAttach(client, data.daemonSessionId);
+	} finally {
+		client.close();
+	}
+}
+
+interface ParsedOpenArgs {
+	daemonArgs: string[];
+	name?: string;
+}
+
+const DAEMON_START_BOOLEAN_FLAGS = new Set([
+	"--continue",
+	"-c",
+	"--resume",
+	"-r",
+	"--no-session",
+	"--no-tools",
+	"-nt",
+	"--no-builtin-tools",
+	"-nbt",
+	"--no-extensions",
+	"-ne",
+	"--no-skills",
+	"-ns",
+	"--no-prompt-templates",
+	"-np",
+	"--no-themes",
+	"--no-context-files",
+	"-nc",
+	"--verbose",
+	"--offline",
+	"--foreground",
+	"--no-detach",
+	"--background",
+	"-d",
+]);
+
+function parseOpenArgs(args: string[]): ParsedOpenArgs {
+	const daemonArgs: string[] = [];
+	const nameParts: string[] = [];
+
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--") {
+			nameParts.push(...args.slice(index + 1));
+			break;
+		}
+
+		if (arg === "--name") {
+			const value = args[index + 1];
+			if (!value) {
+				throw new Error("--name requires a value");
+			}
+			nameParts.push(value);
+			index++;
+			continue;
+		}
+
+		if (arg.startsWith("-")) {
+			daemonArgs.push(arg);
+			if (!DAEMON_START_BOOLEAN_FLAGS.has(arg)) {
+				const value = args[index + 1];
+				if (value && !value.startsWith("-")) {
+					daemonArgs.push(value);
+					index++;
+				}
+			}
+			continue;
+		}
+
+		nameParts.push(arg);
+	}
+
+	const name = nameParts.join(" ").trim();
+	return { daemonArgs, name: name || undefined };
+}
+
+async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionSummary[]> {
+	const response = await client.request({ type: "list" });
+	const data = requireSuccess(response);
+	if (!isSessionListData(data)) {
+		throw new Error("Daemon returned an invalid list response");
+	}
+	return data.sessions;
+}
+
+function nextDefaultSessionName(sessions: DaemonSessionSummary[]): string {
+	const existingNames = new Set(
+		sessions.map((session) => session.sessionName).filter((name): name is string => !!name),
+	);
+	const numericNames = [...existingNames]
+		.map((name) => Number.parseInt(name, 10))
+		.filter((value) => Number.isInteger(value) && value > 0);
+	let next = numericNames.length > 0 ? Math.max(...numericNames) + 1 : 1;
+	while (existingNames.has(String(next))) {
+		next++;
+	}
+	return String(next);
+}
+
+async function runStart(parsed: ParsedDaemonClientCommand): Promise<void> {
+	if (parsed.positionals.length === 1 && parsed.positionals[0] === "help") {
+		printDaemonHelp();
+		return;
+	}
+
+	if (await canConnectToDaemon(parsed.socketPath, 250)) {
+		console.log(`Daemon already running on ${parsed.socketPath}`);
+		return;
+	}
+
+	const entrypoint = process.argv[1];
+	if (!entrypoint) {
+		throw new Error("Cannot determine current CLI entrypoint for daemon launch");
+	}
+
+	const daemonArgs = [
+		...process.execArgv,
+		entrypoint,
+		"--mode",
+		"daemon",
+		"--daemon-socket",
+		parsed.socketPath,
+		...parsed.positionals.filter((arg) => arg !== "--background" && arg !== "-d"),
+	];
+	const child = spawn(process.execPath, daemonArgs, {
+		cwd: process.cwd(),
+		detached: true,
+		env: process.env,
+		stdio: "ignore",
+	});
+	child.unref();
+
+	const deadline = Date.now() + 10000;
+	while (Date.now() < deadline) {
+		if (await canConnectToDaemon(parsed.socketPath, 250)) {
+			console.log(`Daemon started on ${parsed.socketPath} (pid ${child.pid})`);
+			return;
+		}
+		await delay(100);
+	}
+
+	throw new Error(`Timed out waiting for daemon to start on ${parsed.socketPath}`);
+}
+
+async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promise<boolean> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(timeoutMs);
+		return true;
+	} catch {
+		return false;
+	} finally {
+		client.close();
+	}
+}
+
 async function runList(client: DaemonClient, json: boolean): Promise<void> {
 	const response = await client.request({ type: "list" });
 	const data = requireSuccess(response);
@@ -225,14 +428,14 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 	}
 
 	const rows = data.sessions.map((session) => ({
-		id: session.daemonSessionId,
 		name: session.sessionName ?? "",
+		id: session.daemonSessionId,
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
 		streaming: session.isStreaming ? "yes" : "no",
 		cwd: session.cwd,
 	}));
-	printTable(["id", "name", "messages", "clients", "streaming", "cwd"], rows);
+	printTable(["name", "id", "messages", "clients", "streaming", "cwd"], rows);
 }
 
 async function runCreate(client: DaemonClient, args: string[], json: boolean): Promise<void> {
@@ -744,11 +947,14 @@ function isSessionSummary(value: unknown): value is DaemonSessionSummary {
 
 function printDaemonHelp(): void {
 	console.log(`${chalk.bold("Usage:")}
-  ${APP_NAME} daemon start [agent options]
+  ${APP_NAME} daemon [options] [session name]
+  ${APP_NAME} daemon --name <name> [agent options]
   ${APP_NAME} daemon [--socket <path>] <command> [args...]
+  ${APP_NAME} daemon help
 
 ${chalk.bold("Commands:")}
-  start                         Start the background daemon
+  help                          Show daemon help
+  start                         Start the background daemon and return
   list                          List live daemon-owned sessions
   list-saved                    List saved sessions for the current project
   create [name]                 Create a new live daemon session
@@ -767,10 +973,16 @@ ${chalk.bold("Commands:")}
 
 ${chalk.bold("Options:")}
   --socket <path>               Socket path (default: ${defaultDaemonSocketPath()})
+  --name <name>                 Name for the new session created by bare daemon
+  --foreground, --no-detach     Keep daemon attached to this terminal for debugging
   --json                        Print raw JSON for commands with formatted output; attach streams raw protocol JSON
 
 ${chalk.bold("Examples:")}
-  ${APP_NAME} daemon start --socket /tmp/prime-agent.sock --offline
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock --name scratch --model openai/gpt-4o-mini
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock scratch
+  ${APP_NAME} daemon start --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini
+  ${APP_NAME} daemon start --foreground --socket /tmp/prime-agent.sock --offline
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock list
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock create scratch
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock prompt <session> "Say hello"

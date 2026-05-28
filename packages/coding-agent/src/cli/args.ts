@@ -223,7 +223,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} update [source|self|${APP_NAME}]   Update ${APP_NAME} and installed extensions
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config                    Open TUI to enable/disable package resources
-  ${APP_NAME} daemon <command>          Manage background daemon sessions
+  ${APP_NAME} daemon [name]             Start daemon if needed, create a session, and attach
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/daemon
 
 ${chalk.bold("Options:")}
@@ -314,7 +314,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --export session.jsonl output.html
 
   # Start and control daemon sessions
-  ${APP_NAME} daemon start --socket /tmp/prime-agent.sock
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini scratch
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock list
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock prompt <session> "Say hello"
 

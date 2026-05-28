@@ -213,7 +213,11 @@ function canConnectToUnixSocket(socketPath: string): Promise<boolean> {
 
 export async function runDaemonMode(initialRuntime: AgentSessionRuntime, options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
-	const daemon = new AgentDaemon(socketPath, initialRuntime, options);
+	// main() creates a runtime before dispatching modes. Daemon mode should not
+	// expose that bootstrap runtime as a user session; live sessions are created
+	// explicitly through the daemon protocol.
+	await initialRuntime.dispose();
+	const daemon = new AgentDaemon(socketPath, options);
 	await daemon.start();
 	return new Promise(() => {});
 }
@@ -228,14 +232,12 @@ class AgentDaemon {
 
 	constructor(
 		private readonly socketPath: string,
-		private readonly initialRuntime: AgentSessionRuntime,
 		private readonly options: DaemonModeOptions,
 	) {}
 
 	async start(): Promise<void> {
 		await this.prepareSocketPath();
 
-		await this.addRuntime(this.initialRuntime);
 		this.server = createServer((socket) => this.handleConnection(socket));
 
 		try {
