@@ -14,9 +14,9 @@ Prime Agent: RLM-native Coding and Research Harness
 
 <p align="center">
   <a href="packages/coding-agent/docs/index.md">Documentation</a> &bull;
-  <a href="https://github.com/badlogic/pi-mono">pi-mono</a> &bull;
   <a href="https://github.com/PrimeIntellect-ai/verifiers">Verifiers</a> &bull;
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a>
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a> &bull;
+  <a href="https://github.com/badlogic/pi-mono">pi-mono</a>
 </p>
 
 ---
