@@ -303,8 +303,8 @@ class AgentDaemon {
 			runtime,
 			clients: new Set(),
 		};
-		this.sessions.set(record.daemonSessionId, record);
 		await this.bindRecord(record);
+		this.sessions.set(record.daemonSessionId, record);
 		if (name) {
 			record.runtime.session.setSessionName(name);
 		}
@@ -726,7 +726,7 @@ class AgentDaemon {
 		for (const signal of signals) {
 			const handler = () => {
 				killTrackedDetachedChildren();
-				void this.shutdown(signal === "SIGHUP" ? 129 : 143);
+				void this.shutdown(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143);
 			};
 			process.on(signal, handler);
 			this.signalCleanupHandlers.push(() => process.off(signal, handler));
