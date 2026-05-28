@@ -7,6 +7,7 @@ import {
 	DEFAULT_RLM_EXTRA_UV_ARGS,
 	ensureKernelPython,
 	getKernelVenvDir,
+	type KernelPythonSkill,
 } from "../src/core/kernel/bootstrap.js";
 
 let tempDir = "";
@@ -23,12 +24,34 @@ function writeBootstrapVersion(venv: string): void {
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
 		`${JSON.stringify({
-			schema: 3,
+			schema: 4,
 			ipykernel: "ipykernel",
 			runtime: "prime-agent-runtime",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
+			pythonSkills: [],
 		})}\n`,
 	);
+}
+
+function createPythonSkill(name = "web-search"): KernelPythonSkill {
+	const packagePath = join(tempDir, "skills", name);
+	const importName = name.replaceAll("-", "_");
+	const pyprojectPath = join(packagePath, "pyproject.toml");
+	mkdirSync(join(packagePath, "src", importName), { recursive: true });
+	writeFileSync(
+		pyprojectPath,
+		`[project]
+name = "${name}"
+version = "0.1.0"
+`,
+	);
+	writeFileSync(join(packagePath, "src", importName, "__init__.py"), "async def run():\n    return 'ok'\n");
+	return {
+		name,
+		importName,
+		packagePath,
+		pyprojectPath,
+	};
 }
 
 function writeFakePython(filePath: string, importableModules: readonly string[]): void {
@@ -139,11 +162,32 @@ describe("kernel bootstrap", () => {
 		}
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version).toEqual({
-			schema: 3,
+			schema: 4,
 			ipykernel: "ipykernel",
 			runtime: "prime-agent-runtime",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
+			pythonSkills: [],
 		});
+	});
+
+	it("installs Python skills into the bootstrapped venv", async () => {
+		const logPath = installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const pythonSkill = createPythonSkill();
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+
+		await expect(ensureKernelPython({ pythonSkills: [pythonSkill] })).resolves.toBe(join(venv, "bin", "python"));
+
+		const log = readFileSync(logPath, "utf8");
+		expect(log).toContain(`--editable ${pythonSkill.packagePath}`);
+		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
+		expect(version.pythonSkills).toEqual([
+			{
+				importName: pythonSkill.importName,
+				packagePath: pythonSkill.packagePath,
+				pyprojectPath: pythonSkill.pyprojectPath,
+			},
+		]);
 	});
 
 	it("shares concurrent bootstrap work in one process", async () => {
@@ -214,6 +258,17 @@ describe("kernel bootstrap", () => {
 		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
 
 		await expect(ensureKernelPython()).resolves.toBe(overridePython);
+	});
+
+	it("rejects PRIME_AGENT_KERNEL_PYTHON missing Python skill imports", async () => {
+		const overridePython = join(tempDir, "override-python");
+		const pythonSkill = createPythonSkill();
+		writeFakePython(overridePython, ["ipykernel", "rlm", ...DEFAULT_RLM_EXTRA_IMPORT_NAMES]);
+		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
+
+		await expect(ensureKernelPython({ pythonSkills: [pythonSkill] })).rejects.toThrow(
+			/Python skills \(web-search \(web_search\)\)/,
+		);
 	});
 
 	it("rejects PRIME_AGENT_KERNEL_PYTHON missing default extra packages", async () => {

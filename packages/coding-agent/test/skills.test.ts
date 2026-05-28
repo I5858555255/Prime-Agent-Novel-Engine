@@ -2,7 +2,14 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.js";
-import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../src/core/skills.js";
+import {
+	formatSkillsForPrompt,
+	getPythonSkillRuntimeInfo,
+	loadSkills,
+	loadSkillsFromDir,
+	type Skill,
+	type SkillPythonMetadata,
+} from "../src/core/skills.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 
 const fixturesDir = resolve(__dirname, "fixtures/skills");
@@ -14,9 +21,10 @@ function createTestSkill(options: {
 	filePath: string;
 	baseDir: string;
 	disableModelInvocation?: boolean;
+	python?: SkillPythonMetadata;
 	source?: string;
 }): Skill {
-	return {
+	const base = {
 		name: options.name,
 		description: options.description,
 		filePath: options.filePath,
@@ -24,6 +32,16 @@ function createTestSkill(options: {
 		sourceInfo: createSyntheticSourceInfo(options.filePath, { source: options.source ?? "test" }),
 		disableModelInvocation: options.disableModelInvocation ?? false,
 	};
+	return options.python
+		? {
+				...base,
+				kind: "python",
+				python: options.python,
+			}
+		: {
+				...base,
+				kind: "markdown",
+			};
 }
 
 describe("skills", () => {
@@ -219,6 +237,49 @@ describe("skills", () => {
 			expect(skills).toHaveLength(1);
 			expect(skills[0].disableModelInvocation).toBe(false);
 		});
+
+		it("should load Python-backed skills from the same skill root", () => {
+			const skillDir = join(fixturesDir, "python-skill");
+			const { skills, diagnostics } = loadSkillsFromDir({
+				dir: skillDir,
+				source: "test",
+			});
+
+			expect(skills).toHaveLength(1);
+			expect(skills[0]).toMatchObject({
+				name: "python-skill",
+				kind: "python",
+				python: {
+					importName: "python_skill",
+					packagePath: skillDir,
+					pyprojectPath: join(skillDir, "pyproject.toml"),
+				},
+			});
+			expect(getPythonSkillRuntimeInfo(skills)).toEqual([
+				{
+					name: "python-skill",
+					importName: "python_skill",
+					packagePath: skillDir,
+					pyprojectPath: join(skillDir, "pyproject.toml"),
+				},
+			]);
+			expect(diagnostics).toHaveLength(0);
+		});
+
+		it("should warn and keep metadata-only skills when Python package files are missing", () => {
+			const { skills, diagnostics } = loadSkillsFromDir({
+				dir: join(fixturesDir, "python-package-missing"),
+				source: "test",
+			});
+
+			expect(skills).toHaveLength(1);
+			expect(skills[0].kind).toBe("markdown");
+			expect(
+				diagnostics.some((d: ResourceDiagnostic) =>
+					d.message.includes("python skill package src/python_package_missing/__init__.py not found"),
+				),
+			).toBe(true);
+		});
 	});
 
 	describe("formatSkillsForPrompt", () => {
@@ -243,8 +304,30 @@ describe("skills", () => {
 			expect(result).toContain("</available_skills>");
 			expect(result).toContain("<skill>");
 			expect(result).toContain("<name>test-skill</name>");
+			expect(result).toContain("<type>markdown</type>");
 			expect(result).toContain("<description>A test skill.</description>");
 			expect(result).toContain("<location>/path/to/skill/SKILL.md</location>");
+		});
+
+		it("should include Python import metadata for Python-backed skills", () => {
+			const skills: Skill[] = [
+				createTestSkill({
+					name: "python-skill",
+					description: "A Python skill.",
+					filePath: "/path/to/skill/SKILL.md",
+					baseDir: "/path/to/skill",
+					python: {
+						importName: "python_skill",
+						packagePath: "/path/to/skill",
+						pyprojectPath: "/path/to/skill/pyproject.toml",
+					},
+				}),
+			];
+
+			const result = formatSkillsForPrompt(skills);
+
+			expect(result).toContain("<type>python</type>");
+			expect(result).toContain("<python_import>python_skill</python_import>");
 		});
 
 		it("should include intro text before XML", () => {
@@ -262,7 +345,8 @@ describe("skills", () => {
 			const introText = result.substring(0, xmlStart);
 
 			expect(introText).toContain("The following skills provide specialized instructions");
-			expect(introText).toContain("Use ipython to load a skill's file");
+			expect(introText).toContain("Use ipython to inspect a skill's file");
+			expect(introText).toContain("Skills with a python_import are pre-installed");
 		});
 
 		it("should escape XML special characters", () => {
