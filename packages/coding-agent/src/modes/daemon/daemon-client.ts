@@ -1,6 +1,6 @@
 import { createConnection, type Socket } from "node:net";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
-import type { DaemonCommand, DaemonOutbound, DaemonResponse } from "./daemon-mode.js";
+import type { DaemonCommand, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;

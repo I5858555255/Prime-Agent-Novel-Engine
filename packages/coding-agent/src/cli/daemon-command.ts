@@ -6,12 +6,8 @@ import { spawn } from "child_process";
 import { APP_NAME } from "../config.js";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
-import {
-	type DaemonOutbound,
-	type DaemonResponse,
-	type DaemonSessionSummary,
-	defaultDaemonSocketPath,
-} from "../modes/daemon/daemon-mode.js";
+import type { DaemonOutbound, DaemonResponse, DaemonSessionSummary } from "../modes/daemon/daemon-protocol.js";
+import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 
 interface ParsedDaemonClientCommand {
 	command: string;
