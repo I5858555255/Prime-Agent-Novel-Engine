@@ -1,18 +1,20 @@
-# @earendil-works/pi-agent-core
+# Prime Agent Core
 
-Stateful agent with tool execution and event streaming. Built on `@earendil-works/pi-ai`.
+Stateful agent core used by Prime Agent for tool execution and event streaming. Built on Prime Agent AI.
 
-## Installation
+Release docs use the Prime Agent package names. The source workspace manifests still keep inherited package names until the namespace migration is complete.
+
+## Workspace Package
 
 ```bash
-npm install @earendil-works/pi-agent-core
+npm install prime-agent-core
 ```
 
 ## Quick Start
 
 ```typescript
-import { Agent } from "@earendil-works/pi-agent-core";
-import { getModel } from "@earendil-works/pi-ai";
+import { Agent } from "prime-agent-core";
+import { getModel } from "prime-agent-ai";
 
 const agent = new Agent({
   initialState: {
@@ -355,7 +357,7 @@ Follow-up messages are checked only when there are no more tool calls and no ste
 Extend `AgentMessage` via declaration merging:
 
 ```typescript
-declare module "@earendil-works/pi-agent-core" {
+declare module "prime-agent-core" {
   interface CustomAgentMessages {
     notification: { role: "notification"; text: string; timestamp: number };
   }
@@ -436,7 +438,7 @@ Return `terminate: true` from `execute()` or `afterToolCall` to hint that the ag
 For browser apps that proxy through a backend:
 
 ```typescript
-import { Agent, streamProxy } from "@earendil-works/pi-agent-core";
+import { Agent, streamProxy } from "prime-agent-core";
 
 const agent = new Agent({
   streamFn: (model, context, options) =>
@@ -453,7 +455,7 @@ const agent = new Agent({
 For direct control without the Agent class:
 
 ```typescript
-import { agentLoop, agentLoopContinue } from "@earendil-works/pi-agent-core";
+import { agentLoop, agentLoopContinue } from "prime-agent-core";
 
 const context: AgentContext = {
   systemPrompt: "You are helpful.",
