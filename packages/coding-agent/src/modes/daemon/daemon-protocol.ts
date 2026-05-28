@@ -4,11 +4,9 @@ import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.js";
 
-export type DaemonSessionConfig = AgentSessionRuntimeConfig;
-
 export interface DaemonModeOptions {
 	socketPath?: string;
-	defaultSessionConfig: DaemonSessionConfig;
+	defaultSessionConfig: AgentSessionRuntimeConfig;
 	createRuntime: CreateAgentSessionRuntimeFactory;
 }
 
@@ -46,7 +44,7 @@ export type DaemonCommand =
 			sessionPath?: string;
 			continueRecent?: boolean;
 			name?: string;
-			config?: DaemonSessionConfig;
+			config?: AgentSessionRuntimeConfig;
 	  }
 	| { id?: string; type: "attach"; activeSessionId: string }
 	| { id?: string; type: "detach"; activeSessionId?: string }

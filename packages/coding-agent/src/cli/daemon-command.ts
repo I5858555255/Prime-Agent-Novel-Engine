@@ -6,13 +6,9 @@ import chalk from "chalk";
 import { spawn } from "child_process";
 import { APP_NAME, expandTildePath } from "../config.js";
 import type { AgentSessionEvent } from "../core/agent-session.js";
+import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
-import type {
-	DaemonOutbound,
-	DaemonResponse,
-	DaemonSessionConfig,
-	DaemonSessionSummary,
-} from "../modes/daemon/daemon-protocol.js";
+import type { DaemonOutbound, DaemonResponse, DaemonSessionSummary } from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
@@ -270,7 +266,7 @@ async function runOpen(parsed: ParsedDaemonClientCommand): Promise<void> {
 interface ParsedSessionArgs {
 	daemonArgs: string[];
 	name?: string;
-	config?: DaemonSessionConfig;
+	config?: AgentSessionRuntimeConfig;
 	sessionPath?: string;
 	continueRecent?: boolean;
 }
@@ -305,7 +301,7 @@ const SESSION_BOOLEAN_FLAGS = new Set([
 function parseSessionArgs(args: string[]): ParsedSessionArgs {
 	const daemonArgs: string[] = [];
 	const nameParts: string[] = [];
-	const config: DaemonSessionConfig = {};
+	const config: AgentSessionRuntimeConfig = {};
 	const pathBaseCwd = findSessionCwdArg(args) ?? process.cwd();
 	let sessionPath: string | undefined;
 	let continueRecent: boolean | undefined;
@@ -379,7 +375,7 @@ interface ParsedSessionOption {
 function parseSessionOption(
 	args: string[],
 	index: number,
-	config: DaemonSessionConfig,
+	config: AgentSessionRuntimeConfig,
 	pathBaseCwd: string,
 ): ParsedSessionOption | undefined {
 	const arg = args[index];
@@ -510,7 +506,11 @@ function findSessionCwdArg(args: string[]): string | undefined {
 	return undefined;
 }
 
-function parseExtensionFlagOption(args: string[], index: number, config: DaemonSessionConfig): ParsedSessionOption {
+function parseExtensionFlagOption(
+	args: string[],
+	index: number,
+	config: AgentSessionRuntimeConfig,
+): ParsedSessionOption {
 	const arg = args[index]!;
 	const eqIndex = arg.indexOf("=");
 	config.extensionFlagValues = config.extensionFlagValues ?? {};

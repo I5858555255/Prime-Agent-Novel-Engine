@@ -256,7 +256,6 @@ export {
 	type DaemonModeOptions,
 	type DaemonOutbound,
 	type DaemonResponse,
-	type DaemonSessionConfig,
 	type DaemonSessionState,
 	type DaemonSessionSummary,
 	defaultDaemonSocketPath,
