@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added proof-of-concept daemon mode and CLI controls for starting on demand, creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
+- Added daemon mode and CLI controls for starting on demand, creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
 
 ### Changed
 

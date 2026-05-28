@@ -1,5 +1,5 @@
 /**
- * Proof-of-concept background daemon mode.
+ * Background daemon mode.
  *
  * The daemon owns live AgentSessionRuntime instances and exposes a small JSONL
  * protocol over a local socket. Clients can attach/detach from sessions without
