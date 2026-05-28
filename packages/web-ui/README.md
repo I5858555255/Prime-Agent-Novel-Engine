@@ -1,6 +1,17 @@
-# Prime Agent Web UI
+<p align="center">
+  <a href="https://primeintellect.ai">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="../../assets/brand/prime-butterfly.svg">
+      <img alt="Prime Intellect butterfly mark" src="../../assets/brand/prime-butterfly-black.svg" width="88">
+    </picture>
+  </a>
+</p>
 
-Reusable web UI components for building AI chat interfaces powered by Prime Agent AI and Prime Agent Core.
+<h1 align="center">Prime Agent Web UI</h1>
+
+<p align="center">
+  Reusable web UI components for building AI chat interfaces powered by Prime Agent AI and Prime Agent Core.
+</p>
 
 Release docs use the Prime Agent package names. The source workspace manifests still keep inherited package names until the namespace migration is complete.
 

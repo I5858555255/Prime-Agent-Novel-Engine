@@ -1,6 +1,17 @@
-# Prime Agent AI
+<p align="center">
+  <a href="https://primeintellect.ai">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="../../assets/brand/prime-butterfly.svg">
+      <img alt="Prime Intellect butterfly mark" src="../../assets/brand/prime-butterfly-black.svg" width="88">
+    </picture>
+  </a>
+</p>
 
-Provider, model, streaming, OAuth, and tool-call utilities used by Prime Agent.
+<h1 align="center">Prime Agent AI</h1>
+
+<p align="center">
+  Provider, model, streaming, OAuth, and tool-call utilities used by Prime Agent.
+</p>
 
 Release docs use the Prime Agent package name. The source workspace manifest still keeps an inherited package name until the namespace migration is complete.
 

@@ -1,18 +1,17 @@
 <p align="center">
   <a href="https://primeintellect.ai">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/40c36e38-c5bd-4c5a-9b34-f7b902cd155d">
-      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8">
-      <img alt="Prime Intellect" src="https://github.com/user-attachments/assets/6414bc9b-126b-41ca-9307-9e982430cde8" width="312" style="max-width: 100%;">
+      <source media="(prefers-color-scheme: dark)" srcset="../../assets/brand/prime-butterfly.svg">
+      <img alt="Prime Intellect butterfly mark" src="../../assets/brand/prime-butterfly-black.svg" width="96">
     </picture>
   </a>
 </p>
 
-# Prime Agent CLI
+<h1 align="center">Prime Agent CLI</h1>
 
-Prime Agent is a terminal coding and research harness with a persistent IPython runtime, editable TypeScript extensions, skills, prompt templates, and themes.
-
-Prime Agent runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
+<p align="center">
+  Terminal coding and research harness with a persistent IPython runtime, editable TypeScript extensions, skills, prompt templates, and themes.
+</p>
 
 This workspace still keeps an inherited source package name internally. The distributed release package and command are branded as `prime-agent`.
 
