@@ -10,8 +10,10 @@
 <h1 align="center">Prime Agent CLI</h1>
 
 <p align="center">
-  Terminal coding and research harness with a persistent IPython runtime, editable TypeScript extensions, skills, prompt templates, and themes.
+  Terminal coding harness.
 </p>
+
+---
 
 This workspace still keeps an inherited source package name internally. The distributed release package and command are branded as `prime-agent`.
 

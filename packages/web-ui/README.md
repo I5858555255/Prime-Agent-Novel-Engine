@@ -10,8 +10,10 @@
 <h1 align="center">Prime Agent Web UI</h1>
 
 <p align="center">
-  Reusable web UI components for building AI chat interfaces powered by Prime Agent AI and Prime Agent Core.
+  Web chat components.
 </p>
+
+---
 
 Release docs use the Prime Agent package names. The source workspace manifests still keep inherited package names until the namespace migration is complete.
 

@@ -10,8 +10,10 @@
 <h1 align="center">Prime Agent Core</h1>
 
 <p align="center">
-  Stateful agent core used by Prime Agent for tool execution and event streaming. Built on Prime Agent AI.
+  Stateful agent runtime.
 </p>
+
+---
 
 Release docs use the Prime Agent package names. The source workspace manifests still keep inherited package names until the namespace migration is complete.
 

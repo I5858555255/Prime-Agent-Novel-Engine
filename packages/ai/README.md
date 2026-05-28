@@ -10,8 +10,10 @@
 <h1 align="center">Prime Agent AI</h1>
 
 <p align="center">
-  Provider, model, streaming, OAuth, and tool-call utilities used by Prime Agent.
+  LLM provider toolkit.
 </p>
+
+---
 
 Release docs use the Prime Agent package name. The source workspace manifest still keeps an inherited package name until the namespace migration is complete.
 

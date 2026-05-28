@@ -10,8 +10,10 @@
 <h1 align="center">Prime Agent</h1>
 
 <p align="center">
-  <strong>RLM-native coding and research harness</strong>
+  <strong>RLM-native coding harness</strong>
 </p>
+
+---
 
 <p align="center">
   <a href="https://github.com/PrimeIntellect-ai/verifiers">Verifiers</a> &bull;
@@ -27,8 +29,6 @@
     <img src="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/build-binaries.yml/badge.svg" alt="Build Binaries" />
   </a>
 </p>
-
----
 
 ## Overview
 

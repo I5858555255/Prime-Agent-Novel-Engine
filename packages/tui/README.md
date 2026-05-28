@@ -10,8 +10,10 @@
 <h1 align="center">Prime Agent TUI</h1>
 
 <p align="center">
-  Terminal UI primitives used by Prime Agent.
+  Terminal UI primitives.
 </p>
+
+---
 
 Release docs use the Prime Agent package name. The source workspace manifest still keeps an inherited package name until the namespace migration is complete.
 
