@@ -10,7 +10,7 @@ export interface DaemonModeOptions {
 	createRuntime: CreateAgentSessionRuntimeFactory;
 }
 
-export interface DaemonSessionSummary {
+export interface ActiveSessionSummary {
 	activeSessionId: string;
 	sessionId: string;
 	sessionFile?: string;
@@ -22,7 +22,7 @@ export interface DaemonSessionSummary {
 	messageCount: number;
 }
 
-export interface DaemonSessionState {
+export interface ActiveSessionState {
 	model?: Model<Api>;
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
@@ -77,7 +77,7 @@ export type DaemonOutbound =
 	| DaemonResponse
 	| { type: "daemon_hello"; socketPath: string }
 	| { type: "session_event"; activeSessionId: string; event: AgentSessionEvent }
-	| { type: "session_attached"; activeSessionId: string; state: DaemonSessionState; messages: AgentMessage[] }
+	| { type: "session_attached"; activeSessionId: string; state: ActiveSessionState; messages: AgentMessage[] }
 	| { type: "session_detached"; activeSessionId: string }
 	| { type: "session_closed"; activeSessionId: string; reason: "killed" | "shutdown" }
 	| {

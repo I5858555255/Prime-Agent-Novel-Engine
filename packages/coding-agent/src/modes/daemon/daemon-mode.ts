@@ -16,7 +16,13 @@ import { type SessionInfo, SessionManager } from "../../core/session-manager.js"
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { RpcSlashCommand } from "../rpc/rpc-types.js";
-import { bindDaemonSessionRecord } from "./daemon-extension-binding.js";
+import {
+	type ActiveSessionRecord,
+	type DaemonSocketClient,
+	stateForSession,
+	summaryForRecord,
+} from "./active-session-record.js";
+import { bindActiveSessionRecord } from "./daemon-extension-binding.js";
 import {
 	type DaemonCommand,
 	type DaemonModeOptions,
@@ -25,21 +31,15 @@ import {
 	failure,
 	success,
 } from "./daemon-protocol.js";
-import {
-	type DaemonSessionRecord,
-	type DaemonSocketClient,
-	stateForSession,
-	summaryForRecord,
-} from "./daemon-session-record.js";
 import { cleanupDaemonSocketPath, defaultDaemonSocketPath, prepareDaemonSocketPath } from "./daemon-socket.js";
 
 export type {
+	ActiveSessionState,
+	ActiveSessionSummary,
 	DaemonCommand,
 	DaemonModeOptions,
 	DaemonOutbound,
 	DaemonResponse,
-	DaemonSessionState,
-	DaemonSessionSummary,
 } from "./daemon-protocol.js";
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
@@ -59,7 +59,7 @@ class AgentDaemon {
 	private shuttingDown = false;
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
-	private readonly sessions = new Map<string, DaemonSessionRecord>();
+	private readonly sessions = new Map<string, ActiveSessionRecord>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 
 	constructor(
@@ -106,13 +106,13 @@ class AgentDaemon {
 		cleanupDaemonSocketPath(this.socketPath);
 	}
 
-	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<DaemonSessionRecord> {
-		const record: DaemonSessionRecord = {
+	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<ActiveSessionRecord> {
+		const record: ActiveSessionRecord = {
 			activeSessionId: randomUUID().slice(0, 8),
 			runtime,
 			clients: new Set(),
 		};
-		await bindDaemonSessionRecord(record, {
+		await bindActiveSessionRecord(record, {
 			broadcast: (targetRecord, message) => this.broadcastToRecord(targetRecord, message),
 			shutdown: () => {
 				void this.shutdown(0);
@@ -125,13 +125,13 @@ class AgentDaemon {
 		return record;
 	}
 
-	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<DaemonSessionRecord> {
+	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionRecord> {
 		const config = mergeAgentSessionRuntimeConfig(this.options.defaultSessionConfig, command.config);
 		if (!config.cwd) {
-			throw new Error("Daemon session config is missing cwd");
+			throw new Error("Active session config is missing cwd");
 		}
 		if (!config.agentDir) {
-			throw new Error("Daemon session config is missing agentDir");
+			throw new Error("Active session config is missing agentDir");
 		}
 
 		const cwd = resolve(config.cwd);
@@ -150,7 +150,7 @@ class AgentDaemon {
 		return this.addRuntime(runtime, command.name);
 	}
 
-	private getRecord(id: string): DaemonSessionRecord {
+	private getRecord(id: string): ActiveSessionRecord {
 		const direct = this.sessions.get(id);
 		if (direct) {
 			return direct;
@@ -161,7 +161,7 @@ class AgentDaemon {
 				return record;
 			}
 		}
-		throw new Error(`Unknown daemon session: ${id}`);
+		throw new Error(`Unknown active session: ${id}`);
 	}
 
 	private handleConnection(socket: Socket): void {
@@ -217,7 +217,7 @@ class AgentDaemon {
 			case "list_saved": {
 				const defaultConfig = this.options.defaultSessionConfig;
 				if (!defaultConfig.cwd) {
-					throw new Error("Daemon session config is missing cwd");
+					throw new Error("Active session config is missing cwd");
 				}
 				const cwd = resolve(command.cwd ?? defaultConfig.cwd);
 				const sessions: SessionInfo[] = await SessionManager.list(
@@ -362,7 +362,7 @@ class AgentDaemon {
 		}
 	}
 
-	private detachClientFromRecord(client: DaemonSocketClient, record: DaemonSessionRecord): void {
+	private detachClientFromRecord(client: DaemonSocketClient, record: ActiveSessionRecord): void {
 		record.clients.delete(client);
 		client.attachedActiveSessionIds.delete(record.activeSessionId);
 		this.write(client, { type: "session_detached", activeSessionId: record.activeSessionId });
@@ -377,7 +377,7 @@ class AgentDaemon {
 		}
 	}
 
-	private async killRecord(record: DaemonSessionRecord, reason: "killed" | "shutdown"): Promise<void> {
+	private async killRecord(record: ActiveSessionRecord, reason: "killed" | "shutdown"): Promise<void> {
 		record.unsubscribe?.();
 		await record.runtime.dispose();
 		this.sessions.delete(record.activeSessionId);
@@ -388,7 +388,7 @@ class AgentDaemon {
 		record.clients.clear();
 	}
 
-	private broadcastToRecord(record: DaemonSessionRecord, message: DaemonOutbound): void {
+	private broadcastToRecord(record: ActiveSessionRecord, message: DaemonOutbound): void {
 		for (const client of record.clients) {
 			this.write(client, message);
 		}

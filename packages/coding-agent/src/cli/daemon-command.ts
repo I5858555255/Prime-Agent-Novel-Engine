@@ -8,7 +8,7 @@ import { APP_NAME, expandTildePath } from "../config.js";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
-import type { DaemonOutbound, DaemonResponse, DaemonSessionSummary } from "../modes/daemon/daemon-protocol.js";
+import type { ActiveSessionSummary, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
@@ -542,7 +542,7 @@ function resolvePathOption(value: string, cwd: string): string {
 	return isLocalPath(expanded) ? resolve(cwd, expanded) : expanded;
 }
 
-async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionSummary[]> {
+async function getLiveSessions(client: DaemonClient): Promise<ActiveSessionSummary[]> {
 	const response = await client.request({ type: "list" });
 	const data = requireSuccess(response);
 	if (!isSessionListData(data)) {
@@ -551,7 +551,7 @@ async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionSumma
 	return data.sessions;
 }
 
-function nextDefaultSessionName(sessions: DaemonSessionSummary[]): string {
+function nextDefaultSessionName(sessions: ActiveSessionSummary[]): string {
 	const existingNames = new Set(
 		sessions.map((session) => session.sessionName).filter((name): name is string => !!name),
 	);
@@ -637,7 +637,7 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 	}
 
 	if (data.sessions.length === 0) {
-		console.log("No live daemon sessions.");
+		console.log("No active sessions.");
 		return;
 	}
 
@@ -1141,7 +1141,7 @@ function printTable<T extends Record<string, string>>(columns: Array<keyof T>, r
 	}
 }
 
-function isSessionListData(value: unknown): value is { sessions: DaemonSessionSummary[] } {
+function isSessionListData(value: unknown): value is { sessions: ActiveSessionSummary[] } {
 	if (!value || typeof value !== "object") {
 		return false;
 	}
@@ -1149,11 +1149,11 @@ function isSessionListData(value: unknown): value is { sessions: DaemonSessionSu
 	return Array.isArray(sessions) && sessions.every(isSessionSummary);
 }
 
-function isSessionSummary(value: unknown): value is DaemonSessionSummary {
+function isSessionSummary(value: unknown): value is ActiveSessionSummary {
 	if (!value || typeof value !== "object") {
 		return false;
 	}
-	const candidate = value as Partial<DaemonSessionSummary>;
+	const candidate = value as Partial<ActiveSessionSummary>;
 	return (
 		typeof candidate.activeSessionId === "string" &&
 		typeof candidate.sessionId === "string" &&
@@ -1175,9 +1175,9 @@ function printDaemonHelp(): void {
 ${chalk.bold("Commands:")}
   help                          Show daemon help
   start                         Start the background daemon and return
-  list                          List live daemon-owned sessions
+  list                          List active sessions
   list-saved                    List saved sessions for the current project
-  create [name]                 Create a new live daemon session
+  create [name]                 Create a new active session
   attach <session>              Attach an interactive terminal to a live session
   detach [session]              Detach this client from one session or all sessions
   prompt <session> <message>    Send a prompt, stream events, and exit when idle

@@ -5,12 +5,12 @@
 export { DaemonClient, type DaemonClientMessageListener } from "./daemon/daemon-client.js";
 export { runDaemonMode } from "./daemon/daemon-mode.js";
 export type {
+	ActiveSessionState,
+	ActiveSessionSummary,
 	DaemonCommand,
 	DaemonModeOptions,
 	DaemonOutbound,
 	DaemonResponse,
-	DaemonSessionState,
-	DaemonSessionSummary,
 } from "./daemon/daemon-protocol.js";
 export { defaultDaemonSocketPath } from "./daemon/daemon-socket.js";
 export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.js";

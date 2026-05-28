@@ -6,17 +6,17 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
+import type { ActiveSessionRecord } from "./active-session-record.js";
 import type { DaemonOutbound } from "./daemon-protocol.js";
-import type { DaemonSessionRecord } from "./daemon-session-record.js";
 
-export interface DaemonSessionBindingCallbacks {
-	broadcast: (record: DaemonSessionRecord, message: DaemonOutbound) => void;
+export interface ActiveSessionBindingCallbacks {
+	broadcast: (record: ActiveSessionRecord, message: DaemonOutbound) => void;
 	shutdown: () => void;
 }
 
-export async function bindDaemonSessionRecord(
-	record: DaemonSessionRecord,
-	callbacks: DaemonSessionBindingCallbacks,
+export async function bindActiveSessionRecord(
+	record: ActiveSessionRecord,
+	callbacks: ActiveSessionBindingCallbacks,
 ): Promise<void> {
 	const session = record.runtime.session;
 
@@ -30,7 +30,7 @@ export async function bindDaemonSessionRecord(
 	});
 
 	record.runtime.setRebindSession(async () => {
-		await bindDaemonSessionRecord(record, callbacks);
+		await bindActiveSessionRecord(record, callbacks);
 	});
 
 	await session.bindExtensions({
@@ -49,7 +49,7 @@ export async function bindDaemonSessionRecord(
 	});
 }
 
-function createCommandContextActions(record: DaemonSessionRecord): ExtensionCommandContextActions {
+function createCommandContextActions(record: ActiveSessionRecord): ExtensionCommandContextActions {
 	return {
 		waitForIdle: () => record.runtime.session.agent.waitForIdle(),
 		newSession: async (options) => record.runtime.newSession(options),
@@ -74,8 +74,8 @@ function createCommandContextActions(record: DaemonSessionRecord): ExtensionComm
 }
 
 function createExtensionUIContext(
-	record: DaemonSessionRecord,
-	broadcast: DaemonSessionBindingCallbacks["broadcast"],
+	record: ActiveSessionRecord,
+	broadcast: ActiveSessionBindingCallbacks["broadcast"],
 ): ExtensionUIContext {
 	const emitUiRequest = (method: string, payload: Record<string, unknown>): void => {
 		broadcast(record, {

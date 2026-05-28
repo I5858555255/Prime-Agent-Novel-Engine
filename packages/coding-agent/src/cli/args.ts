@@ -317,7 +317,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/--path--/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
 
-  # Start and control daemon sessions
+  # Start and control active sessions
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini scratch
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock list
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock prompt <session> "Say hello"

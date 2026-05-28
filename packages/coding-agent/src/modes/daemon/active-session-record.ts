@@ -2,7 +2,7 @@ import type { Socket } from "node:net";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
-import type { DaemonSessionState, DaemonSessionSummary } from "./daemon-protocol.js";
+import type { ActiveSessionState, ActiveSessionSummary } from "./daemon-protocol.js";
 
 export interface DaemonSocketClient {
 	id: string;
@@ -11,14 +11,14 @@ export interface DaemonSocketClient {
 	detachInput: () => void;
 }
 
-export interface DaemonSessionRecord {
+export interface ActiveSessionRecord {
 	activeSessionId: string;
 	runtime: AgentSessionRuntime;
 	clients: Set<DaemonSocketClient>;
 	unsubscribe?: () => void;
 }
 
-export function stateForSession(session: AgentSession): DaemonSessionState {
+export function stateForSession(session: AgentSession): ActiveSessionState {
 	return {
 		model: session.model as Model<Api> | undefined,
 		thinkingLevel: session.thinkingLevel,
@@ -33,7 +33,7 @@ export function stateForSession(session: AgentSession): DaemonSessionState {
 	};
 }
 
-export function summaryForRecord(record: DaemonSessionRecord): DaemonSessionSummary {
+export function summaryForRecord(record: ActiveSessionRecord): ActiveSessionSummary {
 	const session = record.runtime.session;
 	return {
 		activeSessionId: record.activeSessionId,
