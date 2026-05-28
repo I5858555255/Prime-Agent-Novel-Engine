@@ -1,13 +1,21 @@
+import { resolve } from "node:path";
 import { clearLine, createInterface, cursorTo, type Interface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
 import { spawn } from "child_process";
-import { APP_NAME } from "../config.js";
+import { APP_NAME, expandTildePath } from "../config.js";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
-import type { DaemonOutbound, DaemonResponse, DaemonSessionSummary } from "../modes/daemon/daemon-protocol.js";
+import type {
+	DaemonOutbound,
+	DaemonResponse,
+	DaemonSessionConfig,
+	DaemonSessionSummary,
+} from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
+import { isLocalPath } from "../utils/paths.js";
+import { isValidThinkingLevel } from "./args.js";
 
 interface ParsedDaemonClientCommand {
 	command: string;
@@ -232,17 +240,23 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 }
 
 async function runOpen(parsed: ParsedDaemonClientCommand): Promise<void> {
-	const { daemonArgs, name } = parseOpenArgs(parsed.positionals);
+	const sessionArgs = parseSessionArgs(parsed.positionals);
 	if (!(await canConnectToDaemon(parsed.socketPath, 250))) {
-		await runStart({ ...parsed, command: "start", positionals: daemonArgs });
+		await runStart({ ...parsed, command: "start", positionals: sessionArgs.daemonArgs });
 	}
 
 	const client = new DaemonClient(parsed.socketPath);
 	await client.connect();
 	try {
 		const sessions = await getLiveSessions(client);
-		const sessionName = name ?? nextDefaultSessionName(sessions);
-		const response = await client.request({ type: "create", name: sessionName });
+		const sessionName = sessionArgs.name ?? nextDefaultSessionName(sessions);
+		const response = await client.request({
+			type: "create",
+			name: sessionName,
+			config: sessionArgs.config,
+			sessionPath: sessionArgs.sessionPath,
+			continueRecent: sessionArgs.continueRecent,
+		});
 		const data = requireSuccess(response);
 		if (!isSessionSummary(data)) {
 			throw new Error("Daemon returned an invalid create response");
@@ -253,12 +267,15 @@ async function runOpen(parsed: ParsedDaemonClientCommand): Promise<void> {
 	}
 }
 
-interface ParsedOpenArgs {
+interface ParsedSessionArgs {
 	daemonArgs: string[];
 	name?: string;
+	config?: DaemonSessionConfig;
+	sessionPath?: string;
+	continueRecent?: boolean;
 }
 
-const DAEMON_START_BOOLEAN_FLAGS = new Set([
+const SESSION_BOOLEAN_FLAGS = new Set([
 	"--continue",
 	"-c",
 	"--resume",
@@ -285,9 +302,13 @@ const DAEMON_START_BOOLEAN_FLAGS = new Set([
 	"-d",
 ]);
 
-function parseOpenArgs(args: string[]): ParsedOpenArgs {
+function parseSessionArgs(args: string[]): ParsedSessionArgs {
 	const daemonArgs: string[] = [];
 	const nameParts: string[] = [];
+	const config: DaemonSessionConfig = {};
+	const pathBaseCwd = findSessionCwdArg(args) ?? process.cwd();
+	let sessionPath: string | undefined;
+	let continueRecent: boolean | undefined;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
@@ -306,15 +327,31 @@ function parseOpenArgs(args: string[]): ParsedOpenArgs {
 			continue;
 		}
 
+		if (arg === "--cwd") {
+			config.cwd = resolve(expandTildePath(requireOptionValue(args, index, arg)));
+			index++;
+			continue;
+		}
+
 		if (arg.startsWith("-")) {
-			daemonArgs.push(arg);
-			if (!DAEMON_START_BOOLEAN_FLAGS.has(arg)) {
-				const value = args[index + 1];
-				if (value && !value.startsWith("-")) {
-					daemonArgs.push(value);
-					index++;
+			const parsedOption = parseSessionOption(args, index, config, pathBaseCwd);
+			if (!parsedOption) {
+				nameParts.push(arg);
+				continue;
+			}
+			if (parsedOption.daemonArg) {
+				daemonArgs.push(parsedOption.daemonArg);
+				if (parsedOption.value !== undefined) {
+					daemonArgs.push(parsedOption.value);
 				}
 			}
+			if (parsedOption.sessionPath !== undefined) {
+				sessionPath = parsedOption.sessionPath;
+			}
+			if (parsedOption.continueRecent !== undefined) {
+				continueRecent = parsedOption.continueRecent;
+			}
+			index += parsedOption.consumed;
 			continue;
 		}
 
@@ -322,7 +359,187 @@ function parseOpenArgs(args: string[]): ParsedOpenArgs {
 	}
 
 	const name = nameParts.join(" ").trim();
-	return { daemonArgs, name: name || undefined };
+	return {
+		daemonArgs,
+		name: name || undefined,
+		config: Object.keys(config).length > 0 ? config : undefined,
+		sessionPath,
+		continueRecent,
+	};
+}
+
+interface ParsedSessionOption {
+	consumed: number;
+	daemonArg?: string;
+	value?: string;
+	sessionPath?: string;
+	continueRecent?: boolean;
+}
+
+function parseSessionOption(
+	args: string[],
+	index: number,
+	config: DaemonSessionConfig,
+	pathBaseCwd: string,
+): ParsedSessionOption | undefined {
+	const arg = args[index];
+	if (!arg?.startsWith("-")) {
+		return undefined;
+	}
+
+	const readValue = (optionName = arg): string => requireOptionValue(args, index, optionName);
+	const readPath = (optionName = arg): string => resolvePathOption(readValue(optionName), config.cwd ?? pathBaseCwd);
+	const readCsv = (optionName = arg): string[] =>
+		readValue(optionName)
+			.split(",")
+			.map((part) => part.trim())
+			.filter((part) => part.length > 0);
+	const withValue = (daemonArg = arg): ParsedSessionOption => ({ consumed: 1, daemonArg, value: readValue() });
+	const boolean = (daemonArg = arg): ParsedSessionOption => ({ consumed: 0, daemonArg });
+
+	switch (arg) {
+		case "--continue":
+		case "-c":
+			return { consumed: 0, continueRecent: true };
+		case "--resume":
+		case "-r":
+			return { consumed: 0 };
+		case "--session": {
+			const path = readPath();
+			return { consumed: 1, sessionPath: path };
+		}
+		case "--session-dir":
+			config.sessionDir = expandTildePath(readValue());
+			return withValue(arg);
+		case "--provider":
+			config.provider = readValue();
+			return withValue(arg);
+		case "--model":
+			config.model = readValue();
+			return withValue(arg);
+		case "--api-key":
+			config.apiKey = readValue();
+			return withValue(arg);
+		case "--system-prompt":
+			config.systemPrompt = readValue();
+			return withValue(arg);
+		case "--append-system-prompt":
+			config.appendSystemPrompt = [...(config.appendSystemPrompt ?? []), readValue()];
+			return withValue(arg);
+		case "--models":
+			config.models = readCsv();
+			return withValue(arg);
+		case "--tools":
+		case "-t":
+			config.tools = readCsv();
+			return withValue(arg);
+		case "--thinking": {
+			const level = readValue();
+			if (!isValidThinkingLevel(level)) {
+				throw new Error(`Invalid thinking level "${level}"`);
+			}
+			config.thinking = level;
+			return withValue(arg);
+		}
+		case "--extension":
+		case "-e":
+			config.extensions = [...(config.extensions ?? []), readPath()];
+			return withValue(arg);
+		case "--skill":
+			config.skills = [...(config.skills ?? []), readPath()];
+			return withValue(arg);
+		case "--prompt-template":
+			config.promptTemplates = [...(config.promptTemplates ?? []), readPath()];
+			return withValue(arg);
+		case "--theme":
+			config.themes = [...(config.themes ?? []), readPath()];
+			return withValue(arg);
+		case "--no-tools":
+		case "-nt":
+			config.noTools = true;
+			return boolean(arg);
+		case "--no-builtin-tools":
+		case "-nbt":
+			config.noBuiltinTools = true;
+			return boolean(arg);
+		case "--no-extensions":
+		case "-ne":
+			config.noExtensions = true;
+			return boolean(arg);
+		case "--no-skills":
+		case "-ns":
+			config.noSkills = true;
+			return boolean(arg);
+		case "--no-prompt-templates":
+		case "-np":
+			config.noPromptTemplates = true;
+			return boolean(arg);
+		case "--no-themes":
+			config.noThemes = true;
+			return boolean(arg);
+		case "--no-context-files":
+		case "-nc":
+			config.noContextFiles = true;
+			return boolean(arg);
+		case "--foreground":
+		case "--no-detach":
+		case "--background":
+		case "-d":
+		case "--verbose":
+		case "--offline":
+			return SESSION_BOOLEAN_FLAGS.has(arg) ? boolean(arg) : undefined;
+		case "--no-session":
+			return { consumed: 0 };
+		default:
+			if (!arg.startsWith("--")) {
+				return undefined;
+			}
+			return parseExtensionFlagOption(args, index, config);
+	}
+}
+
+function findSessionCwdArg(args: string[]): string | undefined {
+	for (let index = 0; index < args.length; index++) {
+		if (args[index] === "--") {
+			return undefined;
+		}
+		if (args[index] === "--cwd") {
+			return resolve(expandTildePath(requireOptionValue(args, index, "--cwd")));
+		}
+	}
+	return undefined;
+}
+
+function parseExtensionFlagOption(args: string[], index: number, config: DaemonSessionConfig): ParsedSessionOption {
+	const arg = args[index]!;
+	const eqIndex = arg.indexOf("=");
+	config.extensionFlagValues = config.extensionFlagValues ?? {};
+	if (eqIndex !== -1) {
+		config.extensionFlagValues[arg.slice(2, eqIndex)] = arg.slice(eqIndex + 1);
+		return { consumed: 0, daemonArg: arg };
+	}
+
+	const name = arg.slice(2);
+	const next = args[index + 1];
+	if (next !== undefined && !next.startsWith("-")) {
+		config.extensionFlagValues[name] = next;
+		return { consumed: 1, daemonArg: arg, value: next };
+	}
+	config.extensionFlagValues[name] = true;
+	return { consumed: 0, daemonArg: arg };
+}
+
+function requireOptionValue(args: string[], index: number, option: string): string {
+	const value = args[index + 1];
+	if (!value) {
+		throw new Error(`${option} requires a value`);
+	}
+	return value;
+}
+
+function resolvePathOption(value: string, cwd: string): string {
+	const expanded = expandTildePath(value);
+	return isLocalPath(expanded) ? resolve(cwd, expanded) : expanded;
 }
 
 async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionSummary[]> {
@@ -364,6 +581,7 @@ async function runStart(parsed: ParsedDaemonClientCommand): Promise<void> {
 		throw new Error("Cannot determine current CLI entrypoint for daemon launch");
 	}
 
+	const sessionArgs = parseSessionArgs(parsed.positionals);
 	const daemonArgs = [
 		...process.execArgv,
 		entrypoint,
@@ -371,10 +589,10 @@ async function runStart(parsed: ParsedDaemonClientCommand): Promise<void> {
 		"daemon",
 		"--daemon-socket",
 		parsed.socketPath,
-		...parsed.positionals.filter((arg) => arg !== "--background" && arg !== "-d"),
+		...sessionArgs.daemonArgs.filter((arg) => arg !== "--background" && arg !== "-d"),
 	];
 	const child = spawn(process.execPath, daemonArgs, {
-		cwd: process.cwd(),
+		cwd: sessionArgs.config?.cwd ?? process.cwd(),
 		detached: true,
 		env: process.env,
 		stdio: "ignore",
@@ -435,8 +653,14 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 }
 
 async function runCreate(client: DaemonClient, args: string[], json: boolean): Promise<void> {
-	const name = args.length > 0 ? args.join(" ") : undefined;
-	const response = await client.request(name ? { type: "create", name } : { type: "create" });
+	const sessionArgs = parseSessionArgs(args);
+	const response = await client.request({
+		type: "create",
+		name: sessionArgs.name,
+		config: sessionArgs.config,
+		sessionPath: sessionArgs.sessionPath,
+		continueRecent: sessionArgs.continueRecent,
+	});
 	const data = requireSuccess(response);
 	if (json) {
 		printJson(data);
@@ -970,11 +1194,15 @@ ${chalk.bold("Commands:")}
 ${chalk.bold("Options:")}
   --socket <path>               Socket path (default: ${defaultDaemonSocketPath()})
   --name <name>                 Name for the new session created by bare daemon
+  --cwd <dir>                   Working directory for the created session
   --foreground, --no-detach     Keep daemon attached to this terminal for debugging
   --json                        Print raw JSON for commands with formatted output; attach streams raw protocol JSON
+  Agent options such as --model, --provider, --tools, and --thinking apply to created sessions.
 
 ${chalk.bold("Examples:")}
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock create scratch --model openai/gpt-4o-mini
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock create audit --model anthropic/claude-sonnet-4-5 --cwd ../other-repo
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock --name scratch --model openai/gpt-4o-mini
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock scratch
   ${APP_NAME} daemon start --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini

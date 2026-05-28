@@ -1,13 +1,14 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
+import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.js";
+
+export type DaemonSessionConfig = AgentSessionRuntimeConfig;
 
 export interface DaemonModeOptions {
 	socketPath?: string;
-	cwd: string;
-	agentDir: string;
-	sessionDir?: string;
+	defaultSessionConfig: DaemonSessionConfig;
 	createRuntime: CreateAgentSessionRuntimeFactory;
 }
 
@@ -42,11 +43,10 @@ export type DaemonCommand =
 	| {
 			id?: string;
 			type: "create";
-			cwd?: string;
-			sessionDir?: string;
 			sessionPath?: string;
 			continueRecent?: boolean;
 			name?: string;
+			config?: DaemonSessionConfig;
 	  }
 	| { id?: string; type: "attach"; activeSessionId: string }
 	| { id?: string; type: "detach"; activeSessionId?: string }

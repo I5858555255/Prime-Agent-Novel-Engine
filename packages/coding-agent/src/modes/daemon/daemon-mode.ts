@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { resolve } from "node:path";
 import type { SessionStats } from "../../core/agent-session.js";
+import { mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { type AgentSessionRuntime, createAgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
@@ -125,17 +126,26 @@ class AgentDaemon {
 	}
 
 	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<DaemonSessionRecord> {
-		const cwd = resolve(command.cwd ?? this.options.cwd);
-		const sessionDir = command.sessionDir ?? this.options.sessionDir;
+		const config = mergeAgentSessionRuntimeConfig(this.options.defaultSessionConfig, command.config);
+		if (!config.cwd) {
+			throw new Error("Daemon session config is missing cwd");
+		}
+		if (!config.agentDir) {
+			throw new Error("Daemon session config is missing agentDir");
+		}
+
+		const cwd = resolve(config.cwd);
+		const cwdOverride = command.config?.cwd ? resolve(command.config.cwd) : undefined;
 		const sessionManager = command.sessionPath
-			? SessionManager.open(command.sessionPath, sessionDir)
+			? SessionManager.open(command.sessionPath, config.sessionDir, cwdOverride)
 			: command.continueRecent
-				? SessionManager.continueRecent(cwd, sessionDir)
-				: SessionManager.create(cwd, sessionDir);
+				? SessionManager.continueRecent(cwd, config.sessionDir)
+				: SessionManager.create(cwd, config.sessionDir);
 		const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
 			cwd: sessionManager.getCwd(),
-			agentDir: this.options.agentDir,
+			agentDir: config.agentDir,
 			sessionManager,
+			sessionConfig: config,
 		});
 		return this.addRuntime(runtime, command.name);
 	}
@@ -205,10 +215,14 @@ class AgentDaemon {
 				return success(command.id, "list", { sessions: Array.from(this.sessions.values()).map(summaryForRecord) });
 
 			case "list_saved": {
-				const cwd = resolve(command.cwd ?? this.options.cwd);
+				const defaultConfig = this.options.defaultSessionConfig;
+				if (!defaultConfig.cwd) {
+					throw new Error("Daemon session config is missing cwd");
+				}
+				const cwd = resolve(command.cwd ?? defaultConfig.cwd);
 				const sessions: SessionInfo[] = await SessionManager.list(
 					cwd,
-					command.sessionDir ?? this.options.sessionDir,
+					command.sessionDir ?? defaultConfig.sessionDir,
 				);
 				return success(command.id, "list_saved", { sessions });
 			}

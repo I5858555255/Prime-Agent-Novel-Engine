@@ -9,6 +9,7 @@ export type {
 	DaemonModeOptions,
 	DaemonOutbound,
 	DaemonResponse,
+	DaemonSessionConfig,
 	DaemonSessionState,
 	DaemonSessionSummary,
 } from "./daemon/daemon-protocol.js";

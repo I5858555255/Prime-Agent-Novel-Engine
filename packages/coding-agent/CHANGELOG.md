@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Changed daemon session creation to use per-session runtime config so live sessions can use different cwd, model, auth, and tool settings.
 - Changed the Prime Agent install script to use a bounded animated Prime Lab splash with centered progress and confirmation prompts.
 - Changed startup onboarding to guide unauthenticated users through login and model selection before the first agent turn.
 

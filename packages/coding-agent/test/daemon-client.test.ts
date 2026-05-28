@@ -161,6 +161,59 @@ describe("DaemonClient", () => {
 
 		client.close();
 	});
+
+	it("serializes per-session config for create commands", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+
+		const connect = client.connect();
+		expect(netMock.sockets).toHaveLength(1);
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+
+		const response = client.request({
+			type: "create",
+			name: "configured",
+			config: {
+				cwd: "/tmp/project",
+				model: "openai/gpt-4o-mini",
+				tools: ["bash"],
+			},
+		});
+		expect(socket.writes).toHaveLength(1);
+		const command = JSON.parse(socket.writes[0]!.trim()) as {
+			id?: string;
+			type?: string;
+			name?: string;
+			config?: {
+				cwd?: string;
+				model?: string;
+				tools?: string[];
+			};
+			cwd?: unknown;
+			model?: unknown;
+		};
+
+		expect(command).toMatchObject({
+			type: "create",
+			name: "configured",
+			config: {
+				cwd: "/tmp/project",
+				model: "openai/gpt-4o-mini",
+				tools: ["bash"],
+			},
+		});
+		expect(command).not.toHaveProperty("cwd");
+		expect(command).not.toHaveProperty("model");
+
+		socket.emit(
+			"data",
+			`${JSON.stringify({ id: command.id, type: "response", command: "create", success: true })}\n`,
+		);
+		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
+
+		client.close();
+	});
 });
 
 async function captureRejection(promise: Promise<void>): Promise<Error> {
