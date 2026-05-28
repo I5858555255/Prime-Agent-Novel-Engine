@@ -35,6 +35,7 @@ export class DaemonClient {
 		await new Promise<void>((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				cleanup();
+				this.clearSocketReference(socket);
 				socket.destroy();
 				reject(new Error(`Timed out connecting to daemon socket: ${this.socketPath}`));
 			}, timeoutMs);
@@ -49,6 +50,7 @@ export class DaemonClient {
 			};
 			const onError = (error: Error) => {
 				cleanup();
+				this.clearSocketReference(socket);
 				reject(error);
 			};
 			socket.once("connect", onConnect);
@@ -91,6 +93,15 @@ export class DaemonClient {
 		this.rejectAll(new Error("Daemon client closed"));
 		this.socket?.end();
 		this.socket?.destroy();
+		this.socket = undefined;
+	}
+
+	private clearSocketReference(socket: Socket): void {
+		if (this.socket !== socket) {
+			return;
+		}
+		this.detachReader?.();
+		this.detachReader = undefined;
 		this.socket = undefined;
 	}
 
