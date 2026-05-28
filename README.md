@@ -8,8 +8,6 @@
   </a>
 </p>
 
----
-
 <h3 align="center">
 Prime Agent: RLM-native Coding and Research Harness
 </h3>
@@ -19,8 +17,6 @@ Prime Agent: RLM-native Coding and Research Harness
   <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a> &bull;
   <a href="https://github.com/badlogic/pi-mono">pi-mono</a>
 </p>
-
----
 
 <p align="center">
   <a href="https://github.com/PrimeIntellect-ai/prime-agent/actions/workflows/ci.yml">

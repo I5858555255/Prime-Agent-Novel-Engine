@@ -13,8 +13,6 @@
   Stateful agent runtime.
 </p>
 
----
-
 Release docs use the Prime Agent package names. The source workspace manifests still keep inherited package names until the namespace migration is complete.
 
 ## Workspace Package

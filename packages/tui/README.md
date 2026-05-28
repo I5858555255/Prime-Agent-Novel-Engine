@@ -13,8 +13,6 @@
   Terminal UI primitives.
 </p>
 
----
-
 Release docs use the Prime Agent package name. The source workspace manifest still keeps an inherited package name until the namespace migration is complete.
 
 Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications.

@@ -13,8 +13,6 @@
   LLM provider toolkit.
 </p>
 
----
-
 Release docs use the Prime Agent package name. The source workspace manifest still keeps an inherited package name until the namespace migration is complete.
 
 Unified LLM API with automatic model discovery, provider configuration, token and cost tracking, and simple context persistence and hand-off to other models mid-session.

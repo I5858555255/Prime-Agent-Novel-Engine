@@ -13,8 +13,6 @@
   Terminal coding harness.
 </p>
 
----
-
 This workspace still keeps an inherited source package name internally. The distributed release package and command are branded as `prime-agent`.
 
 ## Table of Contents
@@ -41,8 +39,6 @@ This workspace still keeps an inherited source package name internally. The dist
 - [Upstream](#upstream)
 - [CLI Reference](#cli-reference)
 
----
-
 ## Quick Start
 
 ```bash
@@ -68,8 +64,6 @@ Then just talk to Prime Agent. By default, Prime Agent gives the model one tool:
 The Python kernel runtime is set up automatically on first invocation. Set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
-
----
 
 ## Providers & Models
 
@@ -112,8 +106,6 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
 **Custom providers & models:** Add providers via `~/.prime/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
-
----
 
 ## Interactive Mode
 
@@ -198,8 +190,6 @@ On Windows Terminal, `Alt+Enter` is fullscreen by default. Remap it in [docs/ter
 
 Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once). `transport` selects provider transport preference (`"sse"`, `"websocket"`, or `"auto"`) for providers that support multiple transports.
 
----
-
 ## Sessions
 
 Sessions are stored as JSONL files with a tree structure. Each entry has an `id` and `parentId`, enabling in-place branching without creating new files. See [docs/session-format.md](docs/session-format.md) for file format.
@@ -244,8 +234,6 @@ Long sessions can exhaust context windows. Compaction summarizes older messages 
 
 Compaction is lossy. The full history remains in the JSONL file; use `/tree` to revisit. Customize compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
 
----
-
 ## Settings
 
 Use `/settings` to modify common options, or edit JSON files directly:
@@ -263,8 +251,6 @@ Prime Agent can fetch the release manifest at `https://pub-728493de92a943e2a9b2d
 
 Use `--offline` or `PI_OFFLINE=1` to disable startup network operations, including update checks and package update checks.
 
----
-
 ## Context Files
 
 Prime Agent loads `AGENTS.md` (or `CLAUDE.md`) at startup from:
@@ -279,8 +265,6 @@ Disable context file loading with `--no-context-files` (or `-nc`).
 ### System Prompt
 
 Replace the default system prompt with `.prime/agent/SYSTEM.md` (project) or `~/.prime/agent/SYSTEM.md` (global). Append without replacing via `APPEND_SYSTEM.md`.
-
----
 
 ## Customization
 
@@ -399,8 +383,6 @@ Without a `pi` manifest, Prime Agent auto-discovers from conventional directorie
 
 See [docs/packages.md](docs/packages.md).
 
----
-
 ## Programmatic Usage
 
 ### SDK
@@ -435,15 +417,11 @@ RPC mode uses strict LF-delimited JSONL framing. Clients must split records on `
 
 See [docs/rpc.md](docs/rpc.md) for the protocol.
 
----
-
 ## Upstream
 
 Prime Agent is forked from [pi-mono](https://github.com/badlogic/pi-mono) by Mario Zechner and keeps MIT attribution in the root license.
 
 The package architecture, extension model, and source package names still reflect that upstream lineage while the distributed command and release artifacts are branded for Prime Agent.
-
----
 
 ## CLI Reference
 
@@ -596,13 +574,9 @@ prime-agent --thinking high "Solve this complex problem"
 | `PRIME_AGENT_KERNEL_PYTHON` | Use an existing Python environment with `ipykernel` instead of auto-bootstrapping `~/.prime/agent/kernel-venv` |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |
 
----
-
 ## Contributing & Development
 
 See [docs/development.md](docs/development.md) for setup and debugging.
-
----
 
 ## License
 
