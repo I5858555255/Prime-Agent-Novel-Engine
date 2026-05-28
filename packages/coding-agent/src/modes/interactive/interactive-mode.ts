@@ -315,6 +315,8 @@ type AuthenticationResult =
 
 type ModelSelectionResult = { status: "selected" } | { status: "cancelled" } | { status: "action"; actionId: string };
 
+type ModelFallbackWarningAction = "show" | "suppress" | "wait";
+
 const MODEL_SELECTOR_ACTIONS: readonly ModelSelectorAction[] = [
 	{ id: "add_provider", label: "Add provider...", description: "subscription or API key" },
 ];
@@ -919,23 +921,29 @@ export class InteractiveMode {
 			}
 			deferredStartupNotificationsShown = true;
 
-			newVersionPromise.then((newVersion) => {
-				if (newVersion) {
-					this.showNewVersionNotification(newVersion);
-				}
-			});
+			void newVersionPromise
+				.then((newVersion) => {
+					if (newVersion) {
+						this.showNewVersionNotification(newVersion);
+					}
+				})
+				.catch(() => {});
 
-			packageUpdatesPromise.then((updates) => {
-				if (updates.length > 0) {
-					this.showPackageUpdateNotification(updates);
-				}
-			});
+			void packageUpdatesPromise
+				.then((updates) => {
+					if (updates.length > 0) {
+						this.showPackageUpdateNotification(updates);
+					}
+				})
+				.catch(() => {});
 
-			tmuxKeyboardWarningPromise.then((warning) => {
-				if (warning) {
-					this.showWarning(warning);
-				}
-			});
+			void tmuxKeyboardWarningPromise
+				.then((warning) => {
+					if (warning) {
+						this.showWarning(warning);
+					}
+				})
+				.catch(() => {});
 		};
 
 		let modelFallbackWarningShown = false;
@@ -943,11 +951,14 @@ export class InteractiveMode {
 			if (modelFallbackWarningShown) {
 				return;
 			}
-			if (!this.shouldShowModelFallbackWarning(modelFallbackMessage, needsOnboarding)) {
+			const action = this.getModelFallbackWarningAction(modelFallbackMessage, needsOnboarding);
+			if (action === "wait") {
 				return;
 			}
 			modelFallbackWarningShown = true;
-			this.showWarning(modelFallbackMessage);
+			if (action === "show" && modelFallbackMessage) {
+				this.showWarning(modelFallbackMessage);
+			}
 		};
 
 		if (!needsOnboarding) {
@@ -986,21 +997,24 @@ export class InteractiveMode {
 		}
 	}
 
-	private shouldShowModelFallbackWarning(
+	private getModelFallbackWarningAction(
 		modelFallbackMessage: string | undefined,
 		startupNeededOnboarding: boolean,
-	): modelFallbackMessage is string {
+	): ModelFallbackWarningAction {
 		if (!modelFallbackMessage) {
-			return false;
+			return "suppress";
 		}
 		if (
 			startupNeededOnboarding &&
 			modelFallbackMessage === formatNoModelsAvailableMessage() &&
 			!this.shouldRunOnboarding()
 		) {
-			return false;
+			return "suppress";
 		}
-		return true;
+		if (startupNeededOnboarding && modelFallbackMessage === formatNoModelsAvailableMessage()) {
+			return "wait";
+		}
+		return "show";
 	}
 
 	private shouldRunOnboarding(): boolean {
@@ -5408,18 +5422,44 @@ export class InteractiveMode {
 		});
 	}
 
-	private async selectPrimeInferenceTeam(apiKey: string, dialog: LoginDialogComponent): Promise<string | undefined> {
-		const config = loadPrimeCliConfig();
+	private getPrimeInferenceDefaultTeamStatus(): string {
+		const storedTeam = this.session.modelRegistry.authStorage.getPrimeInferenceTeamSelection();
+		if (storedTeam) {
+			return `Using team "${storedTeam.name}".`;
+		}
+		if (storedTeam === null) {
+			return "Using personal account.";
+		}
+		let config: ReturnType<typeof loadPrimeCliConfig>;
+		try {
+			config = loadPrimeCliConfig();
+		} catch {
+			return "Using personal account.";
+		}
 		if (config.teamIdFromEnv) {
-			this.session.modelRegistry.authStorage.reload();
 			return "Using team from PRIME_TEAM_ID.";
 		}
+		if (config.teamName) {
+			return `Using team "${config.teamName}".`;
+		}
+		if (config.teamId) {
+			return "Using Prime CLI team.";
+		}
+		return "Using personal account.";
+	}
 
+	private async selectPrimeInferenceTeam(apiKey: string, dialog: LoginDialogComponent): Promise<string | undefined> {
 		try {
+			const config = loadPrimeCliConfig();
+			if (config.teamIdFromEnv) {
+				this.session.modelRegistry.authStorage.reload();
+				return "Using team from PRIME_TEAM_ID.";
+			}
+
 			dialog.showProgress("Loading Prime teams...");
 			const teams = await fetchPrimeTeams(apiKey, config.baseUrl, { signal: dialog.signal });
 			if (dialog.signal.aborted) {
-				return undefined;
+				return this.getPrimeInferenceDefaultTeamStatus();
 			}
 			if (teams.length === 0) {
 				this.session.modelRegistry.authStorage.setPrimeInferenceTeamSelection(null);
@@ -5436,13 +5476,10 @@ export class InteractiveMode {
 				? `Using team "${selectedTeam.name}".`
 				: selectedTeam === null
 					? "Using personal account."
-					: undefined;
+					: this.getPrimeInferenceDefaultTeamStatus();
 		} catch {
-			if (dialog.signal.aborted) {
-				return undefined;
-			}
 			this.session.modelRegistry.authStorage.reload();
-			return undefined;
+			return this.getPrimeInferenceDefaultTeamStatus();
 		}
 	}
 
@@ -5481,20 +5518,14 @@ export class InteractiveMode {
 			}
 
 			const previousPrimeCredential = this.session.modelRegistry.authStorage.get(PRIME_INFERENCE_PROVIDER_ID);
+			const previousPrimeTeam =
+				previousPrimeCredential?.type === "api_key" ? previousPrimeCredential.primeTeam : undefined;
 			this.session.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, {
 				type: "api_key",
 				key: result.apiKey,
+				...(previousPrimeTeam !== undefined ? { primeTeam: previousPrimeTeam } : {}),
 			});
 			const teamStatus = await this.selectPrimeInferenceTeam(result.apiKey, dialog);
-			if (dialog.signal.aborted) {
-				if (previousPrimeCredential) {
-					this.session.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, previousPrimeCredential);
-				} else {
-					this.session.modelRegistry.authStorage.remove(PRIME_INFERENCE_PROVIDER_ID);
-				}
-				closeDialog();
-				return { status: "cancelled" };
-			}
 
 			closeDialog();
 			return await this.completeProviderAuthentication(

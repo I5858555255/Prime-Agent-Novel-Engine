@@ -132,37 +132,49 @@ describe("InteractiveMode.showStatus", () => {
 describe("InteractiveMode startup onboarding warnings", () => {
 	type StartupWarningHarness = {
 		shouldRunOnboarding(): boolean;
-		shouldShowModelFallbackWarning(
+		getModelFallbackWarningAction(
 			modelFallbackMessage: string | undefined,
 			startupNeededOnboarding: boolean,
-		): modelFallbackMessage is string;
+		): "show" | "suppress" | "wait";
 	};
 
-	const shouldShowModelFallbackWarning = (InteractiveMode.prototype as unknown as StartupWarningHarness)
-		.shouldShowModelFallbackWarning;
+	const getModelFallbackWarningAction = (InteractiveMode.prototype as unknown as StartupWarningHarness)
+		.getModelFallbackWarningAction;
 
 	test("suppresses the stale no-model warning after onboarding selects a model", () => {
 		const fakeThis: StartupWarningHarness = {
 			shouldRunOnboarding: vi.fn(() => false),
-			shouldShowModelFallbackWarning,
+			getModelFallbackWarningAction,
 		};
 
-		expect(shouldShowModelFallbackWarning.call(fakeThis, formatNoModelsAvailableMessage(), true)).toBe(false);
+		expect(getModelFallbackWarningAction.call(fakeThis, formatNoModelsAvailableMessage(), true)).toBe("suppress");
+		expect(fakeThis.shouldRunOnboarding).toHaveBeenCalledTimes(1);
+	});
+
+	test("waits to suppress the stale no-model warning while onboarding is still needed", () => {
+		const fakeThis: StartupWarningHarness = {
+			shouldRunOnboarding: vi.fn(() => true),
+			getModelFallbackWarningAction,
+		};
+
+		expect(getModelFallbackWarningAction.call(fakeThis, formatNoModelsAvailableMessage(), true)).toBe("wait");
+		expect(fakeThis.shouldRunOnboarding).toHaveBeenCalledTimes(1);
 	});
 
 	test("keeps real model restore fallback warnings after onboarding", () => {
 		const fakeThis: StartupWarningHarness = {
 			shouldRunOnboarding: vi.fn(() => false),
-			shouldShowModelFallbackWarning,
+			getModelFallbackWarningAction,
 		};
 
 		expect(
-			shouldShowModelFallbackWarning.call(
+			getModelFallbackWarningAction.call(
 				fakeThis,
 				"Could not restore model anthropic/claude-old. Using prime-inference/openai/gpt-5.5.",
 				true,
 			),
-		).toBe(true);
+		).toBe("show");
+		expect(fakeThis.shouldRunOnboarding).not.toHaveBeenCalled();
 	});
 });
 
