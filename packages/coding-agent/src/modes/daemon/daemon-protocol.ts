@@ -10,6 +10,7 @@ export interface DaemonModeOptions {
 	createRuntime: CreateAgentSessionRuntimeFactory;
 }
 
+/** Compact active session projection returned by daemon list/create/rename commands. */
 export interface ActiveSessionSummary {
 	activeSessionId: string;
 	sessionId: string;
