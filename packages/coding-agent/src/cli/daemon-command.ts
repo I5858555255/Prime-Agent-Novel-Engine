@@ -652,9 +652,8 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		model: formatSessionModel(session.model),
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
-		cwd: session.cwd,
 	}));
-	printTable(["name", "id", "status", "model", "messages", "clients", "cwd"], rows, colorListRow);
+	printTable(["name", "id", "status", "model", "messages", "clients"], rows, colorListRow);
 }
 
 const LIST_STATUS_ORDER: Record<DaemonSessionStatus, number> = {
@@ -673,7 +672,6 @@ type ListRow = {
 	model: string;
 	messages: string;
 	clients: string;
-	cwd: string;
 };
 
 function sortSessionsForList(sessions: readonly DaemonSessionListEntry[]): DaemonSessionListEntry[] {
