@@ -2,10 +2,10 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { SessionInfo } from "../../core/session-manager.js";
+import type { SessionInfo, SessionStateStatus } from "../../core/session-manager.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 
-export type SessionStatus = "user" | "idle" | "tool" | "model" | "sleep" | "crash";
+export type SessionStatus = "user" | "idle" | "tool" | "model" | SessionStateStatus;
 
 // Lightweight daemon session shape used by list, create, rename, attach, and state responses.
 export interface SessionSummary {
@@ -33,7 +33,6 @@ export interface SessionSummary {
 export function buildSessionList(
 	activeSessions: readonly ActiveSessionState[],
 	savedSessions: readonly SessionInfo[],
-	crashedSessionFiles: ReadonlySet<string>,
 ): SessionSummary[] {
 	const activeBySessionFile = new Map<string, ActiveSessionState>();
 
@@ -54,7 +53,7 @@ export function buildSessionList(
 			seenActiveSessionIds.add(activeSession.activeSessionId);
 			continue;
 		}
-		entries.push(summaryForInactiveSession(savedSession, crashedSessionFiles.has(sessionFile) ? "crash" : "sleep"));
+		entries.push(summaryForInactiveSession(savedSession));
 	}
 
 	for (const activeSession of activeSessions) {
@@ -99,13 +98,10 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 	};
 }
 
-export function summaryForInactiveSession(
-	session: SessionInfo,
-	status: Extract<SessionStatus, "sleep" | "crash">,
-): SessionSummary {
+export function summaryForInactiveSession(session: SessionInfo): SessionSummary {
 	return {
 		id: session.id,
-		status,
+		status: session.state?.status ?? "sleep",
 		sessionId: session.id,
 		sessionFile: session.path,
 		sessionName: session.name,

@@ -54,7 +54,6 @@ class AgentDaemon {
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
-	private readonly crashedSessionFiles = new Set<string>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 
 	constructor(
@@ -114,10 +113,6 @@ class AgentDaemon {
 			},
 		});
 		this.sessions.set(state.activeSessionId, state);
-		const sessionFile = state.runtime.session.sessionFile;
-		if (sessionFile) {
-			this.crashedSessionFiles.delete(resolve(sessionFile));
-		}
 		if (name) {
 			state.runtime.session.setSessionName(name);
 		}
@@ -204,7 +199,7 @@ class AgentDaemon {
 				const activeSessions = Array.from(this.sessions.values());
 				if (!command.all) {
 					return success(command.id, "list", {
-						sessions: buildSessionList(activeSessions, [], this.crashedSessionFiles),
+						sessions: buildSessionList(activeSessions, []),
 					});
 				}
 				const defaultConfig = this.options.defaultSessionConfig;
@@ -219,7 +214,7 @@ class AgentDaemon {
 							)
 						: await SessionManager.listAll();
 				return success(command.id, "list", {
-					sessions: buildSessionList(activeSessions, savedSessions, this.crashedSessionFiles),
+					sessions: buildSessionList(activeSessions, savedSessions),
 				});
 			}
 
@@ -374,6 +369,12 @@ class AgentDaemon {
 	}
 
 	private async killSession(state: ActiveSessionState, reason: "killed" | "shutdown"): Promise<void> {
+		let persistError: unknown;
+		try {
+			state.runtime.session.sessionManager.appendSessionState({ status: "sleep" });
+		} catch (error) {
+			persistError = error;
+		}
 		state.unsubscribe?.();
 		await state.runtime.dispose();
 		this.sessions.delete(state.activeSessionId);
@@ -382,6 +383,9 @@ class AgentDaemon {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
 		}
 		state.clients.clear();
+		if (persistError && reason !== "shutdown") {
+			throw persistError;
+		}
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {

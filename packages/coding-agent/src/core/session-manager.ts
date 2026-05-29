@@ -129,6 +129,18 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
+export type SessionStateStatus = "sleep" | "crash";
+
+export interface SessionState {
+	status: SessionStateStatus;
+}
+
+/** Session lifecycle state entry (e.g., inactive status for daemon-managed sessions). */
+export interface SessionStateEntry extends SessionEntryBase {
+	type: "session_state";
+	state: SessionState;
+}
+
 /**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
@@ -160,7 +172,8 @@ export type SessionEntry =
 	| ChildUsageAttributionEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	| SessionStateEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -188,6 +201,8 @@ export interface SessionInfo {
 	cwd: string;
 	/** User-defined display name from session_info entries. */
 	name?: string;
+	/** Latest persisted lifecycle state from session_state entries. */
+	state?: SessionState;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
 	created: Date;
@@ -580,6 +595,10 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 	return !Number.isNaN(headerTime) ? new Date(headerTime) : statsMtime;
 }
 
+function isSessionStateStatus(value: unknown): value is SessionStateStatus {
+	return value === "sleep" || value === "crash";
+}
+
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const content = await readFile(filePath, "utf8");
@@ -604,12 +623,19 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let firstMessage = "";
 		const allMessages: string[] = [];
 		let name: string | undefined;
+		let state: SessionState | undefined;
 
 		for (const entry of entries) {
 			// Extract session name (use latest, including explicit clears)
 			if (entry.type === "session_info") {
 				const infoEntry = entry as SessionInfoEntry;
 				name = infoEntry.name?.trim() || undefined;
+			}
+			if (entry.type === "session_state") {
+				const stateEntry = entry as SessionStateEntry;
+				if (isSessionStateStatus(stateEntry.state?.status)) {
+					state = { status: stateEntry.state.status };
+				}
 			}
 
 			if (entry.type !== "message") continue;
@@ -638,6 +664,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			id: (header as SessionHeader).id,
 			cwd,
 			name,
+			state,
 			parentSessionPath,
 			created: new Date((header as SessionHeader).timestamp),
 			modified,
@@ -836,7 +863,8 @@ export class SessionManager {
 		if (!this.persist || !this.sessionFile) return;
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-		if (!hasAssistant) {
+		const shouldPersistWithoutAssistant = entry.type === "session_state";
+		if (!hasAssistant && !shouldPersistWithoutAssistant) {
 			// Mark as not flushed so when assistant arrives, all entries get written
 			this.flushed = false;
 			return;
@@ -975,6 +1003,19 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Append a session lifecycle state entry. Returns entry id. */
+	appendSessionState(state: SessionState): string {
+		const entry: SessionStateEntry = {
+			type: "session_state",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			state: { status: state.status },
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Get the current session name from the latest session_info entry, if any. */
 	getSessionName(): string | undefined {
 		// Walk entries in reverse to find the latest session_info entry.
@@ -984,6 +1025,18 @@ export class SessionManager {
 			const entry = entries[i];
 			if (entry.type === "session_info") {
 				return entry.name?.trim() || undefined;
+			}
+		}
+		return undefined;
+	}
+
+	/** Get the current session lifecycle state from the latest session_state entry, if any. */
+	getSessionState(): SessionState | undefined {
+		const entries = this.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "session_state") {
+				return { status: entry.state.status };
 			}
 		}
 		return undefined;

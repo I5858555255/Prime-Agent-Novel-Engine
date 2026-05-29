@@ -196,6 +196,9 @@ export {
 	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
+	type SessionState,
+	type SessionStateEntry,
+	type SessionStateStatus,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.js";
 export {

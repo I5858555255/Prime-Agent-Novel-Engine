@@ -20,7 +20,6 @@ describe("buildSessionList", () => {
 				makeState({ activeSessionId: "done", sessionFile: "/tmp/done.jsonl" }),
 			],
 			[],
-			new Set(),
 		);
 
 		expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
@@ -38,13 +37,12 @@ describe("buildSessionList", () => {
 		const savedSessions = [
 			makeSessionInfo({ path: activePath, id: "saved-active", name: "active saved" }),
 			makeSessionInfo({ path: sleepingPath, id: "saved-sleeping", name: "sleeping saved" }),
-			makeSessionInfo({ path: crashedPath, id: "saved-crashed" }),
+			makeSessionInfo({ path: crashedPath, id: "saved-crashed", state: { status: "crash" } }),
 		];
 
 		const entries = buildSessionList(
 			[makeState({ activeSessionId: "active-1", sessionFile: activePath, sessionId: "saved-active" })],
 			savedSessions,
-			new Set([crashedPath]),
 		);
 
 		expect(entries).toHaveLength(3);
@@ -98,12 +96,13 @@ function makeState(options: StateOptions): ActiveSessionState {
 	} as unknown as ActiveSessionState;
 }
 
-function makeSessionInfo(overrides: { path: string; id: string; name?: string }): SessionInfo {
+function makeSessionInfo(overrides: Pick<SessionInfo, "path" | "id"> & Partial<SessionInfo>): SessionInfo {
 	return {
 		path: overrides.path,
 		id: overrides.id,
 		cwd: "/tmp/project",
 		name: overrides.name,
+		state: overrides.state,
 		created: new Date("2026-05-01T00:00:00.000Z"),
 		modified: new Date("2026-05-02T00:00:00.000Z"),
 		messageCount: 2,
