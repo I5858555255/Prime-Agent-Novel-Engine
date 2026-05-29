@@ -4,11 +4,11 @@ import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "../src/core/session-manager.js";
 import type { ActiveSessionRecord, DaemonSocketClient } from "../src/modes/daemon/active-session-record.js";
 import type { ActiveSessionState } from "../src/modes/daemon/daemon-protocol.js";
-import { buildDaemonSessionList, entryForActiveSessionState } from "../src/modes/daemon/daemon-session-list.js";
+import { buildSessionList, entryForActiveSessionState } from "../src/modes/daemon/daemon-session-list.js";
 
-describe("buildDaemonSessionList", () => {
+describe("buildSessionList", () => {
 	it("derives active session statuses", () => {
-		const entries = buildDaemonSessionList(
+		const entries = buildSessionList(
 			[
 				makeRecord({ activeSessionId: "model", sessionFile: "/tmp/model.jsonl", isStreaming: true }),
 				makeRecord({
@@ -41,7 +41,7 @@ describe("buildDaemonSessionList", () => {
 			makeSessionInfo({ path: resolve("/tmp/project/crashed.jsonl"), id: "saved-crashed" }),
 		];
 
-		const entries = buildDaemonSessionList(
+		const entries = buildSessionList(
 			[makeRecord({ activeSessionId: "active-1", sessionFile: activePath, sessionId: "saved-active" })],
 			savedSessions,
 			new Map([[killedPath, "killed"]]),

@@ -6,11 +6,11 @@ import type { SessionInfo } from "../../core/session-manager.js";
 import type { ActiveSessionRecord } from "./active-session-record.js";
 import type { ActiveSessionState } from "./daemon-protocol.js";
 
-export type DaemonSessionStatus = "user" | "idle" | "tool" | "model" | "killed" | "crashed";
+export type SessionStatus = "user" | "idle" | "tool" | "model" | "killed" | "crashed";
 
-export interface DaemonSessionListEntry {
+export interface SessionListEntry {
 	id: string;
-	status: DaemonSessionStatus;
+	status: SessionStatus;
 	activeSessionId?: string;
 	sessionId: string;
 	sessionFile?: string;
@@ -30,13 +30,13 @@ export interface DaemonSessionListEntry {
 	parentSessionPath?: string;
 }
 
-export type InactiveDaemonSessionStatus = Extract<DaemonSessionStatus, "crashed" | "killed">;
+export type InactiveSessionStatus = Extract<SessionStatus, "crashed" | "killed">;
 
-export function buildDaemonSessionList(
+export function buildSessionList(
 	activeRecords: readonly ActiveSessionRecord[],
 	savedSessions: readonly SessionInfo[],
-	inactiveStatuses: ReadonlyMap<string, InactiveDaemonSessionStatus>,
-): DaemonSessionListEntry[] {
+	inactiveStatuses: ReadonlyMap<string, InactiveSessionStatus>,
+): SessionListEntry[] {
 	const activeBySessionFile = new Map<string, ActiveSessionRecord>();
 
 	for (const record of activeRecords) {
@@ -46,7 +46,7 @@ export function buildDaemonSessionList(
 		}
 	}
 
-	const entries: DaemonSessionListEntry[] = [];
+	const entries: SessionListEntry[] = [];
 	const seenActiveSessionIds = new Set<string>();
 	for (const savedSession of savedSessions) {
 		const sessionFile = resolve(savedSession.path);
@@ -67,7 +67,7 @@ export function buildDaemonSessionList(
 	return entries;
 }
 
-export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?: SessionInfo): DaemonSessionListEntry {
+export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?: SessionInfo): SessionListEntry {
 	const session = record.runtime.session;
 	return {
 		id: record.activeSessionId,
@@ -92,10 +92,7 @@ export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?:
 	};
 }
 
-export function inactiveEntryForSession(
-	session: SessionInfo,
-	status: InactiveDaemonSessionStatus,
-): DaemonSessionListEntry {
+export function inactiveEntryForSession(session: SessionInfo, status: InactiveSessionStatus): SessionListEntry {
 	return {
 		id: session.id,
 		status,
@@ -115,7 +112,7 @@ export function inactiveEntryForSession(
 	};
 }
 
-export function entryForActiveSessionState(state: ActiveSessionState): DaemonSessionListEntry {
+export function entryForActiveSessionState(state: ActiveSessionState): SessionListEntry {
 	return {
 		id: state.activeSessionId,
 		status: activeStatusForState(state),
@@ -135,7 +132,7 @@ export function entryForActiveSessionState(state: ActiveSessionState): DaemonSes
 	};
 }
 
-function activeStatusForRecord(record: ActiveSessionRecord): DaemonSessionStatus {
+function activeStatusForRecord(record: ActiveSessionRecord): SessionStatus {
 	const session = record.runtime.session;
 	if (session.isStreaming) {
 		return session.state.pendingToolCalls.size > 0 ? "tool" : "model";
@@ -143,7 +140,7 @@ function activeStatusForRecord(record: ActiveSessionRecord): DaemonSessionStatus
 	return record.clients.size > 0 ? "user" : "idle";
 }
 
-function activeStatusForState(state: ActiveSessionState): DaemonSessionStatus {
+function activeStatusForState(state: ActiveSessionState): SessionStatus {
 	if (state.isStreaming) {
 		return "model";
 	}

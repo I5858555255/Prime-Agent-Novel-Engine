@@ -10,9 +10,9 @@ import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js"
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { ActiveSessionState, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
 import {
-	type DaemonSessionListEntry,
-	type DaemonSessionStatus,
 	entryForActiveSessionState,
+	type SessionListEntry,
+	type SessionStatus,
 } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
@@ -543,7 +543,7 @@ function resolvePathOption(value: string, cwd: string): string {
 	return isLocalPath(expanded) ? resolve(cwd, expanded) : expanded;
 }
 
-async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionListEntry[]> {
+async function getLiveSessions(client: DaemonClient): Promise<SessionListEntry[]> {
 	const response = await client.request({ type: "list" });
 	const data = requireSuccess(response);
 	const sessions = getSessionListEntries(data);
@@ -553,7 +553,7 @@ async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionListE
 	return sessions;
 }
 
-function nextDefaultSessionName(sessions: DaemonSessionListEntry[]): string {
+function nextDefaultSessionName(sessions: SessionListEntry[]): string {
 	const existingNames = new Set(
 		sessions.map((session) => session.sessionName).filter((name): name is string => !!name),
 	);
@@ -657,7 +657,7 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 	printTable(["name", "id", "status", "age", "model", "messages", "clients"], rows, colorListRow);
 }
 
-const LIST_STATUS_ORDER: Record<DaemonSessionStatus, number> = {
+const LIST_STATUS_ORDER: Record<SessionStatus, number> = {
 	user: 0,
 	idle: 1,
 	tool: 2,
@@ -669,14 +669,14 @@ const LIST_STATUS_ORDER: Record<DaemonSessionStatus, number> = {
 type ListRow = {
 	name: string;
 	id: string;
-	status: DaemonSessionStatus;
+	status: SessionStatus;
 	age: string;
 	model: string;
 	messages: string;
 	clients: string;
 };
 
-function sortSessionsForList(sessions: readonly DaemonSessionListEntry[]): DaemonSessionListEntry[] {
+function sortSessionsForList(sessions: readonly SessionListEntry[]): SessionListEntry[] {
 	return sessions
 		.map((session, index) => ({ session, index }))
 		.sort((left, right) => {
@@ -743,7 +743,7 @@ function parseListArgs(args: string[]): { all: boolean } {
 	return { all };
 }
 
-function formatSessionModel(model: ActiveSessionState["model"] | DaemonSessionListEntry["model"]): string {
+function formatSessionModel(model: ActiveSessionState["model"] | SessionListEntry["model"]): string {
 	return model ? `${model.provider}/${model.id}` : "";
 }
 
@@ -1241,7 +1241,7 @@ function printTable<T extends Record<string, string>>(
 	}
 }
 
-function getSessionListEntries(value: unknown): DaemonSessionListEntry[] | undefined {
+function getSessionListEntries(value: unknown): SessionListEntry[] | undefined {
 	if (!value || typeof value !== "object") {
 		return undefined;
 	}
@@ -1250,9 +1250,9 @@ function getSessionListEntries(value: unknown): DaemonSessionListEntry[] | undef
 		return undefined;
 	}
 
-	const entries: DaemonSessionListEntry[] = [];
+	const entries: SessionListEntry[] = [];
 	for (const session of sessions) {
-		if (isDaemonSessionListEntry(session)) {
+		if (isSessionListEntry(session)) {
 			entries.push(session);
 			continue;
 		}
@@ -1265,11 +1265,11 @@ function getSessionListEntries(value: unknown): DaemonSessionListEntry[] | undef
 	return entries;
 }
 
-function isDaemonSessionListEntry(value: unknown): value is DaemonSessionListEntry {
+function isSessionListEntry(value: unknown): value is SessionListEntry {
 	if (!value || typeof value !== "object") {
 		return false;
 	}
-	const candidate = value as Partial<DaemonSessionListEntry>;
+	const candidate = value as Partial<SessionListEntry>;
 	return (
 		typeof candidate.id === "string" &&
 		typeof candidate.sessionId === "string" &&

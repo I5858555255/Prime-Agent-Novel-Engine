@@ -257,8 +257,6 @@ export {
 	type DaemonModeOptions,
 	type DaemonOutbound,
 	type DaemonResponse,
-	type DaemonSessionListEntry,
-	type DaemonSessionStatus,
 	defaultDaemonSocketPath,
 	InteractiveMode,
 	type InteractiveModeOptions,
@@ -272,6 +270,8 @@ export {
 	type RpcSessionState,
 	runPrintMode,
 	runRpcMode,
+	type SessionListEntry,
+	type SessionStatus,
 } from "./modes/index.js";
 // UI components for extensions
 export {

@@ -26,7 +26,7 @@ import {
 	failure,
 	success,
 } from "./daemon-protocol.js";
-import { buildDaemonSessionList, type InactiveDaemonSessionStatus } from "./daemon-session-list.js";
+import { buildSessionList, type InactiveSessionStatus } from "./daemon-session-list.js";
 import { cleanupDaemonSocketPath, defaultDaemonSocketPath, prepareDaemonSocketPath } from "./daemon-socket.js";
 
 export type {
@@ -36,7 +36,7 @@ export type {
 	DaemonOutbound,
 	DaemonResponse,
 } from "./daemon-protocol.js";
-export type { DaemonSessionListEntry, DaemonSessionStatus } from "./daemon-session-list.js";
+export type { SessionListEntry, SessionStatus } from "./daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
 export async function runDaemonMode(initialRuntime: AgentSessionRuntime, options: DaemonModeOptions): Promise<never> {
@@ -56,7 +56,7 @@ class AgentDaemon {
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionRecord>();
-	private readonly inactiveSessionStatuses = new Map<string, InactiveDaemonSessionStatus>();
+	private readonly inactiveSessionStatuses = new Map<string, InactiveSessionStatus>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 
 	constructor(
@@ -216,7 +216,7 @@ class AgentDaemon {
 				const activeRecords = Array.from(this.sessions.values());
 				if (!command.all) {
 					return success(command.id, "list", {
-						sessions: buildDaemonSessionList(activeRecords, [], this.inactiveSessionStatuses),
+						sessions: buildSessionList(activeRecords, [], this.inactiveSessionStatuses),
 					});
 				}
 				const defaultConfig = this.options.defaultSessionConfig;
@@ -231,7 +231,7 @@ class AgentDaemon {
 							)
 						: await SessionManager.listAll();
 				return success(command.id, "list", {
-					sessions: buildDaemonSessionList(activeRecords, savedSessions, this.inactiveSessionStatuses),
+					sessions: buildSessionList(activeRecords, savedSessions, this.inactiveSessionStatuses),
 				});
 			}
 

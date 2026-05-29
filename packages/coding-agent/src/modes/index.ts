@@ -11,7 +11,7 @@ export type {
 	DaemonOutbound,
 	DaemonResponse,
 } from "./daemon/daemon-protocol.js";
-export type { DaemonSessionListEntry, DaemonSessionStatus } from "./daemon/daemon-session-list.js";
+export type { SessionListEntry, SessionStatus } from "./daemon/daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon/daemon-socket.js";
 export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.js";
 export { type PrintModeOptions, runPrintMode } from "./print-mode.js";
