@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
-import { formatSessionDisplayId, matchesSessionIdPrefix } from "./daemon-session-id.js";
+import { formatSessionDisplayId, matchesSessionIdSuffix } from "./daemon-session-id.js";
 
 export interface DaemonSocketClient {
 	id: string;
@@ -43,20 +43,20 @@ export function resolveActiveSessionState(
 		throw new Error(formatAmbiguousSessionError(selector, exactMatches));
 	}
 
-	const prefixMatches = uniqueStates(
+	const suffixMatches = uniqueStates(
 		[...sessions.values()].filter((state) => {
 			const session = state.runtime.session;
 			return (
-				matchesSessionIdPrefix(state.activeSessionId, selector) ||
-				matchesSessionIdPrefix(session.sessionId, selector)
+				matchesSessionIdSuffix(state.activeSessionId, selector) ||
+				matchesSessionIdSuffix(session.sessionId, selector)
 			);
 		}),
 	);
-	if (prefixMatches.length === 1) {
-		return prefixMatches[0]!;
+	if (suffixMatches.length === 1) {
+		return suffixMatches[0]!;
 	}
-	if (prefixMatches.length > 1) {
-		throw new Error(formatAmbiguousSessionError(selector, prefixMatches));
+	if (suffixMatches.length > 1) {
+		throw new Error(formatAmbiguousSessionError(selector, suffixMatches));
 	}
 
 	throw new Error(`Unknown active session: ${selector}`);
