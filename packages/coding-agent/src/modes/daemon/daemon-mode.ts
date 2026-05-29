@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import type { SessionStats } from "../../core/agent-session.js";
 import { mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { type AgentSessionRuntime, createAgentSessionRuntime } from "../../core/agent-session-runtime.js";
-import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
+import { SessionManager } from "../../core/session-manager.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { RpcSlashCommand } from "../rpc/rpc-types.js";
@@ -26,6 +26,7 @@ import {
 	failure,
 	success,
 } from "./daemon-protocol.js";
+import { buildDaemonSessionList, type InactiveDaemonSessionStatus } from "./daemon-session-list.js";
 import { cleanupDaemonSocketPath, defaultDaemonSocketPath, prepareDaemonSocketPath } from "./daemon-socket.js";
 
 export type {
@@ -35,6 +36,7 @@ export type {
 	DaemonOutbound,
 	DaemonResponse,
 } from "./daemon-protocol.js";
+export type { DaemonSessionListEntry, DaemonSessionStatus } from "./daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
 export async function runDaemonMode(initialRuntime: AgentSessionRuntime, options: DaemonModeOptions): Promise<never> {
@@ -54,6 +56,7 @@ class AgentDaemon {
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionRecord>();
+	private readonly inactiveSessionStatuses = new Map<string, InactiveDaemonSessionStatus>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 
 	constructor(
@@ -113,6 +116,10 @@ class AgentDaemon {
 			},
 		});
 		this.sessions.set(record.activeSessionId, record);
+		const sessionFile = record.runtime.session.sessionFile;
+		if (sessionFile) {
+			this.inactiveSessionStatuses.delete(resolve(sessionFile));
+		}
 		if (name) {
 			record.runtime.session.setSessionName(name);
 		}
@@ -205,20 +212,22 @@ class AgentDaemon {
 		command: DaemonCommand,
 	): Promise<DaemonResponse | undefined> {
 		switch (command.type) {
-			case "list":
-				return success(command.id, "list", { sessions: Array.from(this.sessions.values()).map(stateForRecord) });
-
-			case "list_saved": {
+			case "list": {
+				const activeRecords = Array.from(this.sessions.values());
+				if (!command.all) {
+					return success(command.id, "list", {
+						sessions: buildDaemonSessionList(activeRecords, [], this.inactiveSessionStatuses),
+					});
+				}
 				const defaultConfig = this.options.defaultSessionConfig;
 				if (!defaultConfig.cwd) {
 					throw new Error("Active session config is missing cwd");
 				}
 				const cwd = resolve(command.cwd ?? defaultConfig.cwd);
-				const sessions: SessionInfo[] = await SessionManager.list(
-					cwd,
-					command.sessionDir ?? defaultConfig.sessionDir,
-				);
-				return success(command.id, "list_saved", { sessions });
+				const savedSessions = await SessionManager.list(cwd, command.sessionDir ?? defaultConfig.sessionDir);
+				return success(command.id, "list", {
+					sessions: buildDaemonSessionList(activeRecords, savedSessions, this.inactiveSessionStatuses),
+				});
 			}
 
 			case "create": {
@@ -375,6 +384,12 @@ class AgentDaemon {
 		record.unsubscribe?.();
 		await record.runtime.dispose();
 		this.sessions.delete(record.activeSessionId);
+		if (reason === "killed") {
+			const sessionFile = record.runtime.session.sessionFile;
+			if (sessionFile) {
+				this.inactiveSessionStatuses.set(resolve(sessionFile), "killed");
+			}
+		}
 		this.broadcastToRecord(record, { type: "session_closed", activeSessionId: record.activeSessionId, reason });
 		for (const client of record.clients) {
 			client.attachedActiveSessionIds.delete(record.activeSessionId);

@@ -9,6 +9,7 @@ import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { ActiveSessionState, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
+import type { DaemonSessionListEntry } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
@@ -24,7 +25,6 @@ const DAEMON_CLIENT_COMMANDS = new Set([
 	"help",
 	"start",
 	"list",
-	"list-saved",
 	"create",
 	"attach",
 	"detach",
@@ -157,10 +157,7 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 	try {
 		switch (parsed.command) {
 			case "list":
-				await runList(client, parsed.json);
-				return;
-			case "list-saved":
-				await printResponseData(client, { type: "list_saved" }, parsed.json);
+				await runList(client, parsed.positionals, parsed.json);
 				return;
 			case "create":
 				await runCreate(client, parsed.positionals, parsed.json);
@@ -542,7 +539,7 @@ function resolvePathOption(value: string, cwd: string): string {
 	return isLocalPath(expanded) ? resolve(cwd, expanded) : expanded;
 }
 
-async function getLiveSessions(client: DaemonClient): Promise<ActiveSessionState[]> {
+async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionListEntry[]> {
 	const response = await client.request({ type: "list" });
 	const data = requireSuccess(response);
 	if (!isSessionListData(data)) {
@@ -551,7 +548,7 @@ async function getLiveSessions(client: DaemonClient): Promise<ActiveSessionState
 	return data.sessions;
 }
 
-function nextDefaultSessionName(sessions: ActiveSessionState[]): string {
+function nextDefaultSessionName(sessions: DaemonSessionListEntry[]): string {
 	const existingNames = new Set(
 		sessions.map((session) => session.sessionName).filter((name): name is string => !!name),
 	);
@@ -623,8 +620,9 @@ async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promis
 	}
 }
 
-async function runList(client: DaemonClient, json: boolean): Promise<void> {
-	const response = await client.request({ type: "list" });
+async function runList(client: DaemonClient, args: string[], json: boolean): Promise<void> {
+	const { all } = parseListArgs(args);
+	const response = await client.request({ type: "list", all });
 	const data = requireSuccess(response);
 	if (json) {
 		printJson(data);
@@ -637,23 +635,35 @@ async function runList(client: DaemonClient, json: boolean): Promise<void> {
 	}
 
 	if (data.sessions.length === 0) {
-		console.log("No active sessions.");
+		console.log(all ? "No sessions." : "No active sessions.");
 		return;
 	}
 
 	const rows = data.sessions.map((session) => ({
 		name: session.sessionName ?? "",
-		id: session.activeSessionId,
+		id: session.id,
+		status: session.status,
 		model: formatSessionModel(session.model),
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
-		streaming: session.isStreaming ? "yes" : "no",
 		cwd: session.cwd,
 	}));
-	printTable(["name", "id", "model", "messages", "clients", "streaming", "cwd"], rows);
+	printTable(["name", "id", "status", "model", "messages", "clients", "cwd"], rows);
 }
 
-function formatSessionModel(model: ActiveSessionState["model"]): string {
+function parseListArgs(args: string[]): { all: boolean } {
+	let all = false;
+	for (const arg of args) {
+		if (arg === "-a" || arg === "--all") {
+			all = true;
+			continue;
+		}
+		throw new Error(`Unknown list option: ${arg}`);
+	}
+	return { all };
+}
+
+function formatSessionModel(model: ActiveSessionState["model"] | DaemonSessionListEntry["model"]): string {
 	return model ? `${model.provider}/${model.id}` : "";
 }
 
@@ -1146,12 +1156,30 @@ function printTable<T extends Record<string, string>>(columns: Array<keyof T>, r
 	}
 }
 
-function isSessionListData(value: unknown): value is { sessions: ActiveSessionState[] } {
+function isSessionListData(value: unknown): value is { sessions: DaemonSessionListEntry[] } {
 	if (!value || typeof value !== "object") {
 		return false;
 	}
 	const sessions = (value as { sessions?: unknown }).sessions;
-	return Array.isArray(sessions) && sessions.every(isActiveSessionState);
+	return Array.isArray(sessions) && sessions.every(isDaemonSessionListEntry);
+}
+
+function isDaemonSessionListEntry(value: unknown): value is DaemonSessionListEntry {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const candidate = value as Partial<DaemonSessionListEntry>;
+	return (
+		typeof candidate.id === "string" &&
+		typeof candidate.sessionId === "string" &&
+		typeof candidate.cwd === "string" &&
+		typeof candidate.status === "string" &&
+		typeof candidate.isStreaming === "boolean" &&
+		typeof candidate.isCompacting === "boolean" &&
+		typeof candidate.attachedClients === "number" &&
+		typeof candidate.messageCount === "number" &&
+		typeof candidate.pendingMessageCount === "number"
+	);
 }
 
 function isActiveSessionState(value: unknown): value is ActiveSessionState {
@@ -1182,8 +1210,7 @@ function printDaemonHelp(): void {
 ${chalk.bold("Commands:")}
   help                          Show daemon help
   start                         Start the background daemon and return
-  list                          List active sessions
-  list-saved                    List saved sessions for the current project
+  list [-a|--all]               List active sessions; include inactive sessions with -a
   create [name]                 Create a new active session
   attach <session>              Attach an interactive terminal to a live session
   detach [session]              Detach this client from one session or all sessions
@@ -1215,6 +1242,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} daemon start --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini
   ${APP_NAME} daemon start --foreground --socket /tmp/prime-agent.sock --offline
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock list
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock list -a
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock create scratch
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock prompt <session> "Say hello"
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock attach <session>

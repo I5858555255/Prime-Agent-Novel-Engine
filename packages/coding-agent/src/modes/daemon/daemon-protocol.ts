@@ -28,8 +28,7 @@ export interface ActiveSessionState {
 }
 
 export type DaemonCommand =
-	| { id?: string; type: "list" }
-	| { id?: string; type: "list_saved"; cwd?: string; sessionDir?: string }
+	| { id?: string; type: "list"; all?: boolean; cwd?: string; sessionDir?: string }
 	| {
 			id?: string;
 			type: "create";

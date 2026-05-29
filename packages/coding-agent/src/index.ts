@@ -257,6 +257,8 @@ export {
 	type DaemonModeOptions,
 	type DaemonOutbound,
 	type DaemonResponse,
+	type DaemonSessionListEntry,
+	type DaemonSessionStatus,
 	defaultDaemonSocketPath,
 	InteractiveMode,
 	type InteractiveModeOptions,
