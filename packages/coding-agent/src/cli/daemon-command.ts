@@ -9,7 +9,7 @@ import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { ActiveSessionState, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
-import type { DaemonSessionListEntry } from "../modes/daemon/daemon-session-list.js";
+import { type DaemonSessionListEntry, entryForActiveSessionState } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
@@ -542,10 +542,11 @@ function resolvePathOption(value: string, cwd: string): string {
 async function getLiveSessions(client: DaemonClient): Promise<DaemonSessionListEntry[]> {
 	const response = await client.request({ type: "list" });
 	const data = requireSuccess(response);
-	if (!isSessionListData(data)) {
+	const sessions = getSessionListEntries(data);
+	if (!sessions) {
 		throw new Error("Daemon returned an invalid list response");
 	}
-	return data.sessions;
+	return sessions;
 }
 
 function nextDefaultSessionName(sessions: DaemonSessionListEntry[]): string {
@@ -629,17 +630,18 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		return;
 	}
 
-	if (!isSessionListData(data)) {
+	const sessions = getSessionListEntries(data);
+	if (!sessions) {
 		printJson(data);
 		return;
 	}
 
-	if (data.sessions.length === 0) {
+	if (sessions.length === 0) {
 		console.log(all ? "No sessions." : "No active sessions.");
 		return;
 	}
 
-	const rows = data.sessions.map((session) => ({
+	const rows = sessions.map((session) => ({
 		name: session.sessionName ?? "",
 		id: session.id,
 		status: session.status,
@@ -1156,12 +1158,28 @@ function printTable<T extends Record<string, string>>(columns: Array<keyof T>, r
 	}
 }
 
-function isSessionListData(value: unknown): value is { sessions: DaemonSessionListEntry[] } {
+function getSessionListEntries(value: unknown): DaemonSessionListEntry[] | undefined {
 	if (!value || typeof value !== "object") {
-		return false;
+		return undefined;
 	}
 	const sessions = (value as { sessions?: unknown }).sessions;
-	return Array.isArray(sessions) && sessions.every(isDaemonSessionListEntry);
+	if (!Array.isArray(sessions)) {
+		return undefined;
+	}
+
+	const entries: DaemonSessionListEntry[] = [];
+	for (const session of sessions) {
+		if (isDaemonSessionListEntry(session)) {
+			entries.push(session);
+			continue;
+		}
+		if (isActiveSessionState(session)) {
+			entries.push(entryForActiveSessionState(session));
+			continue;
+		}
+		return undefined;
+	}
+	return entries;
 }
 
 function isDaemonSessionListEntry(value: unknown): value is DaemonSessionListEntry {

@@ -223,8 +223,13 @@ class AgentDaemon {
 				if (!defaultConfig.cwd) {
 					throw new Error("Active session config is missing cwd");
 				}
-				const cwd = resolve(command.cwd ?? defaultConfig.cwd);
-				const savedSessions = await SessionManager.list(cwd, command.sessionDir ?? defaultConfig.sessionDir);
+				const savedSessions =
+					command.cwd || command.sessionDir || defaultConfig.sessionDir
+						? await SessionManager.list(
+								resolve(command.cwd ?? defaultConfig.cwd),
+								command.sessionDir ?? defaultConfig.sessionDir,
+							)
+						: await SessionManager.listAll();
 				return success(command.id, "list", {
 					sessions: buildDaemonSessionList(activeRecords, savedSessions, this.inactiveSessionStatuses),
 				});
