@@ -649,18 +649,19 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		name: session.sessionName ?? "",
 		id: session.id,
 		status: session.status,
+		age: formatSessionAge(session.modified),
 		model: formatSessionModel(session.model),
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
 	}));
-	printTable(["name", "id", "status", "model", "messages", "clients"], rows, colorListRow);
+	printTable(["name", "id", "status", "age", "model", "messages", "clients"], rows, colorListRow);
 }
 
 const LIST_STATUS_ORDER: Record<DaemonSessionStatus, number> = {
 	user: 0,
 	idle: 1,
-	"tool calling": 2,
-	"model calling": 3,
+	tool: 2,
+	model: 3,
 	killed: 4,
 	crashed: 5,
 };
@@ -669,6 +670,7 @@ type ListRow = {
 	name: string;
 	id: string;
 	status: DaemonSessionStatus;
+	age: string;
 	model: string;
 	messages: string;
 	clients: string;
@@ -686,8 +688,8 @@ function sortSessionsForList(sessions: readonly DaemonSessionListEntry[]): Daemo
 
 function colorListRow(row: ListRow, line: string): string {
 	switch (row.status) {
-		case "tool calling":
-		case "model calling":
+		case "tool":
+		case "model":
 			return chalk.red(line);
 		case "user":
 		case "idle":
@@ -696,6 +698,37 @@ function colorListRow(row: ListRow, line: string): string {
 		case "crashed":
 			return chalk.dim(line);
 	}
+}
+
+function formatSessionAge(modified: string | undefined): string {
+	if (!modified) {
+		return "";
+	}
+	const modifiedMs = new Date(modified).getTime();
+	if (Number.isNaN(modifiedMs)) {
+		return "";
+	}
+	const ageSeconds = Math.max(0, Math.floor((Date.now() - modifiedMs) / 1000));
+	if (ageSeconds < 60) {
+		return `${ageSeconds}s`;
+	}
+	const ageMinutes = Math.floor(ageSeconds / 60);
+	if (ageMinutes < 60) {
+		return `${ageMinutes}m`;
+	}
+	const ageHours = Math.floor(ageMinutes / 60);
+	if (ageHours < 24) {
+		return `${ageHours}h`;
+	}
+	const ageDays = Math.floor(ageHours / 24);
+	if (ageDays < 7) {
+		return `${ageDays}d`;
+	}
+	const ageWeeks = Math.floor(ageDays / 7);
+	if (ageWeeks < 52) {
+		return `${ageWeeks}w`;
+	}
+	return `${Math.floor(ageWeeks / 52)}y`;
 }
 
 function parseListArgs(args: string[]): { all: boolean } {

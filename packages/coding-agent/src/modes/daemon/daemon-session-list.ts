@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -5,7 +6,7 @@ import type { SessionInfo } from "../../core/session-manager.js";
 import type { ActiveSessionRecord } from "./active-session-record.js";
 import type { ActiveSessionState } from "./daemon-protocol.js";
 
-export type DaemonSessionStatus = "user" | "idle" | "tool calling" | "model calling" | "killed" | "crashed";
+export type DaemonSessionStatus = "user" | "idle" | "tool" | "model" | "killed" | "crashed";
 
 export interface DaemonSessionListEntry {
 	id: string;
@@ -85,7 +86,7 @@ export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?:
 		pendingMessageCount: session.pendingMessageCount,
 		streamingMessage: session.state.streamingMessage,
 		created: savedSession?.created.toISOString(),
-		modified: savedSession?.modified.toISOString(),
+		modified: savedSession?.modified.toISOString() ?? getSessionFileModifiedIso(session.sessionFile),
 		firstMessage: savedSession?.firstMessage,
 		parentSessionPath: savedSession?.parentSessionPath,
 	};
@@ -137,14 +138,25 @@ export function entryForActiveSessionState(state: ActiveSessionState): DaemonSes
 function activeStatusForRecord(record: ActiveSessionRecord): DaemonSessionStatus {
 	const session = record.runtime.session;
 	if (session.isStreaming) {
-		return session.state.pendingToolCalls.size > 0 ? "tool calling" : "model calling";
+		return session.state.pendingToolCalls.size > 0 ? "tool" : "model";
 	}
 	return record.clients.size > 0 ? "user" : "idle";
 }
 
 function activeStatusForState(state: ActiveSessionState): DaemonSessionStatus {
 	if (state.isStreaming) {
-		return "model calling";
+		return "model";
 	}
 	return state.attachedClients > 0 ? "user" : "idle";
+}
+
+function getSessionFileModifiedIso(sessionFile: string | undefined): string | undefined {
+	if (!sessionFile) {
+		return undefined;
+	}
+	try {
+		return statSync(sessionFile).mtime.toISOString();
+	} catch {
+		return undefined;
+	}
 }

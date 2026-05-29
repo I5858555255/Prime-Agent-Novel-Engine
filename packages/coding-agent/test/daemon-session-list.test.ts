@@ -25,8 +25,8 @@ describe("buildDaemonSessionList", () => {
 		);
 
 		expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
-			["model", "model calling"],
-			["tool", "tool calling"],
+			["model", "model"],
+			["tool", "tool"],
 			["needs-user", "user"],
 			["done", "idle"],
 		]);
