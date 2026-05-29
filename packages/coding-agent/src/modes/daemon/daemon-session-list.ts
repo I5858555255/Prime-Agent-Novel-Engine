@@ -5,7 +5,7 @@ import type { SessionInfo } from "../../core/session-manager.js";
 import type { ActiveSessionRecord } from "./active-session-record.js";
 import type { ActiveSessionState } from "./daemon-protocol.js";
 
-export type DaemonSessionStatus = "model calling" | "tool calling" | "needs user" | "done" | "crashed" | "killed";
+export type DaemonSessionStatus = "user" | "idle" | "tool calling" | "model calling" | "killed" | "crashed";
 
 export interface DaemonSessionListEntry {
 	id: string;
@@ -139,12 +139,12 @@ function activeStatusForRecord(record: ActiveSessionRecord): DaemonSessionStatus
 	if (session.isStreaming) {
 		return session.state.pendingToolCalls.size > 0 ? "tool calling" : "model calling";
 	}
-	return record.clients.size > 0 ? "needs user" : "done";
+	return record.clients.size > 0 ? "user" : "idle";
 }
 
 function activeStatusForState(state: ActiveSessionState): DaemonSessionStatus {
 	if (state.isStreaming) {
 		return "model calling";
 	}
-	return state.attachedClients > 0 ? "needs user" : "done";
+	return state.attachedClients > 0 ? "user" : "idle";
 }

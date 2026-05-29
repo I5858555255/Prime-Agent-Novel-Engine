@@ -27,8 +27,8 @@ describe("buildDaemonSessionList", () => {
 		expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
 			["model", "model calling"],
 			["tool", "tool calling"],
-			["needs-user", "needs user"],
-			["done", "done"],
+			["needs-user", "user"],
+			["done", "idle"],
 		]);
 	});
 
@@ -49,7 +49,7 @@ describe("buildDaemonSessionList", () => {
 
 		expect(entries).toHaveLength(3);
 		expect(entries.map((entry) => [entry.id, entry.sessionId, entry.status])).toEqual([
-			["active-1", "saved-active", "done"],
+			["active-1", "saved-active", "idle"],
 			["saved-killed", "saved-killed", "killed"],
 			["saved-crashed", "saved-crashed", "crashed"],
 		]);
@@ -73,7 +73,7 @@ describe("buildDaemonSessionList", () => {
 
 		expect(entry).toMatchObject({
 			id: "active-1",
-			status: "needs user",
+			status: "user",
 			activeSessionId: "active-1",
 			sessionId: "session-1",
 			sessionName: "one",

@@ -9,7 +9,11 @@ import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { ActiveSessionState, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
-import { type DaemonSessionListEntry, entryForActiveSessionState } from "../modes/daemon/daemon-session-list.js";
+import {
+	type DaemonSessionListEntry,
+	type DaemonSessionStatus,
+	entryForActiveSessionState,
+} from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
@@ -641,7 +645,7 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		return;
 	}
 
-	const rows = sessions.map((session) => ({
+	const rows = sortSessionsForList(sessions).map((session) => ({
 		name: session.sessionName ?? "",
 		id: session.id,
 		status: session.status,
@@ -650,7 +654,50 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		clients: String(session.attachedClients),
 		cwd: session.cwd,
 	}));
-	printTable(["name", "id", "status", "model", "messages", "clients", "cwd"], rows);
+	printTable(["name", "id", "status", "model", "messages", "clients", "cwd"], rows, colorListRow);
+}
+
+const LIST_STATUS_ORDER: Record<DaemonSessionStatus, number> = {
+	user: 0,
+	idle: 1,
+	"tool calling": 2,
+	"model calling": 3,
+	killed: 4,
+	crashed: 5,
+};
+
+type ListRow = {
+	name: string;
+	id: string;
+	status: DaemonSessionStatus;
+	model: string;
+	messages: string;
+	clients: string;
+	cwd: string;
+};
+
+function sortSessionsForList(sessions: readonly DaemonSessionListEntry[]): DaemonSessionListEntry[] {
+	return sessions
+		.map((session, index) => ({ session, index }))
+		.sort((left, right) => {
+			const statusDelta = LIST_STATUS_ORDER[left.session.status] - LIST_STATUS_ORDER[right.session.status];
+			return statusDelta || left.index - right.index;
+		})
+		.map(({ session }) => session);
+}
+
+function colorListRow(row: ListRow, line: string): string {
+	switch (row.status) {
+		case "tool calling":
+		case "model calling":
+			return chalk.red(line);
+		case "user":
+		case "idle":
+			return chalk.blue(line);
+		case "killed":
+		case "crashed":
+			return chalk.dim(line);
+	}
 }
 
 function parseListArgs(args: string[]): { all: boolean } {
@@ -1148,13 +1195,18 @@ function indent(text: string): string {
 		.join("\n");
 }
 
-function printTable<T extends Record<string, string>>(columns: Array<keyof T>, rows: T[]): void {
+function printTable<T extends Record<string, string>>(
+	columns: Array<keyof T>,
+	rows: T[],
+	colorRow?: (row: T, line: string) => string,
+): void {
 	const widths = columns.map((column) =>
 		Math.max(String(column).length, ...rows.map((row) => String(row[column]).length)),
 	);
 	console.log(columns.map((column, index) => String(column).padEnd(widths[index])).join("  "));
 	for (const row of rows) {
-		console.log(columns.map((column, index) => String(row[column]).padEnd(widths[index])).join("  "));
+		const line = columns.map((column, index) => String(row[column]).padEnd(widths[index])).join("  ");
+		console.log(colorRow ? colorRow(row, line) : line);
 	}
 }
 
