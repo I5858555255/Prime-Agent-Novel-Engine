@@ -314,7 +314,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --tools bash -p "Run the project checks"
 
   # Export a session file to HTML
-  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/--path--/session.jsonl
+  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
 
   # Start and control active sessions

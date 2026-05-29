@@ -471,11 +471,10 @@ export function buildSessionContext(
 
 /**
  * Compute the default session directory for a cwd.
- * Encodes cwd into a safe directory name under the configured session root.
+ * Returns the configured session root.
  */
-export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
-	const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-	const sessionDir = join(getSessionsDir(agentDir), safePath);
+export function getDefaultSessionDir(_cwd: string, agentDir: string = getDefaultAgentDir()): string {
+	const sessionDir = getSessionsDir(agentDir);
 	if (!existsSync(sessionDir)) {
 		mkdirSync(sessionDir, { recursive: true });
 	}
@@ -533,6 +532,41 @@ export function findMostRecentSession(sessionDir: string): string | null {
 			.filter((f) => f.endsWith(".jsonl"))
 			.map((f) => join(sessionDir, f))
 			.filter(isValidSessionFile)
+			.map((path) => ({ path, mtime: statSync(path).mtime }))
+			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+		return files[0]?.path || null;
+	} catch {
+		return null;
+	}
+}
+
+function normalizeCwd(cwd: string): string {
+	return resolve(cwd);
+}
+
+function sessionInfoMatchesCwd(session: SessionInfo, cwd: string): boolean {
+	return !!session.cwd && normalizeCwd(session.cwd) === normalizeCwd(cwd);
+}
+
+function sessionFileMatchesCwd(filePath: string, cwd: string): boolean {
+	try {
+		const firstLine = readFileSync(filePath, "utf8").split("\n")[0];
+		if (!firstLine) return false;
+		const header = JSON.parse(firstLine) as Partial<SessionHeader>;
+		return typeof header.cwd === "string" && normalizeCwd(header.cwd) === normalizeCwd(cwd);
+	} catch {
+		return false;
+	}
+}
+
+export function findMostRecentSessionForCwd(sessionDir: string, cwd: string): string | null {
+	try {
+		const files = readdirSync(sessionDir)
+			.filter((f) => f.endsWith(".jsonl"))
+			.map((f) => join(sessionDir, f))
+			.filter(isValidSessionFile)
+			.filter((path) => sessionFileMatchesCwd(path, cwd))
 			.map((path) => ({ path, mtime: statSync(path).mtime }))
 			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
@@ -1372,7 +1406,7 @@ export class SessionManager {
 	/**
 	 * Create a new session.
 	 * @param cwd Working directory (stored in session header)
-	 * @param sessionDir Optional session directory. If omitted, uses default (<session-root>/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses the configured session root.
 	 */
 	static create(cwd: string, sessionDir?: string): SessionManager {
 		const dir = sessionDir ?? getDefaultSessionDir(cwd);
@@ -1398,11 +1432,11 @@ export class SessionManager {
 	/**
 	 * Continue the most recent session, or create new if none.
 	 * @param cwd Working directory
-	 * @param sessionDir Optional session directory. If omitted, uses default (<session-root>/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses the configured session root.
 	 */
 	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
 		const dir = sessionDir ?? getDefaultSessionDir(cwd);
-		const mostRecent = findMostRecentSession(dir);
+		const mostRecent = findMostRecentSessionForCwd(dir, cwd);
 		if (mostRecent) {
 			return new SessionManager(cwd, dir, mostRecent, true);
 		}
@@ -1467,12 +1501,14 @@ export class SessionManager {
 	/**
 	 * List all sessions for a directory.
 	 * @param cwd Working directory (used to compute default session directory)
-	 * @param sessionDir Optional session directory. If omitted, uses default (<session-root>/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses the configured session root.
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
 	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
 		const dir = sessionDir ?? getDefaultSessionDir(cwd);
-		const sessions = await listSessionsFromDir(dir, onProgress);
+		const sessions = (await listSessionsFromDir(dir, onProgress)).filter((session) =>
+			sessionInfoMatchesCwd(session, cwd),
+		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;
 	}
@@ -1483,51 +1519,8 @@ export class SessionManager {
 	 */
 	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]> {
 		const sessionsDir = getSessionsDir();
-
-		try {
-			if (!existsSync(sessionsDir)) {
-				return [];
-			}
-			const entries = await readdir(sessionsDir, { withFileTypes: true });
-			const dirs = entries.filter((e) => e.isDirectory()).map((e) => join(sessionsDir, e.name));
-
-			// Count total files first for accurate progress
-			let totalFiles = 0;
-			const dirFiles: string[][] = [];
-			for (const dir of dirs) {
-				try {
-					const files = (await readdir(dir)).filter((f) => f.endsWith(".jsonl"));
-					dirFiles.push(files.map((f) => join(dir, f)));
-					totalFiles += files.length;
-				} catch {
-					dirFiles.push([]);
-				}
-			}
-
-			// Process all files with progress tracking
-			let loaded = 0;
-			const sessions: SessionInfo[] = [];
-			const allFiles = dirFiles.flat();
-
-			const results = await Promise.all(
-				allFiles.map(async (file) => {
-					const info = await buildSessionInfo(file);
-					loaded++;
-					onProgress?.(loaded, totalFiles);
-					return info;
-				}),
-			);
-
-			for (const info of results) {
-				if (info) {
-					sessions.push(info);
-				}
-			}
-
-			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
-			return sessions;
-		} catch {
-			return [];
-		}
+		const sessions = await listSessionsFromDir(sessionsDir, onProgress);
+		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+		return sessions;
 	}
 }

@@ -384,6 +384,10 @@ describe("detectInstallMethod", () => {
 });
 
 describe("session paths", () => {
+	test("uses the short app-prefixed session dir env var", () => {
+		expect(ENV_SESSION_DIR).toBe("PRIME_AGENT_SESSION_DIR");
+	});
+
 	test("uses the session root env var when computing sessions dir", () => {
 		const sessionRoot = join(tmpdir(), `pi-session-root-${Date.now()}`);
 		process.env[ENV_SESSION_DIR] = sessionRoot;
@@ -397,15 +401,14 @@ describe("session paths", () => {
 		expect(getSessionsDir("/agent")).toBe(join(homedir(), "prime-agent-sessions"));
 	});
 
-	test("nests default session dirs under the env session root", () => {
+	test("uses the env session root as the default session dir", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "pi-session-root-"));
 		const cwd = join(tempDir, "project");
 		const sessionRoot = join(tempDir, "sessions-root");
 		process.env[ENV_SESSION_DIR] = sessionRoot;
 
 		const sessionDir = getDefaultSessionDir(cwd, join(tempDir, "agent"));
-		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 
-		expect(sessionDir).toBe(join(sessionRoot, safePath));
+		expect(sessionDir).toBe(sessionRoot);
 	});
 });
