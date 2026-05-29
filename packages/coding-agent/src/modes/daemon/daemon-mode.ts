@@ -30,7 +30,7 @@ import {
 	failure,
 	success,
 } from "./daemon-protocol.js";
-import { buildSessionList, type InactiveSessionStatus, summaryForActiveSession } from "./daemon-session-list.js";
+import { buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
 import { cleanupDaemonSocketPath, defaultDaemonSocketPath, prepareDaemonSocketPath } from "./daemon-socket.js";
 
 export type { DaemonCommand, DaemonModeOptions, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
@@ -54,7 +54,7 @@ class AgentDaemon {
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
-	private readonly inactiveSessionStatuses = new Map<string, InactiveSessionStatus>();
+	private readonly crashedSessionFiles = new Set<string>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 
 	constructor(
@@ -116,7 +116,7 @@ class AgentDaemon {
 		this.sessions.set(state.activeSessionId, state);
 		const sessionFile = state.runtime.session.sessionFile;
 		if (sessionFile) {
-			this.inactiveSessionStatuses.delete(resolve(sessionFile));
+			this.crashedSessionFiles.delete(resolve(sessionFile));
 		}
 		if (name) {
 			state.runtime.session.setSessionName(name);
@@ -204,7 +204,7 @@ class AgentDaemon {
 				const activeSessions = Array.from(this.sessions.values());
 				if (!command.all) {
 					return success(command.id, "list", {
-						sessions: buildSessionList(activeSessions, [], this.inactiveSessionStatuses),
+						sessions: buildSessionList(activeSessions, [], this.crashedSessionFiles),
 					});
 				}
 				const defaultConfig = this.options.defaultSessionConfig;
@@ -219,7 +219,7 @@ class AgentDaemon {
 							)
 						: await SessionManager.listAll();
 				return success(command.id, "list", {
-					sessions: buildSessionList(activeSessions, savedSessions, this.inactiveSessionStatuses),
+					sessions: buildSessionList(activeSessions, savedSessions, this.crashedSessionFiles),
 				});
 			}
 
@@ -377,12 +377,6 @@ class AgentDaemon {
 		state.unsubscribe?.();
 		await state.runtime.dispose();
 		this.sessions.delete(state.activeSessionId);
-		if (reason === "killed") {
-			const sessionFile = state.runtime.session.sessionFile;
-			if (sessionFile) {
-				this.inactiveSessionStatuses.set(resolve(sessionFile), "killed");
-			}
-		}
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
 		for (const client of state.clients) {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);

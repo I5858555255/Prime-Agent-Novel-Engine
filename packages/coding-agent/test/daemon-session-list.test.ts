@@ -20,7 +20,7 @@ describe("buildSessionList", () => {
 				makeState({ activeSessionId: "done", sessionFile: "/tmp/done.jsonl" }),
 			],
 			[],
-			new Map(),
+			new Set(),
 		);
 
 		expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
@@ -33,24 +33,25 @@ describe("buildSessionList", () => {
 
 	it("merges active records with saved sessions and marks inactive sessions", () => {
 		const activePath = resolve("/tmp/project/active.jsonl");
-		const killedPath = resolve("/tmp/project/killed.jsonl");
+		const sleepingPath = resolve("/tmp/project/sleeping.jsonl");
+		const crashedPath = resolve("/tmp/project/crashed.jsonl");
 		const savedSessions = [
 			makeSessionInfo({ path: activePath, id: "saved-active", name: "active saved" }),
-			makeSessionInfo({ path: killedPath, id: "saved-killed", name: "killed saved" }),
-			makeSessionInfo({ path: resolve("/tmp/project/crashed.jsonl"), id: "saved-crashed" }),
+			makeSessionInfo({ path: sleepingPath, id: "saved-sleeping", name: "sleeping saved" }),
+			makeSessionInfo({ path: crashedPath, id: "saved-crashed" }),
 		];
 
 		const entries = buildSessionList(
 			[makeState({ activeSessionId: "active-1", sessionFile: activePath, sessionId: "saved-active" })],
 			savedSessions,
-			new Map([[killedPath, "killed"]]),
+			new Set([crashedPath]),
 		);
 
 		expect(entries).toHaveLength(3);
 		expect(entries.map((entry) => [entry.id, entry.sessionId, entry.status])).toEqual([
 			["active-1", "saved-active", "idle"],
-			["saved-killed", "saved-killed", "killed"],
-			["saved-crashed", "saved-crashed", "crashed"],
+			["saved-sleeping", "saved-sleeping", "sleep"],
+			["saved-crashed", "saved-crashed", "crash"],
 		]);
 		expect(entries[0]!.sessionName).toBe("session active-1");
 	});

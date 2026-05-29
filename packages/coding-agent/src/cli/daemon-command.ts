@@ -9,11 +9,11 @@ import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
-import { formatSessionDisplayId } from "../modes/daemon/daemon-session-id.js";
-import type { SessionStatus, SessionSummary } from "../modes/daemon/daemon-session-list.js";
+import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
+import { formatSessionListTable } from "./daemon-list-format.js";
 
 interface ParsedDaemonClientCommand {
 	command: string;
@@ -642,94 +642,7 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		return;
 	}
 
-	const rows = sortSessionsForList(sessions).map((session) => ({
-		name: session.sessionName ?? "",
-		id: formatSessionDisplayId(session.id),
-		status: session.status,
-		age: formatSessionAge(session.modified),
-		model: formatSessionModel(session.model),
-		messages: String(session.messageCount),
-		clients: String(session.attachedClients),
-	}));
-	printTable(["name", "id", "status", "age", "model", "messages", "clients"], rows, formatListCell);
-}
-
-const LIST_STATUS_ORDER: Record<SessionStatus, number> = {
-	user: 0,
-	idle: 1,
-	tool: 2,
-	model: 3,
-	killed: 4,
-	crashed: 5,
-};
-
-type ListRow = {
-	name: string;
-	id: string;
-	status: SessionStatus;
-	age: string;
-	model: string;
-	messages: string;
-	clients: string;
-};
-
-function sortSessionsForList(sessions: readonly SessionSummary[]): SessionSummary[] {
-	return sessions
-		.map((session, index) => ({ session, index }))
-		.sort((left, right) => {
-			const statusDelta = LIST_STATUS_ORDER[left.session.status] - LIST_STATUS_ORDER[right.session.status];
-			return statusDelta || left.index - right.index;
-		})
-		.map(({ session }) => session);
-}
-
-function formatListCell(row: ListRow, column: keyof ListRow, value: string): string {
-	if (column !== "status") {
-		return value;
-	}
-
-	switch (row.status) {
-		case "tool":
-		case "model":
-			return chalk.red(value);
-		case "user":
-		case "idle":
-			return chalk.blue(value);
-		case "killed":
-		case "crashed":
-			return chalk.dim(value);
-	}
-}
-
-function formatSessionAge(modified: string | undefined): string {
-	if (!modified) {
-		return "";
-	}
-	const modifiedMs = new Date(modified).getTime();
-	if (Number.isNaN(modifiedMs)) {
-		return "";
-	}
-	const ageSeconds = Math.max(0, Math.floor((Date.now() - modifiedMs) / 1000));
-	if (ageSeconds < 60) {
-		return `${ageSeconds}s`;
-	}
-	const ageMinutes = Math.floor(ageSeconds / 60);
-	if (ageMinutes < 60) {
-		return `${ageMinutes}m`;
-	}
-	const ageHours = Math.floor(ageMinutes / 60);
-	if (ageHours < 24) {
-		return `${ageHours}h`;
-	}
-	const ageDays = Math.floor(ageHours / 24);
-	if (ageDays < 7) {
-		return `${ageDays}d`;
-	}
-	const ageWeeks = Math.floor(ageDays / 7);
-	if (ageWeeks < 52) {
-		return `${ageWeeks}w`;
-	}
-	return `${Math.floor(ageWeeks / 52)}y`;
+	console.log(formatSessionListTable(sessions));
 }
 
 function parseListArgs(args: string[]): { all: boolean } {
@@ -742,10 +655,6 @@ function parseListArgs(args: string[]): { all: boolean } {
 		throw new Error(`Unknown list option: ${arg}`);
 	}
 	return { all };
-}
-
-function formatSessionModel(model: SessionSummary["model"]): string {
-	return model ? `${model.provider}/${model.id}` : "";
 }
 
 async function runCreate(client: DaemonClient, args: string[], json: boolean): Promise<void> {
@@ -1225,26 +1134,6 @@ function indent(text: string): string {
 		.split("\n")
 		.map((line) => `  ${line}`)
 		.join("\n");
-}
-
-function printTable<T extends Record<string, string>>(
-	columns: Array<keyof T>,
-	rows: T[],
-	formatCell?: (row: T, column: keyof T, value: string) => string,
-): void {
-	const widths = columns.map((column) =>
-		Math.max(String(column).length, ...rows.map((row) => String(row[column]).length)),
-	);
-	console.log(columns.map((column, index) => String(column).padEnd(widths[index])).join("  "));
-	for (const row of rows) {
-		const line = columns
-			.map((column, index) => {
-				const value = String(row[column]).padEnd(widths[index]);
-				return formatCell ? formatCell(row, column, value) : value;
-			})
-			.join("  ");
-		console.log(line);
-	}
 }
 
 function getSessionSummaries(value: unknown): SessionSummary[] | undefined {

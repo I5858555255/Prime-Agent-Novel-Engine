@@ -162,6 +162,31 @@ describe("DaemonClient", () => {
 		client.close();
 	});
 
+	it("serializes list commands with all sessions requested", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+
+		const connect = client.connect();
+		expect(netMock.sockets).toHaveLength(1);
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+
+		const response = client.request({ type: "list", all: true });
+		expect(socket.writes).toHaveLength(1);
+		const command = JSON.parse(socket.writes[0]!.trim()) as {
+			id?: string;
+			type?: string;
+			all?: boolean;
+		};
+
+		expect(command).toMatchObject({ type: "list", all: true });
+
+		socket.emit("data", `${JSON.stringify({ id: command.id, type: "response", command: "list", success: true })}\n`);
+		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
+
+		client.close();
+	});
+
 	it("serializes per-session config for create commands", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
 
