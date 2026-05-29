@@ -16,8 +16,8 @@ import { SessionManager } from "../../core/session-manager.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { RpcSlashCommand } from "../rpc/rpc-types.js";
-import { type ActiveSessionRecord, type DaemonSocketClient, stateForRecord } from "./active-session-record.js";
-import { bindActiveSessionRecord } from "./daemon-extension-binding.js";
+import type { ActiveSessionState, DaemonSocketClient } from "./active-session-state.js";
+import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
 	type DaemonCommand,
 	type DaemonModeOptions,
@@ -26,17 +26,11 @@ import {
 	failure,
 	success,
 } from "./daemon-protocol.js";
-import { buildSessionList, type InactiveSessionStatus } from "./daemon-session-list.js";
+import { buildSessionList, type InactiveSessionStatus, summaryForActiveSession } from "./daemon-session-list.js";
 import { cleanupDaemonSocketPath, defaultDaemonSocketPath, prepareDaemonSocketPath } from "./daemon-socket.js";
 
-export type {
-	ActiveSessionState,
-	DaemonCommand,
-	DaemonModeOptions,
-	DaemonOutbound,
-	DaemonResponse,
-} from "./daemon-protocol.js";
-export type { SessionListEntry, SessionStatus } from "./daemon-session-list.js";
+export type { DaemonCommand, DaemonModeOptions, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
+export type { SessionStatus, SessionSummary } from "./daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
 export async function runDaemonMode(initialRuntime: AgentSessionRuntime, options: DaemonModeOptions): Promise<never> {
@@ -55,7 +49,7 @@ class AgentDaemon {
 	private shuttingDown = false;
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
-	private readonly sessions = new Map<string, ActiveSessionRecord>();
+	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly inactiveSessionStatuses = new Map<string, InactiveSessionStatus>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 
@@ -103,30 +97,30 @@ class AgentDaemon {
 		cleanupDaemonSocketPath(this.socketPath);
 	}
 
-	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<ActiveSessionRecord> {
-		const record: ActiveSessionRecord = {
+	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<ActiveSessionState> {
+		const state: ActiveSessionState = {
 			activeSessionId: randomUUID().slice(0, 8),
 			runtime,
 			clients: new Set(),
 		};
-		await bindActiveSessionRecord(record, {
-			broadcast: (targetRecord, message) => this.broadcastToRecord(targetRecord, message),
+		await bindActiveSessionState(state, {
+			broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
 			shutdown: () => {
 				void this.shutdown(0);
 			},
 		});
-		this.sessions.set(record.activeSessionId, record);
-		const sessionFile = record.runtime.session.sessionFile;
+		this.sessions.set(state.activeSessionId, state);
+		const sessionFile = state.runtime.session.sessionFile;
 		if (sessionFile) {
 			this.inactiveSessionStatuses.delete(resolve(sessionFile));
 		}
 		if (name) {
-			record.runtime.session.setSessionName(name);
+			state.runtime.session.setSessionName(name);
 		}
-		return record;
+		return state;
 	}
 
-	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionRecord> {
+	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState> {
 		const config = mergeAgentSessionRuntimeConfig(this.options.defaultSessionConfig, command.config);
 		if (!config.cwd) {
 			throw new Error("Active session config is missing cwd");
@@ -151,15 +145,15 @@ class AgentDaemon {
 		return this.addRuntime(runtime, command.name);
 	}
 
-	private getRecord(id: string): ActiveSessionRecord {
+	private getSessionState(id: string): ActiveSessionState {
 		const direct = this.sessions.get(id);
 		if (direct) {
 			return direct;
 		}
-		for (const record of this.sessions.values()) {
-			const session = record.runtime.session;
+		for (const state of this.sessions.values()) {
+			const session = state.runtime.session;
 			if (session.sessionId === id || session.sessionName === id) {
-				return record;
+				return state;
 			}
 		}
 		throw new Error(`Unknown active session: ${id}`);
@@ -213,10 +207,10 @@ class AgentDaemon {
 	): Promise<DaemonResponse | undefined> {
 		switch (command.type) {
 			case "list": {
-				const activeRecords = Array.from(this.sessions.values());
+				const activeSessions = Array.from(this.sessions.values());
 				if (!command.all) {
 					return success(command.id, "list", {
-						sessions: buildSessionList(activeRecords, [], this.inactiveSessionStatuses),
+						sessions: buildSessionList(activeSessions, [], this.inactiveSessionStatuses),
 					});
 				}
 				const defaultConfig = this.options.defaultSessionConfig;
@@ -231,32 +225,32 @@ class AgentDaemon {
 							)
 						: await SessionManager.listAll();
 				return success(command.id, "list", {
-					sessions: buildSessionList(activeRecords, savedSessions, this.inactiveSessionStatuses),
+					sessions: buildSessionList(activeSessions, savedSessions, this.inactiveSessionStatuses),
 				});
 			}
 
 			case "create": {
-				const record = await this.createRuntime(command);
-				return success(command.id, "create", stateForRecord(record));
+				const state = await this.createRuntime(command);
+				return success(command.id, "create", summaryForActiveSession(state));
 			}
 
 			case "attach": {
-				const record = this.getRecord(command.activeSessionId);
-				record.clients.add(client);
-				client.attachedActiveSessionIds.add(record.activeSessionId);
+				const state = this.getSessionState(command.activeSessionId);
+				state.clients.add(client);
+				client.attachedActiveSessionIds.add(state.activeSessionId);
 				this.write(client, {
 					type: "session_attached",
-					activeSessionId: record.activeSessionId,
-					state: stateForRecord(record),
-					messages: record.runtime.session.messages,
+					activeSessionId: state.activeSessionId,
+					state: summaryForActiveSession(state),
+					messages: state.runtime.session.messages,
 				});
-				return success(command.id, "attach", stateForRecord(record));
+				return success(command.id, "attach", summaryForActiveSession(state));
 			}
 
 			case "detach": {
 				if (command.activeSessionId) {
-					const record = this.getRecord(command.activeSessionId);
-					this.detachClientFromRecord(client, record);
+					const state = this.getSessionState(command.activeSessionId);
+					this.detachClientFromSession(client, state);
 				} else {
 					this.detachClient(client);
 				}
@@ -264,25 +258,25 @@ class AgentDaemon {
 			}
 
 			case "kill": {
-				const record = this.getRecord(command.activeSessionId);
-				await this.killRecord(record, "killed");
+				const state = this.getSessionState(command.activeSessionId);
+				await this.killSession(state, "killed");
 				return success(command.id, "kill");
 			}
 
 			case "rename": {
-				const record = this.getRecord(command.activeSessionId);
+				const state = this.getSessionState(command.activeSessionId);
 				const name = command.name.trim();
 				if (!name) {
 					throw new Error("Session name cannot be empty");
 				}
-				record.runtime.session.setSessionName(name);
-				return success(command.id, "rename", stateForRecord(record));
+				state.runtime.session.setSessionName(name);
+				return success(command.id, "rename", summaryForActiveSession(state));
 			}
 
 			case "prompt": {
-				const record = this.getRecord(command.activeSessionId);
+				const state = this.getSessionState(command.activeSessionId);
 				let preflightSucceeded = false;
-				void record.runtime.session
+				void state.runtime.session
 					.prompt(command.message, {
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
@@ -296,7 +290,7 @@ class AgentDaemon {
 					})
 					.catch((error) => {
 						if (preflightSucceeded) {
-							this.broadcastToRecord(record, failure(command.id, "prompt", error));
+							this.broadcastToSession(state, failure(command.id, "prompt", error));
 						} else {
 							this.write(client, failure(command.id, "prompt", error));
 						}
@@ -305,42 +299,42 @@ class AgentDaemon {
 			}
 
 			case "steer": {
-				const record = this.getRecord(command.activeSessionId);
-				await record.runtime.session.steer(command.message, command.images);
+				const state = this.getSessionState(command.activeSessionId);
+				await state.runtime.session.steer(command.message, command.images);
 				return success(command.id, "steer");
 			}
 
 			case "follow_up": {
-				const record = this.getRecord(command.activeSessionId);
-				await record.runtime.session.followUp(command.message, command.images);
+				const state = this.getSessionState(command.activeSessionId);
+				await state.runtime.session.followUp(command.message, command.images);
 				return success(command.id, "follow_up");
 			}
 
 			case "abort": {
-				const record = this.getRecord(command.activeSessionId);
-				await record.runtime.session.abort();
+				const state = this.getSessionState(command.activeSessionId);
+				await state.runtime.session.abort();
 				return success(command.id, "abort");
 			}
 
 			case "get_state": {
-				const record = this.getRecord(command.activeSessionId);
-				return success(command.id, "get_state", stateForRecord(record));
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_state", summaryForActiveSession(state));
 			}
 
 			case "get_messages": {
-				const record = this.getRecord(command.activeSessionId);
-				return success(command.id, "get_messages", { messages: record.runtime.session.messages });
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_messages", { messages: state.runtime.session.messages });
 			}
 
 			case "get_session_stats": {
-				const record = this.getRecord(command.activeSessionId);
-				const stats: SessionStats = record.runtime.session.getSessionStats();
+				const state = this.getSessionState(command.activeSessionId);
+				const stats: SessionStats = state.runtime.session.getSessionStats();
 				return success(command.id, "get_session_stats", stats);
 			}
 
 			case "get_commands": {
-				const record = this.getRecord(command.activeSessionId);
-				const session = record.runtime.session;
+				const state = this.getSessionState(command.activeSessionId);
+				const session = state.runtime.session;
 				const commands: RpcSlashCommand[] = [
 					...session.extensionRunner.getRegisteredCommands().map((entry) => ({
 						name: entry.invocationName,
@@ -370,40 +364,40 @@ class AgentDaemon {
 		}
 	}
 
-	private detachClientFromRecord(client: DaemonSocketClient, record: ActiveSessionRecord): void {
-		record.clients.delete(client);
-		client.attachedActiveSessionIds.delete(record.activeSessionId);
-		this.write(client, { type: "session_detached", activeSessionId: record.activeSessionId });
+	private detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void {
+		state.clients.delete(client);
+		client.attachedActiveSessionIds.delete(state.activeSessionId);
+		this.write(client, { type: "session_detached", activeSessionId: state.activeSessionId });
 	}
 
 	private detachClient(client: DaemonSocketClient): void {
 		for (const activeSessionId of [...client.attachedActiveSessionIds]) {
-			const record = this.sessions.get(activeSessionId);
-			if (record) {
-				this.detachClientFromRecord(client, record);
+			const state = this.sessions.get(activeSessionId);
+			if (state) {
+				this.detachClientFromSession(client, state);
 			}
 		}
 	}
 
-	private async killRecord(record: ActiveSessionRecord, reason: "killed" | "shutdown"): Promise<void> {
-		record.unsubscribe?.();
-		await record.runtime.dispose();
-		this.sessions.delete(record.activeSessionId);
+	private async killSession(state: ActiveSessionState, reason: "killed" | "shutdown"): Promise<void> {
+		state.unsubscribe?.();
+		await state.runtime.dispose();
+		this.sessions.delete(state.activeSessionId);
 		if (reason === "killed") {
-			const sessionFile = record.runtime.session.sessionFile;
+			const sessionFile = state.runtime.session.sessionFile;
 			if (sessionFile) {
 				this.inactiveSessionStatuses.set(resolve(sessionFile), "killed");
 			}
 		}
-		this.broadcastToRecord(record, { type: "session_closed", activeSessionId: record.activeSessionId, reason });
-		for (const client of record.clients) {
-			client.attachedActiveSessionIds.delete(record.activeSessionId);
+		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
+		for (const client of state.clients) {
+			client.attachedActiveSessionIds.delete(state.activeSessionId);
 		}
-		record.clients.clear();
+		state.clients.clear();
 	}
 
-	private broadcastToRecord(record: ActiveSessionRecord, message: DaemonOutbound): void {
-		for (const client of record.clients) {
+	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
+		for (const client of state.clients) {
 			this.write(client, message);
 		}
 	}
@@ -442,8 +436,8 @@ class AgentDaemon {
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
 		}
-		for (const record of [...this.sessions.values()]) {
-			await this.killRecord(record, "shutdown");
+		for (const state of [...this.sessions.values()]) {
+			await this.killSession(state, "shutdown");
 		}
 		for (const client of this.clients) {
 			client.detachInput();

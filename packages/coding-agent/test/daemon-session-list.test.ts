@@ -2,22 +2,22 @@ import { resolve } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "../src/core/session-manager.js";
-import type { ActiveSessionRecord, DaemonSocketClient } from "../src/modes/daemon/active-session-record.js";
+import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import { buildSessionList } from "../src/modes/daemon/daemon-session-list.js";
 
 describe("buildSessionList", () => {
 	it("derives active session statuses", () => {
 		const entries = buildSessionList(
 			[
-				makeRecord({ activeSessionId: "model", sessionFile: "/tmp/model.jsonl", isStreaming: true }),
-				makeRecord({
+				makeState({ activeSessionId: "model", sessionFile: "/tmp/model.jsonl", isStreaming: true }),
+				makeState({
 					activeSessionId: "tool",
 					sessionFile: "/tmp/tool.jsonl",
 					isStreaming: true,
 					pendingToolCalls: ["tool-1"],
 				}),
-				makeRecord({ activeSessionId: "needs-user", sessionFile: "/tmp/needs-user.jsonl", clients: 1 }),
-				makeRecord({ activeSessionId: "done", sessionFile: "/tmp/done.jsonl" }),
+				makeState({ activeSessionId: "needs-user", sessionFile: "/tmp/needs-user.jsonl", clients: 1 }),
+				makeState({ activeSessionId: "done", sessionFile: "/tmp/done.jsonl" }),
 			],
 			[],
 			new Map(),
@@ -41,7 +41,7 @@ describe("buildSessionList", () => {
 		];
 
 		const entries = buildSessionList(
-			[makeRecord({ activeSessionId: "active-1", sessionFile: activePath, sessionId: "saved-active" })],
+			[makeState({ activeSessionId: "active-1", sessionFile: activePath, sessionId: "saved-active" })],
 			savedSessions,
 			new Map([[killedPath, "killed"]]),
 		);
@@ -56,7 +56,7 @@ describe("buildSessionList", () => {
 	});
 });
 
-interface RecordOptions {
+interface StateOptions {
 	activeSessionId: string;
 	sessionFile?: string;
 	sessionId?: string;
@@ -65,7 +65,7 @@ interface RecordOptions {
 	clients?: number;
 }
 
-function makeRecord(options: RecordOptions): ActiveSessionRecord {
+function makeState(options: StateOptions): ActiveSessionState {
 	const clients = new Set<DaemonSocketClient>();
 	for (let index = 0; index < (options.clients ?? 0); index++) {
 		clients.add({ id: `client-${index}` } as unknown as DaemonSocketClient);
@@ -94,7 +94,7 @@ function makeRecord(options: RecordOptions): ActiveSessionRecord {
 				},
 			},
 		},
-	} as unknown as ActiveSessionRecord;
+	} as unknown as ActiveSessionState;
 }
 
 function makeSessionInfo(overrides: { path: string; id: string; name?: string }): SessionInfo {

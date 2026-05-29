@@ -6,41 +6,41 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
-import type { ActiveSessionRecord } from "./active-session-record.js";
+import type { ActiveSessionState } from "./active-session-state.js";
 import type { DaemonOutbound } from "./daemon-protocol.js";
 
 export interface ActiveSessionBindingCallbacks {
-	broadcast: (record: ActiveSessionRecord, message: DaemonOutbound) => void;
+	broadcast: (state: ActiveSessionState, message: DaemonOutbound) => void;
 	shutdown: () => void;
 }
 
-export async function bindActiveSessionRecord(
-	record: ActiveSessionRecord,
+export async function bindActiveSessionState(
+	state: ActiveSessionState,
 	callbacks: ActiveSessionBindingCallbacks,
 ): Promise<void> {
-	const session = record.runtime.session;
+	const session = state.runtime.session;
 
-	record.unsubscribe?.();
-	record.unsubscribe = session.subscribe((event) => {
-		callbacks.broadcast(record, {
+	state.unsubscribe?.();
+	state.unsubscribe = session.subscribe((event) => {
+		callbacks.broadcast(state, {
 			type: "session_event",
-			activeSessionId: record.activeSessionId,
+			activeSessionId: state.activeSessionId,
 			event,
 		});
 	});
 
-	record.runtime.setRebindSession(async () => {
-		await bindActiveSessionRecord(record, callbacks);
+	state.runtime.setRebindSession(async () => {
+		await bindActiveSessionState(state, callbacks);
 	});
 
 	await session.bindExtensions({
-		uiContext: createExtensionUIContext(record, callbacks.broadcast),
-		commandContextActions: createCommandContextActions(record),
+		uiContext: createExtensionUIContext(state, callbacks.broadcast),
+		commandContextActions: createCommandContextActions(state),
 		shutdownHandler: callbacks.shutdown,
 		onError: (error) => {
-			callbacks.broadcast(record, {
+			callbacks.broadcast(state, {
 				type: "extension_error",
-				activeSessionId: record.activeSessionId,
+				activeSessionId: state.activeSessionId,
 				extensionPath: error.extensionPath,
 				event: error.event,
 				error: error.error,
@@ -49,16 +49,16 @@ export async function bindActiveSessionRecord(
 	});
 }
 
-function createCommandContextActions(record: ActiveSessionRecord): ExtensionCommandContextActions {
+function createCommandContextActions(state: ActiveSessionState): ExtensionCommandContextActions {
 	return {
-		waitForIdle: () => record.runtime.session.agent.waitForIdle(),
-		newSession: async (options) => record.runtime.newSession(options),
+		waitForIdle: () => state.runtime.session.agent.waitForIdle(),
+		newSession: async (options) => state.runtime.newSession(options),
 		fork: async (entryId, options) => {
-			const result = await record.runtime.fork(entryId, options);
+			const result = await state.runtime.fork(entryId, options);
 			return { cancelled: result.cancelled };
 		},
 		navigateTree: async (targetId, options) => {
-			const result = await record.runtime.session.navigateTree(targetId, {
+			const result = await state.runtime.session.navigateTree(targetId, {
 				summarize: options?.summarize,
 				customInstructions: options?.customInstructions,
 				replaceInstructions: options?.replaceInstructions,
@@ -66,21 +66,21 @@ function createCommandContextActions(record: ActiveSessionRecord): ExtensionComm
 			});
 			return { cancelled: result.cancelled };
 		},
-		switchSession: async (sessionPath, options) => record.runtime.switchSession(sessionPath, options),
+		switchSession: async (sessionPath, options) => state.runtime.switchSession(sessionPath, options),
 		reload: async () => {
-			await record.runtime.session.reload();
+			await state.runtime.session.reload();
 		},
 	};
 }
 
 function createExtensionUIContext(
-	record: ActiveSessionRecord,
+	state: ActiveSessionState,
 	broadcast: ActiveSessionBindingCallbacks["broadcast"],
 ): ExtensionUIContext {
 	const emitUiRequest = (method: string, payload: Record<string, unknown>): void => {
-		broadcast(record, {
+		broadcast(state, {
 			type: "extension_ui_request",
-			activeSessionId: record.activeSessionId,
+			activeSessionId: state.activeSessionId,
 			method,
 			payload,
 		});

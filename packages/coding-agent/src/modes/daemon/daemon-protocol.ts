@@ -1,30 +1,14 @@
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.js";
+import type { SessionSummary } from "./daemon-session-list.js";
 
 export interface DaemonModeOptions {
 	socketPath?: string;
 	defaultSessionConfig: AgentSessionRuntimeConfig;
 	createRuntime: CreateAgentSessionRuntimeFactory;
-}
-
-/** Active session projection returned by daemon list/create/rename/state/attach commands. */
-export interface ActiveSessionState {
-	activeSessionId: string;
-	model?: Model<Api>;
-	thinkingLevel: ThinkingLevel;
-	isStreaming: boolean;
-	isCompacting: boolean;
-	sessionId: string;
-	sessionFile?: string;
-	sessionName?: string;
-	cwd: string;
-	attachedClients: number;
-	messageCount: number;
-	pendingMessageCount: number;
-	streamingMessage?: AgentMessage;
 }
 
 export type DaemonCommand =
@@ -68,7 +52,7 @@ export type DaemonOutbound =
 	| DaemonResponse
 	| { type: "daemon_hello"; socketPath: string }
 	| { type: "session_event"; activeSessionId: string; event: AgentSessionEvent }
-	| { type: "session_attached"; activeSessionId: string; state: ActiveSessionState; messages: AgentMessage[] }
+	| { type: "session_attached"; activeSessionId: string; state: SessionSummary; messages: AgentMessage[] }
 	| { type: "session_detached"; activeSessionId: string }
 	| { type: "session_closed"; activeSessionId: string; reason: "killed" | "shutdown" }
 	| {

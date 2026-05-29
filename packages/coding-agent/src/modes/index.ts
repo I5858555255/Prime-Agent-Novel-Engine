@@ -4,14 +4,8 @@
 
 export { DaemonClient, type DaemonClientMessageListener } from "./daemon/daemon-client.js";
 export { runDaemonMode } from "./daemon/daemon-mode.js";
-export type {
-	ActiveSessionState,
-	DaemonCommand,
-	DaemonModeOptions,
-	DaemonOutbound,
-	DaemonResponse,
-} from "./daemon/daemon-protocol.js";
-export type { SessionListEntry, SessionStatus } from "./daemon/daemon-session-list.js";
+export type { DaemonCommand, DaemonModeOptions, DaemonOutbound, DaemonResponse } from "./daemon/daemon-protocol.js";
+export type { SessionStatus, SessionSummary } from "./daemon/daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon/daemon-socket.js";
 export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.js";
 export { type PrintModeOptions, runPrintMode } from "./print-mode.js";

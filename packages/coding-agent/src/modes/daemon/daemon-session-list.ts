@@ -3,11 +3,12 @@ import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { SessionInfo } from "../../core/session-manager.js";
-import type { ActiveSessionRecord } from "./active-session-record.js";
+import type { ActiveSessionState } from "./active-session-state.js";
 
 export type SessionStatus = "user" | "idle" | "tool" | "model" | "killed" | "crashed";
 
-export interface SessionListEntry {
+// Lightweight daemon session shape used by list, create, rename, attach, and state responses.
+export interface SessionSummary {
 	id: string;
 	status: SessionStatus;
 	activeSessionId?: string;
@@ -32,42 +33,42 @@ export interface SessionListEntry {
 export type InactiveSessionStatus = Extract<SessionStatus, "crashed" | "killed">;
 
 export function buildSessionList(
-	activeRecords: readonly ActiveSessionRecord[],
+	activeSessions: readonly ActiveSessionState[],
 	savedSessions: readonly SessionInfo[],
 	inactiveStatuses: ReadonlyMap<string, InactiveSessionStatus>,
-): SessionListEntry[] {
-	const activeBySessionFile = new Map<string, ActiveSessionRecord>();
+): SessionSummary[] {
+	const activeBySessionFile = new Map<string, ActiveSessionState>();
 
-	for (const record of activeRecords) {
-		const sessionFile = record.runtime.session.sessionFile;
+	for (const activeSession of activeSessions) {
+		const sessionFile = activeSession.runtime.session.sessionFile;
 		if (sessionFile) {
-			activeBySessionFile.set(resolve(sessionFile), record);
+			activeBySessionFile.set(resolve(sessionFile), activeSession);
 		}
 	}
 
-	const entries: SessionListEntry[] = [];
+	const entries: SessionSummary[] = [];
 	const seenActiveSessionIds = new Set<string>();
 	for (const savedSession of savedSessions) {
 		const sessionFile = resolve(savedSession.path);
-		const activeRecord = activeBySessionFile.get(sessionFile);
-		if (activeRecord) {
-			entries.push(activeEntryForRecord(activeRecord, savedSession));
-			seenActiveSessionIds.add(activeRecord.activeSessionId);
+		const activeSession = activeBySessionFile.get(sessionFile);
+		if (activeSession) {
+			entries.push(summaryForActiveSession(activeSession, savedSession));
+			seenActiveSessionIds.add(activeSession.activeSessionId);
 			continue;
 		}
-		entries.push(inactiveEntryForSession(savedSession, inactiveStatuses.get(sessionFile) ?? "crashed"));
+		entries.push(summaryForInactiveSession(savedSession, inactiveStatuses.get(sessionFile) ?? "crashed"));
 	}
 
-	for (const record of activeRecords) {
-		if (!seenActiveSessionIds.has(record.activeSessionId)) {
-			entries.push(activeEntryForRecord(record));
+	for (const activeSession of activeSessions) {
+		if (!seenActiveSessionIds.has(activeSession.activeSessionId)) {
+			entries.push(summaryForActiveSession(activeSession));
 		}
 	}
 	return entries;
 }
 
-export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?: SessionInfo): SessionListEntry {
-	const session = record.runtime.session;
+export function summaryForActiveSession(activeSession: ActiveSessionState, savedSession?: SessionInfo): SessionSummary {
+	const session = activeSession.runtime.session;
 	let modified = savedSession?.modified.toISOString();
 	if (!modified && session.sessionFile) {
 		try {
@@ -78,9 +79,9 @@ export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?:
 	}
 
 	return {
-		id: record.activeSessionId,
-		status: activeStatusForRecord(record),
-		activeSessionId: record.activeSessionId,
+		id: activeSession.activeSessionId,
+		status: activeStatusForSession(activeSession),
+		activeSessionId: activeSession.activeSessionId,
 		sessionId: session.sessionId,
 		sessionFile: session.sessionFile,
 		sessionName: session.sessionName,
@@ -89,7 +90,7 @@ export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?:
 		thinkingLevel: session.thinkingLevel,
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
-		attachedClients: record.clients.size,
+		attachedClients: activeSession.clients.size,
 		messageCount: session.messages.length,
 		pendingMessageCount: session.pendingMessageCount,
 		streamingMessage: session.state.streamingMessage,
@@ -100,7 +101,7 @@ export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?:
 	};
 }
 
-export function inactiveEntryForSession(session: SessionInfo, status: InactiveSessionStatus): SessionListEntry {
+export function summaryForInactiveSession(session: SessionInfo, status: InactiveSessionStatus): SessionSummary {
 	return {
 		id: session.id,
 		status,
@@ -120,10 +121,10 @@ export function inactiveEntryForSession(session: SessionInfo, status: InactiveSe
 	};
 }
 
-function activeStatusForRecord(record: ActiveSessionRecord): SessionStatus {
-	const session = record.runtime.session;
+function activeStatusForSession(activeSession: ActiveSessionState): SessionStatus {
+	const session = activeSession.runtime.session;
 	if (session.isStreaming) {
 		return session.state.pendingToolCalls.size > 0 ? "tool" : "model";
 	}
-	return record.clients.size > 0 ? "user" : "idle";
+	return activeSession.clients.size > 0 ? "user" : "idle";
 }

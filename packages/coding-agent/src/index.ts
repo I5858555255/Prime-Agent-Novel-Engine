@@ -250,7 +250,6 @@ export {
 export { type MainOptions, main } from "./main.js";
 // Run modes for programmatic SDK usage
 export {
-	type ActiveSessionState,
 	DaemonClient,
 	type DaemonClientMessageListener,
 	type DaemonCommand,
@@ -270,8 +269,8 @@ export {
 	type RpcSessionState,
 	runPrintMode,
 	runRpcMode,
-	type SessionListEntry,
 	type SessionStatus,
+	type SessionSummary,
 } from "./modes/index.js";
 // UI components for extensions
 export {
