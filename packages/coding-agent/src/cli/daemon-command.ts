@@ -9,6 +9,7 @@ import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
+import { formatSessionDisplayId } from "../modes/daemon/daemon-session-id.js";
 import type { SessionStatus, SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
@@ -643,7 +644,7 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 
 	const rows = sortSessionsForList(sessions).map((session) => ({
 		name: session.sessionName ?? "",
-		id: session.id,
+		id: formatSessionDisplayId(session.id),
 		status: session.status,
 		age: formatSessionAge(session.modified),
 		model: formatSessionModel(session.model),

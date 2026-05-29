@@ -6,7 +6,6 @@
  * disposing the underlying agent loop.
  */
 
-import { randomUUID } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { resolve } from "node:path";
 import type { SessionStats } from "../../core/agent-session.js";
@@ -16,7 +15,12 @@ import { SessionManager } from "../../core/session-manager.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { RpcSlashCommand } from "../rpc/rpc-types.js";
-import type { ActiveSessionState, DaemonSocketClient } from "./active-session-state.js";
+import {
+	type ActiveSessionState,
+	createActiveSessionId,
+	type DaemonSocketClient,
+	resolveActiveSessionState,
+} from "./active-session-state.js";
 import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
 	type DaemonCommand,
@@ -99,7 +103,7 @@ class AgentDaemon {
 
 	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
-			activeSessionId: randomUUID().slice(0, 8),
+			activeSessionId: createActiveSessionId(),
 			runtime,
 			clients: new Set(),
 		};
@@ -146,22 +150,12 @@ class AgentDaemon {
 	}
 
 	private getSessionState(id: string): ActiveSessionState {
-		const direct = this.sessions.get(id);
-		if (direct) {
-			return direct;
-		}
-		for (const state of this.sessions.values()) {
-			const session = state.runtime.session;
-			if (session.sessionId === id || session.sessionName === id) {
-				return state;
-			}
-		}
-		throw new Error(`Unknown active session: ${id}`);
+		return resolveActiveSessionState(this.sessions, id);
 	}
 
 	private handleConnection(socket: Socket): void {
 		const client: DaemonSocketClient = {
-			id: randomUUID().slice(0, 8),
+			id: createActiveSessionId(),
 			socket,
 			attachedActiveSessionIds: new Set(),
 			detachInput: () => {},

@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import { formatSessionDisplayId, matchesSessionIdPrefix } from "./daemon-session-id.js";
 
 export interface DaemonSocketClient {
 	id: string;
@@ -13,4 +15,67 @@ export interface ActiveSessionState {
 	runtime: AgentSessionRuntime;
 	clients: Set<DaemonSocketClient>;
 	unsubscribe?: () => void;
+}
+
+export function createActiveSessionId(): string {
+	return formatSessionDisplayId(randomUUID());
+}
+
+export function resolveActiveSessionState(
+	sessions: ReadonlyMap<string, ActiveSessionState>,
+	selector: string,
+): ActiveSessionState {
+	const direct = sessions.get(selector);
+	if (direct) {
+		return direct;
+	}
+
+	const exactMatches = uniqueStates(
+		[...sessions.values()].filter((state) => {
+			const session = state.runtime.session;
+			return session.sessionId === selector || session.sessionName === selector;
+		}),
+	);
+	if (exactMatches.length === 1) {
+		return exactMatches[0]!;
+	}
+	if (exactMatches.length > 1) {
+		throw new Error(formatAmbiguousSessionError(selector, exactMatches));
+	}
+
+	const prefixMatches = uniqueStates(
+		[...sessions.values()].filter((state) => {
+			const session = state.runtime.session;
+			return (
+				matchesSessionIdPrefix(state.activeSessionId, selector) ||
+				matchesSessionIdPrefix(session.sessionId, selector)
+			);
+		}),
+	);
+	if (prefixMatches.length === 1) {
+		return prefixMatches[0]!;
+	}
+	if (prefixMatches.length > 1) {
+		throw new Error(formatAmbiguousSessionError(selector, prefixMatches));
+	}
+
+	throw new Error(`Unknown active session: ${selector}`);
+}
+
+function uniqueStates(states: ActiveSessionState[]): ActiveSessionState[] {
+	const unique = new Map<string, ActiveSessionState>();
+	for (const state of states) {
+		unique.set(state.activeSessionId, state);
+	}
+	return [...unique.values()];
+}
+
+function formatAmbiguousSessionError(selector: string, states: readonly ActiveSessionState[]): string {
+	return `Ambiguous active session "${selector}": matches ${states.map(formatSessionMatch).join(", ")}`;
+}
+
+function formatSessionMatch(state: ActiveSessionState): string {
+	const session = state.runtime.session;
+	const name = session.sessionName ? ` (${session.sessionName})` : "";
+	return `${state.activeSessionId}/${session.sessionId}${name}`;
 }
