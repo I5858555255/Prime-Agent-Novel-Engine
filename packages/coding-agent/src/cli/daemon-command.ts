@@ -650,7 +650,7 @@ async function runList(client: DaemonClient, args: string[], json: boolean): Pro
 		messages: String(session.messageCount),
 		clients: String(session.attachedClients),
 	}));
-	printTable(["name", "id", "status", "age", "model", "messages", "clients"], rows, colorListRow);
+	printTable(["name", "id", "status", "age", "model", "messages", "clients"], rows, formatListCell);
 }
 
 const LIST_STATUS_ORDER: Record<SessionStatus, number> = {
@@ -682,17 +682,21 @@ function sortSessionsForList(sessions: readonly SessionSummary[]): SessionSummar
 		.map(({ session }) => session);
 }
 
-function colorListRow(row: ListRow, line: string): string {
+function formatListCell(row: ListRow, column: keyof ListRow, value: string): string {
+	if (column !== "status") {
+		return value;
+	}
+
 	switch (row.status) {
 		case "tool":
 		case "model":
-			return chalk.red(line);
+			return chalk.red(value);
 		case "user":
 		case "idle":
-			return chalk.blue(line);
+			return chalk.blue(value);
 		case "killed":
 		case "crashed":
-			return chalk.dim(line);
+			return chalk.dim(value);
 	}
 }
 
@@ -1225,15 +1229,20 @@ function indent(text: string): string {
 function printTable<T extends Record<string, string>>(
 	columns: Array<keyof T>,
 	rows: T[],
-	colorRow?: (row: T, line: string) => string,
+	formatCell?: (row: T, column: keyof T, value: string) => string,
 ): void {
 	const widths = columns.map((column) =>
 		Math.max(String(column).length, ...rows.map((row) => String(row[column]).length)),
 	);
 	console.log(columns.map((column, index) => String(column).padEnd(widths[index])).join("  "));
 	for (const row of rows) {
-		const line = columns.map((column, index) => String(row[column]).padEnd(widths[index])).join("  ");
-		console.log(colorRow ? colorRow(row, line) : line);
+		const line = columns
+			.map((column, index) => {
+				const value = String(row[column]).padEnd(widths[index]);
+				return formatCell ? formatCell(row, column, value) : value;
+			})
+			.join("  ");
+		console.log(line);
 	}
 }
 
