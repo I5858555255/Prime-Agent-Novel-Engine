@@ -69,6 +69,15 @@ export function buildSessionList(
 
 export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?: SessionInfo): SessionListEntry {
 	const session = record.runtime.session;
+	let modified = savedSession?.modified.toISOString();
+	if (!modified && session.sessionFile) {
+		try {
+			modified = statSync(session.sessionFile).mtime.toISOString();
+		} catch {
+			// Leave age blank when the active session has not flushed a jsonl yet.
+		}
+	}
+
 	return {
 		id: record.activeSessionId,
 		status: activeStatusForRecord(record),
@@ -86,7 +95,7 @@ export function activeEntryForRecord(record: ActiveSessionRecord, savedSession?:
 		pendingMessageCount: session.pendingMessageCount,
 		streamingMessage: session.state.streamingMessage,
 		created: savedSession?.created.toISOString(),
-		modified: savedSession?.modified.toISOString() ?? getSessionFileModifiedIso(session.sessionFile),
+		modified,
 		firstMessage: savedSession?.firstMessage,
 		parentSessionPath: savedSession?.parentSessionPath,
 	};
@@ -145,15 +154,4 @@ function activeStatusForState(state: ActiveSessionState): SessionStatus {
 		return "model";
 	}
 	return state.attachedClients > 0 ? "user" : "idle";
-}
-
-function getSessionFileModifiedIso(sessionFile: string | undefined): string | undefined {
-	if (!sessionFile) {
-		return undefined;
-	}
-	try {
-		return statSync(sessionFile).mtime.toISOString();
-	} catch {
-		return undefined;
-	}
 }
