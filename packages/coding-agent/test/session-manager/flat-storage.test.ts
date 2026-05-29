@@ -18,6 +18,9 @@ describe("SessionManager flat storage", () => {
 			const files = readdirSync(sessionDir).filter((file) => file.endsWith(".jsonl"));
 			expect(files).toHaveLength(2);
 			expect(files.some((file) => file.startsWith("--"))).toBe(false);
+			expect(new Set(files)).toEqual(
+				new Set([`${sessionA.getSessionId()}.jsonl`, `${sessionB.getSessionId()}.jsonl`]),
+			);
 
 			const currentSessions = await SessionManager.list(cwdA, sessionDir);
 			expect(currentSessions.map((session) => session.id)).toEqual([sessionA.getSessionId()]);
@@ -25,8 +28,7 @@ describe("SessionManager flat storage", () => {
 			const continued = SessionManager.continueRecent(cwdA, sessionDir);
 			expect(continued.getSessionId()).toBe(sessionA.getSessionId());
 
-			const allIds = new Set([sessionA.getSessionId(), sessionB.getSessionId()]);
-			expect(new Set(files.map((file) => file.slice(file.indexOf("_") + 1, -".jsonl".length)))).toEqual(allIds);
+			expect(sessionA.getSessionArtifactDir()).toBe(join(tempDir, "session-artifacts", sessionA.getSessionId()));
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import {
@@ -231,6 +231,14 @@ export type ReadonlySessionManager = Pick<
 
 function createSessionId(): string {
 	return uuidv7();
+}
+
+function getSessionFilePath(sessionDir: string, sessionId: string): string {
+	return join(sessionDir, `${sessionId}.jsonl`);
+}
+
+function getSessionArtifactPath(sessionDir: string, sessionId: string): string {
+	return join(dirname(sessionDir), "session-artifacts", sessionId);
 }
 
 /** Generate a unique short ID (8 hex chars, collision-checked) */
@@ -840,8 +848,7 @@ export class SessionManager {
 		this.flushed = false;
 
 		if (this.persist) {
-			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
-			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
+			this.sessionFile = getSessionFilePath(this.getSessionDir(), this.sessionId);
 		}
 		return this.sessionFile;
 	}
@@ -891,6 +898,10 @@ export class SessionManager {
 
 	getSessionFile(): string | undefined {
 		return this.sessionFile;
+	}
+
+	getSessionArtifactDir(): string | undefined {
+		return this.persist ? getSessionArtifactPath(this.sessionDir, this.sessionId) : undefined;
 	}
 
 	_persist(entry: SessionEntry): void {
@@ -1321,8 +1332,7 @@ export class SessionManager {
 
 		const newSessionId = createSessionId();
 		const timestamp = new Date().toISOString();
-		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
-		const newSessionFile = join(this.getSessionDir(), `${fileTimestamp}_${newSessionId}.jsonl`);
+		const newSessionFile = getSessionFilePath(this.getSessionDir(), newSessionId);
 
 		const header: SessionHeader = {
 			type: "session",
@@ -1474,8 +1484,7 @@ export class SessionManager {
 		// Create new session file with new ID but forked content
 		const newSessionId = createSessionId();
 		const timestamp = new Date().toISOString();
-		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
-		const newSessionFile = join(dir, `${fileTimestamp}_${newSessionId}.jsonl`);
+		const newSessionFile = getSessionFilePath(dir, newSessionId);
 
 		// Write new header pointing to source as parent, with updated cwd
 		const newHeader: SessionHeader = {
