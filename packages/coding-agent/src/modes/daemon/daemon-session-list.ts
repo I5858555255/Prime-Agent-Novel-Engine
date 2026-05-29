@@ -4,7 +4,6 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { SessionInfo } from "../../core/session-manager.js";
 import type { ActiveSessionRecord } from "./active-session-record.js";
-import type { ActiveSessionState } from "./daemon-protocol.js";
 
 export type SessionStatus = "user" | "idle" | "tool" | "model" | "killed" | "crashed";
 
@@ -121,37 +120,10 @@ export function inactiveEntryForSession(session: SessionInfo, status: InactiveSe
 	};
 }
 
-export function entryForActiveSessionState(state: ActiveSessionState): SessionListEntry {
-	return {
-		id: state.activeSessionId,
-		status: activeStatusForState(state),
-		activeSessionId: state.activeSessionId,
-		sessionId: state.sessionId,
-		sessionFile: state.sessionFile,
-		sessionName: state.sessionName,
-		cwd: state.cwd,
-		model: state.model,
-		thinkingLevel: state.thinkingLevel,
-		isStreaming: state.isStreaming,
-		isCompacting: state.isCompacting,
-		attachedClients: state.attachedClients,
-		messageCount: state.messageCount,
-		pendingMessageCount: state.pendingMessageCount,
-		streamingMessage: state.streamingMessage,
-	};
-}
-
 function activeStatusForRecord(record: ActiveSessionRecord): SessionStatus {
 	const session = record.runtime.session;
 	if (session.isStreaming) {
 		return session.state.pendingToolCalls.size > 0 ? "tool" : "model";
 	}
 	return record.clients.size > 0 ? "user" : "idle";
-}
-
-function activeStatusForState(state: ActiveSessionState): SessionStatus {
-	if (state.isStreaming) {
-		return "model";
-	}
-	return state.attachedClients > 0 ? "user" : "idle";
 }

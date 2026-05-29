@@ -9,11 +9,7 @@ import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { ActiveSessionState, DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
-import {
-	entryForActiveSessionState,
-	type SessionListEntry,
-	type SessionStatus,
-} from "../modes/daemon/daemon-session-list.js";
+import type { SessionListEntry, SessionStatus } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
@@ -743,7 +739,7 @@ function parseListArgs(args: string[]): { all: boolean } {
 	return { all };
 }
 
-function formatSessionModel(model: ActiveSessionState["model"] | SessionListEntry["model"]): string {
+function formatSessionModel(model: SessionListEntry["model"]): string {
 	return model ? `${model.provider}/${model.id}` : "";
 }
 
@@ -1254,10 +1250,6 @@ function getSessionListEntries(value: unknown): SessionListEntry[] | undefined {
 	for (const session of sessions) {
 		if (isSessionListEntry(session)) {
 			entries.push(session);
-			continue;
-		}
-		if (isActiveSessionState(session)) {
-			entries.push(entryForActiveSessionState(session));
 			continue;
 		}
 		return undefined;

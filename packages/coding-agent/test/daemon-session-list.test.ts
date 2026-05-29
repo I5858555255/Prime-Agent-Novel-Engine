@@ -3,8 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "../src/core/session-manager.js";
 import type { ActiveSessionRecord, DaemonSocketClient } from "../src/modes/daemon/active-session-record.js";
-import type { ActiveSessionState } from "../src/modes/daemon/daemon-protocol.js";
-import { buildSessionList, entryForActiveSessionState } from "../src/modes/daemon/daemon-session-list.js";
+import { buildSessionList } from "../src/modes/daemon/daemon-session-list.js";
 
 describe("buildSessionList", () => {
 	it("derives active session statuses", () => {
@@ -54,30 +53,6 @@ describe("buildSessionList", () => {
 			["saved-crashed", "saved-crashed", "crashed"],
 		]);
 		expect(entries[0]!.sessionName).toBe("session active-1");
-	});
-
-	it("normalizes active session state responses for table formatting", () => {
-		const entry = entryForActiveSessionState({
-			activeSessionId: "active-1",
-			thinkingLevel: "off",
-			isStreaming: false,
-			isCompacting: false,
-			sessionId: "session-1",
-			sessionFile: "/tmp/session-1.jsonl",
-			sessionName: "one",
-			cwd: "/tmp/project",
-			attachedClients: 1,
-			messageCount: 2,
-			pendingMessageCount: 0,
-		} satisfies ActiveSessionState);
-
-		expect(entry).toMatchObject({
-			id: "active-1",
-			status: "user",
-			activeSessionId: "active-1",
-			sessionId: "session-1",
-			sessionName: "one",
-		});
 	});
 });
 
