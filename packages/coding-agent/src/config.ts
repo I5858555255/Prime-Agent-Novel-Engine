@@ -528,8 +528,12 @@ export function getPromptsDir(): string {
 }
 
 /** Get path to sessions directory */
-export function getSessionsDir(): string {
-	return join(getAgentDir(), "sessions");
+export function getSessionsDir(agentDir: string = getAgentDir()): string {
+	const envDir = process.env[ENV_SESSION_DIR];
+	if (envDir) {
+		return expandTildePath(envDir);
+	}
+	return join(agentDir, "sessions");
 }
 
 /** Get path to debug log file */
