@@ -206,7 +206,7 @@ describe("kernel bootstrap", () => {
 		]);
 	});
 
-	it("rebuilds a warm venv when a Python skill pyproject changes", async () => {
+	it("syncs a warm venv when a Python skill pyproject changes", async () => {
 		const logPath = installFakeUv();
 		const venv = join(tempDir, "kernel-venv");
 		const python = join(venv, "bin", "python");
@@ -227,7 +227,8 @@ dependencies = ["httpx"]
 		await expect(ensureKernelPython({ pythonSkills: [pythonSkill] })).resolves.toBe(python);
 
 		const log = readFileSync(logPath, "utf8");
-		expect(log).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).not.toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).toContain(`--editable ${pythonSkill.packagePath}`);
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version.pythonSkills[0].pyprojectHash).toBe(pyprojectHash(pythonSkill.pyprojectPath));
 	});
@@ -262,7 +263,7 @@ dependencies = ["httpx"]
 		);
 
 		const retryLog = readFileSync(logPath, "utf8");
-		expect(retryLog.split("\n").filter((line) => line.startsWith(`venv ${venv} `))).toHaveLength(2);
+		expect(retryLog.split("\n").filter((line) => line.startsWith(`venv ${venv} `))).toHaveLength(1);
 		expect(
 			retryLog.split("\n").filter((line) => line.includes(`--editable ${brokenSkill.packagePath}`)),
 		).toHaveLength(2);

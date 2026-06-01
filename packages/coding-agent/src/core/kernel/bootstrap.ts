@@ -412,11 +412,16 @@ function bootstrapVersionCurrent(
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): boolean {
 	return (
+		version !== null && bootstrapBaseVersionCurrent(version) && pythonSkillsMatch(version.pythonSkills, pythonSkills)
+	);
+}
+
+function bootstrapBaseVersionCurrent(version: BootstrapVersion | null): boolean {
+	return (
 		version?.schema === BOOTSTRAP_SCHEMA &&
 		version.ipykernel === IPYKERNEL_REQUIREMENT &&
 		version.runtime === RUNTIME_REQUIREMENT &&
-		extraUvArgsMatch(version.extraUvArgs, DEFAULT_RLM_EXTRA_UV_ARGS) &&
-		pythonSkillsMatch(version.pythonSkills, pythonSkills)
+		extraUvArgsMatch(version.extraUvArgs, DEFAULT_RLM_EXTRA_UV_ARGS)
 	);
 }
 
@@ -453,7 +458,6 @@ async function bootstrapVenv(venv: string, pythonSkills: readonly BootstrapPytho
 	const uv = await ensureUv();
 	const python = path.join(venv, "bin", "python");
 	const runtimeRequirement = await resolveRuntimeRequirement();
-	const installedPythonSkills: BootstrapPythonSkill[] = [];
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
@@ -466,7 +470,28 @@ async function bootstrapVenv(venv: string, pythonSkills: readonly BootstrapPytho
 		runtimeRequirement,
 		...DEFAULT_RLM_EXTRA_UV_ARGS,
 	]);
+	await syncPythonSkills(uv, venv, python, pythonSkills);
+}
+
+async function syncPythonSkills(
+	uv: string,
+	venv: string,
+	python: string,
+	pythonSkills: readonly BootstrapPythonSkill[],
+): Promise<void> {
+	const version = await readBootstrapVersion(venv);
+	const installedPythonSkills: BootstrapPythonSkill[] = [];
+	const currentPythonSkills = new Map(
+		(version?.pythonSkills ?? []).map((skill) => [`${skill.importName}\0${skill.packagePath}`, skill]),
+	);
+
 	for (const skill of pythonSkills) {
+		const existingSkill = currentPythonSkills.get(`${skill.importName}\0${skill.packagePath}`);
+		if (existingSkill?.pyprojectPath === skill.pyprojectPath && existingSkill.pyprojectHash === skill.pyprojectHash) {
+			installedPythonSkills.push(skill);
+			continue;
+		}
+
 		try {
 			await run(uv, ["pip", "install", "--python", python, "--editable", skill.packagePath]);
 			installedPythonSkills.push(skill);
@@ -477,6 +502,14 @@ async function bootstrapVenv(venv: string, pythonSkills: readonly BootstrapPytho
 		}
 	}
 	await writeBootstrapVersion(venv, installedPythonSkills);
+}
+
+async function kernelBaseReady(python: string, venv: string): Promise<boolean> {
+	return (
+		(await hasIpykernel(python)) &&
+		(await hasPrimeAgentRuntime(python)) &&
+		bootstrapBaseVersionCurrent(await readBootstrapVersion(venv))
+	);
 }
 
 async function kernelReady(
@@ -534,6 +567,10 @@ async function ensureKernelPythonUncached(
 	const releaseLock = await acquireBootstrapLock(venv);
 	try {
 		if (await kernelReady(python, venv, pythonSkills)) return python;
+		if (await kernelBaseReady(python, venv)) {
+			await syncPythonSkills(await ensureUv(), venv, python, pythonSkills);
+			return python;
+		}
 
 		const hadVenv = existsSync(venv);
 		process.stderr.write("› setting up python kernel (one-time, ~30s)…\n");
