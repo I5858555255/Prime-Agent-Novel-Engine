@@ -8,6 +8,7 @@ import { stderr, stdin } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import type { PythonSkillRuntimeInfo } from "../skills.js";
 
 const BOOTSTRAP_SCHEMA = 4;
 const PYTHON_VERSION = "3.11";
@@ -40,12 +41,7 @@ const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
 
 let inFlightEnsureKernelPython: { key: string; promise: Promise<string> } | null = null;
 
-export interface KernelPythonSkill {
-	name: string;
-	importName: string;
-	packagePath: string;
-	pyprojectPath: string;
-}
+export type KernelPythonSkill = PythonSkillRuntimeInfo;
 
 export interface EnsureKernelPythonOptions {
 	pythonSkills?: readonly KernelPythonSkill[];
@@ -130,13 +126,13 @@ function normalizePythonSkills(pythonSkills: readonly KernelPythonSkill[] | unde
 	});
 }
 
-function ensureKernelPythonKey(options: EnsureKernelPythonOptions): string {
+function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): string {
 	return [
 		process.env.PRIME_AGENT_KERNEL_PYTHON ?? "",
 		process.env.PRIME_AGENT_KERNEL_VENV ?? "",
 		process.env.HOME ?? "",
 		process.env.XDG_DATA_HOME ?? "",
-		JSON.stringify(normalizePythonSkills(options.pythonSkills)),
+		JSON.stringify(pythonSkills),
 	].join("\0");
 }
 
@@ -457,6 +453,7 @@ async function bootstrapVenv(venv: string, pythonSkills: readonly BootstrapPytho
 	const uv = await ensureUv();
 	const python = path.join(venv, "bin", "python");
 	const runtimeRequirement = await resolveRuntimeRequirement();
+	const installedPythonSkills: BootstrapPythonSkill[] = [];
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
@@ -472,13 +469,14 @@ async function bootstrapVenv(venv: string, pythonSkills: readonly BootstrapPytho
 	for (const skill of pythonSkills) {
 		try {
 			await run(uv, ["pip", "install", "--python", python, "--editable", skill.packagePath]);
+			installedPythonSkills.push(skill);
 		} catch (error) {
 			process.stderr.write(
 				`Warning: Python skill ${skill.importName} failed to install and will be unavailable: ${errorMessage(error)}\n`,
 			);
 		}
 	}
-	await writeBootstrapVersion(venv, pythonSkills);
+	await writeBootstrapVersion(venv, installedPythonSkills);
 }
 
 async function kernelReady(
@@ -501,8 +499,10 @@ function formatBootstrapFailure(error: unknown): Error {
 	);
 }
 
-async function ensureKernelPythonUncached(options: EnsureKernelPythonOptions): Promise<string> {
-	const pythonSkills = normalizePythonSkills(options.pythonSkills);
+async function ensureKernelPythonUncached(
+	options: EnsureKernelPythonOptions,
+	pythonSkills: readonly BootstrapPythonSkill[],
+): Promise<string> {
 	const override = process.env.PRIME_AGENT_KERNEL_PYTHON;
 	if (override) {
 		const python = path.resolve(expandHome(override));
@@ -554,10 +554,11 @@ async function ensureKernelPythonUncached(options: EnsureKernelPythonOptions): P
 }
 
 export function ensureKernelPython(options: EnsureKernelPythonOptions = {}): Promise<string> {
-	const key = ensureKernelPythonKey(options);
+	const pythonSkills = normalizePythonSkills(options.pythonSkills);
+	const key = ensureKernelPythonKey(pythonSkills);
 	if (inFlightEnsureKernelPython?.key === key) return inFlightEnsureKernelPython.promise;
 
-	const promise = ensureKernelPythonUncached(options).finally(() => {
+	const promise = ensureKernelPythonUncached(options, pythonSkills).finally(() => {
 		if (inFlightEnsureKernelPython?.promise === promise) inFlightEnsureKernelPython = null;
 	});
 	inFlightEnsureKernelPython = { key, promise };

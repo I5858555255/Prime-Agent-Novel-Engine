@@ -232,7 +232,7 @@ dependencies = ["httpx"]
 		expect(version.pythonSkills[0].pyprojectHash).toBe(pyprojectHash(pythonSkill.pyprojectPath));
 	});
 
-	it("continues when a Python skill editable install fails", async () => {
+	it("continues when a Python skill editable install fails and retries it next startup", async () => {
 		const logPath = installFakeUv();
 		const venv = join(tempDir, "kernel-venv");
 		const goodSkill = createPythonSkill("good-skill");
@@ -248,7 +248,24 @@ dependencies = ["httpx"]
 		expect(log).toContain(`--editable ${goodSkill.packagePath}`);
 		expect(log).toContain(`--editable ${brokenSkill.packagePath}`);
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
-		expect(version.pythonSkills).toHaveLength(2);
+		expect(version.pythonSkills).toEqual([
+			{
+				importName: goodSkill.importName,
+				packagePath: goodSkill.packagePath,
+				pyprojectPath: goodSkill.pyprojectPath,
+				pyprojectHash: pyprojectHash(goodSkill.pyprojectPath),
+			},
+		]);
+
+		await expect(ensureKernelPython({ pythonSkills: [goodSkill, brokenSkill] })).resolves.toBe(
+			join(venv, "bin", "python"),
+		);
+
+		const retryLog = readFileSync(logPath, "utf8");
+		expect(retryLog.split("\n").filter((line) => line.startsWith(`venv ${venv} `))).toHaveLength(2);
+		expect(
+			retryLog.split("\n").filter((line) => line.includes(`--editable ${brokenSkill.packagePath}`)),
+		).toHaveLength(2);
 	});
 
 	it("rebuilds a warm venv with legacy unhashed Python skill manifest entries", async () => {
