@@ -1,4 +1,5 @@
-import { homedir } from "os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.js";
@@ -42,6 +43,30 @@ function createTestSkill(options: {
 				...base,
 				kind: "markdown",
 			};
+}
+
+function writePythonSkill(root: string, name: string): void {
+	const skillDir = join(root, name);
+	const importName = name.replaceAll("-", "_");
+	mkdirSync(join(skillDir, "src", importName), { recursive: true });
+	writeFileSync(
+		join(skillDir, "SKILL.md"),
+		`---
+name: ${name}
+description: Test skill ${name}
+---
+
+Use this skill for tests.
+`,
+	);
+	writeFileSync(
+		join(skillDir, "pyproject.toml"),
+		`[project]
+name = "${name}"
+version = "0.1.0"
+`,
+	);
+	writeFileSync(join(skillDir, "src", importName, "__init__.py"), "async def run():\n    return 'ok'\n");
 }
 
 describe("skills", () => {
@@ -346,7 +371,7 @@ describe("skills", () => {
 
 			expect(introText).toContain("The following skills provide specialized instructions");
 			expect(introText).toContain("Use ipython to inspect a skill's file");
-			expect(introText).toContain("Skills with a python_import are pre-installed");
+			expect(introText).toContain("Skills with a python_import are prepared");
 		});
 
 		it("should escape XML special characters", () => {
@@ -471,6 +496,32 @@ describe("skills", () => {
 				includeDefaults: true,
 			});
 			expect(withTilde.length).toBe(withoutTilde.length);
+		});
+
+		it("should warn when Python skills share an import name", () => {
+			const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-skills-"));
+			try {
+				writePythonSkill(tempDir, "web-search");
+				writePythonSkill(tempDir, "web_search");
+
+				const { skills, diagnostics } = loadSkills({
+					agentDir: emptyAgentDir,
+					cwd: emptyCwd,
+					skillPaths: [tempDir],
+					includeDefaults: false,
+				});
+
+				expect(skills.map((skill) => skill.name).sort()).toEqual(["web-search", "web_search"]);
+				expect(
+					diagnostics.some((d: ResourceDiagnostic) =>
+						d.message.includes(
+							'python import name "web_search" is shared by skills "web-search" and "web_search"',
+						),
+					),
+				).toBe(true);
+			} finally {
+				rmSync(tempDir, { recursive: true, force: true });
+			}
 		});
 	});
 

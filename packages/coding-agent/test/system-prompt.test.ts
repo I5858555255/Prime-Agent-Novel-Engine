@@ -53,8 +53,9 @@ describe("buildRlmPrompt", () => {
 				"Working directory: /repo",
 				"Conversation log: /repo/.pi/sessions/session.jsonl",
 				"",
-				"Installed Python skills (pre-imported): `websearch`.",
-				"Each Python skill is an async callable by the same import name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
+				"Configured Python skills for IPython: `websearch`.",
+				"When available, each Python skill is an async callable by the same import name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
+				"If a Python skill is unavailable, calling it raises a RuntimeError with the import error.",
 				"Each Python skill may also be available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 				"",
 				"Use `ipython` for both Python and shell work. For repository shell commands, prefer IPython shell syntax: `!rg ...`, `!npm run check`, or `%%bash` for multi-line scripts. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
@@ -170,14 +171,14 @@ describe("buildSystemPrompt", () => {
 			cwd: "/repo",
 		});
 
-		expect(prompt).not.toContain("Installed Python skills");
+		expect(prompt).not.toContain("Configured Python skills for IPython");
 		expect(prompt).toContain("<available_skills>");
 		expect(prompt).toContain("<name>websearch</name>");
 		expect(prompt).toContain("<type>markdown</type>");
 		expect(prompt).toContain("<location>/skills/websearch/SKILL.md</location>");
 	});
 
-	test("Python skills are pre-imported and included in skill metadata", () => {
+	test("Python skills are configured for IPython and included in skill metadata", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
 			contextFiles: [],
@@ -185,7 +186,7 @@ describe("buildSystemPrompt", () => {
 			cwd: "/repo",
 		});
 
-		expect(prompt).toContain("Installed Python skills (pre-imported): `web_search`.");
+		expect(prompt).toContain("Configured Python skills for IPython: `web_search`.");
 		expect(prompt).toContain("<name>web-search</name>");
 		expect(prompt).toContain("<type>python</type>");
 		expect(prompt).toContain("<python_import>web_search</python_import>");

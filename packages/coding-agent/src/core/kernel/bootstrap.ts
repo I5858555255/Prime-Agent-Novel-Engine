@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { constants, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { constants, existsSync, readFileSync } from "node:fs";
 import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -54,6 +55,7 @@ interface BootstrapPythonSkill {
 	importName: string;
 	packagePath: string;
 	pyprojectPath: string;
+	pyprojectHash: string;
 }
 
 interface BootstrapVersion {
@@ -100,6 +102,14 @@ function expandHome(filePath: string): string {
 	return filePath;
 }
 
+function fileContentHash(filePath: string): string {
+	try {
+		return `sha256:${createHash("sha256").update(readFileSync(filePath)).digest("hex")}`;
+	} catch {
+		return "unreadable";
+	}
+}
+
 function normalizePythonSkills(pythonSkills: readonly KernelPythonSkill[] | undefined): BootstrapPythonSkill[] {
 	const byKey = new Map<string, BootstrapPythonSkill>();
 	for (const skill of pythonSkills ?? []) {
@@ -110,6 +120,7 @@ function normalizePythonSkills(pythonSkills: readonly KernelPythonSkill[] | unde
 			importName: skill.importName,
 			packagePath,
 			pyprojectPath,
+			pyprojectHash: fileContentHash(pyprojectPath),
 		});
 	}
 	return [...byKey.values()].sort((a, b) => {
@@ -350,18 +361,23 @@ async function readBootstrapVersion(venv: string): Promise<BootstrapVersion | nu
 			parsed.extraUvArgs.every((v: unknown): v is string => typeof v === "string")
 				? (parsed.extraUvArgs as string[])
 				: undefined;
-		const pythonSkills =
-			Array.isArray(parsed.pythonSkills) &&
-			parsed.pythonSkills.every((v: unknown): v is BootstrapPythonSkill => {
-				if (!isRecord(v)) return false;
-				return (
-					typeof v.importName === "string" &&
-					typeof v.packagePath === "string" &&
-					typeof v.pyprojectPath === "string"
-				);
-			})
-				? (parsed.pythonSkills as BootstrapPythonSkill[])
-				: undefined;
+		let pythonSkills: BootstrapPythonSkill[] | undefined;
+		if (Array.isArray(parsed.pythonSkills)) {
+			if (
+				!parsed.pythonSkills.every((v: unknown): v is BootstrapPythonSkill => {
+					if (!isRecord(v)) return false;
+					return (
+						typeof v.importName === "string" &&
+						typeof v.packagePath === "string" &&
+						typeof v.pyprojectPath === "string" &&
+						typeof v.pyprojectHash === "string"
+					);
+				})
+			) {
+				return null;
+			}
+			pythonSkills = parsed.pythonSkills as BootstrapPythonSkill[];
+		}
 		return {
 			schema: parsed.schema,
 			ipykernel: typeof parsed.ipykernel === "string" ? parsed.ipykernel : undefined,
@@ -389,7 +405,8 @@ function pythonSkillsMatch(a: BootstrapPythonSkill[] | undefined, b: readonly Bo
 		return (
 			skill.importName === expected.importName &&
 			skill.packagePath === expected.packagePath &&
-			skill.pyprojectPath === expected.pyprojectPath
+			skill.pyprojectPath === expected.pyprojectPath &&
+			skill.pyprojectHash === expected.pyprojectHash
 		);
 	});
 }
@@ -440,7 +457,6 @@ async function bootstrapVenv(venv: string, pythonSkills: readonly BootstrapPytho
 	const uv = await ensureUv();
 	const python = path.join(venv, "bin", "python");
 	const runtimeRequirement = await resolveRuntimeRequirement();
-	const pythonSkillInstallArgs = pythonSkills.flatMap((skill) => ["--editable", skill.packagePath]);
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
@@ -452,8 +468,16 @@ async function bootstrapVenv(venv: string, pythonSkills: readonly BootstrapPytho
 		IPYKERNEL_REQUIREMENT,
 		runtimeRequirement,
 		...DEFAULT_RLM_EXTRA_UV_ARGS,
-		...pythonSkillInstallArgs,
 	]);
+	for (const skill of pythonSkills) {
+		try {
+			await run(uv, ["pip", "install", "--python", python, "--editable", skill.packagePath]);
+		} catch (error) {
+			process.stderr.write(
+				`Warning: Python skill ${skill.importName} failed to install and will be unavailable: ${errorMessage(error)}\n`,
+			);
+		}
+	}
 	await writeBootstrapVersion(venv, pythonSkills);
 }
 
@@ -494,7 +518,9 @@ async function ensureKernelPythonUncached(options: EnsureKernelPythonOptions): P
 		if (missing.length === 0 && pythonSkills.length > 0) {
 			const missingPythonSkills = await missingPythonSkillImportLabels(python, options.pythonSkills ?? []);
 			if (missingPythonSkills.length > 0) {
-				missing.push(`Python skills (${missingPythonSkills.join(", ")})`);
+				process.stderr.write(
+					`Warning: Python skills unavailable in PRIME_AGENT_KERNEL_PYTHON and will be disabled: ${missingPythonSkills.join(", ")}\n`,
+				);
 			}
 		}
 		if (missing.length === 0) return python;

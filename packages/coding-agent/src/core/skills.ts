@@ -447,7 +447,7 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 	const lines = [
 		"\n\nThe following skills provide specialized instructions for specific tasks.",
 		"Use ipython to inspect a skill's file when the task matches its description.",
-		"Skills with a python_import are pre-installed in the persistent IPython kernel and can be called directly by that import name.",
+		"Skills with a python_import are prepared in the persistent IPython kernel when available and can be called directly by that import name.",
 		"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
 		"",
 		"<available_skills>",
@@ -515,8 +515,10 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	const skillMap = new Map<string, Skill>();
 	const realPathSet = new Set<string>();
+	const pythonImportMap = new Map<string, Skill>();
 	const allDiagnostics: ResourceDiagnostic[] = [];
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
+	const pythonImportDiagnostics: ResourceDiagnostic[] = [];
 
 	function addSkills(result: LoadSkillsResult) {
 		allDiagnostics.push(...result.diagnostics);
@@ -545,6 +547,18 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 			} else {
 				skillMap.set(skill.name, skill);
 				realPathSet.add(realPath);
+				if (skill.kind === "python") {
+					const existingPythonSkill = pythonImportMap.get(skill.python.importName);
+					if (existingPythonSkill) {
+						pythonImportDiagnostics.push({
+							type: "warning",
+							message: `python import name "${skill.python.importName}" is shared by skills "${existingPythonSkill.name}" and "${skill.name}"`,
+							path: skill.filePath,
+						});
+					} else {
+						pythonImportMap.set(skill.python.importName, skill);
+					}
+				}
 			}
 		}
 	}
@@ -604,6 +618,6 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	return {
 		skills: Array.from(skillMap.values()),
-		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
+		diagnostics: [...allDiagnostics, ...collisionDiagnostics, ...pythonImportDiagnostics],
 	};
 }

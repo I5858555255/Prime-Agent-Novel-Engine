@@ -56,6 +56,24 @@ class _PrimeAgentCallableSkillModule(_prime_agent_types.ModuleType):
             return await result
         return result
 
+class _PrimeAgentUnavailableSkill:
+    def __init__(self, name, error):
+        self.__name__ = name
+        self._prime_agent_import_error = error
+        self.__doc__ = f"Python skill {name} is unavailable: {error}"
+
+    async def run(self, *args, **kwargs):
+        raise RuntimeError(
+            f"Python skill {self.__name__} is unavailable in this IPython kernel. "
+            f"Import error: {self._prime_agent_import_error}"
+        )
+
+    async def __call__(self, *args, **kwargs):
+        return await self.run(*args, **kwargs)
+
+    def __repr__(self):
+        return f"<unavailable Python skill {self.__name__!r}: {self._prime_agent_import_error}>"
+
 def _prime_agent_wrap_skill_module(module):
     run = getattr(module, "run", None)
     if not callable(run):
@@ -74,10 +92,19 @@ def _prime_agent_wrap_skill_module(module):
     _prime_agent_sys.modules[module.__name__] = wrapped
     return wrapped
 
+_PRIME_AGENT_SKILL_IMPORT_ERRORS = {}
+
 for _prime_agent_skill_name in ${JSON.stringify(importNames)}:
-    globals()[_prime_agent_skill_name] = _prime_agent_wrap_skill_module(
-        _prime_agent_importlib.import_module(_prime_agent_skill_name)
-    )
+    try:
+        globals()[_prime_agent_skill_name] = _prime_agent_wrap_skill_module(
+            _prime_agent_importlib.import_module(_prime_agent_skill_name)
+        )
+    except Exception as _prime_agent_skill_error:
+        _PRIME_AGENT_SKILL_IMPORT_ERRORS[_prime_agent_skill_name] = str(_prime_agent_skill_error)
+        globals()[_prime_agent_skill_name] = _PrimeAgentUnavailableSkill(
+            _prime_agent_skill_name,
+            str(_prime_agent_skill_error),
+        )
 `.trim();
 }
 

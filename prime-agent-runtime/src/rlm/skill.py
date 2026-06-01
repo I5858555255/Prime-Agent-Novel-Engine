@@ -21,9 +21,16 @@ async def run_cli(func: Callable[..., Any], prog: str | None = None) -> None:
 
 
 def cli() -> None:
-    """Run `<skill>.run` for a console script named after the skill import."""
+    """Run `<skill>.run` for a console script named exactly after the skill import."""
     prog = Path(sys.argv[0]).stem
-    module = __import__(prog)
+    try:
+        module = __import__(prog)
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Could not import Python skill module {prog!r}. "
+            "The console-script name must match the skill import name exactly; "
+            "use underscores instead of dashes."
+        ) from exc
     run = getattr(module, "run", None)
     if not callable(run):
         raise RuntimeError(f"{prog} does not expose a callable run()")
