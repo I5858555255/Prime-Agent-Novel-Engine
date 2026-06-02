@@ -1,6 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { SessionManager } from "../src/core/session-manager.js";
 import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
 import { resolveActiveSessionState } from "../src/modes/daemon/active-session-state.js";
+import { resolveDaemonSessionPath } from "../src/modes/daemon/daemon-mode.js";
 import { formatSessionDisplayId, matchesSessionIdSuffix } from "../src/modes/daemon/daemon-session-id.js";
 
 describe("formatSessionDisplayId", () => {
@@ -42,6 +47,24 @@ describe("resolveActiveSessionState", () => {
 	});
 });
 
+describe("resolveDaemonSessionPath", () => {
+	it("raises when a saved session prefix matches multiple sessions", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-daemon-session-id-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			createSavedSession(cwd, sessionDir, "abc111");
+			createSavedSession(cwd, sessionDir, "abc222");
+
+			await expect(resolveDaemonSessionPath("abc", cwd, sessionDir)).rejects.toThrow(
+				/Ambiguous saved session "abc"/,
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+});
+
 function makeSessionMap(states: ActiveSessionState[]): Map<string, ActiveSessionState> {
 	return new Map(states.map((state) => [state.activeSessionId, state]));
 }
@@ -57,4 +80,10 @@ function makeState(activeSessionId: string, sessionId: string): ActiveSessionSta
 			},
 		},
 	} as unknown as ActiveSessionState;
+}
+
+function createSavedSession(cwd: string, sessionDir: string, sessionId: string): void {
+	const session = SessionManager.create(cwd, sessionDir);
+	session.newSession({ id: sessionId });
+	session.appendSessionState({ status: "sleep" });
 }

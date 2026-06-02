@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import type { SessionStats } from "../../core/agent-session.js";
 import { mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { type AgentSessionRuntime, createAgentSessionRuntime } from "../../core/agent-session-runtime.js";
-import { SessionManager } from "../../core/session-manager.js";
+import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { RpcSlashCommand } from "../rpc/rpc-types.js";
@@ -442,12 +442,12 @@ class AgentDaemon {
 		}
 		state.unsubscribe?.();
 		await state.runtime.dispose();
-		this.sessions.delete(state.activeSessionId);
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
 		for (const client of state.clients) {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
 		}
 		state.clients.clear();
+		this.sessions.delete(state.activeSessionId);
 		if (persistError && reason !== "shutdown") {
 			throw persistError;
 		}
@@ -512,7 +512,7 @@ class AgentDaemon {
 	}
 }
 
-async function resolveDaemonSessionPath(selector: string, cwd: string, sessionDir?: string): Promise<string> {
+export async function resolveDaemonSessionPath(selector: string, cwd: string, sessionDir?: string): Promise<string> {
 	if (looksLikeSessionPath(selector)) {
 		return selector;
 	}
@@ -520,18 +520,34 @@ async function resolveDaemonSessionPath(selector: string, cwd: string, sessionDi
 	const localMatches = (await SessionManager.list(cwd, sessionDir)).filter((session) =>
 		session.id.startsWith(selector),
 	);
-	if (localMatches.length > 0) {
-		return localMatches[0]!.path;
+	const localMatch = resolveUniqueSavedSessionMatch(selector, localMatches);
+	if (localMatch) {
+		return localMatch.path;
 	}
 
 	const allSessions =
 		sessionDir !== undefined ? await SessionManager.listAll(undefined, sessionDir) : await SessionManager.listAll();
 	const globalMatches = allSessions.filter((session) => session.id.startsWith(selector));
-	if (globalMatches.length > 0) {
-		return globalMatches[0]!.path;
+	const globalMatch = resolveUniqueSavedSessionMatch(selector, globalMatches);
+	if (globalMatch) {
+		return globalMatch.path;
 	}
 
 	throw new Error(`No session found matching "${selector}"`);
+}
+
+function resolveUniqueSavedSessionMatch(selector: string, matches: readonly SessionInfo[]): SessionInfo | undefined {
+	if (matches.length === 0) {
+		return undefined;
+	}
+	if (matches.length > 1) {
+		throw new Error(
+			`Ambiguous saved session "${selector}": matches ${matches
+				.map((session) => `${session.id}${session.name ? ` (${session.name})` : ""}`)
+				.join(", ")}`,
+		);
+	}
+	return matches[0];
 }
 
 function looksLikeSessionPath(selector: string): boolean {
