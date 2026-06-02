@@ -134,10 +134,6 @@ function parseDaemonClientCommand(args: string[]): ParsedDaemonClientCommand {
 	}
 
 	command = command ?? "open";
-	if (command !== "open" && !DAEMON_CLIENT_COMMANDS.has(command)) {
-		throw new Error(`Unknown daemon command: ${command}`);
-	}
-
 	return { command, socketPath, json, positionals };
 }
 
@@ -790,11 +786,15 @@ interface SessionEndWaiter {
 	cancel: () => void;
 }
 
-function waitForSessionEnd(client: DaemonClient, activeSessionId: string): SessionEndWaiter {
+type DaemonWaiterMessagePredicate = (message: DaemonOutbound) => boolean;
+
+function createDaemonMessageWaiter(
+	client: DaemonClient,
+	shouldResolveOnMessage: DaemonWaiterMessagePredicate,
+): SessionEndWaiter {
 	let unsubscribeMessages = () => {};
 	let unsubscribeClose = () => {};
 	let settled = false;
-	let observedAgentStart = false;
 	let resolveWait!: () => void;
 	let rejectWait!: (error: Error) => void;
 
@@ -824,13 +824,7 @@ function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Sessi
 		rejectWait = reject;
 	});
 	unsubscribeMessages = client.onMessage((message) => {
-		if (message.type === "session_event" && message.activeSessionId === activeSessionId) {
-			if (message.event.type === "agent_start") {
-				observedAgentStart = true;
-			} else if (message.event.type === "agent_end" && observedAgentStart) {
-				resolveOnce();
-			}
-		} else if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {
+		if (shouldResolveOnMessage(message)) {
 			resolveOnce();
 		}
 	});
@@ -841,48 +835,28 @@ function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Sessi
 	return { promise, cancel: resolveOnce };
 }
 
-function waitForSessionClose(client: DaemonClient, activeSessionId: string): SessionEndWaiter {
-	let unsubscribeMessages = () => {};
-	let unsubscribeClose = () => {};
-	let settled = false;
-	let resolveWait!: () => void;
-	let rejectWait!: (error: Error) => void;
-
-	const cleanup = () => {
-		unsubscribeMessages();
-		unsubscribeClose();
-	};
-	const resolveOnce = () => {
-		if (settled) {
-			return;
-		}
-		settled = true;
-		cleanup();
-		resolveWait();
-	};
-	const rejectOnce = (error: Error) => {
-		if (settled) {
-			return;
-		}
-		settled = true;
-		cleanup();
-		rejectWait(error);
-	};
-
-	const promise = new Promise<void>((resolve, reject) => {
-		resolveWait = resolve;
-		rejectWait = reject;
-	});
-	unsubscribeMessages = client.onMessage((message) => {
+function waitForSessionEnd(client: DaemonClient, activeSessionId: string): SessionEndWaiter {
+	let observedAgentStart = false;
+	return createDaemonMessageWaiter(client, (message) => {
 		if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {
-			resolveOnce();
+			return true;
 		}
+		if (message.type !== "session_event" || message.activeSessionId !== activeSessionId) {
+			return false;
+		}
+		if (message.event.type === "agent_start") {
+			observedAgentStart = true;
+			return false;
+		}
+		return message.event.type === "agent_end" && observedAgentStart;
 	});
-	unsubscribeClose = client.onClose((error) => {
-		rejectOnce(error);
-	});
+}
 
-	return { promise, cancel: resolveOnce };
+function waitForSessionClose(client: DaemonClient, activeSessionId: string): SessionEndWaiter {
+	return createDaemonMessageWaiter(
+		client,
+		(message) => message.type === "session_closed" && message.activeSessionId === activeSessionId,
+	);
 }
 
 function waitUntilInterrupted(): SessionEndWaiter {
