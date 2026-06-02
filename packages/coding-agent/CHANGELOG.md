@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added daemon mode and CLI controls for starting on demand, creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
+
+### Changed
+
+- Changed active session creation to use per-session runtime config so active sessions can use different cwd, model, auth, and tool settings.
+
 ### Fixed
 
 - Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.
