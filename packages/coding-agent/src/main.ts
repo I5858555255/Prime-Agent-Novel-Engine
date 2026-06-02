@@ -546,10 +546,10 @@ export async function main(args: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
-	const hasEnvSessionDir = !!process.env[ENV_SESSION_DIR];
+	const envSessionDir = process.env[ENV_SESSION_DIR];
 	const sessionDir =
 		(parsed.sessionDir ? expandTildePath(parsed.sessionDir) : undefined) ??
-		(hasEnvSessionDir ? undefined : startupSettingsManager.getSessionDir());
+		(envSessionDir ? expandTildePath(envSessionDir) : startupSettingsManager.getSessionDir());
 	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {

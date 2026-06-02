@@ -186,7 +186,14 @@ class AgentDaemon {
 			void this.handleLine(client, line);
 		});
 
+		let cleanedUp = false;
 		const cleanup = () => {
+			if (cleanedUp) {
+				return;
+			}
+			cleanedUp = true;
+			socket.off("close", cleanup);
+			socket.off("error", cleanup);
 			this.detachClient(client);
 			client.detachInput();
 			this.clients.delete(client);

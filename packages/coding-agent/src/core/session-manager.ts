@@ -921,6 +921,7 @@ export class SessionManager {
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
+		mkdirSync(dirname(this.sessionFile), { recursive: true });
 		writeFileSync(this.sessionFile, content);
 	}
 
@@ -959,10 +960,11 @@ export class SessionManager {
 			return;
 		}
 
-		if (!this.flushed) {
+		if (!this.flushed || !existsSync(this.sessionFile)) {
 			this._rewriteFile();
 			this.flushed = true;
 		} else {
+			mkdirSync(dirname(this.sessionFile), { recursive: true });
 			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
 		}
 	}

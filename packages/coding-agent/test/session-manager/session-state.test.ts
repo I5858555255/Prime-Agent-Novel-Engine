@@ -87,4 +87,50 @@ describe("SessionManager session state", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
+
+	it("recreates the session directory when lifecycle state is the first persisted entry", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-state-missing-dir-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			const session = SessionManager.create(cwd, sessionDir);
+			const sessionFile = session.getSessionFile();
+			expect(sessionFile).toBeDefined();
+
+			rmSync(sessionDir, { recursive: true, force: true });
+			session.appendSessionState({ status: "sleep" });
+
+			expect(existsSync(sessionFile!)).toBe(true);
+			const entries = loadEntriesFromFile(sessionFile!);
+			expect(entries[0]).toMatchObject({ type: "session", id: session.getSessionId() });
+			expect(entries.filter((entry) => entry.type === "session_state")).toHaveLength(1);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("rewrites the full session if the session file disappears after flushing", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-state-missing-file-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			const session = SessionManager.create(cwd, sessionDir);
+
+			session.appendMessage(userMsg("hello"));
+			session.appendMessage(assistantMsg("hi"));
+			const sessionFile = session.getSessionFile();
+			expect(sessionFile).toBeDefined();
+			expect(existsSync(sessionFile!)).toBe(true);
+
+			rmSync(sessionFile!, { force: true });
+			session.appendSessionState({ status: "sleep" });
+
+			const entries = loadEntriesFromFile(sessionFile!);
+			expect(entries[0]).toMatchObject({ type: "session", id: session.getSessionId() });
+			expect(entries.filter((entry) => entry.type === "message")).toHaveLength(2);
+			expect(entries.filter((entry) => entry.type === "session_state")).toHaveLength(1);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
 });
