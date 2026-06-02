@@ -216,12 +216,14 @@ function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string)
 	}
 }
 
-async function createSessionManager(
+export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
+	const explicitCwdOverride = parsed.cwd ? cwd : undefined;
+
 	if (parsed.noSession) {
 		return SessionManager.inMemory();
 	}
@@ -247,7 +249,7 @@ async function createSessionManager(
 		switch (resolved.type) {
 			case "path":
 			case "local":
-				return SessionManager.open(resolved.path, sessionDir);
+				return SessionManager.open(resolved.path, sessionDir, explicitCwdOverride);
 
 			case "global": {
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
