@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const daemonClientMock = vi.hoisted(() => {
 	type Listener = (message: { type: string; activeSessionId?: string; event?: { type: string } }) => void;
 	type CloseListener = (error: Error) => void;
-	type Command = { type: string };
+	type Command = {
+		type: string;
+		name?: string;
+		config?: { extensionFlagValues?: Record<string, boolean | string> };
+	};
 	type Response =
 		| { type: "response"; command: string; success: true }
 		| { type: "response"; command: string; success: false; error: string };
@@ -165,6 +169,44 @@ describe("daemon command", () => {
 		await expect(command).resolves.toBe(true);
 		expect(client?.messageListenerCountAtClose).toBe(0);
 		expect(client?.closeListenerCountAtClose).toBe(0);
+	});
+
+	it("keeps create session name after an unknown boolean extension flag", async () => {
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "create", "--unknown-typo", "my-session"]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toEqual({
+			type: "create",
+			name: "my-session",
+			config: {
+				extensionFlagValues: {
+					"unknown-typo": true,
+				},
+			},
+			sessionPath: undefined,
+			continueRecent: undefined,
+		});
+	});
+
+	it("parses extension flag values with equals without consuming the create name", async () => {
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "create", "--ticket=123", "my-session"]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toEqual({
+			type: "create",
+			name: "my-session",
+			config: {
+				extensionFlagValues: {
+					ticket: "123",
+				},
+			},
+			sessionPath: undefined,
+			continueRecent: undefined,
+		});
 	});
 });
 

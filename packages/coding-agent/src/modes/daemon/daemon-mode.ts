@@ -303,7 +303,14 @@ class AgentDaemon {
 
 			case "prompt": {
 				const state = this.getSessionState(command.activeSessionId);
-				let preflightSucceeded = false;
+				let responseSent = false;
+				const sendSuccessResponse = () => {
+					if (responseSent) {
+						return;
+					}
+					responseSent = true;
+					this.write(client, success(command.id, "prompt"));
+				};
 				void state.runtime.session
 					.prompt(command.message, {
 						images: command.images,
@@ -311,13 +318,15 @@ class AgentDaemon {
 						source: "rpc",
 						preflightResult: (didSucceed) => {
 							if (didSucceed) {
-								preflightSucceeded = true;
-								this.write(client, success(command.id, "prompt"));
+								sendSuccessResponse();
 							}
 						},
 					})
+					.then(() => {
+						sendSuccessResponse();
+					})
 					.catch((error) => {
-						if (preflightSucceeded) {
+						if (responseSent) {
 							this.broadcastToSession(state, failure(command.id, "prompt", error));
 						} else {
 							this.write(client, failure(command.id, "prompt", error));

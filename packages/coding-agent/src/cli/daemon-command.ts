@@ -514,11 +514,6 @@ function parseExtensionFlagOption(
 	}
 
 	const name = arg.slice(2);
-	const next = args[index + 1];
-	if (next !== undefined && !next.startsWith("-")) {
-		config.extensionFlagValues[name] = next;
-		return { consumed: 1, daemonArg: arg, value: next };
-	}
 	config.extensionFlagValues[name] = true;
 	return { consumed: 0, daemonArg: arg };
 }
