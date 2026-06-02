@@ -593,13 +593,13 @@ function sessionInfoMatchesCwd(session: SessionInfo, cwd: string): boolean {
 	return !!session.cwd && normalizeCwd(session.cwd) === normalizeCwd(cwd);
 }
 
-function sessionFileMatchesCwd(filePath: string, cwd: string): boolean {
-	try {
-		const header = readSessionHeader(filePath);
-		return typeof header?.cwd === "string" && normalizeCwd(header.cwd) === normalizeCwd(cwd);
-	} catch {
-		return false;
-	}
+function sessionHeaderMatchesCwd(header: Partial<SessionHeader> | undefined, cwd: string): boolean {
+	return (
+		header?.type === "session" &&
+		typeof header.id === "string" &&
+		typeof header.cwd === "string" &&
+		normalizeCwd(header.cwd) === normalizeCwd(cwd)
+	);
 }
 
 export function findMostRecentSessionForCwd(sessionDir: string, cwd: string): string | null {
@@ -607,9 +607,18 @@ export function findMostRecentSessionForCwd(sessionDir: string, cwd: string): st
 		const files = readdirSync(sessionDir)
 			.filter((f) => f.endsWith(".jsonl"))
 			.map((f) => join(sessionDir, f))
-			.filter(isValidSessionFile)
-			.filter((path) => sessionFileMatchesCwd(path, cwd))
-			.map((path) => ({ path, mtime: statSync(path).mtime }))
+			.map((path) => {
+				try {
+					const header = readSessionHeader(path);
+					if (!sessionHeaderMatchesCwd(header, cwd)) {
+						return undefined;
+					}
+					return { path, mtime: statSync(path).mtime };
+				} catch {
+					return undefined;
+				}
+			})
+			.filter((entry): entry is { path: string; mtime: Date } => entry !== undefined)
 			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
 		return files[0]?.path || null;

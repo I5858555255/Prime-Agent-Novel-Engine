@@ -54,4 +54,30 @@ describe("session migrations", () => {
 		expect(existsSync(legacyDir)).toBe(false);
 		expect(readFileSync(migratedFile, "utf8")).toContain('"id":"session-1"');
 	});
+
+	it("does not move session files from non-legacy subdirectories", () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "prime-agent-migrations-"));
+		tempDirs.push(agentDir);
+		process.env[ENV_AGENT_DIR] = agentDir;
+
+		const sessionsDir = join(agentDir, "sessions");
+		const nonLegacyDir = join(sessionsDir, "exports");
+		mkdirSync(nonLegacyDir, { recursive: true });
+		const nestedFile = join(nonLegacyDir, "session-2.jsonl");
+		writeFileSync(
+			nestedFile,
+			`${JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "session-2",
+				timestamp: new Date().toISOString(),
+				cwd: "/tmp/project",
+			})}\n`,
+		);
+
+		migrateLegacySessionDirsToSessionRoot();
+
+		expect(existsSync(nestedFile)).toBe(true);
+		expect(existsSync(join(sessionsDir, "session-2.jsonl"))).toBe(false);
+	});
 });

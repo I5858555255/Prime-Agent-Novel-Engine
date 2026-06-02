@@ -149,6 +149,10 @@ function isSessionJsonlFile(filePath: string): boolean {
 	}
 }
 
+function isLegacySessionDirName(name: string): boolean {
+	return /^--.+--$/.test(name);
+}
+
 /**
  * Migrate legacy per-cwd session directories into the flat session root.
  *
@@ -168,7 +172,7 @@ export function migrateLegacySessionDirsToSessionRoot(): void {
 	}
 
 	for (const entry of entries) {
-		if (!entry.isDirectory()) {
+		if (!entry.isDirectory() || !isLegacySessionDirName(entry.name)) {
 			continue;
 		}
 
