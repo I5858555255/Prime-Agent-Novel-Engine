@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 export function defaultDaemonSocketPath(): string {
 	if (process.platform === "win32") {
-		return `\\\\.\\pipe\\prime-agent-${process.pid}`;
+		return "\\\\.\\pipe\\prime-agent-daemon";
 	}
 	return join(tmpdir(), "prime-agent-daemon.sock");
 }

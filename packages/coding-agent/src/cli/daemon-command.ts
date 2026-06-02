@@ -773,17 +773,27 @@ async function requireSuccessAsync(responsePromise: Promise<DaemonResponse>): Pr
 }
 
 function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Promise<void> {
-	return new Promise((resolve) => {
-		const unsubscribe = client.onMessage((message) => {
+	return new Promise((resolve, reject) => {
+		let unsubscribeMessages = () => {};
+		let unsubscribeClose = () => {};
+		const cleanup = () => {
+			unsubscribeMessages();
+			unsubscribeClose();
+		};
+		unsubscribeMessages = client.onMessage((message) => {
 			if (message.type === "session_event" && message.activeSessionId === activeSessionId) {
 				if (message.event.type === "agent_end") {
-					unsubscribe();
+					cleanup();
 					resolve();
 				}
 			} else if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {
-				unsubscribe();
+				cleanup();
 				resolve();
 			}
+		});
+		unsubscribeClose = client.onClose((error) => {
+			cleanup();
+			reject(error);
 		});
 	});
 }
@@ -839,11 +849,13 @@ class DaemonAttachTerminal {
 			this.rl?.close();
 		});
 
+		const closePromise = new Promise<void>((resolve) => {
+			this.rl?.once("close", resolve);
+		});
+
 		try {
 			await requireSuccessAsync(this.client.request({ type: "attach", activeSessionId: this.activeSessionId }));
-			await new Promise<void>((resolve) => {
-				this.rl?.once("close", resolve);
-			});
+			await closePromise;
 		} finally {
 			unsubscribe();
 			this.rl?.removeAllListeners();

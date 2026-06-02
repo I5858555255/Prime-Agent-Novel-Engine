@@ -9,12 +9,30 @@
 ### Changed
 
 - Changed active session creation to use per-session runtime config so active sessions can use different cwd, model, auth, and tool settings.
+
+### Fixed
+
+- Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.
+
+## [0.0.7] - 2026-06-01
+
+### Added
+
+- Added Prime team selection during Prime Inference login so team inference costs use the selected Prime CLI context.
+- Added Python-backed skills that install into the persistent IPython kernel and are exposed alongside markdown skills.
+
+### Changed
+
 - Changed the Prime Agent install script to use a bounded animated Prime Lab splash with centered progress and confirmation prompts.
 - Changed startup onboarding to guide unauthenticated users through login and model selection before the first agent turn.
+- Changed installer npm and Node.js setup progress to keep command output hidden behind the splash and rotate detail text.
 
 ### Fixed
 
 - Fixed update notifications and package docs to point at `prime-agent update` and use compact one-line alerts.
+- Fixed Prime CLI credentials from `prime login` to make Prime Inference models available on startup.
+- Fixed first-run search helper downloads to run quietly instead of printing over onboarding.
+- Fixed stale no-model and tmux/update startup notices from appearing during successful onboarding.
 
 ### Removed
 

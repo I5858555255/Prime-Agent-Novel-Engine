@@ -3,7 +3,7 @@
  */
 
 import chalk from "chalk";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir, getSessionsDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.js";
@@ -122,6 +122,73 @@ export function migrateSessionsFromAgentRoot(): void {
 			renameSync(file, newPath);
 		} catch {
 			// Skip files that can't be migrated
+		}
+	}
+}
+
+function isSessionJsonlFile(filePath: string): boolean {
+	try {
+		const firstLine = readFileSync(filePath, "utf8").split("\n")[0];
+		if (!firstLine?.trim()) {
+			return false;
+		}
+		const header = JSON.parse(firstLine) as { type?: unknown; id?: unknown };
+		return header.type === "session" && typeof header.id === "string";
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Migrate legacy per-cwd session directories into the flat session root.
+ *
+ * Older versions stored sessions under ~/.prime/agent/sessions/--cwd--/*.jsonl.
+ * The daemon list/continue paths now scan the flat session root, so move any
+ * existing nested JSONL session files up one level.
+ */
+export function migrateLegacySessionDirsToSessionRoot(): void {
+	const agentDir = getAgentDir();
+	const sessionsDir = getSessionsDir(agentDir);
+
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(sessionsDir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+
+	for (const entry of entries) {
+		if (!entry.isDirectory()) {
+			continue;
+		}
+
+		const legacyDir = join(sessionsDir, entry.name);
+		let files: string[];
+		try {
+			files = readdirSync(legacyDir).filter((file) => file.endsWith(".jsonl"));
+		} catch {
+			continue;
+		}
+
+		for (const file of files) {
+			const oldPath = join(legacyDir, file);
+			const newPath = join(sessionsDir, file);
+			if (existsSync(newPath) || !isSessionJsonlFile(oldPath)) {
+				continue;
+			}
+			try {
+				renameSync(oldPath, newPath);
+			} catch {
+				// Leave the legacy file in place if it cannot be moved.
+			}
+		}
+
+		try {
+			if (readdirSync(legacyDir).length === 0) {
+				rmSync(legacyDir, { recursive: false, force: true });
+			}
+		} catch {
+			// Ignore cleanup errors; migrated files are already in the flat root.
 		}
 	}
 }
@@ -304,6 +371,7 @@ export function runMigrations(cwd: string): {
 } {
 	const migratedAuthProviders = migrateAuthToAuthJson();
 	migrateSessionsFromAgentRoot();
+	migrateLegacySessionDirsToSessionRoot();
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();
 	const deprecationWarnings = migrateExtensionSystem(cwd);

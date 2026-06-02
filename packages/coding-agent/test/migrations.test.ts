@@ -1,0 +1,56 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { ENV_AGENT_DIR } from "../src/config.js";
+import { migrateLegacySessionDirsToSessionRoot } from "../src/migrations.js";
+
+describe("session migrations", () => {
+	const tempDirs: string[] = [];
+	const previousAgentDir = process.env[ENV_AGENT_DIR];
+
+	afterEach(() => {
+		if (previousAgentDir === undefined) {
+			delete process.env[ENV_AGENT_DIR];
+		} else {
+			process.env[ENV_AGENT_DIR] = previousAgentDir;
+		}
+		for (const dir of tempDirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("moves legacy per-cwd session files into the flat session root", () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "prime-agent-migrations-"));
+		tempDirs.push(agentDir);
+		process.env[ENV_AGENT_DIR] = agentDir;
+
+		const sessionsDir = join(agentDir, "sessions");
+		const legacyDir = join(sessionsDir, "--tmp-project--");
+		mkdirSync(legacyDir, { recursive: true });
+		const legacyFile = join(legacyDir, "session-1.jsonl");
+		const sessionLines = [
+			{
+				type: "session",
+				version: 3,
+				id: "session-1",
+				timestamp: new Date().toISOString(),
+				cwd: "/tmp/project",
+			},
+			{
+				type: "message",
+				id: "entry-1",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				message: { role: "user", content: "hello", timestamp: Date.now() },
+			},
+		];
+		writeFileSync(legacyFile, `${sessionLines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+
+		migrateLegacySessionDirsToSessionRoot();
+
+		const migratedFile = join(sessionsDir, "session-1.jsonl");
+		expect(existsSync(legacyFile)).toBe(false);
+		expect(readFileSync(migratedFile, "utf8")).toContain('"id":"session-1"');
+	});
+});

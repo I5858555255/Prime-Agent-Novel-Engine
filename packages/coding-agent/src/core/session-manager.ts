@@ -518,16 +518,52 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	return entries;
 }
 
+function readFirstLineSync(filePath: string, maxBytes = 64 * 1024): string | undefined {
+	const fd = openSync(filePath, "r");
+	const chunks: Buffer[] = [];
+	let position = 0;
+
+	try {
+		const buffer = Buffer.alloc(1024);
+		while (position < maxBytes) {
+			const bytesToRead = Math.min(buffer.length, maxBytes - position);
+			const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
+			if (bytesRead === 0) {
+				break;
+			}
+
+			const chunk = buffer.subarray(0, bytesRead);
+			const newlineIndex = chunk.indexOf(0x0a);
+			if (newlineIndex !== -1) {
+				chunks.push(Buffer.from(chunk.subarray(0, newlineIndex)));
+				return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+			}
+
+			chunks.push(Buffer.from(chunk));
+			position += bytesRead;
+		}
+	} finally {
+		closeSync(fd);
+	}
+
+	if (chunks.length === 0) {
+		return undefined;
+	}
+	return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+}
+
+function readSessionHeader(filePath: string): Partial<SessionHeader> | undefined {
+	const firstLine = readFirstLineSync(filePath);
+	if (!firstLine) {
+		return undefined;
+	}
+	return JSON.parse(firstLine) as Partial<SessionHeader>;
+}
+
 function isValidSessionFile(filePath: string): boolean {
 	try {
-		const fd = openSync(filePath, "r");
-		const buffer = Buffer.alloc(512);
-		const bytesRead = readSync(fd, buffer, 0, 512, 0);
-		closeSync(fd);
-		const firstLine = buffer.toString("utf8", 0, bytesRead).split("\n")[0];
-		if (!firstLine) return false;
-		const header = JSON.parse(firstLine);
-		return header.type === "session" && typeof header.id === "string";
+		const header = readSessionHeader(filePath);
+		return header?.type === "session" && typeof header.id === "string";
 	} catch {
 		return false;
 	}
@@ -559,10 +595,8 @@ function sessionInfoMatchesCwd(session: SessionInfo, cwd: string): boolean {
 
 function sessionFileMatchesCwd(filePath: string, cwd: string): boolean {
 	try {
-		const firstLine = readFileSync(filePath, "utf8").split("\n")[0];
-		if (!firstLine) return false;
-		const header = JSON.parse(firstLine) as Partial<SessionHeader>;
-		return typeof header.cwd === "string" && normalizeCwd(header.cwd) === normalizeCwd(cwd);
+		const header = readSessionHeader(filePath);
+		return typeof header?.cwd === "string" && normalizeCwd(header.cwd) === normalizeCwd(cwd);
 	} catch {
 		return false;
 	}
@@ -844,6 +878,7 @@ export class SessionManager {
 		this.fileEntries = [header];
 		this.byId.clear();
 		this.labelsById.clear();
+		this.labelTimestampsById.clear();
 		this.leafId = null;
 		this.flushed = false;
 
@@ -916,9 +951,7 @@ export class SessionManager {
 		}
 
 		if (!this.flushed) {
-			for (const e of this.fileEntries) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(e)}\n`);
-			}
+			this._rewriteFile();
 			this.flushed = true;
 		} else {
 			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
@@ -1475,6 +1508,7 @@ export class SessionManager {
 		if (!sourceHeader) {
 			throw new Error(`Cannot fork: source session has no header: ${sourcePath}`);
 		}
+		migrateToCurrentVersion(sourceEntries);
 
 		const dir = sessionDir ?? getDefaultSessionDir(targetCwd);
 		if (!existsSync(dir)) {
@@ -1525,9 +1559,10 @@ export class SessionManager {
 	/**
 	 * List all sessions across all project directories.
 	 * @param onProgress Optional callback for progress updates (loaded, total)
+	 * @param sessionDir Optional session root. If omitted, uses the configured session root.
 	 */
-	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]> {
-		const sessionsDir = getSessionsDir();
+	static async listAll(onProgress?: SessionListProgress, sessionDir?: string): Promise<SessionInfo[]> {
+		const sessionsDir = sessionDir ?? getSessionsDir();
 		const sessions = await listSessionsFromDir(sessionsDir, onProgress);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;

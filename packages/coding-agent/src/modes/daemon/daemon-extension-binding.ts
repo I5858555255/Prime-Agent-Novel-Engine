@@ -104,7 +104,11 @@ function createExtensionUIContext(
 			};
 			const onAbort = () => finish();
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-			timeoutId = setTimeout(finish, opts?.timeout ?? 0);
+			if (opts?.timeout !== undefined) {
+				timeoutId = setTimeout(finish, opts.timeout);
+			} else if (!opts?.signal) {
+				timeoutId = setTimeout(finish, 0);
+			}
 		});
 	};
 

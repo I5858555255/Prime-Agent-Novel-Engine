@@ -6,11 +6,13 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
 type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
 
 export type DaemonClientMessageListener = (message: DaemonOutbound) => void;
+export type DaemonClientCloseListener = (error: Error) => void;
 
 export class DaemonClient {
 	private socket?: Socket;
 	private detachReader?: () => void;
 	private readonly listeners = new Set<DaemonClientMessageListener>();
+	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 	private readonly pendingRequests = new Map<
 		string,
 		{
@@ -57,14 +59,21 @@ export class DaemonClient {
 			socket.once("error", onError);
 		});
 
-		socket.on("error", (error) => this.rejectAll(error));
-		socket.on("close", () => this.rejectAll(new Error("Daemon socket closed")));
+		socket.on("error", (error) => this.notifyClosed(error));
+		socket.on("close", () => this.notifyClosed(new Error("Daemon socket closed")));
 	}
 
 	onMessage(listener: DaemonClientMessageListener): () => void {
 		this.listeners.add(listener);
 		return () => {
 			this.listeners.delete(listener);
+		};
+	}
+
+	onClose(listener: DaemonClientCloseListener): () => void {
+		this.closeListeners.add(listener);
+		return () => {
+			this.closeListeners.delete(listener);
 		};
 	}
 
@@ -133,6 +142,13 @@ export class DaemonClient {
 			clearTimeout(pending.timeout);
 			pending.reject(error);
 			this.pendingRequests.delete(id);
+		}
+	}
+
+	private notifyClosed(error: Error): void {
+		this.rejectAll(error);
+		for (const listener of [...this.closeListeners]) {
+			listener(error);
 		}
 	}
 }

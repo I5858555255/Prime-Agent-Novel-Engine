@@ -39,6 +39,7 @@ prime_agent_screen_drawn=0
 prime_agent_screen_last_cols=0
 prime_agent_screen_last_rows=0
 prime_agent_download_dir=
+prime_agent_bootstrap_kernel_on_install=0
 prime_agent_screen_title=
 prime_agent_screen_status=
 prime_agent_screen_detail=
@@ -89,6 +90,7 @@ main() {
 	tarball_url="$prime_agent_base_url/releases/v$version/$tarball_name"
 
 	confirm_install "$version" "$tarball_url"
+	confirm_kernel_runtime_setup
 
 	download_dir=$(create_temp_dir)
 	prime_agent_download_dir="$download_dir"
@@ -101,8 +103,6 @@ main() {
 
 	if [ "${PRIME_AGENT_NODE_INSTALLED_STANDALONE:-0}" = 1 ]; then
 		prime_agent_screen "Prime Agent installed" "" "Checking your shell PATH." ""
-		prime_agent_restore_terminal
-		printf '\n'
 		configure_standalone_node_path
 	elif command -v "$prime_agent_cmd" >/dev/null 2>&1; then
 		if [ "$prime_agent_screen_enabled" = 1 ]; then
@@ -618,11 +618,50 @@ prime_agent_pulse() {
 	esac
 }
 
+prime_agent_static_progress_title() {
+	case "$1" in
+		*...) printf '%s' "$1" ;;
+		*) printf '%s...' "$1" ;;
+	esac
+}
+
+prime_agent_animation_detail() {
+	details="$1"
+	case "$details" in
+		*'
+'*)
+			detail_count=$(printf '%s\n' "$details" | wc -l | tr -d ' ')
+			detail_index=$(((prime_agent_screen_frame / 12) % detail_count + 1))
+			printf '%s\n' "$details" | sed -n "${detail_index}p"
+			;;
+		*) printf '%s' "$details" ;;
+	esac
+}
+
 prime_agent_run_quiet_with_animation() {
 	title="$1"
 	status="$2"
 	detail="$3"
 	shift 3
+
+	prime_agent_run_quiet_with_animation_command "$title" "$status" "$detail" pulse "$@"
+}
+
+prime_agent_run_quiet_with_animation_steps() {
+	title="$1"
+	status="$2"
+	details="$3"
+	shift 3
+
+	prime_agent_run_quiet_with_animation_command "$title" "$status" "$details" static "$@"
+}
+
+prime_agent_run_quiet_with_animation_command() {
+	title="$1"
+	status="$2"
+	details="$3"
+	status_mode="$4"
+	shift 4
 
 	if [ "$prime_agent_screen_enabled" != 1 ]; then
 		printf '%s\n' "$status" >&2
@@ -636,7 +675,11 @@ prime_agent_run_quiet_with_animation() {
 	command_pid=$!
 
 	while kill -0 "$command_pid" 2>/dev/null; do
-		prime_agent_screen "$title" "$status$(prime_agent_pulse)" "$detail" ""
+		case "$status_mode" in
+			static) status_display=$(prime_agent_static_progress_title "$status") ;;
+			*) status_display="$status$(prime_agent_pulse)" ;;
+		esac
+		prime_agent_screen "$title" "$status_display" "$(prime_agent_animation_detail "$details")" ""
 		sleep 0.18
 	done
 
@@ -914,14 +957,22 @@ install_node_npm() {
 	method="$1"
 	label="$2"
 
-	if [ "$prime_agent_screen_enabled" = 1 ]; then
-		prime_agent_screen "Installing Node.js and npm" "" "Using $label." ""
-		prime_agent_restore_terminal
-		printf '\n'
-	else
+	if [ "$prime_agent_screen_enabled" != 1 ]; then
 		printf '\nInstalling Node.js and npm with %s...\n\n' "$label"
+		run_node_install_method "$method"
+	else
+		prepare_sudo_for_node_install "$method"
+		node_install_details="Using $label.
+Resolving Node.js packages.
+Downloading Node.js runtime.
+Installing npm.
+Preparing Prime Agent setup."
+		prime_agent_run_quiet_with_animation_steps \
+			"Installing Node.js and npm" \
+			"Installing Node.js and npm" \
+			"$node_install_details" \
+			run_node_install_method "$method"
 	fi
-	run_node_install_method "$method"
 
 	if [ "$method" = standalone ]; then
 		load_standalone_node
@@ -933,6 +984,38 @@ install_node_npm() {
 	else
 		printf '\nNode.js and npm are installed.\n\n'
 	fi
+}
+
+node_install_needs_sudo() {
+	if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+		return 1
+	fi
+
+	case "$1" in
+		apt|apk)
+			return 0
+			;;
+		standalone)
+			[ "$(uname -s)" = Linux ] || return 1
+			command -v xz >/dev/null 2>&1 && return 1
+			command -v apt-get >/dev/null 2>&1 || command -v apk >/dev/null 2>&1
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+prepare_sudo_for_node_install() {
+	method="$1"
+	if ! node_install_needs_sudo "$method"; then
+		return 0
+	fi
+
+	prime_agent_screen "Preparing Node.js install" "" "This may ask for your sudo password." ""
+	prime_agent_restore_terminal
+	printf '\n'
+	sudo -v
 }
 
 run_node_install_method() {
@@ -1107,24 +1190,44 @@ configure_standalone_node_path() {
 	if original_prime_agent_path=$(resolve_prime_agent_with_original_path); then
 		case "$original_prime_agent_path" in
 			"$PRIME_AGENT_STANDALONE_NODE_BIN/"*)
-				printf '\nRun it with: %s\n' "$prime_agent_cmd"
+				if [ "$prime_agent_screen_enabled" = 1 ]; then
+					prime_agent_screen "Prime Agent installed" "" "Run it with: $prime_agent_cmd" ""
+				else
+					printf '\nRun it with: %s\n' "$prime_agent_cmd"
+				fi
 				return 0
 				;;
 		esac
-		printf '%s was installed, but your shell is not using that install yet.\n' "$prime_agent_cmd"
-		printf 'Your shell currently resolves %s to: %s\n' "$prime_agent_cmd" "$original_prime_agent_path"
+		if [ "$prime_agent_screen_enabled" = 1 ]; then
+			prime_agent_screen "Prime Agent installed" "" "PATH update needed for $prime_agent_cmd." ""
+		else
+			printf '%s was installed, but your shell is not using that install yet.\n' "$prime_agent_cmd"
+			printf 'Your shell currently resolves %s to: %s\n' "$prime_agent_cmd" "$original_prime_agent_path"
+		fi
 	else
-		printf '%s was installed, but your shell is not using that install yet.\n' "$prime_agent_cmd"
+		if [ "$prime_agent_screen_enabled" = 1 ]; then
+			prime_agent_screen "Prime Agent installed" "" "PATH update needed for $prime_agent_cmd." ""
+		else
+			printf '%s was installed, but your shell is not using that install yet.\n' "$prime_agent_cmd"
+		fi
 	fi
 
 	profile=$(detect_shell_profile) || {
+		if [ "$prime_agent_screen_enabled" = 1 ]; then
+			prime_agent_restore_terminal
+			printf '\n'
+		fi
 		print_standalone_path_manual_instructions
 		return 0
 	}
 
 	if shell_profile_has_standalone_node_path "$profile"; then
-		printf '%s already contains %s.\n' "$profile" "$PRIME_AGENT_STANDALONE_NODE_BIN"
-		printf 'Restart your shell or run: . %s\n' "$profile"
+		if [ "$prime_agent_screen_enabled" = 1 ]; then
+			prime_agent_screen "Prime Agent installed" "" "Restart your shell or run: . $profile" ""
+		else
+			printf '%s already contains %s.\n' "$profile" "$PRIME_AGENT_STANDALONE_NODE_BIN"
+			printf 'Restart your shell or run: . %s\n' "$profile"
+		fi
 		return 0
 	fi
 
@@ -1186,21 +1289,25 @@ prompt_add_standalone_node_path() {
 		"Add standalone Node.js to your PATH?" \
 		"Updates $profile so future shells can run $prime_agent_cmd." \
 		"Update PATH? [Y/n]"; then
-		prime_agent_restore_terminal
-		printf '\n'
+		if [ "$prime_agent_screen_enabled" = 1 ]; then
+			prime_agent_restore_terminal
+			printf '\n'
+		fi
 		print_standalone_path_manual_instructions
 		return 0
 	fi
 
-	prime_agent_restore_terminal
-	printf '\n'
 	mkdir -p "$(dirname "$profile")"
 	{
 		printf '\n# Prime Agent standalone Node.js\n'
 		printf '%s\n' "$path_line"
 	} >>"$profile"
-	printf 'Added %s to %s.\n' "$PRIME_AGENT_STANDALONE_NODE_BIN" "$profile"
-	printf 'Restart your shell or run: . %s\n' "$profile"
+	if [ "$prime_agent_screen_enabled" = 1 ]; then
+		prime_agent_screen "Prime Agent installed" "" "Restart your shell or run: . $profile" ""
+	else
+		printf 'Added %s to %s.\n' "$PRIME_AGENT_STANDALONE_NODE_BIN" "$profile"
+		printf 'Restart your shell or run: . %s\n' "$profile"
+	fi
 }
 
 print_standalone_path_manual_instructions() {
@@ -1313,13 +1420,69 @@ confirm_install() {
 	exit 0
 }
 
+confirm_kernel_runtime_setup() {
+	case "${PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL:-}" in
+		1)
+			prime_agent_bootstrap_kernel_on_install=1
+			return
+			;;
+		0)
+			prime_agent_bootstrap_kernel_on_install=0
+			return
+			;;
+	esac
+
+	if prime_agent_prompt_yes_no \
+		"Prepare IPython runtime now?" \
+		"Installs uv, Python 3.11, ipykernel, and Prime Agent runtime." \
+		"Prepare? [Y/n]"; then
+		prime_agent_bootstrap_kernel_on_install=1
+		return
+	else
+		prompt_status=$?
+	fi
+
+	if [ "$prompt_status" -eq 2 ]; then
+		printf 'No terminal detected; preparing the IPython runtime during install.\n'
+		prime_agent_bootstrap_kernel_on_install=1
+		return
+	fi
+
+	prime_agent_bootstrap_kernel_on_install=0
+	if [ "$prime_agent_screen_enabled" = 1 ]; then
+		prime_agent_screen "IPython setup skipped" "" "The runtime can be prepared on first ipython use." ""
+		sleep 0.4
+	else
+		printf '\nSkipping IPython runtime setup.\n'
+	fi
+}
+
 install_prime_agent_package() {
 	tarball_path="$1"
-	prime_agent_run_quiet_with_animation \
-		"Installing Prime Agent" \
-		"Installing Prime Agent" \
-		"Running npm install -g." \
-		npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+	if [ "$prime_agent_bootstrap_kernel_on_install" = 1 ]; then
+		npm_install_details="Preparing global install.
+Linking command binaries.
+Installing runtime packages.
+Preloading search tools.
+Preparing IPython kernel.
+Finalizing npm install."
+		prime_agent_run_quiet_with_animation_steps \
+			"Installing Prime Agent" \
+			"Installing Prime Agent" \
+			"$npm_install_details" \
+			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1 PRIME_AGENT_INSTALL_UV=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+	else
+		npm_install_details="Preparing global install.
+Linking command binaries.
+Installing runtime packages.
+Preloading search tools.
+Finalizing npm install."
+		prime_agent_run_quiet_with_animation_steps \
+			"Installing Prime Agent" \
+			"Installing Prime Agent" \
+			"$npm_install_details" \
+			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+	fi
 }
 
 main "$@"

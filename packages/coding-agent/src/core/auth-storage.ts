@@ -18,11 +18,26 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "f
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.js";
+import {
+	loadPrimeCliConfig,
+	PRIME_INFERENCE_PROVIDER_ID,
+	type PrimeCliConfig,
+	type PrimeTeam,
+} from "./prime-inference-auth.js";
 import { resolveConfigValue } from "./resolve-config-value.js";
+
+export type PrimeTeamCredential = {
+	teamId: string;
+	name: string;
+	slug?: string;
+	role?: string;
+	createdAt?: string;
+};
 
 export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
+	primeTeam?: PrimeTeamCredential | null;
 };
 
 export type OAuthCredential = {
@@ -35,8 +50,13 @@ export type AuthStorageData = Record<string, AuthCredential>;
 
 export type AuthStatus = {
 	configured: boolean;
-	source?: "stored" | "runtime" | "environment" | "fallback" | "models_json_key" | "models_json_command";
+	source?: "stored" | "runtime" | "environment" | "prime_cli" | "fallback" | "models_json_key" | "models_json_command";
 	label?: string;
+};
+
+export type AuthStorageOptions = {
+	primeCliConfigPath?: string;
+	usePrimeCliConfig?: boolean;
 };
 
 type LockResult<T> = {
@@ -194,23 +214,29 @@ export class AuthStorage {
 	private fallbackResolver?: (provider: string) => string | undefined;
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
+	private primeCliConfigCache: PrimeCliConfig | undefined;
+	private primeCliConfigCacheLoaded = false;
 
-	private constructor(private storage: AuthStorageBackend) {
+	private constructor(
+		private storage: AuthStorageBackend,
+		private options: AuthStorageOptions = {},
+	) {
 		this.reload();
 	}
 
-	static create(authPath?: string): AuthStorage {
-		return new AuthStorage(new FileAuthStorageBackend(authPath ?? join(getAgentDir(), "auth.json")));
+	static create(authPath?: string, options?: AuthStorageOptions): AuthStorage {
+		const authOptions = options ?? { usePrimeCliConfig: authPath === undefined };
+		return new AuthStorage(new FileAuthStorageBackend(authPath ?? join(getAgentDir(), "auth.json")), authOptions);
 	}
 
-	static fromStorage(storage: AuthStorageBackend): AuthStorage {
-		return new AuthStorage(storage);
+	static fromStorage(storage: AuthStorageBackend, options?: AuthStorageOptions): AuthStorage {
+		return new AuthStorage(storage, options);
 	}
 
-	static inMemory(data: AuthStorageData = {}): AuthStorage {
+	static inMemory(data: AuthStorageData = {}, options?: AuthStorageOptions): AuthStorage {
 		const storage = new InMemoryAuthStorageBackend();
 		storage.withLock(() => ({ result: undefined, next: JSON.stringify(data, null, 2) }));
-		return AuthStorage.fromStorage(storage);
+		return AuthStorage.fromStorage(storage, options);
 	}
 
 	/**
@@ -252,6 +278,8 @@ export class AuthStorage {
 	 * Reload credentials from storage.
 	 */
 	reload(): void {
+		this.primeCliConfigCache = undefined;
+		this.primeCliConfigCacheLoaded = false;
 		let content: string | undefined;
 		try {
 			this.storage.withLock((current) => {
@@ -332,6 +360,7 @@ export class AuthStorage {
 		if (this.runtimeOverrides.has(provider)) return true;
 		if (this.data[provider]) return true;
 		if (getEnvApiKey(provider)) return true;
+		if (this.getPrimeCliApiKey(provider)) return true;
 		if (this.fallbackResolver?.(provider)) return true;
 		return false;
 	}
@@ -351,6 +380,10 @@ export class AuthStorage {
 		const envKeys = findEnvKeys(provider);
 		if (envKeys?.[0]) {
 			return { configured: false, source: "environment", label: envKeys[0] };
+		}
+
+		if (this.getPrimeCliApiKey(provider)) {
+			return { configured: false, source: "prime_cli", label: "Prime CLI" };
 		}
 
 		if (this.fallbackResolver?.(provider)) {
@@ -507,6 +540,9 @@ export class AuthStorage {
 		const envKey = getEnvApiKey(providerId);
 		if (envKey) return envKey;
 
+		const primeCliKey = this.getPrimeCliApiKey(providerId);
+		if (primeCliKey) return primeCliKey;
+
 		// Fall back to custom resolver (e.g., models.json custom providers)
 		if (options?.includeFallback !== false) {
 			return this.fallbackResolver?.(providerId) ?? undefined;
@@ -520,5 +556,81 @@ export class AuthStorage {
 	 */
 	getOAuthProviders() {
 		return getOAuthProviders();
+	}
+
+	setPrimeInferenceTeamSelection(team: PrimeTeam | null): void {
+		const credential = this.data[PRIME_INFERENCE_PROVIDER_ID];
+		if (credential?.type !== "api_key") {
+			return;
+		}
+		this.set(PRIME_INFERENCE_PROVIDER_ID, {
+			...credential,
+			primeTeam: team ? this.toPrimeTeamCredential(team) : null,
+		});
+	}
+
+	getPrimeInferenceTeamSelection(): PrimeTeamCredential | null | undefined {
+		const credential = this.data[PRIME_INFERENCE_PROVIDER_ID];
+		return credential?.type === "api_key" ? credential.primeTeam : undefined;
+	}
+
+	getProviderHeaders(providerId: string): Record<string, string> | undefined {
+		if (providerId !== PRIME_INFERENCE_PROVIDER_ID) {
+			return undefined;
+		}
+
+		const primeCliConfig = this.getPrimeCliConfig(providerId);
+		if (primeCliConfig?.teamIdFromEnv) {
+			return primeCliConfig.teamId ? { "X-Prime-Team-ID": primeCliConfig.teamId } : undefined;
+		}
+
+		const credential = this.data[providerId];
+		if (credential?.type === "api_key") {
+			if (credential.primeTeam === null) {
+				return undefined;
+			}
+			const selectedTeamId = credential.primeTeam?.teamId;
+			if (selectedTeamId) {
+				return { "X-Prime-Team-ID": selectedTeamId };
+			}
+		}
+
+		const teamId = primeCliConfig?.teamId;
+		return teamId ? { "X-Prime-Team-ID": teamId } : undefined;
+	}
+
+	private toPrimeTeamCredential(team: PrimeTeam): PrimeTeamCredential {
+		const credential: PrimeTeamCredential = {
+			teamId: team.teamId,
+			name: team.name,
+		};
+		if (team.slug) {
+			credential.slug = team.slug;
+		}
+		if (team.role) {
+			credential.role = team.role;
+		}
+		if (team.createdAt) {
+			credential.createdAt = team.createdAt;
+		}
+		return credential;
+	}
+
+	private getPrimeCliConfig(providerId: string): PrimeCliConfig | undefined {
+		if (providerId !== PRIME_INFERENCE_PROVIDER_ID) {
+			return undefined;
+		}
+		if (!this.options.usePrimeCliConfig && !this.options.primeCliConfigPath) {
+			return undefined;
+		}
+		if (!this.primeCliConfigCacheLoaded) {
+			this.primeCliConfigCache = loadPrimeCliConfig(this.options.primeCliConfigPath);
+			this.primeCliConfigCacheLoaded = true;
+		}
+		return this.primeCliConfigCache;
+	}
+
+	private getPrimeCliApiKey(providerId: string): string | undefined {
+		return this.getPrimeCliConfig(providerId)?.apiKey;
 	}
 }

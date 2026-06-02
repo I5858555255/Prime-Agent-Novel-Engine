@@ -37,6 +37,24 @@ export type { DaemonCommand, DaemonModeOptions, DaemonOutbound, DaemonResponse }
 export type { SessionStatus, SessionSummary } from "./daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
+const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
+	"list",
+	"create",
+	"attach",
+	"detach",
+	"kill",
+	"rename",
+	"prompt",
+	"steer",
+	"follow_up",
+	"abort",
+	"get_state",
+	"get_messages",
+	"get_session_stats",
+	"get_commands",
+	"shutdown",
+]);
+
 export async function runDaemonMode(initialRuntime: AgentSessionRuntime, options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
 	// main() creates a runtime before dispatching modes. Daemon mode should not
@@ -174,7 +192,14 @@ class AgentDaemon {
 	private async handleLine(client: DaemonSocketClient, line: string): Promise<void> {
 		let command: DaemonCommand;
 		try {
-			command = JSON.parse(line) as DaemonCommand;
+			const parsed = JSON.parse(line) as { id?: unknown; type?: unknown };
+			if (typeof parsed.type !== "string" || !DAEMON_COMMAND_TYPES.has(parsed.type)) {
+				const commandName = typeof parsed.type === "string" ? parsed.type : "unknown";
+				const commandId = typeof parsed.id === "string" ? parsed.id : undefined;
+				this.write(client, failure(commandId, commandName, `Unknown daemon command: ${commandName}`));
+				return;
+			}
+			command = parsed as DaemonCommand;
 		} catch (error) {
 			this.write(client, failure(undefined, "parse", error));
 			return;
@@ -203,15 +228,16 @@ class AgentDaemon {
 					});
 				}
 				const defaultConfig = this.options.defaultSessionConfig;
-				if (!defaultConfig.cwd) {
-					throw new Error("Active session config is missing cwd");
+				const listSessionDir = command.sessionDir ?? defaultConfig.sessionDir;
+				if (command.cwd) {
+					const savedSessions = await SessionManager.list(resolve(command.cwd), listSessionDir);
+					return success(command.id, "list", {
+						sessions: buildSessionList(activeSessions, savedSessions),
+					});
 				}
 				const savedSessions =
-					command.cwd || command.sessionDir || defaultConfig.sessionDir
-						? await SessionManager.list(
-								resolve(command.cwd ?? defaultConfig.cwd),
-								command.sessionDir ?? defaultConfig.sessionDir,
-							)
+					listSessionDir !== undefined
+						? await SessionManager.listAll(undefined, listSessionDir)
 						: await SessionManager.listAll();
 				return success(command.id, "list", {
 					sessions: buildSessionList(activeSessions, savedSessions),
@@ -348,7 +374,9 @@ class AgentDaemon {
 			}
 
 			case "shutdown":
-				void this.shutdown(0);
+				setImmediate(() => {
+					void this.shutdown(0);
+				});
 				return success(command.id, "shutdown");
 		}
 	}

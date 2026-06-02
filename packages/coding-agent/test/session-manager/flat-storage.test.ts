@@ -25,6 +25,11 @@ describe("SessionManager flat storage", () => {
 			const currentSessions = await SessionManager.list(cwdA, sessionDir);
 			expect(currentSessions.map((session) => session.id)).toEqual([sessionA.getSessionId()]);
 
+			const allSessions = await SessionManager.listAll(undefined, sessionDir);
+			expect(new Set(allSessions.map((session) => session.id))).toEqual(
+				new Set([sessionA.getSessionId(), sessionB.getSessionId()]),
+			);
+
 			const continued = SessionManager.continueRecent(cwdA, sessionDir);
 			expect(continued.getSessionId()).toBe(sessionA.getSessionId());
 

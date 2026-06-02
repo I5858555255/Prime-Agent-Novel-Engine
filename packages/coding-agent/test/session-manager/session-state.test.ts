@@ -65,4 +65,26 @@ describe("SessionManager session state", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
+
+	it("does not duplicate entries when lifecycle state is followed by a normal turn", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-state-turn-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			const session = SessionManager.create(cwd, sessionDir);
+
+			session.appendSessionState({ status: "sleep" });
+			session.appendMessage(userMsg("hello"));
+			session.appendMessage(assistantMsg("hi"));
+
+			const sessionFile = session.getSessionFile();
+			expect(sessionFile).toBeDefined();
+
+			const entries = loadEntriesFromFile(sessionFile!);
+			expect(entries.filter((entry) => entry.type === "session_state")).toHaveLength(1);
+			expect(entries.filter((entry) => entry.type === "message")).toHaveLength(2);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
 });
