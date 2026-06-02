@@ -214,14 +214,34 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	private async disposeSubagentRuntimes(): Promise<void> {
 		const runtimes = [...this.subagentRuntimes.values()];
 		this.subagentRuntimes.clear();
+		let disposeError: unknown;
 		for (const runtime of runtimes) {
-			await runtime.dispose();
+			try {
+				await runtime.dispose();
+			} catch (error) {
+				disposeError ??= error;
+			}
+		}
+		if (disposeError) {
+			throw disposeError;
 		}
 	}
 
 	private async disposeHostedSubagentRuntimes(): Promise<void> {
-		await this.subagentRuntimeHost?.disposeRlmSubagentRuntimes?.();
-		await this.disposeSubagentRuntimes();
+		let disposeError: unknown;
+		try {
+			await this.subagentRuntimeHost?.disposeRlmSubagentRuntimes?.();
+		} catch (error) {
+			disposeError ??= error;
+		}
+		try {
+			await this.disposeSubagentRuntimes();
+		} catch (error) {
+			disposeError ??= error;
+		}
+		if (disposeError) {
+			throw disposeError;
+		}
 	}
 
 	listSubagentRuntimes(): readonly AgentSessionRuntime[] {
@@ -497,21 +517,38 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	}
 
 	private async disposeOnce(): Promise<void> {
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason: "quit",
-		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
-		await this.disposeHostedSubagentRuntimes();
+		let disposeError: unknown;
+		try {
+			await emitSessionShutdownEvent(this.session.extensionRunner, {
+				type: "session_shutdown",
+				reason: "quit",
+			});
+		} catch (error) {
+			disposeError ??= error;
+		}
+		try {
+			this.beforeSessionInvalidate?.();
+		} catch (error) {
+			disposeError ??= error;
+		}
+		try {
+			this.session.dispose();
+		} catch (error) {
+			disposeError ??= error;
+		}
+		try {
+			await this.disposeHostedSubagentRuntimes();
+		} catch (error) {
+			disposeError ??= error;
+		}
+		if (disposeError) {
+			throw disposeError;
+		}
 	}
 
 	async dispose(): Promise<void> {
 		if (!this.disposePromise) {
-			this.disposePromise = this.disposeOnce().catch((error: unknown) => {
-				this.disposePromise = undefined;
-				throw error;
-			});
+			this.disposePromise = this.disposeOnce();
 		}
 		await this.disposePromise;
 	}
