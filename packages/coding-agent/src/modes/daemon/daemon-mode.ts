@@ -83,6 +83,7 @@ class AgentDaemon {
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
+	private readonly closingSessions = new Map<string, Promise<void>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 
 	constructor(
@@ -515,6 +516,21 @@ class AgentDaemon {
 	}
 
 	private async closeSession(state: ActiveSessionState, reason: DaemonSessionClosedReason): Promise<void> {
+		const existingClose = this.closingSessions.get(state.activeSessionId);
+		if (existingClose) {
+			await existingClose;
+			return;
+		}
+		const closePromise = Promise.resolve().then(() => this.closeSessionOnce(state, reason));
+		this.closingSessions.set(state.activeSessionId, closePromise);
+		try {
+			await closePromise;
+		} finally {
+			this.closingSessions.delete(state.activeSessionId);
+		}
+	}
+
+	private async closeSessionOnce(state: ActiveSessionState, reason: DaemonSessionClosedReason): Promise<void> {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}

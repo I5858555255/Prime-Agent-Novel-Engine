@@ -91,6 +91,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	private beforeSessionInvalidate?: () => void;
 	private subagentRuntimeHost?: SubagentRuntimeHost;
 	private subagentRuntimes = new Map<string, AgentSessionRuntime>();
+	private disposePromise?: Promise<void>;
 
 	constructor(
 		private _session: AgentSession,
@@ -490,7 +491,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		return { cancelled: false };
 	}
 
-	async dispose(): Promise<void> {
+	private async disposeOnce(): Promise<void> {
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason: "quit",
@@ -498,6 +499,16 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
 		await this.disposeSubagentRuntimes();
+	}
+
+	async dispose(): Promise<void> {
+		if (!this.disposePromise) {
+			this.disposePromise = this.disposeOnce().catch((error: unknown) => {
+				this.disposePromise = undefined;
+				throw error;
+			});
+		}
+		await this.disposePromise;
 	}
 }
 

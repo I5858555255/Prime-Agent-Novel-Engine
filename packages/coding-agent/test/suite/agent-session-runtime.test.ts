@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionRuntimeConfig } from "../../src/core/agent-session-config.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -149,6 +149,23 @@ describe("AgentSessionRuntime characterization", () => {
 
 		expect(calls).toHaveLength(2);
 		expect(calls[1]?.sessionConfig).toBe(sessionConfig);
+	});
+
+	it("disposes a runtime only once across repeated teardown calls", async () => {
+		const shutdownEvents: SessionShutdownEvent[] = [];
+		const beforeInvalidate = vi.fn();
+		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
+			pi.on("session_shutdown", (event) => {
+				shutdownEvents.push(event);
+			});
+		});
+		runtime.setBeforeSessionInvalidate(beforeInvalidate);
+
+		await Promise.all([runtime.dispose(), runtime.dispose()]);
+		await runtime.dispose();
+
+		expect(shutdownEvents).toEqual([{ type: "session_shutdown", reason: "quit" }]);
+		expect(beforeInvalidate).toHaveBeenCalledTimes(1);
 	});
 
 	it("persists message_end assistant replacements to the session manager", async () => {
