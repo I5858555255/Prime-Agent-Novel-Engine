@@ -278,7 +278,7 @@ export async function createSessionManager(
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return SessionManager.open(selectedPath, sessionDir);
+			return SessionManager.open(selectedPath, sessionDir, explicitCwdOverride);
 		} finally {
 			stopThemeWatcher();
 		}

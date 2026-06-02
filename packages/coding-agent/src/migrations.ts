@@ -4,11 +4,14 @@
 
 import chalk from "chalk";
 import {
+	closeSync,
 	type Dirent,
 	existsSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	readFileSync,
+	readSync,
 	renameSync,
 	rmdirSync,
 	rmSync,
@@ -22,6 +25,40 @@ const MIGRATION_GUIDE_URL =
 	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
 const EXTENSIONS_DOC_URL =
 	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/extensions.md";
+
+function readFirstLineSync(filePath: string, maxBytes = 64 * 1024): string | undefined {
+	const fd = openSync(filePath, "r");
+	const chunks: Buffer[] = [];
+	let position = 0;
+
+	try {
+		const buffer = Buffer.alloc(1024);
+		while (position < maxBytes) {
+			const bytesToRead = Math.min(buffer.length, maxBytes - position);
+			const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
+			if (bytesRead === 0) {
+				break;
+			}
+
+			const chunk = buffer.subarray(0, bytesRead);
+			const newlineIndex = chunk.indexOf(0x0a);
+			if (newlineIndex !== -1) {
+				chunks.push(Buffer.from(chunk.subarray(0, newlineIndex)));
+				return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+			}
+
+			chunks.push(Buffer.from(chunk));
+			position += bytesRead;
+		}
+	} finally {
+		closeSync(fd);
+	}
+
+	if (chunks.length === 0) {
+		return undefined;
+	}
+	return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+}
 
 /**
  * Migrate legacy oauth.json and settings.json apiKeys to auth.json.
@@ -109,8 +146,7 @@ export function migrateSessionsFromAgentRoot(): void {
 	for (const file of files) {
 		try {
 			// Read first line to get session header
-			const content = readFileSync(file, "utf8");
-			const firstLine = content.split("\n")[0];
+			const firstLine = readFirstLineSync(file);
 			if (!firstLine?.trim()) continue;
 
 			const header = JSON.parse(firstLine);
@@ -138,7 +174,7 @@ export function migrateSessionsFromAgentRoot(): void {
 
 function isSessionJsonlFile(filePath: string): boolean {
 	try {
-		const firstLine = readFileSync(filePath, "utf8").split("\n")[0];
+		const firstLine = readFirstLineSync(filePath);
 		if (!firstLine?.trim()) {
 			return false;
 		}

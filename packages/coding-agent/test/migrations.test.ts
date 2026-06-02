@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.js";
-import { migrateLegacySessionDirsToSessionRoot } from "../src/migrations.js";
+import { migrateLegacySessionDirsToSessionRoot, migrateSessionsFromAgentRoot } from "../src/migrations.js";
 
 describe("session migrations", () => {
 	const tempDirs: string[] = [];
@@ -53,6 +53,30 @@ describe("session migrations", () => {
 		expect(existsSync(legacyFile)).toBe(false);
 		expect(existsSync(legacyDir)).toBe(false);
 		expect(readFileSync(migratedFile, "utf8")).toContain('"id":"session-1"');
+	});
+
+	it("moves root session files using only the JSONL header", () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "prime-agent-migrations-"));
+		tempDirs.push(agentDir);
+		process.env[ENV_AGENT_DIR] = agentDir;
+
+		const legacyFile = join(agentDir, "session-root.jsonl");
+		writeFileSync(
+			legacyFile,
+			`${JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "session-root",
+				timestamp: new Date().toISOString(),
+				cwd: "/tmp/project",
+			})}\n${"x".repeat(128 * 1024)}\n`,
+		);
+
+		migrateSessionsFromAgentRoot();
+
+		const migratedFile = join(agentDir, "sessions", "session-root.jsonl");
+		expect(existsSync(legacyFile)).toBe(false);
+		expect(readFileSync(migratedFile, "utf8")).toContain('"id":"session-root"');
 	});
 
 	it("does not move session files from non-legacy subdirectories", () => {
