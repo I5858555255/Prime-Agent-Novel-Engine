@@ -3523,6 +3523,8 @@ export class AgentSession {
 		if (options.parentSession.sessionFile) {
 			childSessionManager.newSession({ parentSession: options.parentSession.sessionFile });
 		}
+		childSessionManager.appendModelChange(options.model.provider, options.model.id);
+		childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
 
 		const childAgent = new Agent({
 			initialState: {
