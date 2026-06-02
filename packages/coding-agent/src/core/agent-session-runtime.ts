@@ -196,7 +196,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		});
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
-		await this.disposeSubagentRuntimes();
+		await this.disposeHostedSubagentRuntimes();
 	}
 
 	private bindRuntimeHost(): void {
@@ -217,6 +217,11 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		for (const runtime of runtimes) {
 			await runtime.dispose();
 		}
+	}
+
+	private async disposeHostedSubagentRuntimes(): Promise<void> {
+		await this.subagentRuntimeHost?.disposeRlmSubagentRuntimes?.();
+		await this.disposeSubagentRuntimes();
 	}
 
 	listSubagentRuntimes(): readonly AgentSessionRuntime[] {
@@ -498,7 +503,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		});
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
-		await this.disposeSubagentRuntimes();
+		await this.disposeHostedSubagentRuntimes();
 	}
 
 	async dispose(): Promise<void> {

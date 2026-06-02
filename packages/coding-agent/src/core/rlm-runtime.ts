@@ -51,4 +51,5 @@ export interface CreateRlmSubagentRuntimeOptions {
 export interface SubagentRuntimeHost {
 	createRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): Promise<RlmSubagentRuntime>;
 	releaseRlmSubagentRuntime?(runtime: RlmSubagentRuntime, options: CreateRlmSubagentRuntimeOptions): Promise<void>;
+	disposeRlmSubagentRuntimes?(): Promise<void>;
 }

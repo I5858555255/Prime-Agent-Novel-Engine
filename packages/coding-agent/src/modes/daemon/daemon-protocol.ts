@@ -48,7 +48,7 @@ export type DaemonResponse =
 	| { id?: string; type: "response"; command: string; success: true; data?: unknown }
 	| { id?: string; type: "response"; command: string; success: false; error: string };
 
-export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed";
+export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced";
 
 export type DaemonOutbound =
 	| DaemonResponse

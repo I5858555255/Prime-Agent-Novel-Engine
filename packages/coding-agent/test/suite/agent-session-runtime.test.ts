@@ -11,6 +11,7 @@ import {
 	createAgentSessionServices,
 } from "../../src/core/agent-session-runtime.js";
 import { AuthStorage } from "../../src/core/auth-storage.js";
+import type { SubagentRuntimeHost } from "../../src/core/rlm-runtime.js";
 import { SessionManager } from "../../src/core/session-manager.js";
 import type {
 	ExtensionAPI,
@@ -166,6 +167,22 @@ describe("AgentSessionRuntime characterization", () => {
 
 		expect(shutdownEvents).toEqual([{ type: "session_shutdown", reason: "quit" }]);
 		expect(beforeInvalidate).toHaveBeenCalledTimes(1);
+	});
+
+	it("disposes hosted RLM children during session replacement", async () => {
+		const disposeRlmSubagentRuntimes = vi.fn(async () => {});
+		const host: SubagentRuntimeHost = {
+			createRlmSubagentRuntime: async () => {
+				throw new Error("unexpected child creation");
+			},
+			disposeRlmSubagentRuntimes,
+		};
+		const { runtime } = await createRuntimeForTest(() => {});
+		runtime.setSubagentRuntimeHost(host);
+
+		await runtime.newSession();
+
+		expect(disposeRlmSubagentRuntimes).toHaveBeenCalledTimes(1);
 	});
 
 	it("persists message_end assistant replacements to the session manager", async () => {

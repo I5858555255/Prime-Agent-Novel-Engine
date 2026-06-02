@@ -210,6 +210,12 @@ class AgentDaemon {
 	private createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost {
 		return {
 			createRlmSubagentRuntime: async (options) => this.createRlmSubagentRuntime(parentState, options),
+			disposeRlmSubagentRuntimes: async () => {
+				const cascadeError = await this.closeChildSessions(parentState, "replaced");
+				if (cascadeError) {
+					throw cascadeError;
+				}
+			},
 			releaseRlmSubagentRuntime: async (runtime) => {
 				const state = this.findRuntimeState(runtime);
 				if (state) {
@@ -534,21 +540,14 @@ class AgentDaemon {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
-		let cascadeError: unknown;
-		for (const childState of getChildActiveSessionStates(this.sessions, state)) {
-			try {
-				await this.closeSession(childState, reason);
-			} catch (error) {
-				cascadeError ??= error;
-			}
-		}
+		const cascadeError = await this.closeChildSessions(state, reason);
 		let persistError: unknown;
 		try {
 			state.runtime.session.sessionManager.appendSessionState({ status: "sleep" });
 		} catch (error) {
 			persistError = error;
 		}
-		if (reason === "killed" || reason === "shutdown") {
+		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
 			await state.runtime.session.abort().catch(() => undefined);
 		}
 		state.unsubscribe?.();
@@ -565,6 +564,21 @@ class AgentDaemon {
 		if (cascadeError && reason !== "shutdown" && reason !== "completed") {
 			throw cascadeError;
 		}
+	}
+
+	private async closeChildSessions(
+		parentState: ActiveSessionState,
+		reason: DaemonSessionClosedReason,
+	): Promise<unknown> {
+		let cascadeError: unknown;
+		for (const childState of getChildActiveSessionStates(this.sessions, parentState)) {
+			try {
+				await this.closeSession(childState, reason);
+			} catch (error) {
+				cascadeError ??= error;
+			}
+		}
+		return cascadeError;
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
