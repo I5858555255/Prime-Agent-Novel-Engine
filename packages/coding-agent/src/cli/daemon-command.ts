@@ -718,10 +718,15 @@ async function runPrompt(client: DaemonClient, args: string[]): Promise<void> {
 	}
 
 	const finished = waitForSessionEnd(client, activeSessionId);
-	client.onMessage(printJsonLine);
-	await requireSuccessAsync(client.request({ type: "attach", activeSessionId }));
-	await requireSuccessAsync(client.request({ type: "prompt", activeSessionId, message }));
-	await finished;
+	const unsubscribeOutput = client.onMessage(printJsonLine);
+	try {
+		await requireSuccessAsync(client.request({ type: "attach", activeSessionId }));
+		await requireSuccessAsync(client.request({ type: "prompt", activeSessionId, message }));
+		await finished.promise;
+	} finally {
+		unsubscribeOutput();
+		finished.cancel();
+	}
 }
 
 async function runMessageCommand(
@@ -772,30 +777,57 @@ async function requireSuccessAsync(responsePromise: Promise<DaemonResponse>): Pr
 	return requireSuccess(await responsePromise);
 }
 
-function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		let unsubscribeMessages = () => {};
-		let unsubscribeClose = () => {};
-		const cleanup = () => {
-			unsubscribeMessages();
-			unsubscribeClose();
-		};
-		unsubscribeMessages = client.onMessage((message) => {
-			if (message.type === "session_event" && message.activeSessionId === activeSessionId) {
-				if (message.event.type === "agent_end") {
-					cleanup();
-					resolve();
-				}
-			} else if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {
-				cleanup();
-				resolve();
-			}
-		});
-		unsubscribeClose = client.onClose((error) => {
-			cleanup();
-			reject(error);
-		});
+interface SessionEndWaiter {
+	promise: Promise<void>;
+	cancel: () => void;
+}
+
+function waitForSessionEnd(client: DaemonClient, activeSessionId: string): SessionEndWaiter {
+	let unsubscribeMessages = () => {};
+	let unsubscribeClose = () => {};
+	let settled = false;
+	let resolveWait!: () => void;
+	let rejectWait!: (error: Error) => void;
+
+	const cleanup = () => {
+		unsubscribeMessages();
+		unsubscribeClose();
+	};
+	const resolveOnce = () => {
+		if (settled) {
+			return;
+		}
+		settled = true;
+		cleanup();
+		resolveWait();
+	};
+	const rejectOnce = (error: Error) => {
+		if (settled) {
+			return;
+		}
+		settled = true;
+		cleanup();
+		rejectWait(error);
+	};
+
+	const promise = new Promise<void>((resolve, reject) => {
+		resolveWait = resolve;
+		rejectWait = reject;
 	});
+	unsubscribeMessages = client.onMessage((message) => {
+		if (message.type === "session_event" && message.activeSessionId === activeSessionId) {
+			if (message.event.type === "agent_end") {
+				resolveOnce();
+			}
+		} else if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {
+			resolveOnce();
+		}
+	});
+	unsubscribeClose = client.onClose((error) => {
+		rejectOnce(error);
+	});
+
+	return { promise, cancel: resolveOnce };
 }
 
 function waitUntilInterrupted(): Promise<void> {
