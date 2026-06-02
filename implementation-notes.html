@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<title>ENG-3885 Implementation Notes</title>
+		<style>
+			body {
+				font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+				line-height: 1.5;
+				margin: 2rem;
+				max-width: 900px;
+			}
+			h1, h2 {
+				line-height: 1.2;
+			}
+			code {
+				background: #f4f4f4;
+				padding: 0.1rem 0.25rem;
+			}
+			.note {
+				border-left: 4px solid #666;
+				padding-left: 1rem;
+				margin: 1rem 0;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>ENG-3885 Implementation Notes</h1>
+		<p>
+			This file is a running record of design decisions, deviations, tradeoffs, and open
+			questions while implementing daemon-owned subagent runtimes.
+		</p>
+
+		<h2>Design Decisions</h2>
+		<ul>
+			<li>
+				The main implementation direction is to make runtime-created sessions use the same
+				<code>AgentSessionRuntime</code> abstraction for subagents. The subagent boundary is a
+				host interface that creates a child runtime; the parent <code>AgentSession</code> still
+				owns RLM result shaping and parent usage attribution.
+			</li>
+			<li>
+				Child runtime creation needs internal session overrides so the child inherits the
+				parent's active model, thinking level, scoped model list, active tools, and RLM depth
+				instead of re-resolving CLI/default startup state.
+			</li>
+			<li>
+				<code>AgentSessionRuntime</code> now implements the subagent host. Runtime-created
+				parents bind themselves as the host for their session, so nested <code>rlm()</code>
+				calls create child <code>AgentSessionRuntime</code> instances through the same runtime
+				factory used for top-level session replacement.
+			</li>
+			<li>
+				The parent <code>AgentSession</code> still builds the user-facing
+				<code>rlm_child_update</code> summary and applies child usage attribution. Those are
+				RLM result semantics rather than runtime construction semantics.
+			</li>
+			<li>
+				Child runtimes carry <code>AgentSessionRuntime.metadata</code> with
+				<code>kind: "subagent"</code>, parent session id/file, RLM child id, prompt, and
+				session directory. The missing daemon layer can map this onto
+				<code>parentActiveSessionId</code> once its active-session ids exist.
+			</li>
+		</ul>
+
+		<h2>Deviations</h2>
+		<ul>
+			<li>
+				The current worktree does not contain the daemon orchestrator registry or protocol
+				files described by ENG-3873. This implementation therefore adds the runtime-host
+				boundary and runtime-owned child tracking in core code, but cannot wire a concrete
+				daemon protocol list/attach/kill endpoint or <code>parentActiveSessionId</code> field yet.
+			</li>
+		</ul>
+
+		<h2>Tradeoffs</h2>
+		<ul>
+			<li>
+				Raw <code>AgentSession</code> callers still need an inline fallback because the public
+				SDK and existing tests can construct sessions without an <code>AgentSessionRuntime</code>.
+				Runtime-created sessions will use the regular runtime host by default.
+			</li>
+			<li>
+				Runtime-created child sessions bind extensions with an empty UI context. This makes
+				the child more like a normal runtime and balances <code>session_start</code> with
+				<code>session_shutdown</code>, but it may expose extension lifecycle behavior that the
+				old inline child path skipped.
+			</li>
+		</ul>
+
+		<h2>Open Questions</h2>
+		<ul>
+			<li>
+				Once ENG-3873 lands, confirm the daemon retention policy for completed child
+				runtimes: dispose immediately after RLM completion while retaining metadata, or keep
+				the runtime attachable until the parent session is closed.
+			</li>
+		</ul>
+	</body>
+</html>

@@ -1,12 +1,11 @@
 import { join } from "node:path";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
+import type { AgentSessionRuntimeOptions } from "./agent-session-runtime-options.js";
 import { AuthStorage } from "./auth-storage.js";
-import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
+import type { SessionStartEvent } from "./extensions/index.js";
 import { ModelRegistry } from "./model-registry.js";
 import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type ResourceLoader } from "./resource-loader.js";
-import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
+import { type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
 import type { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 
@@ -45,16 +44,10 @@ export interface CreateAgentSessionServicesOptions {
  * Use this after services exist and any cwd-bound model/tool/session options
  * have been resolved against those services.
  */
-export interface CreateAgentSessionFromServicesOptions {
+export interface CreateAgentSessionFromServicesOptions extends AgentSessionRuntimeOptions {
 	services: AgentSessionServices;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
-	model?: Model<any>;
-	thinkingLevel?: ThinkingLevel;
-	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
-	tools?: string[];
-	noTools?: CreateAgentSessionOptions["noTools"];
-	customTools?: ToolDefinition[];
 }
 
 /**
@@ -193,6 +186,15 @@ export async function createAgentSessionFromServices(
 		tools: options.tools,
 		noTools: options.noTools,
 		customTools: options.customTools,
+		initialActiveToolNames: options.initialActiveToolNames,
+		allowedToolNames: options.allowedToolNames,
+		includeGoalTools: options.includeGoalTools,
+		autoActivateGoalTools: options.autoActivateGoalTools,
+		rlmDepth: options.rlmDepth,
+		rlmMaxDepth: options.rlmMaxDepth,
+		rlmSessionDir: options.rlmSessionDir,
+		rlmParentNodeId: options.rlmParentNodeId,
+		subagentRuntimeHost: options.subagentRuntimeHost,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 }

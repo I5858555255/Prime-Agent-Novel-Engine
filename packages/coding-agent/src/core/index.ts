@@ -13,10 +13,13 @@ export {
 } from "./agent-session.js";
 export {
 	AgentSessionRuntime,
+	type AgentSessionRuntimeKind,
+	type AgentSessionRuntimeMetadata,
 	type CreateAgentSessionRuntimeFactory,
 	type CreateAgentSessionRuntimeResult,
 	createAgentSessionRuntime,
 } from "./agent-session-runtime.js";
+export type { AgentSessionRuntimeOptions } from "./agent-session-runtime-options.js";
 export {
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
@@ -74,4 +77,5 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.js";
+export type { CreateRlmSubagentRuntimeOptions, RlmSubagentRuntime, SubagentRuntimeHost } from "./rlm-runtime.js";
 export { createSyntheticSourceInfo } from "./source-info.js";

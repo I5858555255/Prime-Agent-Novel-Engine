@@ -156,6 +156,9 @@ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-
 export {
 	AgentSessionRuntime,
 	type AgentSessionRuntimeDiagnostic,
+	type AgentSessionRuntimeKind,
+	type AgentSessionRuntimeMetadata,
+	type AgentSessionRuntimeOptions,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,
 	type CreateAgentSessionOptions,
@@ -163,6 +166,7 @@ export {
 	type CreateAgentSessionRuntimeFactory,
 	type CreateAgentSessionRuntimeResult,
 	type CreateAgentSessionServicesOptions,
+	type CreateRlmSubagentRuntimeOptions,
 	// Factory
 	createAgentSession,
 	createAgentSessionFromServices,
@@ -173,6 +177,8 @@ export {
 	createEditTool,
 	createIpythonTool,
 	type PromptTemplate,
+	type RlmSubagentRuntime,
+	type SubagentRuntimeHost,
 } from "./core/sdk.js";
 export {
 	type BranchSummaryEntry,
