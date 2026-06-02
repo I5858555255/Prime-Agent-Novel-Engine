@@ -4,6 +4,7 @@ import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	detectInstallMethod,
+	ENV_LEGACY_SESSION_DIR,
 	ENV_SESSION_DIR,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
@@ -16,6 +17,7 @@ const execPathDescriptor = Object.getOwnPropertyDescriptor(process, "execPath");
 const originalPath = process.env.PATH;
 const originalPiPackageDir = process.env.PI_PACKAGE_DIR;
 const originalSessionDir = process.env[ENV_SESSION_DIR];
+const originalLegacySessionDir = process.env[ENV_LEGACY_SESSION_DIR];
 let tempDir: string | undefined;
 
 function setExecPath(value: string): void {
@@ -43,6 +45,11 @@ afterEach(() => {
 		delete process.env[ENV_SESSION_DIR];
 	} else {
 		process.env[ENV_SESSION_DIR] = originalSessionDir;
+	}
+	if (originalLegacySessionDir === undefined) {
+		delete process.env[ENV_LEGACY_SESSION_DIR];
+	} else {
+		process.env[ENV_LEGACY_SESSION_DIR] = originalLegacySessionDir;
 	}
 	if (tempDir) {
 		chmodSync(tempDir, 0o700);
@@ -391,6 +398,14 @@ describe("session paths", () => {
 	test("uses the session root env var when computing sessions dir", () => {
 		const sessionRoot = join(tmpdir(), `pi-session-root-${Date.now()}`);
 		process.env[ENV_SESSION_DIR] = sessionRoot;
+
+		expect(getSessionsDir("/agent")).toBe(sessionRoot);
+	});
+
+	test("uses the legacy coding agent session root env var when the new env var is unset", () => {
+		const sessionRoot = join(tmpdir(), `pi-legacy-session-root-${Date.now()}`);
+		delete process.env[ENV_SESSION_DIR];
+		process.env[ENV_LEGACY_SESSION_DIR] = sessionRoot;
 
 		expect(getSessionsDir("/agent")).toBe(sessionRoot);
 	});

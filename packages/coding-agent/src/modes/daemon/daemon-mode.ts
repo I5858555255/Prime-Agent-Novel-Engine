@@ -31,7 +31,12 @@ import {
 	success,
 } from "./daemon-protocol.js";
 import { buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
-import { cleanupDaemonSocketPath, defaultDaemonSocketPath, prepareDaemonSocketPath } from "./daemon-socket.js";
+import {
+	cleanupDaemonSocketPath,
+	defaultDaemonSocketPath,
+	prepareDaemonSocketPath,
+	restrictDaemonSocketPath,
+} from "./daemon-socket.js";
 
 export type { DaemonCommand, DaemonModeOptions, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
 export type { SessionStatus, SessionSummary } from "./daemon-session-list.js";
@@ -92,8 +97,15 @@ class AgentDaemon {
 				};
 				const onListening = () => {
 					this.server?.off("error", onError);
-					if (process.platform !== "win32") {
-						this.ownsSocketPath = true;
+					try {
+						if (process.platform !== "win32") {
+							this.ownsSocketPath = true;
+							restrictDaemonSocketPath(this.socketPath);
+						}
+					} catch (error) {
+						this.server?.close();
+						rejectListen(error);
+						return;
 					}
 					resolveListen();
 				};
@@ -154,8 +166,11 @@ class AgentDaemon {
 
 		const cwd = resolve(config.cwd);
 		const cwdOverride = command.config?.cwd ? resolve(command.config.cwd) : undefined;
-		const sessionManager = command.sessionPath
-			? SessionManager.open(command.sessionPath, config.sessionDir, cwdOverride)
+		const sessionPath = command.sessionPath
+			? await resolveDaemonSessionPath(command.sessionPath, cwd, config.sessionDir)
+			: undefined;
+		const sessionManager = sessionPath
+			? SessionManager.open(sessionPath, config.sessionDir, cwdOverride)
 			: command.continueRecent
 				? SessionManager.continueRecent(cwd, config.sessionDir)
 				: SessionManager.create(cwd, config.sessionDir);
@@ -327,7 +342,7 @@ class AgentDaemon {
 					})
 					.catch((error) => {
 						if (responseSent) {
-							this.broadcastToSession(state, failure(command.id, "prompt", error));
+							this.broadcastToSession(state, failure(undefined, "prompt", error));
 						} else {
 							this.write(client, failure(command.id, "prompt", error));
 						}
@@ -495,4 +510,30 @@ class AgentDaemon {
 		this.cleanupSocketPath();
 		process.exit(exitCode);
 	}
+}
+
+async function resolveDaemonSessionPath(selector: string, cwd: string, sessionDir?: string): Promise<string> {
+	if (looksLikeSessionPath(selector)) {
+		return selector;
+	}
+
+	const localMatches = (await SessionManager.list(cwd, sessionDir)).filter((session) =>
+		session.id.startsWith(selector),
+	);
+	if (localMatches.length > 0) {
+		return localMatches[0]!.path;
+	}
+
+	const allSessions =
+		sessionDir !== undefined ? await SessionManager.listAll(undefined, sessionDir) : await SessionManager.listAll();
+	const globalMatches = allSessions.filter((session) => session.id.startsWith(selector));
+	if (globalMatches.length > 0) {
+		return globalMatches[0]!.path;
+	}
+
+	throw new Error(`No session found matching "${selector}"`);
+}
+
+function looksLikeSessionPath(selector: string): boolean {
+	return selector.includes("/") || selector.includes("\\") || selector.endsWith(".jsonl");
 }

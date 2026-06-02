@@ -6,6 +6,7 @@ const daemonClientMock = vi.hoisted(() => {
 	type Command = {
 		type: string;
 		name?: string;
+		sessionPath?: string;
 		config?: { extensionFlagValues?: Record<string, boolean | string> };
 	};
 	type Response =
@@ -206,6 +207,18 @@ describe("daemon command", () => {
 			},
 			sessionPath: undefined,
 			continueRecent: undefined,
+		});
+	});
+
+	it("keeps bare --session values as session id selectors", async () => {
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "create", "--session", "abc123"]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toMatchObject({
+			type: "create",
+			sessionPath: "abc123",
 		});
 	});
 });

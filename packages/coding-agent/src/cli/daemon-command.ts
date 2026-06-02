@@ -395,8 +395,11 @@ function parseSessionOption(
 		case "-r":
 			return { consumed: 0 };
 		case "--session": {
-			const path = readPath();
-			return { consumed: 1, sessionPath: path };
+			const value = readValue();
+			return {
+				consumed: 1,
+				sessionPath: looksLikeSessionPath(value) ? resolvePathOption(value, config.cwd ?? pathBaseCwd) : value,
+			};
 		}
 		case "--session-dir":
 			config.sessionDir = expandTildePath(readValue());
@@ -516,6 +519,10 @@ function parseExtensionFlagOption(
 	const name = arg.slice(2);
 	config.extensionFlagValues[name] = true;
 	return { consumed: 0, daemonArg: arg };
+}
+
+function looksLikeSessionPath(value: string): boolean {
+	return value.includes("/") || value.includes("\\") || value.endsWith(".jsonl");
 }
 
 function requireOptionValue(args: string[], index: number, option: string): string {

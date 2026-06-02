@@ -464,6 +464,7 @@ export const VERSION: string = pkg.version || "0.0.0";
 // e.g., PI_CODING_AGENT_DIR or PRIME_AGENT_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${envPrefix}_CODING_AGENT_DIR`;
 export const ENV_SESSION_DIR = `${envPrefix}_SESSION_DIR`;
+export const ENV_LEGACY_SESSION_DIR = `${envPrefix}_CODING_AGENT_SESSION_DIR`;
 
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
@@ -529,11 +530,16 @@ export function getPromptsDir(): string {
 
 /** Get path to sessions directory */
 export function getSessionsDir(agentDir: string = getAgentDir()): string {
-	const envDir = process.env[ENV_SESSION_DIR];
+	const envDir = getSessionDirEnvOverride();
 	if (envDir) {
-		return expandTildePath(envDir);
+		return envDir;
 	}
 	return join(agentDir, "sessions");
+}
+
+export function getSessionDirEnvOverride(): string | undefined {
+	const envDir = process.env[ENV_SESSION_DIR] ?? process.env[ENV_LEGACY_SESSION_DIR];
+	return envDir ? expandTildePath(envDir) : undefined;
 }
 
 /** Get path to debug log file */

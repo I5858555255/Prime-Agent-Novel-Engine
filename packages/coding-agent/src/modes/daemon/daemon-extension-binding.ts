@@ -106,7 +106,7 @@ function createExtensionUIContext(
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			if (opts?.timeout !== undefined) {
 				timeoutId = setTimeout(finish, opts.timeout);
-			} else if (!opts?.signal) {
+			} else {
 				timeoutId = setTimeout(finish, 0);
 			}
 		});
