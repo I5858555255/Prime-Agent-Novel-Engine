@@ -59,8 +59,8 @@ export class DaemonClient {
 			socket.once("error", onError);
 		});
 
-		socket.on("error", (error) => this.notifyClosed(error));
-		socket.on("close", () => this.notifyClosed(new Error("Daemon socket closed")));
+		socket.on("error", (error) => this.notifyClosed(socket, error));
+		socket.on("close", () => this.notifyClosed(socket, new Error("Daemon socket closed")));
 	}
 
 	onMessage(listener: DaemonClientMessageListener): () => void {
@@ -145,7 +145,11 @@ export class DaemonClient {
 		}
 	}
 
-	private notifyClosed(error: Error): void {
+	private notifyClosed(socket: Socket, error: Error): void {
+		if (this.socket !== socket) {
+			return;
+		}
+		this.clearSocketReference(socket);
 		this.rejectAll(error);
 		for (const listener of [...this.closeListeners]) {
 			listener(error);

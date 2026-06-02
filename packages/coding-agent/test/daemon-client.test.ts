@@ -258,6 +258,28 @@ describe("DaemonClient", () => {
 		unsubscribe();
 		client.close();
 	});
+
+	it("allows connect retry after a connected daemon socket closes", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+
+		const firstConnect = client.connect();
+		expect(netMock.sockets).toHaveLength(1);
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+
+		firstSocket.emit("close");
+		expect(firstSocket.listenerCount("data")).toBe(0);
+		expect(firstSocket.listenerCount("end")).toBe(0);
+
+		const secondConnect = client.connect();
+		expect(netMock.sockets).toHaveLength(2);
+		const secondSocket = netMock.sockets[1]!;
+		secondSocket.emit("connect");
+		await secondConnect;
+
+		client.close();
+	});
 });
 
 async function captureRejection(promise: Promise<void>): Promise<Error> {
