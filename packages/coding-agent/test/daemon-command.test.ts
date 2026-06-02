@@ -13,6 +13,7 @@ const daemonClientMock = vi.hoisted(() => {
 	class MockDaemonClient {
 		readonly messageListeners = new Set<Listener>();
 		readonly closeListeners = new Set<CloseListener>();
+		readonly requests: Command[] = [];
 		messageListenerCountAtClose: number | undefined;
 		closeListenerCountAtClose: number | undefined;
 
@@ -23,6 +24,7 @@ const daemonClientMock = vi.hoisted(() => {
 		async connect(): Promise<void> {}
 
 		async request(command: Command): Promise<Response> {
+			this.requests.push(command);
 			if (command.type === "prompt") {
 				return { type: "response", command: command.type, success: false, error: "prompt failed" };
 			}
@@ -41,6 +43,12 @@ const daemonClientMock = vi.hoisted(() => {
 			return () => {
 				this.closeListeners.delete(listener);
 			};
+		}
+
+		emitMessage(message: Parameters<Listener>[0]): void {
+			for (const listener of [...this.messageListeners]) {
+				listener(message);
+			}
 		}
 
 		close(): void {
@@ -73,6 +81,7 @@ describe("daemon command", () => {
 		vi.spyOn(console, "error").mockImplementation((...messages: unknown[]) => {
 			consoleErrorMessages.push(...messages);
 		});
+		vi.spyOn(console, "log").mockImplementation(() => {});
 	});
 
 	afterEach(() => {
@@ -91,4 +100,31 @@ describe("daemon command", () => {
 			consoleErrorMessages.some((message) => typeof message === "string" && message.includes("prompt failed")),
 		).toBe(true);
 	});
+
+	it("ends json attach when the session closes", async () => {
+		const command = handleDaemonCommand([
+			"daemon",
+			"--socket",
+			"/tmp/prime-agent.sock",
+			"--json",
+			"attach",
+			"active-1",
+		]);
+
+		await flushPromises();
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests.map((request) => request.type)).toEqual(["attach"]);
+
+		client?.emitMessage({ type: "session_closed", activeSessionId: "active-1" });
+
+		await expect(command).resolves.toBe(true);
+		expect(client?.messageListenerCountAtClose).toBe(0);
+		expect(client?.closeListenerCountAtClose).toBe(0);
+	});
 });
+
+async function flushPromises(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}

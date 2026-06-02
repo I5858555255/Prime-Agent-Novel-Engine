@@ -685,9 +685,17 @@ async function runAttach(client: DaemonClient, activeSessionId: string): Promise
 }
 
 async function runJsonAttach(client: DaemonClient, activeSessionId: string): Promise<void> {
-	client.onMessage(printJsonLine);
-	await requireSuccessAsync(client.request({ type: "attach", activeSessionId }));
-	await waitUntilInterrupted();
+	const unsubscribeOutput = client.onMessage(printJsonLine);
+	const sessionClosed = waitForSessionClose(client, activeSessionId);
+	const interrupted = waitUntilInterrupted();
+	try {
+		await requireSuccessAsync(client.request({ type: "attach", activeSessionId }));
+		await Promise.race([sessionClosed.promise, interrupted.promise]);
+	} finally {
+		unsubscribeOutput();
+		sessionClosed.cancel();
+		interrupted.cancel();
+	}
 }
 
 async function runRename(client: DaemonClient, args: string[], json: boolean): Promise<void> {
@@ -830,19 +838,80 @@ function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Sessi
 	return { promise, cancel: resolveOnce };
 }
 
-function waitUntilInterrupted(): Promise<void> {
-	return new Promise((resolve) => {
-		const onSigint = () => {
-			process.off("SIGTERM", onSigterm);
-			resolve();
-		};
-		const onSigterm = () => {
-			process.off("SIGINT", onSigint);
-			resolve();
-		};
-		process.once("SIGINT", onSigint);
-		process.once("SIGTERM", onSigterm);
+function waitForSessionClose(client: DaemonClient, activeSessionId: string): SessionEndWaiter {
+	let unsubscribeMessages = () => {};
+	let unsubscribeClose = () => {};
+	let settled = false;
+	let resolveWait!: () => void;
+	let rejectWait!: (error: Error) => void;
+
+	const cleanup = () => {
+		unsubscribeMessages();
+		unsubscribeClose();
+	};
+	const resolveOnce = () => {
+		if (settled) {
+			return;
+		}
+		settled = true;
+		cleanup();
+		resolveWait();
+	};
+	const rejectOnce = (error: Error) => {
+		if (settled) {
+			return;
+		}
+		settled = true;
+		cleanup();
+		rejectWait(error);
+	};
+
+	const promise = new Promise<void>((resolve, reject) => {
+		resolveWait = resolve;
+		rejectWait = reject;
 	});
+	unsubscribeMessages = client.onMessage((message) => {
+		if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {
+			resolveOnce();
+		}
+	});
+	unsubscribeClose = client.onClose((error) => {
+		rejectOnce(error);
+	});
+
+	return { promise, cancel: resolveOnce };
+}
+
+function waitUntilInterrupted(): SessionEndWaiter {
+	let settled = false;
+	let resolveWait!: () => void;
+
+	const cleanup = () => {
+		process.off("SIGINT", onSigint);
+		process.off("SIGTERM", onSigterm);
+	};
+	const resolveOnce = () => {
+		if (settled) {
+			return;
+		}
+		settled = true;
+		cleanup();
+		resolveWait();
+	};
+	const onSigint = () => {
+		resolveOnce();
+	};
+	const onSigterm = () => {
+		resolveOnce();
+	};
+
+	const promise = new Promise<void>((resolve) => {
+		resolveWait = resolve;
+	});
+	process.once("SIGINT", onSigint);
+	process.once("SIGTERM", onSigterm);
+
+	return { promise, cancel: resolveOnce };
 }
 
 function printJson(value: unknown): void {
