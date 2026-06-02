@@ -3401,12 +3401,11 @@ export class AgentSession {
 			return this._rlmSessionDir;
 		}
 
-		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionFile) {
-			const dir = sessionFile.endsWith(".jsonl") ? sessionFile.slice(0, -".jsonl".length) : `${sessionFile}.rlm`;
-			mkdirSync(dir, { recursive: true });
-			this._rlmSessionDir = dir;
-			return dir;
+		const sessionArtifactDir = this.sessionManager.getSessionArtifactDir();
+		if (sessionArtifactDir) {
+			mkdirSync(sessionArtifactDir, { recursive: true });
+			this._rlmSessionDir = sessionArtifactDir;
+			return sessionArtifactDir;
 		}
 
 		this._rlmSessionDir = mkdtempSync(join(tmpdir(), "prime-agent-rlm-"));
@@ -3521,6 +3520,9 @@ export class AgentSession {
 
 	private _createInlineRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): RlmSubagentRuntime {
 		const childSessionManager = SessionManager.create(this._cwd, options.sessionDir);
+		if (options.parentSession.sessionFile) {
+			childSessionManager.newSession({ parentSession: options.parentSession.sessionFile });
+		}
 
 		const childAgent = new Agent({
 			initialState: {

@@ -1,10 +1,12 @@
 import { join } from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
-import type { AgentSessionRuntimeOptions } from "./agent-session-runtime-options.js";
 import { AuthStorage } from "./auth-storage.js";
-import type { SessionStartEvent } from "./extensions/index.js";
+import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { ModelRegistry } from "./model-registry.js";
 import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type ResourceLoader } from "./resource-loader.js";
+import type { SubagentRuntimeHost } from "./rlm-runtime.js";
 import { type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
 import type { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
@@ -38,13 +40,31 @@ export interface CreateAgentSessionServicesOptions {
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 }
 
+export interface AgentSessionCreationOptions {
+	model?: Model<any>;
+	thinkingLevel?: ThinkingLevel;
+	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	tools?: string[];
+	noTools?: "all" | "builtin";
+	customTools?: ToolDefinition[];
+	initialActiveToolNames?: string[];
+	allowedToolNames?: string[];
+	includeGoalTools?: boolean;
+	autoActivateGoalTools?: boolean;
+	rlmDepth?: number;
+	rlmMaxDepth?: number;
+	rlmSessionDir?: string;
+	rlmParentNodeId?: string;
+	subagentRuntimeHost?: SubagentRuntimeHost;
+}
+
 /**
  * Inputs for creating an AgentSession from already-created services.
  *
  * Use this after services exist and any cwd-bound model/tool/session options
  * have been resolved against those services.
  */
-export interface CreateAgentSessionFromServicesOptions extends AgentSessionRuntimeOptions {
+export interface CreateAgentSessionFromServicesOptions extends AgentSessionCreationOptions {
 	services: AgentSessionServices;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;

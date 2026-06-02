@@ -11,6 +11,7 @@ export {
 	type PromptOptions,
 	type SessionStats,
 } from "./agent-session.js";
+export type { AgentSessionRuntimeConfig } from "./agent-session-config.js";
 export {
 	AgentSessionRuntime,
 	type AgentSessionRuntimeKind,
@@ -19,8 +20,8 @@ export {
 	type CreateAgentSessionRuntimeResult,
 	createAgentSessionRuntime,
 } from "./agent-session-runtime.js";
-export type { AgentSessionRuntimeOptions } from "./agent-session-runtime-options.js";
 export {
+	type AgentSessionCreationOptions,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,

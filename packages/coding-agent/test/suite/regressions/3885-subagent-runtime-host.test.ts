@@ -69,7 +69,7 @@ describe("ENG-3885 subagent runtime host", () => {
 			agentDir,
 			sessionManager,
 			sessionStartEvent,
-			runtimeOptions,
+			sessionOptions,
 		}) => {
 			const services = await createAgentSessionServices({
 				cwd,
@@ -88,18 +88,18 @@ describe("ENG-3885 subagent runtime host", () => {
 					services,
 					sessionManager,
 					sessionStartEvent,
-					model: runtimeOptions?.model ?? faux.getModel(),
-					thinkingLevel: runtimeOptions?.thinkingLevel ?? "off",
-					scopedModels: runtimeOptions?.scopedModels,
-					initialActiveToolNames: runtimeOptions?.initialActiveToolNames,
-					allowedToolNames: runtimeOptions?.allowedToolNames,
-					customTools: runtimeOptions?.customTools,
-					includeGoalTools: runtimeOptions?.includeGoalTools,
-					autoActivateGoalTools: runtimeOptions?.autoActivateGoalTools,
-					rlmDepth: runtimeOptions?.rlmDepth,
-					rlmMaxDepth: runtimeOptions?.rlmMaxDepth,
-					rlmSessionDir: runtimeOptions?.rlmSessionDir,
-					rlmParentNodeId: runtimeOptions?.rlmParentNodeId,
+					model: sessionOptions?.model ?? faux.getModel(),
+					thinkingLevel: sessionOptions?.thinkingLevel ?? "off",
+					scopedModels: sessionOptions?.scopedModels,
+					initialActiveToolNames: sessionOptions?.initialActiveToolNames,
+					allowedToolNames: sessionOptions?.allowedToolNames,
+					customTools: sessionOptions?.customTools,
+					includeGoalTools: sessionOptions?.includeGoalTools,
+					autoActivateGoalTools: sessionOptions?.autoActivateGoalTools,
+					rlmDepth: sessionOptions?.rlmDepth,
+					rlmMaxDepth: sessionOptions?.rlmMaxDepth,
+					rlmSessionDir: sessionOptions?.rlmSessionDir,
+					rlmParentNodeId: sessionOptions?.rlmParentNodeId,
 				})),
 				services,
 				diagnostics: services.diagnostics,
@@ -159,6 +159,8 @@ describe("ENG-3885 subagent runtime host", () => {
 
 		expect(result.answer).toBe("child answer from faux-child");
 		expect(result.session_dir).not.toBeNull();
+		const childSessions = await SessionManager.list(tempDir, result.session_dir!);
+		expect(childSessions.some((session) => session.parentSessionPath === runtime.session.sessionFile)).toBe(true);
 		expect(runtime.listSubagentRuntimes()).toEqual([]);
 	});
 });

@@ -3,7 +3,7 @@ import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
 import { AgentSession } from "./agent-session.js";
-import type { AgentSessionRuntimeOptions } from "./agent-session-runtime-options.js";
+import type { AgentSessionCreationOptions } from "./agent-session-services.js";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
 import { AuthStorage } from "./auth-storage.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
@@ -19,7 +19,7 @@ import { SettingsManager } from "./settings-manager.js";
 import { time } from "./timings.js";
 import { createBashTool, createEditTool, createIpythonTool, withFileMutationQueue } from "./tools/index.js";
 
-export interface CreateAgentSessionOptions extends AgentSessionRuntimeOptions {
+export interface CreateAgentSessionOptions extends AgentSessionCreationOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
 	/** Global config directory. Default: ~/.pi/agent */
@@ -80,8 +80,9 @@ export interface CreateAgentSessionResult {
 
 // Re-exports
 
+export type { AgentSessionRuntimeConfig } from "./agent-session-config.js";
 export * from "./agent-session-runtime.js";
-export type { AgentSessionRuntimeOptions } from "./agent-session-runtime-options.js";
+export type { AgentSessionCreationOptions } from "./agent-session-services.js";
 export type {
 	ExtensionAPI,
 	ExtensionCommandContext,
