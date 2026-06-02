@@ -124,12 +124,18 @@ class AgentDaemon {
 			runtime,
 			clients: new Set(),
 		};
-		await bindActiveSessionState(state, {
-			broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
-			shutdown: () => {
-				void this.shutdown(0);
-			},
-		});
+		try {
+			await bindActiveSessionState(state, {
+				broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
+				shutdown: () => {
+					void this.shutdown(0);
+				},
+			});
+		} catch (error) {
+			state.unsubscribe?.();
+			await runtime.dispose().catch(() => undefined);
+			throw error;
+		}
 		this.sessions.set(state.activeSessionId, state);
 		if (name) {
 			state.runtime.session.setSessionName(name);
