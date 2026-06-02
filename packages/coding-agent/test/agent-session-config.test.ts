@@ -64,4 +64,28 @@ describe("mergeAgentSessionRuntimeConfig", () => {
 		expect(merged.models).not.toBe(defaults.models);
 		expect(merged.extensions).not.toBe(defaults.extensions);
 	});
+
+	it("ignores undefined override values", () => {
+		const defaults: AgentSessionRuntimeConfig = {
+			cwd: "/repo/default",
+			agentDir: "/agent/default",
+			model: "openai/gpt-4o",
+			tools: ["ipython"],
+		};
+
+		const merged = mergeAgentSessionRuntimeConfig(defaults, {
+			cwd: undefined,
+			model: undefined,
+			tools: undefined,
+			noTools: false,
+		});
+
+		expect(merged).toEqual({
+			cwd: "/repo/default",
+			agentDir: "/agent/default",
+			model: "openai/gpt-4o",
+			tools: ["ipython"],
+			noTools: false,
+		});
+	});
 });

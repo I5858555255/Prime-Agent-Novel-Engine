@@ -378,13 +378,12 @@ function parseSessionOption(
 	}
 
 	const readValue = (optionName = arg): string => requireOptionValue(args, index, optionName);
-	const readPath = (optionName = arg): string => resolvePathOption(readValue(optionName), config.cwd ?? pathBaseCwd);
-	const readCsv = (optionName = arg): string[] =>
-		readValue(optionName)
-			.split(",")
-			.map((part) => part.trim())
-			.filter((part) => part.length > 0);
-	const withValue = (daemonArg = arg): ParsedSessionOption => ({ consumed: 1, daemonArg, value: readValue() });
+	const withValue = (daemonArg = arg, value = readValue()): ParsedSessionOption => ({ consumed: 1, daemonArg, value });
+	const withParsedValue = (daemonArg: string, apply: (value: string) => void): ParsedSessionOption => {
+		const value = readValue(daemonArg);
+		apply(value);
+		return withValue(daemonArg, value);
+	};
 	const boolean = (daemonArg = arg): ParsedSessionOption => ({ consumed: 0, daemonArg });
 
 	switch (arg) {
@@ -402,30 +401,40 @@ function parseSessionOption(
 			};
 		}
 		case "--session-dir":
-			config.sessionDir = expandTildePath(readValue());
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.sessionDir = expandTildePath(value);
+			});
 		case "--provider":
-			config.provider = readValue();
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.provider = value;
+			});
 		case "--model":
-			config.model = readValue();
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.model = value;
+			});
 		case "--api-key":
-			config.apiKey = readValue();
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.apiKey = value;
+			});
 		case "--system-prompt":
-			config.systemPrompt = readValue();
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.systemPrompt = value;
+			});
 		case "--append-system-prompt":
-			config.appendSystemPrompt = [...(config.appendSystemPrompt ?? []), readValue()];
-			return withValue(arg);
-		case "--models":
-			config.models = readCsv();
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.appendSystemPrompt = [...(config.appendSystemPrompt ?? []), value];
+			});
+		case "--models": {
+			const value = readValue();
+			config.models = parseCsvValue(value);
+			return withValue(arg, value);
+		}
 		case "--tools":
-		case "-t":
-			config.tools = readCsv();
-			return withValue(arg);
+		case "-t": {
+			const value = readValue();
+			config.tools = parseCsvValue(value);
+			return withValue(arg, value);
+		}
 		case "--thinking": {
 			const level = readValue();
 			if (!isValidThinkingLevel(level)) {
@@ -436,17 +445,24 @@ function parseSessionOption(
 		}
 		case "--extension":
 		case "-e":
-			config.extensions = [...(config.extensions ?? []), readPath()];
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.extensions = [...(config.extensions ?? []), resolvePathOption(value, config.cwd ?? pathBaseCwd)];
+			});
 		case "--skill":
-			config.skills = [...(config.skills ?? []), readPath()];
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.skills = [...(config.skills ?? []), resolvePathOption(value, config.cwd ?? pathBaseCwd)];
+			});
 		case "--prompt-template":
-			config.promptTemplates = [...(config.promptTemplates ?? []), readPath()];
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.promptTemplates = [
+					...(config.promptTemplates ?? []),
+					resolvePathOption(value, config.cwd ?? pathBaseCwd),
+				];
+			});
 		case "--theme":
-			config.themes = [...(config.themes ?? []), readPath()];
-			return withValue(arg);
+			return withParsedValue(arg, (value) => {
+				config.themes = [...(config.themes ?? []), resolvePathOption(value, config.cwd ?? pathBaseCwd)];
+			});
 		case "--no-tools":
 		case "-nt":
 			config.noTools = true;
@@ -489,6 +505,13 @@ function parseSessionOption(
 			}
 			return parseExtensionFlagOption(args, index, config);
 	}
+}
+
+function parseCsvValue(value: string): string[] {
+	return value
+		.split(",")
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0);
 }
 
 function findSessionCwdArg(args: string[]): string | undefined {

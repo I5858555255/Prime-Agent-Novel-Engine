@@ -4,61 +4,25 @@
 
 import chalk from "chalk";
 import {
-	closeSync,
 	type Dirent,
 	existsSync,
 	mkdirSync,
-	openSync,
 	readdirSync,
 	readFileSync,
-	readSync,
 	renameSync,
 	rmdirSync,
 	rmSync,
 	writeFileSync,
 } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir, getSessionsDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.js";
+import { readFirstLineSync } from "./utils/file-lines.js";
 
 const MIGRATION_GUIDE_URL =
 	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
 const EXTENSIONS_DOC_URL =
 	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/extensions.md";
-
-function readFirstLineSync(filePath: string, maxBytes = 64 * 1024): string | undefined {
-	const fd = openSync(filePath, "r");
-	const chunks: Buffer[] = [];
-	let position = 0;
-
-	try {
-		const buffer = Buffer.alloc(1024);
-		while (position < maxBytes) {
-			const bytesToRead = Math.min(buffer.length, maxBytes - position);
-			const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
-			if (bytesRead === 0) {
-				break;
-			}
-
-			const chunk = buffer.subarray(0, bytesRead);
-			const newlineIndex = chunk.indexOf(0x0a);
-			if (newlineIndex !== -1) {
-				chunks.push(Buffer.from(chunk.subarray(0, newlineIndex)));
-				return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-			}
-
-			chunks.push(Buffer.from(chunk));
-			position += bytesRead;
-		}
-	} finally {
-		closeSync(fd);
-	}
-
-	if (chunks.length === 0) {
-		return undefined;
-	}
-	return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-}
 
 /**
  * Migrate legacy oauth.json and settings.json apiKeys to auth.json.
@@ -160,8 +124,7 @@ export function migrateSessionsFromAgentRoot(): void {
 			}
 
 			// Move the file
-			const fileName = file.split("/").pop() || file.split("\\").pop();
-			const newPath = join(correctDir, fileName!);
+			const newPath = join(correctDir, basename(file));
 
 			if (existsSync(newPath)) continue; // Skip if target exists
 

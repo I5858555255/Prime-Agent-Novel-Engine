@@ -1,22 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
-import {
-	appendFileSync,
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	readSync,
-	statSync,
-	writeFileSync,
-} from "fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { dirname, join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
+import { readFirstLineSync } from "../utils/file-lines.js";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -235,6 +225,17 @@ function createSessionId(): string {
 
 function getSessionFilePath(sessionDir: string, sessionId: string): string {
 	return join(sessionDir, `${sessionId}.jsonl`);
+}
+
+function createUniqueSessionFileTarget(sessionDir: string): { sessionId: string; sessionFile: string } {
+	for (let i = 0; i < 100; i++) {
+		const sessionId = createSessionId();
+		const sessionFile = getSessionFilePath(sessionDir, sessionId);
+		if (!existsSync(sessionFile)) {
+			return { sessionId, sessionFile };
+		}
+	}
+	throw new Error("Unable to create a unique session file");
 }
 
 function getSessionArtifactPath(sessionDir: string, sessionId: string): string {
@@ -516,40 +517,6 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 
 	applyChildUsageAttributions(entries);
 	return entries;
-}
-
-function readFirstLineSync(filePath: string, maxBytes = 64 * 1024): string | undefined {
-	const fd = openSync(filePath, "r");
-	const chunks: Buffer[] = [];
-	let position = 0;
-
-	try {
-		const buffer = Buffer.alloc(1024);
-		while (position < maxBytes) {
-			const bytesToRead = Math.min(buffer.length, maxBytes - position);
-			const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
-			if (bytesRead === 0) {
-				break;
-			}
-
-			const chunk = buffer.subarray(0, bytesRead);
-			const newlineIndex = chunk.indexOf(0x0a);
-			if (newlineIndex !== -1) {
-				chunks.push(Buffer.from(chunk.subarray(0, newlineIndex)));
-				return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-			}
-
-			chunks.push(Buffer.from(chunk));
-			position += bytesRead;
-		}
-	} finally {
-		closeSync(fd);
-	}
-
-	if (chunks.length === 0) {
-		return undefined;
-	}
-	return Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
 }
 
 function readSessionHeader(filePath: string): Partial<SessionHeader> | undefined {
@@ -874,7 +841,19 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
-		this.sessionId = options?.id ?? createSessionId();
+		let sessionId = options?.id ?? createSessionId();
+		let sessionFile: string | undefined;
+		if (this.persist) {
+			if (options?.id) {
+				sessionFile = getSessionFilePath(this.getSessionDir(), sessionId);
+			} else {
+				const target = createUniqueSessionFileTarget(this.getSessionDir());
+				sessionId = target.sessionId;
+				sessionFile = target.sessionFile;
+			}
+		}
+
+		this.sessionId = sessionId;
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
 			type: "session",
@@ -892,7 +871,7 @@ export class SessionManager {
 		this.flushed = false;
 
 		if (this.persist) {
-			this.sessionFile = getSessionFilePath(this.getSessionDir(), this.sessionId);
+			this.sessionFile = sessionFile;
 		}
 		return this.sessionFile;
 	}
@@ -1374,9 +1353,12 @@ export class SessionManager {
 		// Filter out LabelEntry from path - we'll recreate them from the resolved map
 		const pathWithoutLabels = path.filter((e) => e.type !== "label");
 
-		const newSessionId = createSessionId();
+		const target = this.persist
+			? createUniqueSessionFileTarget(this.getSessionDir())
+			: { sessionId: createSessionId(), sessionFile: undefined };
+		const newSessionId = target.sessionId;
 		const timestamp = new Date().toISOString();
-		const newSessionFile = getSessionFilePath(this.getSessionDir(), newSessionId);
+		const newSessionFile = target.sessionFile;
 
 		const header: SessionHeader = {
 			type: "session",
@@ -1527,9 +1509,10 @@ export class SessionManager {
 		}
 
 		// Create new session file with new ID but forked content
-		const newSessionId = createSessionId();
+		const target = createUniqueSessionFileTarget(dir);
+		const newSessionId = target.sessionId;
 		const timestamp = new Date().toISOString();
-		const newSessionFile = getSessionFilePath(dir, newSessionId);
+		const newSessionFile = target.sessionFile;
 
 		// Write new header pointing to source as parent, with updated cwd
 		const newHeader: SessionHeader = {

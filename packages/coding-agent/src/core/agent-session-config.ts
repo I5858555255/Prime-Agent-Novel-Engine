@@ -33,9 +33,10 @@ export function mergeAgentSessionRuntimeConfig(
 	if (!override) {
 		return cloneAgentSessionRuntimeConfig(base);
 	}
+	const merged = cloneAgentSessionRuntimeConfig(base);
+	applyDefinedConfigValues(merged, override);
 	return {
-		...base,
-		...override,
+		...merged,
 		appendSystemPrompt: cloneArray(override.appendSystemPrompt ?? base.appendSystemPrompt),
 		models: cloneArray(override.models ?? base.models),
 		tools: cloneArray(override.tools ?? base.tools),
@@ -48,6 +49,23 @@ export function mergeAgentSessionRuntimeConfig(
 				? { ...(base.extensionFlagValues ?? {}), ...(override.extensionFlagValues ?? {}) }
 				: undefined,
 	};
+}
+
+function applyDefinedConfigValues(target: AgentSessionRuntimeConfig, source: AgentSessionRuntimeConfig): void {
+	for (const key of Object.keys(source) as Array<keyof AgentSessionRuntimeConfig>) {
+		const value = source[key];
+		if (value !== undefined) {
+			setConfigValue(target, key, value);
+		}
+	}
+}
+
+function setConfigValue<K extends keyof AgentSessionRuntimeConfig>(
+	target: AgentSessionRuntimeConfig,
+	key: K,
+	value: AgentSessionRuntimeConfig[K],
+): void {
+	target[key] = value;
 }
 
 function cloneAgentSessionRuntimeConfig(config: AgentSessionRuntimeConfig): AgentSessionRuntimeConfig {
