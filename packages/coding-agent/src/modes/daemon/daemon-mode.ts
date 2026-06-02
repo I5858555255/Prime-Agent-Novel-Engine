@@ -215,6 +215,10 @@ class AgentDaemon {
 					await this.closeSession(state, "completed");
 					return;
 				}
+				if (runtime instanceof AgentSessionRuntime) {
+					await runtime.dispose();
+					return;
+				}
 				runtime.session.dispose();
 			},
 		};
@@ -514,6 +518,14 @@ class AgentDaemon {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
+		let cascadeError: unknown;
+		for (const childState of getChildActiveSessionStates(this.sessions, state)) {
+			try {
+				await this.closeSession(childState, reason);
+			} catch (error) {
+				cascadeError ??= error;
+			}
+		}
 		let persistError: unknown;
 		try {
 			state.runtime.session.sessionManager.appendSessionState({ status: "sleep" });
@@ -533,6 +545,9 @@ class AgentDaemon {
 		this.sessions.delete(state.activeSessionId);
 		if (persistError && reason !== "shutdown" && reason !== "completed") {
 			throw persistError;
+		}
+		if (cascadeError && reason !== "shutdown" && reason !== "completed") {
+			throw cascadeError;
 		}
 	}
 
@@ -593,6 +608,17 @@ class AgentDaemon {
 		this.cleanupSocketPath();
 		process.exit(exitCode);
 	}
+}
+
+export function getChildActiveSessionStates(
+	sessions: ReadonlyMap<string, ActiveSessionState>,
+	parentState: ActiveSessionState,
+): ActiveSessionState[] {
+	return [...sessions.values()].filter(
+		(state) =>
+			state.activeSessionId !== parentState.activeSessionId &&
+			state.runtime.metadata.parentActiveSessionId === parentState.activeSessionId,
+	);
 }
 
 export async function resolveDaemonSessionPath(selector: string, cwd: string, sessionDir?: string): Promise<string> {
