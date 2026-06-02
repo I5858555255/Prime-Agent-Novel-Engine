@@ -51,6 +51,7 @@ describe("session migrations", () => {
 
 		const migratedFile = join(sessionsDir, "session-1.jsonl");
 		expect(existsSync(legacyFile)).toBe(false);
+		expect(existsSync(legacyDir)).toBe(false);
 		expect(readFileSync(migratedFile, "utf8")).toContain('"id":"session-1"');
 	});
 });

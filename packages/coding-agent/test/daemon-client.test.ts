@@ -3,31 +3,41 @@ import { DaemonClient } from "../src/modes/daemon/daemon-client.js";
 
 const netMock = vi.hoisted(() => {
 	type Listener = (...args: unknown[]) => void;
+	type TrackedListener = Listener & { originalListener?: Listener };
 
 	class MockSocket {
-		private readonly listeners = new Map<string, Set<Listener>>();
+		private readonly listeners = new Map<string, Set<TrackedListener>>();
 		readonly writes: string[] = [];
 		destroyed = false;
 
 		constructor(readonly path: string) {}
 
 		on(event: string, listener: Listener): this {
-			const listeners = this.listeners.get(event) ?? new Set<Listener>();
-			listeners.add(listener);
+			const listeners = this.listeners.get(event) ?? new Set<TrackedListener>();
+			listeners.add(listener as TrackedListener);
 			this.listeners.set(event, listeners);
 			return this;
 		}
 
 		once(event: string, listener: Listener): this {
-			const onceListener: Listener = (...args) => {
+			const onceListener: TrackedListener = (...args) => {
 				this.off(event, onceListener);
 				listener(...args);
 			};
+			onceListener.originalListener = listener;
 			return this.on(event, onceListener);
 		}
 
 		off(event: string, listener: Listener): this {
-			this.listeners.get(event)?.delete(listener);
+			const listeners = this.listeners.get(event);
+			if (!listeners) {
+				return this;
+			}
+			for (const registered of [...listeners]) {
+				if (registered === listener || registered.originalListener === listener) {
+					listeners.delete(registered);
+				}
+			}
 			return this;
 		}
 
@@ -256,6 +266,25 @@ describe("DaemonClient", () => {
 
 		expect(closed.map((error) => error.message)).toEqual(["Daemon socket closed"]);
 		unsubscribe();
+		client.close();
+	});
+
+	it("notifies listeners once when a socket error is followed by close", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+
+		const connect = client.connect();
+		expect(netMock.sockets).toHaveLength(1);
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+
+		const closed: Error[] = [];
+		client.onClose((error) => closed.push(error));
+
+		socket.emit("error", new Error("daemon crashed"));
+		socket.emit("close");
+
+		expect(closed.map((error) => error.message)).toEqual(["daemon crashed"]);
 		client.close();
 	});
 

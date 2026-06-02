@@ -3,7 +3,17 @@
  */
 
 import chalk from "chalk";
-import { type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import {
+	type Dirent,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmdirSync,
+	rmSync,
+	writeFileSync,
+} from "fs";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir, getSessionsDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.js";
@@ -185,7 +195,7 @@ export function migrateLegacySessionDirsToSessionRoot(): void {
 
 		try {
 			if (readdirSync(legacyDir).length === 0) {
-				rmSync(legacyDir, { recursive: false, force: true });
+				rmdirSync(legacyDir);
 			}
 		} catch {
 			// Ignore cleanup errors; migrated files are already in the flat root.
