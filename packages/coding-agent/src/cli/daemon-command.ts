@@ -794,6 +794,7 @@ function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Sessi
 	let unsubscribeMessages = () => {};
 	let unsubscribeClose = () => {};
 	let settled = false;
+	let observedAgentStart = false;
 	let resolveWait!: () => void;
 	let rejectWait!: (error: Error) => void;
 
@@ -824,7 +825,9 @@ function waitForSessionEnd(client: DaemonClient, activeSessionId: string): Sessi
 	});
 	unsubscribeMessages = client.onMessage((message) => {
 		if (message.type === "session_event" && message.activeSessionId === activeSessionId) {
-			if (message.event.type === "agent_end") {
+			if (message.event.type === "agent_start") {
+				observedAgentStart = true;
+			} else if (message.event.type === "agent_end" && observedAgentStart) {
 				resolveOnce();
 			}
 		} else if (message.type === "session_closed" && message.activeSessionId === activeSessionId) {

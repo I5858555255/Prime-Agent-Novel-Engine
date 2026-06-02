@@ -9,6 +9,10 @@ const daemonClientMock = vi.hoisted(() => {
 		| { type: "response"; command: string; success: false; error: string };
 
 	const instances: MockDaemonClient[] = [];
+	const behavior = {
+		promptSucceeds: false,
+		emitStaleAgentEndOnAttach: false,
+	};
 
 	class MockDaemonClient {
 		readonly messageListeners = new Set<Listener>();
@@ -25,7 +29,13 @@ const daemonClientMock = vi.hoisted(() => {
 
 		async request(command: Command): Promise<Response> {
 			this.requests.push(command);
+			if (command.type === "attach" && behavior.emitStaleAgentEndOnAttach) {
+				this.emitMessage({ type: "session_event", activeSessionId: "active-1", event: { type: "agent_end" } });
+			}
 			if (command.type === "prompt") {
+				if (behavior.promptSucceeds) {
+					return { type: "response", command: command.type, success: true };
+				}
 				return { type: "response", command: command.type, success: false, error: "prompt failed" };
 			}
 			return { type: "response", command: command.type, success: true };
@@ -60,7 +70,7 @@ const daemonClientMock = vi.hoisted(() => {
 		}
 	}
 
-	return { MockDaemonClient, instances };
+	return { MockDaemonClient, behavior, instances };
 });
 
 vi.mock("../src/modes/daemon/daemon-client.js", () => ({
@@ -74,6 +84,8 @@ describe("daemon command", () => {
 
 	beforeEach(() => {
 		daemonClientMock.instances.length = 0;
+		daemonClientMock.behavior.promptSucceeds = false;
+		daemonClientMock.behavior.emitStaleAgentEndOnAttach = false;
 		consoleErrorMessages = [];
 		vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null | undefined) => {
 			throw new Error(`exit ${code}`);
@@ -99,6 +111,38 @@ describe("daemon command", () => {
 		expect(
 			consoleErrorMessages.some((message) => typeof message === "string" && message.includes("prompt failed")),
 		).toBe(true);
+	});
+
+	it("ignores stale agent_end events before a daemon prompt starts", async () => {
+		daemonClientMock.behavior.promptSucceeds = true;
+		daemonClientMock.behavior.emitStaleAgentEndOnAttach = true;
+		const command = handleDaemonCommand([
+			"daemon",
+			"--socket",
+			"/tmp/prime-agent.sock",
+			"prompt",
+			"active-1",
+			"hello",
+		]);
+
+		await flushPromises();
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests.map((request) => request.type)).toEqual(["attach", "prompt"]);
+
+		let resolved = false;
+		void command.then(() => {
+			resolved = true;
+		});
+		await flushPromises();
+		expect(resolved).toBe(false);
+
+		client?.emitMessage({ type: "session_event", activeSessionId: "active-1", event: { type: "agent_start" } });
+		client?.emitMessage({ type: "session_event", activeSessionId: "active-1", event: { type: "agent_end" } });
+
+		await expect(command).resolves.toBe(true);
+		expect(client?.messageListenerCountAtClose).toBe(0);
+		expect(client?.closeListenerCountAtClose).toBe(0);
 	});
 
 	it("ends json attach when the session closes", async () => {
