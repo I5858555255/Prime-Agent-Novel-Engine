@@ -576,7 +576,9 @@ export async function main(args: string[], options?: MainOptions) {
 	}) => {
 		const config = mergeAgentSessionRuntimeConfig(defaultSessionConfig, sessionConfig);
 		const effectiveAgentDir = config.agentDir ?? agentDir;
-		const authStorage = AuthStorage.create(join(effectiveAgentDir, "auth.json"));
+		const authStorage = AuthStorage.create(join(effectiveAgentDir, "auth.json"), {
+			usePrimeCliConfig: effectiveAgentDir === agentDir,
+		});
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir: effectiveAgentDir,
