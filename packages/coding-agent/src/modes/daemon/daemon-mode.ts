@@ -98,8 +98,8 @@ class AgentDaemon {
 				const onListening = () => {
 					this.server?.off("error", onError);
 					try {
+						this.ownsSocketPath = true;
 						if (process.platform !== "win32") {
-							this.ownsSocketPath = true;
 							restrictDaemonSocketPath(this.socketPath);
 						}
 					} catch (error) {

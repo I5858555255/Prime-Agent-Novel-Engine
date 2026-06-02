@@ -33,39 +33,34 @@ export function mergeAgentSessionRuntimeConfig(
 	if (!override) {
 		return cloneAgentSessionRuntimeConfig(base);
 	}
-	const merged = cloneAgentSessionRuntimeConfig(base);
-	applyDefinedConfigValues(merged, override);
 	return {
-		...merged,
+		cwd: override.cwd ?? base.cwd,
+		agentDir: override.agentDir ?? base.agentDir,
+		sessionDir: override.sessionDir ?? base.sessionDir,
+		provider: override.provider ?? base.provider,
+		model: override.model ?? base.model,
+		apiKey: override.apiKey ?? base.apiKey,
+		systemPrompt: override.systemPrompt ?? base.systemPrompt,
 		appendSystemPrompt: cloneArray(override.appendSystemPrompt ?? base.appendSystemPrompt),
+		thinking: override.thinking ?? base.thinking,
 		models: cloneArray(override.models ?? base.models),
 		tools: cloneArray(override.tools ?? base.tools),
+		noTools: override.noTools ?? base.noTools,
+		noBuiltinTools: override.noBuiltinTools ?? base.noBuiltinTools,
 		extensions: cloneArray(override.extensions ?? base.extensions),
+		noExtensions: override.noExtensions ?? base.noExtensions,
 		skills: cloneArray(override.skills ?? base.skills),
+		noSkills: override.noSkills ?? base.noSkills,
 		promptTemplates: cloneArray(override.promptTemplates ?? base.promptTemplates),
+		noPromptTemplates: override.noPromptTemplates ?? base.noPromptTemplates,
 		themes: cloneArray(override.themes ?? base.themes),
+		noThemes: override.noThemes ?? base.noThemes,
+		noContextFiles: override.noContextFiles ?? base.noContextFiles,
 		extensionFlagValues:
 			base.extensionFlagValues || override.extensionFlagValues
 				? { ...(base.extensionFlagValues ?? {}), ...(override.extensionFlagValues ?? {}) }
 				: undefined,
 	};
-}
-
-function applyDefinedConfigValues(target: AgentSessionRuntimeConfig, source: AgentSessionRuntimeConfig): void {
-	for (const key of Object.keys(source) as Array<keyof AgentSessionRuntimeConfig>) {
-		const value = source[key];
-		if (value !== undefined) {
-			setConfigValue(target, key, value);
-		}
-	}
-}
-
-function setConfigValue<K extends keyof AgentSessionRuntimeConfig>(
-	target: AgentSessionRuntimeConfig,
-	key: K,
-	value: AgentSessionRuntimeConfig[K],
-): void {
-	target[key] = value;
 }
 
 function cloneAgentSessionRuntimeConfig(config: AgentSessionRuntimeConfig): AgentSessionRuntimeConfig {
