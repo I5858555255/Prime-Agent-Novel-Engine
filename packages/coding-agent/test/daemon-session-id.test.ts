@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
-import { resolveActiveSessionState } from "../src/modes/daemon/active-session-state.js";
+import { createActiveSessionId, resolveActiveSessionState } from "../src/modes/daemon/active-session-state.js";
 import { resolveDaemonSessionPath } from "../src/modes/daemon/daemon-mode.js";
 import { formatSessionDisplayId, matchesSessionIdSuffix } from "../src/modes/daemon/daemon-session-id.js";
 
@@ -28,6 +28,21 @@ describe("matchesSessionIdSuffix", () => {
 });
 
 describe("resolveActiveSessionState", () => {
+	it("retries generated active session ids that already exist", () => {
+		const generatedIds: string[] = [];
+		const existingIds = {
+			has: (activeSessionId: string) => {
+				generatedIds.push(activeSessionId);
+				return generatedIds.length === 1;
+			},
+		};
+
+		const activeSessionId = createActiveSessionId(existingIds);
+
+		expect(generatedIds).toHaveLength(2);
+		expect(activeSessionId).toBe(generatedIds[1]);
+	});
+
 	it("resolves unique active session id and session id suffixes", () => {
 		const first = makeState("aaaabbbbcccc", "019e71ec-e08a-75a9-b573-fc10e9f8380f");
 		const second = makeState("dddd11112222", "029e71ec-e08a-75a9-b573-abcdef123456");

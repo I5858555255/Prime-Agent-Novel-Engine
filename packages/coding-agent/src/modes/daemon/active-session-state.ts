@@ -17,8 +17,17 @@ export interface ActiveSessionState {
 	unsubscribe?: () => void;
 }
 
-export function createActiveSessionId(): string {
-	return formatSessionDisplayId(randomUUID());
+interface ActiveSessionIdIndex {
+	has(activeSessionId: string): boolean;
+}
+
+export function createActiveSessionId(existingIds?: ActiveSessionIdIndex): string {
+	while (true) {
+		const activeSessionId = formatSessionDisplayId(randomUUID());
+		if (!existingIds?.has(activeSessionId)) {
+			return activeSessionId;
+		}
+	}
 }
 
 export function resolveActiveSessionState(

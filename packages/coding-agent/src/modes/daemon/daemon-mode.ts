@@ -132,7 +132,7 @@ class AgentDaemon {
 
 	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
-			activeSessionId: createActiveSessionId(),
+			activeSessionId: createActiveSessionId(this.sessions),
 			runtime,
 			clients: new Set(),
 		};
