@@ -7,6 +7,13 @@ import type { SessionManager } from "../../core/session-manager.js";
 import type { SettingsManager } from "../../core/settings-manager.js";
 import type { Theme } from "./theme/theme.js";
 
+/**
+ * Local UI services that are intentionally separate from AgentConnection.
+ *
+ * These services cover client-local concerns such as settings, auth/model
+ * registry access, and theme registration. They are not execution ownership and
+ * should not be used to reach back into AgentSessionRuntime or AgentSession.
+ */
 export interface InteractiveModeUiServices {
 	settingsManager: SettingsManager;
 	modelRegistry: ModelRegistry;
@@ -25,6 +32,14 @@ export type InteractiveModeLocalToolRendererDefinition = Pick<
 	"renderCall" | "renderResult" | "renderShell"
 >;
 
+/**
+ * In-process compatibility adapter for local-only extension hooks.
+ *
+ * This is deliberately not part of AgentConnection. It may expose
+ * AgentSessionRuntime-backed callbacks for the legacy in-process path, but
+ * daemon/gateway-backed InteractiveMode instances must run with
+ * bindLocalSessionExtensions disabled and without this host.
+ */
 export interface InteractiveModeLocalSessionHost {
 	createUiServices(): InteractiveModeUiServices;
 	getSessionManager(): SessionManager;

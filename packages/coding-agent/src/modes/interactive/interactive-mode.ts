@@ -440,9 +440,12 @@ export interface InteractiveModeOptions {
 	verbose?: boolean;
 	/** Agent execution boundary. InteractiveMode never talks directly to AgentSession for core execution. */
 	agentConnection: AgentConnection;
-	/** Local-only host for extension UI binding and session-context callbacks. Omitted for daemon-backed interactive mode. */
+	/**
+	 * Local-only host for in-process extension binding and callback-bearing session operations.
+	 * This must remain optional adapter glue, not a generic execution dependency.
+	 */
 	localSessionHost?: InteractiveModeLocalSessionHost;
-	/** Bind extension handlers in the local session host. Defaults to true when localSessionHost is supplied. */
+	/** Bind extension handlers in the local session host. Disabled for daemon/gateway-backed clients. */
 	bindLocalSessionExtensions?: boolean;
 	/** UI-local services used for settings, auth, resources, and rendering. Defaults to services from localSessionHost. */
 	uiServices?: InteractiveModeUiServices;

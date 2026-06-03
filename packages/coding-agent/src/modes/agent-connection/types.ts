@@ -14,6 +14,26 @@ import type { GoalState } from "../../core/goals.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
 
+/**
+ * Client-side interaction boundary consumed by InteractiveMode.
+ *
+ * This is not the final hosted/gateway wire protocol. Local and future remote
+ * adapters may implement this interface, but network transports should translate
+ * at their edge to versioned DTOs with their own framing, sequencing, replay,
+ * and command lifecycle semantics.
+ *
+ * Keep runtime ownership details out of this contract. InteractiveMode must not
+ * receive AgentSessionRuntime, AgentSession, SessionManager, daemon socket
+ * clients, in-process event emitters, or executable callbacks through
+ * AgentConnection. Local-only compatibility hooks belong in adapter/service
+ * layers such as InteractiveModeLocalSessionHost.
+ *
+ * Transitional note: AgentEvent and AgentMessage are still reused below so this
+ * PR can move the TUI behind a boundary without rewriting the transcript
+ * renderer and stream event model. Replace those aliases with stable
+ * connection-owned/network DTOs before treating this surface as a remote wire
+ * contract.
+ */
 export type AgentConnectionQueueMode = "all" | "one-at-a-time";
 export type AgentConnectionModel = Model<Api>;
 export type AgentConnectionSavedSessionScope = "current" | "all";
@@ -51,6 +71,15 @@ export interface AgentConnectionSavedSessionState {
 	status: AgentConnectionSavedSessionStateStatus;
 }
 
+/**
+ * Saved-session registry row for the current local TUI migration.
+ *
+ * Existing fields intentionally preserve local behavior, including filesystem
+ * paths and Date objects. Do not add new TUI features that require these local
+ * shapes through AgentConnection. Hosted/gateway work should introduce opaque
+ * session/artifact identifiers and string timestamp DTOs before exposing this
+ * data across a network.
+ */
 export interface AgentConnectionSavedSessionInfo {
 	path: string;
 	id: string;

@@ -14,6 +14,14 @@ import type {
 } from "../agent-connection/types.js";
 import type { SessionSummary } from "./daemon-session-list.js";
 
+/**
+ * Local daemon JSONL protocol.
+ *
+ * This is the transport used by DaemonAgentConnection today, not the final
+ * remote gateway protocol. Gateway work should add its own versioned envelopes,
+ * sequencing/replay, command lifecycle, artifact handles, and auth/control-plane
+ * concerns without leaking those details back into InteractiveMode.
+ */
 export type DaemonCommand =
 	| { id?: string; type: "list"; all?: boolean; cwd?: string; sessionDir?: string }
 	| { id?: string; type: "list_saved_sessions"; activeSessionId: string; scope: AgentConnectionSavedSessionScope }

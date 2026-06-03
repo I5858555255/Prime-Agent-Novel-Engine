@@ -44,7 +44,9 @@
         <li>
           The first boundary is named <code>AgentConnection</code>. It is intentionally client-oriented:
           methods describe what the UI wants to do, not how <code>AgentSession</code> performs the work.
-          That keeps the TUI from depending on runtime/session ownership details.
+          That keeps the TUI from depending on runtime/session ownership details. This is not the final
+          remote/gateway wire protocol; hosted transports should add versioned envelopes, sequence/replay,
+          command lifecycle, artifact handles, and auth/control-plane concerns in follow-up work.
         </li>
         <li>
           The connection surface is modeled around the daemon protocol instead of JSON-RPC mode. JSON-RPC
@@ -296,7 +298,9 @@
           Session events now have a client-owned type, <code>AgentConnectionSessionEvent</code>. The shape currently
           mirrors the core session events that the TUI already renders, but interactive mode and daemon protocol no
           longer import or expose <code>AgentSessionEvent</code> directly. This makes event naming part of the
-          connection contract instead of the live session object contract.
+          connection contract instead of the live session object contract. The current reuse of
+          <code>AgentEvent</code> and <code>AgentMessage</code> is transitional; stable network DTOs should replace
+          those aliases before a gateway treats the interface as a remote protocol.
         </li>
         <li>
           RLM child-agent snapshot types used by the TUI now also live under the connection namespace. The payloads
@@ -772,7 +776,15 @@
         </li>
         <li>
           Still local by design: settings managers, keybindings, auth/login flows, model registry browsing, themes,
-          and client-originated callbacks that carry local functions.
+          filesystem-backed session paths, <code>Date</code> objects in saved-session rows, and client-originated
+          callbacks that carry local functions. These are allowed for the local TUI migration, but new TUI features
+          should not make generic <code>AgentConnection</code> behavior depend on them.
+        </li>
+        <li>
+          Boundary guardrails are now documented in <code>AgentConnection</code>, the local daemon protocol, and the
+          in-process local-session-host adapter. <code>test/interactive-mode-boundary.test.ts</code> also checks that
+          <code>InteractiveMode</code> does not import core runtimes, sessions, session managers, daemon transports,
+          or concrete connection adapters.
         </li>
         <li>
           Future gateway/control-plane work still open: designing a transportable replacement for client-originated

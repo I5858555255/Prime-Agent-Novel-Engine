@@ -47,6 +47,12 @@ export interface DaemonAgentConnectionOptions {
 	closeClientOnDispose?: boolean;
 }
 
+/**
+ * AgentConnection adapter for the local daemon JSONL socket transport.
+ *
+ * InteractiveMode depends only on AgentConnection; local socket ownership and
+ * daemon command details stay inside this adapter.
+ */
 export class DaemonAgentConnection implements AgentConnection {
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 	private readonly unsubscribeDaemonMessages: () => void;
