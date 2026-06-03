@@ -204,7 +204,10 @@ describe("InteractiveMode connection events", () => {
 			},
 			resetExtensionUI: vi.fn(),
 			applyConnectionStateSnapshot: vi.fn(),
+			resetCurrentSessionRenderState: vi.fn(),
 			rebindCurrentSession: vi.fn(async () => {}),
+			renderInitialMessages: vi.fn(async () => {}),
+			ui: { requestRender: vi.fn() },
 			handleEvent: vi.fn(),
 			handleConnectionExtensionUiRequest: vi.fn(),
 			showError: vi.fn(),
@@ -219,9 +222,17 @@ describe("InteractiveMode connection events", () => {
 
 		const resetOrder = fakeThis.resetExtensionUI.mock.invocationCallOrder[0];
 		const applySnapshotOrder = fakeThis.applyConnectionStateSnapshot.mock.invocationCallOrder[0];
+		const resetRenderOrder = fakeThis.resetCurrentSessionRenderState.mock.invocationCallOrder[0];
+		const rebindOrder = fakeThis.rebindCurrentSession.mock.invocationCallOrder[0];
+		const renderMessagesOrder = fakeThis.renderInitialMessages.mock.invocationCallOrder[0];
 		expect(resetOrder).toBeLessThan(applySnapshotOrder);
+		expect(applySnapshotOrder).toBeLessThan(resetRenderOrder);
+		expect(resetRenderOrder).toBeLessThan(rebindOrder);
+		expect(rebindOrder).toBeLessThan(renderMessagesOrder);
 		expect(fakeThis.applyConnectionStateSnapshot).toHaveBeenCalledWith(state);
 		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
+		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();
 	});
 });
 

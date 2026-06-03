@@ -2082,7 +2082,7 @@ export class InteractiveMode {
 		process.exit(1);
 	}
 
-	private async renderCurrentSessionState(): Promise<void> {
+	private resetCurrentSessionRenderState(): void {
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
@@ -2092,6 +2092,10 @@ export class InteractiveMode {
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
 		this.syncGoalTray(this.getGoalState());
+	}
+
+	private async renderCurrentSessionState(): Promise<void> {
+		this.resetCurrentSessionRenderState();
 		await this.renderInitialMessages();
 	}
 
@@ -3231,7 +3235,10 @@ export class InteractiveMode {
 			} else if (event.type === "session_replaced") {
 				this.resetExtensionUI();
 				this.applyConnectionStateSnapshot(event.state);
+				this.resetCurrentSessionRenderState();
 				await this.rebindCurrentSession();
+				await this.renderInitialMessages();
+				this.ui.requestRender();
 			} else if (event.type === "extension_ui_request") {
 				await this.handleConnectionExtensionUiRequest(event.request);
 			} else if (event.type === "closed") {
