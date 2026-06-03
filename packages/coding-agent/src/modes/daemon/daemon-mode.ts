@@ -419,10 +419,22 @@ class AgentDaemon {
 			case "list_saved_sessions": {
 				const state = this.getSessionState(command.activeSessionId);
 				const sessionManager = state.runtime.session.sessionManager;
+				const onProgress = command.id
+					? (loaded: number, total: number) => {
+							this.write(client, {
+								id: command.id,
+								type: "session_list_progress",
+								command: "list_saved_sessions",
+								activeSessionId: command.activeSessionId,
+								loaded,
+								total,
+							});
+						}
+					: undefined;
 				const savedSessions =
 					command.scope === "current"
-						? await SessionManager.list(sessionManager.getCwd(), sessionManager.getSessionDir())
-						: await SessionManager.listAll(undefined, sessionManager.getSessionDir());
+						? await SessionManager.list(sessionManager.getCwd(), sessionManager.getSessionDir(), onProgress)
+						: await SessionManager.listAll(onProgress, sessionManager.getSessionDir());
 				return success(command.id, "list_saved_sessions", {
 					sessions: savedSessions.map(serializeSavedSessionInfo),
 				});

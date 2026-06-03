@@ -8,6 +8,7 @@ import type {
 	DaemonClient,
 	DaemonClientCloseListener,
 	DaemonClientMessageListener,
+	DaemonClientRequestOptions,
 } from "../src/modes/daemon/daemon-client.js";
 import type { DaemonCommand, DaemonOutbound, DaemonResponse } from "../src/modes/daemon/daemon-protocol.js";
 
@@ -17,7 +18,11 @@ class FakeDaemonClient {
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 
-	async request(command: DaemonCommand): Promise<DaemonResponse> {
+	async request(
+		command: DaemonCommand,
+		_timeoutMs = 30000,
+		options: DaemonClientRequestOptions = {},
+	): Promise<DaemonResponse> {
 		this.requests.push(command);
 		switch (command.type) {
 			case "attach":
@@ -137,6 +142,22 @@ class FakeDaemonClient {
 					data: { steering: ["cleared"], followUp: [] },
 				};
 			case "list_saved_sessions":
+				options.onProgress?.({
+					id: "daemon_test",
+					type: "session_list_progress",
+					command: "list_saved_sessions",
+					activeSessionId: command.activeSessionId,
+					loaded: 1,
+					total: 2,
+				});
+				options.onProgress?.({
+					id: "daemon_test",
+					type: "session_list_progress",
+					command: "list_saved_sessions",
+					activeSessionId: command.activeSessionId,
+					loaded: 2,
+					total: 2,
+				});
 				return {
 					type: "response",
 					command: command.type,
@@ -515,8 +536,11 @@ describe("DaemonAgentConnection", () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
 		await connection.attach();
+		const progress: Array<[number, number]> = [];
 
-		const sessions = await connection.listSavedSessions("current");
+		const sessions = await connection.listSavedSessions("current", (loaded, total) => {
+			progress.push([loaded, total]);
+		});
 		await connection.renameSavedSession("/tmp/session-a.jsonl", "Next name");
 		await expect(connection.deleteSavedSession("/tmp/session-a.jsonl")).resolves.toEqual({
 			ok: true,
@@ -535,6 +559,10 @@ describe("DaemonAgentConnection", () => {
 				firstMessage: "hello",
 				allMessagesText: "hello world",
 			},
+		]);
+		expect(progress).toEqual([
+			[1, 2],
+			[2, 2],
 		]);
 		expect(fakeClient.requests[1]).toMatchObject({
 			type: "list_saved_sessions",

@@ -127,6 +127,15 @@ export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "r
 
 export type DaemonExtensionUIResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
 
+export interface DaemonRequestProgress {
+	id?: string;
+	type: "session_list_progress";
+	command: "list_saved_sessions";
+	activeSessionId: string;
+	loaded: number;
+	total: number;
+}
+
 export interface DaemonSavedSessionInfo {
 	path: string;
 	id: string;
@@ -147,6 +156,7 @@ export type DaemonResourceSnapshot = AgentConnectionResourceSnapshot;
 
 export type DaemonOutbound =
 	| DaemonResponse
+	| DaemonRequestProgress
 	| { type: "daemon_hello"; socketPath: string }
 	| { type: "session_event"; activeSessionId: string; event: AgentConnectionSessionEvent }
 	| { type: "session_replaced"; activeSessionId: string; state: AgentConnectionState; messages: AgentMessage[] }

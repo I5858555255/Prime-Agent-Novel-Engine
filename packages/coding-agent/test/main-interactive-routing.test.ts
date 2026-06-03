@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
 	type AppMode,
 	type DaemonInteractiveSessionManagerDecision,
+	findActiveDaemonSessionSummaryForInteractiveStartup,
 	type InteractiveDaemonStartupDecision,
 	parseDaemonRichTuiAttachShortcut,
 	shouldUseDaemonInteractive,
@@ -58,6 +59,31 @@ describe("interactive startup routing", () => {
 });
 
 describe("daemon-backed interactive session manager routing", () => {
+	test("falls back to local session lookup when daemon active-session probing fails", async () => {
+		await expect(
+			findActiveDaemonSessionSummaryForInteractiveStartup("/tmp/prime.sock", "saved-session-id", async () => {
+				throw new Error("Daemon returned an invalid active session summary");
+			}),
+		).resolves.toBeUndefined();
+	});
+
+	test("uses daemon active-session summary when probing succeeds", async () => {
+		await expect(
+			findActiveDaemonSessionSummaryForInteractiveStartup("/tmp/prime.sock", "active-1", async () => ({
+				id: "active-1",
+				activeSessionId: "active-1",
+				status: "idle",
+				sessionId: "session-1",
+				cwd: "/tmp/project",
+				isStreaming: false,
+				isCompacting: false,
+				attachedClients: 0,
+				messageCount: 0,
+				pendingMessageCount: 0,
+			})),
+		).resolves.toMatchObject({ activeSessionId: "active-1" });
+	});
+
 	test("uses an ephemeral local session manager for fresh daemon-owned sessions", () => {
 		expect(shouldUseEphemeralSessionManagerForDaemonInteractive({})).toBe(true);
 	});

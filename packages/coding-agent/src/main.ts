@@ -163,6 +163,20 @@ export function shouldUseEphemeralSessionManagerForDaemonInteractive(
 	return !options.hasActiveDaemonSession && !options.session && !options.resume && !options.continue && !options.fork;
 }
 
+type ActiveDaemonSessionSummaryLookup = (socketPath: string, selector: string) => Promise<SessionSummary | undefined>;
+
+export async function findActiveDaemonSessionSummaryForInteractiveStartup(
+	socketPath: string,
+	selector: string,
+	lookup: ActiveDaemonSessionSummaryLookup = findActiveDaemonSessionSummary,
+): Promise<SessionSummary | undefined> {
+	try {
+		return await lookup(socketPath, selector);
+	} catch {
+		return undefined;
+	}
+}
+
 const DAEMON_RICH_TUI_SHORTCUT_COMMANDS = new Set([
 	"help",
 	"start",
@@ -991,7 +1005,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
 	const activeDaemonSessionSummary =
 		useDaemonInteractive && parsed.session && !looksLikeSessionPath(parsed.session)
-			? await findActiveDaemonSessionSummary(daemonSocketPath, parsed.session)
+			? await findActiveDaemonSessionSummaryForInteractiveStartup(daemonSocketPath, parsed.session)
 			: undefined;
 	let sessionManager: SessionManager;
 	if (activeDaemonSessionSummary) {

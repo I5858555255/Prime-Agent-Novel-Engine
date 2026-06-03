@@ -32,6 +32,7 @@ import type {
 	AgentConnectionSavedSessionScope,
 	AgentConnectionScopedModel,
 	AgentConnectionSessionContext,
+	AgentConnectionSessionListProgress,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSlashCommand,
 	AgentConnectionState,
@@ -160,12 +161,27 @@ export class DaemonAgentConnection implements AgentConnection {
 		});
 	}
 
-	async listSavedSessions(scope: AgentConnectionSavedSessionScope): Promise<AgentConnectionSavedSessionInfo[]> {
-		const data = await this.requestData<{ sessions: DaemonSavedSessionInfo[] }>({
-			type: "list_saved_sessions",
-			activeSessionId: this.activeSessionId,
-			scope,
-		});
+	async listSavedSessions(
+		scope: AgentConnectionSavedSessionScope,
+		onProgress?: AgentConnectionSessionListProgress,
+	): Promise<AgentConnectionSavedSessionInfo[]> {
+		const response = await this.client.request(
+			{
+				type: "list_saved_sessions",
+				activeSessionId: this.activeSessionId,
+				scope,
+			},
+			30000,
+			{
+				onProgress: (progress) => {
+					onProgress?.(progress.loaded, progress.total);
+				},
+			},
+		);
+		if (!response.success) {
+			throw deserializeDaemonError(response);
+		}
+		const data = response.data as { sessions: DaemonSavedSessionInfo[] };
 		return data.sessions.map(deserializeSavedSessionInfo);
 	}
 
