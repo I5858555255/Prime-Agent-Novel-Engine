@@ -39,6 +39,31 @@ function normalizeRenderedOutput(container: Container, width = 220): string {
 		.trim();
 }
 
+function createConnectionState(overrides: Partial<AgentConnectionState> = {}): AgentConnectionState {
+	return {
+		activeSessionId: "active-1",
+		cwd: "/tmp/project",
+		thinkingLevel: "medium",
+		availableThinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
+		isStreaming: false,
+		isCompacting: false,
+		retryAttempt: 0,
+		steeringMode: "all",
+		followUpMode: "all",
+		sessionId: "session-1",
+		leafId: null,
+		autoCompactionEnabled: true,
+		messageCount: 0,
+		pendingMessageCount: 0,
+		compactionCount: 0,
+		goal: emptyGoalState(),
+		scopedModels: [],
+		activeToolNames: ["ipython"],
+		contextUsage: undefined,
+		...overrides,
+	};
+}
+
 describe("InteractiveMode update notifications", () => {
 	beforeAll(() => {
 		initTheme("dark");
@@ -163,6 +188,40 @@ describe("InteractiveMode submit handling", () => {
 		);
 		expect(fakeThis.editor.setText).toHaveBeenCalledWith("");
 		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode connection events", () => {
+	test("clears extension UI when a connection-backed session is replaced", async () => {
+		type SessionReplacedEvent = { type: "session_replaced"; state: AgentConnectionState; messages: [] };
+		let listener: ((event: SessionReplacedEvent) => Promise<void> | void) | undefined;
+		const fakeThis = {
+			agentConnection: {
+				subscribe: vi.fn((callback) => {
+					listener = callback;
+					return vi.fn();
+				}),
+			},
+			resetExtensionUI: vi.fn(),
+			applyConnectionStateSnapshot: vi.fn(),
+			rebindCurrentSession: vi.fn(async () => {}),
+			handleEvent: vi.fn(),
+			handleConnectionExtensionUiRequest: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+
+		const state = createConnectionState();
+		await listener?.({ type: "session_replaced", state, messages: [] });
+
+		const resetOrder = fakeThis.resetExtensionUI.mock.invocationCallOrder[0];
+		const applySnapshotOrder = fakeThis.applyConnectionStateSnapshot.mock.invocationCallOrder[0];
+		expect(resetOrder).toBeLessThan(applySnapshotOrder);
+		expect(fakeThis.applyConnectionStateSnapshot).toHaveBeenCalledWith(state);
+		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
 	});
 });
 

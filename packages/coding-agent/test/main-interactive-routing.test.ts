@@ -1,9 +1,11 @@
 import { describe, expect, test } from "vitest";
 import {
 	type AppMode,
+	type DaemonInteractiveSessionManagerDecision,
 	type InteractiveDaemonStartupDecision,
 	parseDaemonRichTuiAttachShortcut,
 	shouldUseDaemonInteractive,
+	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
 
 describe("interactive startup routing", () => {
@@ -52,6 +54,24 @@ describe("interactive startup routing", () => {
 				...overrides,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("daemon-backed interactive session manager routing", () => {
+	test("uses an ephemeral local session manager for fresh daemon-owned sessions", () => {
+		expect(shouldUseEphemeralSessionManagerForDaemonInteractive({})).toBe(true);
+	});
+
+	const persistentSelectionCases: Array<[string, DaemonInteractiveSessionManagerDecision]> = [
+		["active daemon attach", { hasActiveDaemonSession: true }],
+		["explicit saved session", { session: "saved-session-id" }],
+		["resume picker", { resume: true }],
+		["continue recent", { continue: true }],
+		["fork", { fork: "source-session-id" }],
+	];
+
+	test.each(persistentSelectionCases)("keeps %s on a concrete local session manager", (_label, decision) => {
+		expect(shouldUseEphemeralSessionManagerForDaemonInteractive(decision)).toBe(false);
 	});
 });
 

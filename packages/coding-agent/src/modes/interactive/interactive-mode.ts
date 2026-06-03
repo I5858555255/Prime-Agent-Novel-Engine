@@ -3229,6 +3229,7 @@ export class InteractiveMode {
 			if (event.type === "session_event") {
 				await this.handleEvent(event.event);
 			} else if (event.type === "session_replaced") {
+				this.resetExtensionUI();
 				this.applyConnectionStateSnapshot(event.state);
 				await this.rebindCurrentSession();
 			} else if (event.type === "extension_ui_request") {

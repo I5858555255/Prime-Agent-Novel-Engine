@@ -149,6 +149,20 @@ export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDeci
 	);
 }
 
+export interface DaemonInteractiveSessionManagerDecision {
+	session?: string;
+	resume?: boolean;
+	continue?: boolean;
+	fork?: string;
+	hasActiveDaemonSession?: boolean;
+}
+
+export function shouldUseEphemeralSessionManagerForDaemonInteractive(
+	options: DaemonInteractiveSessionManagerDecision,
+): boolean {
+	return !options.hasActiveDaemonSession && !options.session && !options.resume && !options.continue && !options.fork;
+}
+
 const DAEMON_RICH_TUI_SHORTCUT_COMMANDS = new Set([
 	"help",
 	"start",
@@ -979,9 +993,22 @@ export async function main(args: string[], options?: MainOptions) {
 		useDaemonInteractive && parsed.session && !looksLikeSessionPath(parsed.session)
 			? await findActiveDaemonSessionSummary(daemonSocketPath, parsed.session)
 			: undefined;
-	let sessionManager = activeDaemonSessionSummary
-		? createSessionManagerForActiveDaemonSummary(activeDaemonSessionSummary, cwd)
-		: await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+	let sessionManager: SessionManager;
+	if (activeDaemonSessionSummary) {
+		sessionManager = createSessionManagerForActiveDaemonSummary(activeDaemonSessionSummary, cwd);
+	} else if (
+		useDaemonInteractive &&
+		shouldUseEphemeralSessionManagerForDaemonInteractive({
+			session: parsed.session,
+			resume: parsed.resume,
+			continue: parsed.continue,
+			fork: parsed.fork,
+		})
+	) {
+		sessionManager = SessionManager.inMemory(cwd);
+	} else {
+		sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+	}
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		if (appMode === "interactive") {
