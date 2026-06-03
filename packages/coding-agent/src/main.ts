@@ -149,6 +149,64 @@ export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDeci
 	);
 }
 
+const DAEMON_RICH_TUI_SHORTCUT_COMMANDS = new Set([
+	"help",
+	"start",
+	"list",
+	"create",
+	"attach",
+	"detach",
+	"kill",
+	"rename",
+	"prompt",
+	"steer",
+	"follow-up",
+	"state",
+	"messages",
+	"stats",
+	"commands",
+	"shutdown",
+]);
+
+export interface DaemonRichTuiAttachShortcut {
+	socketPath: string;
+	selector: string;
+}
+
+export function parseDaemonRichTuiAttachShortcut(args: string[]): DaemonRichTuiAttachShortcut | undefined {
+	if (args[0] !== "daemon") {
+		return undefined;
+	}
+
+	let socketPath = defaultDaemonSocketPath();
+	let selector: string | undefined;
+	for (let index = 1; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--socket" || arg === "--daemon-socket") {
+			const value = args[index + 1];
+			if (!value) {
+				return undefined;
+			}
+			socketPath = value;
+			index++;
+			continue;
+		}
+		if (arg === "--json" || arg.startsWith("-") || DAEMON_RICH_TUI_SHORTCUT_COMMANDS.has(arg)) {
+			return undefined;
+		}
+		if (selector) {
+			return undefined;
+		}
+		selector = arg;
+	}
+
+	return selector ? { socketPath, selector } : undefined;
+}
+
+function looksLikeSessionPath(sessionArg: string): boolean {
+	return sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl");
+}
+
 async function prepareInitialMessage(
 	parsed: Args,
 	autoResizeImages: boolean,
@@ -183,7 +241,7 @@ type ResolvedSession =
  */
 async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: string): Promise<ResolvedSession> {
 	// If it looks like a file path, use as-is
-	if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
+	if (looksLikeSessionPath(sessionArg)) {
 		return { type: "path", path: sessionArg };
 	}
 
@@ -630,6 +688,68 @@ function isDaemonSessionSummary(value: unknown): value is SessionSummary {
 	return typeof summary.activeSessionId === "string" || typeof summary.id === "string";
 }
 
+function getDaemonSummaryActiveSessionId(summary: SessionSummary): string {
+	return summary.activeSessionId ?? summary.id;
+}
+
+function isUnknownActiveSessionError(message: string): boolean {
+	return message.startsWith("Unknown active session:");
+}
+
+async function findActiveDaemonSessionSummary(
+	socketPath: string,
+	selector: string,
+): Promise<SessionSummary | undefined> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(250);
+	} catch {
+		return undefined;
+	}
+
+	try {
+		const response = await client.request({ type: "get_state", activeSessionId: selector }, 3000);
+		if (!response.success) {
+			if (isUnknownActiveSessionError(response.error)) {
+				return undefined;
+			}
+			throw new Error(response.error);
+		}
+		if (!isDaemonSessionSummary(response.data)) {
+			throw new Error("Daemon returned an invalid active session summary");
+		}
+		return response.data;
+	} finally {
+		client.close();
+	}
+}
+
+async function normalizeDaemonRichTuiAttachArgs(args: string[]): Promise<string[] | undefined> {
+	const shortcut = parseDaemonRichTuiAttachShortcut(args);
+	if (!shortcut) {
+		return undefined;
+	}
+
+	const summary = await findActiveDaemonSessionSummary(shortcut.socketPath, shortcut.selector);
+	if (!summary) {
+		return undefined;
+	}
+
+	return ["--daemon-socket", shortcut.socketPath, "--session", getDaemonSummaryActiveSessionId(summary)];
+}
+
+function createSessionManagerForActiveDaemonSummary(summary: SessionSummary, fallbackCwd: string): SessionManager {
+	const cwd = summary.cwd || fallbackCwd;
+	if (summary.sessionFile) {
+		try {
+			return SessionManager.open(summary.sessionFile, undefined, cwd);
+		} catch {
+			return SessionManager.inMemory(cwd);
+		}
+	}
+	return SessionManager.inMemory(cwd);
+}
+
 async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
 	try {
@@ -687,12 +807,21 @@ async function createDaemonInteractiveConnection(options: {
 	config: AgentSessionRuntimeConfig;
 	sessionPath?: string;
 	continueRecent?: boolean;
+	activeSessionId?: string;
 }): Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> {
 	await ensureInteractiveDaemonRunning(options.socketPath);
 	const client = new DaemonClient(options.socketPath);
 	await client.connect();
 
 	try {
+		if (options.activeSessionId) {
+			const summary = await findAttachedDaemonSessionSummary(client, options.activeSessionId);
+			const connection = await DaemonAgentConnection.attach(client, getDaemonSummaryActiveSessionId(summary), {
+				closeClientOnDispose: true,
+			});
+			return { connection, summary };
+		}
+
 		const response = await client.request({
 			type: "create",
 			config: options.config,
@@ -715,6 +844,20 @@ async function createDaemonInteractiveConnection(options: {
 	}
 }
 
+async function findAttachedDaemonSessionSummary(
+	client: DaemonClient,
+	activeSessionId: string,
+): Promise<SessionSummary> {
+	const response = await client.request({ type: "get_state", activeSessionId });
+	if (!response.success) {
+		throw new Error(response.error);
+	}
+	if (!isDaemonSessionSummary(response.data)) {
+		throw new Error("Daemon returned an invalid active session summary");
+	}
+	return response.data;
+}
+
 export interface MainOptions {
 	extensionFactories?: ExtensionFactory[];
 }
@@ -734,6 +877,14 @@ export async function main(args: string[], options?: MainOptions) {
 
 	if (await handleConfigCommand(args)) {
 		return;
+	}
+
+	try {
+		args = (await normalizeDaemonRichTuiAttachArgs(args)) ?? args;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(`Error: ${message}`));
+		process.exit(1);
 	}
 
 	if (await handleDaemonCommand(args)) {
@@ -801,6 +952,18 @@ export async function main(args: string[], options?: MainOptions) {
 	const agentDir = getAgentDir();
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
+	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
+	if (startupBenchmark && appMode !== "interactive") {
+		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
+		process.exit(1);
+	}
+	const useDaemonInteractive = shouldUseDaemonInteractive({
+		appMode,
+		startupBenchmark,
+		noSession: parsed.noSession,
+		help: parsed.help,
+		listModels: parsed.listModels,
+	});
 
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local
@@ -811,7 +974,14 @@ export async function main(args: string[], options?: MainOptions) {
 		(parsed.sessionDir ? expandTildePath(parsed.sessionDir) : undefined) ??
 		getSessionDirEnvOverride() ??
 		startupSettingsManager.getSessionDir();
-	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
+	const activeDaemonSessionSummary =
+		useDaemonInteractive && parsed.session && !looksLikeSessionPath(parsed.session)
+			? await findActiveDaemonSessionSummary(daemonSocketPath, parsed.session)
+			: undefined;
+	let sessionManager = activeDaemonSessionSummary
+		? createSessionManagerForActiveDaemonSummary(activeDaemonSessionSummary, cwd)
+		: await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		if (appMode === "interactive") {
@@ -879,19 +1049,6 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
-	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
-	if (startupBenchmark && appMode !== "interactive") {
-		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
-		process.exit(1);
-	}
-
-	const useDaemonInteractive = shouldUseDaemonInteractive({
-		appMode,
-		startupBenchmark,
-		noSession: parsed.noSession,
-		help: parsed.help,
-		listModels: parsed.listModels,
-	});
 	if (useDaemonInteractive) {
 		const prepared = await prepareRuntimeServices({
 			config: defaultSessionConfig,
@@ -939,9 +1096,12 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 
 		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
-			socketPath: parsed.daemonSocket ?? defaultDaemonSocketPath(),
+			socketPath: daemonSocketPath,
 			config: defaultSessionConfig,
-			sessionPath: getInteractiveDaemonSessionPath(parsed, sessionManager),
+			activeSessionId: activeDaemonSessionSummary
+				? getDaemonSummaryActiveSessionId(activeDaemonSessionSummary)
+				: undefined,
+			sessionPath: activeDaemonSessionSummary ? undefined : getInteractiveDaemonSessionPath(parsed, sessionManager),
 		});
 
 		const daemonUiServices = createInteractiveModeUiServicesFromServices({

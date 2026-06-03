@@ -107,6 +107,14 @@
           local <code>AgentSessionRuntime</code> for normal daemon-backed startup.
         </li>
         <li>
+          Rich TUI startup can now attach to an already-active daemon session. <code>--session &lt;selector&gt;</code>
+          first asks the daemon whether the selector names a live active session; when it does, the TUI attaches a
+          <code>DaemonAgentConnection</code> to that session instead of creating a new runtime. The convenience
+          shorthand <code>daemon &lt;selector&gt;</code> is rewritten to the same rich TUI attach path only when the
+          selector is currently live; explicit daemon client commands such as <code>daemon attach</code>,
+          <code>daemon list</code>, and <code>daemon create</code> keep their existing line-oriented behavior.
+        </li>
+        <li>
           The daemon-vs-in-process interactive routing decision is now captured in
           <code>shouldUseDaemonInteractive()</code>. Normal interactive startup chooses the daemon-backed path; the
           explicit in-process exceptions are <code>PI_STARTUP_BENCHMARK</code>, <code>--no-session</code>,
@@ -746,6 +754,11 @@
           <code>test/agent-connection-in-process.test.ts</code> passed together with 59 tests. <code>npm run check</code>
           then passed twice, with the second run applying no fixes, and the same focused tests passed again after
           formatting.
+          After adding rich TUI attach for active daemon selectors, <code>test/main-interactive-routing.test.ts</code>
+          verifies the <code>daemon &lt;active-id&gt;</code> shortcut parsing and preservation of explicit daemon
+          client commands. <code>test/main-interactive-routing.test.ts</code> and
+          <code>test/agent-connection-daemon.test.ts</code> passed together, and <code>npm run check</code> passed with
+          no fixes applied.
           A tmux startup smoke from this worktree rendered the normal interactive TUI through a temporary
           daemon-backed socket using <code>PI_OFFLINE=1 /Users/kevin/pi/prime-agent/node_modules/.bin/tsx
           packages/coding-agent/src/cli.ts --offline --daemon-socket /tmp/prime-agent-decouple-smoke.sock</code>.

@@ -10,6 +10,7 @@
 
 - Added an `AgentConnection` client boundary with in-process and daemon adapters for interactive-mode decoupling.
 - Added daemon mode and CLI controls for starting on demand, creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
+- Added rich TUI attach for already-active daemon sessions via `--session <selector>` and live `daemon <selector>` shorthand.
 
 ### Changed
 

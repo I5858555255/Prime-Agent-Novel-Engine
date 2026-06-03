@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { type AppMode, type InteractiveDaemonStartupDecision, shouldUseDaemonInteractive } from "../src/main.js";
+import {
+	type AppMode,
+	type InteractiveDaemonStartupDecision,
+	parseDaemonRichTuiAttachShortcut,
+	shouldUseDaemonInteractive,
+} from "../src/main.js";
 
 describe("interactive startup routing", () => {
 	test("uses daemon-backed interactive mode for normal interactive startup", () => {
@@ -47,5 +52,26 @@ describe("interactive startup routing", () => {
 				...overrides,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("daemon rich TUI attach shortcut parsing", () => {
+	test("recognizes daemon active-session shorthand", () => {
+		expect(parseDaemonRichTuiAttachShortcut(["daemon", "d5c1e83e2182"])).toMatchObject({
+			selector: "d5c1e83e2182",
+		});
+	});
+
+	test("preserves explicit daemon client commands", () => {
+		expect(parseDaemonRichTuiAttachShortcut(["daemon", "attach", "d5c1e83e2182"])).toBeUndefined();
+		expect(parseDaemonRichTuiAttachShortcut(["daemon", "list"])).toBeUndefined();
+		expect(parseDaemonRichTuiAttachShortcut(["daemon", "create", "scratch"])).toBeUndefined();
+	});
+
+	test("carries daemon socket option into shorthand attach", () => {
+		expect(parseDaemonRichTuiAttachShortcut(["daemon", "--socket", "/tmp/prime.sock", "d5c1e83e2182"])).toEqual({
+			socketPath: "/tmp/prime.sock",
+			selector: "d5c1e83e2182",
+		});
 	});
 });
