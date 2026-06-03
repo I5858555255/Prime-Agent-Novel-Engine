@@ -1,0 +1,838 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Decouple TUI Implementation Notes</title>
+    <style>
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+        max-width: 960px;
+        margin: 40px auto;
+        padding: 0 24px;
+        color: #202124;
+      }
+      h1, h2 {
+        line-height: 1.2;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        background: #f3f4f6;
+        padding: 1px 4px;
+        border-radius: 4px;
+      }
+      section {
+        border-top: 1px solid #d0d7de;
+        margin-top: 28px;
+        padding-top: 20px;
+      }
+      li {
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Decouple TUI Implementation Notes</h1>
+    <p>
+      This file tracks implementation choices while moving interactive mode toward consuming a
+      daemon-compatible agent connection boundary.
+    </p>
+
+    <section>
+      <h2>Design Decisions</h2>
+      <ul>
+        <li>
+          The first boundary is named <code>AgentConnection</code>. It is intentionally client-oriented:
+          methods describe what the UI wants to do, not how <code>AgentSession</code> performs the work.
+          That keeps the TUI from depending on runtime/session ownership details.
+        </li>
+        <li>
+          The connection surface is modeled around the daemon protocol instead of JSON-RPC mode. JSON-RPC
+          already proved that command transport works, but daemon mode is the control plane we need local
+          interactive mode to consume.
+        </li>
+        <li>
+          Bash execution is excluded from the connection surface and no longer starts from interactive mode. The
+          requested path treats IPython as the only tool that matters for this migration, so bash-specific session
+          commands should not hold up daemon-first decoupling.
+        </li>
+        <li>
+          Runtime rebinding is owned by the connection adapter. In the old architecture,
+          <code>InteractiveMode</code> registered callbacks directly on <code>AgentSessionRuntime</code>. In the
+          new architecture, the TUI should subscribe to <code>AgentConnection</code> replacement events and use a
+          before-invalidate hook exposed by the connection.
+        </li>
+        <li>
+          <code>DaemonAgentConnection.onBeforeSessionInvalidate()</code> is currently a no-op. A remote client
+          cannot synchronously clean up server-owned extension/runtime state before the daemon swaps sessions;
+          it should react to <code>session_replaced</code> after the daemon rebinds.
+        </li>
+        <li>
+          Daemon extension UI requests now carry request IDs and can be answered through
+          <code>extension_ui_response</code>. Fire-and-forget UI updates still broadcast as requests, but dialogs
+          wait for a response, timeout, abort signal, or session close. If no client is attached, dialogs return
+          their fallback immediately so daemon-side work does not hang headlessly.
+        </li>
+        <li>
+          <code>InteractiveMode</code> now handles <code>extension_ui_request</code> connection events by validating
+          JSON payloads at the TUI boundary, rendering local TUI dialogs for <code>select</code>,
+          <code>confirm</code>, <code>input</code>, and <code>editor</code>, and replying through the connection.
+          Non-dialog UI requests mutate local status/widget/title/editor state without an acknowledgement.
+        </li>
+        <li>
+          The line-oriented daemon attach client cancels dialog-style extension UI requests. That client cannot
+          render rich TUI dialogs, so explicit cancellation is safer than leaving daemon extension code waiting.
+        </li>
+        <li>
+          Queued steering and follow-up messages are now part of <code>AgentConnection</code> via
+          <code>getQueue()</code> and <code>clearQueue()</code>. The TUI keeps a small local queue snapshot updated
+          from <code>queue_update</code> events so rendering stays synchronous while the queue itself remains
+          core-owned.
+        </li>
+        <li>
+          Slash command discovery for autocomplete and streaming/compaction routing now comes from
+          <code>AgentConnection.getCommands()</code>. In-process mode still attaches local extension argument
+          completers when available; daemon-backed clients will get command names/descriptions without executable
+          completion callbacks.
+        </li>
+        <li>
+          <code>InteractiveMode</code> now requires an injected <code>AgentConnection</code>. Local fallback behavior
+          is preserved by wiring <code>InProcessAgentConnection</code> in <code>main.ts</code>, not by giving the TUI
+          a runtime-owning constructor.
+        </li>
+        <li>
+          Normal interactive mode now starts or reuses the local daemon, creates a daemon-owned session, attaches a
+          <code>DaemonAgentConnection</code>, and injects that connection into <code>InteractiveMode</code>. The
+          client prepares local service objects for settings/auth/themes/model browsing, but it does not construct a
+          local <code>AgentSessionRuntime</code> for normal daemon-backed startup.
+        </li>
+        <li>
+          The daemon-vs-in-process interactive routing decision is now captured in
+          <code>shouldUseDaemonInteractive()</code>. Normal interactive startup chooses the daemon-backed path; the
+          explicit in-process exceptions are <code>PI_STARTUP_BENCHMARK</code>, <code>--no-session</code>,
+          <code>--help</code>, and <code>--list-models</code>.
+        </li>
+        <li>
+          <code>--no-session</code> and <code>PI_STARTUP_BENCHMARK</code> remain in-process for now. The daemon
+          protocol does not yet represent an in-memory no-session interactive session, and the startup benchmark
+          should continue measuring TUI startup without daemon process startup.
+        </li>
+        <li>
+          When <code>InteractiveMode</code> is backed by an injected connection, it no longer binds local runtime
+          extensions or local extension shortcuts. Extension command execution and lifecycle hooks belong to the
+          daemon runtime; the TUI only handles daemon-originated UI requests and local chrome.
+        </li>
+        <li>
+          <code>InteractiveMode</code> now treats <code>AgentConnectionState</code> as the live execution-state cache
+          for streaming, compaction, retry, goal, context, model, and scoped-model decisions. Full snapshots come
+          from <code>getState()</code>; incremental updates are applied from session events.
+        </li>
+        <li>
+          Scoped model mutation is now a connection command (<code>setScopedModels()</code> /
+          <code>set_scoped_models</code>) because model scope changes future agent execution. The selector remains a
+          local UI/auth-model-registry flow, but the mutation is daemon-owned.
+        </li>
+        <li>
+          Session model availability now comes from <code>AgentConnection.getAvailableModels()</code>. The TUI still
+          uses the local <code>ModelRegistry</code> for credential setup, provider display, persisted default-model
+          settings, and auth warnings, but model candidates for the active session are now sourced from the execution
+          owner.
+        </li>
+        <li>
+          Scoped-model selector state is now resolved from the connection-provided model candidates. Persisted
+          settings patterns are interpreted against <code>AgentConnection.getAvailableModels()</code>, and session
+          scoped-model mutations map selected <code>provider/model</code> IDs back to that same candidate set instead
+          of asking the local <code>ModelRegistry</code> to recompute availability.
+        </li>
+        <li>
+          <code>ModelSelectorComponent</code> now treats injected <code>availableModels</code> as authoritative when
+          refreshing the scoped-model tab. It can still use <code>ModelRegistry</code> for local models.json errors
+          and fallback loading, but it no longer replaces daemon-provided scoped model objects with client-local
+          registry objects when a connection model list was supplied.
+        </li>
+        <li>
+          Model selection persistence moved out of <code>ModelSelectorComponent</code>. The selector now emits the
+          selected model as UI intent; <code>InteractiveMode</code> calls <code>AgentConnection.setModel()</code> and
+          only writes the local default-model setting after the connection accepts the execution change.
+        </li>
+        <li>
+          Tool-definition lookup is now connection-backed in <code>InteractiveMode</code>. The TUI preloads
+          definitions from <code>AgentConnection.getToolDefinition()</code> before rendering historical tool calls,
+          and loads them as live tool events arrive. Rendering still uses a synchronous local cache because the TUI
+          component tree expects synchronous constructors.
+        </li>
+        <li>
+          <code>AgentConnection.getToolDefinition()</code> now returns <code>AgentConnectionToolDefinition</code>, a
+          serializable metadata DTO. It intentionally excludes <code>execute</code>, <code>prepareArguments</code>,
+          <code>renderCall</code>, and <code>renderResult</code> callbacks from core <code>ToolDefinition</code>.
+          In-process local extension render callbacks are exposed separately through
+          <code>InteractiveModeLocalSessionHost.getToolRendererDefinition()</code>, so they remain local UI behavior
+          instead of daemon/gateway protocol data.
+        </li>
+        <li>
+          Local UI dependencies are now grouped under <code>InteractiveModeUiServices</code>. This makes the
+          distinction explicit: settings, auth/model registry, resource loading, themes, and local extension UI
+          helpers are UI services, while prompts, model changes, queues, compaction, and session execution are
+          connection operations.
+        </li>
+        <li>
+          Local extension binding and local <code>withSession</code> callbacks now sit behind
+          <code>InteractiveModeLocalSessionHost</code>. This host is deliberately narrower than
+          <code>AgentSessionRuntime</code>: it can bind local extensions, refresh local UI services after an
+          in-process session replacement, and run the callback-bearing session replacement methods that are not
+          transportable yet.
+        </li>
+        <li>
+          The in-process UI-service and local-session-host adapters now live in
+          <code>interactive-mode-services.ts</code>, not in <code>interactive-mode.ts</code>. The TUI class consumes
+          <code>InteractiveModeUiServices</code>, <code>InteractiveModeLocalSessionHost</code>, and
+          <code>AgentConnection</code> abstractions; the adapter file is the compatibility layer that knows about
+          <code>AgentSessionRuntime</code>.
+        </li>
+        <li>
+          <code>FooterComponent</code> no longer accepts or stores <code>AgentSession</code>. The current prime
+          footer renders no session telemetry, so keeping a session reference there only preserved a stale coupling
+          to core execution.
+        </li>
+        <li>
+          In daemon-backed interactive startup, <code>main.ts</code> now creates
+          <code>InteractiveModeUiServices</code> from <code>AgentSessionServices</code> rather than creating a
+          local <code>AgentSessionRuntime</code>. The TUI receives the daemon connection plus UI-local
+          settings/auth/model/resource services, not a local session host or local execution runtime.
+        </li>
+        <li>
+          <code>createInteractiveModeUiServicesFromServices()</code> adapts service-only objects into the UI service
+          interface. It uses local services for settings, themes, resource metadata, and model browsing, while
+          execution state comes from <code>AgentConnection.getState()</code> and the TUI's connection-state cache.
+        </li>
+        <li>
+          <code>InteractiveModeUiServices</code> no longer exposes the live <code>ResourceLoader</code>. The TUI asks
+          the UI-services adapter for registered themes through <code>getThemes()</code>; execution resource metadata
+          comes from <code>AgentConnection.getResourceSnapshot()</code>.
+        </li>
+        <li>
+          <code>InteractiveModeUiServices</code> also no longer exposes <code>SessionManager</code>. The TUI receives
+          only initial cwd/session-name fallbacks for the short window before the first connection snapshot arrives.
+          The full session manager is now reachable only through <code>InteractiveModeLocalSessionHost</code> for
+          in-process local extension shortcut contexts.
+        </li>
+        <li>
+          <code>InteractiveModeUiServices</code> no longer exposes <code>ExtensionRunner</code>, system prompts, or
+          abort signals either. Those are only needed when local in-process extension shortcuts are bound, so they now
+          live on <code>InteractiveModeLocalSessionHost</code>. Daemon-backed interactive mode no longer constructs a
+          client-side extension runner.
+        </li>
+        <li>
+          Waiting for the agent to become idle is now an <code>AgentConnection</code> operation
+          (<code>waitForIdle()</code> / <code>wait_for_idle</code>) instead of a direct
+          <code>session.agent.waitForIdle()</code> call from interactive mode.
+        </li>
+        <li>
+          Saved-session registry operations used by the interactive resume picker now go through
+          <code>AgentConnection</code>: <code>listSavedSessions()</code>, <code>renameSavedSession()</code>, and
+          <code>deleteSavedSession()</code>. The daemon protocol exposes these as separate saved-session commands
+          rather than changing the existing live-session <code>list</code> / <code>rename</code> CLI surface.
+        </li>
+        <li>
+          Saved-session list rows now use connection-owned DTOs
+          (<code>AgentConnectionSavedSessionInfo</code> and <code>AgentConnectionSessionListProgress</code>). The
+          resume picker and search helper no longer import <code>SessionInfo</code> from
+          <code>SessionManager</code>; adapters translate core session-manager data into the connection shape.
+        </li>
+        <li>
+          Daemon saved-session wire rows now also use the connection-owned
+          <code>AgentConnectionSavedSessionState</code> type for lifecycle status. <code>daemon-protocol.ts</code>
+          no longer imports <code>SessionState</code> from <code>SessionManager</code>. The daemon session-list summary
+          status union also uses <code>AgentConnectionSavedSessionStateStatus</code> for inactive saved-session
+          statuses.
+        </li>
+        <li>
+          Session tree rows now also use a connection-owned node shape,
+          <code>AgentConnectionSessionTreeNode</code>, whose <code>entry</code> payload is an
+          <code>AgentConnectionSessionEntry</code> union. <code>TreeSelectorComponent</code> and
+          <code>InteractiveMode</code> no longer import <code>SessionTreeNode</code> or <code>SessionEntry</code> from
+          <code>SessionManager</code>; adapters expose tree snapshots through <code>AgentConnection.getSessionTree()</code>.
+        </li>
+        <li>
+          Session context snapshots now use <code>AgentConnectionSessionContext</code>.
+          <code>InteractiveMode.renderSessionContext()</code> no longer imports <code>SessionContext</code> from
+          <code>SessionManager</code>; both daemon and in-process adapters expose the context through
+          <code>AgentConnection.getSessionContext()</code>.
+        </li>
+        <li>
+          Resource listings and resource diagnostics now flow through
+          <code>AgentConnection.getResourceSnapshot()</code>. The snapshot carries transport-safe metadata for
+          context files, skills, prompt templates, extensions, themes, and diagnostics. It intentionally excludes
+          resource contents, extension handlers, tool implementations, and the live <code>ResourceLoader</code>
+          object. The loaded-resource display no longer falls back to the local resource loader for these
+          execution-owned resources.
+        </li>
+        <li>
+          Resource origin and diagnostic metadata now use connection-owned DTOs:
+          <code>AgentConnectionSourceInfo</code>, <code>AgentConnectionResourceCollision</code>, and
+          <code>AgentConnectionResourceDiagnostic</code>. Core loaders still produce structurally compatible values,
+          but the TUI, daemon protocol, and JSON-RPC command metadata no longer import the core source-info or
+          resource-loader modules to describe data that crosses a client boundary.
+        </li>
+        <li>
+          Prompt-template listing is no longer part of <code>InteractiveModeUiServices</code>. Prompt metadata is
+          displayed from <code>AgentConnection.getResourceSnapshot()</code>, and prompt slash commands come from
+          <code>AgentConnection.getCommands()</code>, so the service method became a stale in-process assumption.
+        </li>
+        <li>
+          Extension slash command snapshots now include both the invokable command name and the originally
+          registered extension command name. That lets daemon-backed clients keep the existing built-in-command
+          conflict warning behavior even when the runner renames duplicate extension commands.
+        </li>
+        <li>
+          Session events now have a client-owned type, <code>AgentConnectionSessionEvent</code>. The shape currently
+          mirrors the core session events that the TUI already renders, but interactive mode and daemon protocol no
+          longer import or expose <code>AgentSessionEvent</code> directly. This makes event naming part of the
+          connection contract instead of the live session object contract.
+        </li>
+        <li>
+          RLM child-agent snapshot types used by the TUI now also live under the connection namespace. The payloads
+          are unchanged, but the TUI consumes them as daemon/client data instead of importing child-agent types from
+          <code>AgentSession</code>.
+        </li>
+        <li>
+          Skill-block parsing moved from <code>agent-session.ts</code> to <code>core/skill-blocks.ts</code>. The TUI
+          only needs a pure message-display parser there, not the session execution module. <code>agent-session.ts</code>
+          still re-exports the parser so existing package consumers are not forced through a migration in this slice.
+        </li>
+        <li>
+          <code>SessionStats</code> moved to <code>core/session-stats.ts</code>. Connection, daemon, and RPC protocol
+          types now import the stats DTO from a focused data module instead of from <code>AgentSession</code>.
+          <code>agent-session.ts</code> still re-exports it for compatibility.
+        </li>
+        <li>
+          <code>SessionImportFileNotFoundError</code> moved to <code>core/session-import-errors.ts</code>. The daemon
+          error serializer, interactive import handling, and tests now import the recoverable error from that focused
+          module instead of from <code>agent-session-runtime.ts</code>. The runtime module still re-exports it while it
+          remains the code path that throws it.
+        </li>
+        <li>
+          <code>DaemonModeOptions</code> moved from <code>daemon-protocol.ts</code> to
+          <code>daemon-mode.ts</code>. The daemon protocol module now describes socket commands, responses, outbound
+          messages, and protocol error metadata; the runtime factory used to construct daemon-owned sessions is a
+          process-local daemon-mode concern.
+        </li>
+        <li>
+          Recoverable daemon command errors now carry optional <code>errorInfo</code> metadata. The local daemon
+          connection rehydrates <code>MissingSessionCwdError</code> and
+          <code>SessionImportFileNotFoundError</code> so existing interactive recovery flows still work when the
+          runtime is daemon-owned.
+        </li>
+        <li>
+          Daemon-owned extension command callbacks are allowed to use <code>setup</code> and
+          <code>withSession</code> because the extension command executes inside the daemon process. Those executable
+          closures are never serialized through the daemon protocol; the daemon binding passes them directly to
+          <code>AgentSessionRuntime</code> and broadcasts <code>session_replaced</code> after rebinding.
+        </li>
+        <li>
+          The daemon adapter normalizes serialized saved-session dates back to <code>Date</code> objects before the
+          selector receives them. That preserves the selector's existing search, sorting, and age-rendering behavior
+          while keeping JSON serialization inside the transport adapter.
+        </li>
+        <li>
+          Connection-backed saved-session listing uses the active session's session root for both current-folder and
+          all-session scopes. That keeps daemon-backed TUI behavior tied to the daemon-owned runtime configuration
+          instead of the client process defaults.
+        </li>
+        <li>
+          <code>SessionSelectorComponent</code> now accepts an optional delete callback. Interactive mode supplies
+          the connection-backed deleter; the non-daemon <code>--resume</code> picker keeps the local fallback.
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Deviations</h2>
+      <ul>
+        <li>
+          <code>get_state</code> in the daemon protocol remains the existing lightweight session summary command.
+          The richer TUI/client snapshot uses a new <code>get_connection_state</code> command instead of changing
+          existing daemon CLI semantics.
+        </li>
+        <li>
+          <code>InteractiveMode</code> still has a local-only host for extension binding and callback-bearing
+          <code>withSession</code> flows. That host is now defined in the adapter module rather than the TUI module,
+          but it is still transitional because those callbacks are not daemon protocol concepts.
+        </li>
+        <li>
+          The daemon-backed TUI still performs local service preparation for settings, auth, model registry, resource
+          loading, themes, CLI diagnostics, and initial message image resizing. It no longer constructs a local
+          <code>AgentSessionRuntime</code> for normal interactive startup.
+        </li>
+        <li>
+          The service-backed daemon TUI adapter does not bind local extensions, but it still loads client-side
+          resources for local UI needs such as themes and model browsing. Loaded-resource listings and execution
+          resource diagnostics now use the daemon-owned resource snapshot instead of the client-side loader.
+        </li>
+        <li>
+          Bash commands are now explicitly rejected in interactive mode. Bash was intentionally left out of the
+          requested connection surface, and keeping an in-process-only execution path would preserve a TUI-owned
+          escape hatch into <code>AgentSession</code>.
+        </li>
+        <li>
+          <code>/debug</code> now fails with a user-visible error if the connection cannot return messages instead
+          of falling back to local UI-service messages. That intentionally removes a stale in-process transcript
+          fallback from daemon-backed mode.
+        </li>
+        <li>
+          Startup changelog gating now lets connection-state failures abort startup instead of falling back to a local
+          message count. A daemon-backed TUI without connection state is not healthy enough to make accurate
+          restored-session decisions.
+        </li>
+        <li>
+          Session browsing still uses local <code>SessionManager.list()</code>, local file deletion, and local rename
+          writes only for non-daemon picker usages that do not construct an <code>AgentConnection</code>. Interactive
+          mode now routes list, rename, and delete through the connection.
+        </li>
+        <li>
+          Daemon-backed custom tool render callbacks are not transported. Built-in tool rendering remains client-local,
+          and custom daemon-side tools render from serializable metadata and results unless we later add a declarative
+          renderer protocol.
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Tradeoffs</h2>
+      <ul>
+        <li>
+          I am starting with an in-process adapter and daemon protocol expansion before doing the full
+          interactive-mode migration. This gives us compileable, testable seams and exposes daemon gaps early,
+          instead of burying protocol work inside a large TUI edit.
+        </li>
+        <li>
+          Connection state is a snapshot, while session events remain incremental. A daemon client can always
+          recover from missed events by asking for a fresh snapshot, and the in-process adapter can preserve the
+          current event timing.
+        </li>
+        <li>
+          Extension command contexts can pass <code>setup</code> and <code>withSession</code> callbacks today. For
+          daemon-loaded extensions, those closures stay daemon-side and can keep using
+          <code>AgentSessionRuntime</code> directly through the daemon binding. For client-originated operations, I
+          did not try to serialize closures over JSON; future transports need declarative replacement operations
+          instead.
+        </li>
+        <li>
+          Text daemon attach now auto-cancels dialog UI requests. This prevents hangs for non-TUI clients, but a
+          future multi-client daemon should advertise client capabilities so one non-interactive observer cannot
+          cancel a dialog intended for an interactive UI client.
+        </li>
+        <li>
+          I kept autocomplete rendering synchronous by caching connection command/model/queue snapshots. The
+          alternative was making editor completion providers async, which would have touched more of the TUI package
+          and increased risk for this migration slice.
+        </li>
+        <li>
+          I chose to launch the daemon from normal interactive mode rather than only adding a new
+          <code>daemon tui</code> command. That makes local usage exercise the daemon protocol by default, which is
+          the architectural goal, while preserving the existing line-oriented <code>prime-agent daemon attach</code>
+          behavior for simple terminal clients.
+        </li>
+        <li>
+          I extracted the daemon interactive routing decision into a pure helper instead of testing the full
+          <code>main()</code> startup path. The full path depends on terminal process state, sockets, runtime
+          services, and daemon process launch. The helper test proves the policy; daemon adapter and binding tests
+          cover the protocol behavior underneath.
+        </li>
+        <li>
+          I disabled local extension binding in daemon-backed mode instead of keeping both local and daemon extension
+          hosts active. Running both would preserve some local extension UI affordances, but it risks duplicate
+          lifecycle hooks, duplicate command handlers, and confusing ownership of extension state.
+        </li>
+        <li>
+          I moved session model availability to <code>AgentConnection</code> while leaving provider setup and
+          credential storage local. This is a narrower split than a full remote auth service: the daemon owns what the
+          active session can use, and the local TUI still owns the credential UX needed by today's terminal client.
+        </li>
+        <li>
+          I left <code>ModelSelectorComponent</code> with a <code>ModelRegistry</code> dependency for now instead of
+          introducing a larger selector service. The component still needs local models.json diagnostics and fallback
+          model loading for non-connection tests/usages. The important decoupling point is that injected connection
+          candidates override the registry for execution-facing scoped model objects.
+        </li>
+        <li>
+          I moved default-model persistence to the parent after <code>AgentConnection.setModel()</code> succeeds. The
+          alternative was keeping persistence inside the selector for historical behavior, but that lets a rejected
+          daemon command still mutate local settings. The new ordering makes the local setting a consequence of a
+          successful execution-state change.
+        </li>
+        <li>
+          I kept the scoped-model selector's existing exact-ID behavior for user edits. When a user changes the
+          checkbox set, the session scope is rebuilt from selected <code>provider/model</code> IDs, so thinking-level
+          suffixes are not preserved by that UI interaction. Preserving them would require a richer selector model
+          and is separate from moving ownership to the connection boundary.
+        </li>
+        <li>
+          I kept an event-updated state cache in the TUI instead of making every keypress or render path await
+          daemon state. That preserves current synchronous TUI ergonomics, but means new daemon events must update
+          the cache when they add connection-visible state.
+        </li>
+        <li>
+          I cached tool definitions in the TUI instead of making <code>ToolExecutionComponent</code> accept an async
+          loader. Async component construction would spread the transport concern through more TUI code; a cache
+          keeps the boundary explicit and can be invalidated on session rebind or reload.
+        </li>
+        <li>
+          I split tool presentation into two layers. <code>AgentConnectionToolDefinition</code> carries metadata that
+          can cross JSON, while <code>InteractiveModeLocalSessionHost</code> can provide local renderer callbacks for
+          in-process extension rendering. Returning full <code>ToolDefinition</code> from the connection would preserve
+          a convenient TypeScript shape, but it would lie about what daemon and hosted transports can actually carry.
+        </li>
+        <li>
+          I made <code>/debug</code> connection-authoritative instead of best-effort. The old fallback could produce
+          a debug file with local/stale messages after a daemon connection failure; the new behavior is less
+          forgiving but tells the truth about the failed boundary.
+        </li>
+        <li>
+          I removed local message counts from <code>InteractiveModeUiServices</code> for the same reason as debug
+          transcripts: message history is execution state. The TUI can cache connection snapshots, but it should not
+          have a second local source of truth.
+        </li>
+        <li>
+          I kept neutral execution defaults inside <code>InteractiveMode</code> for the small window before the first
+          connection snapshot is loaded. This is less featureful than reading from the local in-process session during
+          startup, but it keeps the ownership model simple: local UI services do not mirror agent execution state.
+        </li>
+        <li>
+          I kept initial cwd/session-name fallbacks in the UI-services adapter instead of making the constructor wait
+          for <code>AgentConnection.getState()</code>. That lets the TUI build its footer and terminal title
+          synchronously, while avoiding a broad <code>SessionManager</code> dependency in the TUI.
+        </li>
+        <li>
+          I removed the legacy <code>new InteractiveMode(runtimeHost, options)</code> constructor instead of keeping
+          it as a compatibility path. The safer staged version is to keep the in-process adapter, but force callers
+          to cross the same <code>AgentConnection</code> boundary as daemon-backed interactive mode.
+        </li>
+        <li>
+          I moved saved-session registry operations onto <code>AgentConnection</code> instead of creating a separate
+          daemon control-plane client in this slice. That makes interactive mode consume daemon protocol for the
+          resume picker now, while leaving room to split registry/admin operations into a separate service later.
+        </li>
+        <li>
+          I duplicated the saved-session list row shape in the connection layer instead of aliasing
+          <code>SessionInfo</code>. The two shapes are currently structurally identical, but the explicit DTO keeps
+          future daemon/gateway clients from inheriting every internal <code>SessionManager</code> type change.
+        </li>
+        <li>
+          I reused the connection saved-session state DTO in the daemon protocol instead of creating a separate
+          daemon-only status union. Saved-session lifecycle status is already part of the client-facing connection
+          contract, so a second identical daemon type would add indirection without making the boundary clearer. The
+          daemon still imports <code>SessionInfo</code> where it is actually reading saved-session files; only the
+          client-visible status vocabulary moved out of <code>SessionManager</code>.
+        </li>
+        <li>
+          I duplicated the small source/diagnostic DTO shapes in the connection layer instead of aliasing
+          <code>SourceInfo</code> or <code>ResourceDiagnostic</code> from core. The duplicated shapes are intentionally
+          boring, but that is the point: protocol data should be stable because the client contract says so, not
+          because the current loader implementation happens to export the same TypeScript interfaces.
+        </li>
+        <li>
+          I duplicated the serialized session entry union in the connection layer instead of importing
+          <code>SessionEntry</code>. The JSON payload is intentionally the same data the session file already stores,
+          but the TypeScript dependency now points at <code>AgentConnectionSessionEntry</code> so client code is not
+          coupled to <code>SessionManager</code>.
+        </li>
+        <li>
+          I duplicated the session context wrapper in the connection layer while still carrying
+          <code>AgentMessage[]</code>. The wrapper mirrors <code>SessionManager.buildSessionContext()</code> today,
+          but gives the TUI a connection-owned import path. Fully connection-owned message DTOs should be handled in
+          the later transcript/event protocol pass rather than mixed into this cleanup.
+        </li>
+        <li>
+          I extracted the in-process adapter helpers instead of deleting the fallback path. Removing the fallback
+          would be cleaner architecturally, but <code>--no-session</code> and startup benchmarking still need a
+          local execution path until the daemon protocol has equivalent semantics.
+        </li>
+        <li>
+          I removed the footer's <code>AgentSession</code> argument rather than replacing it with a footer snapshot.
+          The footer is intentionally empty today; if telemetry returns later, it should read from
+          <code>AgentConnectionState</code> or a dedicated presentation snapshot, not from a core session object.
+        </li>
+        <li>
+          I represented loaded resources as a snapshot instead of trying to expose <code>ResourceLoader</code> over
+          the transport. A loader has filesystem and process behavior; a snapshot has stable data that can cross an
+          in-process adapter, local daemon socket, or future hosted gateway.
+        </li>
+        <li>
+          I kept extension shortcut diagnostics local to the TUI path that binds local extensions. Shortcut conflict
+          detection depends on effective client keybindings, so the daemon should not compute it until the protocol
+          has an explicit client-capabilities or keybinding snapshot.
+        </li>
+        <li>
+          I copied the client-visible session event union into the connection layer instead of aliasing
+          <code>AgentSessionEvent</code>. Aliasing would be less code today, but it would keep the public client
+          boundary tied to whatever event shape the core runtime happens to use internally.
+        </li>
+        <li>
+          I serialized only the recoverable error identities the TUI already branches on. A broader typed-error
+          system would be more general, but it would add protocol surface before we know which failures should be
+          recoverable in hosted clients.
+        </li>
+        <li>
+          I kept compatibility re-exports for <code>SessionStats</code>, <code>parseSkillBlock</code>, and
+          <code>SessionImportFileNotFoundError</code> in their old modules. The migration goal here is to stop new
+          TUI/connection code from importing execution modules for transport-safe data, not to force external API
+          consumers through unrelated import churn in this PR.
+        </li>
+        <li>
+          I kept the daemon <code>create</code> command's <code>config</code> payload typed as
+          <code>AgentSessionRuntimeConfig</code> for now. That payload is still part of the local daemon control
+          surface. I only moved the non-wire runtime factory out of the protocol module in this pass.
+        </li>
+        <li>
+          I extracted the existing session file deletion behavior into a shared core helper instead of changing the
+          semantics. The daemon-backed path still tries <code>trash</code> first and falls back to unlink, but that
+          now happens in the daemon process.
+        </li>
+        <li>
+          I removed the live interactive bash shortcut instead of adding bash operations to
+          <code>AgentConnection</code>. This is a deliberate narrowing: historical <code>bashExecution</code>
+          messages still render, but new shell work should go through IPython rather than a TUI-owned session method.
+        </li>
+        <li>
+          Interactive startup no longer ensures <code>rg</code> for the removed shell shortcut. It still ensures
+          <code>fd</code> because path autocomplete needs it.
+        </li>
+        <li>
+          I split runtime preparation from runtime construction in <code>main.ts</code>. Normal daemon-backed
+          interactive mode now runs only the preparation half locally, then asks the daemon to construct the
+          execution runtime. RPC, print, daemon server mode, <code>--no-session</code>, and startup benchmark still
+          use local runtime construction because they are not daemon-backed TUI clients.
+        </li>
+        <li>
+          Daemon session summaries now include runtime diagnostics and model fallback messages. That keeps
+          user-visible startup warnings owned by the daemon runtime once the client stops constructing its own
+          execution runtime.
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Current Status</h2>
+      <ul>
+        <li>
+          Implemented: shared <code>AgentConnection</code> types, in-process adapter, daemon adapter, daemon protocol
+          commands for the TUI command surface, session replacement events, connection snapshots, extension UI
+          request/response plumbing, queue state, command snapshots, injectable connection construction, and migration
+          of the main interactive execution mutations to the connection. Normal interactive startup now creates a
+          daemon-owned execution session and injects a <code>DaemonAgentConnection</code>, except for the explicit
+          in-process fallbacks listed above. The latest pass also moved scoped-model mutation and common
+          streaming/compaction/retry/goal/model reads behind the connection state cache. A follow-up pass moved
+          tool-definition lookup and <code>waitForIdle()</code> behind the connection too. Follow-up passes extracted
+          UI-local settings/auth/resource dependencies into <code>InteractiveModeUiServices</code>, added
+          <code>InteractiveModeLocalSessionHost</code> for local extension binding, removed the runtime-owning
+          <code>InteractiveMode</code> constructor, and changed both daemon-backed and in-process startup so the mode
+          is constructed through an explicit <code>AgentConnection</code>. The daemon-backed path now creates
+          <code>InteractiveModeUiServices</code> from service objects and skips local
+          <code>AgentSessionRuntime</code> construction for normal interactive startup. The
+          interactive resume picker now uses connection-backed saved-session listing, rename, and delete operations.
+          Loaded-resource startup and reload listings now use connection resource snapshots, so daemon-backed
+          interactive mode displays daemon-owned context, skill, prompt, extension, theme, and resource diagnostic
+          metadata instead of inspecting a local execution runtime. Resource source metadata and diagnostics are now
+          connection-owned DTOs too, so the TUI, daemon protocol, and JSON-RPC command metadata do not import the
+          core loader/source-info types for protocol data.
+          The in-process UI-service/local-session-host glue has been moved out of the TUI module, and the footer no
+          longer stores <code>AgentSession</code>. <code>InteractiveModeUiServices</code> has also been narrowed so
+          prompt templates, model state, streaming state, compaction state, goal state, context usage, scoped models,
+          message counts, full transcript messages, the live resource loader, the live session manager, local
+          extension runner, system prompt, and abort signal are no longer exposed as local service surfaces.
+          Model candidate loading for <code>/model</code>, onboarding, provider count, and scoped-model selection now
+          asks <code>AgentConnection.getAvailableModels()</code> instead of recomputing active-session availability
+          from the local model registry. Scoped-model selector changes now also build the session mutation from those
+          connection-provided candidates.
+          Live bash execution was also removed from interactive mode so the TUI no longer calls
+          <code>session.executeBash()</code>, <code>session.recordBashResult()</code>, or
+          <code>session.abortBash()</code>.
+        </li>
+        <li>
+          Verified after the explicit <code>AgentConnection</code> constructor change:
+          <code>npm run check</code> passed, and
+          <code>test/agent-connection-daemon.test.ts</code> passed for daemon queue commands,
+          <code>wait_for_idle</code>, <code>set_scoped_models</code>, saved-session list/rename/delete commands,
+          extension UI event forwarding, and owning-client disposal. <code>test/session-selector-path-delete.test.ts</code>
+          also passed for the injected delete handler path. After removing live bash execution,
+          <code>test/interactive-mode-status.test.ts</code> passed, including a regression that <code>!</code> input
+          warns locally and never reaches <code>AgentConnection.prompt()</code>. After removing the legacy
+          <code>InteractiveMode(runtimeHost, options)</code> path, focused tests for clone/import/status passed
+          together, and the full <code>npm run check</code> passed again. After removing local runtime construction
+          from normal daemon-backed interactive startup, <code>npm run check</code> passed twice, with the second run
+          applying no fixes, and <code>test/agent-connection-daemon.test.ts</code> passed.
+          After adding resource snapshots, <code>test/agent-connection-daemon.test.ts</code> passed with five tests,
+          including <code>get_resource_snapshot</code>, and <code>npm run check</code> passed cleanly on a second run
+          with no fixes applied.
+          After the adapter extraction and footer decoupling, <code>test/footer-width.test.ts</code> passed and
+          <code>npm run check</code> passed with no fixes applied.
+          After narrowing <code>InteractiveModeUiServices</code>, <code>test/interactive-mode-status.test.ts</code>
+          passed with 40 tests and <code>npm run check</code> passed with no fixes applied.
+          After moving model candidate loading to the connection, <code>test/interactive-mode-status.test.ts</code>
+          verifies that unscoped candidates call <code>AgentConnection.getAvailableModels()</code> and scoped
+          candidates come from connection state.
+          After moving scoped-model selector resolution to connection-provided candidates,
+          <code>test/model-resolver.test.ts</code> verifies the supplied-list resolver path and
+          <code>test/interactive-mode-status.test.ts</code> verifies selected IDs are mapped back to connection
+          candidates.
+          After making injected model candidates authoritative inside <code>ModelSelectorComponent</code>,
+          <code>test/model-selector-actions.test.ts</code> verifies that the scoped-model tab displays the
+          connection-provided model object instead of a local registry replacement.
+          After moving default-model persistence out of <code>ModelSelectorComponent</code>,
+          <code>test/interactive-mode-status.test.ts</code> verifies that local defaults are saved only after
+          <code>AgentConnection.setModel()</code> succeeds and are not saved when the connection rejects the model.
+          After moving saved-session row types into the connection layer,
+          <code>test/session-selector-path-delete.test.ts</code>, <code>test/session-selector-rename.test.ts</code>,
+          and <code>test/session-selector-search.test.ts</code> use <code>AgentConnectionSavedSessionInfo</code> for
+          resume-picker coverage.
+          After moving session tree node wrappers into the connection layer,
+          <code>test/tree-selector.test.ts</code> uses <code>AgentConnectionSessionTreeNode</code> and
+          <code>AgentConnectionSessionEntry</code> for tree-selector coverage. <code>test/agent-connection-daemon.test.ts</code>
+          also verifies that <code>DaemonAgentConnection.getSessionTree()</code> uses the
+          <code>get_session_tree</code> command and returns the connection tree DTO.
+          <code>test/daemon-session-list.test.ts</code> verifies active and inactive daemon list statuses after moving
+          inactive status typing to <code>AgentConnectionSavedSessionStateStatus</code>.
+          After moving session context snapshots into the connection layer,
+          <code>test/suite/regressions/4167-thinking-toggle-pending-tool-render.test.ts</code> covers
+          <code>InteractiveMode.renderSessionContext()</code> through <code>AgentConnectionSessionContext</code>.
+          <code>test/agent-connection-daemon.test.ts</code> and
+          <code>test/agent-connection-in-process.test.ts</code> also verify that both adapters expose session context
+          through the connection boundary.
+          After splitting tool metadata from local renderer callbacks, <code>test/agent-connection-in-process.test.ts</code>
+          verifies that in-process connection tool definitions strip <code>execute</code>, <code>renderCall</code>,
+          and <code>renderResult</code>, and <code>test/agent-connection-daemon.test.ts</code> verifies daemon tool
+          metadata comes through <code>get_tool_definition</code>.
+          After auditing daemon extension replacement, <code>test/daemon-extension-binding.test.ts</code> passed and
+          verifies that daemon-side <code>withSession</code> callbacks run only after the daemon rebinds and
+          broadcasts the replacement session.
+          After introducing <code>AgentConnectionSessionEvent</code>, <code>test/agent-connection-daemon.test.ts</code>
+          passed with six tests, including a regression that daemon <code>session_event</code> messages are forwarded
+          only for the attached active session.
+          After preserving daemon recoverable errors and extracting skill-block parsing,
+          <code>test/agent-connection-daemon.test.ts</code> passed with seven tests, including rehydration for missing
+          session cwd and missing import file errors.
+          After moving <code>SessionStats</code> and <code>SessionImportFileNotFoundError</code> into focused modules,
+          the import audit shows the remaining mode-layer imports from <code>agent-session.ts</code> /
+          <code>agent-session-runtime.ts</code> are adapter/owner imports: daemon runtime ownership, the in-process
+          connection adapter, the connection snapshot adapter, saved-session file discovery in daemon list mode, and
+          the transitional local-session-host adapter.
+          <code>test/agent-connection-daemon.test.ts</code>, <code>test/interactive-mode-import-command.test.ts</code>,
+          and a stable <code>npm run check</code> pass after this extraction.
+          After moving <code>DaemonModeOptions</code>, <code>daemon-protocol.ts</code> no longer imports
+          <code>CreateAgentSessionRuntimeFactory</code>; daemon process construction details live in
+          <code>daemon-mode.ts</code>.
+          <code>test/main-interactive-routing.test.ts</code> verifies that normal interactive startup uses the
+          daemon-backed path and that the known fallback modes stay in-process.
+          <code>test/agent-connection-in-process.test.ts</code> verifies that the fallback adapter emits a
+          transport-shaped replacement snapshot, unsubscribes from the old session, subscribes to the new session, and
+          clears runtime callbacks during disposal.
+          <code>test/agent-connection-daemon.test.ts</code> now also verifies that
+          <code>DaemonAgentConnection.getState()</code> uses <code>get_connection_state</code> rather than the older
+          daemon summary command, and that daemon <code>session_replaced</code> broadcasts arrive at the TUI boundary
+          with the replacement snapshot and messages.
+          <code>test/interactive-mode-clear-command.test.ts</code> verifies that the user-visible
+          <code>/clear</code> flow creates the replacement session through <code>AgentConnection.newSession()</code>
+          and treats connection cancellation as a local no-op.
+          <code>/debug</code> now obtains transcript messages only from
+          <code>AgentConnection.getMessages()</code>; <code>InteractiveModeUiServices</code> no longer exposes the
+          full message list. <code>test/interactive-mode-debug-command.test.ts</code> verifies both the successful
+          connection-backed debug log and the failure path when the connection cannot provide messages.
+          Startup changelog gating now reads <code>AgentConnectionState.messageCount</code> instead of local UI
+          service state; <code>test/interactive-mode-changelog.test.ts</code> verifies restored-session detection and
+          the no-local-fallback failure path.
+          After moving source-info and resource-diagnostic DTOs into the connection layer,
+          <code>test/interactive-mode-status.test.ts</code>, <code>test/agent-connection-daemon.test.ts</code>, and
+          <code>test/agent-connection-in-process.test.ts</code> passed together with 59 tests. <code>npm run check</code>
+          then passed twice, with the second run applying no fixes, and the same focused tests passed again after
+          formatting.
+          A tmux startup smoke from this worktree rendered the normal interactive TUI through a temporary
+          daemon-backed socket using <code>PI_OFFLINE=1 /Users/kevin/pi/prime-agent/node_modules/.bin/tsx
+          packages/coding-agent/src/cli.ts --offline --daemon-socket /tmp/prime-agent-decouple-smoke.sock</code>.
+          The temporary daemon was then shut down with the same socket and returned <code>ok</code>.
+        </li>
+        <li>
+          Smoke caveat: <code>./prime-agent.sh</code> did not work from this worktree because it expects
+          <code>node_modules/.bin/tsx</code> under the worktree root. Dependencies are installed in the main checkout,
+          so the smoke used the root <code>tsx</code> binary directly. This is a worktree test-environment issue, not a
+          daemon/TUI protocol issue.
+        </li>
+        <li>
+          Still local by design: settings managers, keybindings, auth/login flows, model registry browsing, themes,
+          and client-originated callbacks that carry local functions.
+        </li>
+        <li>
+          Future gateway/control-plane work still open: designing a transportable replacement for client-originated
+          session replacement callbacks, deciding how remote clients should express shortcut/keybinding capabilities,
+          and adding broader end-to-end TUI smoke coverage.
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Open Questions</h2>
+      <ul>
+        <li>
+          Session selectors can pass concrete session paths today. If daemon clients should also accept short
+          saved-session selectors for <code>switch_session</code>, we should route that command through
+          <code>resolveDaemonSessionPath()</code>.
+        </li>
+        <li>
+          Should theme metadata remain in the execution resource snapshot long-term, or should themes become an
+          explicitly local UI service only? The current implementation includes daemon theme metadata in the loaded
+          resource listing while still registering/rendering themes from local TUI services.
+        </li>
+        <li>
+          Decide whether saved-session registry operations should remain on <code>AgentConnection</code> or move to a
+          separate daemon control-plane service before the hosted gateway work. Interactive mode now uses the
+          connection, but the boundary may want to split "agent execution" from "session administration" later.
+        </li>
+        <li>
+          Client-originated <code>setup</code> and <code>withSession</code> callbacks are not transportable. Daemon
+          extension-owned callbacks are covered by the daemon binding, but future web/gateway clients need a
+          declarative replacement-session customization model if they should customize a freshly switched or forked
+          session.
+        </li>
+        <li>
+          Confirm whether removing the live interactive bash shortcut is the desired final product behavior. I kept
+          historical bash-message rendering so old sessions remain readable, but new <code>!</code> commands now show
+          an unsupported warning.
+        </li>
+        <li>
+          Decide how daemon protocol should represent <code>--no-session</code>. Today that flag stays on the
+          in-process path to preserve non-persistence behavior.
+        </li>
+        <li>
+          Future hosted clients need a product decision for auth/model setup. The terminal client still edits local
+          credentials directly, while the daemon protocol now owns active-session model availability. A web/gateway
+          client likely needs a separate credentials/control-plane flow rather than reusing the local
+          <code>ModelRegistry</code> UI.
+        </li>
+        <li>
+          Decide whether scoped-model thinking levels should become first-class editable UI state. The current
+          selector still preserves existing behavior: settings patterns can carry thinking-level suffixes, but editing
+          the checkbox selection sends exact model IDs and drops per-model thinking overrides.
+        </li>
+        <li>
+          Decide when to introduce fully connection-owned transcript/message DTOs. Session context now has a
+          connection-owned wrapper, but it still carries <code>AgentMessage[]</code> so this migration does not
+          rewrite the renderer and event protocol in the same pass.
+        </li>
+        <li>
+          Decide whether hosted/daemon clients need declarative custom tool rendering. Today local in-process
+          extensions can still provide renderer callbacks through the local session host, but daemon/gateway clients
+          should not receive JavaScript functions. A future protocol could use renderer IDs, structured display
+          schemas, or fully generic rendering from tool result content.
+        </li>
+        <li>
+          Add broader full-TUI smoke coverage for daemon-backed interactive mode. I added daemon adapter tests for
+          connection state, queue state, session replacement forwarding, session event forwarding, recoverable error
+          rehydration, extension UI request forwarding, and resource snapshots; an in-process adapter test for session
+          replacement; TUI command routing/state-source tests for clone, import, clear, debug, startup changelog
+          gating, and bash rejection; and one tmux startup smoke, but not a prompt/streaming end-to-end interactive
+          smoke test.
+        </li>
+      </ul>
+    </section>
+  </body>
+</html>

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import type { DaemonExtensionUIResponse } from "./daemon-protocol.js";
 import { formatSessionDisplayId, matchesSessionIdSuffix } from "./daemon-session-id.js";
 
 export interface DaemonSocketClient {
@@ -14,7 +15,12 @@ export interface ActiveSessionState {
 	activeSessionId: string;
 	runtime: AgentSessionRuntime;
 	clients: Set<DaemonSocketClient>;
+	extensionUiRequests: Map<string, ActiveSessionExtensionUiRequest>;
 	unsubscribe?: () => void;
+}
+
+export interface ActiveSessionExtensionUiRequest {
+	resolve: (response: DaemonExtensionUIResponse) => void;
 }
 
 interface ActiveSessionIdIndex {

@@ -10,7 +10,12 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
-import type { SourceInfo } from "../src/core/source-info.js";
+import type {
+	AgentConnectionModel,
+	AgentConnectionResourceSnapshot,
+	AgentConnectionSourceInfo,
+	AgentConnectionState,
+} from "../src/modes/agent-connection/types.js";
 import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -79,7 +84,7 @@ describe("InteractiveMode update notifications", () => {
 
 type ExtensionFixture = {
 	path: string;
-	sourceInfo?: SourceInfo;
+	sourceInfo?: AgentConnectionSourceInfo;
 };
 
 describe("InteractiveMode.showStatus", () => {
@@ -129,6 +134,38 @@ describe("InteractiveMode.showStatus", () => {
 	});
 });
 
+type SubmitHandlerHarness = {
+	defaultEditor: { onSubmit?: (text: string) => Promise<void> };
+	editor: { setText: (text: string) => void };
+	showWarning: (message: string) => void;
+	agentConnection: { prompt: (message: string) => Promise<void> };
+};
+
+describe("InteractiveMode submit handling", () => {
+	test("rejects legacy bash shortcuts before reaching the agent connection", async () => {
+		const fakeThis: SubmitHandlerHarness = {
+			defaultEditor: {},
+			editor: { setText: vi.fn() },
+			showWarning: vi.fn(),
+			agentConnection: { prompt: vi.fn(async () => {}) },
+		};
+
+		(
+			InteractiveMode.prototype as unknown as {
+				setupEditorSubmitHandler(this: SubmitHandlerHarness): void;
+			}
+		).setupEditorSubmitHandler.call(fakeThis);
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.showWarning).toHaveBeenCalledWith(
+			"Bash commands are not available in interactive mode. Use IPython for shell commands.",
+		);
+		expect(fakeThis.editor.setText).toHaveBeenCalledWith("");
+		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+});
+
 describe("InteractiveMode startup onboarding warnings", () => {
 	type StartupWarningHarness = {
 		shouldRunOnboarding(): boolean;
@@ -175,6 +212,152 @@ describe("InteractiveMode startup onboarding warnings", () => {
 			),
 		).toBe("show");
 		expect(fakeThis.shouldRunOnboarding).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode model candidates", () => {
+	type ModelCandidatesHarness = {
+		agentConnection: { getAvailableModels: () => Promise<AgentConnectionModel[]> };
+		connectionModels: AgentConnectionModel[];
+		getScopedModelState(): AgentConnectionState["scopedModels"];
+		getConnectionAvailableModels(): Promise<AgentConnectionModel[]>;
+		getModelCandidates(): Promise<AgentConnectionModel[]>;
+		getScopedModelsFromModelIds(
+			enabledIds: readonly string[],
+			allModels: readonly AgentConnectionModel[],
+		): AgentConnectionState["scopedModels"];
+	};
+	const prototype = InteractiveMode.prototype as unknown as ModelCandidatesHarness;
+
+	const createModel = (provider: string, id: string): AgentConnectionModel =>
+		({
+			provider,
+			id,
+			name: id,
+		}) as AgentConnectionModel;
+
+	test("loads unscoped model candidates through AgentConnection", async () => {
+		const model = createModel("openai", "gpt-5.5");
+		const getAvailableModels = vi.fn(async () => [model]);
+		const fakeThis: ModelCandidatesHarness = {
+			agentConnection: { getAvailableModels },
+			connectionModels: [],
+			getScopedModelState: () => [],
+			getConnectionAvailableModels: prototype.getConnectionAvailableModels,
+			getModelCandidates: prototype.getModelCandidates,
+			getScopedModelsFromModelIds: prototype.getScopedModelsFromModelIds,
+		};
+
+		const result = await prototype.getModelCandidates.call(fakeThis);
+
+		expect(result).toEqual([model]);
+		expect(getAvailableModels).toHaveBeenCalledTimes(1);
+		expect(fakeThis.connectionModels).toEqual([model]);
+	});
+
+	test("uses connection state for scoped model candidates", async () => {
+		const model = createModel("anthropic", "claude-opus-4-5");
+		const getAvailableModels = vi.fn(async () => [createModel("openai", "gpt-5.5")]);
+		const fakeThis: ModelCandidatesHarness = {
+			agentConnection: { getAvailableModels },
+			connectionModels: [],
+			getScopedModelState: () => [{ model, thinkingLevel: "medium" }],
+			getConnectionAvailableModels: prototype.getConnectionAvailableModels,
+			getModelCandidates: prototype.getModelCandidates,
+			getScopedModelsFromModelIds: prototype.getScopedModelsFromModelIds,
+		};
+
+		const result = await prototype.getModelCandidates.call(fakeThis);
+
+		expect(result).toEqual([model]);
+		expect(getAvailableModels).not.toHaveBeenCalled();
+	});
+
+	test("maps selected scoped model IDs from connection candidates", () => {
+		const anthropicModel = createModel("anthropic", "claude-opus-4-5");
+		const openaiModel = createModel("openai", "gpt-5.5");
+
+		const result = prototype.getScopedModelsFromModelIds(
+			["missing/model", "anthropic/claude-opus-4-5", "anthropic/claude-opus-4-5", "openai/gpt-5.5"],
+			[openaiModel, anthropicModel],
+		);
+
+		expect(result).toEqual([{ model: anthropicModel }, { model: openaiModel }]);
+	});
+});
+
+describe("InteractiveMode model selection persistence", () => {
+	type ModelSelectionHarness = {
+		agentConnection: { setModel(provider: string, modelId: string): Promise<void> };
+		uiServices: {
+			settingsManager: { setDefaultModelAndProvider(provider: string, modelId: string): void };
+		};
+		footer: { invalidate(): void };
+		patchConnectionState(patch: Partial<AgentConnectionState>): void;
+		updateEditorBorderColor(): void;
+		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+	};
+
+	const createModel = (provider: string, id: string): AgentConnectionModel =>
+		({
+			provider,
+			id,
+			name: id,
+		}) as AgentConnectionModel;
+
+	test("persists local default only after the connection accepts the model", async () => {
+		const order: string[] = [];
+		const model = createModel("openai", "gpt-5.5");
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
+		fakeThis.agentConnection = {
+			setModel: vi.fn(async () => {
+				order.push("connection");
+			}),
+		};
+		fakeThis.uiServices = {
+			settingsManager: {
+				setDefaultModelAndProvider: vi.fn(() => {
+					order.push("settings");
+				}),
+			},
+		};
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.patchConnectionState = vi.fn();
+		fakeThis.updateEditorBorderColor = vi.fn();
+
+		await fakeThis.applySelectedModel(model);
+
+		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(order).toEqual(["connection", "settings"]);
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model });
+		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
+		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not persist local default when the connection rejects the model", async () => {
+		const model = createModel("openai", "missing-model");
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
+		fakeThis.agentConnection = {
+			setModel: vi.fn(async () => {
+				throw new Error("model unavailable");
+			}),
+		};
+		fakeThis.uiServices = {
+			settingsManager: {
+				setDefaultModelAndProvider: vi.fn(),
+			},
+		};
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.patchConnectionState = vi.fn();
+		fakeThis.updateEditorBorderColor = vi.fn();
+
+		await expect(fakeThis.applySelectedModel(model)).rejects.toThrow("model unavailable");
+
+		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).not.toHaveBeenCalled();
+		expect(fakeThis.patchConnectionState).not.toHaveBeenCalled();
+		expect(fakeThis.footer.invalidate).not.toHaveBeenCalled();
+		expect(fakeThis.updateEditorBorderColor).not.toHaveBeenCalled();
 	});
 });
 
@@ -250,50 +433,47 @@ describe("InteractiveMode goal status announcements", () => {
 
 describe("InteractiveMode tray goal label", () => {
 	type TrayLabelHarness = {
-		runtimeHost: {
-			session: {
-				goalState: GoalState;
-				getContextUsage(): { contextWindow: number; percent: number | null } | undefined;
-			};
+		connectionState: {
+			goal: GoalState;
+			contextUsage: { contextWindow: number; percent: number | null } | undefined;
 		};
+		uiServices: { getContextUsage(): { contextWindow: number; percent: number | null } | undefined };
 		getTrayContextLabel(): string | undefined;
 	};
 	const getTrayContextLabel = (InteractiveMode.prototype as unknown as TrayLabelHarness).getTrayContextLabel;
 
 	test("shows active goals in the lower tray without an objective", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
-		fakeThis.runtimeHost = {
-			session: {
-				goalState: {
-					active: true,
-					status: "active",
-					objective: "a long objective that should not render in the tray",
-					tokensUsed: 0,
-					timeUsedSeconds: 65,
-					continuationsUsed: 1,
-				} satisfies GoalState,
-				getContextUsage: () => undefined,
-			},
+		fakeThis.connectionState = {
+			goal: {
+				active: true,
+				status: "active",
+				objective: "a long objective that should not render in the tray",
+				tokensUsed: 0,
+				timeUsedSeconds: 65,
+				continuationsUsed: 1,
+			} satisfies GoalState,
+			contextUsage: undefined,
 		};
+		fakeThis.uiServices = { getContextUsage: () => undefined };
 
 		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s)");
 	});
 
 	test("combines active goals with low-context signal in one lower-tray label", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
-		fakeThis.runtimeHost = {
-			session: {
-				goalState: {
-					active: true,
-					status: "active",
-					objective: "finish the task",
-					tokensUsed: 0,
-					timeUsedSeconds: 65,
-					continuationsUsed: 1,
-				} satisfies GoalState,
-				getContextUsage: () => ({ contextWindow: 100_000, percent: 75 }),
-			},
+		fakeThis.connectionState = {
+			goal: {
+				active: true,
+				status: "active",
+				objective: "finish the task",
+				tokensUsed: 0,
+				timeUsedSeconds: 65,
+				continuationsUsed: 1,
+			} satisfies GoalState,
+			contextUsage: { contextWindow: 100_000, percent: 75 },
 		};
+		fakeThis.uiServices = { getContextUsage: () => undefined };
 
 		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · 25% context left");
 	});
@@ -302,28 +482,22 @@ describe("InteractiveMode tray goal label", () => {
 describe("InteractiveMode.handleGoalStatusCommand", () => {
 	test("prints current goal details without queuing through the agent", () => {
 		type GoalStatusCommandHarness = {
-			runtimeHost: {
-				session: {
-					goalState: GoalState;
-				};
-			};
+			connectionState: { goal: GoalState };
 			chatContainer: Container;
 			ui: { requestRender(): void };
 			handleGoalStatusCommand(): void;
 			formatGoalElapsed(seconds: number): string;
 		};
 		const fakeThis = Object.create(InteractiveMode.prototype) as GoalStatusCommandHarness;
-		fakeThis.runtimeHost = {
-			session: {
-				goalState: {
-					active: true,
-					status: "active",
-					objective: "ship the feature",
-					tokenBudget: 1000,
-					tokensUsed: 125,
-					timeUsedSeconds: 65,
-					continuationsUsed: 2,
-				},
+		fakeThis.connectionState = {
+			goal: {
+				active: true,
+				status: "active",
+				objective: "ship the feature",
+				tokenBudget: 1000,
+				tokensUsed: 125,
+				timeUsedSeconds: 65,
+				continuationsUsed: 2,
 			},
 		};
 		fakeThis.chatContainer = new Container();
@@ -502,9 +676,26 @@ describe("InteractiveMode.showLoadedResources", () => {
 		contextFiles?: Array<{ path: string; content?: string }>;
 		extensions?: ExtensionFixture[];
 		skills?: Array<{ filePath: string; name: string }>;
-		skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
+		skillDiagnostics?: AgentConnectionResourceSnapshot["diagnostics"]["skills"];
 		useRealScopeGroups?: boolean;
 	}) {
+		const connectionResourceSnapshot: AgentConnectionResourceSnapshot = {
+			contextFiles: (options.contextFiles ?? []).map((contextFile) => ({ path: contextFile.path })),
+			skills: options.skills ?? [],
+			prompts: [],
+			extensions: options.extensions ?? [],
+			themes: [],
+			diagnostics: {
+				skills: options.skillDiagnostics ?? [],
+				prompts: [],
+				extensions: [],
+				themes: [],
+			},
+		};
+		const extensionRunner = {
+			getCommandDiagnostics: () => [],
+			getShortcutDiagnostics: () => [],
+		};
 		const fakeThis: any = {
 			options: { verbose: options.verbose ?? false },
 			toolOutputExpanded: options.toolOutputExpanded ?? false,
@@ -515,40 +706,25 @@ describe("InteractiveMode.showLoadedResources", () => {
 			sessionManager: {
 				getCwd: () => options.cwd ?? "/tmp/project",
 			},
-			session: {
-				promptTemplates: [],
-				extensionRunner: {
-					getCommandDiagnostics: () => [],
-					getShortcutDiagnostics: () => [],
-				},
-				resourceLoader: {
-					getPathMetadata: () => new Map(),
-					getAgentsFiles: () => ({ agentsFiles: options.contextFiles ?? [] }),
-					getSkills: () => ({
-						skills: options.skills ?? [],
-						diagnostics: options.skillDiagnostics ?? [],
-					}),
-					getPrompts: () => ({ prompts: [], diagnostics: [] }),
-					getExtensions: () => ({ extensions: options.extensions ?? [], errors: [], runtime: {} }),
-					getThemes: () => ({ themes: [], diagnostics: [] }),
-				},
-			},
+			connectionResourceSnapshot,
+			extensionRunner,
 			formatDisplayPath: (p: string) => (InteractiveMode as any).prototype.formatDisplayPath.call(fakeThis, p),
 			formatExtensionDisplayPath: (p: string) =>
 				(InteractiveMode as any).prototype.formatExtensionDisplayPath.call(fakeThis, p),
 			formatContextPath: (p: string) => (InteractiveMode as any).prototype.formatContextPath.call(fakeThis, p),
+			getCurrentCwd: () => options.cwd ?? "/tmp/project",
 			getStartupExpansionState: () => (InteractiveMode as any).prototype.getStartupExpansionState.call(fakeThis),
 			buildScopeGroups: () => [],
 			formatScopeGroups: () => "resource-list",
-			isPackageSource: (sourceInfo?: SourceInfo) =>
+			isPackageSource: (sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.isPackageSource.call(fakeThis, sourceInfo),
-			getShortPath: (p: string, sourceInfo?: SourceInfo) =>
+			getShortPath: (p: string, sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getShortPath.call(fakeThis, p, sourceInfo),
-			getCompactPathLabel: (p: string, sourceInfo?: SourceInfo) =>
+			getCompactPathLabel: (p: string, sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactPathLabel.call(fakeThis, p, sourceInfo),
-			getCompactPackageSourceLabel: (sourceInfo?: SourceInfo) =>
+			getCompactPackageSourceLabel: (sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactPackageSourceLabel.call(fakeThis, sourceInfo),
-			getCompactExtensionLabel: (p: string, sourceInfo?: SourceInfo) =>
+			getCompactExtensionLabel: (p: string, sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactExtensionLabel.call(fakeThis, p, sourceInfo),
 			getCompactDisplayPathSegments: (p: string) =>
 				(InteractiveMode as any).prototype.getCompactDisplayPathSegments.call(fakeThis, p),
@@ -564,9 +740,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 		};
 
 		if (options.useRealScopeGroups) {
-			fakeThis.getScopeGroup = (sourceInfo?: SourceInfo) =>
+			fakeThis.getScopeGroup = (sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getScopeGroup.call(fakeThis, sourceInfo);
-			fakeThis.buildScopeGroups = (items: Array<{ path: string; sourceInfo?: SourceInfo }>) =>
+			fakeThis.buildScopeGroups = (items: Array<{ path: string; sourceInfo?: AgentConnectionSourceInfo }>) =>
 				(InteractiveMode as any).prototype.buildScopeGroups.call(fakeThis, items);
 			fakeThis.formatScopeGroups = (groups: unknown, formatOptions: unknown) =>
 				(InteractiveMode as any).prototype.formatScopeGroups.call(fakeThis, groups, formatOptions);
@@ -583,7 +759,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			origin: "package" | "top-level";
 			baseDir?: string;
 		},
-	): SourceInfo {
+	): AgentConnectionSourceInfo {
 		return {
 			path: filePath,
 			source: options.source,

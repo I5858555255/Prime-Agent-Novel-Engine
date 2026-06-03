@@ -8,30 +8,41 @@
 
 import { createServer, type Server, type Socket } from "node:net";
 import { resolve } from "node:path";
-import type { SessionStats } from "../../core/agent-session.js";
-import { mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
-import { AgentSessionRuntime, createAgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
+import {
+	AgentSessionRuntime,
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionRuntime,
+} from "../../core/agent-session-runtime.js";
 import type {
 	CreateRlmSubagentRuntimeOptions,
 	RlmSubagentRuntime,
 	SubagentRuntimeHost,
 } from "../../core/rlm-runtime.js";
+import { deleteSessionFile } from "../../core/session-file-actions.js";
 import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
+import type { SessionStats } from "../../core/session-stats.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
+import {
+	createAgentConnectionCommands,
+	createAgentConnectionResourceSnapshot,
+	createAgentConnectionState,
+} from "../agent-connection/snapshot.js";
+import { createAgentConnectionToolDefinition } from "../agent-connection/tool-definition.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
-import type { RpcSlashCommand } from "../rpc/rpc-types.js";
 import {
 	type ActiveSessionState,
 	createActiveSessionId,
 	type DaemonSocketClient,
 	resolveActiveSessionState,
 } from "./active-session-state.js";
+import { serializeDaemonError } from "./daemon-errors.js";
 import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
 	type DaemonCommand,
-	type DaemonModeOptions,
 	type DaemonOutbound,
 	type DaemonResponse,
+	type DaemonSavedSessionInfo,
 	type DaemonSessionClosedReason,
 	failure,
 	success,
@@ -44,12 +55,19 @@ import {
 	restrictDaemonSocketPath,
 } from "./daemon-socket.js";
 
-export type { DaemonCommand, DaemonModeOptions, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
+export interface DaemonModeOptions {
+	socketPath?: string;
+	defaultSessionConfig: AgentSessionRuntimeConfig;
+	createRuntime: CreateAgentSessionRuntimeFactory;
+}
+
+export type { DaemonCommand, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
 export type { SessionStatus, SessionSummary } from "./daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
 const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"list",
+	"list_saved_sessions",
 	"create",
 	"attach",
 	"detach",
@@ -59,10 +77,47 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"steer",
 	"follow_up",
 	"abort",
+	"wait_for_idle",
 	"get_state",
+	"get_connection_state",
 	"get_messages",
 	"get_session_stats",
 	"get_commands",
+	"get_resource_snapshot",
+	"get_available_models",
+	"get_queue",
+	"clear_queue",
+	"set_model",
+	"cycle_model",
+	"set_scoped_models",
+	"set_thinking_level",
+	"cycle_thinking_level",
+	"set_transport",
+	"set_steering_mode",
+	"set_follow_up_mode",
+	"set_auto_compaction",
+	"compact",
+	"abort_compaction",
+	"abort_branch_summary",
+	"abort_retry",
+	"reload",
+	"new_session",
+	"switch_session",
+	"fork",
+	"navigate_tree",
+	"import_jsonl",
+	"export_html",
+	"export_jsonl",
+	"set_session_name",
+	"rename_saved_session",
+	"delete_saved_session",
+	"get_session_context",
+	"get_session_tree",
+	"get_user_messages_for_forking",
+	"get_last_assistant_text",
+	"get_tool_definition",
+	"set_session_entry_label",
+	"extension_ui_response",
 	"shutdown",
 ]);
 
@@ -142,6 +197,7 @@ class AgentDaemon {
 			activeSessionId: createActiveSessionId(this.sessions),
 			runtime,
 			clients: new Set(),
+			extensionUiRequests: new Map(),
 		};
 		try {
 			await bindActiveSessionState(state, {
@@ -317,7 +373,7 @@ class AgentDaemon {
 			}
 			command = parsed as DaemonCommand;
 		} catch (error) {
-			this.write(client, failure(undefined, "parse", error));
+			this.write(client, failure(undefined, "parse", error, serializeDaemonError(error)));
 			return;
 		}
 
@@ -327,7 +383,7 @@ class AgentDaemon {
 				this.write(client, response);
 			}
 		} catch (error) {
-			this.write(client, failure(command.id, command.type, error));
+			this.write(client, failure(command.id, command.type, error, serializeDaemonError(error)));
 		}
 	}
 
@@ -357,6 +413,18 @@ class AgentDaemon {
 						: await SessionManager.listAll();
 				return success(command.id, "list", {
 					sessions: buildSessionList(activeSessions, savedSessions),
+				});
+			}
+
+			case "list_saved_sessions": {
+				const state = this.getSessionState(command.activeSessionId);
+				const sessionManager = state.runtime.session.sessionManager;
+				const savedSessions =
+					command.scope === "current"
+						? await SessionManager.list(sessionManager.getCwd(), sessionManager.getSessionDir())
+						: await SessionManager.listAll(undefined, sessionManager.getSessionDir());
+				return success(command.id, "list_saved_sessions", {
+					sessions: savedSessions.map(serializeSavedSessionInfo),
 				});
 			}
 
@@ -404,6 +472,29 @@ class AgentDaemon {
 				return success(command.id, "rename", summaryForActiveSession(state));
 			}
 
+			case "rename_saved_session": {
+				this.getSessionState(command.activeSessionId);
+				const state = this.findActiveSessionByFile(command.sessionPath);
+				const name = command.name.trim();
+				if (!name) {
+					throw new Error("Session name cannot be empty");
+				}
+				if (state) {
+					state.runtime.session.setSessionName(name);
+				} else {
+					SessionManager.open(command.sessionPath).appendSessionInfo(name);
+				}
+				return success(command.id, "rename_saved_session");
+			}
+
+			case "delete_saved_session": {
+				this.getSessionState(command.activeSessionId);
+				if (this.findActiveSessionByFile(command.sessionPath)) {
+					throw new Error("Cannot delete the currently active session");
+				}
+				return success(command.id, "delete_saved_session", await deleteSessionFile(command.sessionPath));
+			}
+
 			case "prompt": {
 				const state = this.getSessionState(command.activeSessionId);
 				let responseSent = false;
@@ -430,9 +521,9 @@ class AgentDaemon {
 					})
 					.catch((error) => {
 						if (responseSent) {
-							this.broadcastToSession(state, failure(undefined, "prompt", error));
+							this.broadcastToSession(state, failure(undefined, "prompt", error, serializeDaemonError(error)));
 						} else {
-							this.write(client, failure(command.id, "prompt", error));
+							this.write(client, failure(command.id, "prompt", error, serializeDaemonError(error)));
 						}
 					});
 				return undefined;
@@ -456,9 +547,24 @@ class AgentDaemon {
 				return success(command.id, "abort");
 			}
 
+			case "wait_for_idle": {
+				const state = this.getSessionState(command.activeSessionId);
+				await state.runtime.session.agent.waitForIdle();
+				return success(command.id, "wait_for_idle");
+			}
+
 			case "get_state": {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "get_state", summaryForActiveSession(state));
+			}
+
+			case "get_connection_state": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(
+					command.id,
+					"get_connection_state",
+					createAgentConnectionState(state.runtime, state.activeSessionId),
+				);
 			}
 
 			case "get_messages": {
@@ -474,28 +580,249 @@ class AgentDaemon {
 
 			case "get_commands": {
 				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_commands", {
+					commands: createAgentConnectionCommands(state.runtime.session),
+				});
+			}
+
+			case "get_resource_snapshot": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(
+					command.id,
+					"get_resource_snapshot",
+					createAgentConnectionResourceSnapshot(state.runtime.session),
+				);
+			}
+
+			case "get_available_models": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.modelRegistry.refresh();
+				return success(command.id, "get_available_models", {
+					models: state.runtime.session.modelRegistry.getAvailable(),
+				});
+			}
+
+			case "get_queue": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_queue", {
+					steering: [...state.runtime.session.getSteeringMessages()],
+					followUp: [...state.runtime.session.getFollowUpMessages()],
+				});
+			}
+
+			case "clear_queue": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "clear_queue", state.runtime.session.clearQueue());
+			}
+
+			case "set_model": {
+				const state = this.getSessionState(command.activeSessionId);
 				const session = state.runtime.session;
-				const commands: RpcSlashCommand[] = [
-					...session.extensionRunner.getRegisteredCommands().map((entry) => ({
-						name: entry.invocationName,
-						description: entry.description,
-						source: "extension" as const,
-						sourceInfo: entry.sourceInfo,
-					})),
-					...session.promptTemplates.map((entry) => ({
-						name: entry.name,
-						description: entry.description,
-						source: "prompt" as const,
-						sourceInfo: entry.sourceInfo,
-					})),
-					...session.resourceLoader.getSkills().skills.map((entry) => ({
-						name: `skill:${entry.name}`,
-						description: entry.description,
-						source: "skill" as const,
-						sourceInfo: entry.sourceInfo,
-					})),
-				];
-				return success(command.id, "get_commands", { commands });
+				session.modelRegistry.refresh();
+				const model = session.modelRegistry.getAvailable().find((candidate) => {
+					return candidate.provider === command.provider && candidate.id === command.modelId;
+				});
+				if (!model) {
+					throw new Error(`Model not found: ${command.provider}/${command.modelId}`);
+				}
+				await session.setModel(model);
+				return success(command.id, "set_model", model);
+			}
+
+			case "cycle_model": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.session.cycleModel(command.direction);
+				return success(command.id, "cycle_model", result ?? null);
+			}
+
+			case "set_scoped_models": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.setScopedModels(command.scopedModels);
+				return success(command.id, "set_scoped_models");
+			}
+
+			case "set_thinking_level": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.setThinkingLevel(command.level);
+				return success(command.id, "set_thinking_level");
+			}
+
+			case "cycle_thinking_level": {
+				const state = this.getSessionState(command.activeSessionId);
+				const level = state.runtime.session.cycleThinkingLevel();
+				return success(command.id, "cycle_thinking_level", level ? { level } : null);
+			}
+
+			case "set_transport": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.settingsManager.setTransport(command.transport);
+				state.runtime.session.agent.transport = command.transport;
+				return success(command.id, "set_transport");
+			}
+
+			case "set_steering_mode": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.setSteeringMode(command.mode);
+				return success(command.id, "set_steering_mode");
+			}
+
+			case "set_follow_up_mode": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.setFollowUpMode(command.mode);
+				return success(command.id, "set_follow_up_mode");
+			}
+
+			case "set_auto_compaction": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.setAutoCompactionEnabled(command.enabled);
+				return success(command.id, "set_auto_compaction");
+			}
+
+			case "compact": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.session.compact(command.customInstructions);
+				return success(command.id, "compact", result);
+			}
+
+			case "abort_compaction": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.abortCompaction();
+				return success(command.id, "abort_compaction");
+			}
+
+			case "abort_branch_summary": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.abortBranchSummary();
+				return success(command.id, "abort_branch_summary");
+			}
+
+			case "abort_retry": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.abortRetry();
+				return success(command.id, "abort_retry");
+			}
+
+			case "reload": {
+				const state = this.getSessionState(command.activeSessionId);
+				await state.runtime.session.reload();
+				return success(command.id, "reload");
+			}
+
+			case "new_session": {
+				const state = this.getSessionState(command.activeSessionId);
+				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+				const result = await state.runtime.newSession(options);
+				return success(command.id, "new_session", result);
+			}
+
+			case "switch_session": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.switchSession(command.sessionPath, {
+					cwdOverride: command.cwdOverride,
+				});
+				return success(command.id, "switch_session", result);
+			}
+
+			case "fork": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.fork(command.entryId, {
+					position: command.position,
+				});
+				return success(command.id, "fork", result);
+			}
+
+			case "navigate_tree": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.session.navigateTree(command.targetId, {
+					summarize: command.summarize,
+					customInstructions: command.customInstructions,
+					replaceInstructions: command.replaceInstructions,
+					label: command.label,
+				});
+				return success(command.id, "navigate_tree", result);
+			}
+
+			case "import_jsonl": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.importFromJsonl(command.inputPath, command.cwdOverride);
+				return success(command.id, "import_jsonl", result);
+			}
+
+			case "export_html": {
+				const state = this.getSessionState(command.activeSessionId);
+				const path = await state.runtime.session.exportToHtml(command.outputPath);
+				return success(command.id, "export_html", { path });
+			}
+
+			case "export_jsonl": {
+				const state = this.getSessionState(command.activeSessionId);
+				const path = state.runtime.session.exportToJsonl(command.outputPath);
+				return success(command.id, "export_jsonl", { path });
+			}
+
+			case "set_session_name": {
+				const state = this.getSessionState(command.activeSessionId);
+				const name = command.name.trim();
+				if (!name) {
+					throw new Error("Session name cannot be empty");
+				}
+				state.runtime.session.setSessionName(name);
+				return success(command.id, "set_session_name");
+			}
+
+			case "get_session_context": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_session_context", {
+					context: state.runtime.session.sessionManager.buildSessionContext(),
+				});
+			}
+
+			case "get_session_tree": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_session_tree", {
+					tree: state.runtime.session.sessionManager.getTree(),
+					leafId: state.runtime.session.sessionManager.getLeafId(),
+				});
+			}
+
+			case "get_user_messages_for_forking": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_user_messages_for_forking", {
+					messages: state.runtime.session.getUserMessagesForForking(),
+				});
+			}
+
+			case "get_last_assistant_text": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_last_assistant_text", {
+					text: state.runtime.session.getLastAssistantText(),
+				});
+			}
+
+			case "get_tool_definition": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_tool_definition", {
+					toolDefinition: createAgentConnectionToolDefinition(
+						state.runtime.session.getToolDefinition(command.name),
+					),
+				});
+			}
+
+			case "set_session_entry_label": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.sessionManager.appendLabelChange(command.entryId, command.label);
+				return success(command.id, "set_session_entry_label");
+			}
+
+			case "extension_ui_response": {
+				const state = this.getSessionState(command.activeSessionId);
+				const pending = state.extensionUiRequests.get(command.requestId);
+				if (!pending) {
+					throw new Error(`Unknown extension UI request: ${command.requestId}`);
+				}
+				state.extensionUiRequests.delete(command.requestId);
+				pending.resolve(command.response);
+				return success(command.id, "extension_ui_response");
 			}
 
 			case "shutdown":
@@ -519,6 +846,17 @@ class AgentDaemon {
 				this.detachClientFromSession(client, state);
 			}
 		}
+	}
+
+	private findActiveSessionByFile(sessionPath: string): ActiveSessionState | undefined {
+		const resolvedSessionPath = resolve(sessionPath);
+		for (const state of this.sessions.values()) {
+			const sessionFile = state.runtime.session.sessionFile;
+			if (sessionFile && resolve(sessionFile) === resolvedSessionPath) {
+				return state;
+			}
+		}
+		return undefined;
 	}
 
 	private async closeSession(state: ActiveSessionState, reason: DaemonSessionClosedReason): Promise<void> {
@@ -550,6 +888,7 @@ class AgentDaemon {
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
 			await state.runtime.session.abort().catch(() => undefined);
 		}
+		this.cancelPendingExtensionUiRequests(state);
 		state.unsubscribe?.();
 		await state.runtime.dispose();
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
@@ -579,6 +918,13 @@ class AgentDaemon {
 			}
 		}
 		return cascadeError;
+	}
+
+	private cancelPendingExtensionUiRequests(state: ActiveSessionState): void {
+		for (const [requestId, pending] of state.extensionUiRequests) {
+			state.extensionUiRequests.delete(requestId);
+			pending.resolve({ cancelled: true });
+		}
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
@@ -638,6 +984,22 @@ class AgentDaemon {
 		this.cleanupSocketPath();
 		process.exit(exitCode);
 	}
+}
+
+function serializeSavedSessionInfo(session: SessionInfo): DaemonSavedSessionInfo {
+	return {
+		path: session.path,
+		id: session.id,
+		cwd: session.cwd,
+		name: session.name,
+		state: session.state,
+		parentSessionPath: session.parentSessionPath,
+		created: session.created.toISOString(),
+		modified: session.modified.toISOString(),
+		messageCount: session.messageCount,
+		firstMessage: session.firstMessage,
+		allMessagesText: session.allMessagesText,
+	};
 }
 
 export function getChildActiveSessionStates(

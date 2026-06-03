@@ -5,9 +5,10 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
+import { type ImageContent, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.js";
@@ -21,6 +22,7 @@ import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.js";
 import {
 	type AgentSessionRuntimeDiagnostic,
+	type AgentSessionServices,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.js";
@@ -30,7 +32,7 @@ import { exportFromFile } from "./core/export-html/index.js";
 import type { ExtensionFactory } from "./core/extensions/types.js";
 import { KeybindingsManager } from "./core/keybindings.js";
 import type { ModelRegistry } from "./core/model-registry.js";
-import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
+import { findInitialModel, resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.js";
 import {
@@ -43,7 +45,19 @@ import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
-import { InteractiveMode, runDaemonMode, runPrintMode, runRpcMode } from "./modes/index.js";
+import {
+	createInteractiveModeLocalSessionHost,
+	createInteractiveModeUiServicesFromServices,
+	DaemonAgentConnection,
+	DaemonClient,
+	defaultDaemonSocketPath,
+	InProcessAgentConnection,
+	InteractiveMode,
+	runDaemonMode,
+	runPrintMode,
+	runRpcMode,
+	type SessionSummary,
+} from "./modes/index.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.js";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
@@ -95,7 +109,7 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
-type AppMode = "interactive" | "print" | "json" | "rpc" | "daemon";
+export type AppMode = "interactive" | "print" | "json" | "rpc" | "daemon";
 
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 	if (parsed.mode === "daemon") {
@@ -115,6 +129,24 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 
 function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "daemon"> {
 	return appMode === "json" ? "json" : "text";
+}
+
+export interface InteractiveDaemonStartupDecision {
+	appMode: AppMode;
+	startupBenchmark: boolean;
+	noSession?: boolean;
+	help?: boolean;
+	listModels?: string | true;
+}
+
+export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDecision): boolean {
+	return (
+		options.appMode === "interactive" &&
+		!options.startupBenchmark &&
+		!options.noSession &&
+		!options.help &&
+		options.listModels === undefined
+	);
 }
 
 async function prepareInitialMessage(
@@ -422,6 +454,136 @@ function runtimeConfigFromArgs(
 	};
 }
 
+interface PreparedRuntimeServices {
+	services: AgentSessionServices;
+	scopedModels: ScopedModel[];
+	sessionOptions: CreateAgentSessionOptions;
+	cliThinkingFromModel: boolean;
+	diagnostics: AgentSessionRuntimeDiagnostic[];
+}
+
+async function prepareRuntimeServices(options: {
+	config: AgentSessionRuntimeConfig;
+	cwd: string;
+	agentDir: string;
+	sessionManager: SessionManager;
+	extensionFactories?: ExtensionFactory[];
+	sessionOptionsOverride?: CreateAgentSessionOptions;
+}): Promise<PreparedRuntimeServices> {
+	const { config, sessionManager } = options;
+	const effectiveAgentDir = config.agentDir ?? options.agentDir;
+	const authStorage = AuthStorage.create(join(effectiveAgentDir, "auth.json"), {
+		usePrimeCliConfig: effectiveAgentDir === options.agentDir,
+	});
+	const services = await createAgentSessionServices({
+		cwd: options.cwd,
+		agentDir: effectiveAgentDir,
+		authStorage,
+		extensionFlagValues: new Map(Object.entries(config.extensionFlagValues ?? {})),
+		resourceLoaderOptions: {
+			additionalExtensionPaths: config.extensions,
+			additionalSkillPaths: config.skills,
+			additionalPromptTemplatePaths: config.promptTemplates,
+			additionalThemePaths: config.themes,
+			noExtensions: config.noExtensions,
+			noSkills: config.noSkills,
+			noPromptTemplates: config.noPromptTemplates,
+			noThemes: config.noThemes,
+			noContextFiles: config.noContextFiles,
+			systemPrompt: config.systemPrompt,
+			appendSystemPrompt: config.appendSystemPrompt,
+			extensionFactories: options.extensionFactories,
+		},
+	});
+	const { settingsManager, modelRegistry, resourceLoader } = services;
+	const diagnostics: AgentSessionRuntimeDiagnostic[] = [
+		...services.diagnostics,
+		...collectSettingsDiagnostics(settingsManager, "runtime creation"),
+		...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
+			type: "error" as const,
+			message: `Failed to load extension "${path}": ${error}`,
+		})),
+	];
+
+	const modelPatterns = config.models ?? settingsManager.getEnabledModels();
+	const scopedModels =
+		modelPatterns && modelPatterns.length > 0 ? await resolveModelScope(modelPatterns, modelRegistry) : [];
+	const {
+		options: sessionOptions,
+		cliThinkingFromModel,
+		diagnostics: sessionOptionDiagnostics,
+	} = buildSessionOptions(
+		config,
+		scopedModels,
+		sessionManager.buildSessionContext().messages.length > 0,
+		modelRegistry,
+		settingsManager,
+	);
+	diagnostics.push(...sessionOptionDiagnostics);
+
+	const effectiveSessionModel = options.sessionOptionsOverride?.model ?? sessionOptions.model;
+	if (config.apiKey) {
+		if (!effectiveSessionModel) {
+			diagnostics.push({
+				type: "error",
+				message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
+			});
+		} else {
+			authStorage.setRuntimeApiKey(effectiveSessionModel.provider, config.apiKey);
+		}
+	}
+
+	return {
+		services,
+		scopedModels,
+		sessionOptions,
+		cliThinkingFromModel,
+		diagnostics,
+	};
+}
+
+async function resolvePreparedStartupModel(options: {
+	prepared: PreparedRuntimeServices;
+	sessionManager: SessionManager;
+}): Promise<{ model: Model<any> | undefined; modelFallbackMessage: string | undefined }> {
+	const { prepared, sessionManager } = options;
+	const { modelRegistry, settingsManager } = prepared.services;
+	const existingSession = sessionManager.buildSessionContext();
+	const hasExistingSession = existingSession.messages.length > 0;
+
+	let model = prepared.sessionOptions.model;
+	let modelFallbackMessage: string | undefined;
+
+	if (!model && hasExistingSession && existingSession.model) {
+		const restoredModel = modelRegistry.find(existingSession.model.provider, existingSession.model.modelId);
+		if (restoredModel && modelRegistry.hasConfiguredAuth(restoredModel)) {
+			model = restoredModel;
+		}
+		if (!model) {
+			modelFallbackMessage = `Could not restore model ${existingSession.model.provider}/${existingSession.model.modelId}`;
+		}
+	}
+
+	if (!model) {
+		const result = await findInitialModel({
+			scopedModels: [],
+			isContinuing: hasExistingSession,
+			defaultProvider: settingsManager.getDefaultProvider(),
+			defaultModelId: settingsManager.getDefaultModel(),
+			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
+			modelRegistry,
+		});
+		model = result.model;
+		if (!model) {
+			modelFallbackMessage = formatNoModelsAvailableMessage();
+		} else if (modelFallbackMessage) {
+			modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
+		}
+	}
+
+	return { model, modelFallbackMessage };
+}
+
 async function promptForMissingSessionCwd(
 	issue: SessionCwdIssue,
 	settingsManager: SettingsManager,
@@ -454,6 +616,103 @@ async function promptForMissingSessionCwd(
 		ui.setFocus(selector);
 		ui.start();
 	});
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isDaemonSessionSummary(value: unknown): value is SessionSummary {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const summary = value as { activeSessionId?: unknown; id?: unknown };
+	return typeof summary.activeSessionId === "string" || typeof summary.id === "string";
+}
+
+async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promise<boolean> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(timeoutMs);
+		return true;
+	} catch {
+		return false;
+	} finally {
+		client.close();
+	}
+}
+
+async function ensureInteractiveDaemonRunning(socketPath: string): Promise<void> {
+	if (await canConnectToDaemon(socketPath, 250)) {
+		return;
+	}
+
+	const entrypoint = process.argv[1];
+	if (!entrypoint) {
+		throw new Error("Cannot determine current CLI entrypoint for daemon launch");
+	}
+
+	const child = spawn(
+		process.execPath,
+		[...process.execArgv, entrypoint, "--mode", "daemon", "--daemon-socket", socketPath],
+		{
+			cwd: process.cwd(),
+			detached: true,
+			env: process.env,
+			stdio: "ignore",
+		},
+	);
+	child.unref();
+
+	const deadline = Date.now() + 10000;
+	while (Date.now() < deadline) {
+		if (await canConnectToDaemon(socketPath, 250)) {
+			return;
+		}
+		await delay(100);
+	}
+
+	throw new Error(`Timed out waiting for daemon to start on ${socketPath}`);
+}
+
+function getInteractiveDaemonSessionPath(parsed: Args, sessionManager: SessionManager): string | undefined {
+	if (!parsed.session && !parsed.resume && !parsed.continue && !parsed.fork) {
+		return undefined;
+	}
+	return sessionManager.getSessionFile();
+}
+
+async function createDaemonInteractiveConnection(options: {
+	socketPath: string;
+	config: AgentSessionRuntimeConfig;
+	sessionPath?: string;
+	continueRecent?: boolean;
+}): Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> {
+	await ensureInteractiveDaemonRunning(options.socketPath);
+	const client = new DaemonClient(options.socketPath);
+	await client.connect();
+
+	try {
+		const response = await client.request({
+			type: "create",
+			config: options.config,
+			sessionPath: options.sessionPath,
+			continueRecent: options.continueRecent,
+		});
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+		if (!isDaemonSessionSummary(response.data)) {
+			throw new Error("Daemon returned an invalid create response");
+		}
+		const summary = response.data;
+		const activeSessionId = summary.activeSessionId ?? summary.id;
+		const connection = await DaemonAgentConnection.attach(client, activeSessionId, { closeClientOnDispose: true });
+		return { connection, summary };
+	} catch (error) {
+		client.close();
+		throw error;
+	}
 }
 
 export interface MainOptions {
@@ -578,73 +837,21 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionOptions: runtimeSessionOptions,
 	}) => {
 		const config = mergeAgentSessionRuntimeConfig(defaultSessionConfig, sessionConfig);
-		const effectiveAgentDir = config.agentDir ?? agentDir;
-		const authStorage = AuthStorage.create(join(effectiveAgentDir, "auth.json"), {
-			usePrimeCliConfig: effectiveAgentDir === agentDir,
-		});
-		const services = await createAgentSessionServices({
-			cwd,
-			agentDir: effectiveAgentDir,
-			authStorage,
-			extensionFlagValues: new Map(Object.entries(config.extensionFlagValues ?? {})),
-			resourceLoaderOptions: {
-				additionalExtensionPaths: config.extensions,
-				additionalSkillPaths: config.skills,
-				additionalPromptTemplatePaths: config.promptTemplates,
-				additionalThemePaths: config.themes,
-				noExtensions: config.noExtensions,
-				noSkills: config.noSkills,
-				noPromptTemplates: config.noPromptTemplates,
-				noThemes: config.noThemes,
-				noContextFiles: config.noContextFiles,
-				systemPrompt: config.systemPrompt,
-				appendSystemPrompt: config.appendSystemPrompt,
-				extensionFactories: options?.extensionFactories,
-			},
-		});
-		const { settingsManager, modelRegistry, resourceLoader } = services;
-		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
-			...services.diagnostics,
-			...collectSettingsDiagnostics(settingsManager, "runtime creation"),
-			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
-				type: "error" as const,
-				message: `Failed to load extension "${path}": ${error}`,
-			})),
-		];
-
-		const modelPatterns = config.models ?? settingsManager.getEnabledModels();
-		const scopedModels =
-			modelPatterns && modelPatterns.length > 0 ? await resolveModelScope(modelPatterns, modelRegistry) : [];
-		const {
-			options: sessionOptions,
-			cliThinkingFromModel,
-			diagnostics: sessionOptionDiagnostics,
-		} = buildSessionOptions(
+		const prepared = await prepareRuntimeServices({
 			config,
-			scopedModels,
-			sessionManager.buildSessionContext().messages.length > 0,
-			modelRegistry,
-			settingsManager,
-		);
-		diagnostics.push(...sessionOptionDiagnostics);
-
-		const effectiveSessionModel = runtimeSessionOptions?.model ?? sessionOptions.model;
-		if (config.apiKey) {
-			if (!effectiveSessionModel) {
-				diagnostics.push({
-					type: "error",
-					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
-				});
-			} else {
-				authStorage.setRuntimeApiKey(effectiveSessionModel.provider, config.apiKey);
-			}
-		}
+			cwd,
+			agentDir,
+			sessionManager,
+			extensionFactories: options?.extensionFactories,
+			sessionOptionsOverride: runtimeSessionOptions,
+		});
+		const { services, sessionOptions, diagnostics } = prepared;
 
 		const created = await createAgentSessionFromServices({
 			services,
 			sessionManager,
 			sessionStartEvent,
-			model: effectiveSessionModel,
+			model: runtimeSessionOptions?.model ?? sessionOptions.model,
 			thinkingLevel: runtimeSessionOptions?.thinkingLevel ?? sessionOptions.thinkingLevel,
 			scopedModels: runtimeSessionOptions?.scopedModels ?? sessionOptions.scopedModels,
 			tools: runtimeSessionOptions?.tools ?? sessionOptions.tools,
@@ -660,7 +867,7 @@ export async function main(args: string[], options?: MainOptions) {
 			rlmParentNodeId: runtimeSessionOptions?.rlmParentNodeId,
 			subagentRuntimeHost: runtimeSessionOptions?.subagentRuntimeHost,
 		});
-		const cliThinkingOverride = config.thinking !== undefined || cliThinkingFromModel;
+		const cliThinkingOverride = config.thinking !== undefined || prepared.cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);
 		}
@@ -672,6 +879,92 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
+	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
+	if (startupBenchmark && appMode !== "interactive") {
+		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
+		process.exit(1);
+	}
+
+	const useDaemonInteractive = shouldUseDaemonInteractive({
+		appMode,
+		startupBenchmark,
+		noSession: parsed.noSession,
+		help: parsed.help,
+		listModels: parsed.listModels,
+	});
+	if (useDaemonInteractive) {
+		const prepared = await prepareRuntimeServices({
+			config: defaultSessionConfig,
+			cwd: sessionManager.getCwd(),
+			agentDir,
+			sessionManager,
+			extensionFactories: options?.extensionFactories,
+		});
+		const { services, scopedModels } = prepared;
+		const { settingsManager } = services;
+
+		const startupModel = await resolvePreparedStartupModel({ prepared, sessionManager });
+
+		let stdinContent: string | undefined;
+		stdinContent = await readPipedStdin();
+		time("readPipedStdin");
+
+		const { initialMessage, initialImages } = await prepareInitialMessage(
+			parsed,
+			settingsManager.getImageAutoResize(),
+			stdinContent,
+		);
+		time("prepareInitialMessage");
+		initTheme(settingsManager.getTheme(), true);
+		time("initTheme");
+
+		if (deprecationWarnings.length > 0) {
+			await showDeprecationWarnings(deprecationWarnings);
+		}
+
+		reportDiagnostics(prepared.diagnostics);
+		if (prepared.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			process.exit(1);
+		}
+		time("prepareInteractiveServices");
+
+		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
+			const modelList = scopedModels
+				.map((sm) => {
+					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
+					return `${sm.model.id}${thinkingStr}`;
+				})
+				.join(", ");
+			console.log(chalk.dim(`Model scope: ${modelList} ${chalk.gray("(Ctrl+P to cycle)")}`));
+		}
+
+		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
+			socketPath: parsed.daemonSocket ?? defaultDaemonSocketPath(),
+			config: defaultSessionConfig,
+			sessionPath: getInteractiveDaemonSessionPath(parsed, sessionManager),
+		});
+
+		const daemonUiServices = createInteractiveModeUiServicesFromServices({
+			services,
+			sessionManager,
+		});
+		const interactiveMode = new InteractiveMode({
+			agentConnection,
+			uiServices: daemonUiServices,
+			bindLocalSessionExtensions: false,
+			migratedProviders,
+			modelFallbackMessage: summary.modelFallbackMessage ?? startupModel.modelFallbackMessage,
+			initialMessage,
+			initialImages,
+			initialMessages: parsed.messages,
+			verbose: parsed.verbose,
+		});
+
+		printTimings();
+		await interactiveMode.run();
+		return;
+	}
+
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
@@ -732,12 +1025,6 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
-	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
-	if (startupBenchmark && appMode !== "interactive") {
-		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
-		process.exit(1);
-	}
-
 	if (appMode === "rpc") {
 		printTimings();
 		await runRpcMode(runtime);
@@ -759,7 +1046,10 @@ export async function main(args: string[], options?: MainOptions) {
 			console.log(chalk.dim(`Model scope: ${modelList} ${chalk.gray("(Ctrl+P to cycle)")}`));
 		}
 
-		const interactiveMode = new InteractiveMode(runtime, {
+		const interactiveMode = new InteractiveMode({
+			agentConnection: new InProcessAgentConnection(runtime),
+			localSessionHost: createInteractiveModeLocalSessionHost(runtime),
+			bindLocalSessionExtensions: true,
 			migratedProviders,
 			modelFallbackMessage,
 			initialMessage,
