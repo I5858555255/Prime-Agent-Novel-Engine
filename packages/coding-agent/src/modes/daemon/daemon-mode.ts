@@ -899,10 +899,10 @@ class AgentDaemon {
 		} catch (error) {
 			persistError = error;
 		}
+		cancelPendingExtensionUiRequests(state);
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
 			await state.runtime.session.abort().catch(() => undefined);
 		}
-		cancelPendingExtensionUiRequests(state);
 		state.unsubscribe?.();
 		await state.runtime.dispose();
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
