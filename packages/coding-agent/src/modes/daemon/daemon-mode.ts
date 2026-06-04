@@ -846,8 +846,7 @@ class AgentDaemon {
 	}
 
 	private detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void {
-		state.clients.delete(client);
-		client.attachedActiveSessionIds.delete(state.activeSessionId);
+		detachClientFromActiveSession(client, state);
 		this.write(client, { type: "session_detached", activeSessionId: state.activeSessionId });
 	}
 
@@ -900,7 +899,7 @@ class AgentDaemon {
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
 			await state.runtime.session.abort().catch(() => undefined);
 		}
-		this.cancelPendingExtensionUiRequests(state);
+		cancelPendingExtensionUiRequests(state);
 		state.unsubscribe?.();
 		await state.runtime.dispose();
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
@@ -930,13 +929,6 @@ class AgentDaemon {
 			}
 		}
 		return cascadeError;
-	}
-
-	private cancelPendingExtensionUiRequests(state: ActiveSessionState): void {
-		for (const [requestId, pending] of state.extensionUiRequests) {
-			state.extensionUiRequests.delete(requestId);
-			pending.resolve({ cancelled: true });
-		}
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
@@ -1023,6 +1015,22 @@ export function getChildActiveSessionStates(
 			state.activeSessionId !== parentState.activeSessionId &&
 			state.runtime.metadata.parentActiveSessionId === parentState.activeSessionId,
 	);
+}
+
+export function detachClientFromActiveSession(client: DaemonSocketClient, state: ActiveSessionState): void {
+	state.clients.delete(client);
+	client.attachedActiveSessionIds.delete(state.activeSessionId);
+	if (state.clients.size === 0) {
+		cancelPendingExtensionUiRequests(state);
+	}
+}
+
+export function cancelPendingExtensionUiRequests(state: ActiveSessionState): void {
+	const pendingRequests = [...state.extensionUiRequests.values()];
+	state.extensionUiRequests.clear();
+	for (const pending of pendingRequests) {
+		pending.resolve({ cancelled: true });
+	}
 }
 
 export async function resolveDaemonSessionPath(selector: string, cwd: string, sessionDir?: string): Promise<string> {

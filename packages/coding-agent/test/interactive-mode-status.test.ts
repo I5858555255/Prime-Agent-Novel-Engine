@@ -11,6 +11,8 @@ import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import type {
+	AgentConnectionExtensionUiRequest,
+	AgentConnectionExtensionUiResponse,
 	AgentConnectionModel,
 	AgentConnectionResourceSnapshot,
 	AgentConnectionSessionEvent,
@@ -235,6 +237,120 @@ describe("InteractiveMode connection events", () => {
 		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();
+	});
+});
+
+describe("InteractiveMode connection extension UI", () => {
+	type ActiveConnectionExtensionUiRequest = { cancelLocal(): void };
+
+	type ConnectionExtensionUiCancelHarness = {
+		activeConnectionExtensionUiRequests: Map<string, ActiveConnectionExtensionUiRequest>;
+		agentConnection: {
+			respondToExtensionUiRequest(requestId: string, response: AgentConnectionExtensionUiResponse): Promise<void>;
+		};
+		showError(message: string): void;
+		cancelActiveConnectionExtensionUiRequests(): void;
+	};
+
+	type ConnectionExtensionUiHandlerHarness = ConnectionExtensionUiCancelHarness & {
+		resolveConnectionExtensionUiRequest(
+			request: AgentConnectionExtensionUiRequest,
+		): Promise<AgentConnectionExtensionUiResponse | undefined>;
+		handleConnectionExtensionUiRequest(request: AgentConnectionExtensionUiRequest): Promise<void>;
+	};
+
+	const prototype = InteractiveMode.prototype as unknown as ConnectionExtensionUiHandlerHarness;
+
+	test("reset cancellation responds to active connection UI requests", async () => {
+		const cancelLocal = vi.fn();
+		const fakeThis = Object.create(InteractiveMode.prototype) as ConnectionExtensionUiCancelHarness;
+		fakeThis.activeConnectionExtensionUiRequests = new Map([["request-1", { cancelLocal }]]);
+		fakeThis.agentConnection = {
+			respondToExtensionUiRequest: vi.fn(async () => {}),
+		};
+		fakeThis.showError = vi.fn();
+
+		prototype.cancelActiveConnectionExtensionUiRequests.call(fakeThis);
+		await Promise.resolve();
+
+		expect(fakeThis.activeConnectionExtensionUiRequests.size).toBe(0);
+		expect(cancelLocal).toHaveBeenCalledTimes(1);
+		expect(fakeThis.agentConnection.respondToExtensionUiRequest).toHaveBeenCalledWith("request-1", {
+			cancelled: true,
+		});
+		expect(fakeThis.showError).not.toHaveBeenCalled();
+	});
+
+	test("connection UI handler does not double respond after reset cancellation", async () => {
+		const fakeThis = Object.create(InteractiveMode.prototype) as ConnectionExtensionUiHandlerHarness;
+		fakeThis.activeConnectionExtensionUiRequests = new Map();
+		fakeThis.agentConnection = {
+			respondToExtensionUiRequest: vi.fn(async () => {}),
+		};
+		fakeThis.showError = vi.fn();
+		fakeThis.resolveConnectionExtensionUiRequest = vi.fn(
+			() =>
+				new Promise<AgentConnectionExtensionUiResponse | undefined>(() => {
+					// Intentionally left pending until cancellation wins the race.
+				}),
+		);
+
+		const request: AgentConnectionExtensionUiRequest = {
+			id: "request-1",
+			method: "select",
+			payload: {},
+		};
+		const handling = prototype.handleConnectionExtensionUiRequest.call(fakeThis, request);
+		expect(fakeThis.activeConnectionExtensionUiRequests.size).toBe(1);
+
+		prototype.cancelActiveConnectionExtensionUiRequests.call(fakeThis);
+		await handling;
+
+		expect(fakeThis.agentConnection.respondToExtensionUiRequest).toHaveBeenCalledTimes(1);
+		expect(fakeThis.agentConnection.respondToExtensionUiRequest).toHaveBeenCalledWith("request-1", {
+			cancelled: true,
+		});
+		expect(fakeThis.activeConnectionExtensionUiRequests.size).toBe(0);
+	});
+});
+
+describe("InteractiveMode key handlers", () => {
+	type KeyHandlerHarness = {
+		defaultEditor: {
+			onEscape?: () => void;
+			onCtrlD?: () => void;
+			onMoveBelowPrompt?: () => void;
+			onChange?: () => void;
+			onPasteImage?: () => void;
+			onAction(action: string, handler: () => void): void;
+		};
+		editor: { getText(): string };
+		ui: { onDebug?: () => void };
+		isAgentStreaming(): boolean;
+		restoreQueuedMessagesToEditor(options: { abort: boolean }): Promise<number>;
+		showError(message: string): void;
+		setupKeyHandlers(): void;
+	};
+
+	test("reports rejected streaming escape aborts", async () => {
+		const fakeThis = Object.create(InteractiveMode.prototype) as KeyHandlerHarness;
+		fakeThis.defaultEditor = {
+			onAction: vi.fn(),
+		};
+		fakeThis.editor = { getText: () => "" };
+		fakeThis.ui = {};
+		fakeThis.isAgentStreaming = () => true;
+		fakeThis.restoreQueuedMessagesToEditor = vi.fn(async () => {
+			throw new Error("abort failed");
+		});
+		fakeThis.showError = vi.fn();
+
+		fakeThis.setupKeyHandlers();
+		fakeThis.defaultEditor.onEscape?.();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(fakeThis.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
+		expect(fakeThis.showError).toHaveBeenCalledWith("abort failed");
 	});
 });
 

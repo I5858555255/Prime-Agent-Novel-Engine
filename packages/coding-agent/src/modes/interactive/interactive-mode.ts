@@ -565,6 +565,7 @@ export class InteractiveMode {
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
+	private activeConnectionExtensionUiRequests = new Map<string, { cancelLocal: () => void }>();
 
 	// Extension widgets (components rendered above/below the editor)
 	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
@@ -2446,6 +2447,7 @@ export class InteractiveMode {
 	}
 
 	private resetExtensionUI(): void {
+		this.cancelActiveConnectionExtensionUiRequests();
 		if (this.extensionSelector) {
 			this.hideExtensionSelector();
 		}
@@ -3037,7 +3039,9 @@ export class InteractiveMode {
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
 			if (this.isAgentStreaming()) {
-				void this.restoreQueuedMessagesToEditor({ abort: true });
+				void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
+					this.showError(error instanceof Error ? error.message : String(error));
+				});
 			} else if (!this.editor.getText().trim()) {
 				// Double-escape with empty editor triggers /tree, /fork, or nothing based on setting
 				const action = this.settingsManager.getDoubleEscapeAction();
@@ -3317,14 +3321,32 @@ export class InteractiveMode {
 
 	private async handleConnectionExtensionUiRequest(request: AgentConnectionExtensionUiRequest): Promise<void> {
 		let response: AgentConnectionExtensionUiResponse | undefined;
+		const expectsResponse = this.expectsConnectionExtensionUiResponse(request);
+
 		try {
-			response = await this.resolveConnectionExtensionUiRequest(request);
+			if (expectsResponse) {
+				let cancelLocal: (response: AgentConnectionExtensionUiResponse) => void = () => {};
+				const cancelled = new Promise<AgentConnectionExtensionUiResponse>((resolve) => {
+					cancelLocal = resolve;
+				});
+				this.activeConnectionExtensionUiRequests.set(request.id, {
+					cancelLocal: () => cancelLocal({ cancelled: true }),
+				});
+				response = await Promise.race([this.resolveConnectionExtensionUiRequest(request), cancelled]);
+			} else {
+				response = await this.resolveConnectionExtensionUiRequest(request);
+			}
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 			response = { cancelled: true };
 		}
 
 		if (response === undefined) {
+			this.activeConnectionExtensionUiRequests.delete(request.id);
+			return;
+		}
+
+		if (!this.activeConnectionExtensionUiRequests.delete(request.id)) {
 			return;
 		}
 
@@ -3332,6 +3354,30 @@ export class InteractiveMode {
 			await this.agentConnection.respondToExtensionUiRequest(request.id, response);
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private expectsConnectionExtensionUiResponse(request: AgentConnectionExtensionUiRequest): boolean {
+		return (
+			request.method === "select" ||
+			request.method === "confirm" ||
+			request.method === "input" ||
+			request.method === "editor"
+		);
+	}
+
+	private cancelActiveConnectionExtensionUiRequests(): void {
+		const requestIds = [...this.activeConnectionExtensionUiRequests.keys()];
+		for (const requestId of requestIds) {
+			const activeRequest = this.activeConnectionExtensionUiRequests.get(requestId);
+			if (!activeRequest) {
+				continue;
+			}
+			this.activeConnectionExtensionUiRequests.delete(requestId);
+			activeRequest.cancelLocal();
+			void this.agentConnection.respondToExtensionUiRequest(requestId, { cancelled: true }).catch((error) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
 		}
 	}
 
