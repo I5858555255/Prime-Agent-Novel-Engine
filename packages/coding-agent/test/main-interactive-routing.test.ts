@@ -6,6 +6,7 @@ import {
 	findActiveDaemonSessionSummaryForSessionFile,
 	type InteractiveDaemonStartupDecision,
 	parseDaemonRichTuiAttachShortcut,
+	shouldEnsureDaemonBeforeActiveSessionLookup,
 	shouldUseDaemonInteractive,
 	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
@@ -61,6 +62,27 @@ describe("interactive startup routing", () => {
 });
 
 describe("daemon-backed interactive session manager routing", () => {
+	test("ensures daemon is available before probing non-path session selectors", () => {
+		expect(
+			shouldEnsureDaemonBeforeActiveSessionLookup({
+				useDaemonInteractive: true,
+				session: "active-1",
+			}),
+		).toBe(true);
+		expect(
+			shouldEnsureDaemonBeforeActiveSessionLookup({
+				useDaemonInteractive: true,
+				session: "/tmp/session.jsonl",
+			}),
+		).toBe(false);
+		expect(
+			shouldEnsureDaemonBeforeActiveSessionLookup({
+				useDaemonInteractive: false,
+				session: "active-1",
+			}),
+		).toBe(false);
+	});
+
 	test("falls back to local session lookup when daemon active-session probing fails", async () => {
 		await expect(
 			findActiveDaemonSessionSummaryForInteractiveStartup("/tmp/prime.sock", "saved-session-id", async () => {

@@ -163,6 +163,15 @@ export function shouldUseEphemeralSessionManagerForDaemonInteractive(
 	return !options.hasActiveDaemonSession && !options.session && !options.resume && !options.continue && !options.fork;
 }
 
+export interface DaemonActiveSessionLookupDecision {
+	useDaemonInteractive: boolean;
+	session?: string;
+}
+
+export function shouldEnsureDaemonBeforeActiveSessionLookup(options: DaemonActiveSessionLookupDecision): boolean {
+	return options.useDaemonInteractive && options.session !== undefined && !looksLikeSessionPath(options.session);
+}
+
 type ActiveDaemonSessionSummaryLookup = (socketPath: string, selector: string) => Promise<SessionSummary | undefined>;
 
 export async function findActiveDaemonSessionSummaryForInteractiveStartup(
@@ -1047,8 +1056,15 @@ export async function main(args: string[], options?: MainOptions) {
 		getSessionDirEnvOverride() ??
 		startupSettingsManager.getSessionDir();
 	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
+	const shouldLookupDaemonActiveSession = shouldEnsureDaemonBeforeActiveSessionLookup({
+		useDaemonInteractive,
+		session: parsed.session,
+	});
+	if (shouldLookupDaemonActiveSession) {
+		await ensureInteractiveDaemonRunning(daemonSocketPath);
+	}
 	const activeDaemonSessionSummary =
-		useDaemonInteractive && parsed.session && !looksLikeSessionPath(parsed.session)
+		shouldLookupDaemonActiveSession && parsed.session
 			? await findActiveDaemonSessionSummaryForInteractiveStartup(daemonSocketPath, parsed.session)
 			: undefined;
 	let sessionManager: SessionManager;
