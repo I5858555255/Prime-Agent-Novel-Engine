@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Changed `InteractiveMode` construction to require an `AgentConnection` and explicit UI services or local session host.
+
 ### Added
 
+- Added an `AgentConnection` client boundary with in-process and daemon adapters for interactive-mode decoupling.
 - Added daemon mode and CLI controls for starting on demand, creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
+- Added rich TUI attach for already-active daemon sessions via `--session <selector>` and live `daemon <selector>` shorthand.
 
 ### Changed
 
@@ -13,6 +19,10 @@
 ### Fixed
 
 - Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.
+
+### Removed
+
+- Removed the interactive `!` / `!!` bash shortcuts; use IPython for shell commands.
 
 ## [0.0.7] - 2026-06-01
 

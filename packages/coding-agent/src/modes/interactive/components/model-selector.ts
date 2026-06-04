@@ -1,7 +1,6 @@
 import { type Model, modelsAreEqual } from "@earendil-works/pi-ai";
 import { Container, type Focusable, fuzzyFilter, getKeybindings, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import type { ModelRegistry } from "../../../core/model-registry.js";
-import type { SettingsManager } from "../../../core/settings-manager.js";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { MenuList, MenuPanel, MenuRow, MenuSearchInput } from "./menu-panel.js";
@@ -25,6 +24,7 @@ export interface ModelSelectorAction {
 
 interface ModelSelectorOptions {
 	actions?: ReadonlyArray<ModelSelectorAction>;
+	availableModels?: ReadonlyArray<Model<any>>;
 	onAction?: (actionId: string) => void;
 	subtitle?: string;
 }
@@ -53,11 +53,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private filteredModels: ModelItem[] = [];
 	private selectedIndex: number = 0;
 	private currentModel?: Model<any>;
-	private settingsManager: SettingsManager;
 	private modelRegistry: ModelRegistry;
 	private onSelectCallback: (model: Model<any>) => void;
 	private onCancelCallback: () => void;
 	private actions: ReadonlyArray<ModelSelectorAction>;
+	private availableModels?: ReadonlyArray<Model<any>>;
 	private onActionCallback?: (actionId: string) => void;
 	private errorMessage?: string;
 	private tui: TUI;
@@ -69,7 +69,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	constructor(
 		tui: TUI,
 		currentModel: Model<any> | undefined,
-		settingsManager: SettingsManager,
 		modelRegistry: ModelRegistry,
 		scopedModels: ReadonlyArray<ScopedModelItem>,
 		onSelect: (model: Model<any>) => void,
@@ -81,13 +80,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 		this.tui = tui;
 		this.currentModel = currentModel;
-		this.settingsManager = settingsManager;
 		this.modelRegistry = modelRegistry;
 		this.scopedModels = scopedModels;
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 		this.actions = options.actions ?? [];
+		this.availableModels = options.availableModels;
 		this.onActionCallback = options.onAction;
 
 		const panel = new MenuPanel({
@@ -152,8 +151,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 
 		// Load available models (built-in models still work even if models.json failed)
+		let availableModels: ReadonlyArray<Model<any>>;
 		try {
-			const availableModels = await this.modelRegistry.getAvailable();
+			availableModels = this.availableModels ?? (await this.modelRegistry.getAvailable());
 			models = availableModels.map((model: Model<any>) => ({
 				provider: model.provider,
 				id: model.id,
@@ -169,8 +169,12 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 
 		this.allModels = this.sortModels(models);
+		const availableModelsById = new Map(availableModels.map((model) => [`${model.provider}/${model.id}`, model]));
 		this.scopedModels = this.scopedModels.map((scoped) => {
-			const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
+			const scopedModelId = `${scoped.model.provider}/${scoped.model.id}`;
+			const refreshed =
+				availableModelsById.get(scopedModelId) ??
+				(this.availableModels ? undefined : this.modelRegistry.find(scoped.model.provider, scoped.model.id));
 			return refreshed ? { ...scoped, model: refreshed } : scoped;
 		});
 		this.scopedModelItems = this.scopedModels.map((scoped) => ({
@@ -332,8 +336,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private handleSelect(model: Model<any>): void {
-		// Save as new default
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		this.onSelectCallback(model);
 	}
 
