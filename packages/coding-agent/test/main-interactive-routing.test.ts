@@ -3,11 +3,13 @@ import {
 	type AppMode,
 	type DaemonInteractiveSessionManagerDecision,
 	findActiveDaemonSessionSummaryForInteractiveStartup,
+	findActiveDaemonSessionSummaryForSessionFile,
 	type InteractiveDaemonStartupDecision,
 	parseDaemonRichTuiAttachShortcut,
 	shouldUseDaemonInteractive,
 	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
+import type { SessionSummary } from "../src/modes/index.js";
 
 describe("interactive startup routing", () => {
 	test("uses daemon-backed interactive mode for normal interactive startup", () => {
@@ -99,6 +101,26 @@ describe("daemon-backed interactive session manager routing", () => {
 	test.each(persistentSelectionCases)("keeps %s on a concrete local session manager", (_label, decision) => {
 		expect(shouldUseEphemeralSessionManagerForDaemonInteractive(decision)).toBe(false);
 	});
+
+	test("finds an active daemon session by resolved session file", () => {
+		const inactiveSummary = makeSessionSummary({
+			id: "saved-1",
+			activeSessionId: undefined,
+			sessionFile: "/tmp/project/session.jsonl",
+		});
+		const activeSummary = makeSessionSummary({
+			id: "active-1",
+			activeSessionId: "active-1",
+			sessionFile: "/tmp/project/session.jsonl",
+		});
+
+		expect(
+			findActiveDaemonSessionSummaryForSessionFile(
+				[inactiveSummary, activeSummary],
+				"/tmp/project/../project/session.jsonl",
+			),
+		).toBe(activeSummary);
+	});
 });
 
 describe("daemon rich TUI attach shortcut parsing", () => {
@@ -121,3 +143,18 @@ describe("daemon rich TUI attach shortcut parsing", () => {
 		});
 	});
 });
+
+function makeSessionSummary(overrides: Partial<SessionSummary>): SessionSummary {
+	return {
+		id: "session-1",
+		status: "idle",
+		sessionId: "session-1",
+		cwd: "/tmp/project",
+		isStreaming: false,
+		isCompacting: false,
+		attachedClients: 0,
+		messageCount: 0,
+		pendingMessageCount: 0,
+		...overrides,
+	};
+}

@@ -830,6 +830,19 @@ function getInteractiveDaemonSessionPath(parsed: Args, sessionManager: SessionMa
 	return sessionManager.getSessionFile();
 }
 
+export function findActiveDaemonSessionSummaryForSessionFile(
+	summaries: readonly SessionSummary[],
+	sessionPath: string,
+): SessionSummary | undefined {
+	const resolvedSessionPath = resolve(sessionPath);
+	return summaries.find(
+		(summary) =>
+			summary.activeSessionId !== undefined &&
+			summary.sessionFile !== undefined &&
+			resolve(summary.sessionFile) === resolvedSessionPath,
+	);
+}
+
 async function createDaemonInteractiveConnection(options: {
 	socketPath: string;
 	config: AgentSessionRuntimeConfig;
@@ -842,12 +855,26 @@ async function createDaemonInteractiveConnection(options: {
 	await client.connect();
 
 	try {
-		if (options.activeSessionId) {
-			const summary = await findAttachedDaemonSessionSummary(client, options.activeSessionId);
+		const attach = async (summary: SessionSummary) => {
 			const connection = await DaemonAgentConnection.attach(client, getDaemonSummaryActiveSessionId(summary), {
 				closeClientOnDispose: true,
 			});
 			return { connection, summary };
+		};
+
+		if (options.activeSessionId) {
+			const summary = await findAttachedDaemonSessionSummary(client, options.activeSessionId);
+			return await attach(summary);
+		}
+
+		if (options.sessionPath) {
+			const activeSummary = findActiveDaemonSessionSummaryForSessionFile(
+				await listActiveDaemonSessionSummaries(client),
+				options.sessionPath,
+			);
+			if (activeSummary) {
+				return await attach(activeSummary);
+			}
 		}
 
 		const response = await client.request({
@@ -863,13 +890,30 @@ async function createDaemonInteractiveConnection(options: {
 			throw new Error("Daemon returned an invalid create response");
 		}
 		const summary = response.data;
-		const activeSessionId = summary.activeSessionId ?? summary.id;
-		const connection = await DaemonAgentConnection.attach(client, activeSessionId, { closeClientOnDispose: true });
-		return { connection, summary };
+		return await attach(summary);
 	} catch (error) {
 		client.close();
 		throw error;
 	}
+}
+
+async function listActiveDaemonSessionSummaries(client: DaemonClient): Promise<SessionSummary[]> {
+	const response = await client.request({ type: "list" });
+	if (!response.success) {
+		throw new Error(response.error);
+	}
+	const data = response.data;
+	if (!data || typeof data !== "object" || !("sessions" in data)) {
+		throw new Error("Daemon returned an invalid session list response");
+	}
+	const sessions = (data as { sessions: unknown }).sessions;
+	if (!Array.isArray(sessions)) {
+		throw new Error("Daemon returned an invalid session list response");
+	}
+	if (!sessions.every(isDaemonSessionSummary)) {
+		throw new Error("Daemon returned an invalid session summary");
+	}
+	return sessions;
 }
 
 async function findAttachedDaemonSessionSummary(
