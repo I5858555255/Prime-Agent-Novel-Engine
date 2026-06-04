@@ -45,6 +45,7 @@ import {
 	type DaemonSavedSessionInfo,
 	type DaemonSessionClosedReason,
 	failure,
+	isDaemonDialogExtensionUiRequest,
 	success,
 } from "./daemon-protocol.js";
 import { buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
@@ -337,6 +338,7 @@ class AgentDaemon {
 			socket,
 			attachedActiveSessionIds: new Set(),
 			detachInput: () => {},
+			supportsExtensionUi: false,
 		};
 		this.clients.add(client);
 		this.write(client, { type: "daemon_hello", socketPath: this.socketPath });
@@ -447,6 +449,7 @@ class AgentDaemon {
 
 			case "attach": {
 				const state = this.getSessionState(command.activeSessionId);
+				client.supportsExtensionUi = command.supportsExtensionUi === true;
 				state.clients.add(client);
 				client.attachedActiveSessionIds.add(state.activeSessionId);
 				this.write(client, {
@@ -933,6 +936,9 @@ class AgentDaemon {
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
 		for (const client of state.clients) {
+			if (!shouldSendDaemonOutboundToClient(client, message)) {
+				continue;
+			}
 			this.write(client, message);
 		}
 	}
@@ -1031,6 +1037,14 @@ export function cancelPendingExtensionUiRequests(state: ActiveSessionState): voi
 	for (const pending of pendingRequests) {
 		pending.resolve({ cancelled: true });
 	}
+}
+
+export function shouldSendDaemonOutboundToClient(client: DaemonSocketClient, message: DaemonOutbound): boolean {
+	return (
+		message.type !== "extension_ui_request" ||
+		!isDaemonDialogExtensionUiRequest(message.method) ||
+		client.supportsExtensionUi
+	);
 }
 
 export async function resolveDaemonSessionPath(selector: string, cwd: string, sessionDir?: string): Promise<string> {

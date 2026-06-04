@@ -33,7 +33,7 @@ export type DaemonCommand =
 			name?: string;
 			config?: AgentSessionRuntimeConfig;
 	  }
-	| { id?: string; type: "attach"; activeSessionId: string }
+	| { id?: string; type: "attach"; activeSessionId: string; supportsExtensionUi?: boolean }
 	| { id?: string; type: "detach"; activeSessionId?: string }
 	| { id?: string; type: "kill"; activeSessionId: string }
 	| { id?: string; type: "rename"; activeSessionId: string; name: string }
@@ -126,6 +126,10 @@ export type DaemonErrorInfo =
 export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced";
 
 export type DaemonExtensionUIResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
+
+export function isDaemonDialogExtensionUiRequest(method: string): boolean {
+	return method === "select" || method === "confirm" || method === "input" || method === "editor";
+}
 
 export interface DaemonRequestProgress {
 	id?: string;

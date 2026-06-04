@@ -91,6 +91,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		const summary = await this.requestData<SessionSummary>({
 			type: "attach",
 			activeSessionId: this.activeSessionId,
+			supportsExtensionUi: true,
 		});
 		this.activeSessionId = summary.activeSessionId ?? summary.id;
 	}

@@ -5,6 +5,7 @@ import {
 	cancelPendingExtensionUiRequests,
 	detachClientFromActiveSession,
 	getChildActiveSessionStates,
+	shouldSendDaemonOutboundToClient,
 } from "../src/modes/daemon/daemon-mode.js";
 
 describe("daemon mode helpers", () => {
@@ -61,6 +62,27 @@ describe("daemon mode helpers", () => {
 		expect(state.extensionUiRequests.size).toBe(0);
 		expect(resolve).toHaveBeenCalledWith({ cancelled: true });
 	});
+
+	it("sends dialog extension UI requests only to UI-capable clients", () => {
+		const lineClient = makeClient("line-client", "active", false);
+		const uiClient = makeClient("ui-client", "active", true);
+		const dialogRequest = {
+			type: "extension_ui_request",
+			activeSessionId: "active",
+			id: "request-1",
+			method: "confirm",
+			payload: {},
+		} as const;
+
+		expect(shouldSendDaemonOutboundToClient(lineClient, dialogRequest)).toBe(false);
+		expect(shouldSendDaemonOutboundToClient(uiClient, dialogRequest)).toBe(true);
+		expect(
+			shouldSendDaemonOutboundToClient(lineClient, {
+				...dialogRequest,
+				method: "notify",
+			}),
+		).toBe(true);
+	});
 });
 
 function makeState(activeSessionId: string, parentActiveSessionId?: string): ActiveSessionState {
@@ -77,11 +99,12 @@ function makeState(activeSessionId: string, parentActiveSessionId?: string): Act
 	} as unknown as ActiveSessionState;
 }
 
-function makeClient(id: string, activeSessionId: string): DaemonSocketClient {
+function makeClient(id: string, activeSessionId: string, supportsExtensionUi = false): DaemonSocketClient {
 	return {
 		id,
 		socket: { destroyed: false } as Socket,
 		attachedActiveSessionIds: new Set([activeSessionId]),
 		detachInput: vi.fn(),
+		supportsExtensionUi,
 	};
 }

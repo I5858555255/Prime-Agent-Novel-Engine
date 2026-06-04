@@ -1064,18 +1064,6 @@ class DaemonAttachTerminal {
 				return;
 			case "extension_ui_request":
 				this.writeLine(chalk.dim(`Extension UI request: ${message.method}`));
-				if (isDialogExtensionUiRequest(message.method)) {
-					void this.client
-						.request({
-							type: "extension_ui_response",
-							activeSessionId: message.activeSessionId,
-							requestId: message.id,
-							response: { cancelled: true },
-						})
-						.catch((error) => {
-							this.writeLine(chalk.red(error instanceof Error ? error.message : String(error)));
-						});
-				}
 				return;
 			case "extension_error":
 				this.writeLine(chalk.red(`Extension error (${message.extensionPath}, ${message.event}): ${message.error}`));
@@ -1176,10 +1164,6 @@ class DaemonAttachTerminal {
 		process.stdout.write(`${text}\n`);
 		this.rl?.prompt(true);
 	}
-}
-
-function isDialogExtensionUiRequest(method: string): boolean {
-	return method === "select" || method === "confirm" || method === "input" || method === "editor";
 }
 
 function isMessagesData(value: unknown): value is { messages: AgentMessage[] } {

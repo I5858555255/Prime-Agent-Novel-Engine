@@ -10,7 +10,11 @@ import type { SubagentRuntimeHost } from "../../core/rlm-runtime.js";
 import { createAgentConnectionState } from "../agent-connection/snapshot.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import type { ActiveSessionState } from "./active-session-state.js";
-import type { DaemonExtensionUIResponse, DaemonOutbound } from "./daemon-protocol.js";
+import {
+	type DaemonExtensionUIResponse,
+	type DaemonOutbound,
+	isDaemonDialogExtensionUiRequest,
+} from "./daemon-protocol.js";
 
 export interface ActiveSessionBindingCallbacks {
 	broadcast: (state: ActiveSessionState, message: DaemonOutbound) => void;
@@ -110,7 +114,7 @@ function createExtensionUIContext(
 		if (opts?.signal?.aborted) {
 			return Promise.resolve(fallback);
 		}
-		if (state.clients.size === 0) {
+		if (!hasExtensionUiClientForMethod(state, method)) {
 			return Promise.resolve(fallback);
 		}
 		const requestId = emitUiRequest(method, payload);
@@ -206,4 +210,11 @@ function createExtensionUIContext(
 		getToolsExpanded: () => false,
 		setToolsExpanded: () => {},
 	};
+}
+
+function hasExtensionUiClientForMethod(state: ActiveSessionState, method: string): boolean {
+	if (!isDaemonDialogExtensionUiRequest(method)) {
+		return state.clients.size > 0;
+	}
+	return [...state.clients].some((client) => client.supportsExtensionUi);
 }

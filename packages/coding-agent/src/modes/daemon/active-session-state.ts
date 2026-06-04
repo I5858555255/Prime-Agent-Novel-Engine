@@ -9,6 +9,7 @@ export interface DaemonSocketClient {
 	socket: Socket;
 	attachedActiveSessionIds: Set<string>;
 	detachInput: () => void;
+	supportsExtensionUi: boolean;
 }
 
 export interface ActiveSessionState {

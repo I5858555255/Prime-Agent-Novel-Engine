@@ -512,6 +512,11 @@ describe("DaemonAgentConnection", () => {
 			events.push(event);
 		});
 		await connection.attach();
+		expect(fakeClient.requests[0]).toMatchObject({
+			type: "attach",
+			activeSessionId: "active-1",
+			supportsExtensionUi: true,
+		});
 
 		fakeClient.emitMessage({
 			type: "extension_ui_request",
