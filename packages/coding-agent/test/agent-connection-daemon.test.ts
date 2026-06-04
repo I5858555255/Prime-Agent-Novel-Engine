@@ -26,6 +26,14 @@ class FakeDaemonClient {
 		this.requests.push(command);
 		switch (command.type) {
 			case "attach":
+				if (command.activeSessionId === "missing") {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown active session: missing",
+					};
+				}
 				return {
 					type: "response",
 					command: command.type,
@@ -240,6 +248,14 @@ class FakeDaemonClient {
 		for (const listener of [...this.messageListeners]) {
 			listener(message);
 		}
+	}
+
+	getMessageListenerCount(): number {
+		return this.messageListeners.size;
+	}
+
+	getCloseListenerCount(): number {
+		return this.closeListeners.size;
 	}
 
 	close(): void {
@@ -613,6 +629,19 @@ describe("DaemonAgentConnection", () => {
 		await connection.dispose();
 
 		expect(fakeClient.requests.at(-1)).toMatchObject({ type: "detach", activeSessionId: "active-1" });
+		expect(fakeClient.closeCount).toBe(1);
+	});
+
+	it("cleans up daemon client subscriptions when static attach fails", async () => {
+		const fakeClient = new FakeDaemonClient();
+
+		await expect(
+			DaemonAgentConnection.attach(asDaemonClient(fakeClient), "missing", { closeClientOnDispose: true }),
+		).rejects.toThrow("Unknown active session: missing");
+
+		expect(fakeClient.getMessageListenerCount()).toBe(0);
+		expect(fakeClient.getCloseListenerCount()).toBe(0);
+		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "detach"]);
 		expect(fakeClient.closeCount).toBe(1);
 	});
 });

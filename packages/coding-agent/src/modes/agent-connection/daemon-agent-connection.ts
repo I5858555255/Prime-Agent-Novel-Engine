@@ -78,8 +78,13 @@ export class DaemonAgentConnection implements AgentConnection {
 		options?: DaemonAgentConnectionOptions,
 	): Promise<DaemonAgentConnection> {
 		const connection = new DaemonAgentConnection(client, activeSessionId, options);
-		await connection.attach();
-		return connection;
+		try {
+			await connection.attach();
+			return connection;
+		} catch (error) {
+			await connection.dispose();
+			throw error;
+		}
 	}
 
 	async attach(): Promise<void> {

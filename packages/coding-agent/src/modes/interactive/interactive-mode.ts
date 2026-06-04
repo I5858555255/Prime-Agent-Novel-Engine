@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
+	type Api,
 	type AssistantMessage,
 	getProviders,
 	type ImageContent,
@@ -4245,10 +4246,11 @@ export class InteractiveMode {
 	 * @param sessionContext Session context to render
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
+	 * @param options.clearChat Clear the current transcript immediately before rendering
 	 */
 	private async renderSessionContext(
 		sessionContext: AgentConnectionSessionContext,
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		options: { updateFooter?: boolean; populateHistory?: boolean; clearChat?: boolean } = {},
 	): Promise<void> {
 		this.resetPendingToolState();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
@@ -4264,6 +4266,10 @@ export class InteractiveMode {
 			}
 		}
 		await this.preloadToolDefinitions(toolNames);
+
+		if (options.clearChat) {
+			this.chatContainer.clear();
+		}
 
 		if (options.updateFooter) {
 			this.footer.invalidate();
@@ -4356,9 +4362,8 @@ export class InteractiveMode {
 	}
 
 	private async rebuildChatFromMessages(): Promise<void> {
-		this.chatContainer.clear();
 		const context = await this.agentConnection.getSessionContext();
-		await this.renderSessionContext(context);
+		await this.renderSessionContext(context, { clearChat: true });
 	}
 
 	// =========================================================================
@@ -5052,7 +5057,6 @@ export class InteractiveMode {
 								child.setHideThinkingBlock(hidden);
 							}
 						}
-						this.chatContainer.clear();
 						void this.rebuildChatFromMessages().catch((error) => {
 							this.showError(error instanceof Error ? error.message : String(error));
 						});
@@ -5116,10 +5120,7 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
-				await this.agentConnection.setModel(model.provider, model.id);
-				this.patchConnectionState({ model });
-				this.footer.invalidate();
-				this.updateEditorBorderColor();
+				await this.applySelectedModel(model);
 				this.showStatus(`Model: ${model.id}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 				this.checkDaxnutsEasterEgg(model);
@@ -5132,7 +5133,7 @@ export class InteractiveMode {
 		this.showModelSelector(searchTerm);
 	}
 
-	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
+	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
 		const models = await this.getModelCandidates();
 		return findExactModelReferenceMatch(searchTerm, models);
 	}

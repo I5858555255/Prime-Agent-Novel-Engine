@@ -318,6 +318,31 @@ describe("InteractiveMode tool event rendering", () => {
 	});
 });
 
+describe("InteractiveMode transcript rebuild", () => {
+	test("keeps existing chat visible when session context reload fails", async () => {
+		type RebuildHarness = {
+			chatContainer: Container;
+			agentConnection: { getSessionContext(): Promise<never> };
+			renderSessionContext(): Promise<void>;
+			rebuildChatFromMessages(): Promise<void>;
+		};
+		const fakeThis = Object.create(InteractiveMode.prototype) as RebuildHarness;
+		fakeThis.chatContainer = new Container();
+		fakeThis.chatContainer.addChild(new Container());
+		fakeThis.agentConnection = {
+			getSessionContext: vi.fn(async () => {
+				throw new Error("context unavailable");
+			}),
+		};
+		fakeThis.renderSessionContext = vi.fn(async () => {});
+
+		await expect(fakeThis.rebuildChatFromMessages()).rejects.toThrow("context unavailable");
+
+		expect(fakeThis.chatContainer.children).toHaveLength(1);
+		expect(fakeThis.renderSessionContext).not.toHaveBeenCalled();
+	});
+});
+
 describe("InteractiveMode startup onboarding warnings", () => {
 	type StartupWarningHarness = {
 		shouldRunOnboarding(): boolean;
@@ -447,7 +472,13 @@ describe("InteractiveMode model selection persistence", () => {
 		footer: { invalidate(): void };
 		patchConnectionState(patch: Partial<AgentConnectionState>): void;
 		updateEditorBorderColor(): void;
+		showStatus(message: string): void;
+		showError(message: string): void;
+		findExactModelMatch(searchTerm: string): Promise<AgentConnectionModel | undefined>;
+		maybeWarnAboutAnthropicSubscriptionAuth(model: AgentConnectionModel): Promise<void>;
+		checkDaxnutsEasterEgg(model: AgentConnectionModel): void;
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+		handleModelCommand(searchTerm?: string): Promise<void>;
 	};
 
 	const createModel = (provider: string, id: string): AgentConnectionModel =>
@@ -510,6 +541,33 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(fakeThis.patchConnectionState).not.toHaveBeenCalled();
 		expect(fakeThis.footer.invalidate).not.toHaveBeenCalled();
 		expect(fakeThis.updateEditorBorderColor).not.toHaveBeenCalled();
+	});
+
+	test("persists exact /model command selections after the connection accepts them", async () => {
+		const model = createModel("openai", "gpt-5.5");
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
+		fakeThis.agentConnection = { setModel: vi.fn(async () => {}) };
+		fakeThis.uiServices = {
+			settingsManager: {
+				setDefaultModelAndProvider: vi.fn(),
+			},
+		};
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.patchConnectionState = vi.fn();
+		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showError = vi.fn();
+		fakeThis.findExactModelMatch = vi.fn(async () => model);
+		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn(async () => {});
+		fakeThis.checkDaxnutsEasterEgg = vi.fn();
+
+		await fakeThis.handleModelCommand("gpt-5.5");
+
+		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model });
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
+		expect(fakeThis.showError).not.toHaveBeenCalled();
 	});
 });
 
