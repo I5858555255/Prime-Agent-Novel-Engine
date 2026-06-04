@@ -16,6 +16,7 @@ import {
 	type Model,
 	type OAuthProviderId,
 	type OAuthSelectPrompt,
+	type ToolCall,
 } from "@earendil-works/pi-ai";
 import type {
 	AutocompleteItem,
@@ -181,6 +182,12 @@ import {
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
 	setExpanded(expanded: boolean): void;
+}
+
+interface PendingToolCallRenderInput {
+	id: string;
+	name: string;
+	arguments: ToolCall["arguments"];
 }
 
 function isExpandable(obj: unknown): obj is Expandable {
@@ -506,6 +513,8 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
+	private pendingToolCreations = new Set<string>();
+	private startedToolCalls = new Set<string>();
 	private toolDefinitionCache = new Map<string, ToolExecutionDefinition | undefined>();
 
 	// RLM child-agent tray: compact entry below the editor, bounded list/detail in the main view.
@@ -2088,10 +2097,16 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
-		this.pendingTools.clear();
+		this.resetPendingToolState();
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
 		this.syncGoalTray(this.getGoalState());
+	}
+
+	private resetPendingToolState(): void {
+		this.pendingTools.clear();
+		this.pendingToolCreations.clear();
+		this.startedToolCalls.clear();
 	}
 
 	private async renderCurrentSessionState(): Promise<void> {
@@ -2114,6 +2129,58 @@ export class InteractiveMode {
 		);
 		this.toolDefinitionCache.set(toolName, definition);
 		return definition;
+	}
+
+	private getLatestStreamingToolCall(toolCallId: string): ToolCall | undefined {
+		return this.streamingMessage?.content.find(
+			(content): content is ToolCall => content.type === "toolCall" && content.id === toolCallId,
+		);
+	}
+
+	private async getOrCreatePendingToolComponent(
+		toolCall: PendingToolCallRenderInput,
+	): Promise<ToolExecutionComponent | undefined> {
+		const existingComponent = this.pendingTools.get(toolCall.id);
+		if (existingComponent) {
+			existingComponent.updateArgs(toolCall.arguments);
+			return existingComponent;
+		}
+		if (this.pendingToolCreations.has(toolCall.id)) {
+			return undefined;
+		}
+
+		this.pendingToolCreations.add(toolCall.id);
+		try {
+			const toolDefinition = await this.loadToolDefinition(toolCall.name);
+			const latestToolCall = this.getLatestStreamingToolCall(toolCall.id) ?? toolCall;
+			const componentAfterLoad = this.pendingTools.get(latestToolCall.id);
+			if (componentAfterLoad) {
+				componentAfterLoad.updateArgs(latestToolCall.arguments);
+				return componentAfterLoad;
+			}
+
+			const component = new ToolExecutionComponent(
+				latestToolCall.name,
+				latestToolCall.id,
+				latestToolCall.arguments,
+				{
+					showImages: this.settingsManager.getShowImages(),
+					imageWidthCells: this.settingsManager.getImageWidthCells(),
+				},
+				toolDefinition,
+				this.ui,
+				this.getCurrentCwd(),
+			);
+			component.setExpanded(this.toolOutputExpanded);
+			if (this.startedToolCalls.has(latestToolCall.id)) {
+				component.markExecutionStarted();
+			}
+			this.chatContainer.addChild(component);
+			this.pendingTools.set(latestToolCall.id, component);
+			return component;
+		} finally {
+			this.pendingToolCreations.delete(toolCall.id);
+		}
 	}
 
 	private createToolExecutionDefinition(
@@ -3390,7 +3457,7 @@ export class InteractiveMode {
 
 		switch (event.type) {
 			case "agent_start":
-				this.pendingTools.clear();
+				this.resetPendingToolState();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -3464,29 +3531,7 @@ export class InteractiveMode {
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
-							if (!this.pendingTools.has(content.id)) {
-								const toolDefinition = await this.loadToolDefinition(content.name);
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.id,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-										imageWidthCells: this.settingsManager.getImageWidthCells(),
-									},
-									toolDefinition,
-									this.ui,
-									this.getCurrentCwd(),
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
+							await this.getOrCreatePendingToolComponent(content);
 						}
 					}
 					this.ui.requestRender();
@@ -3518,7 +3563,7 @@ export class InteractiveMode {
 								isError: true,
 							});
 						}
-						this.pendingTools.clear();
+						this.resetPendingToolState();
 					} else {
 						// Args are now complete - trigger diff computation for edit tools
 						for (const [, component] of this.pendingTools.entries()) {
@@ -3533,26 +3578,18 @@ export class InteractiveMode {
 				break;
 
 			case "tool_execution_start": {
+				this.startedToolCalls.add(event.toolCallId);
 				let component = this.pendingTools.get(event.toolCallId);
 				if (!component) {
-					const toolDefinition = await this.loadToolDefinition(event.toolName);
-					component = new ToolExecutionComponent(
-						event.toolName,
-						event.toolCallId,
-						event.args,
-						{
-							showImages: this.settingsManager.getShowImages(),
-							imageWidthCells: this.settingsManager.getImageWidthCells(),
-						},
-						toolDefinition,
-						this.ui,
-						this.getCurrentCwd(),
-					);
-					component.setExpanded(this.toolOutputExpanded);
-					this.chatContainer.addChild(component);
-					this.pendingTools.set(event.toolCallId, component);
+					component = await this.getOrCreatePendingToolComponent({
+						id: event.toolCallId,
+						name: event.toolName,
+						arguments: event.args,
+					});
 				}
-				component.markExecutionStarted();
+				if (component) {
+					component.markExecutionStarted();
+				}
 				this.ui.requestRender();
 				break;
 			}
@@ -3571,6 +3608,7 @@ export class InteractiveMode {
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError });
 					this.pendingTools.delete(event.toolCallId);
+					this.startedToolCalls.delete(event.toolCallId);
 					this.ui.requestRender();
 				}
 				break;
@@ -3586,7 +3624,7 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
-				this.pendingTools.clear();
+				this.resetPendingToolState();
 
 				await this.checkShutdownRequested();
 
@@ -4212,7 +4250,7 @@ export class InteractiveMode {
 		sessionContext: AgentConnectionSessionContext,
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): Promise<void> {
-		this.pendingTools.clear();
+		this.resetPendingToolState();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		const toolNames: string[] = [];
 		for (const message of sessionContext.messages) {

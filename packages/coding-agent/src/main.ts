@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { type ImageContent, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
+import { type Api, type ImageContent, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.js";
@@ -631,7 +631,7 @@ async function prepareRuntimeServices(options: {
 async function resolvePreparedStartupModel(options: {
 	prepared: PreparedRuntimeServices;
 	sessionManager: SessionManager;
-}): Promise<{ model: Model<any> | undefined; modelFallbackMessage: string | undefined }> {
+}): Promise<{ model: Model<Api> | undefined; modelFallbackMessage: string | undefined }> {
 	const { prepared, sessionManager } = options;
 	const { modelRegistry, settingsManager } = prepared.services;
 	const existingSession = sessionManager.buildSessionContext();
@@ -652,7 +652,7 @@ async function resolvePreparedStartupModel(options: {
 
 	if (!model) {
 		const result = await findInitialModel({
-			scopedModels: [],
+			scopedModels: prepared.scopedModels,
 			isContinuing: hasExistingSession,
 			defaultProvider: settingsManager.getDefaultProvider(),
 			defaultModelId: settingsManager.getDefaultModel(),

@@ -13,9 +13,11 @@ import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import type {
 	AgentConnectionModel,
 	AgentConnectionResourceSnapshot,
+	AgentConnectionSessionEvent,
 	AgentConnectionSourceInfo,
 	AgentConnectionState,
 } from "../src/modes/agent-connection/types.js";
+import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -233,6 +235,86 @@ describe("InteractiveMode connection events", () => {
 		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();
+	});
+});
+
+describe("InteractiveMode tool event rendering", () => {
+	test("reserves streaming tool call ids before loading tool definitions", async () => {
+		let resolveDefinition!: () => void;
+		const definitionPromise = new Promise<undefined>((resolve) => {
+			resolveDefinition = () => resolve(undefined);
+		});
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			isInitialized: true,
+			init: vi.fn(async () => {}),
+			footer: { invalidate: vi.fn() },
+			updateConnectionStateFromEvent: vi.fn(),
+			streamingComponent: { updateContent: vi.fn() },
+			streamingMessage: undefined,
+			chatContainer: new Container(),
+			pendingTools: new Map<string, ToolExecutionComponent>(),
+			pendingToolCreations: new Set<string>(),
+			startedToolCalls: new Set<string>(),
+			loadToolDefinition: vi.fn(() => definitionPromise),
+			uiServices: {
+				settingsManager: {
+					getShowImages: () => true,
+					getImageWidthCells: () => 60,
+				},
+			},
+			toolOutputExpanded: false,
+			ui: { requestRender: vi.fn() },
+			getCurrentCwd: () => "/tmp/project",
+		});
+		const event = {
+			type: "message_update",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tool-1",
+						name: "ipython",
+						arguments: { code: "print(1)" },
+					},
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				},
+				stopReason: "stop",
+				timestamp: 1,
+			},
+		} as unknown as AgentConnectionSessionEvent;
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof fakeThis, event: AgentConnectionSessionEvent): Promise<void>;
+			}
+		).handleEvent;
+
+		const firstUpdate = handleEvent.call(fakeThis, event);
+		const secondUpdate = handleEvent.call(fakeThis, event);
+		await Promise.resolve();
+		expect(fakeThis.loadToolDefinition).toHaveBeenCalledTimes(1);
+
+		resolveDefinition();
+		await Promise.all([firstUpdate, secondUpdate]);
+
+		expect(fakeThis.pendingTools.size).toBe(1);
+		expect(fakeThis.chatContainer.children).toHaveLength(1);
 	});
 });
 
