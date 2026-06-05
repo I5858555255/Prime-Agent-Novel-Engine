@@ -9,15 +9,36 @@ export interface KeyTextOptions {
 	primaryOnly?: boolean;
 }
 
-function formatKey(key: KeyId | string): string {
-	return key === "escape" ? "esc" : key;
+function normalizeKeyPart(part: string): string {
+	return part === "escape" ? "esc" : part;
+}
+
+function formatKeyPart(part: string, platform: NodeJS.Platform): string {
+	const normalized = normalizeKeyPart(part);
+	if (platform === "darwin") {
+		if (normalized === "ctrl") return "Cmd";
+		if (normalized === "alt") return "Option";
+	}
+	return normalized === "esc" ? normalized : normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+export function formatKeyText(key: string, platform: NodeJS.Platform = process.platform): string {
+	return key
+		.split("/")
+		.map((binding) =>
+			binding
+				.split("+")
+				.map((part) => formatKeyPart(part, platform))
+				.join("+"),
+		)
+		.join("/");
 }
 
 function formatKeys(keys: KeyId[], options: KeyTextOptions = {}): string {
-	const displayKeys = (options.primaryOnly ? keys.slice(0, 1) : keys).map((key) => formatKey(key));
+	const displayKeys = options.primaryOnly ? keys.slice(0, 1) : keys;
 	if (displayKeys.length === 0) return "";
-	if (displayKeys.length === 1) return displayKeys[0]!;
-	return displayKeys.join("/");
+	if (displayKeys.length === 1) return formatKeyText(displayKeys[0]!);
+	return formatKeyText(displayKeys.join("/"));
 }
 
 export function keyText(keybinding: Keybinding, options: KeyTextOptions = {}): string {
@@ -29,5 +50,5 @@ export function keyHint(keybinding: Keybinding, description: string, options: Ke
 }
 
 export function rawKeyHint(key: string, description: string): string {
-	return theme.fg("dim", formatKey(key)) + theme.fg("muted", ` ${description}`);
+	return theme.fg("dim", formatKeyText(key)) + theme.fg("muted", ` ${description}`);
 }

@@ -184,7 +184,7 @@ class SelectSubmenu extends Container {
 
 		// Hint
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", "  Enter to select · esc to go back"), 0, 0));
 	}
 
 	handleInput(data: string): void {

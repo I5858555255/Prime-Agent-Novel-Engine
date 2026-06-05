@@ -402,7 +402,7 @@ describe("marquee TUI components", () => {
 		expect(focusedSummary).toContain("1 subagent running");
 		expect(focusedSummary).not.toContain("▌");
 		const focusedSummaryWide = stripAnsi(summary.render(96).join("\n"));
-		expect(focusedSummaryWide).toContain("enter open");
+		expect(focusedSummaryWide).toContain("Enter open");
 		expect(focusedSummaryWide).not.toContain("editor");
 		expect(focusedSummaryWide).not.toContain("ctrl+c");
 		const summaryRow = summary.render(60).at(-1) ?? "";
@@ -432,8 +432,8 @@ describe("marquee TUI components", () => {
 		expect(compact).not.toContain("├─");
 		expect(compact).not.toContain("assistant: reading shard metrics");
 		const wideList = stripAnsi(component.render(96).join("\n"));
-		expect(wideList).toContain("up/down move");
-		expect(wideList).toContain("enter open");
+		expect(wideList).toContain("Up/Down move");
+		expect(wideList).toContain("Enter open");
 		expect(wideList).toContain("esc close");
 		expect(wideList).not.toContain("ctrl+c close");
 		for (const line of component.render(96)) {

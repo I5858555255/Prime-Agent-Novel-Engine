@@ -6,6 +6,7 @@
 
 - Fixed child-agent navigation to show contextual keybinding hints and a visible focused tray marker.
 - Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.
+- Fixed browser sign-in links to show plain URLs when terminal hyperlinks are unsupported.
 
 ## [0.0.7] - 2026-06-01
 
