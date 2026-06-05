@@ -522,7 +522,10 @@ export class Editor implements Component, Focusable {
 		// Emit hardware cursor marker only when focused and not showing autocomplete
 		const emitCursorMarker = this.focused && !this.autocompleteState;
 
-		for (const layoutLine of visibleLines) {
+		for (let visibleLineIndex = 0; visibleLineIndex < visibleLines.length; visibleLineIndex++) {
+			const layoutLine = visibleLines[visibleLineIndex]!;
+			const absoluteLineIndex = this.scrollOffset + visibleLineIndex;
+			const linePromptPrefix = absoluteLineIndex === 0 ? promptPrefix : " ".repeat(promptPrefixWidth);
 			let displayText = layoutLine.text;
 			let lineVisibleWidth = visibleWidth(layoutLine.text);
 			let cursorInPadding = false;
@@ -561,7 +564,7 @@ export class Editor implements Component, Focusable {
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
 			// Render the line (no side borders, just horizontal lines above and below)
-			const contentLine = `${promptLeadingPadding}${promptPrefix}${promptTrailingPadding}${displayText}${padding}${lineRightPadding}`;
+			const contentLine = `${promptLeadingPadding}${linePromptPrefix}${promptTrailingPadding}${displayText}${padding}${lineRightPadding}`;
 			result.push(useBackgroundSurface ? renderSurfaceLine(contentLine) : contentLine);
 		}
 
@@ -1786,6 +1789,7 @@ export class Editor implements Component, Focusable {
 
 		if (deltaCol !== 0) {
 			const currentLine = this.state.lines[this.state.cursorLine] || "";
+			const lineStartCol = this.getLineHiddenTextPrefixLength(this.state.cursorLine, currentLine);
 
 			if (deltaCol > 0) {
 				// Moving right - move by one grapheme (handles emojis, combining characters, etc.)
@@ -1807,11 +1811,12 @@ export class Editor implements Component, Focusable {
 				}
 			} else {
 				// Moving left - move by one grapheme (handles emojis, combining characters, etc.)
-				if (this.state.cursorCol > 0) {
-					const beforeCursor = currentLine.slice(0, this.state.cursorCol);
+				if (this.state.cursorCol > lineStartCol) {
+					const beforeCursor = currentLine.slice(lineStartCol, this.state.cursorCol);
 					const graphemes = [...this.segment(beforeCursor)];
 					const lastGrapheme = graphemes[graphemes.length - 1];
-					this.setCursorCol(this.state.cursorCol - (lastGrapheme ? lastGrapheme.segment.length : 1));
+					const previousCol = this.state.cursorCol - (lastGrapheme ? lastGrapheme.segment.length : 1);
+					this.setCursorCol(Math.max(lineStartCol, previousCol));
 				} else if (this.state.cursorLine > 0) {
 					// Wrap to end of previous logical line
 					this.state.cursorLine--;
@@ -1841,9 +1846,10 @@ export class Editor implements Component, Focusable {
 	private moveWordBackwards(): void {
 		this.lastAction = null;
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const lineStartCol = this.getLineHiddenTextPrefixLength(this.state.cursorLine, currentLine);
 
 		// If at start of line, move to end of previous line
-		if (this.state.cursorCol === 0) {
+		if (this.state.cursorCol <= lineStartCol) {
 			if (this.state.cursorLine > 0) {
 				this.state.cursorLine--;
 				const prevLine = this.state.lines[this.state.cursorLine] || "";
@@ -1852,7 +1858,7 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
+		const textBeforeCursor = currentLine.slice(lineStartCol, this.state.cursorCol);
 		const graphemes = [...this.segment(textBeforeCursor)];
 		let newCol = this.state.cursorCol;
 
@@ -1892,7 +1898,7 @@ export class Editor implements Component, Focusable {
 			}
 		}
 
-		this.setCursorCol(newCol);
+		this.setCursorCol(Math.max(lineStartCol, newCol));
 	}
 
 	/**

@@ -73,6 +73,17 @@ describe("Editor prompt prefix", () => {
 		assert.match(inputLine(editor), /^ > {2}hello/);
 	});
 
+	it("uses a blank prompt gutter on wrapped rows", () => {
+		const editor = new BashPromptEditor(createTestTUI(), defaultEditorTheme);
+
+		editor.setText("abcdefghijklmnop");
+		const contentLines = editor.render(10).slice(1, -1).map(stripVTControlCharacters);
+
+		assert.match(contentLines[0] ?? "", /^> /);
+		assert.match(contentLines[1] ?? "", /^ {2}/);
+		assert.doesNotMatch(contentLines[1] ?? "", /^>/);
+	});
+
 	it("renders bash prefixes in the prompt gutter and hides them from input text", () => {
 		const editor = new BashPromptEditor(createTestTUI(), defaultEditorTheme);
 
@@ -105,5 +116,31 @@ describe("Editor prompt prefix", () => {
 
 		assert.strictEqual(editor.getText(), "!xecho");
 		assert.match(inputLine(editor), /^! xecho/);
+	});
+
+	it("keeps left navigation out of hidden bash prefixes", () => {
+		const editor = new BashPromptEditor(createTestTUI(), defaultEditorTheme);
+
+		editor.setText("!echo");
+		for (let i = 0; i < 10; i++) {
+			editor.handleInput("\x1b[D");
+		}
+		editor.handleInput("x");
+
+		assert.strictEqual(editor.getText(), "!xecho");
+		assert.match(inputLine(editor), /^! xecho/);
+	});
+
+	it("keeps word-left navigation out of hidden bash prefixes", () => {
+		const editor = new BashPromptEditor(createTestTUI(), defaultEditorTheme);
+
+		editor.setText("! foo bar");
+		for (let i = 0; i < 4; i++) {
+			editor.handleInput("\x1b[1;5D");
+		}
+		editor.handleInput("x");
+
+		assert.strictEqual(editor.getText(), "! xfoo bar");
+		assert.match(inputLine(editor), /^! xfoo bar/);
 	});
 });
