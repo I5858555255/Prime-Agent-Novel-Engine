@@ -143,4 +143,25 @@ describe("Editor prompt prefix", () => {
 		assert.strictEqual(editor.getText(), "! xfoo bar");
 		assert.match(inputLine(editor), /^! xfoo bar/);
 	});
+
+	it("keeps backspace at the visible command boundary from deleting hidden prefixes", () => {
+		const editor = new BashPromptEditor(createTestTUI(), defaultEditorTheme);
+
+		editor.setText("!echo");
+		editor.handleInput("\x01");
+		editor.handleInput("\x7f");
+
+		assert.strictEqual(editor.getText(), "!echo");
+		assert.match(inputLine(editor), /^! echo/);
+	});
+
+	it("allows backspace to clear an empty bash marker", () => {
+		const editor = new BashPromptEditor(createTestTUI(), defaultEditorTheme);
+
+		editor.setText("!");
+		editor.handleInput("\x7f");
+
+		assert.strictEqual(editor.getText(), "");
+		assert.match(inputLine(editor), /^> /);
+	});
 });

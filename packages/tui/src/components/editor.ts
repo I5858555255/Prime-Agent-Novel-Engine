@@ -1283,12 +1283,14 @@ export class Editor implements Component, Focusable {
 		this.historyIndex = -1; // Exit history browsing mode
 		this.lastAction = null;
 
-		if (this.state.cursorCol > 0) {
+		const line = this.state.lines[this.state.cursorLine] || "";
+		const lineStartCol = this.getLineHiddenTextPrefixLength(this.state.cursorLine, line);
+
+		if (this.state.cursorCol > lineStartCol) {
 			this.pushUndoSnapshot();
 
 			// Delete grapheme before cursor (handles emojis, combining characters, etc.)
-			const line = this.state.lines[this.state.cursorLine] || "";
-			const beforeCursor = line.slice(0, this.state.cursorCol);
+			const beforeCursor = line.slice(lineStartCol, this.state.cursorCol);
 
 			// Find the last grapheme in the text before cursor
 			const graphemes = [...this.segment(beforeCursor)];
@@ -1300,6 +1302,11 @@ export class Editor implements Component, Focusable {
 
 			this.state.lines[this.state.cursorLine] = before + after;
 			this.setCursorCol(this.state.cursorCol - graphemeLength);
+		} else if (lineStartCol > 0 && line.length === lineStartCol) {
+			this.pushUndoSnapshot();
+
+			this.state.lines[this.state.cursorLine] = "";
+			this.setCursorCol(0);
 		} else if (this.state.cursorLine > 0) {
 			this.pushUndoSnapshot();
 
