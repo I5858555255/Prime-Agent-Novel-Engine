@@ -107,7 +107,7 @@ export class DaemonAgentConnection implements AgentConnection {
 						},
 		});
 		this.activeSessionId = getAttachActiveSessionId(result);
-		this.lastEventSequence = getAttachLastEventSequence(result, this.lastEventSequence);
+		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 	}
 
 	subscribe(listener: AgentConnectionEventListener): () => void {
@@ -543,14 +543,21 @@ function getAttachActiveSessionId(result: SessionSummary | DaemonAttachResult): 
 	return result.activeSessionId ?? result.id;
 }
 
-function getAttachLastEventSequence(
-	result: SessionSummary | DaemonAttachResult,
-	fallback: number | undefined,
-): number | undefined {
+function getAttachLastEventSequence(result: SessionSummary | DaemonAttachResult): number | undefined {
 	if ("lastEventSequence" in result) {
 		return result.lastEventSequence;
 	}
-	return fallback;
+	return undefined;
+}
+
+function maxEventSequence(current: number | undefined, observed: number | undefined): number | undefined {
+	if (current === undefined) {
+		return observed;
+	}
+	if (observed === undefined) {
+		return current;
+	}
+	return Math.max(current, observed);
 }
 
 function deserializeSavedSessionInfo(session: DaemonSavedSessionInfo): AgentConnectionSavedSessionInfo {

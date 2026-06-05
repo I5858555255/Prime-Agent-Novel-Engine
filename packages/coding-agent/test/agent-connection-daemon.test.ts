@@ -567,6 +567,16 @@ describe("DaemonAgentConnection", () => {
 				eventSequence: 14,
 			},
 		});
+
+		await connection.attach();
+		expect(fakeClient.requests.at(-1)).toMatchObject({
+			type: "attach",
+			activeSessionId: "active-1",
+			resumeCursor: {
+				activeSessionId: "active-1",
+				eventSequence: 14,
+			},
+		});
 	});
 
 	it("forwards extension UI requests and responses", async () => {

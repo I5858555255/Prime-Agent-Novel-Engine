@@ -367,10 +367,26 @@ export function createDaemonReplayInfo(
 	resumeCursor: DaemonResumeCursor | undefined,
 	lastEventSequence: DaemonEventSequence,
 ): DaemonReplayInfo {
-	if (!resumeCursor || resumeCursor.eventSequence >= lastEventSequence) {
+	if (!resumeCursor) {
 		return {
 			status: "complete",
-			...(resumeCursor ? { fromSequence: resumeCursor.eventSequence } : {}),
+			toSequence: lastEventSequence,
+		};
+	}
+
+	if (resumeCursor.eventSequence > lastEventSequence) {
+		return {
+			status: "unavailable",
+			fromSequence: resumeCursor.eventSequence,
+			toSequence: lastEventSequence,
+			reason: "resume_cursor_ahead_of_session",
+		};
+	}
+
+	if (resumeCursor.eventSequence === lastEventSequence) {
+		return {
+			status: "complete",
+			fromSequence: resumeCursor.eventSequence,
 			toSequence: lastEventSequence,
 		};
 	}

@@ -48,6 +48,12 @@ describe("daemon protocol helpers", () => {
 			fromSequence: 5,
 			toSequence: 5,
 		});
+		expect(createDaemonReplayInfo({ activeSessionId: "active-1", eventSequence: 10 }, 5)).toEqual({
+			status: "unavailable",
+			fromSequence: 10,
+			toSequence: 5,
+			reason: "resume_cursor_ahead_of_session",
+		});
 		expect(createDaemonReplayInfo({ activeSessionId: "active-1", eventSequence: 2 }, 5)).toEqual({
 			status: "unavailable",
 			fromSequence: 2,
