@@ -1319,8 +1319,13 @@ standalone_node_path_line() {
 	printf 'export PATH="%s:$PATH"' "$PRIME_AGENT_STANDALONE_NODE_BIN"
 }
 
+prime_agent_shell_quote() {
+	quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+	printf "'%s'" "$quoted"
+}
+
 prime_agent_source_profile_command() {
-	printf '. %s && %s' "$1" "$prime_agent_cmd"
+	printf '. %s && %s' "$(prime_agent_shell_quote "$1")" "$prime_agent_cmd"
 }
 
 download_prime_agent_package() {
