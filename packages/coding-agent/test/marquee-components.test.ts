@@ -383,7 +383,10 @@ describe("marquee TUI components", () => {
 		expect(focusedSummary).toContain("agents-sidebar");
 		expect(focusedSummary).toContain("37% context left");
 		expect(focusedSummary).toContain("1 subagent running");
-		expect(focusedSummary).not.toContain("▌");
+		expect(focusedSummary).toContain("▌");
+		const focusedSummaryWide = stripAnsi(summary.render(96).join("\n"));
+		expect(focusedSummaryWide).toContain("enter open");
+		expect(focusedSummaryWide).toContain("escape/ctrl+c editor");
 		const summaryRow = summary.render(60).at(-1) ?? "";
 		expect(visibleWidth(summaryRow)).toBe(60);
 		expect(stripAnsi(summaryRow).endsWith("37% context left")).toBe(true);
@@ -410,6 +413,10 @@ describe("marquee TUI components", () => {
 		expect(compact).not.toContain("└─");
 		expect(compact).not.toContain("├─");
 		expect(compact).not.toContain("assistant: reading shard metrics");
+		const wideList = stripAnsi(component.render(96).join("\n"));
+		expect(wideList).toContain("up/down move");
+		expect(wideList).toContain("enter open");
+		expect(wideList).toContain("escape/ctrl+c close");
 		for (const line of component.render(96)) {
 			expect(visibleWidth(line)).toBe(96);
 		}
@@ -438,6 +445,7 @@ describe("marquee TUI components", () => {
 		expect(detail).toContain("reading shard metrics");
 		expect(detail).toContain("$ echo hi");
 		expect(detail).toContain("hi");
+		expect(detail).toContain("escape/ctrl+c back to subagents");
 		expect(detail).not.toContain("user: inspect training logs");
 		expect(detail).not.toContain("assistant: reading shard metrics");
 		expect(detail).not.toContain("tool: bash");
@@ -495,6 +503,7 @@ describe("marquee TUI components", () => {
 		const first = stripAnsi(firstLines.join("\n"));
 		expect(first).toContain("fallback transcript row 01");
 		expect(first).toContain("fallback transcript row 12");
+		expect(first).toContain("escape/ctrl+c back to subagents");
 		expect(first).not.toContain("↑");
 		expect(first).not.toContain("↓");
 		expect(firstLines.length).toBeGreaterThan(6);
