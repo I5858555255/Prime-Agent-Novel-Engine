@@ -185,6 +185,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		shouldRunOnboarding(): boolean;
 		completeOnboarding(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
+		runOnboardingFlow(): Promise<boolean>;
 	};
 	type OnboardingFake = OnboardingHarness & {
 		runtimeHost: {
@@ -209,10 +210,13 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		maybeWarnAboutAnthropicSubscriptionAuth?: (model?: Model<"openai-completions">) => void;
 		checkDaxnutsEasterEgg?: (model: { provider: string; id: string }) => void;
 		findExactModelMatch?: (searchTerm: string) => Promise<Model<"openai-completions"> | undefined>;
+		showOnboardingModelSelectionSplash?: () => Promise<boolean>;
+		promptForModelSelection?: (options?: { allowProviderSetup?: boolean }) => Promise<boolean>;
 	};
 	const shouldRunOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).shouldRunOnboarding;
 	const completeOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).completeOnboarding;
 	const handleModelCommand = (InteractiveMode.prototype as unknown as OnboardingHarness).handleModelCommand;
+	const runOnboardingFlow = (InteractiveMode.prototype as unknown as OnboardingHarness).runOnboardingFlow;
 
 	const primeModel: Model<"openai-completions"> = {
 		id: "openai/gpt-5.5",
@@ -298,6 +302,19 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		expect(fakeThis.runtimeHost.session.setModel).toHaveBeenCalledWith(primeModel);
 		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
 		expect(shouldRunOnboarding.call(fakeThis)).toBe(false);
+	});
+
+	test("cancelled model picker does not complete Prime CLI onboarding", async () => {
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.showOnboardingModelSelectionSplash = vi.fn(async () => true);
+		fakeThis.promptForModelSelection = vi.fn(async () => false);
+		fakeThis.showStatus = vi.fn();
+
+		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBe(false);
+
+		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
+		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model selection required. Use /model to continue.");
 	});
 });
 

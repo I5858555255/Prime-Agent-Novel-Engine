@@ -1071,7 +1071,7 @@ export class InteractiveMode {
 			}
 
 			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (selectedModel || this.isCurrentModelReady()) {
+			if (selectedModel) {
 				this.completeOnboarding();
 				return true;
 			}
@@ -1082,7 +1082,7 @@ export class InteractiveMode {
 
 		if (this.session.modelRegistry.getAvailable().length > 0) {
 			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (selectedModel || this.isCurrentModelReady()) {
+			if (selectedModel) {
 				this.completeOnboarding();
 				return true;
 			}
@@ -1100,7 +1100,7 @@ export class InteractiveMode {
 		}
 
 		const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-		if (selectedModel || this.isCurrentModelReady()) {
+		if (selectedModel) {
 			this.completeOnboarding();
 			return true;
 		}
