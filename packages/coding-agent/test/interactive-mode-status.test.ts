@@ -10,6 +10,7 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
+import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
 import type { SourceInfo } from "../src/core/source-info.js";
 import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -175,6 +176,73 @@ describe("InteractiveMode startup onboarding warnings", () => {
 			),
 		).toBe("show");
 		expect(fakeThis.shouldRunOnboarding).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode Prime CLI onboarding", () => {
+	type OnboardingHarness = {
+		shouldRunOnboarding(): boolean;
+		completeOnboarding(): void;
+	};
+	type OnboardingFake = OnboardingHarness & {
+		runtimeHost: {
+			session: {
+				model: { provider: string; id: string };
+				modelRegistry: {
+					refresh: () => void;
+					hasConfiguredAuth: (model: unknown) => boolean;
+					getProviderAuthStatus: (provider: string) => { source?: string };
+				};
+				settingsManager: {
+					getOnboardingCompleted: () => boolean;
+					setOnboardingCompleted: (completed: boolean) => void;
+				};
+			};
+		};
+	};
+	const shouldRunOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).shouldRunOnboarding;
+	const completeOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).completeOnboarding;
+
+	function createPrimeCliHarness(completed: boolean): OnboardingFake {
+		const fakeThis = Object.create(InteractiveMode.prototype) as OnboardingFake;
+		fakeThis.runtimeHost = {
+			session: {
+				model: { provider: PRIME_INFERENCE_PROVIDER_ID, id: "openai/gpt-5.5" },
+				modelRegistry: {
+					refresh: vi.fn(),
+					hasConfiguredAuth: vi.fn(() => true),
+					getProviderAuthStatus: vi.fn(() => ({
+						source: "prime_cli",
+					})),
+				},
+				settingsManager: {
+					getOnboardingCompleted: vi.fn(() => completed),
+					setOnboardingCompleted: vi.fn(),
+				},
+			},
+		};
+		return fakeThis;
+	}
+
+	test("shows onboarding when the selected Prime model is backed by Prime CLI auth", () => {
+		const fakeThis = createPrimeCliHarness(false);
+
+		expect(shouldRunOnboarding.call(fakeThis)).toBe(true);
+		expect(fakeThis.runtimeHost.session.modelRegistry.refresh).toHaveBeenCalledTimes(1);
+	});
+
+	test("skips Prime CLI onboarding after it has been completed", () => {
+		const fakeThis = createPrimeCliHarness(true);
+
+		expect(shouldRunOnboarding.call(fakeThis)).toBe(false);
+	});
+
+	test("persists onboarding completion once", () => {
+		const fakeThis = createPrimeCliHarness(false);
+
+		completeOnboarding.call(fakeThis);
+
+		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
 	});
 });
 
