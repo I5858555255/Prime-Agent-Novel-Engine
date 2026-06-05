@@ -111,6 +111,7 @@ import type {
 	AgentConnectionSessionEvent,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSlashCommand,
+	AgentConnectionSnapshot,
 	AgentConnectionSourceInfo,
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
@@ -539,6 +540,7 @@ export class InteractiveMode {
 	private connectionModels: AgentConnectionModel[] = [];
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
+	private initialConnectionSnapshotConsumed = false;
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
@@ -4381,10 +4383,20 @@ export class InteractiveMode {
 	}
 
 	async renderInitialMessages(): Promise<void> {
-		const [context, state] = await Promise.all([
-			this.agentConnection.getSessionContext(),
-			this.agentConnection.getState(),
-		]);
+		let context: AgentConnectionSessionContext;
+		let state: AgentConnectionState;
+		if (this.initialConnectionSnapshotConsumed) {
+			[context, state] = await Promise.all([
+				this.agentConnection.getSessionContext(),
+				this.agentConnection.getState(),
+			]);
+		} else {
+			const snapshot = await this.agentConnection.getInitialSnapshot();
+			this.initialConnectionSnapshotConsumed = true;
+			context = this.getSessionContextFromConnectionSnapshot(snapshot);
+			state = snapshot.state;
+		}
+		this.applyConnectionStateSnapshot(state);
 		await this.renderSessionContext(context, {
 			updateFooter: true,
 			populateHistory: true,
@@ -4396,6 +4408,19 @@ export class InteractiveMode {
 			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 			this.showStatus(`Session compacted ${times}`);
 		}
+	}
+
+	private getSessionContextFromConnectionSnapshot(snapshot: AgentConnectionSnapshot): AgentConnectionSessionContext {
+		if (snapshot.sessionContext) {
+			return snapshot.sessionContext;
+		}
+		return {
+			messages: snapshot.messages,
+			thinkingLevel: snapshot.state.thinkingLevel,
+			model: snapshot.state.model
+				? { provider: snapshot.state.model.provider, modelId: snapshot.state.model.id }
+				: null,
+		};
 	}
 
 	async getUserInput(): Promise<string> {
