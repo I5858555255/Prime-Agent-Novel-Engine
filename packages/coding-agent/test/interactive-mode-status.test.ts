@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
+import type { Model } from "@earendil-works/pi-ai";
 import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
@@ -183,11 +184,13 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 	type OnboardingHarness = {
 		shouldRunOnboarding(): boolean;
 		completeOnboarding(): void;
+		handleModelCommand(searchTerm?: string): Promise<void>;
 	};
 	type OnboardingFake = OnboardingHarness & {
 		runtimeHost: {
 			session: {
-				model: { provider: string; id: string };
+				model?: Model<"openai-completions">;
+				setModel?: (model: Model<"openai-completions">) => Promise<void>;
 				modelRegistry: {
 					refresh: () => void;
 					hasConfiguredAuth: (model: unknown) => boolean;
@@ -199,15 +202,41 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 				};
 			};
 		};
+		footer?: { invalidate: () => void };
+		updateEditorBorderColor?: () => void;
+		showStatus?: (message: string) => void;
+		showError?: (message: string) => void;
+		maybeWarnAboutAnthropicSubscriptionAuth?: (model?: Model<"openai-completions">) => void;
+		checkDaxnutsEasterEgg?: (model: { provider: string; id: string }) => void;
+		findExactModelMatch?: (searchTerm: string) => Promise<Model<"openai-completions"> | undefined>;
 	};
 	const shouldRunOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).shouldRunOnboarding;
 	const completeOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).completeOnboarding;
+	const handleModelCommand = (InteractiveMode.prototype as unknown as OnboardingHarness).handleModelCommand;
+
+	const primeModel: Model<"openai-completions"> = {
+		id: "openai/gpt-5.5",
+		name: "GPT-5.5",
+		api: "openai-completions",
+		provider: PRIME_INFERENCE_PROVIDER_ID,
+		baseUrl: "https://api.pinference.ai/api/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 1050000,
+		maxTokens: 128000,
+	};
 
 	function createPrimeCliHarness(completed: boolean): OnboardingFake {
 		const fakeThis = Object.create(InteractiveMode.prototype) as OnboardingFake;
 		fakeThis.runtimeHost = {
 			session: {
-				model: { provider: PRIME_INFERENCE_PROVIDER_ID, id: "openai/gpt-5.5" },
+				model: primeModel,
 				modelRegistry: {
 					refresh: vi.fn(),
 					hasConfiguredAuth: vi.fn(() => true),
@@ -243,6 +272,32 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		completeOnboarding.call(fakeThis);
 
 		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
+	});
+
+	test("manual exact model selection completes Prime CLI onboarding", async () => {
+		let completed = false;
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.runtimeHost.session.model = undefined;
+		fakeThis.runtimeHost.session.settingsManager.getOnboardingCompleted = vi.fn(() => completed);
+		fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted = vi.fn((nextCompleted: boolean) => {
+			completed = nextCompleted;
+		});
+		fakeThis.runtimeHost.session.setModel = vi.fn(async (model: Model<"openai-completions">) => {
+			fakeThis.runtimeHost.session.model = model;
+		});
+		fakeThis.findExactModelMatch = vi.fn(async () => primeModel);
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showError = vi.fn();
+		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn();
+		fakeThis.checkDaxnutsEasterEgg = vi.fn();
+
+		await handleModelCommand.call(fakeThis, "prime-inference/openai/gpt-5.5");
+
+		expect(fakeThis.runtimeHost.session.setModel).toHaveBeenCalledWith(primeModel);
+		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
+		expect(shouldRunOnboarding.call(fakeThis)).toBe(false);
 	});
 });
 

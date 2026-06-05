@@ -1048,6 +1048,12 @@ export class InteractiveMode {
 		}
 	}
 
+	private completeOnboardingIfCurrentModelReady(): void {
+		if (this.isCurrentModelReady()) {
+			this.completeOnboarding();
+		}
+	}
+
 	private async ensurePromptReady(): Promise<boolean> {
 		if (!this.shouldRunOnboarding()) {
 			return true;
@@ -4126,6 +4132,7 @@ export class InteractiveMode {
 			} else {
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
+				this.completeOnboardingIfCurrentModelReady();
 				const thinkingStr =
 					result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
 				this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
@@ -4646,6 +4653,7 @@ export class InteractiveMode {
 				await this.session.setModel(model);
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
+				this.completeOnboardingIfCurrentModelReady();
 				this.showStatus(`Model: ${model.id}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 				this.checkDaxnutsEasterEgg(model);
@@ -4796,6 +4804,7 @@ export class InteractiveMode {
 						this.footer.invalidate();
 						this.updateEditorBorderColor();
 						close();
+						this.completeOnboardingIfCurrentModelReady();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 						this.checkDaxnutsEasterEgg(model);
