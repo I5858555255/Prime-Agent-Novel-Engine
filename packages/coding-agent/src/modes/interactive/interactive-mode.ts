@@ -1054,6 +1054,14 @@ export class InteractiveMode {
 		}
 	}
 
+	private isOnboardingResolvedAfterModelPrompt(selectedModel: boolean): boolean {
+		if (selectedModel) {
+			this.completeOnboarding();
+			return true;
+		}
+		return !this.shouldRunOnboarding();
+	}
+
 	private async ensurePromptReady(): Promise<boolean> {
 		if (!this.shouldRunOnboarding()) {
 			return true;
@@ -1071,8 +1079,7 @@ export class InteractiveMode {
 			}
 
 			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (selectedModel) {
-				this.completeOnboarding();
+			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
 				return true;
 			}
 
@@ -1082,8 +1089,7 @@ export class InteractiveMode {
 
 		if (this.session.modelRegistry.getAvailable().length > 0) {
 			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (selectedModel) {
-				this.completeOnboarding();
+			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
 				return true;
 			}
 
@@ -1100,8 +1106,7 @@ export class InteractiveMode {
 		}
 
 		const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-		if (selectedModel) {
-			this.completeOnboarding();
+		if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
 			return true;
 		}
 

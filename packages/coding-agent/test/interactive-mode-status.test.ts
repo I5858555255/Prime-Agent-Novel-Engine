@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
+import type { AuthStatus } from "../src/core/auth-storage.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
@@ -194,8 +195,9 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 				setModel?: (model: Model<"openai-completions">) => Promise<void>;
 				modelRegistry: {
 					refresh: () => void;
+					getAvailable: () => Model<"openai-completions">[];
 					hasConfiguredAuth: (model: unknown) => boolean;
-					getProviderAuthStatus: (provider: string) => { source?: string };
+					getProviderAuthStatus: (provider: string) => AuthStatus;
 				};
 				settingsManager: {
 					getOnboardingCompleted: () => boolean;
@@ -243,10 +245,14 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 				model: primeModel,
 				modelRegistry: {
 					refresh: vi.fn(),
+					getAvailable: vi.fn(() => [primeModel]),
 					hasConfiguredAuth: vi.fn(() => true),
-					getProviderAuthStatus: vi.fn(() => ({
-						source: "prime_cli",
-					})),
+					getProviderAuthStatus: vi.fn(
+						(): AuthStatus => ({
+							configured: false,
+							source: "prime_cli",
+						}),
+					),
 				},
 				settingsManager: {
 					getOnboardingCompleted: vi.fn(() => completed),
@@ -315,6 +321,24 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
 		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model selection required. Use /model to continue.");
+	});
+
+	test("cancelled model picker continues when current model is ready outside Prime CLI onboarding", async () => {
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.runtimeHost.session.modelRegistry.getProviderAuthStatus = vi.fn(
+			(): AuthStatus => ({
+				configured: true,
+				source: "stored",
+			}),
+		);
+		fakeThis.promptForModelSelection = vi.fn(async () => false);
+		fakeThis.showStatus = vi.fn();
+
+		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBe(true);
+
+		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
+		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
+		expect(fakeThis.showStatus).not.toHaveBeenCalled();
 	});
 });
 
