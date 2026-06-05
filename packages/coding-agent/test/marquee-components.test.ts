@@ -3,6 +3,7 @@ import { type Component, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.js";
+import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";
 import {
 	ChildAgentDetailComponent,
 	ChildAgentInspectorComponent,
@@ -313,6 +314,22 @@ describe("marquee TUI components", () => {
 		expect(expanded).toContain("assistant: no anomaly found in this shard");
 	});
 
+	test("renders assistant thinking as quiet text without background styling", () => {
+		const component = new AssistantMessageComponent(
+			createAssistantMessage("answer", "Check **bold** and `code` first.\n```ts\nconst value = 1;\n```"),
+		);
+
+		const rendered = component.render(80).join("\n");
+		const plain = stripAnsi(rendered);
+
+		expect(plain).toContain("Check bold and code first.");
+		expect(plain).not.toContain("**bold**");
+		expect(plain).not.toContain("`code`");
+		expect(plain).not.toContain("```ts");
+		expect(plain).toContain("const value = 1;");
+		expect(rendered).not.toMatch(/\x1b\[(?:4\d|10\d|48;)/);
+	});
+
 	test("renders child agent summary and bounded inspector list", () => {
 		const summary = new ChildAgentSummaryComponent(
 			() => "agents-sidebar",
@@ -383,10 +400,11 @@ describe("marquee TUI components", () => {
 		expect(focusedSummary).toContain("agents-sidebar");
 		expect(focusedSummary).toContain("37% context left");
 		expect(focusedSummary).toContain("1 subagent running");
-		expect(focusedSummary).toContain("▌");
+		expect(focusedSummary).not.toContain("▌");
 		const focusedSummaryWide = stripAnsi(summary.render(96).join("\n"));
 		expect(focusedSummaryWide).toContain("enter open");
-		expect(focusedSummaryWide).toContain("escape/ctrl+c editor");
+		expect(focusedSummaryWide).not.toContain("editor");
+		expect(focusedSummaryWide).not.toContain("ctrl+c");
 		const summaryRow = summary.render(60).at(-1) ?? "";
 		expect(visibleWidth(summaryRow)).toBe(60);
 		expect(stripAnsi(summaryRow).endsWith("37% context left")).toBe(true);
@@ -416,14 +434,16 @@ describe("marquee TUI components", () => {
 		const wideList = stripAnsi(component.render(96).join("\n"));
 		expect(wideList).toContain("up/down move");
 		expect(wideList).toContain("enter open");
-		expect(wideList).toContain("escape/ctrl+c close");
+		expect(wideList).toContain("esc close");
+		expect(wideList).not.toContain("ctrl+c close");
 		for (const line of component.render(96)) {
 			expect(visibleWidth(line)).toBe(96);
 		}
 
 		component.focused = true;
 		const focused = stripAnsi(component.render(42).join("\n"));
-		expect(focused).toContain("▌ running · inspect training logs");
+		expect(focused).not.toContain("▌");
+		expect(focused).toContain("running · inspect training logs");
 		expect(focused).not.toContain("assistant: reading shard metrics");
 
 		let openedNodeId: string | undefined;
@@ -445,14 +465,15 @@ describe("marquee TUI components", () => {
 		expect(detail).toContain("reading shard metrics");
 		expect(detail).toContain("$ echo hi");
 		expect(detail).toContain("hi");
-		expect(detail).toContain("escape/ctrl+c back to subagents");
+		expect(detail).toContain("esc back to subagents");
 		expect(detail).not.toContain("user: inspect training logs");
 		expect(detail).not.toContain("assistant: reading shard metrics");
 		expect(detail).not.toContain("tool: bash");
 
 		component.handleInput("\x1b");
 		const returned = stripAnsi(component.render(42).join("\n"));
-		expect(returned).toContain("▌ running · inspect training logs");
+		expect(returned).not.toContain("▌");
+		expect(returned).toContain("running · inspect training logs");
 		expect(returned).not.toContain("assistant: reading shard metrics");
 
 		for (const line of component.render(42)) {
@@ -503,7 +524,7 @@ describe("marquee TUI components", () => {
 		const first = stripAnsi(firstLines.join("\n"));
 		expect(first).toContain("fallback transcript row 01");
 		expect(first).toContain("fallback transcript row 12");
-		expect(first).toContain("escape/ctrl+c back to subagents");
+		expect(first).toContain("esc back to subagents");
 		expect(first).not.toContain("↑");
 		expect(first).not.toContain("↓");
 		expect(firstLines.length).toBeGreaterThan(6);

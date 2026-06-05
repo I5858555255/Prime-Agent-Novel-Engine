@@ -258,8 +258,8 @@ export class SettingsSelectorComponent extends Container {
 			},
 			{
 				id: "double-escape-action",
-				label: "Double-escape action",
-				description: "Action when pressing Escape twice with empty editor",
+				label: "Double-esc action",
+				description: "Action when pressing esc twice with empty editor",
 				currentValue: config.doubleEscapeAction,
 				values: ["tree", "fork", "none"],
 			},

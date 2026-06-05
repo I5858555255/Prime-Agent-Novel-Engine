@@ -120,8 +120,12 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
 	return count === 1 ? singular : plural;
 }
 
-function keyAction(keybinding: Keybinding, description: string): string | undefined {
-	const keys = keyText(keybinding).trim();
+interface KeyActionOptions {
+	primaryOnly?: boolean;
+}
+
+function keyAction(keybinding: Keybinding, description: string, options: KeyActionOptions = {}): string | undefined {
+	const keys = keyText(keybinding, options).trim();
 	return keys ? `${theme.fg("dim", keys)}${theme.fg("muted", ` ${description}`)}` : undefined;
 }
 
@@ -247,11 +251,11 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		if (!selected) {
 			return rendered;
 		}
-		return theme.bg("selectedBg", `${theme.fg("accent", "▌")} ${rendered}`);
+		return theme.bg("selectedBg", rendered);
 	}
 
 	private summaryHint(): string {
-		return joinHints([keyAction("tui.select.confirm", "open"), keyAction("tui.select.cancel", "editor")]);
+		return joinHints([keyAction("tui.select.confirm", "open")]);
 	}
 }
 
@@ -345,7 +349,7 @@ export class ChildAgentInspectorComponent implements Component, Focusable {
 		if (availableRows > 0) {
 			for (const entry of flat.slice(start, start + availableRows)) {
 				const selected = this.focused && entry.node.id === this.selectedId;
-				lines.push({ text: this.renderListEntry(entry, contentWidth, selected), selected });
+				lines.push({ text: this.renderListEntry(entry, contentWidth), selected });
 			}
 		}
 		while (targetHeight > 0 && lines.length < targetHeight - 2) {
@@ -355,10 +359,9 @@ export class ChildAgentInspectorComponent implements Component, Focusable {
 		return lines;
 	}
 
-	private renderListEntry(entry: FlatChildAgentNode, width: number, selected: boolean): string {
-		const selector = selected ? theme.fg("accent", "▌") : " ";
+	private renderListEntry(entry: FlatChildAgentNode, width: number): string {
 		const indent = " ".repeat(Math.min(6, entry.depth * 2));
-		const line = `${selector} ${indent}${this.statusLabel(entry.node.status)} ${theme.fg("dim", "·")} ${theme.fg("muted", entry.node.label)}`;
+		const line = `  ${indent}${this.statusLabel(entry.node.status)} ${theme.fg("dim", "·")} ${theme.fg("muted", entry.node.label)}`;
 		return this.truncate(line, width, "…");
 	}
 	private flatten(): FlatChildAgentNode[] {
@@ -391,7 +394,7 @@ export class ChildAgentInspectorComponent implements Component, Focusable {
 			[
 				combinedKeyAction(["tui.select.up", "tui.select.down"], "move"),
 				keyAction("tui.select.confirm", "open"),
-				keyAction("tui.select.cancel", "close"),
+				keyAction("tui.select.cancel", "close", { primaryOnly: true }),
 			],
 			width,
 		);
@@ -587,7 +590,7 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 	}
 
 	private detailHintLine(width: number): string {
-		return hintLine([keyAction("tui.select.cancel", "back to subagents")], width);
+		return hintLine([keyAction("tui.select.cancel", "back to subagents", { primaryOnly: true })], width);
 	}
 
 	private statusLabel(status: ChildAgentStatus): string {
