@@ -445,12 +445,11 @@ export function getBundledSkillsDir(): string {
 		return join(getPackageDir(), "skills");
 	}
 	const packageDir = getPackageDir();
-	// In dev (tsx), skills live at the package root; in a built package they are copied to dist/skills.
-	const distSkillsDir = join(packageDir, "dist", "skills");
-	if (existsSync(distSkillsDir)) {
-		return distSkillsDir;
-	}
-	return join(packageDir, "skills");
+	// Source checkouts (tsx) keep the bundled skills at the package root; built
+	// packages copy them to dist/skills. Decide by whether src/ is present so a
+	// stale dist/ from a prior build never shadows live source edits.
+	const isSourceCheckout = existsSync(join(packageDir, "src"));
+	return isSourceCheckout ? join(packageDir, "skills") : join(packageDir, "dist", "skills");
 }
 
 // =============================================================================
