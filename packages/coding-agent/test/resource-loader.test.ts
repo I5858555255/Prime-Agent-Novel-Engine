@@ -452,6 +452,79 @@ Content`,
 		});
 	});
 
+	describe("bundled skills", () => {
+		it("should load the bundled websearch skill by default", async () => {
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			const websearch = skills.find((s) => s.name === "websearch");
+			expect(websearch).toBeDefined();
+			expect(websearch?.kind).toBe("python");
+			if (websearch?.kind === "python") {
+				expect(websearch.python.importName).toBe("websearch");
+				expect(websearch.python.pyprojectPath.endsWith("pyproject.toml")).toBe(true);
+			}
+		});
+
+		it("should not load bundled skills when noSkills is true", async () => {
+			const loader = new DefaultResourceLoader({ cwd, agentDir, noSkills: true });
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			expect(skills.some((s) => s.name === "websearch")).toBe(false);
+		});
+
+		it("should let a project skill override the bundled websearch skill", async () => {
+			const projectSkillDir = join(cwd, ".prime", "agent", "skills", "websearch");
+			mkdirSync(projectSkillDir, { recursive: true });
+			writeFileSync(
+				join(projectSkillDir, "SKILL.md"),
+				`---
+name: websearch
+description: Project-specific web search override.
+---
+Project override.`,
+			);
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { skills, diagnostics } = loader.getSkills();
+			const websearch = skills.find((s) => s.name === "websearch");
+			expect(websearch).toBeDefined();
+			expect(websearch?.filePath).toBe(join(projectSkillDir, "SKILL.md"));
+			expect(websearch?.kind).toBe("markdown");
+			expect(diagnostics.some((d) => d.type === "collision" && d.collision?.name === "websearch")).toBe(true);
+		});
+
+		it("should let an explicit --skill path override the bundled websearch skill", async () => {
+			const customSkillDir = join(tempDir, "custom-websearch", "websearch");
+			mkdirSync(customSkillDir, { recursive: true });
+			writeFileSync(
+				join(customSkillDir, "SKILL.md"),
+				`---
+name: websearch
+description: Explicit web search override.
+---
+Explicit override.`,
+			);
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				additionalSkillPaths: [customSkillDir],
+			});
+			await loader.reload();
+
+			const { skills } = loader.getSkills();
+			const websearch = skills.find((s) => s.name === "websearch");
+			expect(websearch).toBeDefined();
+			expect(websearch?.filePath).toBe(join(customSkillDir, "SKILL.md"));
+			expect(websearch?.kind).toBe("markdown");
+		});
+	});
+
 	describe("override functions", () => {
 		it("should apply skillsOverride", async () => {
 			const injectedSkill: Skill = {

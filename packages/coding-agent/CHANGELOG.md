@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a bundled `websearch` skill (Google search via the Serper API) that loads by default and can be overridden by a same-named skill in any user, project, package, or `--skill` location.
+
 ### Fixed
 
 - Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.

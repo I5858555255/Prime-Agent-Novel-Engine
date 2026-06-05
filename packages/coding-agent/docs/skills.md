@@ -9,6 +9,7 @@ Prime Agent implements the [Agent Skills standard](https://agentskills.io/specif
 ## Table of Contents
 
 - [Locations](#locations)
+- [Bundled Skills](#bundled-skills)
 - [How Skills Work](#how-skills-work)
 - [Python-Backed Skills](#python-backed-skills)
 - [Skill Commands](#skill-commands)
@@ -24,6 +25,7 @@ Prime Agent implements the [Agent Skills standard](https://agentskills.io/specif
 
 Prime Agent loads skills from:
 
+- Bundled: skills shipped with Prime Agent (currently `websearch`). Loaded by default; override by defining a skill with the same name in any location below.
 - Global:
   - `~/.prime/agent/skills/`
   - `~/.agents/skills/`
@@ -61,6 +63,35 @@ For project-level Claude Code skills, add to `.prime/agent/settings.json`:
   "skills": ["../.claude/skills"]
 }
 ```
+
+## Bundled Skills
+
+Prime Agent ships with a small set of skills that load by default, so common capabilities work without manual installation.
+
+### websearch
+
+A Python-backed skill that searches Google via the [Serper](https://serper.dev) API. It takes a single query and returns titles, URLs, snippets, and knowledge-graph data.
+
+Setup:
+
+```bash
+export SERPER_API_KEY=...        # required, get a key at https://serper.dev
+# optional overrides:
+export PRIME_AGENT_WEBSEARCH_TIMEOUT=45
+export PRIME_AGENT_WEBSEARCH_NUM_RESULTS=5
+```
+
+Once loaded, the model can call it directly in the IPython kernel by import name:
+
+```python
+print(await websearch.run("latest Prime Agent release"))
+```
+
+Without `SERPER_API_KEY` the skill stays visible and returns a clear error explaining that the key must be set.
+
+To replace it with a different backend (Brave, Exa, Tavily, or your own), define a skill named `websearch` in any user, project, package, or `--skill` location. Same-name skills take precedence over the bundled one.
+
+Disable bundled skills together with discovered skills using `--no-skills` (explicit `--skill` paths still load).
 
 ## How Skills Work
 

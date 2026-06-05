@@ -434,6 +434,25 @@ export function getBundledInteractiveAssetPath(name: string): string {
 	return join(getInteractiveAssetsDir(), name);
 }
 
+/**
+ * Get path to bundled skills directory (shipped with the package).
+ * - For Bun binary: skills/ next to executable
+ * - For Node.js (dist/): dist/skills/
+ * - For tsx (src/): skills/ at the package root
+ */
+export function getBundledSkillsDir(): string {
+	if (isBunBinary) {
+		return join(getPackageDir(), "skills");
+	}
+	const packageDir = getPackageDir();
+	// In dev (tsx), skills live at the package root; in a built package they are copied to dist/skills.
+	const distSkillsDir = join(packageDir, "dist", "skills");
+	if (existsSync(distSkillsDir)) {
+		return distSkillsDir;
+	}
+	return join(packageDir, "skills");
+}
+
 // =============================================================================
 // App Config (from package.json piConfig)
 // =============================================================================

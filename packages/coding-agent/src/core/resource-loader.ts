@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import chalk from "chalk";
-import { CONFIG_DIR_NAME } from "../config.js";
+import { CONFIG_DIR_NAME, getBundledSkillsDir } from "../config.js";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
 
@@ -416,9 +416,17 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
 		this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
 
+		// Bundled skills ship with the package and load by default. They are placed
+		// last so user/project/CLI skills with the same name take precedence
+		// (loadSkills resolves name collisions first-wins). `--no-skills` excludes them.
+		const bundledSkillsDir = getBundledSkillsDir();
+		const bundledSkillPaths = this.noSkills || !existsSync(bundledSkillsDir) ? [] : [bundledSkillsDir];
 		const skillPaths = this.noSkills
 			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
-			: this.mergePaths([...cliEnabledSkills, ...enabledSkills], this.additionalSkillPaths);
+			: this.mergePaths(
+					[...cliEnabledSkills, ...enabledSkills],
+					[...this.additionalSkillPaths, ...bundledSkillPaths],
+				);
 
 		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
