@@ -75,6 +75,7 @@ function createFakeSession(id: string, messages: AgentMessage[]): FakeSessionCon
 			getSessionDir: () => "/tmp/prime-agent-sessions",
 			getLeafId: () => `${id}-leaf`,
 			getEntries: () => [],
+			getTree: () => [],
 			buildSessionContext: () => ({
 				messages,
 				thinkingLevel,
@@ -163,6 +164,31 @@ describe("InProcessAgentConnection", () => {
 			messages: [userMessage("context", 1)],
 			thinkingLevel: "medium",
 			model: null,
+		});
+	});
+
+	it("builds initial snapshots from the current runtime", async () => {
+		const session = createFakeSession("snapshot", [userMessage("snapshot context", 1)]);
+		const runtime = new FakeRuntime(session.session);
+		const connection = new InProcessAgentConnection(asRuntime(runtime));
+
+		await expect(connection.getInitialSnapshot()).resolves.toMatchObject({
+			state: {
+				cwd: "/tmp/snapshot",
+				sessionId: "snapshot",
+				messageCount: 1,
+				leafId: "snapshot-leaf",
+			},
+			messages: [userMessage("snapshot context", 1)],
+			sessionContext: {
+				messages: [userMessage("snapshot context", 1)],
+				thinkingLevel: "medium",
+				model: null,
+			},
+			sessionTree: {
+				tree: [],
+				leafId: "snapshot-leaf",
+			},
 		});
 	});
 
