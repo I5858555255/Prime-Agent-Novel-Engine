@@ -57,7 +57,7 @@ export function createAgentConnectionSnapshot(
 	const sessionManager = session.sessionManager;
 	return {
 		state: createAgentConnectionState(runtime, activeSessionId),
-		messages: session.messages,
+		messages: [...session.messages],
 		sessionContext: sessionManager.buildSessionContext(),
 		sessionTree: {
 			tree: sessionManager.getTree(),

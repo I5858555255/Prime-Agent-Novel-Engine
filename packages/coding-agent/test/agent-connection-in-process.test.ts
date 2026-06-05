@@ -168,11 +168,14 @@ describe("InProcessAgentConnection", () => {
 	});
 
 	it("builds initial snapshots from the current runtime", async () => {
-		const session = createFakeSession("snapshot", [userMessage("snapshot context", 1)]);
+		const messages = [userMessage("snapshot context", 1)];
+		const session = createFakeSession("snapshot", messages);
 		const runtime = new FakeRuntime(session.session);
 		const connection = new InProcessAgentConnection(asRuntime(runtime));
 
-		await expect(connection.getInitialSnapshot()).resolves.toMatchObject({
+		const snapshot = await connection.getInitialSnapshot();
+
+		expect(snapshot).toMatchObject({
 			state: {
 				cwd: "/tmp/snapshot",
 				sessionId: "snapshot",
@@ -190,6 +193,8 @@ describe("InProcessAgentConnection", () => {
 				leafId: "snapshot-leaf",
 			},
 		});
+		messages.push(userMessage("later context", 2));
+		expect(snapshot.messages).toEqual([userMessage("snapshot context", 1)]);
 	});
 
 	it("emits replacement snapshots and rebinds events when the runtime replaces its session", async () => {

@@ -147,7 +147,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async getInitialSnapshot(): Promise<AgentConnectionSnapshot> {
-		if (this.latestSnapshot) {
+		if (this.latestSnapshotIsFresh && this.latestSnapshot) {
 			return this.latestSnapshot;
 		}
 		const [state, messagesData, sessionContextData, sessionTree] = await Promise.all([

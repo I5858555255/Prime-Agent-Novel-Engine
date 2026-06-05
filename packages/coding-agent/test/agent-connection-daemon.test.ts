@@ -64,6 +64,13 @@ class FakeDaemonClient {
 					success: true,
 					data: createConnectionState(command.activeSessionId, "session-current"),
 				};
+			case "get_messages":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { messages: [{ role: "user", content: "current prompt", timestamp: 4 }] },
+				};
 			case "get_resource_snapshot":
 				return {
 					type: "response",
@@ -568,6 +575,39 @@ describe("DaemonAgentConnection", () => {
 		});
 		await expect(connection.getMessages()).resolves.toEqual(reconnectedMessages);
 		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "attach"]);
+	});
+
+	it("refreshes initial snapshots after live events make the cached snapshot stale", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.attachResultFactory = (command) =>
+			createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12, {
+				state: createConnectionState(command.activeSessionId, "session-attached"),
+				messages: [{ role: "user", content: "attached prompt", timestamp: 1 }],
+			});
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+
+		await connection.attach();
+		emitSequencedQueueUpdate(fakeClient, "active-1", 13);
+
+		await expect(connection.getInitialSnapshot()).resolves.toMatchObject({
+			state: {
+				sessionId: "session-current",
+			},
+			messages: [{ role: "user", content: "current prompt", timestamp: 4 }],
+			sessionContext: {
+				messages: [{ role: "user", content: "context prompt", timestamp: 3 }],
+			},
+			sessionTree: {
+				leafId: "user-1",
+			},
+		});
+		expect(fakeClient.requests.map((request) => request.type)).toEqual([
+			"attach",
+			"get_connection_state",
+			"get_messages",
+			"get_session_context",
+			"get_session_tree",
+		]);
 	});
 
 	it("ignores older sequenced events after an attach snapshot", async () => {
