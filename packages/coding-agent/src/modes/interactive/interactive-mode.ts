@@ -773,7 +773,7 @@ export class InteractiveMode {
 			const verboseInstructions = this.options.verbose
 				? [
 						hint("app.interrupt", "to interrupt"),
-						hint("app.clear", "to clear"),
+						hint("app.clear", "to interrupt / clear"),
 						rawKeyHint(`${keyText("app.clear")} twice`, "to exit"),
 						hint("app.exit", "to exit (empty)"),
 						hint("app.suspend", "to suspend"),
@@ -3936,6 +3936,14 @@ export class InteractiveMode {
 	// =========================================================================
 
 	private handleCtrlC(): void {
+		if (this.session.isStreaming) {
+			this.restoreQueuedMessagesToEditor({ abort: true });
+			return;
+		}
+		if (this.session.isBashRunning) {
+			this.session.abortBash();
+			return;
+		}
 		const now = Date.now();
 		if (now - this.lastSigintTime < 500) {
 			void this.shutdown();
@@ -6380,7 +6388,7 @@ export class InteractiveMode {
 |-----|--------|
 | \`${tab}\` | Path completion / accept autocomplete |
 | \`${interrupt}\` | Cancel autocomplete / abort streaming |
-| \`${clear}\` | Clear editor (first) / exit (second) |
+| \`${clear}\` | Abort streaming / clear editor (first) / exit (second) |
 | \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
 | \`${cycleThinkingLevel}\` | Cycle thinking level |

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Ctrl+C to interrupt the model while streaming and abort running bash commands, in addition to Escape.
+
 ### Fixed
 
 - Fixed child-agent navigation to show contextual keybinding hints and a visible focused tray marker.
