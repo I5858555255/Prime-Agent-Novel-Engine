@@ -49,8 +49,6 @@ describe("buildRlmPrompt", () => {
 				"You are a general purpose agent that uses code to solve tasks.",
 				"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating one step at a time.",
 				"When you are done, stop calling tools and state your final answer.",
-				"A Python project's interpreter can be in `PATH`. If not use the appropriate `.venv`.",
-				"",
 				"Working directory: /repo",
 				"Conversation log: /repo/.pi/sessions/session.jsonl",
 				"",
@@ -59,9 +57,15 @@ describe("buildRlmPrompt", () => {
 				"If a Python skill is unavailable, calling it raises a RuntimeError with the import error.",
 				"Each Python skill may also be available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 				"",
-				"Use `ipython` for both Python and shell work. For repository shell commands, prefer IPython shell syntax: `!rg ...`, `!npm run check`, or `%%bash` for multi-line scripts. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
+				"IPython is the agent's long-lived notebook: a persistent control environment for reasoning, context management, state, tool orchestration, and recursive subcalls. Use it to keep intermediate variables, inspect and transform outputs, write small helper functions, and preserve useful state across turns or compaction.",
 				"",
-				"Each `!cmd` and each `%%bash` cell runs in a throw-away subshell, so shell-level state (`cd`, `export`, `source`, shell variables) does NOT carry to later cells. To persist state, either chain dependent steps inside one cell (e.g. `!cd build && make`, or a single `%%bash` block that sources then uses a venv), or use kernel-level equivalents that survive across calls: `%cd <dir>` for the working directory and `os.environ['VAR'] = '...'` (or `%env VAR=...`) for environment variables — these apply to all subsequent `!` and `%%bash` calls.",
+				"Do not assume IPython is the native runtime of the external thing being investigated. A repository, package, service, dataset, paper, website, benchmark, or API may have its own environment and normal interface. Evaluate external systems through their own interface, then use IPython to coordinate the process and analyze what comes back.",
+				"",
+				"When running shell commands from IPython, use `%%bash` cells. Avoid `!cmd` shell escapes for project commands so shell behavior is explicit and multi-line commands share one shell context.",
+				"",
+				"Important: do not install dependencies into the IPython kernel just to make an external project import or run there. If a project import, test, script, CLI, or dependency check is needed, run it through that project's own environment and normal command interface. For example, in a Python repo use its documented commands, `uv run ...`, `.venv/bin/python ...`, or the active project interpreter from the repo root. Treat failures from that native environment as the relevant result.",
+				"",
+				"Each `%%bash` cell runs in a throw-away subshell, so shell-level state (`cd`, `export`, `source`, shell variables) does NOT carry to later cells. To persist state, either chain dependent steps inside one cell (e.g. `!cd build && make`, or a single `%%bash` block that sources then uses a venv), or use kernel-level equivalents that survive across calls: `%cd <dir>` for the working directory and `os.environ['VAR'] = '...'` (or `%env VAR=...`) for environment variables — these apply to all subsequent `%%bash` calls.",
 				"",
 				"Python state in the kernel, by contrast, persists across cells: named variables, helper functions, classes, imports, and shell-output captures via `out = !cmd` (a list of lines) all remain available in every later turn. Tool calls are themselves Python `await` expressions, so their return values can be bound to variables and composed into program logic just like any other call.",
 				"",
@@ -80,7 +84,7 @@ describe("buildRlmPrompt", () => {
 			allowRecursion: false,
 		});
 
-		expect(prompt).not.toContain("Use `ipython` for both Python and shell work");
+		expect(prompt).not.toContain("IPython is the agent's long-lived notebook");
 	});
 });
 
@@ -113,14 +117,16 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("rlm.background");
 		expect(prompt).not.toContain("notify='wake'");
 		expect(prompt).not.toContain("notify='silent'");
-		expect(prompt).toContain("Use `ipython` for both Python and shell work");
+		expect(prompt).toContain("IPython is the agent's long-lived notebook");
 		expect(prompt).toContain("yaml (PyYAML)");
 		expect(prompt).toContain("dotenv (python-dotenv)");
 		expect(prompt).toContain("bs4 (Beautiful Soup)");
-		expect(prompt).toContain("prefer IPython shell syntax");
-		expect(prompt).toContain("Each `!cmd` and each `%%bash` cell runs in a throw-away subshell");
+		expect(prompt).toContain("Avoid `!cmd` shell escapes for project commands");
+		expect(prompt).toContain("Each `%%bash` cell runs in a throw-away subshell");
 		expect(prompt).toContain("Python state in the kernel, by contrast, persists across cells");
-		expect(prompt).toContain("Do not wrap ordinary shell commands in Python subprocesses");
+		expect(prompt).toContain("Do not assume IPython is the native runtime");
+		expect(prompt).toContain("do not install dependencies into the IPython kernel");
+		expect(prompt).toContain("run it through that project's own environment");
 		expect(prompt).toContain("Call at most one built-in tool per turn.");
 		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("Available tools:");
