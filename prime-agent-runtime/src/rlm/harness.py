@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -77,6 +77,10 @@ class RefinementEvent:
     created_at: str = field(default_factory=_now)
 
 
+_ENTRY_FIELDS = {field.name for field in fields(HarnessEntry)}
+_REFINEMENT_FIELDS = {field.name for field in fields(RefinementEvent)}
+
+
 class HarnessState:
     """CRUD store for reset-free harness refinement state."""
 
@@ -101,9 +105,10 @@ class HarnessState:
                     continue
                 for entry_id, raw_entry in raw_kind_entries.items():
                     if isinstance(raw_entry, dict):
-                        raw_entry.setdefault("id", str(entry_id))
-                        raw_entry.setdefault("kind", kind)
-                        entries[kind][str(entry_id)] = HarnessEntry(**raw_entry)
+                        entry_data = {key: value for key, value in raw_entry.items() if key in _ENTRY_FIELDS}
+                        entry_data.setdefault("id", str(entry_id))
+                        entry_data.setdefault("kind", kind)
+                        entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
         self.entries = entries
 
         self.refinements = []
@@ -111,7 +116,8 @@ class HarnessState:
         if isinstance(raw_refinements, list):
             for raw_event in raw_refinements:
                 if isinstance(raw_event, dict):
-                    self.refinements.append(RefinementEvent(**raw_event))
+                    event_data = {key: value for key, value in raw_event.items() if key in _REFINEMENT_FIELDS}
+                    self.refinements.append(RefinementEvent(**event_data))
         return self
 
     def save(self) -> "HarnessState":

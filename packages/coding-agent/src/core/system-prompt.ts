@@ -84,6 +84,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		prompt += `\nCurrent date: ${date}`;
 		prompt += `\nCurrent working directory: ${promptCwd}`;
 
+		if (harnessState) {
+			prompt += `\n\n${formatHarnessStateForPrompt(harnessState)}`;
+		}
+
 		if (appendSection) {
 			prompt += appendSection;
 		}

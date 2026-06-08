@@ -2662,9 +2662,10 @@ export class AgentSession {
 	 */
 	async refine(options: { instructions?: string; rollbackId?: string } = {}): Promise<RefinementResult> {
 		this._disconnectFromAgent();
-		await this.abort();
 
 		try {
+			await this.abort();
+
 			if (!this.model) {
 				throw new Error(formatNoModelSelectedMessage());
 			}

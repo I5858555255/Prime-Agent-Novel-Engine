@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -111,6 +112,40 @@ class HarnessStateTest(unittest.TestCase):
                 reloaded.overview(),
             )
             self.assertIn("refinements: 1", reloaded.overview())
+
+    def test_load_ignores_unknown_json_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "entries": {
+                            "memory": {
+                                "known": {
+                                    "title": "Known memory",
+                                    "content": "Loaded despite extra keys.",
+                                    "unexpected": True,
+                                }
+                            }
+                        },
+                        "refinements": [
+                            {
+                                "id": "refine_extra",
+                                "trigger": "extra keys",
+                                "changes": ["loaded"],
+                                "ignored": "value",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = HarnessState(state_path)
+
+            self.assertEqual(state.get("memory", "known").content, "Loaded despite extra keys.")
+            self.assertEqual(state.refinements[0].id, "refine_extra")
 
     def test_explicit_create_and_update_enforce_entry_existence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -310,6 +310,30 @@ describe("buildSystemPrompt", () => {
 	});
 
 	test("custom prompt override bypasses the rlm harness body", () => {
+		const harnessState: HarnessState = {
+			schema: 1,
+			entries: {
+				prompt: {},
+				memory: {
+					custom_memory: {
+						id: "custom_memory",
+						kind: "memory",
+						title: "Custom memory",
+						content: "Custom prompts still receive harness state.",
+						path: "custom",
+						metadata: {},
+						source: "refine",
+						created_at: "2026-06-08T00:00:00.000Z",
+						updated_at: "2026-06-08T00:00:00.000Z",
+						version: 1,
+					},
+				},
+				skill: {},
+				subagent: {},
+			},
+			refinements: [],
+		};
+
 		const prompt = buildSystemPrompt({
 			customPrompt: "custom body",
 			selectedTools: ["ipython"],
@@ -317,12 +341,17 @@ describe("buildSystemPrompt", () => {
 			contextFiles: [],
 			skills: [],
 			cwd: "/repo",
+			harnessState,
 		});
 
 		expect(prompt).toContain("custom body");
+		expect(prompt).toContain("# Global Harness State");
+		expect(prompt).toContain("[custom_memory] Custom memory (custom, v1)");
 		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("You are a general purpose agent that uses code to solve tasks.");
+		expect(prompt.indexOf("Current working directory: /repo")).toBeLessThan(prompt.indexOf("# Global Harness State"));
 		expect(prompt.indexOf("Current working directory: /repo")).toBeLessThan(prompt.indexOf("custom append"));
+		expect(prompt.indexOf("# Global Harness State")).toBeLessThan(prompt.indexOf("custom append"));
 	});
 
 	test("append system prompt content is included after the rlm harness prompt", () => {
