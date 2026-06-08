@@ -74,7 +74,7 @@ describe("buildRlmPrompt", () => {
 				"",
 				`The kernel has these Python imports available: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}. Import them directly; no pip install needed.`,
 				"",
-				"Continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. Use it to record reset-free improvements to prompt notes, memory, reusable skills, and subagent specs while you work. Typical calls: `rlm.harness.remember(...)`, `rlm.harness.upsert_skill(...)`, `rlm.harness.upsert_subagent(...)`, `rlm.harness.set_prompt_note(...)`, `rlm.harness.record_refinement(...)`, and `rlm.harness.overview()`.",
+				"Global continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. Use it to record reset-free improvements to prompt notes, memory, reusable skills, and subagent specs that should persist across Prime Agent sessions. Typical calls: `rlm.harness.remember(...)`, `rlm.harness.upsert_skill(...)`, `rlm.harness.upsert_subagent(...)`, `rlm.harness.set_prompt_note(...)`, `rlm.harness.record_refinement(...)`, and `rlm.harness.overview()`.",
 				"",
 				"Treat harness refinement as a small, evidence-backed update after observing a repeated failure or reusable tactic: diagnose the issue, update the smallest relevant harness component, validate on the next action, then record the outcome. Do not rewrite the whole harness when a focused memory, skill, prompt note, or subagent spec is enough.",
 				"",
@@ -131,7 +131,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("Avoid `!cmd` shell escapes for project commands");
 		expect(prompt).toContain("Each `%%bash` cell runs in a throw-away subshell");
 		expect(prompt).toContain("Python state in the kernel, by contrast, persists across cells");
-		expect(prompt).toContain("Continual harness state is available as `rlm.harness`");
+		expect(prompt).toContain("Global continual harness state is available as `rlm.harness`");
 		expect(prompt).toContain(
 			"record reset-free improvements to prompt notes, memory, reusable skills, and subagent specs",
 		);

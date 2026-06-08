@@ -111,6 +111,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
+	getGlobalHarnessStateDir,
 	getRefinementHistory,
 	loadHarnessState,
 	type RefinementResult,
@@ -2668,8 +2669,8 @@ export class AgentSession {
 			}
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
-			const rlmSessionDir = this._ensureRlmSessionDir();
-			const state = loadHarnessState(rlmSessionDir);
+			const harnessStateDir = getGlobalHarnessStateDir();
+			const state = loadHarnessState(harnessStateDir);
 			const history = getRefinementHistory(
 				this.sessionManager.getEntries().filter((entry) => entry.type === "custom"),
 			);
@@ -2684,7 +2685,7 @@ export class AgentSession {
 				undefined,
 				this.thinkingLevel,
 			);
-			result.harnessStatePath = saveHarnessState(rlmSessionDir, state);
+			result.harnessStatePath = saveHarnessState(harnessStateDir, state);
 			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);
 			return result;
 		} finally {
@@ -3388,6 +3389,7 @@ export class AgentSession {
 		return {
 			RLM_DEPTH: String(this._rlmDepth),
 			RLM_MAX_DEPTH: String(this._rlmMaxDepth),
+			RLM_HARNESS_STATE_DIR: getGlobalHarnessStateDir(),
 			RLM_SESSION_DIR: this._ensureRlmSessionDir(),
 		};
 	}

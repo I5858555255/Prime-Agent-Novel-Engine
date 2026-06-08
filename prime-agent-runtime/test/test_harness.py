@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -112,12 +113,26 @@ class HarnessStateTest(unittest.TestCase):
             self.assertEqual(second.content, "new")
             self.assertEqual(second.version, 2)
 
-    def test_session_dir_cache_uses_harness_state_file(self) -> None:
+    def test_explicit_state_dir_cache_uses_harness_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = get_harness_state(temp_dir)
             again = get_harness_state(temp_dir)
 
             self.assertIs(state, again)
+            self.assertEqual(state.file_path, Path(temp_dir).resolve() / "harness_state.json")
+
+    def test_default_state_uses_global_harness_env_dir(self) -> None:
+        previous = os.environ.get("RLM_HARNESS_STATE_DIR")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["RLM_HARNESS_STATE_DIR"] = temp_dir
+            try:
+                state = HarnessState()
+            finally:
+                if previous is None:
+                    os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_HARNESS_STATE_DIR"] = previous
+
             self.assertEqual(state.file_path, Path(temp_dir).resolve() / "harness_state.json")
 
     def test_callable_rlm_exposes_harness_state_helpers(self) -> None:

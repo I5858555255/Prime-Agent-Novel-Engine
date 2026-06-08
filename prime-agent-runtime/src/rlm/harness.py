@@ -1,9 +1,9 @@
 """Persistent harness-state helpers for Prime Agent's RLM kernel.
 
 The state model is intentionally small: it records prompt notes, memory,
-skills, subagent specs, and refinement events in the current RLM session
-directory. Execution still belongs to Prime Agent's TypeScript host and the
-existing ``rlm.run`` recursion bridge.
+skills, subagent specs, and refinement events in the global agent harness
+directory by default. Execution still belongs to Prime Agent's TypeScript host
+and the existing ``rlm.run`` recursion bridge.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from typing import Any, Literal
 HarnessKind = Literal["prompt", "memory", "skill", "subagent"]
 
 _DEFAULT_FILE_NAME = "harness_state.json"
+_DEFAULT_HARNESS_DIR_NAME = "harness"
 _KINDS: tuple[HarnessKind, ...] = ("prompt", "memory", "skill", "subagent")
 _state_cache: dict[Path, "HarnessState"] = {}
 
@@ -32,11 +33,20 @@ def _slug(raw: str, fallback: str) -> str:
     return (normalized or fallback)[:80]
 
 
-def _state_file(session_dir: str | Path | None = None) -> Path:
-    root = session_dir or os.environ.get("RLM_SESSION_DIR")
+def _agent_dir() -> Path:
+    raw = (
+        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
+        or os.environ.get("PI_CODING_AGENT_DIR")
+        or str(Path.home() / ".prime" / "agent")
+    )
+    return Path(raw).expanduser().resolve()
+
+
+def _state_file(state_dir: str | Path | None = None) -> Path:
+    root = state_dir or os.environ.get("RLM_HARNESS_STATE_DIR")
     if root:
         return Path(root).expanduser().resolve() / _DEFAULT_FILE_NAME
-    return Path.home() / ".prime" / "agent" / _DEFAULT_FILE_NAME
+    return _agent_dir() / _DEFAULT_HARNESS_DIR_NAME / _DEFAULT_FILE_NAME
 
 
 @dataclass
@@ -295,9 +305,9 @@ class HarnessState:
         }
 
 
-def get_harness_state(session_dir: str | Path | None = None) -> HarnessState:
-    """Return the cached harness state for a session directory."""
-    file_path = _state_file(session_dir)
+def get_harness_state(state_dir: str | Path | None = None) -> HarnessState:
+    """Return the cached global harness state, or a state for an explicit directory."""
+    file_path = _state_file(state_dir)
     state = _state_cache.get(file_path)
     if state is None:
         state = HarnessState(file_path)

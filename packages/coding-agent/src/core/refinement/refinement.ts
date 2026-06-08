@@ -3,11 +3,13 @@ import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
+import { getAgentDir } from "../../config.js";
 import { serializeConversation } from "../compaction/utils.js";
 import { convertToLlm } from "../messages.js";
 import type { CustomEntry } from "../session-manager.js";
 
 export const REFINEMENT_CUSTOM_TYPE = "prime-agent.refinement";
+const HARNESS_STATE_DIR_NAME = "harness";
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -147,12 +149,16 @@ function cloneEntry(entry: HarnessEntry | undefined): HarnessEntry | undefined {
 	return entry ? JSON.parse(JSON.stringify(entry)) : undefined;
 }
 
-export function getHarnessStatePath(rlmSessionDir: string): string {
-	return join(rlmSessionDir, "harness_state.json");
+export function getGlobalHarnessStateDir(agentDir: string = getAgentDir()): string {
+	return join(agentDir, HARNESS_STATE_DIR_NAME);
 }
 
-export function loadHarnessState(rlmSessionDir: string): HarnessState {
-	const statePath = getHarnessStatePath(rlmSessionDir);
+export function getHarnessStatePath(harnessStateDir: string = getGlobalHarnessStateDir()): string {
+	return join(harnessStateDir, "harness_state.json");
+}
+
+export function loadHarnessState(harnessStateDir: string = getGlobalHarnessStateDir()): HarnessState {
+	const statePath = getHarnessStatePath(harnessStateDir);
 	if (!existsSync(statePath)) {
 		return emptyHarnessState();
 	}
@@ -171,9 +177,9 @@ export function loadHarnessState(rlmSessionDir: string): HarnessState {
 	return state;
 }
 
-export function saveHarnessState(rlmSessionDir: string, state: HarnessState): string {
-	const statePath = getHarnessStatePath(rlmSessionDir);
-	mkdirSync(rlmSessionDir, { recursive: true });
+export function saveHarnessState(harnessStateDir: string, state: HarnessState): string {
+	const statePath = getHarnessStatePath(harnessStateDir);
+	mkdirSync(harnessStateDir, { recursive: true });
 	writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 	return statePath;
 }

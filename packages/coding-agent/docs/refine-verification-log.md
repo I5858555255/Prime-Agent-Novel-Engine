@@ -4,6 +4,11 @@ This log records manual benchmark-verification checks for PrimeAgent continual
 harness features. It is intentionally artifact-oriented so later benchmark runs
 can replay the same surfaces.
 
+Current design note: refined prompt notes, memories, skills, subagent specs, and
+refinement events are global by default under the agent harness directory, for
+example `~/.prime/agent/harness/harness_state.json`. Session JSONL entries still
+record refinement results for auditability and rollback evidence.
+
 ## 2026-06-08 manual CLI session
 
 - Branch: `continual-harness-capabilities`
@@ -14,6 +19,9 @@ can replay the same surfaces.
   `/Users/milkkarten/.prime/agent/sessions/--Users-milkkarten-Research-prime-agent--/2026-06-08T19-08-33-915Z_019ea8a2-fafa-741b-902a-c00b6b8b997d.jsonl`
 - Harness state file:
   `/Users/milkkarten/.prime/agent/sessions/--Users-milkkarten-Research-prime-agent--/2026-06-08T19-08-33-915Z_019ea8a2-fafa-741b-902a-c00b6b8b997d/harness_state.json`
+
+Historical note: this manual run happened before the harness store was switched
+from session-backed to global-by-default persistence.
 
 ### Harness availability
 
@@ -27,7 +35,7 @@ Expected result:
 
 - `rlm.harness` is available to the model-facing callable object.
 - `type(rlm.harness).__name__` is `HarnessState`.
-- `rlm.harness.overview()` prints the session-scoped `harness_state.json` path.
+- `rlm.harness.overview()` prints the active `harness_state.json` path.
 
 Observed result:
 
@@ -168,6 +176,7 @@ Covered validation and recovery cases:
 
 - Generated ids for create edits without ids.
 - Default `path`, `metadata`, `source`, and version handling.
+- Global harness state directory resolution under the agent dir.
 - Persistence to and reload from `harness_state.json`.
 - Refinement history extraction from `prime-agent.refinement` custom entries.
 - Duplicate create rejection for every editable kind.
@@ -183,5 +192,6 @@ Covered validation and recovery cases:
 - Missing rollback target error.
 - Python runtime create, read, update, list, and delete for prompt, memory,
   skill, and subagent entries.
+- Python runtime default backing store through `RLM_HARNESS_STATE_DIR`.
 - Python runtime unknown-kind rejection for `upsert`, `get`, `delete`, and
   `list`.

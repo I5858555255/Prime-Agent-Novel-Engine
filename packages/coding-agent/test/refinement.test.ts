@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	applyRefinementProposal,
+	getGlobalHarnessStateDir,
+	getHarnessStatePath,
 	getRefinementHistory,
 	type HarnessState,
 	loadHarnessState,
@@ -245,7 +247,15 @@ describe("harness refinement", () => {
 		expect(state.entries.skill.native_check.content).toBe("Run project-native checks.");
 	});
 
-	it("persists harness state in the RLM session directory", () => {
+	it("uses a global harness state directory under the agent dir by default", () => {
+		const agentDir = makeTempDir();
+		const harnessDir = getGlobalHarnessStateDir(agentDir);
+
+		expect(harnessDir).toBe(join(agentDir, "harness"));
+		expect(getHarnessStatePath(harnessDir)).toBe(join(agentDir, "harness", "harness_state.json"));
+	});
+
+	it("persists harness state in the selected harness directory", () => {
 		const dir = makeTempDir();
 		const state = loadHarnessState(dir);
 		applyRefinementProposal(
