@@ -376,6 +376,8 @@ export interface InteractiveModeOptions {
 }
 
 export class InteractiveMode {
+	private static readonly EXIT_HINT_DURATION_MS = 2000;
+
 	private runtimeHost: AgentSessionRuntime;
 	private ui: TUI;
 	private chatContainer: Container;
@@ -407,8 +409,8 @@ export class InteractiveMode {
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
-	private lastSigintTime = 0;
-	private lastEscapeTime = 0;
+	private ctrlCExitHintExpiresAt = 0;
+	private ctrlCExitHintTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 	private changelogMarkdown: string | undefined = undefined;
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
@@ -459,12 +461,10 @@ export class InteractiveMode {
 
 	// Auto-compaction state
 	private autoCompactionLoader: Loader | undefined = undefined;
-	private autoCompactionEscapeHandler?: () => void;
 
 	// Auto-retry state
 	private retryLoader: Loader | undefined = undefined;
 	private retryCountdown: CountdownTimer | undefined = undefined;
-	private retryEscapeHandler?: () => void;
 
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
@@ -772,9 +772,9 @@ export class InteractiveMode {
 			const hint = (keybinding: AppKeybinding, description: string) => keyHint(keybinding, description);
 			const verboseInstructions = this.options.verbose
 				? [
-						hint("app.interrupt", "to interrupt"),
-						hint("app.clear", "to clear"),
+						hint("app.clear", "to interrupt"),
 						rawKeyHint(`${keyText("app.clear")} twice`, "to exit"),
+						hint("app.input.clear", "to clear input"),
 						hint("app.exit", "to exit (empty)"),
 						hint("app.suspend", "to suspend"),
 						keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
@@ -2727,35 +2727,12 @@ export class InteractiveMode {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
-			if (this.session.isStreaming) {
-				this.restoreQueuedMessagesToEditor({ abort: true });
-			} else if (this.session.isBashRunning) {
-				this.session.abortBash();
-			} else if (this.isBashMode) {
-				this.editor.setText("");
-				this.isBashMode = false;
-				this.updateEditorBorderColor();
-			} else if (!this.editor.getText().trim()) {
-				// Double-escape with empty editor triggers /tree, /fork, or nothing based on setting
-				const action = this.settingsManager.getDoubleEscapeAction();
-				if (action !== "none") {
-					const now = Date.now();
-					if (now - this.lastEscapeTime < 500) {
-						if (action === "tree") {
-							this.showTreeSelector();
-						} else {
-							this.showUserMessageSelector();
-						}
-						this.lastEscapeTime = 0;
-					} else {
-						this.lastEscapeTime = now;
-					}
-				}
-			}
+			this.clearInputBar();
 		};
 
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
+		this.defaultEditor.onAction("app.interrupt", () => this.handleInterruptKey());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
 		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
@@ -2778,6 +2755,9 @@ export class InteractiveMode {
 		this.defaultEditor.onMoveBelowPrompt = () => this.focusChildAgentSummary();
 
 		this.defaultEditor.onChange = (text: string) => {
+			if (text.length > 0) {
+				this.clearCtrlCExitHint();
+			}
 			const wasBashMode = this.isBashMode;
 			this.isBashMode = text.trimStart().startsWith("!");
 			if (wasBashMode !== this.isBashMode) {
@@ -2958,7 +2938,9 @@ export class InteractiveMode {
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 				if (command) {
 					if (this.session.isBashRunning) {
-						this.showWarning("A bash command is already running. Press esc to cancel it first.");
+						this.showWarning(
+							`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`,
+						);
 						this.editor.setText(text);
 						return;
 					}
@@ -3022,12 +3004,6 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
-				}
-				// Restore main escape handler if retry handler is still active
-				// (retry success event fires later, but we need main handler now)
-				if (this.retryEscapeHandler) {
-					this.defaultEditor.onEscape = this.retryEscapeHandler;
-					this.retryEscapeHandler = undefined;
 				}
 				if (this.retryCountdown) {
 					this.retryCountdown.dispose();
@@ -3221,12 +3197,8 @@ export class InteractiveMode {
 					this.ui.terminal.setProgress(true);
 				}
 				// Keep editor active; submissions are queued during compaction.
-				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortCompaction();
-				};
 				this.statusContainer.clear();
-				const cancelHint = `(${keyText("app.interrupt")} to cancel)`;
+				const cancelHint = `(${keyText("app.clear")} to cancel)`;
 				const label =
 					event.reason === "manual"
 						? `Compacting context... ${cancelHint}`
@@ -3245,10 +3217,6 @@ export class InteractiveMode {
 			case "compaction_end": {
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
-				}
-				if (this.autoCompactionEscapeHandler) {
-					this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
-					this.autoCompactionEscapeHandler = undefined;
 				}
 				if (this.autoCompactionLoader) {
 					this.autoCompactionLoader.stop();
@@ -3286,16 +3254,11 @@ export class InteractiveMode {
 			}
 
 			case "auto_retry_start": {
-				// Set up escape to abort retry
-				this.retryEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortRetry();
-				};
 				// Show retry indicator
 				this.statusContainer.clear();
 				this.retryCountdown?.dispose();
 				const retryMessage = (seconds: number) =>
-					`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} to cancel)`;
+					`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.clear")} to cancel)`;
 				this.retryLoader = new Loader(
 					this.ui,
 					(spinner) => theme.fg("muted", spinner),
@@ -3318,11 +3281,6 @@ export class InteractiveMode {
 			}
 
 			case "auto_retry_end": {
-				// Restore escape handler
-				if (this.retryEscapeHandler) {
-					this.defaultEditor.onEscape = this.retryEscapeHandler;
-					this.retryEscapeHandler = undefined;
-				}
 				if (this.retryCountdown) {
 					this.retryCountdown.dispose();
 					this.retryCountdown = undefined;
@@ -3530,6 +3488,10 @@ export class InteractiveMode {
 	}
 
 	private getTrayOverrideLabel(): string | undefined {
+		if (this.isCtrlCExitHintVisible()) {
+			const clearKey = keyText("app.clear");
+			return clearKey ? `Press ${clearKey} again to exit` : "Press again to exit";
+		}
 		const text = this.editor.getExpandedText?.() ?? this.editor.getText();
 		if (!this.session.isStreaming || !text.trim()) {
 			return undefined;
@@ -3936,13 +3898,74 @@ export class InteractiveMode {
 	// =========================================================================
 
 	private handleCtrlC(): void {
-		const now = Date.now();
-		if (now - this.lastSigintTime < 500) {
+		if (this.isCtrlCExitHintVisible()) {
 			void this.shutdown();
-		} else {
-			this.clearEditor();
-			this.lastSigintTime = now;
+			return;
 		}
+		this.handleInterruptKey();
+	}
+
+	private handleInterruptKey(): void {
+		this.interruptOrClearInput();
+		this.showCtrlCExitHint();
+	}
+
+	private interruptOrClearInput(): void {
+		if (this.session.isRetrying) {
+			this.session.abortRetry();
+			return;
+		}
+		if (this.session.isCompacting) {
+			this.session.abortCompaction();
+			this.session.abortBranchSummary();
+			return;
+		}
+		if (this.session.isStreaming) {
+			this.restoreQueuedMessagesToEditor({ abort: true });
+			return;
+		}
+		if (this.session.isBashRunning) {
+			this.session.abortBash();
+			return;
+		}
+		this.clearInputBar();
+	}
+
+	private showCtrlCExitHint(): void {
+		if (this.ctrlCExitHintTimer) {
+			clearTimeout(this.ctrlCExitHintTimer);
+		}
+		this.ctrlCExitHintExpiresAt = Date.now() + InteractiveMode.EXIT_HINT_DURATION_MS;
+		this.ctrlCExitHintTimer = setTimeout(() => {
+			this.ctrlCExitHintTimer = undefined;
+			if (!this.isCtrlCExitHintVisible()) {
+				this.ctrlCExitHintExpiresAt = 0;
+				this.childAgentSummary.invalidate();
+				this.ui.requestRender();
+			}
+		}, InteractiveMode.EXIT_HINT_DURATION_MS);
+		this.ctrlCExitHintTimer.unref?.();
+		this.childAgentSummary.invalidate();
+		this.ui.requestRender();
+	}
+
+	private clearCtrlCExitHint(options: { render?: boolean } = {}): void {
+		if (!this.ctrlCExitHintTimer && this.ctrlCExitHintExpiresAt === 0) {
+			return;
+		}
+		if (this.ctrlCExitHintTimer) {
+			clearTimeout(this.ctrlCExitHintTimer);
+			this.ctrlCExitHintTimer = undefined;
+		}
+		this.ctrlCExitHintExpiresAt = 0;
+		if (options.render !== false) {
+			this.childAgentSummary.invalidate();
+			this.ui.requestRender();
+		}
+	}
+
+	private isCtrlCExitHintVisible(): boolean {
+		return this.ctrlCExitHintExpiresAt > Date.now();
 	}
 
 	private handleCtrlD(): void {
@@ -3961,6 +3984,7 @@ export class InteractiveMode {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
+		this.clearCtrlCExitHint({ render: false });
 
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
@@ -4239,8 +4263,19 @@ export class InteractiveMode {
 	// =========================================================================
 
 	clearEditor(): void {
+		this.clearInputBar();
+	}
+
+	private clearInputBar(): void {
+		this.clearCtrlCExitHint({ render: false });
+		const wasBashMode = this.isBashMode;
 		this.editor.setText("");
-		this.ui.requestRender();
+		this.isBashMode = false;
+		if (wasBashMode) {
+			this.updateEditorBorderColor();
+		} else {
+			this.ui.requestRender();
+		}
 	}
 
 	showError(errorMessage: string): void {
@@ -5042,18 +5077,13 @@ export class InteractiveMode {
 
 					// Set up escape handler and loader if summarizing
 					let summaryLoader: Loader | undefined;
-					const originalOnEscape = this.defaultEditor.onEscape;
-
 					if (wantsSummary) {
-						this.defaultEditor.onEscape = () => {
-							this.session.abortBranchSummary();
-						};
 						this.chatContainer.addChild(new Spacer(1));
 						summaryLoader = new Loader(
 							this.ui,
 							(spinner) => theme.fg("muted", spinner),
 							(text) => theme.fg("muted", text),
-							`Summarizing branch... (${keyText("app.interrupt")} to cancel)`,
+							`Summarizing branch... (${keyText("app.clear")} to cancel)`,
 						);
 						this.statusContainer.addChild(summaryLoader);
 						this.ui.requestRender();
@@ -5091,7 +5121,6 @@ export class InteractiveMode {
 							summaryLoader.stop();
 							this.statusContainer.clear();
 						}
-						this.defaultEditor.onEscape = originalOnEscape;
 					}
 				},
 				() => {
@@ -6334,8 +6363,9 @@ export class InteractiveMode {
 		const tab = this.getEditorKeyDisplay("tui.input.tab");
 
 		// App keybindings
-		const interrupt = this.getAppKeyDisplay("app.interrupt");
 		const clear = this.getAppKeyDisplay("app.clear");
+		const clearInput = this.getAppKeyDisplay("app.input.clear");
+		const interrupt = this.getAppKeyDisplay("app.interrupt");
 		const exit = this.getAppKeyDisplay("app.exit");
 		const suspend = this.getAppKeyDisplay("app.suspend");
 		const cycleThinkingLevel = this.getAppKeyDisplay("app.thinking.cycle");
@@ -6379,9 +6409,9 @@ export class InteractiveMode {
 | Key | Action |
 |-----|--------|
 | \`${tab}\` | Path completion / accept autocomplete |
-| \`${interrupt}\` | Cancel autocomplete / abort streaming |
-| \`${clear}\` | Clear editor (first) / exit (second) |
-| \`${exit}\` | Exit (when editor is empty) |
+| \`${clearInput}\` | Clear input / cancel autocomplete |
+| \`${clear}\` | Interrupt current operation or clear input (first) / exit (second) |
+${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
 | \`${cycleThinkingLevel}\` | Cycle thinking level |
 | \`${cycleModelForward}\` / \`${cycleModelBackward}\` | Cycle models |
@@ -6603,6 +6633,7 @@ export class InteractiveMode {
 
 	stop(): void {
 		this.unregisterSignalHandlers();
+		this.clearCtrlCExitHint({ render: false });
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}
