@@ -10,6 +10,61 @@ from rlm.harness import HarnessState, get_harness_state
 
 
 class HarnessStateTest(unittest.TestCase):
+    def test_crud_for_all_entry_kinds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+
+            created = {
+                "prompt": state.set_prompt_note(
+                    "Prompt note",
+                    "Prompt content",
+                    id="prompt_entry",
+                    path="prompt/path",
+                    metadata={"kind": "prompt"},
+                ),
+                "memory": state.remember(
+                    "Memory",
+                    "Memory content",
+                    id="memory_entry",
+                    path="memory/path",
+                    metadata={"kind": "memory"},
+                ),
+                "skill": state.upsert_skill(
+                    "Skill",
+                    "Skill content",
+                    id="skill_entry",
+                    path="skill/path",
+                    metadata={"kind": "skill"},
+                ),
+                "subagent": state.upsert_subagent(
+                    "Subagent",
+                    "Subagent content",
+                    id="subagent_entry",
+                    path="subagent/path",
+                    metadata={"kind": "subagent"},
+                ),
+            }
+
+            for kind, entry in created.items():
+                self.assertEqual(entry.kind, kind)
+                self.assertIn("content", state.get(kind, entry.id).content.lower())
+                self.assertIn(entry, state.list(kind))
+
+            state.upsert("prompt", "Prompt note", "Prompt content updated", id="prompt_entry")
+            state.upsert("memory", "Memory", "Memory content updated", id="memory_entry")
+            state.upsert("skill", "Skill", "Skill content updated", id="skill_entry")
+            state.upsert("subagent", "Subagent", "Subagent content updated", id="subagent_entry")
+
+            for kind in ("prompt", "memory", "skill", "subagent"):
+                entry_id = f"{kind}_entry"
+                self.assertEqual(state.get(kind, entry_id).version, 2)
+                self.assertIn("updated", state.get(kind, entry_id).content)
+                self.assertTrue(state.delete(kind, entry_id))
+                self.assertIsNone(state.get(kind, entry_id))
+                self.assertFalse(state.delete(kind, entry_id))
+
+            self.assertEqual(state.list(), [])
+
     def test_persists_entries_and_refinements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
@@ -77,6 +132,19 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertEqual(event.changes, ["single change"])
             self.assertEqual(state.refinements[0].changes, ["single change"])
+
+    def test_unknown_kind_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+
+            with self.assertRaisesRegex(ValueError, "unknown harness kind"):
+                state.upsert("tool", "Tool", "Tool content")
+            with self.assertRaisesRegex(ValueError, "unknown harness kind"):
+                state.get("tool", "tool")
+            with self.assertRaisesRegex(ValueError, "unknown harness kind"):
+                state.delete("tool", "tool")
+            with self.assertRaisesRegex(ValueError, "unknown harness kind"):
+                state.list("tool")
 
 
 if __name__ == "__main__":

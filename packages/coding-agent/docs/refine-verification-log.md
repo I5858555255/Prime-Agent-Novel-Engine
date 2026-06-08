@@ -141,3 +141,47 @@ npx tsx ../../node_modules/vitest/dist/cli.js --run test/system-prompt.test.ts
 npx tsx ../../node_modules/vitest/dist/cli.js --run test/kernel-bootstrap.test.ts
 npm run check
 ```
+
+## Automated matrix coverage
+
+`packages/coding-agent/test/refinement.test.ts` covers the deterministic
+refinement engine used by both interactive `/refine` and RPC `refine`.
+`prime-agent-runtime/test/test_harness.py` covers the Python `rlm.harness`
+runtime store exposed to model IPython calls.
+
+Covered action/kind combinations:
+
+- `create prompt`
+- `create memory`
+- `create skill`
+- `create subagent`
+- `update prompt`
+- `update memory`
+- `update skill`
+- `update subagent`
+- `delete prompt`
+- `delete memory`
+- `delete skill`
+- `delete subagent`
+
+Covered validation and recovery cases:
+
+- Generated ids for create edits without ids.
+- Default `path`, `metadata`, `source`, and version handling.
+- Persistence to and reload from `harness_state.json`.
+- Refinement history extraction from `prime-agent.refinement` custom entries.
+- Duplicate create rejection for every editable kind.
+- Missing update target rejection for every editable kind.
+- Missing delete target rejection for every editable kind.
+- Required title/content validation for create and update.
+- Required id validation for update and delete.
+- Unsupported action rejection.
+- Unsupported kind rejection.
+- Immutable `base_system_prompt` rejection.
+- Rollback restoration for one created entry, one updated entry, and one deleted
+  entry in the same target refinement.
+- Missing rollback target error.
+- Python runtime create, read, update, list, and delete for prompt, memory,
+  skill, and subagent entries.
+- Python runtime unknown-kind rejection for `upsert`, `get`, `delete`, and
+  `list`.

@@ -5,8 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	applyRefinementProposal,
 	getRefinementHistory,
+	type HarnessState,
 	loadHarnessState,
+	type RefinementAction,
+	type RefinementKind,
+	type RefinementProposal,
 	type RefinementResult,
+	refineHarness,
 	saveHarnessState,
 } from "../src/core/refinement/index.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
@@ -25,7 +30,132 @@ function makeTempDir(): string {
 	return tempDir;
 }
 
+const kinds = ["prompt", "memory", "skill", "subagent"] as const satisfies readonly RefinementKind[];
+
+function proposal(summary: string, edits: RefinementProposal["edits"]): RefinementProposal {
+	return {
+		summary,
+		rationale: `${summary} rationale`,
+		expectedOutcome: `${summary} outcome`,
+		edits,
+	};
+}
+
+function seedEntry(state: HarnessState, kind: RefinementKind, id = `${kind}_entry`): void {
+	applyRefinementProposal(
+		state,
+		proposal(`seed ${kind}`, [
+			{
+				action: "create",
+				kind,
+				id,
+				title: `${kind} title`,
+				content: `${kind} content`,
+				path: `${kind}/path`,
+				metadata: { seeded: true },
+			},
+		]),
+		{ id: `seed_${kind}_${id}` },
+	);
+}
+
 describe("harness refinement", () => {
+	it("applies create, update, and delete for every editable harness kind", () => {
+		const state = loadHarnessState(makeTempDir());
+
+		const created = applyRefinementProposal(
+			state,
+			proposal(
+				"Create all kinds",
+				kinds.map((kind) => ({
+					action: "create",
+					kind,
+					id: `${kind}_entry`,
+					title: `${kind} title`,
+					content: `${kind} content`,
+					path: `${kind}/created`,
+					metadata: { kind },
+				})),
+			),
+			{ id: "refine_create_all" },
+		);
+
+		expect(created.appliedEdits).toHaveLength(kinds.length);
+		for (const kind of kinds) {
+			const edit = created.appliedEdits.find((item) => item.kind === kind);
+			expect(edit?.applied).toBe(true);
+			expect(edit?.before).toBeUndefined();
+			expect(edit?.after?.version).toBe(1);
+			expect(state.entries[kind][`${kind}_entry`]).toMatchObject({
+				id: `${kind}_entry`,
+				kind,
+				title: `${kind} title`,
+				content: `${kind} content`,
+				path: `${kind}/created`,
+				metadata: { kind },
+				source: "refine",
+				version: 1,
+			});
+		}
+		expect(state.refinements.at(-1)?.changes).toEqual(kinds.map((kind) => `create ${kind}:${kind}_entry`));
+
+		const updated = applyRefinementProposal(
+			state,
+			proposal(
+				"Update all kinds",
+				kinds.map((kind) => ({
+					action: "update",
+					kind,
+					id: `${kind}_entry`,
+					title: `${kind} title updated`,
+					content: `${kind} content updated`,
+					path: `${kind}/updated`,
+					metadata: { updated: kind },
+				})),
+			),
+			{ id: "refine_update_all" },
+		);
+
+		expect(updated.appliedEdits).toHaveLength(kinds.length);
+		for (const kind of kinds) {
+			const edit = updated.appliedEdits.find((item) => item.kind === kind);
+			expect(edit?.applied).toBe(true);
+			expect(edit?.before?.version).toBe(1);
+			expect(edit?.after?.version).toBe(2);
+			expect(state.entries[kind][`${kind}_entry`]).toMatchObject({
+				title: `${kind} title updated`,
+				content: `${kind} content updated`,
+				path: `${kind}/updated`,
+				metadata: { updated: kind },
+				version: 2,
+			});
+		}
+		expect(state.refinements.at(-1)?.changes).toEqual(kinds.map((kind) => `update ${kind}:${kind}_entry`));
+
+		const deleted = applyRefinementProposal(
+			state,
+			proposal(
+				"Delete all kinds",
+				kinds.map((kind) => ({
+					action: "delete",
+					kind,
+					id: `${kind}_entry`,
+				})),
+			),
+			{ id: "refine_delete_all" },
+		);
+
+		expect(deleted.appliedEdits).toHaveLength(kinds.length);
+		for (const kind of kinds) {
+			const edit = deleted.appliedEdits.find((item) => item.kind === kind);
+			expect(edit?.applied).toBe(true);
+			expect(edit?.before?.version).toBe(2);
+			expect(edit?.after).toBeUndefined();
+			expect(state.entries[kind][`${kind}_entry`]).toBeUndefined();
+		}
+		expect(state.refinements.at(-1)?.changes).toEqual(kinds.map((kind) => `delete ${kind}:${kind}_entry`));
+	});
+
 	it("applies create, update, and delete edits to editable harness state", () => {
 		const state = loadHarnessState(makeTempDir());
 		const first = applyRefinementProposal(
@@ -86,6 +216,35 @@ describe("harness refinement", () => {
 		expect(state.refinements.map((event) => event.id)).toEqual(["refine_1", "refine_2"]);
 	});
 
+	it("creates ids from titles and uses default path and metadata when omitted", () => {
+		const state = loadHarnessState(makeTempDir());
+
+		const result = applyRefinementProposal(
+			state,
+			proposal("Create with generated id", [
+				{
+					action: "create",
+					kind: "skill",
+					title: "Native Check!",
+					content: "Run project-native checks.",
+				},
+			]),
+			{ id: "refine_generated_id" },
+		);
+
+		expect(result.appliedEdits[0]).toMatchObject({
+			applied: true,
+			id: "native_check",
+			after: {
+				id: "native_check",
+				path: "general",
+				metadata: {},
+				version: 1,
+			},
+		});
+		expect(state.entries.skill.native_check.content).toBe("Run project-native checks.");
+	});
+
 	it("persists harness state in the RLM session directory", () => {
 		const dir = makeTempDir();
 		const state = loadHarnessState(dir);
@@ -113,6 +272,11 @@ describe("harness refinement", () => {
 
 		expect(statePath.endsWith("harness_state.json")).toBe(true);
 		expect(reloaded.entries.prompt.focused_edits.content).toBe("Prefer small harness edits.");
+		expect(reloaded.refinements[0]).toMatchObject({
+			id: "refine_1",
+			trigger: "Add prompt note",
+			changes: ["create prompt:focused_edits"],
+		});
 	});
 
 	it("extracts refinement history from custom session entries", () => {
@@ -141,9 +305,202 @@ describe("harness refinement", () => {
 				parentId: "custom_1",
 				timestamp: new Date().toISOString(),
 			},
+			{
+				type: "custom",
+				customType: "prime-agent.refinement",
+				data: { id: "malformed" },
+				id: "custom_malformed",
+				parentId: "custom_2",
+				timestamp: new Date().toISOString(),
+			},
 		];
 
 		expect(getRefinementHistory(entries)).toEqual([result]);
+	});
+
+	it.each(kinds)("rejects duplicate create for %s entries", (kind) => {
+		const state = loadHarnessState(makeTempDir());
+		seedEntry(state, kind);
+
+		const result = applyRefinementProposal(
+			state,
+			proposal(`Duplicate ${kind}`, [
+				{
+					action: "create",
+					kind,
+					id: `${kind}_entry`,
+					title: "replacement",
+					content: "replacement",
+				},
+			]),
+			{ id: `refine_duplicate_${kind}` },
+		);
+
+		expect(result.appliedEdits).toHaveLength(1);
+		expect(result.appliedEdits[0]).toMatchObject({
+			action: "create",
+			kind,
+			id: `${kind}_entry`,
+			applied: false,
+			error: "entry already exists",
+		});
+		expect(result.appliedEdits[0].before?.content).toBe(`${kind} content`);
+		expect(state.entries[kind][`${kind}_entry`].content).toBe(`${kind} content`);
+		expect(state.refinements.at(-1)?.changes).toEqual([]);
+	});
+
+	it.each(kinds)("rejects update of missing %s entries", (kind) => {
+		const state = loadHarnessState(makeTempDir());
+
+		const result = applyRefinementProposal(
+			state,
+			proposal(`Missing ${kind} update`, [
+				{
+					action: "update",
+					kind,
+					id: `${kind}_missing`,
+					title: "missing",
+					content: "missing",
+				},
+			]),
+			{ id: `refine_missing_update_${kind}` },
+		);
+
+		expect(result.appliedEdits[0]).toMatchObject({
+			action: "update",
+			kind,
+			id: `${kind}_missing`,
+			applied: false,
+			error: "entry not found",
+		});
+		expect(state.entries[kind][`${kind}_missing`]).toBeUndefined();
+		expect(state.refinements.at(-1)?.changes).toEqual([]);
+	});
+
+	it.each(kinds)("rejects delete of missing %s entries", (kind) => {
+		const state = loadHarnessState(makeTempDir());
+
+		const result = applyRefinementProposal(
+			state,
+			proposal(`Missing ${kind} delete`, [
+				{
+					action: "delete",
+					kind,
+					id: `${kind}_missing`,
+				},
+			]),
+			{ id: `refine_missing_delete_${kind}` },
+		);
+
+		expect(result.appliedEdits[0]).toMatchObject({
+			action: "delete",
+			kind,
+			id: `${kind}_missing`,
+			applied: false,
+			error: "entry not found",
+		});
+		expect(state.refinements.at(-1)?.changes).toEqual([]);
+	});
+
+	it.each(["create", "update"] as const satisfies readonly RefinementAction[])(
+		"rejects %s edits missing title or content",
+		(action) => {
+			const state = loadHarnessState(makeTempDir());
+			if (action === "update") {
+				seedEntry(state, "memory", "missing_fields");
+			}
+
+			const result = applyRefinementProposal(
+				state,
+				proposal(`Invalid ${action}`, [
+					{
+						action,
+						kind: "memory",
+						id: "missing_fields",
+						title: "Missing content",
+					},
+				]),
+				{ id: `refine_invalid_${action}` },
+			);
+
+			expect(result.appliedEdits[0]).toMatchObject({
+				action,
+				kind: "memory",
+				id: "missing_fields",
+				applied: false,
+				error: `${action} requires title and content`,
+			});
+			expect(state.refinements.at(-1)?.changes).toEqual([]);
+		},
+	);
+
+	it.each(["update", "delete"] as const satisfies readonly RefinementAction[])(
+		"rejects %s edits missing ids",
+		(action) => {
+			const state = loadHarnessState(makeTempDir());
+
+			const result = applyRefinementProposal(
+				state,
+				proposal(`Missing id ${action}`, [
+					{
+						action,
+						kind: "skill",
+						title: action === "update" ? "Missing id" : undefined,
+						content: action === "update" ? "Missing id" : undefined,
+					},
+				]),
+				{ id: `refine_missing_id_${action}` },
+			);
+
+			expect(result.appliedEdits[0]).toMatchObject({
+				action,
+				kind: "skill",
+				id: "",
+				applied: false,
+				error: `${action} requires id`,
+			});
+			expect(state.refinements.at(-1)?.changes).toEqual([]);
+		},
+	);
+
+	it("rejects unsupported actions and kinds without mutating state", () => {
+		const state = loadHarnessState(makeTempDir());
+
+		const result = applyRefinementProposal(
+			state,
+			proposal("Unsupported edits", [
+				{
+					action: "rename" as RefinementAction,
+					kind: "memory",
+					id: "bad_action",
+					title: "Bad action",
+					content: "Bad action",
+				},
+				{
+					action: "create",
+					kind: "tool" as RefinementKind,
+					id: "bad_kind",
+					title: "Bad kind",
+					content: "Bad kind",
+				},
+			]),
+			{ id: "refine_unsupported" },
+		);
+
+		expect(result.appliedEdits).toHaveLength(2);
+		expect(result.appliedEdits[0]).toMatchObject({
+			id: "bad_action",
+			applied: false,
+			error: "unsupported action rename",
+		});
+		expect(result.appliedEdits[1]).toMatchObject({
+			id: "bad_kind",
+			applied: false,
+			error: "unsupported kind tool",
+		});
+		expect(state.entries.memory.bad_action).toBeUndefined();
+		expect(Object.keys(state.entries)).toEqual([...kinds]);
+		expect(state.refinements.at(-1)?.changes).toEqual([]);
 	});
 
 	it("rejects attempts to edit the base system prompt", () => {
@@ -170,5 +527,78 @@ describe("harness refinement", () => {
 		expect(result.appliedEdits[0].applied).toBe(false);
 		expect(result.appliedEdits[0].error).toContain("base system prompt");
 		expect(state.entries.prompt.base_system_prompt).toBeUndefined();
+	});
+
+	it("rolls back created, updated, and deleted entries from refinement history", async () => {
+		const state = loadHarnessState(makeTempDir());
+		seedEntry(state, "memory", "kept_memory");
+		seedEntry(state, "skill", "deleted_skill");
+
+		const target = applyRefinementProposal(
+			state,
+			proposal("Target refinement", [
+				{
+					action: "create",
+					kind: "prompt",
+					id: "created_prompt",
+					title: "Created prompt",
+					content: "Created prompt content",
+				},
+				{
+					action: "update",
+					kind: "memory",
+					id: "kept_memory",
+					title: "Updated memory",
+					content: "Updated memory content",
+					path: "updated/path",
+					metadata: { updated: true },
+				},
+				{
+					action: "delete",
+					kind: "skill",
+					id: "deleted_skill",
+				},
+			]),
+			{ id: "refine_target" },
+		);
+
+		expect(state.entries.prompt.created_prompt).toBeDefined();
+		expect(state.entries.memory.kept_memory.content).toBe("Updated memory content");
+		expect(state.entries.skill.deleted_skill).toBeUndefined();
+
+		const rollback = await refineHarness([], state, [target], {} as never, "api-key", {
+			rollbackId: "refine_target",
+		});
+
+		expect(rollback.rollbackOf).toBe("refine_target");
+		expect(rollback.appliedEdits.map((edit) => `${edit.action} ${edit.kind}:${edit.id}`)).toEqual([
+			"create skill:deleted_skill",
+			"update memory:kept_memory",
+			"delete prompt:created_prompt",
+		]);
+		expect(state.entries.prompt.created_prompt).toBeUndefined();
+		expect(state.entries.memory.kept_memory).toMatchObject({
+			title: "memory title",
+			content: "memory content",
+			path: "memory/path",
+			metadata: { seeded: true },
+			version: 3,
+		});
+		expect(state.entries.skill.deleted_skill).toMatchObject({
+			title: "skill title",
+			content: "skill content",
+			path: "skill/path",
+			metadata: { seeded: true },
+			version: 1,
+		});
+		expect(state.refinements.at(-1)?.trigger).toBe("Rollback refinement refine_target");
+	});
+
+	it("throws when rollback target is missing", async () => {
+		const state = loadHarnessState(makeTempDir());
+
+		await expect(
+			refineHarness([], state, [], {} as never, "api-key", { rollbackId: "missing_refinement" }),
+		).rejects.toThrow("Refinement missing_refinement not found");
 	});
 });

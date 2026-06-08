@@ -300,6 +300,14 @@ export function applyRefinementProposal(
 			appliedEdits.push({ ...edit, id, before, applied: true });
 			continue;
 		}
+		if (edit.action === "create" && before) {
+			appliedEdits.push({ ...edit, id, before, applied: false, error: "entry already exists" });
+			continue;
+		}
+		if (edit.action === "update" && !before) {
+			appliedEdits.push({ ...edit, id, applied: false, error: "entry not found" });
+			continue;
+		}
 
 		const createdAt = before?.created_at ?? now();
 		const version = before ? before.version + 1 : 1;
