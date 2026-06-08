@@ -110,6 +110,13 @@ import type { KernelManager } from "./kernel/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
+import {
+	getRefinementHistory,
+	loadHarnessState,
+	type RefinementResult,
+	refineHarness,
+	saveHarnessState,
+} from "./refinement/index.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type {
 	CreateRlmSubagentRuntimeOptions,
@@ -2645,6 +2652,44 @@ export class AgentSession {
 	abortCompaction(): void {
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
+	}
+
+	/**
+	 * Refine editable harness state: prompt notes, memory, skills, and subagent specs.
+	 * The base system prompt is intentionally not editable through this path.
+	 */
+	async refine(options: { instructions?: string; rollbackId?: string } = {}): Promise<RefinementResult> {
+		this._disconnectFromAgent();
+		await this.abort();
+
+		try {
+			if (!this.model) {
+				throw new Error(formatNoModelSelectedMessage());
+			}
+
+			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
+			const rlmSessionDir = this._ensureRlmSessionDir();
+			const state = loadHarnessState(rlmSessionDir);
+			const history = getRefinementHistory(
+				this.sessionManager.getEntries().filter((entry) => entry.type === "custom"),
+			);
+			const result = await refineHarness(
+				this.agent.state.messages,
+				state,
+				history,
+				this.model,
+				apiKey,
+				options,
+				headers,
+				undefined,
+				this.thinkingLevel,
+			);
+			result.harnessStatePath = saveHarnessState(rlmSessionDir, state);
+			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);
+			return result;
+		} finally {
+			this._reconnectToAgent();
+		}
 	}
 
 	/**

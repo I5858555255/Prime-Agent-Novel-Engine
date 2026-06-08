@@ -25,6 +25,10 @@ const IPYTHON_CONTROL_PROMPT = [
 	"Python state in the kernel, by contrast, persists across cells: named variables, helper functions, classes, imports, notes, parsed outputs, and helper data structures all remain available in every later turn. Tool calls are themselves Python `await` expressions, so their return values can be bound to variables and composed into program logic just like any other call.",
 	"",
 	`The kernel has these Python imports available: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}. Import them directly; no pip install needed.`,
+	"",
+	"Continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. Use it to record reset-free improvements to prompt notes, memory, reusable skills, and subagent specs while you work. Typical calls: `rlm.harness.remember(...)`, `rlm.harness.upsert_skill(...)`, `rlm.harness.upsert_subagent(...)`, `rlm.harness.set_prompt_note(...)`, `rlm.harness.record_refinement(...)`, and `rlm.harness.overview()`.",
+	"",
+	"Treat harness refinement as a small, evidence-backed update after observing a repeated failure or reusable tactic: diagnose the issue, update the smallest relevant harness component, validate on the next action, then record the outcome. Do not rewrite the whole harness when a focused memory, skill, prompt note, or subagent spec is enough.",
 ].join("\n");
 
 export function buildRlmPrompt(options: RlmPromptOptions): string {

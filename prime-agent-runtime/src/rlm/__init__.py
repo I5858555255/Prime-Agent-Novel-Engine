@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .harness import HarnessEntry, HarnessState, RefinementEvent, get_harness_state
+
 try:
     from ipykernel.comm import Comm
 except Exception:  # pragma: no cover - depends on ipykernel version
@@ -148,6 +150,7 @@ class _RLMCallable:
 
 
 rlm = _RLMCallable()
+harness = get_harness_state()
 
 
 class _CallableModule(types.ModuleType):
@@ -158,8 +161,13 @@ class _CallableModule(types.ModuleType):
 sys.modules[__name__].__class__ = _CallableModule
 
 __all__ = [
+    "HarnessEntry",
+    "HarnessState",
     "RLMResult",
+    "RefinementEvent",
     "TokenUsage",
+    "get_harness_state",
+    "harness",
     "rlm",
     "run",
 ]

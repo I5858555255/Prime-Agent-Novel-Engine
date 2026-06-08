@@ -9,6 +9,7 @@ import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { RefinementResult } from "../../core/refinement/index.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.js";
@@ -269,6 +270,14 @@ export class RpcClient {
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		const response = await this.send({ type: "compact", customInstructions });
+		return this.getData(response);
+	}
+
+	/**
+	 * Refine editable harness state.
+	 */
+	async refine(options: { instructions?: string; rollbackId?: string } = {}): Promise<RefinementResult> {
+		const response = await this.send({ type: "refine", ...options });
 		return this.getData(response);
 	}
 

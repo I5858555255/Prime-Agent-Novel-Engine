@@ -14,7 +14,7 @@ import {
 let tempDir = "";
 let originalEnv: NodeJS.ProcessEnv;
 const RLM_RUNTIME_CHECK =
-	"import rlm; assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')";
+	"import rlm; assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')";
 
 function pyprojectHash(pyprojectPath: string): string {
 	return `sha256:${createHash("sha256").update(readFileSync(pyprojectPath)).digest("hex")}`;

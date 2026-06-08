@@ -3254,6 +3254,12 @@ export class InteractiveMode {
 				await this.handleCompactCommand(customInstructions);
 				return;
 			}
+			if (text === "/refine" || text.startsWith("/refine ")) {
+				const refineArgs = text.startsWith("/refine ") ? text.slice(8).trim() : undefined;
+				this.editor.setText("");
+				await this.handleRefineCommand(refineArgs);
+				return;
+			}
 			if (text === "/reload") {
 				this.editor.setText("");
 				await this.handleReloadCommand();
@@ -7255,6 +7261,38 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			await this.agentConnection.compact(customInstructions);
 		} catch {
 			// Ignore, will be emitted as an event
+		}
+	}
+
+	private async handleRefineCommand(args?: string): Promise<void> {
+		const entries = this.sessionManager.getEntries();
+		const messageCount = entries.filter((e) => e.type === "message").length;
+
+		if (messageCount < 2) {
+			this.showWarning("Nothing to refine (no trajectory yet)");
+			return;
+		}
+
+		const rollbackPrefix = "rollback ";
+		const options =
+			args?.startsWith(rollbackPrefix) && args.slice(rollbackPrefix.length).trim()
+				? { rollbackId: args.slice(rollbackPrefix.length).trim() }
+				: { instructions: args };
+
+		this.stopWorkingLoader();
+		this.showStatus(
+			options.rollbackId ? `Rolling back refinement ${options.rollbackId}...` : "Refining harness state...",
+		);
+
+		try {
+			const result = await this.session.refine(options);
+			const applied = result.appliedEdits.filter((edit) => edit.applied).length;
+			const failed = result.appliedEdits.length - applied;
+			const failedSuffix = failed > 0 ? `, ${failed} failed` : "";
+			this.showStatus(`Refined harness state: ${applied} edit${applied === 1 ? "" : "s"} applied${failedSuffix}`);
+			this.showStatus(`Harness state: ${result.harnessStatePath}`);
+		} catch (error) {
+			this.showError(`Refinement failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
