@@ -24,7 +24,8 @@ export function compareAuthSelectorProviders(a: AuthSelectorProvider, b: AuthSel
 }
 
 const PREFERRED_VISIBLE_PROVIDERS = 8;
-const PROVIDER_LIST_RESERVED_ROWS = 8;
+const PROVIDER_LIST_RESERVED_ROWS = 7;
+const PROVIDER_SCROLL_INDICATOR_ROWS = 1;
 
 /**
  * Component that renders an auth provider selector
@@ -252,9 +253,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.listLayout = getMenuListLayout({
 			getRows: this.viewport.getRows,
 			preferredVisibleItems: PREFERRED_VISIBLE_PROVIDERS,
+			totalItems: this.filteredProviders.length,
 			reservedRows: PROVIDER_LIST_RESERVED_ROWS,
 			comfortableItemRows: 3,
 			compactItemRows: 2,
+			scrollIndicatorRows: PROVIDER_SCROLL_INDICATOR_ROWS,
 		});
 	}
 }

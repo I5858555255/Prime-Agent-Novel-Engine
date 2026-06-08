@@ -24,9 +24,11 @@ interface MenuListOptions {
 interface MenuListLayoutOptions extends MenuViewportProvider {
 	preferredVisibleItems: number;
 	minVisibleItems?: number;
+	totalItems?: number;
 	reservedRows: number;
 	comfortableItemRows: number;
 	compactItemRows?: number;
+	scrollIndicatorRows?: number;
 	comfortableListPaddingRows?: number;
 	compactListPaddingRows?: number;
 }
@@ -66,9 +68,10 @@ function visibleItemCount(
 		reservedRows: number;
 		itemRows: number;
 		listPaddingRows: number;
+		extraRows: number;
 	},
 ): number {
-	const capacityRows = Math.max(0, rows - options.reservedRows - options.listPaddingRows);
+	const capacityRows = Math.max(0, rows - options.reservedRows - options.listPaddingRows - options.extraRows);
 	const itemCapacity = Math.floor(capacityRows / options.itemRows);
 	return Math.max(options.minVisibleItems, Math.min(options.preferredVisibleItems, itemCapacity));
 }
@@ -78,8 +81,68 @@ function listRowsUsed(options: {
 	listPaddingRows: number;
 	visibleItems: number;
 	itemRows: number;
-}) {
-	return options.reservedRows + options.listPaddingRows + options.visibleItems * options.itemRows;
+	extraRows: number;
+}): number {
+	return options.reservedRows + options.listPaddingRows + options.extraRows + options.visibleItems * options.itemRows;
+}
+
+function scrollIndicatorRows(options: {
+	totalItems: number | undefined;
+	visibleItems: number;
+	scrollIndicatorRows: number;
+}): number {
+	if (options.totalItems === undefined || options.scrollIndicatorRows <= 0) {
+		return 0;
+	}
+	return options.totalItems > options.visibleItems ? options.scrollIndicatorRows : 0;
+}
+
+function getLayoutCandidate(
+	rows: number,
+	options: MenuListLayoutOptions,
+	itemRows: number,
+	listPaddingRows: number,
+	compact: boolean,
+): MenuListLayout & { rowsUsed: number; fits: boolean } {
+	const minVisibleItems = options.minVisibleItems ?? 1;
+	const preferredVisibleItems = Math.max(minVisibleItems, options.preferredVisibleItems);
+	const visibleItemsWithoutScroll = visibleItemCount(rows, {
+		preferredVisibleItems,
+		minVisibleItems,
+		reservedRows: options.reservedRows,
+		itemRows,
+		listPaddingRows,
+		extraRows: 0,
+	});
+	const extraRows = scrollIndicatorRows({
+		totalItems: options.totalItems,
+		visibleItems: visibleItemsWithoutScroll,
+		scrollIndicatorRows: options.scrollIndicatorRows ?? 0,
+	});
+	const visibleItems =
+		extraRows > 0
+			? visibleItemCount(rows, {
+					preferredVisibleItems,
+					minVisibleItems,
+					reservedRows: options.reservedRows,
+					itemRows,
+					listPaddingRows,
+					extraRows,
+				})
+			: visibleItemsWithoutScroll;
+	const rowsUsed = listRowsUsed({
+		reservedRows: options.reservedRows,
+		listPaddingRows,
+		visibleItems,
+		itemRows,
+		extraRows,
+	});
+	return {
+		compact,
+		visibleItems,
+		rowsUsed,
+		fits: rowsUsed <= rows,
+	};
 }
 
 export function getMenuListLayout(options: MenuListLayoutOptions): MenuListLayout {
@@ -90,45 +153,33 @@ export function getMenuListLayout(options: MenuListLayoutOptions): MenuListLayou
 		return { compact: false, visibleItems: preferredVisibleItems };
 	}
 
-	const comfortableVisibleItems = visibleItemCount(rows, {
-		preferredVisibleItems,
-		minVisibleItems,
-		reservedRows: options.reservedRows,
-		itemRows: Math.max(1, options.comfortableItemRows),
-		listPaddingRows: options.comfortableListPaddingRows ?? 1,
-	});
+	const comfortableLayout = getLayoutCandidate(
+		rows,
+		options,
+		Math.max(1, options.comfortableItemRows),
+		options.comfortableListPaddingRows ?? 1,
+		false,
+	);
 	if (options.compactItemRows === undefined) {
-		return { compact: false, visibleItems: comfortableVisibleItems };
+		return { compact: false, visibleItems: comfortableLayout.visibleItems };
 	}
 
-	const comfortableItemRows = Math.max(1, options.comfortableItemRows);
-	const compactItemRows = Math.max(1, options.compactItemRows);
-	const comfortableListPaddingRows = options.comfortableListPaddingRows ?? 1;
-	const compactListPaddingRows = options.compactListPaddingRows ?? 0;
-	const compactVisibleItems = visibleItemCount(rows, {
-		preferredVisibleItems,
-		minVisibleItems,
-		reservedRows: options.reservedRows,
-		itemRows: compactItemRows,
-		listPaddingRows: compactListPaddingRows,
-	});
-	const comfortableFits =
-		listRowsUsed({
-			reservedRows: options.reservedRows,
-			listPaddingRows: comfortableListPaddingRows,
-			visibleItems: comfortableVisibleItems,
-			itemRows: comfortableItemRows,
-		}) <= rows;
-	const compactFits =
-		listRowsUsed({
-			reservedRows: options.reservedRows,
-			listPaddingRows: compactListPaddingRows,
-			visibleItems: compactVisibleItems,
-			itemRows: compactItemRows,
-		}) <= rows;
-	return compactVisibleItems > comfortableVisibleItems || (!comfortableFits && compactFits)
-		? { compact: true, visibleItems: compactVisibleItems }
-		: { compact: false, visibleItems: comfortableVisibleItems };
+	const compactLayout = getLayoutCandidate(
+		rows,
+		options,
+		Math.max(1, options.compactItemRows),
+		options.compactListPaddingRows ?? 0,
+		true,
+	);
+	if (compactLayout.fits && (!comfortableLayout.fits || compactLayout.visibleItems > comfortableLayout.visibleItems)) {
+		return { compact: true, visibleItems: compactLayout.visibleItems };
+	}
+	if (comfortableLayout.fits) {
+		return { compact: false, visibleItems: comfortableLayout.visibleItems };
+	}
+	return compactLayout.rowsUsed <= comfortableLayout.rowsUsed
+		? { compact: true, visibleItems: compactLayout.visibleItems }
+		: { compact: false, visibleItems: comfortableLayout.visibleItems };
 }
 
 function surfaceLine(text: string, width: number, paddingX = PANEL_PADDING_X): string {

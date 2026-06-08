@@ -41,9 +41,10 @@ type ModelScope = "all" | "scoped";
 
 const PREFERRED_VISIBLE_MODELS = 10;
 const MODEL_LIST_RESERVED_ROWS = {
-	base: 8,
+	base: 7,
 	detail: 2,
 };
+const MODEL_SCROLL_INDICATOR_ROWS = 1;
 const MODEL_HELP_MIN_ROWS = 12;
 const MODEL_DETAIL_MIN_ROWS = 14;
 
@@ -415,9 +416,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.listLayout = getMenuListLayout({
 			getRows: this.viewport.getRows,
 			preferredVisibleItems: PREFERRED_VISIBLE_MODELS,
+			totalItems: this.filteredModels.length,
 			reservedRows,
 			comfortableItemRows: 3,
 			compactItemRows: 2,
+			scrollIndicatorRows: MODEL_SCROLL_INDICATOR_ROWS,
 		});
 		this.responsiveLayoutKey = [
 			showHeaderHelp ? "help" : "no-help",

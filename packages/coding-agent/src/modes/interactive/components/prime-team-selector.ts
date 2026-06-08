@@ -16,7 +16,8 @@ type PrimeTeamOption = {
 };
 
 const PREFERRED_VISIBLE_TEAMS = 8;
-const TEAM_LIST_RESERVED_ROWS = 8;
+const TEAM_LIST_RESERVED_ROWS = 7;
+const TEAM_SCROLL_INDICATOR_ROWS = 1;
 
 export class PrimeTeamSelectorComponent extends Container implements Focusable {
 	private readonly searchInput: MenuSearchInput;
@@ -187,9 +188,11 @@ export class PrimeTeamSelectorComponent extends Container implements Focusable {
 		this.listLayout = getMenuListLayout({
 			getRows: this.viewport.getRows,
 			preferredVisibleItems: PREFERRED_VISIBLE_TEAMS,
+			totalItems: this.filteredOptions.length,
 			reservedRows: TEAM_LIST_RESERVED_ROWS,
 			comfortableItemRows: 3,
 			compactItemRows: 2,
+			scrollIndicatorRows: TEAM_SCROLL_INDICATOR_ROWS,
 		});
 	}
 }

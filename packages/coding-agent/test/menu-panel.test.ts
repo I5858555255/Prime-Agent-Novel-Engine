@@ -123,6 +123,32 @@ describe("MenuPanel", () => {
 		expect(layout).toEqual({ compact: true, visibleItems: 8 });
 	});
 
+	it("reserves scroll indicator rows when sizing visible items", () => {
+		const layout = getMenuListLayout({
+			getRows: () => 16,
+			preferredVisibleItems: 10,
+			totalItems: 12,
+			reservedRows: 12,
+			comfortableItemRows: 3,
+			compactItemRows: 2,
+			scrollIndicatorRows: 1,
+		});
+
+		expect(layout).toEqual({ compact: true, visibleItems: 1 });
+	});
+
+	it("uses compact layout when neither layout can fully fit", () => {
+		const layout = getMenuListLayout({
+			getRows: () => 5,
+			preferredVisibleItems: 3,
+			reservedRows: 4,
+			comfortableItemRows: 3,
+			compactItemRows: 2,
+		});
+
+		expect(layout).toEqual({ compact: true, visibleItems: 1 });
+	});
+
 	it("renders compact rows without vertical padding", () => {
 		const list = new MenuList({ compact: true });
 		list.addChild(

@@ -16,7 +16,8 @@ export interface ExtensionSelectorOptions {
 }
 
 const PREFERRED_VISIBLE_OPTIONS = 8;
-const OPTION_LIST_RESERVED_ROWS = 7;
+const OPTION_LIST_RESERVED_ROWS = 6;
+const OPTION_SCROLL_INDICATOR_ROWS = 1;
 
 export class ExtensionSelectorComponent extends Container {
 	private options: string[];
@@ -144,9 +145,11 @@ export class ExtensionSelectorComponent extends Container {
 		this.listLayout = getMenuListLayout({
 			getRows: this.viewport.getRows,
 			preferredVisibleItems: PREFERRED_VISIBLE_OPTIONS,
+			totalItems: this.options.length,
 			reservedRows: OPTION_LIST_RESERVED_ROWS,
 			comfortableItemRows: 2,
 			compactItemRows: 1,
+			scrollIndicatorRows: OPTION_SCROLL_INDICATOR_ROWS,
 		});
 	}
 }
