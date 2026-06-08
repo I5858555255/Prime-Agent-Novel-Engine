@@ -112,7 +112,7 @@ for _prime_agent_skill_name in ${JSON.stringify(importNames)}:
 const ipythonSchema = Type.Object({
 	code: Type.String({
 		description:
-			"Python or IPython shell code to execute. State (variables, imports, loaded data) persists across calls.",
+			"Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports.",
 	}),
 });
 
@@ -179,8 +179,8 @@ export function createIpythonToolDefinition(
 		name: "ipython",
 		label: "ipython",
 		description:
-			"Execute Python and shell commands in a persistent IPython kernel. Variables, imports, and loaded data persist across calls.",
-		promptSnippet: "ipython - execute Python and shell commands in a persistent kernel",
+			"Execute Python scratchpad code and `%%bash` shell cells in a persistent IPython kernel. Variables, imports, and loaded data persist across calls. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
+		promptSnippet: "ipython - persistent agent notebook for Python scratchpad code and %%bash orchestration",
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
 		executionMode: "sequential",
 		parameters: ipythonSchema,
