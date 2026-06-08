@@ -3928,7 +3928,9 @@ export class InteractiveMode {
 			this.session.abortBash();
 			return;
 		}
-		this.clearInputBar();
+		if (this.isBashMode) {
+			this.clearInputBar();
+		}
 	}
 
 	private showCtrlCExitHint(): void {
@@ -6410,7 +6412,7 @@ export class InteractiveMode {
 |-----|--------|
 | \`${tab}\` | Path completion / accept autocomplete |
 | \`${clearInput}\` | Clear input / cancel autocomplete |
-| \`${clear}\` | Interrupt current operation or clear input (first) / exit (second) |
+| \`${clear}\` | Interrupt current operation (first) / exit (second) |
 ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
 | \`${cycleThinkingLevel}\` | Cycle thinking level |

@@ -30,6 +30,7 @@ type FakeInteractiveMode = {
 	ui: { requestRender: Mock; onDebug?: () => void };
 	restoreQueuedMessagesToEditor: Mock;
 	shutdown: Mock;
+	updateEditorBorderColor: Mock;
 	defaultEditor?: {
 		onAction: Mock;
 		onEscape?: () => void;
@@ -64,12 +65,13 @@ function createInteractiveFake(options: {
 	compacting?: boolean;
 	retrying?: boolean;
 	bashRunning?: boolean;
+	bashMode?: boolean;
 }): FakeInteractiveMode {
 	const editor = createEditor(options.editorText ?? "");
 	const fake: FakeInteractiveMode = {
 		ctrlCExitHintExpiresAt: 0,
 		ctrlCExitHintTimer: undefined,
-		isBashMode: false,
+		isBashMode: options.bashMode ?? false,
 		isShuttingDown: false,
 		editor,
 		session: {
@@ -86,6 +88,7 @@ function createInteractiveFake(options: {
 		ui: { requestRender: vi.fn() },
 		restoreQueuedMessagesToEditor: vi.fn(),
 		shutdown: vi.fn().mockResolvedValue(undefined),
+		updateEditorBorderColor: vi.fn(),
 	};
 	Object.setPrototypeOf(fake, InteractiveMode.prototype);
 	return fake;
@@ -129,6 +132,7 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		const mode = createInteractiveFake({ editorText: "draft" });
 
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
+		expect(mode.editor.getText()).toBe("draft");
 		expect(Reflect.get(InteractiveMode.prototype, "getTrayOverrideLabel").call(mode)).toBe(
 			"Press Ctrl+C again to exit",
 		);
@@ -138,6 +142,27 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		expect(Reflect.get(InteractiveMode.prototype, "getTrayOverrideLabel").call(mode)).toBeUndefined();
 		expect(mode.childAgentSummary.invalidate).toHaveBeenCalled();
 		expect(mode.ui.requestRender).toHaveBeenCalled();
+	});
+
+	it("preserves idle draft input on first Ctrl+C", () => {
+		const mode = createInteractiveFake({ editorText: "draft" });
+
+		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
+
+		expect(mode.editor.getText()).toBe("draft");
+		expect(mode.restoreQueuedMessagesToEditor).not.toHaveBeenCalled();
+		expect(mode.shutdown).not.toHaveBeenCalled();
+	});
+
+	it("clears bash-mode input on first Ctrl+C", () => {
+		const mode = createInteractiveFake({ editorText: "!echo hi", bashMode: true });
+
+		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
+
+		expect(mode.editor.getText()).toBe("");
+		expect(mode.isBashMode).toBe(false);
+		expect(mode.updateEditorBorderColor).toHaveBeenCalledTimes(1);
+		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
 
 	it("makes Escape clear input without aborting the agent", () => {

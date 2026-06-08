@@ -66,7 +66,7 @@ declare module "@earendil-works/pi-tui" {
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
 	"app.interrupt": { defaultKeys: [], description: "Interrupt current operation" },
-	"app.clear": { defaultKeys: "ctrl+c", description: "Interrupt or clear, then exit" },
+	"app.clear": { defaultKeys: "ctrl+c", description: "Interrupt current operation, then exit" },
 	"app.input.clear": { defaultKeys: "escape", description: "Clear input" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },
 	"app.suspend": {
