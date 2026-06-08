@@ -141,7 +141,13 @@ async def run(prompt: str, **kwargs: Any) -> RLMResult:
     return _result_from_payload(payload)
 
 
+_harness_state = get_harness_state()
+
+
 class _RLMCallable:
+    harness = _harness_state
+    get_harness_state = staticmethod(get_harness_state)
+
     async def run(self, prompt: str, **kwargs: Any) -> RLMResult:
         return await run(prompt, **kwargs)
 
@@ -150,7 +156,7 @@ class _RLMCallable:
 
 
 rlm = _RLMCallable()
-harness = get_harness_state()
+harness = _harness_state
 
 
 class _CallableModule(types.ModuleType):

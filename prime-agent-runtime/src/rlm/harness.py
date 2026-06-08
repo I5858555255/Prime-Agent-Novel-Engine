@@ -227,17 +227,18 @@ class HarnessState:
     def record_refinement(
         self,
         trigger: str,
-        changes: list[str],
+        changes: list[str] | str,
         *,
         evidence: str = "",
         outcome: str = "",
         id: str | None = None,
     ) -> RefinementEvent:
         event_id = id or f"refine_{len(self.refinements) + 1:04d}"
+        normalized_changes = [changes] if isinstance(changes, str) else list(changes)
         event = RefinementEvent(
             id=event_id,
             trigger=trigger,
-            changes=list(changes),
+            changes=normalized_changes,
             evidence=evidence,
             outcome=outcome,
         )

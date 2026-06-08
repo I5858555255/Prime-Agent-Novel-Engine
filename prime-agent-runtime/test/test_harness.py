@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from rlm import harness as package_harness
+from rlm import rlm as callable_rlm
 from rlm.harness import HarnessState, get_harness_state
 
 
@@ -62,6 +64,19 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertIs(state, again)
             self.assertEqual(state.file_path, Path(temp_dir).resolve() / "harness_state.json")
+
+    def test_callable_rlm_exposes_harness_state_helpers(self) -> None:
+        self.assertIs(callable_rlm.harness, package_harness)
+        self.assertIs(callable_rlm.get_harness_state, get_harness_state)
+
+    def test_record_refinement_accepts_single_change_string(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+
+            event = state.record_refinement("manual cli test", "single change")
+
+            self.assertEqual(event.changes, ["single change"])
+            self.assertEqual(state.refinements[0].changes, ["single change"])
 
 
 if __name__ == "__main__":
