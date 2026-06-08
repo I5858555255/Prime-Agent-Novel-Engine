@@ -10,6 +10,8 @@ example `~/.prime/agent/harness/harness_state.json`. Session JSONL entries still
 record refinement results for auditability and rollback evidence. A compact
 overview of the global harness state is injected into the default system prompt
 so the agent can use learned state without first calling `rlm.harness.overview()`.
+The model-facing `rlm.harness` API uses explicit `create_*`, `update_*`, and
+`delete_*` calls for memory, skill, subagent, and prompt-note entries.
 
 ## 2026-06-08 manual CLI session
 
@@ -197,6 +199,8 @@ Covered validation and recovery cases:
 - Missing rollback target error.
 - Python runtime create, read, update, list, and delete for prompt, memory,
   skill, and subagent entries.
+- Python runtime explicit `create_*`, `update_*`, and `delete_*` model-facing
+  methods.
 - Python runtime default backing store through `RLM_HARNESS_STATE_DIR`.
 - Python runtime unknown-kind rejection for `upsert`, `get`, `delete`, and
   `list`.

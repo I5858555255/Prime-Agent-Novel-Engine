@@ -16,28 +16,28 @@ class HarnessStateTest(unittest.TestCase):
             state = HarnessState(Path(temp_dir) / "harness_state.json")
 
             created = {
-                "prompt": state.set_prompt_note(
+                "prompt": state.create_prompt_note(
                     "Prompt note",
                     "Prompt content",
                     id="prompt_entry",
                     path="prompt/path",
                     metadata={"kind": "prompt"},
                 ),
-                "memory": state.remember(
+                "memory": state.create_memory(
                     "Memory",
                     "Memory content",
                     id="memory_entry",
                     path="memory/path",
                     metadata={"kind": "memory"},
                 ),
-                "skill": state.upsert_skill(
+                "skill": state.create_skill(
                     "Skill",
                     "Skill content",
                     id="skill_entry",
                     path="skill/path",
                     metadata={"kind": "skill"},
                 ),
-                "subagent": state.upsert_subagent(
+                "subagent": state.create_subagent(
                     "Subagent",
                     "Subagent content",
                     id="subagent_entry",
@@ -51,18 +51,19 @@ class HarnessStateTest(unittest.TestCase):
                 self.assertIn("content", state.get(kind, entry.id).content.lower())
                 self.assertIn(entry, state.list(kind))
 
-            state.upsert("prompt", "Prompt note", "Prompt content updated", id="prompt_entry")
-            state.upsert("memory", "Memory", "Memory content updated", id="memory_entry")
-            state.upsert("skill", "Skill", "Skill content updated", id="skill_entry")
-            state.upsert("subagent", "Subagent", "Subagent content updated", id="subagent_entry")
+            state.update_prompt_note("prompt_entry", "Prompt note", "Prompt content updated")
+            state.update_memory("memory_entry", "Memory", "Memory content updated")
+            state.update_skill("skill_entry", "Skill", "Skill content updated")
+            state.update_subagent("subagent_entry", "Subagent", "Subagent content updated")
 
             for kind in ("prompt", "memory", "skill", "subagent"):
                 entry_id = f"{kind}_entry"
                 self.assertEqual(state.get(kind, entry_id).version, 2)
                 self.assertIn("updated", state.get(kind, entry_id).content)
-                self.assertTrue(state.delete(kind, entry_id))
+                delete_method = getattr(state, f"delete_{'prompt_note' if kind == 'prompt' else kind}")
+                self.assertTrue(delete_method(entry_id))
                 self.assertIsNone(state.get(kind, entry_id))
-                self.assertFalse(state.delete(kind, entry_id))
+                self.assertFalse(delete_method(entry_id))
 
             self.assertEqual(state.list(), [])
 
@@ -70,22 +71,22 @@ class HarnessStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
 
-            memory = state.remember(
+            memory = state.create_memory(
                 "Prefer focused patches",
                 "Small harness updates are easier to validate than broad rewrites.",
                 path="engineering",
             )
-            skill = state.upsert_skill(
+            skill = state.create_skill(
                 "Check failures first",
                 "Inspect current failure evidence before editing code.",
                 id="failure_first",
             )
-            subagent = state.upsert_subagent(
+            subagent = state.create_subagent(
                 "Reviewer",
                 "Review the proposed patch for regressions and missing tests.",
                 metadata={"max_turns": 3},
             )
-            state.set_prompt_note("Refinement cadence", "Refine only after repeated evidence.")
+            state.create_prompt_note("Refinement cadence", "Refine only after repeated evidence.")
             event = state.record_refinement(
                 "skill failed twice",
                 ["updated failure_first skill", "added reviewer subagent"],
@@ -102,12 +103,17 @@ class HarnessStateTest(unittest.TestCase):
             self.assertIn("Prefer focused patches", reloaded.overview())
             self.assertIn("refinements: 1", reloaded.overview())
 
-    def test_upsert_versions_existing_entries(self) -> None:
+    def test_explicit_create_and_update_enforce_entry_existence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
 
-            first = state.upsert_skill("Triage", "old", id="triage")
-            second = state.upsert_skill("Triage", "new", id="triage")
+            first = state.create_skill("Triage", "old", id="triage")
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                state.create_skill("Triage", "duplicate", id="triage")
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                state.update_skill("missing", "Missing", "missing")
+
+            second = state.update_skill("triage", "Triage", "new")
 
             self.assertEqual(first.id, second.id)
             self.assertEqual(second.content, "new")

@@ -190,7 +190,42 @@ class HarnessState:
             records.extend(self.entries[current_kind].values())
         return sorted(records, key=lambda entry: (entry.kind, entry.path, entry.title, entry.id))
 
-    def remember(
+    def create(
+        self,
+        kind: HarnessKind,
+        title: str,
+        content: str,
+        *,
+        id: str | None = None,
+        path: str = "general",
+        metadata: dict[str, Any] | None = None,
+        source: str = "agent",
+    ) -> HarnessEntry:
+        if kind not in self.entries:
+            raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+        entry_id = id or _slug(title, kind)
+        if entry_id in self.entries[kind]:
+            raise ValueError(f"{kind} entry {entry_id!r} already exists")
+        return self.upsert(kind, title, content, id=entry_id, path=path, metadata=metadata, source=source)
+
+    def update(
+        self,
+        kind: HarnessKind,
+        id: str,
+        title: str,
+        content: str,
+        *,
+        path: str = "general",
+        metadata: dict[str, Any] | None = None,
+        source: str = "agent",
+    ) -> HarnessEntry:
+        if kind not in self.entries:
+            raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+        if id not in self.entries[kind]:
+            raise ValueError(f"{kind} entry {id!r} does not exist")
+        return self.upsert(kind, title, content, id=id, path=path, metadata=metadata, source=source)
+
+    def create_memory(
         self,
         title: str,
         content: str,
@@ -199,9 +234,23 @@ class HarnessState:
         path: str = "general",
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.upsert("memory", title, content, id=id, path=path, metadata=metadata)
+        return self.create("memory", title, content, id=id, path=path, metadata=metadata)
 
-    def set_prompt_note(
+    def update_memory(
+        self,
+        id: str,
+        title: str,
+        content: str,
+        *,
+        path: str = "general",
+        metadata: dict[str, Any] | None = None,
+    ) -> HarnessEntry:
+        return self.update("memory", id, title, content, path=path, metadata=metadata)
+
+    def delete_memory(self, id: str) -> bool:
+        return self.delete("memory", id)
+
+    def create_prompt_note(
         self,
         title: str,
         content: str,
@@ -210,9 +259,23 @@ class HarnessState:
         path: str = "policy",
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.upsert("prompt", title, content, id=id, path=path, metadata=metadata)
+        return self.create("prompt", title, content, id=id, path=path, metadata=metadata)
 
-    def upsert_skill(
+    def update_prompt_note(
+        self,
+        id: str,
+        title: str,
+        content: str,
+        *,
+        path: str = "policy",
+        metadata: dict[str, Any] | None = None,
+    ) -> HarnessEntry:
+        return self.update("prompt", id, title, content, path=path, metadata=metadata)
+
+    def delete_prompt_note(self, id: str) -> bool:
+        return self.delete("prompt", id)
+
+    def create_skill(
         self,
         title: str,
         content: str,
@@ -221,9 +284,23 @@ class HarnessState:
         path: str = "general",
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.upsert("skill", title, content, id=id, path=path, metadata=metadata)
+        return self.create("skill", title, content, id=id, path=path, metadata=metadata)
 
-    def upsert_subagent(
+    def update_skill(
+        self,
+        id: str,
+        title: str,
+        content: str,
+        *,
+        path: str = "general",
+        metadata: dict[str, Any] | None = None,
+    ) -> HarnessEntry:
+        return self.update("skill", id, title, content, path=path, metadata=metadata)
+
+    def delete_skill(self, id: str) -> bool:
+        return self.delete("skill", id)
+
+    def create_subagent(
         self,
         title: str,
         content: str,
@@ -232,7 +309,21 @@ class HarnessState:
         path: str = "general",
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.upsert("subagent", title, content, id=id, path=path, metadata=metadata)
+        return self.create("subagent", title, content, id=id, path=path, metadata=metadata)
+
+    def update_subagent(
+        self,
+        id: str,
+        title: str,
+        content: str,
+        *,
+        path: str = "general",
+        metadata: dict[str, Any] | None = None,
+    ) -> HarnessEntry:
+        return self.update("subagent", id, title, content, path=path, metadata=metadata)
+
+    def delete_subagent(self, id: str) -> bool:
+        return self.delete("subagent", id)
 
     def record_refinement(
         self,
