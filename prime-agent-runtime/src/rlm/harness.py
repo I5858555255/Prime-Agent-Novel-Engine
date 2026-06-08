@@ -108,6 +108,10 @@ class HarnessState:
                         entry_data = {key: value for key, value in raw_entry.items() if key in _ENTRY_FIELDS}
                         entry_data.setdefault("id", str(entry_id))
                         entry_data.setdefault("kind", kind)
+                        if not isinstance(entry_data.get("title"), str) or not isinstance(
+                            entry_data.get("content"), str
+                        ):
+                            continue
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
         self.entries = entries
 
@@ -117,6 +121,15 @@ class HarnessState:
             for raw_event in raw_refinements:
                 if isinstance(raw_event, dict):
                     event_data = {key: value for key, value in raw_event.items() if key in _REFINEMENT_FIELDS}
+                    if not isinstance(event_data.get("id"), str) or not isinstance(
+                        event_data.get("trigger"), str
+                    ):
+                        continue
+                    changes = event_data.get("changes")
+                    if isinstance(changes, str):
+                        event_data["changes"] = [changes]
+                    elif not isinstance(changes, list):
+                        continue
                     self.refinements.append(RefinementEvent(**event_data))
         return self
 

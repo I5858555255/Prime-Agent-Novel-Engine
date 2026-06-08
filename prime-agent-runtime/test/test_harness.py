@@ -126,6 +126,9 @@ class HarnessStateTest(unittest.TestCase):
                                     "title": "Known memory",
                                     "content": "Loaded despite extra keys.",
                                     "unexpected": True,
+                                },
+                                "missing_content": {
+                                    "title": "Missing content",
                                 }
                             }
                         },
@@ -135,6 +138,10 @@ class HarnessStateTest(unittest.TestCase):
                                 "trigger": "extra keys",
                                 "changes": ["loaded"],
                                 "ignored": "value",
+                            },
+                            {
+                                "id": "refine_missing_changes",
+                                "trigger": "missing changes",
                             }
                         ],
                     }
@@ -145,7 +152,9 @@ class HarnessStateTest(unittest.TestCase):
             state = HarnessState(state_path)
 
             self.assertEqual(state.get("memory", "known").content, "Loaded despite extra keys.")
+            self.assertIsNone(state.get("memory", "missing_content"))
             self.assertEqual(state.refinements[0].id, "refine_extra")
+            self.assertEqual(len(state.refinements), 1)
 
     def test_explicit_create_and_update_enforce_entry_existence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
