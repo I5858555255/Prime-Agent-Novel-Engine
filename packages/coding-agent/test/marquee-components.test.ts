@@ -436,7 +436,7 @@ describe("marquee TUI components", () => {
 		const wideList = stripAnsi(component.render(96).join("\n"));
 		expect(wideList).toContain("Up/Down move");
 		expect(wideList).toContain("Enter open");
-		expect(wideList).toContain("esc close");
+		expect(wideList).toContain("Esc close");
 		expect(wideList).not.toContain("ctrl+c close");
 		for (const line of component.render(96)) {
 			expect(visibleWidth(line)).toBe(96);
@@ -467,7 +467,7 @@ describe("marquee TUI components", () => {
 		expect(detail).toContain("reading shard metrics");
 		expect(detail).toContain("$ echo hi");
 		expect(detail).toContain("hi");
-		expect(detail).toContain("esc back to subagents");
+		expect(detail).toContain("Esc back to subagents");
 		expect(detail).not.toContain("user: inspect training logs");
 		expect(detail).not.toContain("assistant: reading shard metrics");
 		expect(detail).not.toContain("tool: bash");
@@ -572,7 +572,7 @@ describe("marquee TUI components", () => {
 		const first = stripAnsi(firstLines.join("\n"));
 		expect(first).toContain("fallback transcript row 01");
 		expect(first).toContain("fallback transcript row 12");
-		expect(first).toContain("esc back to subagents");
+		expect(first).toContain("Esc back to subagents");
 		expect(first).not.toContain("↑");
 		expect(first).not.toContain("↓");
 		expect(firstLines.length).toBeGreaterThan(6);
