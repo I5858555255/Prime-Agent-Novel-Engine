@@ -48,7 +48,7 @@ import {
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
-import { ensureTool, formatMissingRipgrepMessage } from "../utils/tools-manager.js";
+import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
@@ -3729,7 +3729,7 @@ export class AgentSession {
 		const task = (async (): Promise<RlmRunResult> => {
 			try {
 				if (!(await ensureTool("rg", true))) {
-					throw new Error(formatMissingRipgrepMessage());
+					throw new Error(MISSING_RIPGREP_MESSAGE);
 				}
 				await child.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
 				await child.agent.waitForIdle();

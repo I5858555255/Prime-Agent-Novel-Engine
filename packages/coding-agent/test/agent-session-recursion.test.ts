@@ -19,7 +19,7 @@ import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
-import { formatMissingRipgrepMessage } from "../src/utils/tools-manager.js";
+import { MISSING_RIPGREP_MESSAGE } from "../src/utils/tools-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
 const toolsManagerMock = vi.hoisted(() => ({
@@ -292,12 +292,12 @@ describe("AgentSession rlm recursion", () => {
 			}
 		});
 
-		await expect(root.runRlmChild("summarize shard 1")).rejects.toThrow(formatMissingRipgrepMessage());
+		await expect(root.runRlmChild("summarize shard 1")).rejects.toThrow(MISSING_RIPGREP_MESSAGE);
 
 		expect(toolsManagerMock.ensureTool).toHaveBeenCalledWith("rg", true);
 		expect(streamFn).not.toHaveBeenCalled();
 		const errorUpdate = [...childUpdates].reverse().find((update) => update.status === "error");
-		expect(errorUpdate?.transcript).toContainEqual({ role: "system", text: formatMissingRipgrepMessage() });
+		expect(errorUpdate?.transcript).toContainEqual({ role: "system", text: MISSING_RIPGREP_MESSAGE });
 	});
 
 	it("adds child usage to the parent session aggregate", async () => {

@@ -104,7 +104,7 @@ import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipb
 import { parseGitUrl } from "../../utils/git.js";
 import { getCwdRelativePath } from "../../utils/paths.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
-import { ensureTool, formatMissingRipgrepMessage } from "../../utils/tools-manager.js";
+import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../../utils/tools-manager.js";
 import { checkForNewPiVersion } from "../../utils/version-check.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
@@ -762,7 +762,7 @@ export class InteractiveMode {
 		const [fdPath, rgPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
 		this.fdPath = fdPath;
 		if (!rgPath) {
-			this.showWarning(formatMissingRipgrepMessage());
+			this.showWarning(MISSING_RIPGREP_MESSAGE);
 		}
 
 		// Add header container as first child

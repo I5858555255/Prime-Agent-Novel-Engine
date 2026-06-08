@@ -244,9 +244,8 @@ const TERMUX_PACKAGES: Record<string, string> = {
 	rg: "ripgrep",
 };
 
-export function formatMissingRipgrepMessage(): string {
-	return "ripgrep (rg) is missing; search and sub-agents may fail until it is installed.";
-}
+export const MISSING_RIPGREP_MESSAGE =
+	"ripgrep (rg) is missing; search and sub-agents may fail until it is installed.";
 
 // Ensure a tool is available, downloading if necessary
 // Returns the path to the tool, or null if unavailable
