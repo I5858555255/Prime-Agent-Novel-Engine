@@ -137,7 +137,7 @@ class HarnessStateTest(unittest.TestCase):
                             {
                                 "id": "refine_extra",
                                 "trigger": "extra keys",
-                                "changes": ["loaded"],
+                                "changes": [1, "loaded"],
                                 "ignored": "value",
                             },
                             {
@@ -156,7 +156,9 @@ class HarnessStateTest(unittest.TestCase):
             self.assertEqual(state.get("memory", "known").version, 2)
             self.assertIsNone(state.get("memory", "missing_content"))
             self.assertEqual(state.refinements[0].id, "refine_extra")
+            self.assertEqual(state.refinements[0].changes, ["1", "loaded"])
             self.assertEqual(len(state.refinements), 1)
+            self.assertIn("1, loaded", state.overview())
 
             updated = state.update_memory("known", "Known memory", "Updated content.")
             self.assertEqual(updated.version, 3)

@@ -137,6 +137,8 @@ class HarnessState:
                     changes = event_data.get("changes")
                     if isinstance(changes, str):
                         event_data["changes"] = [changes]
+                    elif isinstance(changes, list):
+                        event_data["changes"] = [str(change) for change in changes]
                     elif not isinstance(changes, list):
                         continue
                     self.refinements.append(RefinementEvent(**event_data))
