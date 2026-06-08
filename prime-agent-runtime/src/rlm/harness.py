@@ -112,6 +112,15 @@ class HarnessState:
                             entry_data.get("content"), str
                         ):
                             continue
+                        version = entry_data.get("version", 1)
+                        if isinstance(version, str):
+                            try:
+                                version = int(version)
+                            except ValueError:
+                                version = 1
+                        if not isinstance(version, int):
+                            version = 1
+                        entry_data["version"] = version
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
         self.entries = entries
 
