@@ -401,7 +401,7 @@ describe("Coding Agent Tools", () => {
 			expect(getTextOutput(result).trim()).toBe("€");
 		});
 
-		it("should expose local bash operations for extension reuse", async () => {
+		it("should expose local bash operations for reuse", async () => {
 			const ops = createLocalBashOperations();
 			const chunks: Buffer[] = [];
 

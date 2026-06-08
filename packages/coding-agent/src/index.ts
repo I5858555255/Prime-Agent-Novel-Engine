@@ -48,96 +48,7 @@ export {
 	shouldCompact,
 } from "./core/compaction/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
-// Extension system
-export type {
-	AgentEndEvent,
-	AgentStartEvent,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	AppKeybinding,
-	AutocompleteProviderFactory,
-	BashToolCallEvent,
-	BeforeAgentStartEvent,
-	BeforeAgentStartEventResult,
-	BeforeProviderRequestEvent,
-	BeforeProviderRequestEventResult,
-	BuildSystemPromptOptions,
-	CompactOptions,
-	ContextEvent,
-	ContextUsage,
-	CustomToolCallEvent,
-	EditToolCallEvent,
-	ExecOptions,
-	ExecResult,
-	Extension,
-	ExtensionActions,
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionCommandContextActions,
-	ExtensionContext,
-	ExtensionContextActions,
-	ExtensionError,
-	ExtensionEvent,
-	ExtensionFactory,
-	ExtensionFlag,
-	ExtensionHandler,
-	ExtensionRuntime,
-	ExtensionShortcut,
-	ExtensionUIContext,
-	ExtensionUIDialogOptions,
-	ExtensionWidgetOptions,
-	InputEvent,
-	InputEventResult,
-	InputSource,
-	IpythonToolCallEvent,
-	KeybindingsManager,
-	LoadExtensionsResult,
-	MessageRenderer,
-	MessageRenderOptions,
-	ProviderConfig,
-	ProviderModelConfig,
-	RegisteredCommand,
-	RegisteredTool,
-	ResolvedCommand,
-	SessionBeforeCompactEvent,
-	SessionBeforeForkEvent,
-	SessionBeforeSwitchEvent,
-	SessionBeforeTreeEvent,
-	SessionCompactEvent,
-	SessionShutdownEvent,
-	SessionStartEvent,
-	SessionTreeEvent,
-	SlashCommandInfo,
-	SlashCommandSource,
-	SourceInfo,
-	TerminalInputHandler,
-	ToolCallEvent,
-	ToolCallEventResult,
-	ToolDefinition,
-	ToolExecutionMode,
-	ToolInfo,
-	ToolRenderResultOptions,
-	ToolResultEvent,
-	TurnEndEvent,
-	TurnStartEvent,
-	UserBashEvent,
-	UserBashEventResult,
-	WidgetPlacement,
-	WorkingIndicatorOptions,
-} from "./core/extensions/index.js";
-export {
-	createExtensionRuntime,
-	defineTool,
-	discoverAndLoadExtensions,
-	ExtensionRunner,
-	isBashToolResult,
-	isEditToolResult,
-	isIpythonToolResult,
-	isToolCallEventType,
-	wrapRegisteredTool,
-	wrapRegisteredTools,
-} from "./core/extensions/index.js";
-// Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
+// Footer data provider
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.js";
 export { convertToLlm } from "./core/messages.js";
 export { ModelRegistry } from "./core/model-registry.js";
@@ -220,7 +131,7 @@ export {
 	type SkillKind,
 	type SkillPythonMetadata,
 } from "./core/skills.js";
-export { createSyntheticSourceInfo } from "./core/source-info.js";
+export { createSyntheticSourceInfo, type SourceInfo } from "./core/source-info.js";
 // Tools
 export {
 	type BashOperations,
@@ -243,6 +154,10 @@ export {
 	type IpythonToolDetails,
 	type IpythonToolInput,
 	type IpythonToolOptions,
+	type ToolDefinition,
+	type ToolExecutionContext,
+	type ToolRenderContext,
+	type ToolRenderResultOptions,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
@@ -268,7 +183,7 @@ export {
 	runPrintMode,
 	runRpcMode,
 } from "./modes/index.js";
-// UI components for extensions
+// UI components
 export {
 	ArminComponent,
 	AssistantMessageComponent,
@@ -279,15 +194,14 @@ export {
 	CustomEditor,
 	CustomMessageComponent,
 	DynamicBorder,
-	ExtensionEditorComponent,
-	ExtensionInputComponent,
-	ExtensionSelectorComponent,
 	FooterComponent,
 	keyHint,
 	keyText,
 	LoginDialogComponent,
 	ModelSelectorComponent,
 	OAuthSelectorComponent,
+	PromptEditorComponent,
+	PromptSelectorComponent,
 	type RenderDiffOptions,
 	rawKeyHint,
 	renderDiff,
@@ -307,7 +221,7 @@ export {
 	UserMessageSelectorComponent,
 	type VisualTruncateResult,
 } from "./modes/interactive/components/index.js";
-// Theme utilities for custom tools and extensions
+// Theme utilities for custom tools
 export {
 	getLanguageFromPath,
 	getMarkdownTheme,

@@ -1,5 +1,5 @@
 /**
- * Multi-line editor component for extensions.
+ * Multi-line editor component for prompt dialogs.
  * Supports Ctrl+G for external editor.
  */
 
@@ -22,7 +22,7 @@ import { getEditorTheme, theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint } from "./keybinding-hints.js";
 
-export class ExtensionEditorComponent extends Container implements Focusable {
+export class PromptEditorComponent extends Container implements Focusable {
 	private editor: Editor;
 	private onSubmitCallback: (value: string) => void;
 	private onCancelCallback: () => void;
@@ -117,7 +117,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		}
 
 		const currentText = this.editor.getText();
-		const tmpFile = path.join(os.tmpdir(), `pi-extension-editor-${Date.now()}.md`);
+		const tmpFile = path.join(os.tmpdir(), `pi-prompt-editor-${Date.now()}.md`);
 
 		try {
 			fs.writeFileSync(tmpFile, currentText, "utf-8");

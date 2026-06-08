@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -46,10 +46,6 @@ function createAssistantMessage(text: string, overrides?: Partial<AssistantMessa
 	};
 }
 
-type SessionWithExtensionEmitHook = {
-	_emitExtensionEvent: (event: AgentEvent) => Promise<void>;
-};
-
 describe("AgentSession retry", () => {
 	let session: AgentSession;
 	let tempDir: string;
@@ -68,10 +64,9 @@ describe("AgentSession retry", () => {
 		}
 	});
 
-	function createSession(options?: { failCount?: number; maxRetries?: number; delayAssistantMessageEndMs?: number }) {
+	function createSession(options?: { failCount?: number; maxRetries?: number }) {
 		const failCount = options?.failCount ?? 1;
 		const maxRetries = options?.maxRetries ?? 3;
-		const delayAssistantMessageEndMs = options?.delayAssistantMessageEndMs ?? 0;
 		let callCount = 0;
 
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -115,17 +110,6 @@ describe("AgentSession retry", () => {
 			resourceLoader: createTestResourceLoader(),
 		});
 
-		if (delayAssistantMessageEndMs > 0) {
-			const sessionWithHook = session as unknown as SessionWithExtensionEmitHook;
-			const original = sessionWithHook._emitExtensionEvent.bind(sessionWithHook);
-			sessionWithHook._emitExtensionEvent = async (event: AgentEvent) => {
-				if (event.type === "message_end" && event.message.role === "assistant") {
-					await new Promise((resolve) => setTimeout(resolve, delayAssistantMessageEndMs));
-				}
-				await original(event);
-			};
-		}
-
 		return { session, getCallCount: () => callCount };
 	}
 
@@ -158,15 +142,6 @@ describe("AgentSession retry", () => {
 		expect(events).toContain("start:1");
 		expect(events).toContain("start:2");
 		expect(events).toContain("end:success=false");
-		expect(created.session.isRetrying).toBe(false);
-	});
-
-	it("prompt waits for retry completion even when assistant message_end handling is delayed", async () => {
-		const created = createSession({ failCount: 1, delayAssistantMessageEndMs: 40 });
-
-		await created.session.prompt("Test");
-
-		expect(created.getCallCount()).toBe(2);
 		expect(created.session.isRetrying).toBe(false);
 	});
 

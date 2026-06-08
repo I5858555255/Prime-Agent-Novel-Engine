@@ -8,12 +8,12 @@ This page collects day-to-day usage details that do not fit on the quickstart pa
 
 The interface has four main areas:
 
-- **Startup header** - compact brand and runtime summary; `--verbose` also lists loaded context files, prompt templates, skills, and extensions
-- **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
+- **Startup header** - compact brand and runtime summary; `--verbose` also lists loaded context files, prompt templates, and skills
+- **Messages** - user messages, assistant responses, tool calls, tool results, notifications, and errors
 - **Editor** - where you type
 - **Footer** - empty by default; use `/usage` for token, cost, and context details
 
-The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
+The editor can be replaced temporarily by built-in UI such as `/settings`.
 
 ### Editor Features
 
@@ -31,7 +31,7 @@ See [Keybindings](keybindings.md) for all shortcuts and customization.
 
 ## Slash Commands
 
-Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`.
+Type `/` in the editor to open command completion. Skills are available as `/skill:name`, and prompt templates expand via `/templatename`.
 
 | Command | Description |
 |---------|-------------|
@@ -51,7 +51,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
-| `/reload` | Reload keybindings, extensions, skills, prompts, and context files |
+| `/reload` | Reload keybindings, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
 | `/quit` | Quit pi |
@@ -133,9 +133,8 @@ pi install <source> [-l]     # Install package, -l for project-local
 pi remove <source> [-l]      # Remove package
 pi uninstall <source> [-l]   # Alias for remove
 prime-agent update [source|self|prime-agent]   # Update Prime Agent and packages; skips pinned packages
-prime-agent update --extensions                # Update packages only
+prime-agent update --packages                  # Update packages only
 prime-agent update --self                      # Update Prime Agent only
-prime-agent update --extension <src>           # Update one package
 pi list                      # List installed packages
 pi config                    # Enable/disable package resources
 ```
@@ -184,8 +183,8 @@ cat README.md | pi -p "Summarize this text"
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist specific built-in, extension, and custom tools |
-| `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
+| `--tools <list>`, `-t <list>` | Allowlist specific built-in and custom tools |
+| `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
 Built-in tools: `ipython`, `bash`, `edit`.
@@ -194,8 +193,6 @@ Built-in tools: `ipython`, `bash`, `edit`.
 
 | Option | Description |
 |--------|-------------|
-| `-e`, `--extension <source>` | Load an extension from path, npm, or git; repeatable |
-| `--no-extensions` | Disable extension discovery |
 | `--skill <path>` | Load a skill; repeatable |
 | `--no-skills` | Disable skill discovery |
 | `--prompt-template <path>` | Load a prompt template; repeatable |
@@ -204,11 +201,7 @@ Built-in tools: `ipython`, `bash`, `edit`.
 | `--no-themes` | Disable theme discovery |
 | `--no-context-files`, `-nc` | Disable `AGENTS.md` and `CLAUDE.md` discovery |
 
-Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings. Example:
-
-```bash
-pi --no-extensions -e ./my-extension.ts
-```
+Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings.
 
 ### Other Options
 
@@ -273,8 +266,8 @@ pi --tools bash,edit -p "Review the code"
 
 ## Design Principles
 
-Pi keeps the core small and pushes workflow-specific behavior into extensions, skills, prompt templates, and packages.
+Pi keeps the core small and pushes workflow-specific behavior into skills, prompt templates, and packages.
 
-It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages, or use external tools such as containers and tmux.
+It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. Use packages, skills, prompt templates, or external tools such as containers and tmux for those workflows.
 
 For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).

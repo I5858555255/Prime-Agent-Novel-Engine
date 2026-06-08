@@ -1,5 +1,5 @@
 /**
- * Generic selector component for extensions.
+ * Generic selector component for prompt dialogs.
  * Displays a list of string options with keyboard navigation.
  */
 
@@ -8,12 +8,12 @@ import { CountdownTimer } from "./countdown-timer.js";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 import { MenuList, MenuPanel, MenuRow } from "./menu-panel.js";
 
-export interface ExtensionSelectorOptions {
+export interface PromptSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 }
 
-export class ExtensionSelectorComponent extends Container {
+export class PromptSelectorComponent extends Container {
 	private options: string[];
 	private selectedIndex = 0;
 	private listContainer: Container;
@@ -28,7 +28,7 @@ export class ExtensionSelectorComponent extends Container {
 		options: string[],
 		onSelect: (option: string) => void,
 		onCancel: () => void,
-		opts?: ExtensionSelectorOptions,
+		opts?: PromptSelectorOptions,
 	) {
 		super();
 

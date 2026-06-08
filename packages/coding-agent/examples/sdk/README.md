@@ -13,7 +13,6 @@ The runtime example shows how to build a recreate function that closes over proc
 | `03-custom-prompt.ts` | Replace or modify system prompt |
 | `04-skills.ts` | Discover, filter, or replace skills |
 | `05-tools.ts` | Built-in tools, custom tools |
-| `06-extensions.ts` | Logging, blocking, result modification |
 | `07-context-files.ts` | AGENTS.md context files |
 | `08-slash-commands.ts` | File-based slash commands |
 | `09-api-keys-and-oauth.ts` | API key resolution, OAuth config |
@@ -77,7 +76,6 @@ const customRegistry = ModelRegistry.create(customAuth);
 
 const resourceLoader = new DefaultResourceLoader({
   systemPromptOverride: () => "You are helpful.",
-  extensionFactories: [myExtension],
   skillsOverride: () => ({ skills: [], diagnostics: [] }),
   agentsFilesOverride: () => ({ agentsFiles: [] }),
   promptsOverride: () => ({ prompts: [], diagnostics: [] }),
@@ -116,7 +114,7 @@ await session.prompt("Hello");
 | `thinkingLevel` | From settings/"off" | off, low, medium, high |
 | `tools` | `["ipython"]` | Built-in tools |
 | `customTools` | `[]` | Additional tool definitions |
-| `resourceLoader` | DefaultResourceLoader | Resource loader for extensions, skills, prompts, themes |
+| `resourceLoader` | DefaultResourceLoader | Resource loader for skills, prompts, themes, and context files |
 | `sessionManager` | `SessionManager.create(cwd)` | Persistence |
 | `settingsManager` | `SettingsManager.create(cwd, agentDir)` | Settings overrides |
 

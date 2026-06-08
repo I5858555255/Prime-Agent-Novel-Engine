@@ -32,7 +32,6 @@ This workspace still keeps an inherited source package name internally. The dist
 - [Customization](#customization)
   - [Prompt Templates](#prompt-templates)
   - [Skills](#skills)
-  - [Extensions](#extensions)
   - [Themes](#themes)
   - [Prime Agent Packages](#prime-agent-packages)
 - [Programmatic Usage](#programmatic-usage)
@@ -59,7 +58,7 @@ prime-agent
 /login  # Then select provider
 ```
 
-Then just talk to Prime Agent. By default, Prime Agent gives the model one tool: `ipython`. The model uses the persistent kernel to read files, run commands, edit code, and inspect data. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Prime Agent packages](#prime-agent-packages).
+Then just talk to Prime Agent. By default, Prime Agent gives the model one tool: `ipython`. The model uses the persistent kernel to read files, run commands, edit code, and inspect data. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), or [Prime Agent packages](#prime-agent-packages).
 
 The Python kernel runtime is set up automatically on first invocation. Set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
 
@@ -105,7 +104,7 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 
 See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
-**Custom providers & models:** Add providers via `~/.prime/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
+**Custom providers & models:** Add providers via `~/.prime/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google). See [docs/models.md](docs/models.md) and [docs/providers.md](docs/providers.md).
 
 ## Interactive Mode
 
@@ -113,12 +112,12 @@ See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
 The interface from top to bottom:
 
-- **Startup header** - Shows a compact brand and runtime summary; use `--verbose` to list loaded AGENTS.md files, prompt templates, skills, and extensions
-- **Messages** - Your messages, assistant responses, tool calls and results, notifications, errors, and extension UI
+- **Startup header** - Shows a compact brand and runtime summary; use `--verbose` to list loaded AGENTS.md files, prompt templates, and skills
+- **Messages** - Your messages, assistant responses, tool calls and results, notifications, and errors
 - **Editor** - Where you type
 - **Footer** - Empty by default; use `/usage` for token, cost, and context details
 
-The editor can be temporarily replaced by other UI, like built-in `/settings` or custom UI from extensions (e.g., a Q&A tool that lets the user answer model questions in a structured format). [Extensions](#extensions) can also replace the editor, add widgets above/below it, a status line, custom footer, or overlays.
+The editor can be temporarily replaced by built-in UI, like `/settings`, `/model`, or `/tree`.
 
 ### Editor
 
@@ -134,7 +133,7 @@ Standard editing keybindings for delete word, undo, etc. See [docs/keybindings.m
 
 ### Commands
 
-Type `/` in the editor to trigger commands. [Extensions](#extensions) can register custom commands, [skills](#skills) are available as `/skill:name`, and [prompt templates](#prompt-templates) expand via `/templatename`.
+Type `/` in the editor to trigger commands. [Skills](#skills) are available as `/skill:name`, and [prompt templates](#prompt-templates) expand via `/templatename`.
 
 | Command | Description |
 |---------|-------------|
@@ -154,7 +153,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
-| `/reload` | Reload keybindings, extensions, skills, prompts, and context files (themes hot-reload automatically) |
+| `/reload` | Reload keybindings, skills, prompts, and context files (themes hot-reload automatically) |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
 | `/quit` | Quit Prime Agent |
@@ -232,7 +231,7 @@ Long sessions can exhaust context windows. Compaction summarizes older messages 
 
 **Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`.
 
-Compaction is lossy. The full history remains in the JSONL file; use `/tree` to revisit. Customize compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
+Compaction is lossy. The full history remains in the JSONL file; use `/tree` to revisit. See [docs/compaction.md](docs/compaction.md) for internals.
 
 ## Settings
 
@@ -302,38 +301,6 @@ Skills can also be Python-backed. A Python skill is a normal skill directory wit
 
 Place in `~/.prime/agent/skills/`, `~/.agents/skills/`, `.prime/agent/skills/`, or `.agents/skills/` (from `cwd` up through parent directories) or a [Prime Agent package](#prime-agent-packages) to share with others. See [docs/skills.md](docs/skills.md).
 
-### Extensions
-
-<p align="center"><img src="docs/images/doom-extension.png" alt="Doom Extension" width="600"></p>
-
-TypeScript modules that extend Prime Agent with custom tools, commands, keyboard shortcuts, event handlers, and UI components.
-
-```typescript
-export default function (pi: ExtensionAPI) {
-  pi.registerTool({ name: "deploy", ... });
-  pi.registerCommand("stats", { ... });
-  pi.on("tool_call", async (event, ctx) => { ... });
-}
-```
-
-The default export can also be `async`. Prime Agent waits for async extension factories before startup continues, which is useful for one-time initialization such as fetching remote model lists before calling `pi.registerProvider()`.
-
-**What's possible:**
-- Custom tools (or replace built-in tools entirely)
-- Sub-agents and plan mode
-- Custom compaction and summarization
-- Permission gates and path protection
-- Custom editors and UI components
-- Status lines, headers, footers
-- Git checkpointing and auto-commit
-- SSH and sandbox execution
-- MCP server integration
-- Make Prime Agent look like Claude Code
-- Games while waiting (yes, Doom runs)
-- ...anything you can dream up
-
-Place in `~/.prime/agent/extensions/`, `.prime/agent/extensions/`, or a [Prime Agent package](#prime-agent-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
-
 ### Themes
 
 Built-in: `dark`, `light`. Themes hot-reload: modify the active theme file and Prime Agent immediately applies changes.
@@ -342,9 +309,9 @@ Place in `~/.prime/agent/themes/`, `.prime/agent/themes/`, or a [Prime Agent pac
 
 ### Prime Agent Packages
 
-Bundle and share extensions, skills, prompts, and themes via npm or git.
+Bundle and share skills, prompts, and themes via npm or git.
 
-> **Security:** Prime Agent packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
+> **Security:** Prime Agent packages run with full system access. Skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
 
 ```bash
 prime-agent install npm:@foo/prime-agent-tools
@@ -361,11 +328,11 @@ prime-agent remove npm:@foo/prime-agent-tools
 prime-agent uninstall npm:@foo/prime-agent-tools          # alias for remove
 prime-agent list
 prime-agent update                      # update Prime Agent and packages (skips pinned packages)
-prime-agent update --extensions         # update packages only
+prime-agent update --packages           # update packages only
 prime-agent update --self               # update Prime Agent only
 prime-agent update --self --force       # reinstall Prime Agent even if current
 prime-agent update npm:@foo/prime-agent-tools    # update one package
-prime-agent config                      # enable/disable extensions, skills, prompts, themes
+prime-agent config                      # enable/disable skills, prompts, themes
 ```
 
 Packages install to `~/.prime/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.prime/agent/git/`, `.prime/agent/npm/`). Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
@@ -377,7 +344,6 @@ Create a package by adding the inherited `pi` manifest key to `package.json`:
   "name": "my-prime-agent-package",
   "keywords": ["prime-agent-package"],
   "pi": {
-    "extensions": ["./extensions"],
     "skills": ["./skills"],
     "prompts": ["./prompts"],
     "themes": ["./themes"]
@@ -385,7 +351,7 @@ Create a package by adding the inherited `pi` manifest key to `package.json`:
 }
 ```
 
-Without a `pi` manifest, Prime Agent auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`).
+Without a `pi` manifest, Prime Agent auto-discovers from conventional directories (`skills/`, `prompts/`, `themes/`).
 
 See [docs/packages.md](docs/packages.md).
 
@@ -427,7 +393,7 @@ See [docs/rpc.md](docs/rpc.md) for the protocol.
 
 Prime Agent is forked from [pi-mono](https://github.com/badlogic/pi-mono) by Mario Zechner and keeps MIT attribution in the root license.
 
-The package architecture, extension model, and source package names still reflect that upstream lineage while the distributed command and release artifacts are branded for Prime Agent.
+The source package names still reflect that upstream lineage while the distributed command and release artifacts are branded for Prime Agent.
 
 ## CLI Reference
 
@@ -442,10 +408,10 @@ prime-agent install <source> [-l]     # Install package, -l for project-local
 prime-agent remove <source> [-l]      # Remove package
 prime-agent uninstall <source> [-l]   # Alias for remove
 prime-agent update [source|self|prime-agent]   # Update Prime Agent and packages (skips pinned packages)
-prime-agent update --extensions                # Update packages only
+prime-agent update --packages                  # Update packages only
 prime-agent update --self                      # Update Prime Agent only
 prime-agent update --self --force              # Reinstall Prime Agent even if current
-prime-agent update --extension <src>           # Update one package
+prime-agent update <src>                       # Update one package
 prime-agent list                      # List installed packages
 prime-agent config                    # Enable/disable package resources
 ```
@@ -492,8 +458,8 @@ cat README.md | prime-agent -p "Summarize this text"
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>`, `-t <list>` | Allowlist specific tool names across built-in, extension, and custom tools |
-| `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
+| `--tools <list>`, `-t <list>` | Allowlist specific tool names across built-in and custom tools |
+| `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
 Available built-in tools: `ipython`, `bash`, `edit`
@@ -502,8 +468,6 @@ Available built-in tools: `ipython`, `bash`, `edit`
 
 | Option | Description |
 |--------|-------------|
-| `-e`, `--extension <source>` | Load extension from path, npm, or git (repeatable) |
-| `--no-extensions` | Disable extension discovery |
 | `--skill <path>` | Load skill (repeatable) |
 | `--no-skills` | Disable skill discovery |
 | `--prompt-template <path>` | Load prompt template (repeatable) |
@@ -512,7 +476,7 @@ Available built-in tools: `ipython`, `bash`, `edit`
 | `--no-themes` | Disable theme discovery |
 | `--no-context-files`, `-nc` | Disable AGENTS.md and CLAUDE.md context file discovery |
 
-Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings.json (e.g., `--no-extensions -e ./my-ext.ts`).
+Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings.json.
 
 ### Other Options
 

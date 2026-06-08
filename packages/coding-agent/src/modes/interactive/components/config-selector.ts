@@ -21,10 +21,9 @@ import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { rawKeyHint } from "./keybinding-hints.js";
 
-type ResourceType = "extensions" | "skills" | "prompts" | "themes";
+type ResourceType = "skills" | "prompts" | "themes";
 
 const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
-	extensions: "Extensions",
 	skills: "Skills",
 	prompts: "Prompts",
 	themes: "Themes",
@@ -101,9 +100,7 @@ function buildGroups(resolved: ResolvedPaths): ResourceGroup[] {
 			const fileName = basename(path);
 			const parentFolder = basename(dirname(path));
 			let displayName: string;
-			if (resourceType === "extensions" && parentFolder !== "extensions") {
-				displayName = `${parentFolder}/${fileName}`;
-			} else if (resourceType === "skills" && fileName === "SKILL.md") {
+			if (resourceType === "skills" && fileName === "SKILL.md") {
 				displayName = parentFolder;
 			} else {
 				displayName = fileName;
@@ -120,7 +117,6 @@ function buildGroups(resolved: ResolvedPaths): ResourceGroup[] {
 		}
 	};
 
-	addToGroup(resolved.extensions, "extensions");
 	addToGroup(resolved.skills, "skills");
 	addToGroup(resolved.prompts, "prompts");
 	addToGroup(resolved.themes, "themes");
@@ -138,7 +134,7 @@ function buildGroups(resolved: ResolvedPaths): ResourceGroup[] {
 	});
 
 	// Sort subgroups within each group by type order, and items by name
-	const typeOrder: Record<ResourceType, number> = { extensions: 0, skills: 1, prompts: 2, themes: 3 };
+	const typeOrder: Record<ResourceType, number> = { skills: 0, prompts: 1, themes: 2 };
 	for (const group of groups) {
 		group.subgroups.sort((a, b) => typeOrder[a.type] - typeOrder[b.type]);
 		for (const subgroup of group.subgroups) {
@@ -427,7 +423,7 @@ class ResourceList implements Component, Focusable {
 		const settings =
 			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
 
-		const arrayKey = item.resourceType as "extensions" | "skills" | "prompts" | "themes";
+		const arrayKey = item.resourceType;
 		const current = (settings[arrayKey] ?? []) as string[];
 
 		// Generate pattern for this resource
@@ -448,9 +444,7 @@ class ResourceList implements Component, Focusable {
 		}
 
 		if (scope === "project") {
-			if (arrayKey === "extensions") {
-				this.settingsManager.setProjectExtensionPaths(updated);
-			} else if (arrayKey === "skills") {
+			if (arrayKey === "skills") {
 				this.settingsManager.setProjectSkillPaths(updated);
 			} else if (arrayKey === "prompts") {
 				this.settingsManager.setProjectPromptTemplatePaths(updated);
@@ -458,9 +452,7 @@ class ResourceList implements Component, Focusable {
 				this.settingsManager.setProjectThemePaths(updated);
 			}
 		} else {
-			if (arrayKey === "extensions") {
-				this.settingsManager.setExtensionPaths(updated);
-			} else if (arrayKey === "skills") {
+			if (arrayKey === "skills") {
 				this.settingsManager.setSkillPaths(updated);
 			} else if (arrayKey === "prompts") {
 				this.settingsManager.setPromptTemplatePaths(updated);
@@ -492,7 +484,7 @@ class ResourceList implements Component, Focusable {
 		}
 
 		// Get the resource array for this type
-		const arrayKey = item.resourceType as "extensions" | "skills" | "prompts" | "themes";
+		const arrayKey = item.resourceType;
 		const current = (pkg[arrayKey] ?? []) as string[];
 
 		// Generate pattern relative to package root
@@ -515,9 +507,7 @@ class ResourceList implements Component, Focusable {
 		(pkg as Record<string, unknown>)[arrayKey] = updated.length > 0 ? updated : undefined;
 
 		// Clean up empty filter object
-		const hasFilters = ["extensions", "skills", "prompts", "themes"].some(
-			(k) => (pkg as Record<string, unknown>)[k] !== undefined,
-		);
+		const hasFilters = ["skills", "prompts", "themes"].some((k) => (pkg as Record<string, unknown>)[k] !== undefined);
 		if (!hasFilters) {
 			packages[pkgIndex] = (pkg as { source: string }).source;
 		}

@@ -50,7 +50,6 @@ describe("regression #3616: in-memory settings survive reload", () => {
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
-			noExtensions: true,
 			noSkills: true,
 			noPromptTemplates: true,
 			noThemes: true,

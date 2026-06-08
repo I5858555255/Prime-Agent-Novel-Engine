@@ -3,11 +3,7 @@
 	"private": true,
 	"type": "module",
 	"workspaces": [
-		"packages/*",
-		"packages/coding-agent/examples/extensions/with-deps",
-		"packages/coding-agent/examples/extensions/custom-provider-anthropic",
-		"packages/coding-agent/examples/extensions/custom-provider-gitlab-duo",
-		"packages/coding-agent/examples/extensions/sandbox"
+		"packages/*"
 	],
 	"scripts": {
 		"clean": "npm run clean --workspaces",
@@ -39,7 +35,6 @@
 		"@typescript/native-preview": "7.0.0-dev.20260120.1",
 		"concurrently": "^9.2.1",
 		"husky": "^9.1.7",
-		"jiti": "^2.7.0",
 		"tsx": "^4.20.3",
 		"typescript": "^5.9.2",
 		"shx": "^0.4.0"

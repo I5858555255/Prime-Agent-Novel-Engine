@@ -10,9 +10,6 @@ import { getModel, type OAuthCredentials, type OAuthProvider } from "@earendil-w
 import { getOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import { createEventBus } from "../src/core/event-bus.js";
-import type { Extension, ExtensionFactory, LoadExtensionsResult } from "../src/core/extensions/index.js";
-import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import type { ResourceLoader } from "../src/core/resource-loader.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -176,53 +173,14 @@ export interface TestSessionContext {
 	cleanup: () => void;
 }
 
-export interface CreateTestExtensionsResultInput {
-	factory: ExtensionFactory;
-	path?: string;
-}
-
-export async function createTestExtensionsResult(
-	inputs: Array<ExtensionFactory | CreateTestExtensionsResultInput>,
-	cwd = process.cwd(),
-): Promise<LoadExtensionsResult> {
-	const runtime = createExtensionRuntime();
-	const eventBus = createEventBus();
-	const extensions: Extension[] = [];
-
-	for (const [index, input] of inputs.entries()) {
-		const factory = typeof input === "function" ? input : input.factory;
-		const extensionPath =
-			typeof input === "function" ? `<inline:${index + 1}>` : (input.path ?? `<inline:${index + 1}>`);
-		extensions.push(await loadExtensionFromFactory(factory, cwd, eventBus, runtime, extensionPath));
-	}
-
+export function createTestResourceLoader(): ResourceLoader {
 	return {
-		extensions,
-		errors: [],
-		runtime,
-	};
-}
-
-export interface CreateTestResourceLoaderOptions {
-	extensionsResult?: LoadExtensionsResult;
-}
-
-export function createTestResourceLoader(options: CreateTestResourceLoaderOptions = {}): ResourceLoader {
-	const extensionsResult = options.extensionsResult ?? {
-		extensions: [],
-		errors: [],
-		runtime: createExtensionRuntime(),
-	};
-
-	return {
-		getExtensions: () => extensionsResult,
 		getSkills: () => ({ skills: [], diagnostics: [] }),
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
 		getAgentsFiles: () => ({ agentsFiles: [] }),
 		getSystemPrompt: () => undefined,
 		getAppendSystemPrompt: () => [],
-		extendResources: () => {},
 		reload: async () => {},
 	};
 }

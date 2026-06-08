@@ -5,7 +5,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.js";
-import type { ExtensionFlag } from "../core/extensions/types.js";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -29,8 +28,6 @@ export interface Args {
 	tools?: string[];
 	noTools?: boolean;
 	noBuiltinTools?: boolean;
-	extensions?: string[];
-	noExtensions?: boolean;
 	print?: boolean;
 	export?: string;
 	noSkills?: boolean;
@@ -45,8 +42,6 @@ export interface Args {
 	verbose?: boolean;
 	messages: string[];
 	fileArgs: string[];
-	/** Unknown flags (potentially extension flags) - map of flag name to value */
-	unknownFlags: Map<string, boolean | string>;
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
 }
 
@@ -62,7 +57,6 @@ export function parseArgs(args: string[]): Args {
 	const result: Args = {
 		messages: [],
 		fileArgs: [],
-		unknownFlags: new Map(),
 		diagnostics: [],
 	};
 
@@ -138,11 +132,6 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--export" && i + 1 < args.length) {
 			result.export = args[++i];
-		} else if ((arg === "--extension" || arg === "-e") && i + 1 < args.length) {
-			result.extensions = result.extensions ?? [];
-			result.extensions.push(args[++i]);
-		} else if (arg === "--no-extensions" || arg === "-ne") {
-			result.noExtensions = true;
 		} else if (arg === "--skill" && i + 1 < args.length) {
 			result.skills = result.skills ?? [];
 			result.skills.push(args[++i]);
@@ -174,19 +163,8 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
-			const eqIndex = arg.indexOf("=");
-			if (eqIndex !== -1) {
-				result.unknownFlags.set(arg.slice(2, eqIndex), arg.slice(eqIndex + 1));
-			} else {
-				const flagName = arg.slice(2);
-				const next = args[i + 1];
-				if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
-					result.unknownFlags.set(flagName, next);
-					i++;
-				} else {
-					result.unknownFlags.set(flagName, true);
-				}
-			}
+			const optionName = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
+			result.diagnostics.push({ type: "error", message: `Unknown option: ${optionName}` });
 		} else if (arg.startsWith("-") && !arg.startsWith("--")) {
 			result.diagnostics.push({ type: "error", message: `Unknown option: ${arg}` });
 		} else if (!arg.startsWith("-")) {
@@ -197,28 +175,18 @@ export function parseArgs(args: string[]): Args {
 	return result;
 }
 
-export function printHelp(extensionFlags?: ExtensionFlag[]): void {
-	const extensionFlagsText =
-		extensionFlags && extensionFlags.length > 0
-			? `\n${chalk.bold("Extension CLI Flags:")}\n${extensionFlags
-					.map((flag) => {
-						const value = flag.type === "string" ? " <value>" : "";
-						const description = flag.description ?? `Registered by ${flag.extensionPath}`;
-						return `  --${flag.name}${value}`.padEnd(30) + description;
-					})
-					.join("\n")}\n`
-			: "";
+export function printHelp(): void {
 	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with an ipython tool
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [@files...] [messages...]
 
 ${chalk.bold("Commands:")}
-  ${APP_NAME} install <source> [-l]     Install extension source and add to settings
-  ${APP_NAME} remove <source> [-l]      Remove extension source from settings
+  ${APP_NAME} install <source> [-l]     Install package source and add to settings
+  ${APP_NAME} remove <source> [-l]      Remove package source from settings
   ${APP_NAME} uninstall <source> [-l]   Alias for remove
-  ${APP_NAME} update [source|self|${APP_NAME}]   Update ${APP_NAME} and installed extensions
-  ${APP_NAME} list                      List installed extensions from settings
+  ${APP_NAME} update [source|self|${APP_NAME}]   Update ${APP_NAME} and installed packages
+  ${APP_NAME} list                      List installed packages from settings
   ${APP_NAME} config                    Open TUI to enable/disable package resources
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
 
@@ -238,13 +206,11 @@ ${chalk.bold("Options:")}
   --no-session                   Don't save session (ephemeral)
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
-  --no-tools, -nt                Disable all tools by default (built-in and extension)
-  --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled
+  --no-tools, -nt                Disable all tools by default
+  --no-builtin-tools, -nbt       Disable built-in tools by default but keep custom tools enabled
   --tools, -t <tools>            Comma-separated allowlist of tool names to enable
-                                 Applies to built-in, extension, and custom tools
+                                 Applies to built-in and custom tools
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
-  --extension, -e <path>         Load an extension file (can be used multiple times)
-  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
   --skill <path>                 Load a skill file or directory (can be used multiple times)
   --no-skills, -ns               Disable skills discovery and loading
   --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)
@@ -258,8 +224,6 @@ ${chalk.bold("Options:")}
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
   --help, -h                     Show this help
   --version, -v                  Show version number
-
-Extensions can register additional flags (e.g., --plan from plan-mode extension).${extensionFlagsText}
 
 ${chalk.bold("Examples:")}
   # Interactive mode

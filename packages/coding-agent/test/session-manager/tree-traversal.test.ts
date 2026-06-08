@@ -481,7 +481,7 @@ describe("createBranchedSession", () => {
 			// (deferred to _persist on first assistant, matching newSession() contract)
 			expect(existsSync(newFile!)).toBe(false);
 
-			// Simulate extension adding entry before assistant (like preset on turn_start)
+			// Simulate a custom entry before assistant output.
 			session.appendCustomEntry("preset-state", { name: "plan" });
 
 			// Now the assistant responds

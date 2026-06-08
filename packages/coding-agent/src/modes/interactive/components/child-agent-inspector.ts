@@ -11,7 +11,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type { ToolDefinition } from "../../../core/extensions/types.js";
+import type { ToolDefinition } from "../../../core/tools/tool-definition.js";
 import { theme } from "../theme/theme.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { keyText } from "./keybinding-hints.js";

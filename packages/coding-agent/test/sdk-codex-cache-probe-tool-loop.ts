@@ -26,13 +26,12 @@ import {
 	streamSimpleOpenAICodexResponses,
 } from "../../ai/src/providers/openai-codex-responses.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import { createExtensionRuntime } from "../src/core/extensions/loader.js";
-import type { ToolDefinition } from "../src/core/extensions/types.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import type { ResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import type { ToolDefinition } from "../src/core/tools/tool-definition.js";
 
 type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
 
@@ -172,14 +171,12 @@ function buildPrompt(turn: number): string {
 
 function createMinimalResourceLoader(systemPrompt: string): ResourceLoader {
 	return {
-		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
 		getSkills: () => ({ skills: [], diagnostics: [] }),
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
 		getAgentsFiles: () => ({ agentsFiles: [] }),
 		getSystemPrompt: () => systemPrompt,
 		getAppendSystemPrompt: () => [],
-		extendResources: () => {},
 		reload: async () => {},
 	};
 }

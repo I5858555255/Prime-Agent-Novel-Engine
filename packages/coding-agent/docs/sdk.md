@@ -51,7 +51,7 @@ The SDK is included in the main package. No separate installation needed.
 
 The main factory function for a single `AgentSession`.
 
-`createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
+`createAgentSession()` uses a `ResourceLoader` to supply skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
 
 ```typescript
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
@@ -166,7 +166,6 @@ Important behavior:
 
 - `runtime.session` changes after those operations
 - event subscriptions are attached to a specific `AgentSession`, so re-subscribe after replacement
-- if you use extensions, call `runtime.session.bindExtensions(...)` again for the new session
 - creation returns diagnostics on `runtime.diagnostics`
 - if runtime creation or replacement fails, the method throws and the caller decides how to handle it
 
@@ -202,7 +201,7 @@ interface PromptOptions {
 
 It fires before `prompt()` resolves. `prompt()` still resolves only after the full accepted run finishes, including retries. Failures after acceptance are reported through the normal event and message stream, not through `preflightResult(false)`.
 
-The `prompt()` method handles prompt templates, extension commands, and message sending:
+The `prompt()` method handles prompt templates and message sending:
 
 ```typescript
 // Basic prompt (when not streaming)
@@ -219,7 +218,6 @@ await session.prompt("After you're done, also check X", { streamingBehavior: "fo
 ```
 
 **Behavior:**
-- **Extension commands** (e.g., `/mycommand`): Execute immediately, even during streaming. They manage their own LLM interaction via `pi.sendMessage()`.
 - **File-based prompt templates** (from `.md` files): Expanded to their content before sending or queueing.
 - **During streaming without `streamingBehavior`**: Throws an error. Use `steer()` or `followUp()` directly, or specify the option.
 - **`preflightResult(true)`**: Means the prompt was accepted, queued, or handled immediately.
@@ -235,7 +233,7 @@ await session.steer("New instruction");
 await session.followUp("After you're done, also do this");
 ```
 
-Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued).
+Both `steer()` and `followUp()` expand file-based prompt templates before queueing.
 
 ### Agent and AgentState
 
@@ -343,7 +341,6 @@ const { session } = await createAgentSession({
 ```
 
 `cwd` is used by `DefaultResourceLoader` for:
-- Project extensions (`.pi/extensions/`)
 - Project skills:
   - `.pi/skills/`
   - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
@@ -352,7 +349,6 @@ const { session } = await createAgentSession({
 - Session directory naming
 
 `agentDir` is used by `DefaultResourceLoader` for:
-- Global extensions (`extensions/`)
 - Global skills:
   - `skills/` under `agentDir` (for example `~/.pi/agent/skills/`)
   - `~/.agents/skills/`
@@ -536,51 +532,11 @@ const { session } = await createAgentSession({
 });
 ```
 
-Use `defineTool()` for standalone definitions and arrays like `customTools: [myTool]`. Inline `pi.registerTool({ ... })` already infers parameter types correctly.
+Use `defineTool()` for standalone definitions and arrays like `customTools: [myTool]`.
 
-Custom tools passed via `customTools` are combined with extension-registered tools. Extensions loaded by the ResourceLoader can also register tools via `pi.registerTool()`.
+Custom tools passed via `customTools` are combined with the built-in tools selected for the session.
 
 > See [examples/sdk/05-tools.ts](../examples/sdk/05-tools.ts)
-
-### Extensions
-
-Extensions are loaded by the `ResourceLoader`. `DefaultResourceLoader` discovers extensions from `~/.pi/agent/extensions/`, `.pi/extensions/`, and settings.json extension sources.
-
-```typescript
-import { createAgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
-
-const loader = new DefaultResourceLoader({
-  additionalExtensionPaths: ["/path/to/my-extension.ts"],
-  extensionFactories: [
-    (pi) => {
-      pi.on("agent_start", () => {
-        console.log("[Inline Extension] Agent starting");
-      });
-    },
-  ],
-});
-await loader.reload();
-
-const { session } = await createAgentSession({ resourceLoader: loader });
-```
-
-Extensions can register tools, subscribe to events, add commands, and more. See [extensions.md](extensions.md) for the full API.
-
-**Event Bus:** Extensions can communicate via `pi.events`. Pass a shared `eventBus` to `DefaultResourceLoader` if you need to emit or listen from outside:
-
-```typescript
-import { createEventBus, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
-
-const eventBus = createEventBus();
-const loader = new DefaultResourceLoader({
-  eventBus,
-});
-await loader.reload();
-
-eventBus.on("my-extension:status", (data) => console.log(data));
-```
-
-> See [examples/sdk/06-extensions.ts](../examples/sdk/06-extensions.ts) and [docs/extensions.md](extensions.md)
 
 ### Skills
 
@@ -818,7 +774,7 @@ Project overrides global. Nested objects merge keys. Setters modify global setti
 
 ## ResourceLoader
 
-Use `DefaultResourceLoader` to discover extensions, skills, prompts, themes, and context files.
+Use `DefaultResourceLoader` to discover skills, prompts, themes, and context files.
 
 ```typescript
 import {
@@ -832,7 +788,6 @@ const loader = new DefaultResourceLoader({
 });
 await loader.reload();
 
-const extensions = loader.getExtensions();
 const skills = loader.getSkills();
 const prompts = loader.getPrompts();
 const themes = loader.getThemes();
@@ -847,18 +802,9 @@ const contextFiles = loader.getAgentsFiles().agentsFiles;
 interface CreateAgentSessionResult {
   // The session
   session: AgentSession;
-  
-  // Extensions result (for runner setup)
-  extensionsResult: LoadExtensionsResult;
-  
+
   // Warning if session model couldn't be restored
   modelFallbackMessage?: string;
-}
-
-interface LoadExtensionsResult {
-  extensions: Extension[];
-  errors: Array<{ path: string; error: string }>;
-  runtime: ExtensionRuntime;
 }
 ```
 
@@ -1072,7 +1018,7 @@ The SDK is preferred when:
 - You want type safety
 - You're in the same Node.js process
 - You need direct access to agent state
-- You want to customize tools/extensions programmatically
+- You want to customize tools programmatically
 
 RPC mode is preferred when:
 - You're integrating from another language
@@ -1112,12 +1058,8 @@ createIpythonToolDefinition, createBashToolDefinition, createEditToolDefinition
 // Types
 type CreateAgentSessionOptions
 type CreateAgentSessionResult
-type ExtensionFactory
-type ExtensionAPI
 type ToolDefinition
 type Skill
 type PromptTemplate
 type Tool
 ```
-
-For extension types, see [extensions.md](extensions.md) for the full API.

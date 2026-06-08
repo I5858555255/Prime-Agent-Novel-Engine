@@ -1,30 +1,21 @@
 import type { TextContent } from "@earendil-works/pi-ai";
-import type { Component } from "@earendil-works/pi-tui";
 import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
-import type { MessageRenderer } from "../../../core/extensions/types.js";
 import type { CustomMessage } from "../../../core/messages.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 /**
- * Component that renders a custom message entry from extensions.
+ * Component that renders a custom message entry.
  * Uses distinct styling to differentiate from user messages.
  */
 export class CustomMessageComponent extends Container {
 	private message: CustomMessage<unknown>;
-	private customRenderer?: MessageRenderer;
 	private box: Box;
-	private customComponent?: Component;
 	private markdownTheme: MarkdownTheme;
 	private _expanded = false;
 
-	constructor(
-		message: CustomMessage<unknown>,
-		customRenderer?: MessageRenderer,
-		markdownTheme: MarkdownTheme = getMarkdownTheme(),
-	) {
+	constructor(message: CustomMessage<unknown>, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
 		super();
 		this.message = message;
-		this.customRenderer = customRenderer;
 		this.markdownTheme = markdownTheme;
 
 		this.addChild(new Spacer(1));
@@ -48,27 +39,7 @@ export class CustomMessageComponent extends Container {
 	}
 
 	private rebuild(): void {
-		// Remove previous content component
-		if (this.customComponent) {
-			this.removeChild(this.customComponent);
-			this.customComponent = undefined;
-		}
 		this.removeChild(this.box);
-
-		// Try custom renderer first - it handles its own styling
-		if (this.customRenderer) {
-			try {
-				const component = this.customRenderer(this.message, { expanded: this._expanded }, theme);
-				if (component) {
-					// Custom renderer provides its own styled component
-					this.customComponent = component;
-					this.addChild(component);
-					return;
-				}
-			} catch {
-				// Fall through to default rendering
-			}
-		}
 
 		// Default rendering uses our box
 		this.addChild(this.box);

@@ -39,10 +39,7 @@ export interface BashExecutionMessage {
 	excludeFromContext?: boolean;
 }
 
-/**
- * Message type for extension-injected messages via sendMessage().
- * These are custom messages that extensions can inject into the conversation.
- */
+/** Message type for custom session messages. */
 export interface CustomMessage<T = unknown> {
 	role: "custom";
 	customType: string;
@@ -143,7 +140,7 @@ export function createCustomMessage(
  * This is used by:
  * - Agent's transormToLlm option (for prompt calls and queued messages)
  * - Compaction's generateSummary (for summarization)
- * - Custom extensions and tools
+ * - Custom tools
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
 	return messages

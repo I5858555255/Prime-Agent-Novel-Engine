@@ -6,7 +6,6 @@ import { AgentSession } from "./agent-session.js";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
 import { AuthStorage } from "./auth-storage.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
-import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { GOAL_TOOL_NAMES } from "./goals.js";
 import { convertToLlm } from "./messages.js";
 import { ModelRegistry } from "./model-registry.js";
@@ -16,7 +15,13 @@ import { DefaultResourceLoader } from "./resource-loader.js";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 import { time } from "./timings.js";
-import { createBashTool, createEditTool, createIpythonTool, withFileMutationQueue } from "./tools/index.js";
+import {
+	createBashTool,
+	createEditTool,
+	createIpythonTool,
+	type ToolDefinition,
+	withFileMutationQueue,
+} from "./tools/index.js";
 
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
@@ -41,14 +46,14 @@ export interface CreateAgentSessionOptions {
 	 *
 	 * - "all": start with no tools enabled
 	 * - "builtin": disable the default built-in tool (ipython)
-	 *   but keep extension/custom tools enabled
+	 *   but keep custom tools enabled
 	 */
 	noTools?: "all" | "builtin";
 	/**
 	 * Optional allowlist of tool names.
 	 *
 	 * When omitted, pi enables the default built-in tool (ipython)
-	 * and leaves extension/custom tools enabled unless `noTools` changes that default.
+	 * and leaves custom tools enabled unless `noTools` changes that default.
 	 * When provided, only the listed tool names are enabled.
 	 */
 	tools?: string[];
@@ -63,16 +68,12 @@ export interface CreateAgentSessionOptions {
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
 	settingsManager?: SettingsManager;
-	/** Session start event metadata for extension runtime startup. */
-	sessionStartEvent?: SessionStartEvent;
 }
 
 /** Result from createAgentSession */
 export interface CreateAgentSessionResult {
 	/** The created session */
 	session: AgentSession;
-	/** Extensions result (for UI context setup in interactive mode) */
-	extensionsResult: LoadExtensionsResult;
 	/** Warning if session was restored with a different model than saved */
 	modelFallbackMessage?: string;
 }
@@ -80,18 +81,9 @@ export interface CreateAgentSessionResult {
 // Re-exports
 
 export * from "./agent-session-runtime.js";
-export type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionContext,
-	ExtensionFactory,
-	SlashCommandInfo,
-	SlashCommandSource,
-	ToolDefinition,
-} from "./extensions/index.js";
 export type { PromptTemplate } from "./prompt-templates.js";
 export type { Skill } from "./skills.js";
-export type { Tool } from "./tools/index.js";
+export type { Tool, ToolDefinition } from "./tools/index.js";
 
 export {
 	withFileMutationQueue,
@@ -270,8 +262,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		});
 	};
 
-	const extensionRunnerRef: { current?: ExtensionRunner } = {};
-
 	agent = new Agent({
 		initialState: {
 			systemPrompt: "",
@@ -295,30 +285,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				headers: auth.headers || options?.headers ? { ...auth.headers, ...options?.headers } : undefined,
 			});
 		},
-		onPayload: async (payload, _model) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
-			}
-			return runner.emitBeforeProviderRequest(payload);
-		},
-		onResponse: async (response, _model) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("after_provider_response")) {
-				return;
-			}
-			await runner.emit({
-				type: "after_provider_response",
-				status: response.status,
-				headers: response.headers,
-			});
-		},
 		sessionId: sessionManager.getSessionId(),
-		transformContext: async (messages) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner) return messages;
-			return runner.emitContext(messages);
-		},
 		steeringMode: settingsManager.getSteeringMode(),
 		followUpMode: settingsManager.getFollowUpMode(),
 		transport: settingsManager.getTransport(),
@@ -353,14 +320,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		allowedToolNames,
 		includeGoalTools,
 		autoActivateGoalTools,
-		extensionRunnerRef,
-		sessionStartEvent: options.sessionStartEvent,
 	});
-	const extensionsResult = resourceLoader.getExtensions();
 
 	return {
 		session,
-		extensionsResult,
 		modelFallbackMessage,
 	};
 }

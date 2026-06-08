@@ -80,15 +80,11 @@ function resolveBranchWithGitAsync(repoDir: string): Promise<string | null> {
 	});
 }
 
-/**
- * Provides git branch and extension statuses - data not otherwise accessible to extensions.
- * Token stats, model info available via ctx.sessionManager and ctx.model.
- */
+/** Provides git branch and provider-count data for the TUI footer/tray. */
 export class FooterDataProvider {
 	private cwd: string;
 	private static readonly WATCH_DEBOUNCE_MS = 500;
 
-	private extensionStatuses = new Map<string, string>();
 	private cachedBranch: string | null | undefined = undefined;
 	private gitPaths: GitPaths | null | undefined = undefined;
 	private headWatcher: FSWatcher | null = null;
@@ -117,29 +113,10 @@ export class FooterDataProvider {
 		return this.cachedBranch;
 	}
 
-	/** Extension status texts set via ctx.ui.setStatus() */
-	getExtensionStatuses(): ReadonlyMap<string, string> {
-		return this.extensionStatuses;
-	}
-
 	/** Subscribe to git branch changes. Returns unsubscribe function. */
 	onBranchChange(callback: () => void): () => void {
 		this.branchChangeCallbacks.add(callback);
 		return () => this.branchChangeCallbacks.delete(callback);
-	}
-
-	/** Internal: set extension status */
-	setExtensionStatus(key: string, text: string | undefined): void {
-		if (text === undefined) {
-			this.extensionStatuses.delete(key);
-		} else {
-			this.extensionStatuses.set(key, text);
-		}
-	}
-
-	/** Internal: clear extension statuses */
-	clearExtensionStatuses(): void {
-		this.extensionStatuses.clear();
 	}
 
 	/** Number of unique providers with available models (for footer display) */
@@ -347,8 +324,7 @@ export class FooterDataProvider {
 	}
 }
 
-/** Read-only view for extensions - excludes setExtensionStatus, setAvailableProviderCount and dispose */
 export type ReadonlyFooterDataProvider = Pick<
 	FooterDataProvider,
-	"getGitBranch" | "getExtensionStatuses" | "getAvailableProviderCount" | "onBranchChange"
+	"getGitBranch" | "getAvailableProviderCount" | "onBranchChange"
 >;

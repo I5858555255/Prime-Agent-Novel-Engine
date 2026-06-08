@@ -2,8 +2,8 @@ import type { AgentContext, AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext, ExtensionFactory } from "../../src/core/extensions/types.js";
 import { GOAL_TOOL_NAMES } from "../../src/core/goals.js";
+import type { ToolExecutionContext } from "../../src/core/tools/tool-definition.js";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
 function assistantWithUsage(message: string | AssistantMessage, usage: Partial<Usage>): AssistantMessage {
@@ -38,16 +38,6 @@ function currentAgentContext(harness: Harness): AgentContext {
 		messages: [...state.messages],
 		tools: [...state.tools],
 	};
-}
-
-async function waitForCondition(predicate: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 100; attempt++) {
-		if (predicate()) {
-			return;
-		}
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	}
-	throw new Error("condition was not met");
 }
 
 function createWaitingTool(): {
@@ -190,7 +180,7 @@ describe("AgentSession goals", () => {
 			{ objective: "finish the active goal" },
 			undefined,
 			undefined,
-			{} as ExtensionContext,
+			{} as ToolExecutionContext,
 		);
 		harness.session.setActiveToolsByName([]);
 		harness.setResponses([
@@ -232,7 +222,7 @@ describe("AgentSession goals", () => {
 			{ objective: "finish the active goal" },
 			undefined,
 			undefined,
-			{} as ExtensionContext,
+			{} as ToolExecutionContext,
 		);
 
 		await harness.session.reload();
@@ -252,7 +242,7 @@ describe("AgentSession goals", () => {
 			{ objective: "finish the active goal" },
 			undefined,
 			undefined,
-			{} as ExtensionContext,
+			{} as ToolExecutionContext,
 		);
 		harness.session.subscribe((event) => {
 			if (event.type === "goal_update") {
@@ -496,7 +486,7 @@ describe("AgentSession goals", () => {
 			if (!getGoalTool) {
 				throw new Error("expected get_goal tool");
 			}
-			const result = await getGoalTool.execute("get-goal", {}, undefined, undefined, {} as ExtensionContext);
+			const result = await getGoalTool.execute("get-goal", {}, undefined, undefined, {} as ToolExecutionContext);
 			const details = result.details as { goal: { timeUsedSeconds: number } | null };
 			expect(details.goal?.timeUsedSeconds).toBe(5);
 
@@ -553,46 +543,6 @@ describe("AgentSession goals", () => {
 		expect(harness.session.goalState.tokensUsed).toBeGreaterThanOrEqual(10);
 	});
 
-	it("checks goal budget before continuation while event processing is delayed", async () => {
-		let releaseMessageEnd: (() => void) | undefined;
-		const blockedMessageEnd = new Promise<void>((resolve) => {
-			releaseMessageEnd = resolve;
-		});
-		let didBlock = false;
-		const extension: ExtensionFactory = (pi) => {
-			pi.on("message_end", async (event) => {
-				if (event.message.role === "assistant" && !didBlock) {
-					didBlock = true;
-					await blockedMessageEnd;
-				}
-			});
-		};
-		const harness = await createHarness({ extensionFactories: [extension] });
-		harnesses.push(harness);
-		harness.setResponses([
-			assistantWithUsage("Spent the budget.", { input: 6, output: 5, totalTokens: 11 }),
-			fauxAssistantMessage("Wrapping up."),
-			fauxAssistantMessage("Should not continue."),
-		]);
-
-		const promptPromise = harness.session.prompt("/goal --budget 10 do work");
-		try {
-			await waitForCondition(() => harness.getPendingResponseCount() === 1);
-		} finally {
-			releaseMessageEnd?.();
-		}
-		await promptPromise;
-
-		expect(visibleAssistantTexts(harness)).toEqual(["Spent the budget.", "Wrapping up."]);
-		expect(harness.getPendingResponseCount()).toBe(1);
-		expect(harness.session.goalState).toMatchObject({
-			active: false,
-			status: "budget_limited",
-			tokenBudget: 10,
-			continuationsUsed: 0,
-		});
-	});
-
 	it.each(["/goal --budget=1abc task", "/goal --budget 1.5 task", "/goal --budget 1e6 task"])(
 		"rejects malformed goal budget %s",
 		async (command) => {
@@ -637,7 +587,7 @@ describe("AgentSession goals", () => {
 			{ objective: "finish the active goal" },
 			undefined,
 			undefined,
-			{} as ExtensionContext,
+			{} as ToolExecutionContext,
 		);
 		const errorMessage = fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid_api_key" });
 

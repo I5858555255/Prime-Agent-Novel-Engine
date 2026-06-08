@@ -683,11 +683,11 @@ function getDefaultTheme(): string {
 // Global Theme Instance
 // ============================================================================
 
-// Use globalThis to share theme across module loaders (tsx + jiti in dev mode)
+// Use globalThis to share theme across module instances in dev mode.
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
 
 // Export theme as a getter that reads from globalThis
-// This ensures all module instances (tsx, jiti) see the same theme
+// This ensures all module instances see the same theme.
 export const theme: Theme = new Proxy({} as Theme, {
 	get(_target, prop) {
 		const t = (globalThis as Record<symbol, Theme>)[THEME_KEY];

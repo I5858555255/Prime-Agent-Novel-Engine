@@ -49,7 +49,7 @@ describe("parseArgs", () => {
 			const result = parseArgs(["-p", prompt]);
 			expect(result.print).toBe(true);
 			expect(result.messages).toEqual([prompt]);
-			expect(result.unknownFlags.size).toBe(0);
+			expect(result.diagnostics).toEqual([]);
 		});
 
 		test("does not consume options after -p as prompts", () => {
@@ -156,36 +156,6 @@ describe("parseArgs", () => {
 		test("parses --no-session flag", () => {
 			const result = parseArgs(["--no-session"]);
 			expect(result.noSession).toBe(true);
-		});
-	});
-
-	describe("--extension flag", () => {
-		test("parses single --extension", () => {
-			const result = parseArgs(["--extension", "./my-extension.ts"]);
-			expect(result.extensions).toEqual(["./my-extension.ts"]);
-		});
-
-		test("parses -e shorthand", () => {
-			const result = parseArgs(["-e", "./my-extension.ts"]);
-			expect(result.extensions).toEqual(["./my-extension.ts"]);
-		});
-
-		test("parses multiple --extension flags", () => {
-			const result = parseArgs(["--extension", "./ext1.ts", "-e", "./ext2.ts"]);
-			expect(result.extensions).toEqual(["./ext1.ts", "./ext2.ts"]);
-		});
-	});
-
-	describe("--no-extensions flag", () => {
-		test("parses --no-extensions flag", () => {
-			const result = parseArgs(["--no-extensions"]);
-			expect(result.noExtensions).toBe(true);
-		});
-
-		test("parses --no-extensions with explicit -e flags", () => {
-			const result = parseArgs(["--no-extensions", "-e", "foo.ts", "-e", "bar.ts"]);
-			expect(result.noExtensions).toBe(true);
-			expect(result.extensions).toEqual(["foo.ts", "bar.ts"]);
 		});
 	});
 
@@ -342,20 +312,20 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual(["explain this"]);
 		});
 
-		test("captures unknown long flags with string values", () => {
+		test("reports unknown long flags with string values", () => {
 			const result = parseArgs(["--unknown-flag", "message"]);
-			expect(result.messages).toEqual([]);
-			expect(result.unknownFlags.get("unknown-flag")).toBe("message");
+			expect(result.messages).toEqual(["message"]);
+			expect(result.diagnostics).toContainEqual({ type: "error", message: "Unknown option: --unknown-flag" });
 		});
 
-		test("captures unknown boolean long flags", () => {
+		test("reports unknown boolean long flags", () => {
 			const result = parseArgs(["--unknown-flag"]);
-			expect(result.unknownFlags.get("unknown-flag")).toBe(true);
+			expect(result.diagnostics).toContainEqual({ type: "error", message: "Unknown option: --unknown-flag" });
 		});
 
-		test("captures unknown long flags with equals syntax", () => {
+		test("reports unknown long flags with equals syntax", () => {
 			const result = parseArgs(["--unknown-flag=value"]);
-			expect(result.unknownFlags.get("unknown-flag")).toBe("value");
+			expect(result.diagnostics).toContainEqual({ type: "error", message: "Unknown option: --unknown-flag" });
 		});
 	});
 

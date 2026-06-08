@@ -8,11 +8,6 @@ import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.js";
 
-const MIGRATION_GUIDE_URL =
-	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
-const EXTENSIONS_DOC_URL =
-	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/extensions.md";
-
 /**
  * Migrate legacy oauth.json and settings.json apiKeys to auth.json.
  *
@@ -216,45 +211,9 @@ function migrateToolsToBin(): void {
 }
 
 /**
- * Check for deprecated hooks/ and tools/ directories.
- * Note: tools/ may contain fd/rg binaries extracted by pi, so only warn if it has other files.
+ * Run resource layout migrations.
  */
-function checkDeprecatedExtensionDirs(baseDir: string, label: string): string[] {
-	const hooksDir = join(baseDir, "hooks");
-	const toolsDir = join(baseDir, "tools");
-	const warnings: string[] = [];
-
-	if (existsSync(hooksDir)) {
-		warnings.push(`${label} hooks/ directory found. Hooks have been renamed to extensions.`);
-	}
-
-	if (existsSync(toolsDir)) {
-		// Check if tools/ contains anything other than fd/rg (which are auto-extracted binaries)
-		try {
-			const entries = readdirSync(toolsDir);
-			const customTools = entries.filter((e) => {
-				const lower = e.toLowerCase();
-				return (
-					lower !== "fd" && lower !== "rg" && lower !== "fd.exe" && lower !== "rg.exe" && !e.startsWith(".") // Ignore .DS_Store and other hidden files
-				);
-			});
-			if (customTools.length > 0) {
-				warnings.push(
-					`${label} tools/ directory contains custom tools. Custom tools have been merged into extensions.`,
-				);
-			}
-		} catch {
-			// Ignore read errors
-		}
-	}
-
-	return warnings;
-}
-
-/**
- * Run extension system migrations (commands→prompts) and collect warnings about deprecated directories.
- */
-function migrateExtensionSystem(cwd: string): string[] {
+function migrateResourceLayout(cwd: string): string[] {
 	const agentDir = getAgentDir();
 	const projectDir = join(cwd, CONFIG_DIR_NAME);
 
@@ -262,13 +221,7 @@ function migrateExtensionSystem(cwd: string): string[] {
 	migrateCommandsToPrompts(agentDir, "Global");
 	migrateCommandsToPrompts(projectDir, "Project");
 
-	// Check for deprecated directories
-	const warnings = [
-		...checkDeprecatedExtensionDirs(agentDir, "Global"),
-		...checkDeprecatedExtensionDirs(projectDir, "Project"),
-	];
-
-	return warnings;
+	return [];
 }
 
 /**
@@ -280,9 +233,6 @@ export async function showDeprecationWarnings(warnings: string[]): Promise<void>
 	for (const warning of warnings) {
 		console.log(chalk.yellow(`Warning: ${warning}`));
 	}
-	console.log(chalk.yellow(`\nMove your extensions to the extensions/ directory.`));
-	console.log(chalk.yellow(`Migration guide: ${MIGRATION_GUIDE_URL}`));
-	console.log(chalk.yellow(`Documentation: ${EXTENSIONS_DOC_URL}`));
 	console.log(chalk.dim(`\nPress any key to continue...`));
 
 	await new Promise<void>((resolve) => {
@@ -310,6 +260,6 @@ export function runMigrations(cwd: string): {
 	migrateSessionsFromAgentRoot();
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();
-	const deprecationWarnings = migrateExtensionSystem(cwd);
+	const deprecationWarnings = migrateResourceLayout(cwd);
 	return { migratedAuthProviders, deprecationWarnings };
 }

@@ -67,7 +67,6 @@ export type PackageSource =
 	| string
 	| {
 			source: string;
-			extensions?: string[];
 			skills?: string[];
 			prompts?: string[];
 			themes?: string[];
@@ -91,7 +90,6 @@ export interface Settings {
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
 	npmCommand?: string[]; // Command used for npm package lookup/install operations, argv-style (e.g., ["mise", "exec", "node@20", "--", "npm"])
 	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
-	extensions?: string[]; // Array of local extension file paths or directories
 	skills?: string[]; // Array of local skill file paths or directories
 	prompts?: string[]; // Array of local prompt template paths or directories
 	themes?: string[]; // Array of local theme file paths or directories
@@ -795,23 +793,6 @@ export class SettingsManager {
 		const projectSettings = structuredClone(this.projectSettings);
 		projectSettings.packages = packages;
 		this.markProjectModified("packages");
-		this.saveProjectSettings(projectSettings);
-	}
-
-	getExtensionPaths(): string[] {
-		return [...(this.settings.extensions ?? [])];
-	}
-
-	setExtensionPaths(paths: string[]): void {
-		this.globalSettings.extensions = paths;
-		this.markModified("extensions");
-		this.save();
-	}
-
-	setProjectExtensionPaths(paths: string[]): void {
-		const projectSettings = structuredClone(this.projectSettings);
-		projectSettings.extensions = paths;
-		this.markProjectModified("extensions");
 		this.saveProjectSettings(projectSettings);
 	}
 

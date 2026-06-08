@@ -15,6 +15,10 @@
 - Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.
 - Fixed browser sign-in links to show plain URLs when terminal hyperlinks are unsupported.
 
+### Removed
+
+- Removed extension loading, extension CLI/config/package resources, extension runtime APIs, and bundled extension documentation/examples (ENG-3921).
+
 ## [0.0.7] - 2026-06-01
 
 ### Added

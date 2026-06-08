@@ -94,31 +94,6 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
-	it("prompt waits for retry completion even when assistant message_end handling is delayed", async () => {
-		const harness = await createHarness({
-			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
-			extensionFactories: [
-				(pi) => {
-					pi.on("message_end", async (event) => {
-						if (event.message.role === "assistant") {
-							await new Promise((resolve) => setTimeout(resolve, 40));
-						}
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("recovered"),
-		]);
-
-		await harness.session.prompt("test");
-
-		expect(harness.faux.state.callCount).toBe(2);
-		expect(harness.session.isRetrying).toBe(false);
-	});
-
 	it("does not retry when retry is disabled", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: false } } });
 		harnesses.push(harness);
@@ -196,42 +171,6 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isStreaming).toBe(false);
 		await harness.session.prompt("follow-up");
 		expect(harness.faux.state.callCount).toBe(4);
-	});
-
-	it("emits extension events before public event subscribers", async () => {
-		const order: string[] = [];
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.on("message_start", async (event) => {
-						order.push(`extension:${event.type}:${event.message.role}`);
-					});
-					pi.on("message_end", async (event) => {
-						order.push(`extension:${event.type}:${event.message.role}`);
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-		harness.session.subscribe((event) => {
-			if (event.type === "message_start" || event.type === "message_end") {
-				order.push(`public:${event.type}:${event.message.role}`);
-			}
-		});
-		harness.setResponses([fauxAssistantMessage("done")]);
-
-		await harness.session.prompt("hi");
-
-		expect(order).toEqual([
-			"extension:message_start:user",
-			"public:message_start:user",
-			"extension:message_end:user",
-			"public:message_end:user",
-			"extension:message_start:assistant",
-			"public:message_start:assistant",
-			"extension:message_end:assistant",
-			"public:message_end:assistant",
-		]);
 	});
 
 	it("emits the expected event order for a single prompt", async () => {

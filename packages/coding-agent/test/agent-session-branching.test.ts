@@ -54,13 +54,12 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 			agentDir: tempDir,
 			authStorage,
 			resourceLoaderOptions: {
-				noExtensions: true,
 				noSkills: true,
 				noPromptTemplates: true,
 				noThemes: true,
 			},
 		};
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager }) => {
 			const services = await createAgentSessionServices({
 				...servicesOptions,
 				cwd,
@@ -69,7 +68,6 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 				...(await createAgentSessionFromServices({
 					services,
 					sessionManager,
-					sessionStartEvent,
 					model,
 					tools: ["ipython", "bash", "edit"],
 				})),

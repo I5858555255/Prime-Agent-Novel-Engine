@@ -170,9 +170,9 @@ Every theme must define all 51 color tokens. There are no optional colors.
 | `selectedBg` | Selected line background |
 | `userMessageBg` | User message background |
 | `userMessageText` | User message text |
-| `customMessageBg` | Extension message background |
-| `customMessageText` | Extension message text |
-| `customMessageLabel` | Extension message label |
+| `customMessageBg` | Custom message background |
+| `customMessageText` | Custom message text |
+| `customMessageLabel` | Custom message label |
 | `toolPendingBg` | Tool box (pending) |
 | `toolSuccessBg` | Tool box (success) |
 | `toolErrorBg` | Tool box (error) |

@@ -1,7 +1,7 @@
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.js";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.js";
+import type { AnyToolDefinition, ToolRenderContext } from "../../../core/tools/tool-definition.js";
 import { convertToPng } from "../../../utils/image-convert.js";
 import { theme } from "../theme/theme.js";
 import { getIpythonCodeFromArgs, IPythonCellComponent } from "./ipython-cell.js";
@@ -28,8 +28,8 @@ export class ToolExecutionComponent extends Container {
 	private showImages: boolean;
 	private imageWidthCells: number;
 	private isPartial = true;
-	private toolDefinition?: ToolDefinition<any, any>;
-	private builtInToolDefinition?: ToolDefinition<any, any>;
+	private toolDefinition?: AnyToolDefinition;
+	private builtInToolDefinition?: AnyToolDefinition;
 	private ui: TUI;
 	private cwd: string;
 	private executionStarted = false;
@@ -47,7 +47,7 @@ export class ToolExecutionComponent extends Container {
 		toolCallId: string,
 		args: any,
 		options: ToolExecutionOptions = {},
-		toolDefinition: ToolDefinition<any, any> | undefined,
+		toolDefinition: AnyToolDefinition | undefined,
 		ui: TUI,
 		cwd: string,
 	) {
@@ -80,7 +80,7 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
-	private getCallRenderer(): ToolDefinition<any, any>["renderCall"] | undefined {
+	private getCallRenderer(): AnyToolDefinition["renderCall"] | undefined {
 		if (!this.builtInToolDefinition) {
 			return this.toolDefinition?.renderCall;
 		}
@@ -90,7 +90,7 @@ export class ToolExecutionComponent extends Container {
 		return this.toolDefinition.renderCall ?? this.builtInToolDefinition.renderCall;
 	}
 
-	private getResultRenderer(): ToolDefinition<any, any>["renderResult"] | undefined {
+	private getResultRenderer(): AnyToolDefinition["renderResult"] | undefined {
 		if (!this.builtInToolDefinition) {
 			return this.toolDefinition?.renderResult;
 		}

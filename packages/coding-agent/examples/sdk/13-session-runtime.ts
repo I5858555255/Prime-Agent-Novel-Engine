@@ -5,7 +5,7 @@
  * for example for new-session, resume, fork, or import flows.
  *
  * The important pattern is: after the runtime replaces the active session,
- * rebind any session-local subscriptions and extension bindings to `runtime.session`.
+ * rebind any session-local subscriptions to `runtime.session`.
  */
 
 import {
@@ -17,13 +17,12 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager }) => {
 	const services = await createAgentSessionServices({ cwd });
 	return {
 		...(await createAgentSessionFromServices({
 			services,
 			sessionManager,
-			sessionStartEvent,
 		})),
 		services,
 		diagnostics: services.diagnostics,
@@ -40,7 +39,6 @@ let unsubscribe: (() => void) | undefined;
 async function bindSession() {
 	unsubscribe?.();
 	const session = runtime.session;
-	await session.bindExtensions({});
 	unsubscribe = session.subscribe((event) => {
 		if (event.type === "queue_update") {
 			console.log("Queued:", event.steering.length + event.followUp.length);

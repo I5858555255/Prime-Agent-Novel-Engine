@@ -14,8 +14,6 @@ export class CustomEditor extends Editor {
 	public onCtrlD?: () => void;
 	public onPasteImage?: () => void;
 	public onMoveBelowPrompt?: () => boolean;
-	/** Handler for extension-registered shortcuts. Returns true if handled. */
-	public onExtensionShortcut?: (data: string) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions) {
 		const promptPrefix = options?.promptPrefix ?? "> ";
@@ -65,11 +63,6 @@ export class CustomEditor extends Editor {
 	}
 
 	handleInput(data: string): void {
-		// Check extension-registered shortcuts first
-		if (this.onExtensionShortcut?.(data)) {
-			return;
-		}
-
 		// Check for paste image keybinding
 		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
 			this.onPasteImage?.();

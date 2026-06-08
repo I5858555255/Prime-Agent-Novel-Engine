@@ -601,7 +601,7 @@ Those stay in TypeScript so children share the parent harness implementation:
 - session storage
 - cost and usage accounting
 - skills loader
-- slash-command and extension environment
+- slash-command environment
 
 ## Failure Modes
 

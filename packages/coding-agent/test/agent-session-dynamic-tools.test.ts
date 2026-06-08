@@ -9,7 +9,7 @@ import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 
-describe("AgentSession dynamic tool registration", () => {
+describe("AgentSession SDK custom tools", () => {
 	let tempDir: string;
 	let agentDir: string;
 
@@ -25,7 +25,7 @@ describe("AgentSession dynamic tool registration", () => {
 		}
 	});
 
-	it("refreshes tool registry when tools are registered after initialization", async () => {
+	it("adds SDK custom tools to the active tool registry", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory();
 
@@ -33,24 +33,6 @@ describe("AgentSession dynamic tool registration", () => {
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", () => {
-						pi.registerTool({
-							name: "dynamic_tool",
-							label: "Dynamic Tool",
-							description: "Tool registered from session_start",
-							promptSnippet: "Run dynamic test behavior",
-							promptGuidelines: ["Use dynamic_tool when the user asks for dynamic behavior tests."],
-							parameters: Type.Object({}),
-							execute: async () => ({
-								content: [{ type: "text", text: "ok" }],
-								details: {},
-							}),
-						});
-					});
-				},
-			],
 		});
 		await resourceLoader.reload();
 
@@ -61,11 +43,21 @@ describe("AgentSession dynamic tool registration", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader,
+			customTools: [
+				{
+					name: "dynamic_tool",
+					label: "Dynamic Tool",
+					description: "Tool registered through createAgentSession",
+					promptSnippet: "Run dynamic test behavior",
+					promptGuidelines: ["Use dynamic_tool when the user asks for dynamic behavior tests."],
+					parameters: Type.Object({}),
+					execute: async () => ({
+						content: [{ type: "text", text: "ok" }],
+						details: {},
+					}),
+				},
+			],
 		});
-
-		expect(session.getAllTools().map((tool) => tool.name)).not.toContain("dynamic_tool");
-
-		await session.bindExtensions({});
 
 		const allTools = session.getAllTools();
 		const dynamicTool = allTools.find((tool) => tool.name === "dynamic_tool");
@@ -73,8 +65,8 @@ describe("AgentSession dynamic tool registration", () => {
 
 		expect(allTools.map((tool) => tool.name)).toContain("dynamic_tool");
 		expect(dynamicTool?.sourceInfo).toMatchObject({
-			path: "<inline:1>",
-			source: "inline",
+			path: "<sdk:dynamic_tool>",
+			source: "sdk",
 			scope: "temporary",
 			origin: "top-level",
 		});
@@ -142,22 +134,6 @@ describe("AgentSession dynamic tool registration", () => {
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_start", () => {
-						pi.registerTool({
-							name: "hidden_tool",
-							label: "Hidden Tool",
-							description: "Description should not appear in available tools",
-							parameters: Type.Object({}),
-							execute: async () => ({
-								content: [{ type: "text", text: "ok" }],
-								details: {},
-							}),
-						});
-					});
-				},
-			],
 		});
 		await resourceLoader.reload();
 
@@ -168,9 +144,19 @@ describe("AgentSession dynamic tool registration", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader,
+			customTools: [
+				{
+					name: "hidden_tool",
+					label: "Hidden Tool",
+					description: "Description should not appear in available tools",
+					parameters: Type.Object({}),
+					execute: async () => ({
+						content: [{ type: "text", text: "ok" }],
+						details: {},
+					}),
+				},
+			],
 		});
-
-		await session.bindExtensions({});
 
 		expect(session.getAllTools().map((tool) => tool.name)).toContain("hidden_tool");
 		expect(session.getActiveToolNames()).toContain("hidden_tool");

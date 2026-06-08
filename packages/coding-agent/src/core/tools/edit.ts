@@ -4,7 +4,6 @@ import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.js";
-import type { ToolDefinition } from "../extensions/types.js";
 import {
 	applyEditsToNormalizedContent,
 	computeEditsDiff,
@@ -20,6 +19,7 @@ import {
 import { withFileMutationQueue } from "./file-mutation-queue.js";
 import { resolveToCwd } from "./path-utils.js";
 import { invalidArgText, shortenPath, str } from "./render-utils.js";
+import type { ToolDefinition } from "./tool-definition.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
 type EditPreview = EditDiffResult | EditDiffError;

@@ -129,10 +129,10 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
-See [Compaction](compaction.md) for branch summarization internals and extension hooks.
+See [Compaction](compaction.md) for branch summarization internals.
 
 ## Session Format
 
-Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, compactions, branch summaries, and extension entries.
+Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, compactions, branch summaries, and custom entries.
 
-For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](session-format.md).
+For parsers, SDK usage, and the full SessionManager API, see [Session Format](session-format.md).

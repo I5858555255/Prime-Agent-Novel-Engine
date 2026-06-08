@@ -18,7 +18,7 @@ import { getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
 
-type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string };
+type UpdateTarget = { type: "all" } | { type: "self" } | { type: "packages"; source?: string };
 
 interface PackageCommandOptions {
 	command: PackageCommand;
@@ -50,7 +50,7 @@ function getPackageCommandUsage(command: PackageCommand): string {
 		case "remove":
 			return `${APP_NAME} remove <source> [-l]`;
 		case "update":
-			return `${APP_NAME} update [source|self|${APP_NAME}] [--self] [--extensions] [--extension <source>] [--force]`;
+			return `${APP_NAME} update [source|self|${APP_NAME}] [--self] [--packages] [--package <source>] [--force]`;
 		case "list":
 			return `${APP_NAME} list`;
 	}
@@ -101,12 +101,12 @@ Update ${APP_NAME} and installed packages.
 
 Options:
   --self                  Update ${APP_NAME} only
-  --extensions            Update installed packages only
-  --extension <source>    Update one package only
+  --packages              Update installed packages only
+  --package <source>      Update one package only
   --force                 Reinstall ${APP_NAME} even if the current version is latest
 
 Short forms:
-  ${APP_NAME} update                Update ${APP_NAME} and all extensions
+  ${APP_NAME} update                Update ${APP_NAME} and all packages
   ${APP_NAME} update <source>       Update one package
   ${APP_NAME} update ${APP_NAME}             Update ${APP_NAME} only (self works as an alias)
 `);
@@ -143,8 +143,8 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 	let conflictingOptions: string | undefined;
 	let source: string | undefined;
 	let selfFlag = false;
-	let extensionsFlag = false;
-	let extensionFlagSource: string | undefined;
+	let packagesFlag = false;
+	let packageFlagSource: string | undefined;
 
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index];
@@ -171,9 +171,9 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			continue;
 		}
 
-		if (arg === "--extensions") {
+		if (arg === "--packages") {
 			if (command === "update") {
-				extensionsFlag = true;
+				packagesFlag = true;
 			} else {
 				invalidOption = invalidOption ?? arg;
 			}
@@ -189,7 +189,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			continue;
 		}
 
-		if (arg === "--extension") {
+		if (arg === "--package") {
 			if (command !== "update") {
 				invalidOption = invalidOption ?? arg;
 				continue;
@@ -198,11 +198,11 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			const value = rest[index + 1];
 			if (!value || value.startsWith("-")) {
 				missingOptionValue = missingOptionValue ?? arg;
-			} else if (extensionFlagSource) {
-				conflictingOptions = conflictingOptions ?? "--extension can only be provided once";
+			} else if (packageFlagSource) {
+				conflictingOptions = conflictingOptions ?? "--package can only be provided once";
 				index++;
 			} else {
-				extensionFlagSource = value;
+				packageFlagSource = value;
 				index++;
 			}
 			continue;
@@ -222,31 +222,31 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 
 	let updateTarget: UpdateTarget | undefined;
 	if (command === "update") {
-		if (extensionFlagSource) {
-			if (selfFlag || extensionsFlag) {
-				conflictingOptions = conflictingOptions ?? "--extension cannot be combined with --self or --extensions";
+		if (packageFlagSource) {
+			if (selfFlag || packagesFlag) {
+				conflictingOptions = conflictingOptions ?? "--package cannot be combined with --self or --packages";
 			}
 			if (source) {
-				conflictingOptions = conflictingOptions ?? "--extension cannot be combined with a positional source";
+				conflictingOptions = conflictingOptions ?? "--package cannot be combined with a positional source";
 			}
-			updateTarget = { type: "extensions", source: extensionFlagSource };
+			updateTarget = { type: "packages", source: packageFlagSource };
 		} else if (source) {
 			const sourceIsSelf = source === "self" || source === "pi" || source === APP_NAME;
 			if (sourceIsSelf) {
-				updateTarget = extensionsFlag ? { type: "all" } : { type: "self" };
+				updateTarget = packagesFlag ? { type: "all" } : { type: "self" };
 			} else {
-				if (extensionsFlag || selfFlag) {
+				if (packagesFlag || selfFlag) {
 					conflictingOptions =
-						conflictingOptions ?? "positional update targets cannot be combined with --self or --extensions";
+						conflictingOptions ?? "positional update targets cannot be combined with --self or --packages";
 				}
-				updateTarget = { type: "extensions", source };
+				updateTarget = { type: "packages", source };
 			}
-		} else if (selfFlag && extensionsFlag) {
+		} else if (selfFlag && packagesFlag) {
 			updateTarget = { type: "all" };
 		} else if (selfFlag) {
 			updateTarget = { type: "self" };
-		} else if (extensionsFlag) {
-			updateTarget = { type: "extensions" };
+		} else if (packagesFlag) {
+			updateTarget = { type: "packages" };
 		} else {
 			updateTarget = { type: "all" };
 		}
@@ -270,8 +270,8 @@ function updateTargetIncludesSelf(target: UpdateTarget): boolean {
 	return target.type === "all" || target.type === "self";
 }
 
-function updateTargetIncludesExtensions(target: UpdateTarget): boolean {
-	return target.type === "all" || target.type === "extensions";
+function updateTargetIncludesPackages(target: UpdateTarget): boolean {
+	return target.type === "all" || target.type === "packages";
 }
 
 function printSelfUpdateUnavailable(
@@ -485,8 +485,8 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 
 			case "update": {
 				const target = options.updateTarget ?? { type: "all" };
-				if (updateTargetIncludesExtensions(target)) {
-					const updateSource = target.type === "extensions" ? target.source : undefined;
+				if (updateTargetIncludesPackages(target)) {
+					const updateSource = target.type === "packages" ? target.source : undefined;
 					await packageManager.update(updateSource);
 					if (updateSource) {
 						console.log(chalk.green(`Updated ${updateSource}`));

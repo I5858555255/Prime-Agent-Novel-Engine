@@ -782,7 +782,7 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Register a provider dynamically (from extensions).
+	 * Register a provider dynamically.
 	 *
 	 * If provider has models: replaces all existing models for this provider.
 	 * If provider has only baseUrl/headers: overrides existing models' URLs.

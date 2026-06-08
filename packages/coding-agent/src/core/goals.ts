@@ -1,7 +1,7 @@
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
-import type { ToolDefinition } from "./extensions/types.js";
 import type { CustomMessage } from "./messages.js";
+import type { ToolDefinition } from "./tools/tool-definition.js";
 
 export const GOAL_STATE_CUSTOM_TYPE = "thread_goal_state";
 export const GOAL_CONTEXT_CUSTOM_TYPE = "goal_context";

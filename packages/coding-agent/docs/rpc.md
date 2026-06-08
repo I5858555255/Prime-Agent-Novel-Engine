@@ -63,8 +63,6 @@ With images:
 
 If the agent is streaming and no `streamingBehavior` is specified, the command returns an error.
 
-**Extension commands**: If the message is an extension command (e.g., `/mycommand`), it executes immediately even during streaming. Extension commands manage their own LLM interaction via `pi.sendMessage()`.
-
 **Input expansion**: Skill commands (`/skill:name`) and prompt templates (`/template`) are expanded before sending/queueing.
 
 Response:
@@ -78,7 +76,7 @@ The `images` field is optional. Each image uses `ImageContent` format: `{"type":
 
 #### steer
 
-Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. Skill commands and prompt templates are expanded.
 
 ```json
 {"type": "steer", "message": "Stop and do this instead"}
@@ -100,7 +98,7 @@ See [set_steering_mode](#set_steering_mode) for controlling how steering message
 
 #### follow_up
 
-Queue a follow-up message to be processed after the agent finishes. Delivered only when agent has no more tool calls or steering messages. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a follow-up message to be processed after the agent finishes. Delivered only when agent has no more tool calls or steering messages. Skill commands and prompt templates are expanded.
 
 ```json
 {"type": "follow_up", "message": "After you're done, also do this"}
@@ -135,7 +133,7 @@ Response:
 
 #### new_session
 
-Start a fresh session. Can be cancelled by a `session_before_switch` extension event handler.
+Start a fresh session.
 
 ```json
 {"type": "new_session"}
@@ -151,7 +149,7 @@ Response:
 {"type": "response", "command": "new_session", "success": true, "data": {"cancelled": false}}
 ```
 
-If an extension cancelled:
+If the operation is cancelled:
 ```json
 {"type": "response", "command": "new_session", "success": true, "data": {"cancelled": true}}
 ```
@@ -562,7 +560,7 @@ Response:
 
 #### switch_session
 
-Load a different session file. Can be cancelled by a `session_before_switch` extension event handler.
+Load a different session file.
 
 ```json
 {"type": "switch_session", "sessionPath": "/path/to/session.jsonl"}
@@ -573,14 +571,14 @@ Response:
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": false}}
 ```
 
-If an extension cancelled the switch:
+If the switch is cancelled:
 ```json
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": true}}
 ```
 
 #### fork
 
-Create a new fork from a previous user message on the active branch. Can be cancelled by a `session_before_fork` extension event handler. Returns the text of the message being forked from.
+Create a new fork from a previous user message on the active branch. Returns the text of the message being forked from.
 
 ```json
 {"type": "fork", "entryId": "abc123"}
@@ -596,7 +594,7 @@ Response:
 }
 ```
 
-If an extension cancelled the fork:
+If the fork is cancelled:
 ```json
 {
   "type": "response",
@@ -608,7 +606,7 @@ If an extension cancelled the fork:
 
 #### clone
 
-Duplicate the current active branch into a new session at the current position. Can be cancelled by a `session_before_fork` extension event handler.
+Duplicate the current active branch into a new session at the current position.
 
 ```json
 {"type": "clone"}
@@ -624,7 +622,7 @@ Response:
 }
 ```
 
-If an extension cancelled the clone:
+If the clone is cancelled:
 ```json
 {
   "type": "response",
@@ -700,7 +698,7 @@ The current session name is available via `get_state` in the `sessionName` field
 
 #### get_commands
 
-Get available commands (extension commands, prompt templates, and skills). These can be invoked via the `prompt` command by prefixing with `/`.
+Get available commands (prompt templates and skills). These can be invoked via the `prompt` command by prefixing with `/`.
 
 ```json
 {"type": "get_commands"}
@@ -714,7 +712,6 @@ Response:
   "success": true,
   "data": {
     "commands": [
-      {"name": "session-name", "description": "Set or clear session name", "source": "extension", "path": "/home/user/.pi/agent/extensions/session.ts"},
       {"name": "fix-tests", "description": "Fix failing tests", "source": "prompt", "location": "project", "path": "/home/user/myproject/.pi/agent/prompts/fix-tests.md"},
       {"name": "skill:brave-search", "description": "Web search via Brave API", "source": "skill", "location": "user", "path": "/home/user/.pi/agent/skills/brave-search/SKILL.md"}
     ]
@@ -724,12 +721,11 @@ Response:
 
 Each command has:
 - `name`: Command name (invoke with `/name`)
-- `description`: Human-readable description (optional for extension commands)
+- `description`: Human-readable description
 - `source`: What kind of command:
-  - `"extension"`: Registered via `pi.registerCommand()` in an extension
   - `"prompt"`: Loaded from a prompt template `.md` file
   - `"skill"`: Loaded from a skill directory (name is prefixed with `skill:`)
-- `location`: Where it was loaded from (optional, not present for extensions):
+- `location`: Where it was loaded from:
   - `"user"`: User-level (`~/.pi/agent/`)
   - `"project"`: Project-level (`./.pi/agent/`)
   - `"path"`: Explicit path via CLI or settings
@@ -760,7 +756,6 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `compaction_end` | Compaction completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
-| `extension_error` | Extension threw an error |
 
 ### agent_start
 
@@ -968,211 +963,6 @@ On final failure (max retries exceeded):
 }
 ```
 
-### extension_error
-
-Emitted when an extension throws an error.
-
-```json
-{
-  "type": "extension_error",
-  "extensionPath": "/path/to/extension.ts",
-  "event": "tool_call",
-  "error": "Error message..."
-}
-```
-
-## Extension UI Protocol
-
-Extensions can request user interaction via `ctx.ui.select()`, `ctx.ui.confirm()`, etc. In RPC mode, these are translated into a request/response sub-protocol on top of the base command/event flow.
-
-There are two categories of extension UI methods:
-
-- **Dialog methods** (`select`, `confirm`, `input`, `editor`): emit an `extension_ui_request` on stdout and block until the client sends back an `extension_ui_response` on stdin with the matching `id`.
-- **Fire-and-forget methods** (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`): emit an `extension_ui_request` on stdout but do not expect a response. The client can display the information or ignore it.
-
-If a dialog method includes a `timeout` field, the agent-side will auto-resolve with a default value when the timeout expires. The client does not need to track timeouts.
-
-Some `ExtensionUIContext` methods are not supported or degraded in RPC mode because they require direct TUI access:
-- `custom()` returns `undefined`
-- `setWorkingMessage()`, `setWorkingIndicator()`, `setFooter()`, `setHeader()`, `setEditorComponent()`, `setToolsExpanded()` are no-ops
-- `getEditorText()` returns `""`
-- `getToolsExpanded()` returns `false`
-- `pasteToEditor()` delegates to `setEditorText()` (no paste/collapse handling)
-- `getAllThemes()` returns `[]`
-- `getTheme()` returns `undefined`
-- `setTheme()` returns `{ success: false, error: "..." }`
-
-Note: `ctx.hasUI` is `true` in RPC mode because the dialog and fire-and-forget methods are functional via the extension UI sub-protocol.
-
-### Extension UI Requests (stdout)
-
-All requests have `type: "extension_ui_request"`, a unique `id`, and a `method` field.
-
-#### select
-
-Prompt the user to choose from a list. Dialog methods with a `timeout` field include the timeout in milliseconds; the agent auto-resolves with `undefined` if the client doesn't respond in time.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-1",
-  "method": "select",
-  "title": "Allow dangerous command?",
-  "options": ["Allow", "Block"],
-  "timeout": 10000
-}
-```
-
-Expected response: `extension_ui_response` with `value` (the selected option string) or `cancelled: true`.
-
-#### confirm
-
-Prompt the user for yes/no confirmation.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-2",
-  "method": "confirm",
-  "title": "Clear session?",
-  "message": "All messages will be lost.",
-  "timeout": 5000
-}
-```
-
-Expected response: `extension_ui_response` with `confirmed: true/false` or `cancelled: true`.
-
-#### input
-
-Prompt the user for free-form text.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-3",
-  "method": "input",
-  "title": "Enter a value",
-  "placeholder": "type something..."
-}
-```
-
-Expected response: `extension_ui_response` with `value` (the entered text) or `cancelled: true`.
-
-#### editor
-
-Open a multi-line text editor with optional prefilled content.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-4",
-  "method": "editor",
-  "title": "Edit some text",
-  "prefill": "Line 1\nLine 2\nLine 3"
-}
-```
-
-Expected response: `extension_ui_response` with `value` (the edited text) or `cancelled: true`.
-
-#### notify
-
-Display a notification. Fire-and-forget, no response expected.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-5",
-  "method": "notify",
-  "message": "Command blocked by user",
-  "notifyType": "warning"
-}
-```
-
-The `notifyType` field is `"info"`, `"warning"`, or `"error"`. Defaults to `"info"` if omitted.
-
-#### setStatus
-
-Set or clear a status entry in the footer/status bar. Fire-and-forget.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-6",
-  "method": "setStatus",
-  "statusKey": "my-ext",
-  "statusText": "Turn 3 running..."
-}
-```
-
-Send `statusText: undefined` (or omit it) to clear the status entry for that key.
-
-#### setWidget
-
-Set or clear a widget (block of text lines) displayed above or below the editor. Fire-and-forget.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-7",
-  "method": "setWidget",
-  "widgetKey": "my-ext",
-  "widgetLines": ["--- My Widget ---", "Line 1", "Line 2"],
-  "widgetPlacement": "aboveEditor"
-}
-```
-
-Send `widgetLines: undefined` (or omit it) to clear the widget. The `widgetPlacement` field is `"aboveEditor"` (default) or `"belowEditor"`. Only string arrays are supported in RPC mode; component factories are ignored.
-
-#### setTitle
-
-Set the terminal window/tab title. Fire-and-forget.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-8",
-  "method": "setTitle",
-  "title": "pi - my project"
-}
-```
-
-#### set_editor_text
-
-Set the text in the input editor. Fire-and-forget.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-9",
-  "method": "set_editor_text",
-  "text": "prefilled text for the user"
-}
-```
-
-### Extension UI Responses (stdin)
-
-Responses are sent for dialog methods only (`select`, `confirm`, `input`, `editor`). The `id` must match the request.
-
-#### Value response (select, input, editor)
-
-```json
-{"type": "extension_ui_response", "id": "uuid-1", "value": "Allow"}
-```
-
-#### Confirmation response (confirm)
-
-```json
-{"type": "extension_ui_response", "id": "uuid-2", "confirmed": true}
-```
-
-#### Cancellation response (any dialog)
-
-Dismiss any dialog method. The extension receives `undefined` (for select/input/editor) or `false` (for confirm).
-
-```json
-{"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}
-```
-
 ## Error Handling
 
 Failed commands return a response with `success: false`:
@@ -1203,7 +993,7 @@ Source files:
 - [`packages/ai/src/types.ts`](../../ai/src/types.ts) - `Model`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
 - [`packages/agent/src/types.ts`](../../agent/src/types.ts) - `AgentMessage`, `AgentEvent`
 - [`src/core/messages.ts`](../src/core/messages.ts) - `BashExecutionMessage`
-- [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
+- [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types
 
 ### Model
 
@@ -1351,8 +1141,6 @@ for event in read_events():
 ## Example: Interactive Client (Node.js)
 
 See [`test/rpc-example.ts`](../test/rpc-example.ts) for a complete interactive example, or [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts) for a typed client implementation.
-
-For a complete example of handling the extension UI protocol, see [`examples/rpc-extension-ui.ts`](../examples/rpc-extension-ui.ts) which pairs with the [`examples/extensions/rpc-demo.ts`](../examples/extensions/rpc-demo.ts) extension.
 
 ```javascript
 const { spawn } = require("child_process");

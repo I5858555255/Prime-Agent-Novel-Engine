@@ -7,7 +7,6 @@ LLMs have limited context windows. When conversations grow too long, pi uses com
 - [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) - Branch summarization
 - [`packages/coding-agent/src/core/compaction/utils.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/utils.ts) - Shared utilities (file tracking, serialization)
 - [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/session-manager.ts) - Entry types (`CompactionEntry`, `BranchSummaryEntry`)
-- [`packages/coding-agent/src/core/extensions/types.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/extensions/types.ts) - Extension event types
 
 For TypeScript definitions in your project, inspect `node_modules/@earendil-works/pi-coding-agent/dist/`.
 
@@ -129,7 +128,7 @@ interface CompactionEntry<T = unknown> {
   summary: string;
   firstKeptEntryId: string;
   tokensBefore: number;
-  fromHook?: boolean;  // true if provided by extension (legacy field name)
+  fromHook?: boolean;  // legacy hook marker
   details?: T;         // implementation-specific data
 }
 
@@ -140,7 +139,7 @@ interface CompactionDetails {
 }
 ```
 
-Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure.
+The default compaction tracks file operations in `details`; the field remains implementation-specific for custom session data.
 
 See [`prepareCompaction()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation.
 
@@ -195,7 +194,7 @@ interface BranchSummaryEntry<T = unknown> {
   timestamp: number;
   summary: string;
   fromId: string;      // Entry we navigated from
-  fromHook?: boolean;  // true if provided by extension (legacy field name)
+  fromHook?: boolean;  // legacy hook marker
   details?: T;         // implementation-specific data
 }
 
@@ -206,7 +205,7 @@ interface BranchSummaryDetails {
 }
 ```
 
-Same as compaction, extensions can store custom data in `details`.
+Same as compaction, `details` is reserved for implementation-specific data.
 
 See [`collectEntriesForBranchSummary()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts), [`prepareBranchEntries()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts), and [`generateBranchSummary()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) for the implementation.
 
@@ -265,111 +264,6 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 This prevents the model from treating it as a conversation to continue.
 
 Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results, especially from `ipython` and optional `bash`, are typically the largest contributors to context size.
-
-## Custom Summarization via Extensions
-
-Extensions can intercept and customize both compaction and branch summarization. See [`extensions/types.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/extensions/types.ts) for event type definitions.
-
-### session_before_compact
-
-Fired before auto-compaction or `/compact`. Can cancel or provide custom summary. See `SessionBeforeCompactEvent` and `CompactionPreparation` in the types file.
-
-```typescript
-pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, customInstructions, signal } = event;
-
-  // preparation.messagesToSummarize - messages to summarize
-  // preparation.turnPrefixMessages - split turn prefix (if isSplitTurn)
-  // preparation.previousSummary - previous compaction summary
-  // preparation.fileOps - extracted file operations
-  // preparation.tokensBefore - context tokens before compaction
-  // preparation.firstKeptEntryId - where kept messages start
-  // preparation.settings - compaction settings
-
-  // branchEntries - all entries on current branch (for custom state)
-  // signal - AbortSignal (pass to LLM calls)
-
-  // Cancel:
-  return { cancel: true };
-
-  // Custom summary:
-  return {
-    compaction: {
-      summary: "Your summary...",
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-      details: { /* custom data */ },
-    }
-  };
-});
-```
-
-#### Converting Messages to Text
-
-To generate a summary with your own model, convert messages to text using `serializeConversation`:
-
-```typescript
-import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
-
-pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation } = event;
-  
-  // Convert AgentMessage[] to Message[], then serialize to text
-  const conversationText = serializeConversation(
-    convertToLlm(preparation.messagesToSummarize)
-  );
-  // Returns:
-  // [User]: message text
-  // [Assistant thinking]: thinking content
-  // [Assistant]: response text
-  // [Assistant tool calls]: ipython(code="open('...').read()"); bash(command="...")
-  // [Tool result]: output text
-
-  // Now send to your model for summarization
-  const summary = await myModel.summarize(conversationText);
-  
-  return {
-    compaction: {
-      summary,
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-    }
-  };
-});
-```
-
-See [custom-compaction.ts](../examples/extensions/custom-compaction.ts) for a complete example using a different model.
-
-### session_before_tree
-
-Fired before `/tree` navigation. Always fires regardless of whether user chose to summarize. Can cancel navigation or provide custom summary.
-
-```typescript
-pi.on("session_before_tree", async (event, ctx) => {
-  const { preparation, signal } = event;
-
-  // preparation.targetId - where we're navigating to
-  // preparation.oldLeafId - current position (being abandoned)
-  // preparation.commonAncestorId - shared ancestor
-  // preparation.entriesToSummarize - entries that would be summarized
-  // preparation.userWantsSummary - whether user chose to summarize
-
-  // Cancel navigation entirely:
-  return { cancel: true };
-
-  // Provide custom summary (only used if userWantsSummary is true):
-  if (preparation.userWantsSummary) {
-    return {
-      summary: {
-        summary: "Your summary...",
-        details: { /* custom data */ },
-      }
-    };
-  }
-});
-```
-
-See `SessionBeforeTreeEvent` and `TreePreparation` in the types file.
 
 ## Settings
 

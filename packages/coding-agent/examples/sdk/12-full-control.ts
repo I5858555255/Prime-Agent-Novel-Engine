@@ -8,7 +8,6 @@ import { getModel } from "@earendil-works/pi-ai";
 import {
 	AuthStorage,
 	createAgentSession,
-	createExtensionRuntime,
 	ModelRegistry,
 	type ResourceLoader,
 	SessionManager,
@@ -38,7 +37,6 @@ const settingsManager = SettingsManager.inMemory({
 const cwd = process.cwd();
 
 const resourceLoader: ResourceLoader = {
-	getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
 	getSkills: () => ({ skills: [], diagnostics: [] }),
 	getPrompts: () => ({ prompts: [], diagnostics: [] }),
 	getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -46,7 +44,6 @@ const resourceLoader: ResourceLoader = {
 	getSystemPrompt: () => `You are a minimal assistant.
 Available: ipython, bash. Be concise.`,
 	getAppendSystemPrompt: () => [],
-	extendResources: () => {},
 	reload: async () => {},
 };
 

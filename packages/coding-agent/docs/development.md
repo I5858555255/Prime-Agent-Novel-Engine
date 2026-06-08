@@ -20,7 +20,7 @@ The script can be run from any directory. Prime Agent keeps the caller's current
 
 ## Local Configuration
 
-User configuration lives under `~/.prime/agent/`. Project-local settings, prompts, themes, extensions, and skills live under `.prime/agent/` in the project root. Override the user config directory with `PRIME_AGENT_CODING_AGENT_DIR`.
+User configuration lives under `~/.prime/agent/`. Project-local settings, prompts, themes, and skills live under `.prime/agent/` in the project root. Override the user config directory with `PRIME_AGENT_CODING_AGENT_DIR`.
 
 ## Path Resolution
 

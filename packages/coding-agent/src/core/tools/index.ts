@@ -37,13 +37,22 @@ export {
 } from "./truncate.js";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { ToolDefinition } from "../extensions/types.js";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.js";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.js";
 import { createIpythonTool, createIpythonToolDefinition, type IpythonToolOptions } from "./ipython.js";
+import type { AnyToolDefinition } from "./tool-definition.js";
+
+export {
+	type AnyToolDefinition,
+	defineTool,
+	type ToolDefinition,
+	type ToolExecutionContext,
+	type ToolRenderContext,
+	type ToolRenderResultOptions,
+} from "./tool-definition.js";
 
 export type Tool = AgentTool<any>;
-export type ToolDef = ToolDefinition<any, any>;
+export type ToolDef = AnyToolDefinition;
 export type ToolName = "ipython" | "bash" | "edit";
 export const allToolNames: Set<ToolName> = new Set(["ipython", "bash", "edit"]);
 

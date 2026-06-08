@@ -1,18 +1,10 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
 
-async function createWaitingHarness(
-	options: {
-		tools?: AgentTool[];
-		extensionFactories?: Harness["session"]["extensionRunner"] extends never
-			? never
-			: Array<(pi: ExtensionAPI) => void>;
-	} = {},
-): Promise<{
+async function createWaitingHarness(options: { tools?: AgentTool[] } = {}): Promise<{
 	harness: Harness;
 	releaseToolExecution: () => void;
 	promptPromise: Promise<void>;
@@ -37,7 +29,6 @@ async function createWaitingHarness(
 	};
 	const harness = await createHarness({
 		tools: [waitTool, ...(options.tools ?? [])],
-		extensionFactories: options.extensionFactories,
 	});
 
 	const waitForToolStart = new Promise<void>((resolve) => {
@@ -66,38 +57,8 @@ describe("AgentSession queue characterization", () => {
 		}
 	});
 
-	it("dispatches extension commands immediately when prompted while idle", async () => {
-		const commandRuns: string[] = [];
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
-						description: "Test command",
-						handler: async (args) => {
-							commandRuns.push(args);
-						},
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-
-		await harness.session.prompt("/testcmd hello world");
-
-		expect(commandRuns).toEqual(["hello world"]);
-		expect(harness.getPendingResponseCount()).toBe(0);
-		expect(harness.session.messages).toEqual([]);
-	});
-
-	it("delivers extension-origin steering messages before the next LLM call", async () => {
-		let extensionApi: ExtensionAPI | undefined;
-		const waiting = await createWaitingHarness({
-			extensionFactories: [
-				(pi) => {
-					extensionApi = pi;
-				},
-			],
-		});
+	it("delivers steering messages before the next LLM call", async () => {
+		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
 		harnesses.push(harness);
 
@@ -114,7 +75,7 @@ describe("AgentSession queue characterization", () => {
 		await waitForToolStart;
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
-		extensionApi?.sendUserMessage("steer now", { deliverAs: "steer" });
+		await harness.session.steer("steer now");
 		releaseToolExecution();
 		await promptPromise;
 
@@ -382,41 +343,5 @@ describe("AgentSession queue characterization", () => {
 
 		expect(countsAtQueuedMessageStart).toEqual([0]);
 		expect(harness.session.pendingMessageCount).toBe(0);
-	});
-
-	it("throws when queueing an extension command with steer", async () => {
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
-						description: "Test command",
-						handler: async () => {},
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-
-		await expect(harness.session.steer("/testcmd queued")).rejects.toThrow(
-			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
-		);
-	});
-
-	it("throws when queueing an extension command with followUp", async () => {
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("testcmd", {
-						description: "Test command",
-						handler: async () => {},
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-
-		await expect(harness.session.followUp("/testcmd queued")).rejects.toThrow(
-			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
-		);
 	});
 });

@@ -70,7 +70,7 @@ describe("SettingsManager", () => {
 			// User adds custom settings externally
 			const currentSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
 			currentSettings.shellPath = "/bin/zsh";
-			currentSettings.extensions = ["/path/to/extension.ts"];
+			currentSettings.skills = ["/path/to/skill"];
 			writeFileSync(settingsPath, JSON.stringify(currentSettings, null, 2));
 
 			// User changes theme
@@ -80,7 +80,7 @@ describe("SettingsManager", () => {
 			// Verify all settings preserved
 			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
 			expect(savedSettings.shellPath).toBe("/bin/zsh");
-			expect(savedSettings.extensions).toEqual(["/path/to/extension.ts"]);
+			expect(savedSettings.skills).toEqual(["/path/to/skill"]);
 			expect(savedSettings.theme).toBe("light");
 		});
 
@@ -111,19 +111,19 @@ describe("SettingsManager", () => {
 	});
 
 	describe("packages migration", () => {
-		it("should keep local-only extensions in extensions array", () => {
+		it("should keep local skill paths in skills array", () => {
 			const settingsPath = join(agentDir, "settings.json");
 			writeFileSync(
 				settingsPath,
 				JSON.stringify({
-					extensions: ["/local/ext.ts", "./relative/ext.ts"],
+					skills: ["/local/skill", "./relative/skill"],
 				}),
 			);
 
 			const manager = SettingsManager.create(projectDir, agentDir);
 
 			expect(manager.getPackages()).toEqual([]);
-			expect(manager.getExtensionPaths()).toEqual(["/local/ext.ts", "./relative/ext.ts"]);
+			expect(manager.getSkillPaths()).toEqual(["/local/skill", "./relative/skill"]);
 		});
 
 		it("should handle packages with filtering objects", () => {
@@ -134,8 +134,8 @@ describe("SettingsManager", () => {
 					packages: [
 						"npm:simple-pkg",
 						{
-							source: "npm:shitty-extensions",
-							extensions: ["extensions/oracle.ts"],
+							source: "npm:shared-resources",
+							prompts: ["prompts/oracle.md"],
 							skills: [],
 						},
 					],
@@ -148,8 +148,8 @@ describe("SettingsManager", () => {
 			expect(packages).toHaveLength(2);
 			expect(packages[0]).toBe("npm:simple-pkg");
 			expect(packages[1]).toEqual({
-				source: "npm:shitty-extensions",
-				extensions: ["extensions/oracle.ts"],
+				source: "npm:shared-resources",
+				prompts: ["prompts/oracle.md"],
 				skills: [],
 			});
 		});
@@ -162,7 +162,7 @@ describe("SettingsManager", () => {
 				settingsPath,
 				JSON.stringify({
 					theme: "dark",
-					extensions: ["/before.ts"],
+					skills: ["/before"],
 				}),
 			);
 
@@ -172,7 +172,7 @@ describe("SettingsManager", () => {
 				settingsPath,
 				JSON.stringify({
 					theme: "light",
-					extensions: ["/after.ts"],
+					skills: ["/after"],
 					defaultModel: "claude-sonnet",
 				}),
 			);
@@ -180,7 +180,7 @@ describe("SettingsManager", () => {
 			await manager.reload();
 
 			expect(manager.getTheme()).toBe("light");
-			expect(manager.getExtensionPaths()).toEqual(["/after.ts"]);
+			expect(manager.getSkillPaths()).toEqual(["/after"]);
 			expect(manager.getDefaultModel()).toBe("claude-sonnet");
 		});
 

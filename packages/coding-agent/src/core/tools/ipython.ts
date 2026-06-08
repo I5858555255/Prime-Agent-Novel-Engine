@@ -1,11 +1,11 @@
 // TODO: reconsider whether the persistent kernel is needed once RLM-1 weights land.
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
-import type { ToolDefinition } from "../extensions/types.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import { KernelManager } from "../kernel/index.js";
 import type { RlmRunHandler } from "../rlm-runtime.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
+import type { ToolDefinition } from "./tool-definition.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
 const RLM_BOOTSTRAP_BASE_CODE = `
@@ -188,7 +188,7 @@ export function createIpythonToolDefinition(
 			let reportedStartupProgress = false;
 			const reportStartupProgress: KernelBootstrapProgressHandler = (message) => {
 				reportedStartupProgress = true;
-				ctx?.ui.setWorkingMessage(message);
+				ctx?.setWorkingMessage(message);
 				onUpdate?.({
 					content: [{ type: "text", text: message }],
 					details: { status: "starting" },
@@ -225,7 +225,7 @@ export function createIpythonToolDefinition(
 				};
 			} finally {
 				if (reportedStartupProgress) {
-					ctx?.ui.setWorkingMessage();
+					ctx?.setWorkingMessage();
 				}
 			}
 		},

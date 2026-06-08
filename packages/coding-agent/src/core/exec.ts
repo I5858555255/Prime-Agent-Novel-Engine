@@ -1,5 +1,5 @@
 /**
- * Shared command execution utilities for extensions and custom tools.
+ * Shared command execution utilities for custom tools.
  */
 
 import { spawn } from "node:child_process";

@@ -53,7 +53,6 @@
 		"glob": "^13.0.1",
 		"hosted-git-info": "^9.0.2",
 		"ignore": "^7.0.5",
-		"jiti": "^2.7.0",
 		"marked": "^15.0.12",
 		"minimatch": "^10.2.3",
 		"proper-lockfile": "^4.1.2",

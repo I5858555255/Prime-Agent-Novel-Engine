@@ -192,7 +192,7 @@ export class RpcClient {
 	/**
 	 * Start a new session, optionally with parent tracking.
 	 * @param parentSession - Optional parent session path for lineage tracking
-	 * @returns Object with `cancelled: true` if an extension cancelled the new session
+	 * @returns Object with cancellation status
 	 */
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
 		const response = await this.send({ type: "new_session", parentSession });
@@ -326,7 +326,7 @@ export class RpcClient {
 
 	/**
 	 * Switch to a different session file.
-	 * @returns Object with `cancelled: true` if an extension cancelled the switch
+	 * @returns Object with cancellation status
 	 */
 	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
 		const response = await this.send({ type: "switch_session", sessionPath });
@@ -335,7 +335,7 @@ export class RpcClient {
 
 	/**
 	 * Fork from a specific message.
-	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
+	 * @returns Object with `text` (the message text) and cancellation status
 	 */
 	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
 		const response = await this.send({ type: "fork", entryId });
@@ -344,7 +344,7 @@ export class RpcClient {
 
 	/**
 	 * Clone the current active branch into a new session.
-	 * @returns Object with `cancelled: true` if an extension cancelled the clone
+	 * @returns Object with cancellation status
 	 */
 	async clone(): Promise<{ cancelled: boolean }> {
 		const response = await this.send({ type: "clone" });
@@ -383,7 +383,7 @@ export class RpcClient {
 	}
 
 	/**
-	 * Get available commands (extension commands, prompt templates, skills).
+	 * Get available commands (prompt templates and skills).
 	 */
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		const response = await this.send({ type: "get_commands" });

@@ -3,12 +3,12 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
 import { AuthStorage } from "./auth-storage.js";
-import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { ModelRegistry } from "./model-registry.js";
 import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type ResourceLoader } from "./resource-loader.js";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
 import type { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
+import type { ToolDefinition } from "./tools/index.js";
 
 /**
  * Non-fatal issues collected while creating services or sessions.
@@ -35,7 +35,6 @@ export interface CreateAgentSessionServicesOptions {
 	authStorage?: AuthStorage;
 	settingsManager?: SettingsManager;
 	modelRegistry?: ModelRegistry;
-	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 }
 
@@ -48,7 +47,6 @@ export interface CreateAgentSessionServicesOptions {
 export interface CreateAgentSessionFromServicesOptions {
 	services: AgentSessionServices;
 	sessionManager: SessionManager;
-	sessionStartEvent?: SessionStartEvent;
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
@@ -73,54 +71,6 @@ export interface AgentSessionServices {
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
-function applyExtensionFlagValues(
-	resourceLoader: ResourceLoader,
-	extensionFlagValues: Map<string, boolean | string> | undefined,
-): AgentSessionRuntimeDiagnostic[] {
-	if (!extensionFlagValues) {
-		return [];
-	}
-
-	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
-	const extensionsResult = resourceLoader.getExtensions();
-	const registeredFlags = new Map<string, { type: "boolean" | "string" }>();
-	for (const extension of extensionsResult.extensions) {
-		for (const [name, flag] of extension.flags) {
-			registeredFlags.set(name, { type: flag.type });
-		}
-	}
-
-	const unknownFlags: string[] = [];
-	for (const [name, value] of extensionFlagValues) {
-		const flag = registeredFlags.get(name);
-		if (!flag) {
-			unknownFlags.push(name);
-			continue;
-		}
-		if (flag.type === "boolean") {
-			extensionsResult.runtime.flagValues.set(name, true);
-			continue;
-		}
-		if (typeof value === "string") {
-			extensionsResult.runtime.flagValues.set(name, value);
-			continue;
-		}
-		diagnostics.push({
-			type: "error",
-			message: `Extension flag "--${name}" requires a value`,
-		});
-	}
-
-	if (unknownFlags.length > 0) {
-		diagnostics.push({
-			type: "error",
-			message: `Unknown option${unknownFlags.length === 1 ? "" : "s"}: ${unknownFlags.map((name) => `--${name}`).join(", ")}`,
-		});
-	}
-
-	return diagnostics;
-}
-
 /**
  * Create cwd-bound runtime services.
  *
@@ -143,20 +93,6 @@ export async function createAgentSessionServices(
 	await resourceLoader.reload();
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
-	const extensionsResult = resourceLoader.getExtensions();
-	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
-		try {
-			modelRegistry.registerProvider(name, config);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			diagnostics.push({
-				type: "error",
-				message: `Extension "${extensionPath}" error: ${message}`,
-			});
-		}
-	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
-	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 
 	return {
 		cwd,
@@ -193,6 +129,5 @@ export async function createAgentSessionFromServices(
 		tools: options.tools,
 		noTools: options.noTools,
 		customTools: options.customTools,
-		sessionStartEvent: options.sessionStartEvent,
 	});
 }

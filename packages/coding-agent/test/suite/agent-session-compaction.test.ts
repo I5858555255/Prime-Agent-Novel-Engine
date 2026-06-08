@@ -54,34 +54,6 @@ describe("AgentSession compaction characterization", () => {
 		}
 	});
 
-	it("manually compacts using an extension-provided summary", async () => {
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async (event) => ({
-						compaction: {
-							summary: "summary from extension",
-							firstKeptEntryId: event.preparation.firstKeptEntryId,
-							tokensBefore: event.preparation.tokensBefore,
-							details: { source: "extension" },
-						},
-					}));
-				},
-			],
-		});
-		harnesses.push(harness);
-
-		await harness.session.prompt("one");
-		await harness.session.prompt("two");
-
-		const result = await harness.session.compact();
-		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
-
-		expect(result.summary).toBe("summary from extension");
-		expect(compactionEntries).toHaveLength(1);
-		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
-	});
-
 	it("throws when compacting without a model", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -95,69 +67,6 @@ describe("AgentSession compaction characterization", () => {
 		harnesses.push(harness);
 
 		await expect(harness.session.compact()).rejects.toThrow(`No API key found for ${harness.getModel().provider}.`);
-	});
-
-	it("cancels in-progress manual compaction when abortCompaction is called", async () => {
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async (event) => {
-						return await new Promise<{ cancel: true }>((resolve) => {
-							event.signal.addEventListener("abort", () => resolve({ cancel: true }), { once: true });
-						});
-					});
-				},
-			],
-		});
-		harnesses.push(harness);
-
-		await harness.session.prompt("one");
-		await harness.session.prompt("two");
-
-		const compactPromise = harness.session.compact();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		harness.session.abortCompaction();
-
-		await expect(compactPromise).rejects.toThrow("Compaction cancelled");
-	});
-
-	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
-		vi.useFakeTimers();
-		const harness = await createHarness({
-			settings: { compaction: { keepRecentTokens: 1 } },
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async (event) => ({
-						compaction: {
-							summary: "auto compacted",
-							firstKeptEntryId: event.preparation.firstKeptEntryId,
-							tokensBefore: event.preparation.tokensBefore,
-							details: {},
-						},
-					}));
-				},
-			],
-		});
-		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
-		await harness.session.prompt("first");
-		await harness.session.prompt("second");
-
-		harness.session.agent.followUp({
-			role: "custom",
-			customType: "test",
-			content: [{ type: "text", text: "queued custom" }],
-			display: false,
-			timestamp: Date.now(),
-		});
-
-		const continueSpy = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
-		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
-
-		await sessionInternals._runAutoCompaction("threshold", false);
-		await vi.advanceTimersByTimeAsync(100);
-
-		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not retry overflow recovery more than once", async () => {

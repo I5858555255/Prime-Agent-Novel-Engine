@@ -104,7 +104,7 @@ export interface CompactionResult<T = unknown> {
 	summary: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
-	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
+	/** Implementation-specific data (e.g., file tracking or structured compaction markers) */
 	details?: T;
 }
 
@@ -595,7 +595,7 @@ export async function generateSummary(
 }
 
 // ============================================================================
-// Compaction Preparation (for extensions)
+// Compaction Preparation
 // ============================================================================
 
 export interface CompactionPreparation {
