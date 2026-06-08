@@ -13,6 +13,29 @@ interface MenuPanelOptions {
 	subtitle?: string;
 }
 
+export interface MenuViewportProvider {
+	getRows?: () => number;
+}
+
+interface MenuListOptions {
+	compact?: boolean | (() => boolean);
+}
+
+interface MenuListLayoutOptions extends MenuViewportProvider {
+	preferredVisibleItems: number;
+	minVisibleItems?: number;
+	reservedRows: number;
+	comfortableItemRows: number;
+	compactItemRows?: number;
+	comfortableListPaddingRows?: number;
+	compactListPaddingRows?: number;
+}
+
+export interface MenuListLayout {
+	compact: boolean;
+	visibleItems: number;
+}
+
 const PANEL_PADDING_X = 2;
 const PANEL_PADDING_Y = 1;
 const FIELD_PADDING_X = 2;
@@ -25,6 +48,87 @@ interface FullWidthMenuComponent {
 
 function fillsMenuPanel(component: Component): component is Component & FullWidthMenuComponent {
 	return (component as { fillsMenuPanel?: unknown }).fillsMenuPanel === true;
+}
+
+function getViewportRows(getRows: (() => number) | undefined): number | undefined {
+	const rows = getRows?.();
+	if (rows === undefined || !Number.isFinite(rows) || rows <= 0) {
+		return undefined;
+	}
+	return Math.floor(rows);
+}
+
+function visibleItemCount(
+	rows: number,
+	options: {
+		preferredVisibleItems: number;
+		minVisibleItems: number;
+		reservedRows: number;
+		itemRows: number;
+		listPaddingRows: number;
+	},
+): number {
+	const capacityRows = Math.max(0, rows - options.reservedRows - options.listPaddingRows);
+	const itemCapacity = Math.floor(capacityRows / options.itemRows);
+	return Math.max(options.minVisibleItems, Math.min(options.preferredVisibleItems, itemCapacity));
+}
+
+function listRowsUsed(options: {
+	reservedRows: number;
+	listPaddingRows: number;
+	visibleItems: number;
+	itemRows: number;
+}) {
+	return options.reservedRows + options.listPaddingRows + options.visibleItems * options.itemRows;
+}
+
+export function getMenuListLayout(options: MenuListLayoutOptions): MenuListLayout {
+	const minVisibleItems = options.minVisibleItems ?? 1;
+	const preferredVisibleItems = Math.max(minVisibleItems, options.preferredVisibleItems);
+	const rows = getViewportRows(options.getRows);
+	if (rows === undefined) {
+		return { compact: false, visibleItems: preferredVisibleItems };
+	}
+
+	const comfortableVisibleItems = visibleItemCount(rows, {
+		preferredVisibleItems,
+		minVisibleItems,
+		reservedRows: options.reservedRows,
+		itemRows: Math.max(1, options.comfortableItemRows),
+		listPaddingRows: options.comfortableListPaddingRows ?? 1,
+	});
+	if (options.compactItemRows === undefined) {
+		return { compact: false, visibleItems: comfortableVisibleItems };
+	}
+
+	const comfortableItemRows = Math.max(1, options.comfortableItemRows);
+	const compactItemRows = Math.max(1, options.compactItemRows);
+	const comfortableListPaddingRows = options.comfortableListPaddingRows ?? 1;
+	const compactListPaddingRows = options.compactListPaddingRows ?? 0;
+	const compactVisibleItems = visibleItemCount(rows, {
+		preferredVisibleItems,
+		minVisibleItems,
+		reservedRows: options.reservedRows,
+		itemRows: compactItemRows,
+		listPaddingRows: compactListPaddingRows,
+	});
+	const comfortableFits =
+		listRowsUsed({
+			reservedRows: options.reservedRows,
+			listPaddingRows: comfortableListPaddingRows,
+			visibleItems: comfortableVisibleItems,
+			itemRows: comfortableItemRows,
+		}) <= rows;
+	const compactFits =
+		listRowsUsed({
+			reservedRows: options.reservedRows,
+			listPaddingRows: compactListPaddingRows,
+			visibleItems: compactVisibleItems,
+			itemRows: compactItemRows,
+		}) <= rows;
+	return compactVisibleItems > comfortableVisibleItems || (!comfortableFits && compactFits)
+		? { compact: true, visibleItems: compactVisibleItems }
+		: { compact: false, visibleItems: comfortableVisibleItems };
 }
 
 function surfaceLine(text: string, width: number, paddingX = PANEL_PADDING_X): string {
@@ -209,11 +313,20 @@ export class MenuRow implements Component, FullWidthMenuComponent {
 export class MenuList extends Container implements FullWidthMenuComponent {
 	readonly fillsMenuPanel = true;
 
+	constructor(private readonly options: MenuListOptions = {}) {
+		super();
+	}
+
 	override render(width: number): string[] {
 		const lines: string[] = [];
+		const compact = this.isCompact();
 		for (let index = 0; index < this.children.length; index++) {
 			const child = this.children[index];
 			if (child instanceof MenuRow) {
+				if (compact) {
+					lines.push(...child.renderContent(width));
+					continue;
+				}
 				const previousChild = this.children[index - 1];
 				const nextChild = this.children[index + 1];
 				const previousRow = previousChild instanceof MenuRow ? previousChild : undefined;
@@ -233,5 +346,10 @@ export class MenuList extends Container implements FullWidthMenuComponent {
 			}
 		}
 		return lines;
+	}
+
+	private isCompact(): boolean {
+		const compact = this.options.compact;
+		return typeof compact === "function" ? compact() : compact === true;
 	}
 }

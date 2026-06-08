@@ -77,4 +77,38 @@ describe("ModelSelectorComponent provider actions", () => {
 
 		expect(selectedAction).toBe("add_provider");
 	});
+
+	it("keeps the model menu within a short terminal viewport", async () => {
+		const harness = await createHarness({
+			models: Array.from({ length: 12 }, (_, index) => ({
+				id: `faux-${index + 1}`,
+				name: `Faux Model ${index + 1}`,
+				reasoning: true,
+			})),
+		});
+		harnesses.push(harness);
+
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			harness.getModel("faux-1"),
+			harness.settingsManager,
+			harness.session.modelRegistry,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			{ getRows: () => 12 },
+		);
+
+		await waitForAsyncRender();
+
+		expect(selector.render(120)).toHaveLength(12);
+
+		selector.handleInput("\x1b[B");
+		const output = stripAnsi(selector.render(120).join("\n"));
+
+		expect(selector.render(120)).toHaveLength(12);
+		expect(output).toContain("faux-2");
+		expect(output).toContain("(2/12)");
+	});
 });
