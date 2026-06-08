@@ -77,6 +77,8 @@ describe("buildRlmPrompt", () => {
 				"",
 				"Global continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. Use it to record reset-free improvements to prompt notes, memory, reusable skills, and subagent specs that should persist across Prime Agent sessions. Use explicit CRUD calls such as `rlm.harness.create_memory(...)`, `rlm.harness.update_memory(...)`, `rlm.harness.delete_memory(...)`, `rlm.harness.create_skill(...)`, `rlm.harness.update_skill(...)`, `rlm.harness.delete_skill(...)`, `rlm.harness.create_subagent(...)`, `rlm.harness.update_subagent(...)`, `rlm.harness.delete_subagent(...)`, `rlm.harness.create_prompt_note(...)`, `rlm.harness.update_prompt_note(...)`, `rlm.harness.delete_prompt_note(...)`, plus `rlm.harness.record_refinement(...)` and `rlm.harness.overview()`.",
 				"",
+				"RLM-native call contract for refined entries: installed Python skills are called from IPython as `await <skill_import>(...)` with keyword arguments, or as `<skill_import> ...` from shell when a CLI exists. Harness skill entries are reusable procedural specs unless their metadata names an installed Python import. Harness subagent entries are reusable delegation specs; invoke them by turning the spec into a concise task prompt and calling `await rlm('sub-task')`, or `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent non-native wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
+				"",
 				"Treat harness refinement as a small, evidence-backed update after observing a repeated failure or reusable tactic: diagnose the issue, update the smallest relevant harness component, validate on the next action, then record the outcome. Do not rewrite the whole harness when a focused memory, skill, prompt note, or subagent spec is enough.",
 				"",
 				"Call at most one built-in tool per turn.",
@@ -182,6 +184,10 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("# Global Harness State");
 		expect(prompt).toContain("Persistent harness state is global by default");
 		expect(prompt).toContain("When to call `/refine`");
+		expect(prompt).toContain("Call contract: use installed Python skills as `await <skill_import>(...)`");
+		expect(prompt).toContain("Harness skill entries are procedural specs");
+		expect(prompt).toContain("Harness subagent entries are invoked by composing a concise task prompt");
+		expect(prompt).toContain("await rlm('sub-task')");
 		expect(prompt).toContain("after a repeated failure");
 		expect(prompt).toContain("a reusable tactic emerges");
 		expect(prompt).toContain("validation shows a harness entry is wrong");
@@ -281,6 +287,13 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("rlm.harness.create_prompt_note");
 		expect(prompt).not.toContain("rlm.harness.upsert_skill");
 		expect(prompt).toContain("rlm.harness.record_refinement");
+		expect(prompt).toContain("RLM-native call contract for refined entries");
+		expect(prompt).toContain("await <skill_import>(...)");
+		expect(prompt).toContain("metadata names an installed Python import");
+		expect(prompt).toContain("await asyncio.gather(rlm('task1'), rlm('task2'))");
+		expect(prompt).toContain("call_skill(...)");
+		expect(prompt).toContain("run_subagent(...)");
+		expect(prompt).toContain("named subagent registries");
 		expect(prompt).toContain("Do not assume IPython is the native runtime");
 		expect(prompt).toContain("Project import checks are target-environment checks");
 		expect(prompt).toContain("do not run `import <project>` directly in IPython");

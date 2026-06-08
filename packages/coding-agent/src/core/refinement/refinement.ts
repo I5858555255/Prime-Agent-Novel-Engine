@@ -95,8 +95,8 @@ conversation you emit precise Create, Update, or Delete edits to reusable state.
 Editable components:
 - prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.
 - memory: durable facts, decisions, failures, preferences, and outcomes.
-- skill: reusable procedures or tactics the agent should apply later.
-- subagent: reusable delegation specs, including purpose, instructions, and when to invoke.
+- skill: reusable procedures or tactics the agent should apply later. A skill entry is a spec, not automatically executable code. If it refers to an installed Python skill, include the RLM-native call form \`await <skill_import>(...)\` and put \`python_import\` / \`call_pattern\` in metadata.
+- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: create a concise task prompt and call \`await rlm("sub-task")\`; for independent parallel subagents use \`await asyncio.gather(rlm("task1"), rlm("task2"))\`. Do not invent wrappers like \`run_subagent(...)\`.
 
 Use the trajectory, current harness state, and prior refinement history. Prefer
 small evidence-backed edits. If prior refinements caused issues, rollback or
@@ -213,6 +213,8 @@ export function formatHarnessStateForPrompt(
 		"Use these prompt notes, memories, skills, and subagent specs when they are relevant. The base system prompt is immutable; prompt entries below are supplemental notes only.",
 		"",
 		"When to call `/refine`: after a repeated failure, a reusable tactic emerges, a user corrects behavior that should persist, validation shows a harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `/refine` edits small and evidence-backed.",
+		"",
+		"Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Harness skill entries are procedural specs unless metadata names an installed Python import and call pattern. Harness subagent entries are invoked by composing a concise task prompt and calling `await rlm('sub-task')`; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
 		"",
 	];
 

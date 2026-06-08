@@ -101,6 +101,15 @@ class HarnessStateTest(unittest.TestCase):
             self.assertEqual(reloaded.get("subagent", subagent.id).metadata["max_turns"], 3)
             self.assertEqual(reloaded.refinements[0].id, event.id)
             self.assertIn("Prefer focused patches", reloaded.overview())
+            self.assertIn(
+                "Call contract: installed Python skills use await <skill_import>(...)",
+                reloaded.overview(),
+            )
+            self.assertIn("await rlm('sub-task')", reloaded.overview())
+            self.assertIn(
+                "asyncio.gather(rlm('task1'), rlm('task2'))",
+                reloaded.overview(),
+            )
             self.assertIn("refinements: 1", reloaded.overview())
 
     def test_explicit_create_and_update_enforce_entry_existence(self) -> None:

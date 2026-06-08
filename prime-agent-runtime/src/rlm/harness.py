@@ -365,7 +365,13 @@ class HarnessState:
         return plan
 
     def overview(self, *, max_entries_per_kind: int = 20) -> str:
-        lines = [f"Harness state: {self.file_path}"]
+        lines = [
+            f"Harness state: {self.file_path}",
+            "Call contract: installed Python skills use await <skill_import>(...) or a matching shell CLI; "
+            "harness skill entries are procedural specs unless metadata names an installed Python import. "
+            "Subagent specs are invoked by composing a concise task prompt and calling await rlm('sub-task'), "
+            "or asyncio.gather(rlm('task1'), rlm('task2')) for independent parallel subagents.",
+        ]
         for kind in _KINDS:
             records = self.list(kind)[:max_entries_per_kind]
             lines.append(f"{kind}: {len(self.entries[kind])}")
