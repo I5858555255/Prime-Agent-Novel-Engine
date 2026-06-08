@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed alternate terminal encodings for `Alt+Arrow` keybindings, including `Alt+Up` for restoring queued messages ([ENG-3979](https://linear.app/primeintellect/issue/ENG-3979/queued-message-cant-be-edited-with-altup)).
+
 ## [0.0.4] - 2026-05-21
 
 ## [0.0.2] - 2026-05-20

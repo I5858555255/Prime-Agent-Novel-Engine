@@ -90,12 +90,15 @@ describe("matchesKey", () => {
 			setKittyProtocolActive(true);
 			assert.strictEqual(matchesKey("\x1b[107;9u", "super+k"), true);
 			assert.strictEqual(matchesKey("\x1b[13;9u", "super+enter"), true);
+			assert.strictEqual(matchesKey("\x1b[1;9A", "super+up"), true);
 			assert.strictEqual(matchesKey("\x1b[107;13u", Key.ctrlSuper("k")), true);
 			assert.strictEqual(matchesKey("\x1b[107;13u", "ctrl+super+k"), true);
 			assert.strictEqual(matchesKey("\x1b[107;14u", "ctrl+shift+super+k"), true);
 			assert.strictEqual(matchesKey("\x1b[107;13u", "super+k"), false);
+			assert.strictEqual(matchesKey("\x1b[1;9A", "alt+up"), false);
 			assert.strictEqual(parseKey("\x1b[107;9u"), "super+k");
 			assert.strictEqual(parseKey("\x1b[13;9u"), "super+enter");
+			assert.strictEqual(parseKey("\x1b[1;9A"), "super+up");
 			assert.strictEqual(parseKey("\x1b[107;13u"), "ctrl+super+k");
 			assert.strictEqual(parseKey("\x1b[107;14u"), "shift+ctrl+super+k");
 			setKittyProtocolActive(false);
@@ -483,6 +486,47 @@ describe("matchesKey", () => {
 			assert.strictEqual(matchesKey("\x1bp", "up"), false);
 		});
 
+		it("should match alternate legacy alt+arrow encodings", () => {
+			setKittyProtocolActive(false);
+			const cases = [
+				["\x1bp", "alt+up"],
+				["\x1bn", "alt+down"],
+				["\x1bf", "alt+right"],
+				["\x1bb", "alt+left"],
+				["\x1b[1;3A", "alt+up"],
+				["\x1b[1;3B", "alt+down"],
+				["\x1b[1;3C", "alt+right"],
+				["\x1b[1;3D", "alt+left"],
+				["\x1b[1;9A", "alt+up"],
+				["\x1b[1;9B", "alt+down"],
+				["\x1b[1;9C", "alt+right"],
+				["\x1b[1;9D", "alt+left"],
+				["\x1b[3A", "alt+up"],
+				["\x1b[3B", "alt+down"],
+				["\x1b[3C", "alt+right"],
+				["\x1b[3D", "alt+left"],
+				["\x1bO3A", "alt+up"],
+				["\x1bO3B", "alt+down"],
+				["\x1bO3C", "alt+right"],
+				["\x1bO3D", "alt+left"],
+				["\x1b\x1b[A", "alt+up"],
+				["\x1b\x1b[B", "alt+down"],
+				["\x1b\x1b[C", "alt+right"],
+				["\x1b\x1b[D", "alt+left"],
+				["\x1b\x1bOA", "alt+up"],
+				["\x1b\x1bOB", "alt+down"],
+				["\x1b\x1bOC", "alt+right"],
+				["\x1b\x1bOD", "alt+left"],
+			] as const;
+
+			for (const [sequence, key] of cases) {
+				assert.strictEqual(matchesKey(sequence, key), true, key);
+				assert.strictEqual(parseKey(sequence), key, key);
+			}
+
+			assert.strictEqual(matchesKey("\x1b[1;9A", "super+up"), false);
+		});
+
 		it("should match rxvt modifier sequences", () => {
 			assert.strictEqual(matchesKey("\x1b[a", "shift+up"), true);
 			assert.strictEqual(matchesKey("\x1bOa", "ctrl+up"), true);
@@ -605,6 +649,8 @@ describe("parseKey", () => {
 			assert.strictEqual(parseKey("\x1b[E"), "clear");
 			assert.strictEqual(parseKey("\x1b[2^"), "ctrl+insert");
 			assert.strictEqual(parseKey("\x1bp"), "alt+up");
+			assert.strictEqual(parseKey("\x1b[1;9A"), "alt+up");
+			assert.strictEqual(parseKey("\x1b\x1b[A"), "alt+up");
 		});
 
 		it("should parse double bracket pageUp", () => {

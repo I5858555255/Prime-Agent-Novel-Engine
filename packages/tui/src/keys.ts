@@ -314,6 +314,8 @@ const ARROW_CODEPOINTS = {
 	left: -4,
 } as const;
 
+type ArrowKeyName = keyof typeof ARROW_CODEPOINTS;
+
 const FUNCTIONAL_CODEPOINTS = {
 	delete: -10,
 	insert: -11,
@@ -481,6 +483,20 @@ const LEGACY_SEQUENCE_KEY_IDS: Record<string, KeyId> = {
 } as const;
 
 type LegacyModifierKey = keyof typeof LEGACY_SHIFT_SEQUENCES;
+
+const ALT_ARROW_SEQUENCES = {
+	up: ["\x1bp"],
+	down: ["\x1bn"],
+	right: ["\x1bf"],
+	left: ["\x1bb"],
+} as const satisfies Record<ArrowKeyName, readonly string[]>;
+
+const LEGACY_ALT_ARROW_SEQUENCES = {
+	up: ["\x1b[1;3A", "\x1b[1;9A", "\x1b[3A", "\x1bO3A", "\x1b\x1b[A", "\x1b\x1bOA"],
+	down: ["\x1b[1;3B", "\x1b[1;9B", "\x1b[3B", "\x1bO3B", "\x1b\x1b[B", "\x1b\x1bOB"],
+	right: ["\x1b[1;3C", "\x1b[1;9C", "\x1b[3C", "\x1bO3C", "\x1b\x1b[C", "\x1b\x1bOC", "\x1bF"],
+	left: ["\x1b[1;3D", "\x1b[1;9D", "\x1b[3D", "\x1bO3D", "\x1b\x1b[D", "\x1b\x1bOD", "\x1bB"],
+} as const satisfies Record<ArrowKeyName, readonly string[]>;
 
 const matchesLegacySequence = (data: string, sequences: readonly string[]): boolean => sequences.includes(data);
 
@@ -773,6 +789,37 @@ function matchesPrintableModifyOtherKeys(data: string, expectedKeycode: number, 
 	);
 }
 
+function parseAltArrowSequence(data: string): ArrowKeyName | undefined {
+	for (const key of Object.keys(ALT_ARROW_SEQUENCES) as ArrowKeyName[]) {
+		if (matchesLegacySequence(data, ALT_ARROW_SEQUENCES[key])) return key;
+	}
+
+	if (_kittyProtocolActive) return undefined;
+
+	for (const key of Object.keys(LEGACY_ALT_ARROW_SEQUENCES) as ArrowKeyName[]) {
+		if (matchesLegacySequence(data, LEGACY_ALT_ARROW_SEQUENCES[key])) return key;
+	}
+
+	return undefined;
+}
+
+function matchesArrowKey(data: string, key: ArrowKeyName, modifier: number): boolean {
+	const altArrow = parseAltArrowSequence(data);
+	if (altArrow !== undefined) {
+		return altArrow === key && modifier === MODIFIERS.alt;
+	}
+
+	if (modifier === 0) {
+		return (
+			matchesLegacySequence(data, LEGACY_KEY_SEQUENCES[key]) || matchesKittySequence(data, ARROW_CODEPOINTS[key], 0)
+		);
+	}
+	if (matchesLegacyModifierSequence(data, key, modifier)) {
+		return true;
+	}
+	return matchesKittySequence(data, ARROW_CODEPOINTS[key], modifier);
+}
+
 function formatKeyNameWithModifiers(keyName: string, modifier: number): string | undefined {
 	const mods: string[] = [];
 	const effectiveMod = modifier & ~LOCK_MASK;
@@ -1042,88 +1089,16 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 			return matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.pageDown, modifier);
 
 		case "up":
-			if (modifier === MODIFIERS.alt) {
-				return data === "\x1bp" || matchesKittySequence(data, ARROW_CODEPOINTS.up, MODIFIERS.alt);
-			}
-			if (modifier === 0) {
-				return (
-					matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.up) ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.up, 0)
-				);
-			}
-			if (matchesLegacyModifierSequence(data, "up", modifier)) {
-				return true;
-			}
-			return matchesKittySequence(data, ARROW_CODEPOINTS.up, modifier);
+			return matchesArrowKey(data, "up", modifier);
 
 		case "down":
-			if (modifier === MODIFIERS.alt) {
-				return data === "\x1bn" || matchesKittySequence(data, ARROW_CODEPOINTS.down, MODIFIERS.alt);
-			}
-			if (modifier === 0) {
-				return (
-					matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.down) ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.down, 0)
-				);
-			}
-			if (matchesLegacyModifierSequence(data, "down", modifier)) {
-				return true;
-			}
-			return matchesKittySequence(data, ARROW_CODEPOINTS.down, modifier);
+			return matchesArrowKey(data, "down", modifier);
 
 		case "left":
-			if (modifier === MODIFIERS.alt) {
-				return (
-					data === "\x1b[1;3D" ||
-					(!_kittyProtocolActive && data === "\x1bB") ||
-					data === "\x1bb" ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.left, MODIFIERS.alt)
-				);
-			}
-			if (modifier === MODIFIERS.ctrl) {
-				return (
-					data === "\x1b[1;5D" ||
-					matchesLegacyModifierSequence(data, "left", MODIFIERS.ctrl) ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.left, MODIFIERS.ctrl)
-				);
-			}
-			if (modifier === 0) {
-				return (
-					matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.left) ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.left, 0)
-				);
-			}
-			if (matchesLegacyModifierSequence(data, "left", modifier)) {
-				return true;
-			}
-			return matchesKittySequence(data, ARROW_CODEPOINTS.left, modifier);
+			return matchesArrowKey(data, "left", modifier);
 
 		case "right":
-			if (modifier === MODIFIERS.alt) {
-				return (
-					data === "\x1b[1;3C" ||
-					(!_kittyProtocolActive && data === "\x1bF") ||
-					data === "\x1bf" ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.right, MODIFIERS.alt)
-				);
-			}
-			if (modifier === MODIFIERS.ctrl) {
-				return (
-					data === "\x1b[1;5C" ||
-					matchesLegacyModifierSequence(data, "right", MODIFIERS.ctrl) ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.right, MODIFIERS.ctrl)
-				);
-			}
-			if (modifier === 0) {
-				return (
-					matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.right) ||
-					matchesKittySequence(data, ARROW_CODEPOINTS.right, 0)
-				);
-			}
-			if (matchesLegacyModifierSequence(data, "right", modifier)) {
-				return true;
-			}
-			return matchesKittySequence(data, ARROW_CODEPOINTS.right, modifier);
+			return matchesArrowKey(data, "right", modifier);
 
 		case "f1":
 		case "f2":
@@ -1249,6 +1224,9 @@ function formatParsedKey(codepoint: number, modifier: number, baseLayoutKey?: nu
 }
 
 export function parseKey(data: string): string | undefined {
+	const altArrow = parseAltArrowSequence(data);
+	if (altArrow) return `alt+${altArrow}`;
+
 	const kitty = parseKittySequence(data);
 	if (kitty) {
 		return formatParsedKey(kitty.codepoint, kitty.modifier, kitty.baseLayoutKey);
