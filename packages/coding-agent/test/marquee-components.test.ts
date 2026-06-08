@@ -520,13 +520,13 @@ describe("marquee TUI components", () => {
 			});
 
 			const before = stripAnsi(detailComponent.render(80).join("\n"));
-			expect(before).toContain("Ctrl+X expand tools");
+			expect(before).toContain("Ctrl+X to expand");
 			detailComponent.handleInput("\x18");
 
 			expect(toggleCount).toBe(1);
 			detailComponent.setToolsExpanded(true);
 			const after = stripAnsi(detailComponent.render(80).join("\n"));
-			expect(after).toContain("Ctrl+X collapse tools");
+			expect(after).toContain("Ctrl+X to collapse");
 		} finally {
 			setKeybindings(new KeybindingsManager());
 		}

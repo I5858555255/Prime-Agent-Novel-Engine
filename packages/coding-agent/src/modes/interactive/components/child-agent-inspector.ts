@@ -616,7 +616,7 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 	}
 
 	private detailHintLine(width: number): string {
-		const expandAction = keyAction("app.tools.expand", this.toolsExpanded ? "collapse tools" : "expand tools");
+		const expandAction = keyAction("app.tools.expand", this.toolsExpanded ? "to collapse" : "to expand");
 		return hintLine(
 			[keyAction("tui.select.cancel", "back to subagents", { primaryOnly: true }), expandAction],
 			width,
