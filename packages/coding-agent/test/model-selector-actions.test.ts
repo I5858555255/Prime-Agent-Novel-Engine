@@ -111,4 +111,44 @@ describe("ModelSelectorComponent provider actions", () => {
 		expect(output).toContain("faux-2");
 		expect(output).toContain("(2/12)");
 	});
+
+	it("keeps scoped model help within a short terminal viewport", async () => {
+		const harness = await createHarness({
+			models: Array.from({ length: 12 }, (_, index) => ({
+				id: `faux-${index + 1}`,
+				name: `Faux Model ${index + 1}`,
+				reasoning: true,
+			})),
+		});
+		harnesses.push(harness);
+		const scopedModels = Array.from({ length: 12 }, (_, index) => {
+			const model = harness.getModel(`faux-${index + 1}`);
+			if (!model) {
+				throw new Error(`Missing model faux-${index + 1}`);
+			}
+			return { model };
+		});
+
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			harness.getModel("faux-1"),
+			harness.settingsManager,
+			harness.session.modelRegistry,
+			scopedModels,
+			() => {},
+			() => {},
+			undefined,
+			{ getRows: () => 16 },
+		);
+
+		await waitForAsyncRender();
+
+		const lines = selector.render(120);
+		const output = stripAnsi(lines.join("\n"));
+
+		expect(lines.length).toBeLessThanOrEqual(16);
+		expect(output).toContain("Scope: ");
+		expect(output).toContain("(all/scoped)");
+		expect(output).toContain("(1/12)");
+	});
 });

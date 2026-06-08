@@ -42,7 +42,6 @@ type ModelScope = "all" | "scoped";
 const PREFERRED_VISIBLE_MODELS = 10;
 const MODEL_LIST_RESERVED_ROWS = {
 	base: 8,
-	help: 2,
 	detail: 2,
 };
 const MODEL_HELP_MIN_ROWS = 12;
@@ -394,20 +393,24 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private updateResponsiveLayout(): void {
 		const showHeaderHelp = this.shouldShowHeaderHelp();
+		let headerHelpRows = 0;
 		this.headerHelpContainer.clear();
 		if (showHeaderHelp) {
 			if (this.scopeText && this.scopeHintText) {
 				this.headerHelpContainer.addChild(this.scopeText);
 				this.headerHelpContainer.addChild(this.scopeHintText);
+				headerHelpRows += 2;
 			} else if (this.warningText) {
 				this.headerHelpContainer.addChild(this.warningText);
+				headerHelpRows += 1;
 			}
 			this.headerHelpContainer.addChild(new Spacer(1));
+			headerHelpRows += 1;
 		}
 
 		const reservedRows =
 			MODEL_LIST_RESERVED_ROWS.base +
-			(showHeaderHelp ? MODEL_LIST_RESERVED_ROWS.help : 0) +
+			headerHelpRows +
 			(this.shouldShowSelectedDetails() ? MODEL_LIST_RESERVED_ROWS.detail : 0);
 		this.listLayout = getMenuListLayout({
 			getRows: this.viewport.getRows,
@@ -418,6 +421,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		});
 		this.responsiveLayoutKey = [
 			showHeaderHelp ? "help" : "no-help",
+			headerHelpRows,
 			this.shouldShowSelectedDetails() ? "detail" : "no-detail",
 			this.listLayout.compact ? "compact" : "comfortable",
 			this.listLayout.visibleItems,
