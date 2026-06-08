@@ -10,6 +10,9 @@ import type { CustomEntry } from "../session-manager.js";
 
 export const REFINEMENT_CUSTOM_TYPE = "prime-agent.refinement";
 const HARNESS_STATE_DIR_NAME = "harness";
+const DEFAULT_OVERVIEW_ENTRY_LIMIT = 6;
+const DEFAULT_OVERVIEW_REFINEMENT_LIMIT = 5;
+const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -182,6 +185,75 @@ export function saveHarnessState(harnessStateDir: string, state: HarnessState): 
 	mkdirSync(harnessStateDir, { recursive: true });
 	writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 	return statePath;
+}
+
+function compactText(text: string, maxLength: number): string {
+	const normalized = text.replace(/\s+/g, " ").trim();
+	if (normalized.length <= maxLength) {
+		return normalized;
+	}
+	return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+export function formatHarnessStateForPrompt(
+	state: HarnessState,
+	options: {
+		maxEntriesPerKind?: number;
+		maxRefinements?: number;
+		maxContentLength?: number;
+	} = {},
+): string {
+	const maxEntriesPerKind = options.maxEntriesPerKind ?? DEFAULT_OVERVIEW_ENTRY_LIMIT;
+	const maxRefinements = options.maxRefinements ?? DEFAULT_OVERVIEW_REFINEMENT_LIMIT;
+	const maxContentLength = options.maxContentLength ?? DEFAULT_OVERVIEW_CONTENT_LIMIT;
+	const lines = [
+		"# Global Harness State",
+		"",
+		"Persistent harness state is global by default and should influence this session without requiring a tool call.",
+		"Use these prompt notes, memories, skills, and subagent specs when they are relevant. The base system prompt is immutable; prompt entries below are supplemental notes only.",
+		"",
+		"When to call `/refine`: after a repeated failure, a reusable tactic emerges, a user corrects behavior that should persist, validation shows a harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `/refine` edits small and evidence-backed.",
+		"",
+	];
+
+	let totalEntries = 0;
+	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
+		const entries = Object.values(state.entries[kind]).sort((a, b) =>
+			[a.path, a.title, a.id].join("\0").localeCompare([b.path, b.title, b.id].join("\0")),
+		);
+		totalEntries += entries.length;
+		lines.push(`${kind}: ${entries.length}`);
+		for (const entry of entries.slice(0, maxEntriesPerKind)) {
+			lines.push(
+				`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version}): ${compactText(
+					entry.content,
+					maxContentLength,
+				)}`,
+			);
+		}
+		const overflow = entries.length - Math.min(entries.length, maxEntriesPerKind);
+		if (overflow > 0) {
+			lines.push(`- +${overflow} more ${kind} entries`);
+		}
+		lines.push("");
+	}
+
+	if (totalEntries === 0) {
+		lines.push("No saved harness entries yet.", "");
+	}
+
+	lines.push(`recent refinements: ${state.refinements.length}`);
+	for (const event of state.refinements.slice(-maxRefinements)) {
+		const changes = event.changes.length > 0 ? event.changes.join(", ") : "no applied edits";
+		const outcome = event.outcome ? `; outcome: ${compactText(event.outcome, maxContentLength)}` : "";
+		lines.push(`- [${event.id}] ${compactText(event.trigger, maxContentLength)}: ${changes}${outcome}`);
+	}
+	const refinementOverflow = state.refinements.length - Math.min(state.refinements.length, maxRefinements);
+	if (refinementOverflow > 0) {
+		lines.push(`- +${refinementOverflow} older refinement events`);
+	}
+
+	return lines.join("\n").trim();
 }
 
 function overviewForPrompt(state: HarnessState): string {

@@ -7,7 +7,9 @@ can replay the same surfaces.
 Current design note: refined prompt notes, memories, skills, subagent specs, and
 refinement events are global by default under the agent harness directory, for
 example `~/.prime/agent/harness/harness_state.json`. Session JSONL entries still
-record refinement results for auditability and rollback evidence.
+record refinement results for auditability and rollback evidence. A compact
+overview of the global harness state is injected into the default system prompt
+so the agent can use learned state without first calling `rlm.harness.overview()`.
 
 ## 2026-06-08 manual CLI session
 
@@ -177,6 +179,9 @@ Covered validation and recovery cases:
 - Generated ids for create edits without ids.
 - Default `path`, `metadata`, `source`, and version handling.
 - Global harness state directory resolution under the agent dir.
+- Compact global harness overview injection into the default system prompt.
+- `/refine` usage guidance in the injected harness overview.
+- Bounded harness prompt injection with entry overflow and content truncation.
 - Persistence to and reload from `harness_state.json`.
 - Refinement history extraction from `prime-agent.refinement` custom entries.
 - Duplicate create rejection for every editable kind.

@@ -1836,6 +1836,7 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 			allowRecursion: this._rlmDepth < this._rlmMaxDepth,
+			harnessState: loadHarnessState(getGlobalHarnessStateDir()),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -2687,6 +2688,8 @@ export class AgentSession {
 			);
 			result.harnessStatePath = saveHarnessState(harnessStateDir, state);
 			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
 			return result;
 		} finally {
 			this._reconnectToAgent();

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { DEFAULT_RLM_EXTRA_IMPORT_LABELS } from "../src/core/kernel/bootstrap.js";
 import { buildRlmPrompt } from "../src/core/prompts/index.js";
+import type { HarnessState } from "../src/core/refinement/index.js";
 import type { Skill } from "../src/core/skills.js";
 import { buildSystemPrompt } from "../src/core/system-prompt.js";
 import { createIpythonToolDefinition } from "../src/core/tools/ipython.js";
@@ -96,6 +97,145 @@ describe("buildRlmPrompt", () => {
 });
 
 describe("buildSystemPrompt", () => {
+	test("injects compact global harness context and refine guidance by default", () => {
+		const harnessState: HarnessState = {
+			schema: 1,
+			entries: {
+				prompt: {
+					focused_edits: {
+						id: "focused_edits",
+						kind: "prompt",
+						title: "Focused edits",
+						content: "Prefer small prompt, memory, skill, or subagent updates over broad rewrites.",
+						path: "policy",
+						metadata: {},
+						source: "refine",
+						created_at: "2026-06-08T00:00:00.000Z",
+						updated_at: "2026-06-08T00:00:00.000Z",
+						version: 1,
+					},
+				},
+				memory: {
+					validation: {
+						id: "validation",
+						kind: "memory",
+						title: "Validation",
+						content: "Run `npm run check` after PrimeAgent code changes.",
+						path: "repo/prime-agent",
+						metadata: {},
+						source: "refine",
+						created_at: "2026-06-08T00:00:00.000Z",
+						updated_at: "2026-06-08T00:00:00.000Z",
+						version: 2,
+					},
+				},
+				skill: {
+					review_refinement: {
+						id: "review_refinement",
+						kind: "skill",
+						title: "Review refinement",
+						content: "Check requested edit coverage, rollback safety, and validation commands.",
+						path: "quality",
+						metadata: {},
+						source: "refine",
+						created_at: "2026-06-08T00:00:00.000Z",
+						updated_at: "2026-06-08T00:00:00.000Z",
+						version: 1,
+					},
+				},
+				subagent: {
+					refinement_reviewer: {
+						id: "refinement_reviewer",
+						kind: "subagent",
+						title: "Refinement reviewer",
+						content: "Review proposed harness edits for scope, evidence, and unintended behavior.",
+						path: "review",
+						metadata: {},
+						source: "refine",
+						created_at: "2026-06-08T00:00:00.000Z",
+						updated_at: "2026-06-08T00:00:00.000Z",
+						version: 1,
+					},
+				},
+			},
+			refinements: [
+				{
+					id: "refine_1",
+					trigger: "Observed validation miss",
+					changes: ["create memory:validation"],
+					evidence: "manual test",
+					outcome: "Future runs should name npm run check.",
+					created_at: "2026-06-08T00:00:00.000Z",
+				},
+			],
+		};
+
+		const prompt = buildSystemPrompt({
+			selectedTools: ["ipython"],
+			contextFiles: [],
+			skills: [],
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			harnessState,
+		});
+
+		expect(prompt).toContain("# Global Harness State");
+		expect(prompt).toContain("Persistent harness state is global by default");
+		expect(prompt).toContain("When to call `/refine`");
+		expect(prompt).toContain("after a repeated failure");
+		expect(prompt).toContain("a reusable tactic emerges");
+		expect(prompt).toContain("validation shows a harness entry is wrong");
+		expect(prompt).toContain("[focused_edits] Focused edits (policy, v1)");
+		expect(prompt).toContain("[validation] Validation (repo/prime-agent, v2): Run `npm run check`");
+		expect(prompt).toContain("[review_refinement] Review refinement (quality, v1)");
+		expect(prompt).toContain("[refinement_reviewer] Refinement reviewer (review, v1)");
+		expect(prompt).toContain("recent refinements: 1");
+		expect(prompt).toContain("[refine_1] Observed validation miss: create memory:validation");
+		expect(prompt.indexOf("# Global Harness State")).toBeGreaterThan(prompt.indexOf("Conversation log:"));
+	});
+
+	test("keeps injected harness context compact", () => {
+		const longContent = "x".repeat(500);
+		const memoryEntries: HarnessState["entries"]["memory"] = {};
+		for (let i = 0; i < 8; i++) {
+			memoryEntries[`memory_${i}`] = {
+				id: `memory_${i}`,
+				kind: "memory",
+				title: `Memory ${i}`,
+				content: longContent,
+				path: "overflow",
+				metadata: {},
+				source: "refine",
+				created_at: "2026-06-08T00:00:00.000Z",
+				updated_at: "2026-06-08T00:00:00.000Z",
+				version: 1,
+			};
+		}
+		const harnessState: HarnessState = {
+			schema: 1,
+			entries: {
+				prompt: {},
+				memory: memoryEntries,
+				skill: {},
+				subagent: {},
+			},
+			refinements: [],
+		};
+
+		const prompt = buildSystemPrompt({
+			selectedTools: ["ipython"],
+			contextFiles: [],
+			skills: [],
+			cwd: "/repo",
+			harnessState,
+		});
+
+		expect(prompt).toContain("memory: 8");
+		expect(prompt).toContain("- +2 more memory entries");
+		expect(prompt).toContain(`${"x".repeat(177)}...`);
+		expect(prompt).not.toContain(longContent);
+	});
+
 	test("uses the model-agnostic rlm harness prompt", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
