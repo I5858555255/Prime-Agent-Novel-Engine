@@ -8,8 +8,10 @@ import {
 } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { formatNoModelsAvailableMessage } from "../src/core/auth-guidance.js";
+import type { AuthStatus } from "../src/core/auth-storage.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
+import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
 import type {
 	AgentConnectionExtensionUiRequest,
 	AgentConnectionExtensionUiResponse,
@@ -324,33 +326,27 @@ describe("InteractiveMode key handlers", () => {
 			onPasteImage?: () => void;
 			onAction(action: string, handler: () => void): void;
 		};
-		editor: { getText(): string };
-		ui: { onDebug?: () => void };
-		isAgentStreaming(): boolean;
-		restoreQueuedMessagesToEditor(options: { abort: boolean }): Promise<number>;
-		showError(message: string): void;
+		editor: { setText: ReturnType<typeof vi.fn> };
+		ui: { onDebug?: () => void; requestRender: ReturnType<typeof vi.fn> };
+		clearCtrlCExitHint(options?: { render?: boolean }): void;
 		setupKeyHandlers(): void;
 	};
 
-	test("reports rejected streaming escape aborts", async () => {
+	test("escape clears the input bar without aborting streaming", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as KeyHandlerHarness;
 		fakeThis.defaultEditor = {
 			onAction: vi.fn(),
 		};
-		fakeThis.editor = { getText: () => "" };
-		fakeThis.ui = {};
-		fakeThis.isAgentStreaming = () => true;
-		fakeThis.restoreQueuedMessagesToEditor = vi.fn(async () => {
-			throw new Error("abort failed");
-		});
-		fakeThis.showError = vi.fn();
+		fakeThis.editor = { setText: vi.fn() };
+		fakeThis.ui = { requestRender: vi.fn() };
+		fakeThis.clearCtrlCExitHint = vi.fn();
 
 		fakeThis.setupKeyHandlers();
 		fakeThis.defaultEditor.onEscape?.();
-		await new Promise<void>((resolve) => setImmediate(resolve));
 
-		expect(fakeThis.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
-		expect(fakeThis.showError).toHaveBeenCalledWith("abort failed");
+		expect(fakeThis.clearCtrlCExitHint).toHaveBeenCalledWith({ render: false });
+		expect(fakeThis.editor.setText).toHaveBeenCalledWith("");
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -595,6 +591,7 @@ describe("InteractiveMode model selection persistence", () => {
 		checkDaxnutsEasterEgg(model: AgentConnectionModel): void;
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
 		handleModelCommand(searchTerm?: string): Promise<void>;
+		completeOnboardingIfCurrentModelReady(): void;
 	};
 
 	const createModel = (provider: string, id: string): AgentConnectionModel =>
@@ -676,6 +673,7 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.findExactModelMatch = vi.fn(async () => model);
 		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn(async () => {});
 		fakeThis.checkDaxnutsEasterEgg = vi.fn();
+		fakeThis.completeOnboardingIfCurrentModelReady = vi.fn();
 
 		await fakeThis.handleModelCommand("gpt-5.5");
 
@@ -684,6 +682,182 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model });
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
 		expect(fakeThis.showError).not.toHaveBeenCalled();
+		expect(fakeThis.completeOnboardingIfCurrentModelReady).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("InteractiveMode Prime CLI onboarding", () => {
+	type OnboardingHarness = {
+		shouldRunOnboarding(): boolean;
+		completeOnboarding(): void;
+		handleModelCommand(searchTerm?: string): Promise<void>;
+		runOnboardingFlow(): Promise<boolean>;
+		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+	};
+	type OnboardingFake = OnboardingHarness & {
+		connectionState: AgentConnectionState;
+		connectionModels: AgentConnectionModel[];
+		agentConnection: {
+			getAvailableModels?: () => Promise<AgentConnectionModel[]>;
+			setModel?: (provider: string, modelId: string) => Promise<void>;
+		};
+		uiServices: {
+			modelRegistry: {
+				refresh: () => void;
+				hasConfiguredAuth: (model: unknown) => boolean;
+				getProviderAuthStatus: (provider: string) => AuthStatus;
+			};
+			settingsManager: {
+				getOnboardingCompleted: () => boolean;
+				setOnboardingCompleted: (completed: boolean) => void;
+				setDefaultModelAndProvider: (provider: string, modelId: string) => void;
+			};
+		};
+		footer?: { invalidate: () => void };
+		updateEditorBorderColor?: () => void;
+		showStatus?: (message: string) => void;
+		showError?: (message: string) => void;
+		patchConnectionState?: (patch: Partial<AgentConnectionState>) => void;
+		maybeWarnAboutAnthropicSubscriptionAuth?: (model?: AgentConnectionModel) => void;
+		checkDaxnutsEasterEgg?: (model: { provider: string; id: string }) => void;
+		findExactModelMatch?: (searchTerm: string) => Promise<AgentConnectionModel | undefined>;
+		showOnboardingModelSelectionSplash?: () => Promise<boolean>;
+		promptForModelSelection?: (options?: { allowProviderSetup?: boolean }) => Promise<boolean>;
+		completeOnboardingIfCurrentModelReady?: () => void;
+		getModelCandidates?: () => Promise<AgentConnectionModel[]>;
+	};
+	const shouldRunOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).shouldRunOnboarding;
+	const completeOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).completeOnboarding;
+	const handleModelCommand = (InteractiveMode.prototype as unknown as OnboardingHarness).handleModelCommand;
+	const runOnboardingFlow = (InteractiveMode.prototype as unknown as OnboardingHarness).runOnboardingFlow;
+	const applySelectedModel = (InteractiveMode.prototype as unknown as OnboardingHarness).applySelectedModel;
+
+	const primeModel: AgentConnectionModel = {
+		id: "openai/gpt-5.5",
+		name: "GPT-5.5",
+		api: "openai-completions",
+		provider: PRIME_INFERENCE_PROVIDER_ID,
+		baseUrl: "https://api.pinference.ai/api/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 1050000,
+		maxTokens: 128000,
+	} as AgentConnectionModel;
+
+	function createPrimeCliHarness(completed: boolean): OnboardingFake {
+		const fakeThis = Object.create(InteractiveMode.prototype) as OnboardingFake;
+		fakeThis.connectionState = createConnectionState({ model: primeModel });
+		fakeThis.connectionModels = [primeModel];
+		fakeThis.agentConnection = {
+			getAvailableModels: vi.fn(async () => [primeModel]),
+		};
+		fakeThis.uiServices = {
+			modelRegistry: {
+				refresh: vi.fn(),
+				hasConfiguredAuth: vi.fn(() => true),
+				getProviderAuthStatus: vi.fn(
+					(): AuthStatus => ({
+						configured: false,
+						source: "prime_cli",
+					}),
+				),
+			},
+			settingsManager: {
+				getOnboardingCompleted: vi.fn(() => completed),
+				setOnboardingCompleted: vi.fn(),
+				setDefaultModelAndProvider: vi.fn(),
+			},
+		};
+		fakeThis.getModelCandidates = vi.fn(async () => [primeModel]);
+		return fakeThis;
+	}
+
+	test("shows onboarding when the selected Prime model is backed by Prime CLI auth", () => {
+		const fakeThis = createPrimeCliHarness(false);
+
+		expect(shouldRunOnboarding.call(fakeThis)).toBe(true);
+		expect(fakeThis.uiServices.modelRegistry.refresh).toHaveBeenCalledTimes(1);
+	});
+
+	test("skips Prime CLI onboarding after it has been completed", () => {
+		const fakeThis = createPrimeCliHarness(true);
+
+		expect(shouldRunOnboarding.call(fakeThis)).toBe(false);
+	});
+
+	test("persists onboarding completion once", () => {
+		const fakeThis = createPrimeCliHarness(false);
+
+		completeOnboarding.call(fakeThis);
+
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
+	});
+
+	test("manual exact model selection completes Prime CLI onboarding", async () => {
+		let completed = false;
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.connectionState = createConnectionState({ model: undefined });
+		fakeThis.uiServices.settingsManager.getOnboardingCompleted = vi.fn(() => completed);
+		fakeThis.uiServices.settingsManager.setOnboardingCompleted = vi.fn((nextCompleted: boolean) => {
+			completed = nextCompleted;
+		});
+		fakeThis.agentConnection.setModel = vi.fn(async (_provider: string, _modelId: string) => {
+			fakeThis.connectionState = { ...fakeThis.connectionState, model: primeModel };
+		});
+		fakeThis.findExactModelMatch = vi.fn(async () => primeModel);
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.patchConnectionState = vi.fn((patch: Partial<AgentConnectionState>) => {
+			fakeThis.connectionState = { ...fakeThis.connectionState, ...patch };
+		});
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showError = vi.fn();
+		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn();
+		fakeThis.checkDaxnutsEasterEgg = vi.fn();
+		fakeThis.applySelectedModel = applySelectedModel;
+
+		await handleModelCommand.call(fakeThis, "prime-inference/openai/gpt-5.5");
+
+		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith(PRIME_INFERENCE_PROVIDER_ID, "openai/gpt-5.5");
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
+		expect(shouldRunOnboarding.call(fakeThis)).toBe(false);
+	});
+
+	test("cancelled model picker does not complete Prime CLI onboarding", async () => {
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.showOnboardingModelSelectionSplash = vi.fn(async () => true);
+		fakeThis.promptForModelSelection = vi.fn(async () => false);
+		fakeThis.showStatus = vi.fn();
+
+		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBe(false);
+
+		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model selection required. Use /model to continue.");
+	});
+
+	test("cancelled model picker continues when current model is ready outside Prime CLI onboarding", async () => {
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.uiServices.modelRegistry.getProviderAuthStatus = vi.fn(
+			(): AuthStatus => ({
+				configured: true,
+				source: "stored",
+			}),
+		);
+		fakeThis.promptForModelSelection = vi.fn(async () => false);
+		fakeThis.showStatus = vi.fn();
+
+		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBe(true);
+
+		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
+		expect(fakeThis.showStatus).not.toHaveBeenCalled();
 	});
 });
 
@@ -852,14 +1026,16 @@ describe("truncatePathMiddle", () => {
 });
 
 describe("InteractiveMode.setToolsExpanded", () => {
-	test("applies expansion state to the active header and chat entries", () => {
+	test("applies expansion state to the active header, chat entries, and child agent detail", () => {
 		const header = { setExpanded: vi.fn() };
 		const chatChild = { setExpanded: vi.fn() };
+		const childAgentDetail = { setToolsExpanded: vi.fn() };
 		const fakeThis: any = {
 			toolOutputExpanded: false,
 			customHeader: undefined,
 			builtInHeader: header,
 			chatContainer: { children: [chatChild] },
+			childAgentDetail,
 			ui: { requestRender: vi.fn() },
 		};
 
@@ -868,6 +1044,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(fakeThis.toolOutputExpanded).toBe(true);
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
+		expect(childAgentDetail.setToolsExpanded).toHaveBeenCalledWith(true);
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
 	});
 });

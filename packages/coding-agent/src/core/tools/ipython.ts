@@ -2,6 +2,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.js";
+import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import { KernelManager } from "../kernel/index.js";
 import type { RlmRunHandler } from "../rlm-runtime.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
@@ -111,8 +112,7 @@ for _prime_agent_skill_name in ${JSON.stringify(importNames)}:
 const ipythonSchema = Type.Object({
 	code: Type.String({
 		description:
-			"Python or IPython shell code to execute. State (variables, imports, loaded data) persists across calls. " +
-			"Prefer `!cmd` for ordinary single-line shell commands and `%%bash` for multi-line shell scripts.",
+			"Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports.",
 	}),
 });
 
@@ -120,7 +120,7 @@ export type IpythonToolInput = Static<typeof ipythonSchema>;
 
 export interface IpythonToolDetails {
 	durationMs?: number;
-	status?: "ok" | "error" | "aborted";
+	status?: "ok" | "error" | "aborted" | "starting";
 	errorEname?: string;
 }
 
@@ -147,7 +147,7 @@ export function createIpythonToolDefinition(
 		options.kernelManagerRef.current = undefined;
 	}
 
-	function getManager(): Promise<KernelManager> {
+	function getManager(onBootstrapProgress?: KernelBootstrapProgressHandler): Promise<KernelManager> {
 		if (!managerPromise) {
 			managerPromise = (async () => {
 				const m = new KernelManager({
@@ -158,7 +158,9 @@ export function createIpythonToolDefinition(
 					rlmRunHandler: options?.rlmRunHandler,
 					pythonSkills: options?.pythonSkills,
 				});
-				await m.start();
+				onBootstrapProgress?.("Starting IPython kernel...");
+				await m.start({ onBootstrapProgress });
+				onBootstrapProgress?.("Preparing IPython runtime...");
 				const bootstrap = await m.execute(buildRlmBootstrapCode(options?.pythonSkills));
 				if (bootstrap.status !== "ok") {
 					const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
@@ -177,42 +179,55 @@ export function createIpythonToolDefinition(
 		name: "ipython",
 		label: "ipython",
 		description:
-			"Execute Python and shell commands in a persistent IPython kernel. Variables, imports, and loaded data " +
-			"persist across calls. Prefer `!cmd` for ordinary single-line shell commands and `%%bash` " +
-			"for multi-line shell scripts.",
-		promptSnippet:
-			"ipython - execute Python and shell commands in a persistent kernel; prefer `!cmd` and `%%bash` for shell work",
+			"Execute Python scratchpad code and `%%bash` shell cells in a persistent IPython kernel. Variables, imports, and loaded data persist across calls. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
+		promptSnippet: "ipython - persistent agent notebook for Python scratchpad code and %%bash orchestration",
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
 		executionMode: "sequential",
 		parameters: ipythonSchema,
-		execute: async (_toolCallId, params, signal, onUpdate) => {
-			const m = await getManager();
-			const r = await m.execute(params.code, {
-				signal,
-				onStream: (chunk) => {
-					onUpdate?.({
-						content: [{ type: "text", text: chunk }],
-						details: { status: "ok" },
-					});
-				},
-			});
-
-			let text = r.stdout;
-			if (r.stderr) text += (text ? "\n" : "") + r.stderr;
-			if (r.result) text += (text ? "\n" : "") + r.result;
-			if (r.status === "error" && r.error) {
-				text += (text ? "\n" : "") + r.error.traceback.join("\n");
-			}
-
-			return {
-				content: [{ type: "text", text: text || "" }],
-				details: {
-					durationMs: r.durationMs,
-					status: r.status,
-					errorEname: r.error?.ename,
-				},
-				isError: r.status === "error" || r.status === "aborted",
+		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
+			let reportedStartupProgress = false;
+			const reportStartupProgress: KernelBootstrapProgressHandler = (message) => {
+				reportedStartupProgress = true;
+				ctx?.ui.setWorkingMessage(message);
+				onUpdate?.({
+					content: [{ type: "text", text: message }],
+					details: { status: "starting" },
+				});
 			};
+
+			try {
+				const m = await getManager(reportStartupProgress);
+				const r = await m.execute(params.code, {
+					signal,
+					onStream: (chunk) => {
+						onUpdate?.({
+							content: [{ type: "text", text: chunk }],
+							details: { status: "ok" },
+						});
+					},
+				});
+
+				let text = r.stdout;
+				if (r.stderr) text += (text ? "\n" : "") + r.stderr;
+				if (r.result) text += (text ? "\n" : "") + r.result;
+				if (r.status === "error" && r.error) {
+					text += (text ? "\n" : "") + r.error.traceback.join("\n");
+				}
+
+				return {
+					content: [{ type: "text", text: text || "" }],
+					details: {
+						durationMs: r.durationMs,
+						status: r.status,
+						errorEname: r.error?.ename,
+					},
+					isError: r.status === "error" || r.status === "aborted",
+				};
+			} finally {
+				if (reportedStartupProgress) {
+					ctx?.ui.setWorkingMessage();
+				}
+			}
 		},
 	};
 }

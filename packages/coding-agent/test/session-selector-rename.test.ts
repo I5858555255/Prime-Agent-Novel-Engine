@@ -55,7 +55,7 @@ describe("session selector rename", () => {
 		await flushPromises();
 
 		const output = selector.render(120).join("\n");
-		expect(output).toContain("ctrl+r");
+		expect(output).toContain("Ctrl+R");
 		expect(output).toContain("rename");
 	});
 
@@ -74,7 +74,7 @@ describe("session selector rename", () => {
 		await flushPromises();
 
 		const output = selector.render(120).join("\n");
-		expect(output).not.toContain("ctrl+r");
+		expect(output).not.toContain("Ctrl+R");
 		expect(output).not.toContain("rename");
 	});
 

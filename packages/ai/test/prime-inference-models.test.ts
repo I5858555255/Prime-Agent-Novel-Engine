@@ -20,6 +20,7 @@ describe("Prime Inference models", () => {
 		expect(modelIds).toEqual(
 			expect.arrayContaining([
 				"anthropic/claude-opus-4.7",
+				"anthropic/claude-opus-4.8",
 				"deepseek/deepseek-v4-pro",
 				"nvidia/nemotron-3-super-120b-a12b",
 				"openai/gpt-5.4",
@@ -64,6 +65,11 @@ describe("Prime Inference models", () => {
 	});
 
 	it("marks known reasoning-capable Prime Inference model families", () => {
+		const opus48 = getModel("prime-inference", "anthropic/claude-opus-4.8");
+		expect(opus48.reasoning).toBe(true);
+		expect(opus48.thinkingLevelMap).toEqual({ xhigh: "xhigh" });
+		expect(getSupportedThinkingLevels(opus48)).toContain("xhigh");
+
 		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").reasoning).toBe(true);
 		const deepseekV4Flash = getModel("prime-inference", "deepseek/deepseek-v4-flash");
 		expect(deepseekV4Flash.reasoning).toBe(true);
@@ -79,7 +85,6 @@ describe("Prime Inference models", () => {
 		});
 		expect(getModel("prime-inference", "qwen/qwen3-coder-next").reasoning).toBe(false);
 		expect(getModel("prime-inference", "x-ai/grok-4.20").reasoning).toBe(true);
-		expect(getModel("prime-inference", "x-ai/grok-code-fast-1").reasoning).toBe(false);
 	});
 
 	it("resolves PRIME_API_KEY from the environment", () => {

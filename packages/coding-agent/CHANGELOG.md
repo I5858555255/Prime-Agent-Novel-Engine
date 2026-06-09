@@ -16,10 +16,17 @@
 ### Changed
 
 - Changed active session creation to use per-session runtime config so active sessions can use different cwd, model, auth, and tool settings.
+- Changed interactive `Ctrl+C` to interrupt the current operation first and exit only on a second press while the exit hint is visible; `Escape` now clears the input bar without interrupting the agent.
+- Changed the IPython system prompt section to use the upstream rlm-harness IPYTHON_CONTROL_PROMPT: IPython is framed as a persistent control environment, not the target project's runtime. Shell commands should use `%%bash` cells instead of `!cmd` escapes. The agent should not install dependencies into the IPython kernel but use the project's own environment instead.
+- Removed the `.venv` interpreter hint from the system prompt (no longer needed with the control-environment framing).
 
 ### Fixed
 
+- Stopped showing changelog entries automatically on install, first launch, and update startup.
+- Fixed child-agent navigation to show contextual keybinding hints and a visible focused tray marker.
 - Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.
+- Fixed browser sign-in links to show plain URLs when terminal hyperlinks are unsupported.
+- Fixed the release installer splash to keep its logo geometry stable across terminal resizes.
 
 ### Removed
 

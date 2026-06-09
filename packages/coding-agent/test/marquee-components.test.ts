@@ -1,8 +1,10 @@
 import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
-import { type Component, TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, setKeybindings, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";
 import {
 	ChildAgentDetailComponent,
 	ChildAgentInspectorComponent,
@@ -82,6 +84,7 @@ async function renderInVirtualTerminal(component: Component, width = 100, height
 describe("marquee TUI components", () => {
 	beforeAll(() => {
 		initTheme("dark");
+		setKeybindings(new KeybindingsManager());
 	});
 
 	test("renders ipython cells with shell magic and collapsed traceback", async () => {
@@ -313,6 +316,22 @@ describe("marquee TUI components", () => {
 		expect(expanded).toContain("assistant: no anomaly found in this shard");
 	});
 
+	test("renders assistant thinking as quiet text without background styling", () => {
+		const component = new AssistantMessageComponent(
+			createAssistantMessage("answer", "Check **bold** and `code` first.\n```ts\nconst value = 1;\n```"),
+		);
+
+		const rendered = component.render(80).join("\n");
+		const plain = stripAnsi(rendered);
+
+		expect(plain).toContain("Check bold and code first.");
+		expect(plain).not.toContain("**bold**");
+		expect(plain).not.toContain("`code`");
+		expect(plain).not.toContain("```ts");
+		expect(plain).toContain("const value = 1;");
+		expect(rendered).not.toMatch(/\x1b\[(?:4\d|10\d|48;)/);
+	});
+
 	test("renders child agent summary and bounded inspector list", () => {
 		const summary = new ChildAgentSummaryComponent(
 			() => "agents-sidebar",
@@ -384,6 +403,10 @@ describe("marquee TUI components", () => {
 		expect(focusedSummary).toContain("37% context left");
 		expect(focusedSummary).toContain("1 subagent running");
 		expect(focusedSummary).not.toContain("▌");
+		const focusedSummaryWide = stripAnsi(summary.render(96).join("\n"));
+		expect(focusedSummaryWide).toContain("Enter open");
+		expect(focusedSummaryWide).not.toContain("editor");
+		expect(focusedSummaryWide).not.toContain("ctrl+c");
 		const summaryRow = summary.render(60).at(-1) ?? "";
 		expect(visibleWidth(summaryRow)).toBe(60);
 		expect(stripAnsi(summaryRow).endsWith("37% context left")).toBe(true);
@@ -410,13 +433,19 @@ describe("marquee TUI components", () => {
 		expect(compact).not.toContain("└─");
 		expect(compact).not.toContain("├─");
 		expect(compact).not.toContain("assistant: reading shard metrics");
+		const wideList = stripAnsi(component.render(96).join("\n"));
+		expect(wideList).toContain("Up/Down move");
+		expect(wideList).toContain("Enter open");
+		expect(wideList).toContain("Esc close");
+		expect(wideList).not.toContain("ctrl+c close");
 		for (const line of component.render(96)) {
 			expect(visibleWidth(line)).toBe(96);
 		}
 
 		component.focused = true;
 		const focused = stripAnsi(component.render(42).join("\n"));
-		expect(focused).toContain("▌ running · inspect training logs");
+		expect(focused).not.toContain("▌");
+		expect(focused).toContain("running · inspect training logs");
 		expect(focused).not.toContain("assistant: reading shard metrics");
 
 		let openedNodeId: string | undefined;
@@ -438,13 +467,15 @@ describe("marquee TUI components", () => {
 		expect(detail).toContain("reading shard metrics");
 		expect(detail).toContain("$ echo hi");
 		expect(detail).toContain("hi");
+		expect(detail).toContain("Esc back to subagents");
 		expect(detail).not.toContain("user: inspect training logs");
 		expect(detail).not.toContain("assistant: reading shard metrics");
 		expect(detail).not.toContain("tool: bash");
 
 		component.handleInput("\x1b");
 		const returned = stripAnsi(component.render(42).join("\n"));
-		expect(returned).toContain("▌ running · inspect training logs");
+		expect(returned).not.toContain("▌");
+		expect(returned).toContain("running · inspect training logs");
 		expect(returned).not.toContain("assistant: reading shard metrics");
 
 		for (const line of component.render(42)) {
@@ -453,6 +484,52 @@ describe("marquee TUI components", () => {
 
 		const narrow = stripAnsi(component.render(24).join("\n"));
 		expect(narrow).toContain("inspect t…");
+	});
+
+	test("routes child agent detail tool expansion through app keybindings", () => {
+		setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+x" }));
+		try {
+			const detailComponent = new ChildAgentDetailComponent(() => 20);
+			let toggleCount = 0;
+			detailComponent.onToggleToolsExpanded = () => {
+				toggleCount += 1;
+			};
+			detailComponent.setNode({
+				id: "sub-a",
+				label: "inspect training logs",
+				status: "running",
+				sessionDir: "/tmp/session/sub-a",
+				transcript: [],
+				structuredTranscript: [
+					{
+						type: "tool",
+						role: "tool",
+						text: "bash: hi",
+						toolCallId: "tool-sub-a",
+						toolName: "bash",
+						args: { command: "echo hi" },
+						result: {
+							content: [{ type: "text", text: "hi" }],
+							isError: false,
+						},
+						isPartial: false,
+						executionStarted: true,
+						argsComplete: true,
+					},
+				],
+			});
+
+			const before = stripAnsi(detailComponent.render(80).join("\n"));
+			expect(before).toContain("Ctrl+X to expand");
+			detailComponent.handleInput("\x18");
+
+			expect(toggleCount).toBe(1);
+			detailComponent.setToolsExpanded(true);
+			const after = stripAnsi(detailComponent.render(80).join("\n"));
+			expect(after).toContain("Ctrl+X to collapse");
+		} finally {
+			setKeybindings(new KeybindingsManager());
+		}
 	});
 
 	test("keeps child agent summary visible when the right tray label is long", () => {
@@ -495,6 +572,7 @@ describe("marquee TUI components", () => {
 		const first = stripAnsi(firstLines.join("\n"));
 		expect(first).toContain("fallback transcript row 01");
 		expect(first).toContain("fallback transcript row 12");
+		expect(first).toContain("Esc back to subagents");
 		expect(first).not.toContain("↑");
 		expect(first).not.toContain("↓");
 		expect(firstLines.length).toBeGreaterThan(6);

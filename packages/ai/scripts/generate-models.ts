@@ -126,6 +126,7 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"anthropic/claude-haiku-4.5": { contextWindow: 200000, maxTokens: 64000 },
 	"anthropic/claude-opus-4.6": { contextWindow: 1000000, maxTokens: 128000 },
 	"anthropic/claude-opus-4.7": { contextWindow: 1000000, maxTokens: 128000 },
+	"anthropic/claude-opus-4.8": { contextWindow: 1000000, maxTokens: 128000 },
 	"anthropic/claude-sonnet-4.5": { contextWindow: 200000, maxTokens: 64000 },
 	"anthropic/claude-sonnet-4.6": { contextWindow: 1000000, maxTokens: 128000 },
 	"deepseek/deepseek-v3.2": { contextWindow: 128000, maxTokens: 8000 },
@@ -145,7 +146,6 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"qwen/qwen3-vl-235b-a22b-thinking": { contextWindow: 262144, maxTokens: 32768 },
 	"x-ai/grok-4.20": { contextWindow: 2000000, maxTokens: 30000 },
 	"x-ai/grok-4.20-multi-agent": { contextWindow: 2000000, maxTokens: 30000 },
-	"x-ai/grok-code-fast-1": { contextWindow: 32768, maxTokens: 8192 },
 	"z-ai/glm-5": { contextWindow: 202752, maxTokens: 131072 },
 	"z-ai/glm-5.1": { contextWindow: 202800, maxTokens: 131072 },
 };
@@ -209,7 +209,12 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("opus-4-6") || model.id.includes("opus-4.6")) {
 		mergeThinkingLevelMap(model, { xhigh: "max" });
 	}
-	if (model.id.includes("opus-4-7") || model.id.includes("opus-4.7")) {
+	if (
+		model.id.includes("opus-4-7") ||
+		model.id.includes("opus-4.7") ||
+		model.id.includes("opus-4-8") ||
+		model.id.includes("opus-4.8")
+	) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
 	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
