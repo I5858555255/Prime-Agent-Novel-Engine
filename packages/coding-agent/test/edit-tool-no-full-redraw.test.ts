@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container, type Terminal, Text, TUI } from "@earendil-works/pi-tui";
+import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createEditToolDefinition } from "../src/core/tools/edit.js";
-import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.js";
+import { computeEditDiff } from "../src/core/tools/edit-diff.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -50,19 +51,11 @@ async function waitForRenderedText(
 		onRetry?.();
 		await waitForRender();
 		lastRender = getRender();
-		if (lastRender.includes(expectedText)) {
+		if (stripAnsi(lastRender).includes(expectedText)) {
 			return lastRender;
 		}
 	}
 	throw new Error(`Timed out waiting for render to include "${expectedText}". Last render:\n${lastRender}`);
-}
-
-function createLargeEdits(lines: string[]): Edit[] {
-	const targets = [50, 150, 250, 350, 450, 550, 650, 750, 850, 950];
-	return targets.map((lineNumber) => ({
-		oldText: `${lines[lineNumber - 1]}\n${lines[lineNumber]}\n${lines[lineNumber + 1]}`,
-		newText: `${lines[lineNumber - 1]}\n${lines[lineNumber]} changed\n${lines[lineNumber + 1]}`,
-	}));
 }
 
 describe("edit tool TUI rendering", () => {
@@ -76,19 +69,16 @@ describe("edit tool TUI rendering", () => {
 		await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 	});
 
-	it("renders the large diff in the call preview and does not full-redraw when the result settles", async () => {
+	it("renders the diff in the call preview and does not full-redraw when the result settles", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-redraw-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "large-edit.txt");
-		await writeFile(
-			filePath,
-			`${Array.from({ length: 1000 }, (_, i) => `line ${i}`).join("\n")}
-`,
-			"utf8",
-		);
-		const lines = (await readFile(filePath, "utf8")).trimEnd().split("\n");
-		const edits = createLargeEdits(lines);
-		const diff = await computeEditsDiff(filePath, edits, process.cwd());
+		const lines = Array.from({ length: 1000 }, (_, i) => `line ${i}`);
+		await writeFile(filePath, `${lines.join("\n")}\n`, "utf8");
+
+		const old_str = "line 50\nline 51\nline 52";
+		const new_str = "line 50\nline 51 changed\nline 52";
+		const diff = await computeEditDiff(filePath, old_str, new_str, process.cwd());
 		if ("error" in diff) {
 			throw new Error(diff.error);
 		}
@@ -103,7 +93,7 @@ describe("edit tool TUI rendering", () => {
 		const component = new ToolExecutionComponent(
 			"edit",
 			"tool-call-1",
-			{ path: filePath, edits },
+			{ path: filePath, old_str, new_str },
 			{},
 			createEditToolDefinition(process.cwd()),
 			tui,
@@ -119,19 +109,20 @@ describe("edit tool TUI rendering", () => {
 		await waitForRender();
 		await waitForRender();
 
-		const callOnlyRender = await waitForRenderedText(
+		const rawCallRender = await waitForRenderedText(
 			() => component.render(80).join("\n"),
-			"line 50 changed",
+			"line 51 changed",
 			() => tui.requestRender(true),
 		);
+		const callOnlyRender = stripAnsi(rawCallRender);
 		expect(callOnlyRender).toContain("edit");
-		expect(callOnlyRender).toContain("line 950 changed");
+		expect(callOnlyRender).toContain("line 51 changed");
 
 		const redrawsBeforeResult = tui.fullRedraws;
 		const clearsBeforeResult = terminal.fullClearCount;
 		component.updateResult(
 			{
-				content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${filePath}.` }],
+				content: [{ type: "text", text: `Edited ${filePath}` }],
 				details: diff,
 				isError: false,
 			},
@@ -143,25 +134,21 @@ describe("edit tool TUI rendering", () => {
 		expect(tui.fullRedraws).toBe(redrawsBeforeResult);
 		expect(terminal.fullClearCount).toBe(clearsBeforeResult);
 
-		const settledRender = component.render(80).join("\n");
-		expect(settledRender).toContain("line 50 changed");
-		expect(settledRender).toContain("line 950 changed");
-		expect(settledRender).not.toContain("Successfully replaced");
+		const settledRender = stripAnsi(component.render(80).join("\n"));
+		expect(settledRender).toContain("line 51 changed");
+		expect(settledRender).not.toContain("Edited");
 	});
 
 	it("reconstructs the boxed preview from a settled result without argsComplete", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-replay-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "replay-edit.txt");
-		await writeFile(
-			filePath,
-			`${Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n")}
-`,
-			"utf8",
-		);
-		const lines = (await readFile(filePath, "utf8")).trimEnd().split("\n");
-		const edits = createLargeEdits(lines).slice(0, 2);
-		const diff = await computeEditsDiff(filePath, edits, process.cwd());
+		const lines = Array.from({ length: 200 }, (_, i) => `line ${i}`);
+		await writeFile(filePath, `${lines.join("\n")}\n`, "utf8");
+
+		const old_str = "line 50\nline 51\nline 52";
+		const new_str = "line 50\nline 51 changed\nline 52";
+		const diff = await computeEditDiff(filePath, old_str, new_str, process.cwd());
 		if ("error" in diff) {
 			throw new Error(diff.error);
 		}
@@ -172,7 +159,7 @@ describe("edit tool TUI rendering", () => {
 		const component = new ToolExecutionComponent(
 			"edit",
 			"tool-call-replay",
-			{ path: filePath, edits },
+			{ path: filePath, old_str, new_str },
 			{},
 			createEditToolDefinition(process.cwd()),
 			tui,
@@ -184,7 +171,7 @@ describe("edit tool TUI rendering", () => {
 
 		component.updateResult(
 			{
-				content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${filePath}.` }],
+				content: [{ type: "text", text: `Edited ${filePath}` }],
 				details: diff,
 				isError: false,
 			},
@@ -193,12 +180,11 @@ describe("edit tool TUI rendering", () => {
 		await waitForRender();
 		await waitForRender();
 
-		const rendered = component.render(80).join("\n");
-		expect(rendered).toContain("line 50 changed");
-		expect(rendered).toContain("line 150 changed");
+		const rendered = stripAnsi(component.render(80).join("\n"));
+		expect(rendered).toContain("line 51 changed");
 	});
 
-	it("shows a preflight error without rendering a diff when the edits do not apply", async () => {
+	it("shows a preflight error without rendering a diff when the edit does not apply", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-preflight-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "missing-edit.txt");
@@ -209,7 +195,7 @@ describe("edit tool TUI rendering", () => {
 		const component = new ToolExecutionComponent(
 			"edit",
 			"tool-call-2",
-			{ path: filePath, edits: [{ oldText: "does not exist", newText: "replacement" }] },
+			{ path: filePath, old_str: "does not exist", new_str: "replacement" },
 			{},
 			createEditToolDefinition(process.cwd()),
 			tui,

@@ -72,7 +72,7 @@ describe("ToolExecutionComponent parity", () => {
 		const component = new ToolExecutionComponent(
 			"edit",
 			"tool-2",
-			{ path: "README.md", oldText: "before", newText: "after" },
+			{ path: "README.md", old_str: "before", new_str: "after" },
 			{},
 			overrideDefinition,
 			createFakeTui(),
@@ -89,7 +89,7 @@ describe("ToolExecutionComponent parity", () => {
 		const component = new ToolExecutionComponent(
 			"edit",
 			"tool-3",
-			{ file_path: "README.md", oldText: "before", newText: "after" },
+			{ path: "README.md", old_str: "before", new_str: "after" },
 			{},
 			undefined,
 			createFakeTui(),
@@ -124,7 +124,7 @@ describe("ToolExecutionComponent parity", () => {
 		const component = new ToolExecutionComponent(
 			"edit",
 			"tool-4",
-			{ path: "README.md", oldText: "before", newText: "after" },
+			{ path: "README.md", old_str: "before", new_str: "after" },
 			{},
 			createEditToolDefinition(process.cwd()),
 			createFakeTui(),

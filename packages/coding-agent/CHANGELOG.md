@@ -5,7 +5,7 @@
 ### Added
 
 - Added the `edit` tool to the default active tool set (on by default alongside `ipython`). Previously the edit tool was available but had to be explicitly enabled via `--tools edit`.
-- Added `old_str`/`new_str` parameter support to the edit tool, matching the rlm-harness edit tool interface. Models can now call `edit` with `{path, old_str, new_str}` in addition to the existing `{path, edits}` format.
+- Replaced the `edits[]` edit tool interface with the rlm-harness `{path, old_str, new_str}` interface for single-occurrence string replacement. The old `{path, edits[{oldText, newText}]}` and `{path, oldText, newText}` formats are no longer supported.
 
 ### Changed
 

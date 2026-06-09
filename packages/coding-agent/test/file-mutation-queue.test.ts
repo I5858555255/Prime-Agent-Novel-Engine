@@ -107,8 +107,8 @@ describe("built-in edit tool", () => {
 		});
 
 		await Promise.all([
-			editTool.execute("call-1", { path: filePath, edits: [{ oldText: "alpha", newText: "ALPHA" }] }),
-			editTool.execute("call-2", { path: filePath, edits: [{ oldText: "beta", newText: "BETA" }] }),
+			editTool.execute("call-1", { path: filePath, old_str: "alpha", new_str: "ALPHA" }),
+			editTool.execute("call-2", { path: filePath, old_str: "beta", new_str: "BETA" }),
 		]);
 
 		const content = await readFile(filePath, "utf8");

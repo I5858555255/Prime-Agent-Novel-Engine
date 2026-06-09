@@ -70,18 +70,6 @@ export interface FuzzyMatchResult {
 	contentForReplacement: string;
 }
 
-export interface Edit {
-	oldText: string;
-	newText: string;
-}
-
-interface MatchedEdit {
-	editIndex: number;
-	matchIndex: number;
-	matchLength: number;
-	newText: string;
-}
-
 export interface AppliedEditsResult {
 	baseContent: string;
 	newContent: string;
@@ -144,44 +132,6 @@ function countOccurrences(content: string, oldText: string): number {
 	return fuzzyContent.split(fuzzyOldText).length - 1;
 }
 
-function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
-	if (totalEdits === 1) {
-		return new Error(
-			`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
-		);
-	}
-	return new Error(
-		`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`,
-	);
-}
-
-function getDuplicateError(path: string, editIndex: number, totalEdits: number, occurrences: number): Error {
-	if (totalEdits === 1) {
-		return new Error(
-			`Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
-		);
-	}
-	return new Error(
-		`Found ${occurrences} occurrences of edits[${editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`,
-	);
-}
-
-function getEmptyOldTextError(path: string, editIndex: number, totalEdits: number): Error {
-	if (totalEdits === 1) {
-		return new Error(`oldText must not be empty in ${path}.`);
-	}
-	return new Error(`edits[${editIndex}].oldText must not be empty in ${path}.`);
-}
-
-function getNoChangeError(path: string, totalEdits: number): Error {
-	if (totalEdits === 1) {
-		return new Error(
-			`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
-		);
-	}
-	return new Error(`No changes made to ${path}. The replacements produced identical content.`);
-}
-
 /**
  * Apply one or more exact-text replacements to LF-normalized content.
  *
@@ -190,70 +140,45 @@ function getNoChangeError(path: string, totalEdits: number): Error {
  * fuzzy matching, the operation runs in fuzzy-normalized content space to
  * preserve current single-edit behavior.
  */
-export function applyEditsToNormalizedContent(
+export function applyEditToNormalizedContent(
 	normalizedContent: string,
-	edits: Edit[],
+	old_str: string,
+	new_str: string,
 	path: string,
 ): AppliedEditsResult {
-	const normalizedEdits = edits.map((edit) => ({
-		oldText: normalizeToLF(edit.oldText),
-		newText: normalizeToLF(edit.newText),
-	}));
+	const normalizedOldStr = normalizeToLF(old_str);
+	const normalizedNewStr = normalizeToLF(new_str);
 
-	for (let i = 0; i < normalizedEdits.length; i++) {
-		if (normalizedEdits[i].oldText.length === 0) {
-			throw getEmptyOldTextError(path, i, normalizedEdits.length);
-		}
+	if (normalizedOldStr.length === 0) {
+		throw new Error(`old_str must not be empty in ${path}.`);
 	}
 
-	const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(normalizedContent, edit.oldText));
-	const baseContent = initialMatches.some((match) => match.usedFuzzyMatch)
-		? normalizeForFuzzyMatch(normalizedContent)
-		: normalizedContent;
+	const initialMatch = fuzzyFindText(normalizedContent, normalizedOldStr);
+	const baseContent = initialMatch.usedFuzzyMatch ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
 
-	const matchedEdits: MatchedEdit[] = [];
-	for (let i = 0; i < normalizedEdits.length; i++) {
-		const edit = normalizedEdits[i];
-		const matchResult = fuzzyFindText(baseContent, edit.oldText);
-		if (!matchResult.found) {
-			throw getNotFoundError(path, i, normalizedEdits.length);
-		}
-
-		const occurrences = countOccurrences(baseContent, edit.oldText);
-		if (occurrences > 1) {
-			throw getDuplicateError(path, i, normalizedEdits.length, occurrences);
-		}
-
-		matchedEdits.push({
-			editIndex: i,
-			matchIndex: matchResult.index,
-			matchLength: matchResult.matchLength,
-			newText: edit.newText,
-		});
+	const matchResult = fuzzyFindText(baseContent, normalizedOldStr);
+	if (!matchResult.found) {
+		throw new Error(
+			`Could not find the exact text in ${path}. The old_str must match exactly including all whitespace and newlines.`,
+		);
 	}
 
-	matchedEdits.sort((a, b) => a.matchIndex - b.matchIndex);
-	for (let i = 1; i < matchedEdits.length; i++) {
-		const previous = matchedEdits[i - 1];
-		const current = matchedEdits[i];
-		if (previous.matchIndex + previous.matchLength > current.matchIndex) {
-			throw new Error(
-				`edits[${previous.editIndex}] and edits[${current.editIndex}] overlap in ${path}. Merge them into one edit or target disjoint regions.`,
-			);
-		}
+	const occurrences = countOccurrences(baseContent, normalizedOldStr);
+	if (occurrences > 1) {
+		throw new Error(
+			`Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
+		);
 	}
 
-	let newContent = baseContent;
-	for (let i = matchedEdits.length - 1; i >= 0; i--) {
-		const edit = matchedEdits[i];
-		newContent =
-			newContent.substring(0, edit.matchIndex) +
-			edit.newText +
-			newContent.substring(edit.matchIndex + edit.matchLength);
-	}
+	const newContent =
+		baseContent.substring(0, matchResult.index) +
+		normalizedNewStr +
+		baseContent.substring(matchResult.index + matchResult.matchLength);
 
 	if (baseContent === newContent) {
-		throw getNoChangeError(path, normalizedEdits.length);
+		throw new Error(
+			`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
+		);
 	}
 
 	return { baseContent, newContent };
@@ -398,12 +323,13 @@ export interface EditDiffError {
 }
 
 /**
- * Compute the diff for one or more edit operations without applying them.
+ * Compute the diff for an edit operation without applying it.
  * Used for preview rendering in the TUI before the tool executes.
  */
-export async function computeEditsDiff(
+export async function computeEditDiff(
 	path: string,
-	edits: Edit[],
+	old_str: string,
+	new_str: string,
 	cwd: string,
 ): Promise<EditDiffResult | EditDiffError> {
 	const absolutePath = resolveToCwd(path, cwd);
@@ -420,27 +346,14 @@ export async function computeEditsDiff(
 		// Read the file
 		const rawContent = await readFile(absolutePath, "utf-8");
 
-		// Strip BOM before matching (LLM won't include invisible BOM in oldText)
+		// Strip BOM before matching (LLM won't include invisible BOM in old_str)
 		const { text: content } = stripBom(rawContent);
 		const normalizedContent = normalizeToLF(content);
-		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+		const { baseContent, newContent } = applyEditToNormalizedContent(normalizedContent, old_str, new_str, path);
 
 		// Generate the diff
 		return generateDiffString(baseContent, newContent);
 	} catch (err) {
 		return { error: err instanceof Error ? err.message : String(err) };
 	}
-}
-
-/**
- * Compute the diff for a single edit operation without applying it.
- * Kept as a convenience wrapper for single-edit callers.
- */
-export async function computeEditDiff(
-	path: string,
-	oldText: string,
-	newText: string,
-	cwd: string,
-): Promise<EditDiffResult | EditDiffError> {
-	return computeEditsDiff(path, [{ oldText, newText }], cwd);
 }
