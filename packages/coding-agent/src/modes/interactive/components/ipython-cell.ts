@@ -50,7 +50,7 @@ interface TracebackParts {
 	preview: string;
 }
 
-type CellBackground = "toolPendingBg";
+type CellBackground = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 type ExpandHintFormatter = (label: string) => string;
 
 const MAGIC_LINE_PATTERN = /^\s*!/;
@@ -359,24 +359,14 @@ export class IPythonCellComponent implements Component {
 					details.error.traceback.join("\n") || formatIpythonErrorSummary(details.error),
 				);
 			} else {
-				this.addWrapped(
-					lines,
-					"",
-					`${theme.fg("muted", formatIpythonErrorSummary(details.error))} ${theme.fg("dim", "·")} ${withExpandHint("traceback collapsed")}`,
-					width,
-				);
+				this.addWrapped(lines, "", withExpandHint(formatIpythonErrorSummary(details.error)), width);
 			}
 		} else if (traceback) {
 			startOutput();
 			if (this.state.expanded) {
 				this.renderTraceback(lines, width, traceback.traceback);
 			} else {
-				this.addWrapped(
-					lines,
-					"",
-					`${theme.fg("muted", traceback.preview)} ${theme.fg("dim", "·")} ${withExpandHint("traceback collapsed")}`,
-					width,
-				);
+				this.addWrapped(lines, "", withExpandHint(traceback.preview), width);
 			}
 		}
 
@@ -437,14 +427,14 @@ export class IPythonCellComponent implements Component {
 		const truncated = truncateToWidth(line, contentWidth, "");
 		const paddedContent = truncated + " ".repeat(Math.max(0, contentWidth - visibleWidth(truncated)));
 		const padded = `${" ".repeat(this.paddingX)}${paddedContent}${" ".repeat(this.paddingX)}`;
-		const background = this.background();
-		return background ? theme.bg(background, padded) : padded;
+		return theme.bg(this.background(), padded);
 	}
 
-	private background(): CellBackground | undefined {
+	private background(): CellBackground {
 		if (this.state.isPartial || !this.state.executionStarted) {
 			return "toolPendingBg";
 		}
-		return undefined;
+		const details = readDetails(this.state.details);
+		return this.state.isError || details.status === "error" ? "toolErrorBg" : "toolSuccessBg";
 	}
 }

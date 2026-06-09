@@ -7,7 +7,6 @@ export interface CollapsibleErrorOptions {
 	text: string;
 	summary?: string;
 	expanded?: boolean;
-	collapseLabel?: string;
 	forceCollapse?: boolean;
 	paddingX?: number;
 }
@@ -18,12 +17,17 @@ export function normalizeErrorDetails(text: string): string {
 
 export function summarizeErrorDetails(text: string): string {
 	const normalized = normalizeErrorDetails(text);
-	return (
-		normalized
-			.split("\n")
-			.map((line) => line.trim())
-			.find((line) => line.length > 0) ?? "Error"
-	);
+	const lines = normalized
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0);
+	if (lines.length === 0) {
+		return "Error";
+	}
+	if (lines[0]?.startsWith("Traceback ")) {
+		return lines.at(-1) ?? "Error";
+	}
+	return lines[0] ?? "Error";
 }
 
 export function shouldCollapseErrorDetails(text: string): boolean {
@@ -57,8 +61,7 @@ export class CollapsibleErrorComponent implements Component {
 		}
 
 		const summary = normalizeErrorDetails(this.options.summary ?? summarizeErrorDetails(text));
-		const label = this.options.collapseLabel ?? "error details collapsed";
-		const inlineHint = `${summary} ${theme.fg("dim", "·")} ${label} ${theme.fg("dim", "·")} ${keyHint("app.tools.expand", "to expand")}`;
+		const inlineHint = `${summary} ${theme.fg("dim", "·")} ${keyHint("app.tools.expand", "to expand")}`;
 		return this.renderText(inlineHint, width, "muted");
 	}
 

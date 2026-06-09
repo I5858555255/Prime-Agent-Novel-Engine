@@ -584,7 +584,6 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 		return new CollapsibleErrorComponent({
 			text: entry.text,
 			expanded: this.toolsExpanded,
-			collapseLabel: "error details collapsed",
 		});
 	}
 

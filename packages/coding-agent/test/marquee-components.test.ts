@@ -111,7 +111,8 @@ describe("marquee TUI components", () => {
 		expect(collapsed).toContain("%%bash");
 		expect(collapsed).toContain("hi");
 		expect(collapsed).toContain("ValueError: bad");
-		expect(collapsed).toContain("traceback collapsed");
+		expect(collapsed).toContain("Ctrl+O to expand");
+		expect(collapsed).not.toContain("traceback collapsed");
 		expect(collapsed).not.toContain('File "<stdin>"');
 
 		component.update({ ...state, expanded: true });
@@ -159,9 +160,9 @@ describe("marquee TUI components", () => {
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
 		expect(collapsed).toContain("cat: /tmp/missing-file: No such file or directory");
-		expect(collapsed).toContain("CalledProcessError · traceback collapsed");
+		expect(collapsed).toContain("CalledProcessError · Ctrl+O to expand");
 		expect(collapsed).not.toContain("returned non-zero exit status 1.");
-		expect(collapsed).toContain("traceback collapsed");
+		expect(collapsed).not.toContain("traceback collapsed");
 		expect(collapsed).not.toContain("get_ipython().run_cell_magic");
 		expect(collapsed).not.toContain("Cell In[15]");
 
@@ -306,7 +307,8 @@ describe("marquee TUI components", () => {
 
 		const collapsed = component.render(80);
 		const collapsedText = stripAnsi(collapsed.join("\n"));
-		expect(collapsedText).toContain("traceback collapsed");
+		expect(collapsedText).toContain("Ctrl+O to expand");
+		expect(collapsedText).not.toContain("traceback collapsed");
 		expect(collapsedText).not.toContain('File "<stdin>"');
 
 		component.update({ ...state, expanded: true });
@@ -396,12 +398,29 @@ describe("marquee TUI components", () => {
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
 		expect(collapsed).toContain("Error: Provider request failed");
-		expect(collapsed).toContain("error details collapsed");
+		expect(collapsed).toContain("Ctrl+O to expand");
+		expect(collapsed).not.toContain("error details collapsed");
 		expect(collapsed).not.toContain("/tmp/internal.py");
 
 		component.setExpanded(true);
 		const expanded = stripAnsi(component.render(100).join("\n"));
 		expect(expanded).toContain("/tmp/internal.py");
+
+		const tracebackFirstMessage: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: [
+				"Traceback (most recent call last):",
+				'  File "/tmp/internal.py", line 12, in run',
+				"RuntimeError: backend crashed",
+			].join("\n"),
+		};
+		const tracebackFirstComponent = new AssistantMessageComponent(tracebackFirstMessage);
+		const tracebackFirstCollapsed = stripAnsi(tracebackFirstComponent.render(100).join("\n"));
+		expect(tracebackFirstCollapsed).toContain("Error: RuntimeError: backend crashed");
+		expect(tracebackFirstCollapsed).not.toContain("Traceback (most recent call last):");
+		expect(tracebackFirstCollapsed).not.toContain("/tmp/internal.py");
 
 		const shortMessage: AssistantMessage = {
 			...createAssistantMessage(""),
@@ -413,6 +432,7 @@ describe("marquee TUI components", () => {
 		const short = stripAnsi(shortComponent.render(100).join("\n"));
 		expect(short).toContain("Error: provider failure");
 		expect(short).not.toContain("error details collapsed");
+		expect(short).not.toContain("Ctrl+O to expand");
 	});
 
 	test("renders child agent summary and bounded inspector list", () => {
@@ -588,7 +608,8 @@ describe("marquee TUI components", () => {
 
 		const collapsed = stripAnsi(detailComponent.render(100).join("\n"));
 		expect(collapsed).toContain("ChildProcessError: child exited with status 1");
-		expect(collapsed).toContain("error details collapsed");
+		expect(collapsed).toContain("Ctrl+O to expand");
+		expect(collapsed).not.toContain("error details collapsed");
 		expect(collapsed).not.toContain("/tmp/rlm_harness/internal.py");
 
 		detailComponent.setToolsExpanded(true);
@@ -706,7 +727,9 @@ describe("marquee TUI components", () => {
 			isError: false,
 		});
 
-		const output = stripAnsi(component.render(100).join("\n"));
+		const rawOutput = component.render(100).join("\n");
+		expect(rawOutput).toMatch(/\x1b\[48;(?:2|5);/);
+		const output = stripAnsi(rawOutput);
 		expect(output).toContain("done · 12ms");
 		expect(output).not.toContain("ipython");
 		expect(output).toContain("print(55)");

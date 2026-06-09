@@ -185,7 +185,6 @@ export class AssistantMessageComponent extends Container {
 			text,
 			summary,
 			expanded: this.expanded,
-			collapseLabel: "error details collapsed",
 		});
 	}
 }
