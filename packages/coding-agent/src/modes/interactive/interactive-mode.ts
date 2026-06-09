@@ -481,7 +481,7 @@ export interface InteractiveModeOptions {
 	returnToAgentsView?: boolean;
 }
 
-export type InteractiveModeRunResult = "exit" | "agents_view";
+export type InteractiveModeRunResult = "agents_view";
 
 export class InteractiveMode {
 	private static readonly EXIT_HINT_DURATION_MS = 2000;

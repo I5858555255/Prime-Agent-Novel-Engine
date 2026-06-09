@@ -18,7 +18,7 @@ import type { DaemonCommand, DaemonResponse } from "../daemon/daemon-protocol.js
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
 import { CustomEditor } from "../interactive/components/custom-editor.js";
 import { keyText } from "../interactive/components/keybinding-hints.js";
-import { BrandSplashHeader, InteractiveMode, type InteractiveModeRunResult } from "../interactive/interactive-mode.js";
+import { BrandSplashHeader, InteractiveMode } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
 import {
 	getEditorTheme,
@@ -162,10 +162,9 @@ function isUnknownActiveSessionError(error: unknown): boolean {
 }
 
 export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise<void> {
-	let fullSessionResult: InteractiveModeRunResult = "agents_view";
 	const persistentState: AgentsViewPersistentState = {};
 
-	while (fullSessionResult === "agents_view") {
+	while (true) {
 		const view = new AgentsViewMode(options, persistentState);
 		const result = await view.run();
 		if (result.type === "exit") {
@@ -186,11 +185,10 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				verbose: options.verbose,
 				returnToAgentsView: true,
 			});
-			fullSessionResult = await interactiveMode.run();
+			await interactiveMode.run();
 		} catch (error) {
 			await opened?.connection.dispose().catch(() => undefined);
 			persistentState.statusMessage = formatError("Failed to open agent", error);
-			fullSessionResult = "agents_view";
 		}
 	}
 }
