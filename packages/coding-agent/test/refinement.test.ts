@@ -44,6 +44,8 @@ function proposal(summary: string, edits: RefinementProposal["edits"]): Refineme
 }
 
 function seedEntry(state: HarnessState, kind: RefinementKind, id = `${kind}_entry`): void {
+	const skillArguments =
+		kind === "skill" ? { arguments: { input: { type: "string", required: true, description: "Task input" } } } : {};
 	applyRefinementProposal(
 		state,
 		proposal(`seed ${kind}`, [
@@ -54,6 +56,7 @@ function seedEntry(state: HarnessState, kind: RefinementKind, id = `${kind}_entr
 				title: `${kind} title`,
 				content: `${kind} content`,
 				path: `${kind}/path`,
+				...skillArguments,
 				metadata: { seeded: true },
 			},
 		]),
@@ -76,6 +79,9 @@ describe("harness refinement", () => {
 					title: `${kind} title`,
 					content: `${kind} content`,
 					path: `${kind}/created`,
+					...(kind === "skill"
+						? { arguments: { input: { type: "string", required: true, description: "Task input" } } }
+						: {}),
 					metadata: { kind },
 				})),
 			),
@@ -112,6 +118,9 @@ describe("harness refinement", () => {
 					title: `${kind} title updated`,
 					content: `${kind} content updated`,
 					path: `${kind}/updated`,
+					...(kind === "skill"
+						? { arguments: { input: { type: "string", required: true, description: "Updated task input" } } }
+						: {}),
 					metadata: { updated: kind },
 				})),
 			),
@@ -181,6 +190,9 @@ describe("harness refinement", () => {
 						id: "native_check",
 						title: "Native check",
 						content: "Use documented project commands for validation.",
+						arguments: {
+							command: { type: "string", required: false, description: "Optional command to validate." },
+						},
 					},
 				],
 			},
@@ -199,6 +211,9 @@ describe("harness refinement", () => {
 						id: "native_check",
 						title: "Native check",
 						content: "Use `npm run check` for this repo after code changes.",
+						arguments: {
+							command: { type: "string", required: false, description: "Optional command to validate." },
+						},
 					},
 					{
 						action: "delete",
@@ -229,6 +244,9 @@ describe("harness refinement", () => {
 					kind: "skill",
 					title: "Native Check!",
 					content: "Run project-native checks.",
+					arguments: {
+						command: { type: "string", required: false, description: "Optional command override." },
+					},
 				},
 			]),
 			{ id: "refine_generated_id" },
@@ -240,11 +258,56 @@ describe("harness refinement", () => {
 			after: {
 				id: "native_check",
 				path: "general",
+				arguments: {
+					command: { type: "string", required: false, description: "Optional command override." },
+				},
 				metadata: {},
 				version: 1,
 			},
 		});
 		expect(state.entries.skill.native_check.content).toBe("Run project-native checks.");
+	});
+
+	it("requires argument contracts for harness-created skills", () => {
+		const state = loadHarnessState(makeTempDir());
+
+		const missingArguments = applyRefinementProposal(
+			state,
+			proposal("Create skill without arguments", [
+				{
+					action: "create",
+					kind: "skill",
+					id: "argumentless_skill",
+					title: "Argumentless skill",
+					content: "This should not be accepted without an argument contract.",
+				},
+			]),
+			{ id: "refine_missing_skill_arguments" },
+		);
+		const explicitNoArguments = applyRefinementProposal(
+			state,
+			proposal("Create skill with explicit empty arguments", [
+				{
+					action: "create",
+					kind: "skill",
+					id: "no_input_skill",
+					title: "No input skill",
+					content: "This skill intentionally needs no external inputs.",
+					arguments: {},
+				},
+			]),
+			{ id: "refine_empty_skill_arguments" },
+		);
+
+		expect(missingArguments.appliedEdits[0]).toMatchObject({
+			applied: false,
+			error: "create skill requires arguments",
+		});
+		expect(state.entries.skill.argumentless_skill).toBeUndefined();
+		expect(explicitNoArguments.appliedEdits[0]).toMatchObject({
+			applied: true,
+			after: { arguments: {} },
+		});
 	});
 
 	it("uses a global harness state directory under the agent dir by default", () => {
@@ -341,6 +404,9 @@ describe("harness refinement", () => {
 					id: `${kind}_entry`,
 					title: "replacement",
 					content: "replacement",
+					...(kind === "skill"
+						? { arguments: { input: { type: "string", required: true, description: "Replacement input" } } }
+						: {}),
 				},
 			]),
 			{ id: `refine_duplicate_${kind}` },
@@ -371,6 +437,9 @@ describe("harness refinement", () => {
 					id: `${kind}_missing`,
 					title: "missing",
 					content: "missing",
+					...(kind === "skill"
+						? { arguments: { input: { type: "string", required: true, description: "Missing input" } } }
+						: {}),
 				},
 			]),
 			{ id: `refine_missing_update_${kind}` },
@@ -598,6 +667,7 @@ describe("harness refinement", () => {
 			title: "skill title",
 			content: "skill content",
 			path: "skill/path",
+			arguments: { input: { type: "string", required: true, description: "Task input" } },
 			metadata: { seeded: true },
 			version: 1,
 		});

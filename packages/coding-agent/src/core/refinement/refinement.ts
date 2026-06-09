@@ -23,6 +23,7 @@ export interface HarnessEntry {
 	title: string;
 	content: string;
 	path: string;
+	arguments: Record<string, unknown>;
 	metadata: Record<string, unknown>;
 	source: string;
 	created_at: string;
@@ -52,6 +53,7 @@ export interface RefinementEdit {
 	title?: string;
 	content?: string;
 	path?: string;
+	arguments?: Record<string, unknown>;
 	metadata?: Record<string, unknown>;
 	reason?: string;
 }
@@ -95,7 +97,7 @@ conversation you emit precise Create, Update, or Delete edits to reusable state.
 Editable components:
 - prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.
 - memory: durable facts, decisions, failures, preferences, and outcomes.
-- skill: reusable procedures or tactics the agent should apply later. A skill entry is a spec, not automatically executable code. If it refers to an installed Python skill, include the RLM-native call form \`await <skill_import>(...)\` and put \`python_import\` / \`call_pattern\` in metadata.
+- skill: reusable procedures or tactics the agent should apply later. A skill entry is a spec, not automatically executable code. Skill create/update edits MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints; use \`{}\` only when the skill truly needs no external inputs. If it refers to an installed Python skill, include the RLM-native call form \`await <skill_import>(...)\` and put \`python_import\` / \`call_pattern\` in metadata.
 - subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: create a concise task prompt and call \`await rlm("sub-task")\`; for independent parallel subagents use \`await asyncio.gather(rlm("task1"), rlm("task2"))\`. Do not invent wrappers like \`run_subagent(...)\`.
 
 Use the trajectory, current harness state, and prior refinement history. Prefer
@@ -115,6 +117,7 @@ JSON only with this exact shape:
       "title": "required for create/update except delete",
       "content": "required for create/update except delete",
       "path": "optional grouping path",
+      "arguments": {"name": {"type": "string", "required": true, "description": "accepted input"}},
       "metadata": {},
       "reason": "why this edit is useful"
     }
@@ -152,6 +155,13 @@ function cloneEntry(entry: HarnessEntry | undefined): HarnessEntry | undefined {
 	return entry ? JSON.parse(JSON.stringify(entry)) : undefined;
 }
 
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	return value as Record<string, unknown>;
+}
+
 export function getGlobalHarnessStateDir(agentDir: string = getAgentDir()): string {
 	return join(agentDir, HARNESS_STATE_DIR_NAME);
 }
@@ -171,7 +181,15 @@ export function loadHarnessState(harnessStateDir: string = getGlobalHarnessState
 	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
 		const records = parsed.entries?.[kind];
 		if (records && typeof records === "object") {
-			state.entries[kind] = records;
+			for (const [id, rawEntry] of Object.entries(records)) {
+				const entry = objectRecord(rawEntry);
+				if (!entry) continue;
+				state.entries[kind][id] = {
+					...(entry as unknown as HarnessEntry),
+					arguments: objectRecord(entry.arguments) ?? {},
+					metadata: objectRecord(entry.metadata) ?? {},
+				};
+			}
 		}
 	}
 	if (Array.isArray(parsed.refinements)) {
@@ -214,7 +232,7 @@ export function formatHarnessStateForPrompt(
 		"",
 		"When to call `/refine`: after a repeated failure, a reusable tactic emerges, a user corrects behavior that should persist, validation shows a harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `/refine` edits small and evidence-backed.",
 		"",
-		"Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Harness skill entries are procedural specs unless metadata names an installed Python import and call pattern. Harness subagent entries are invoked by composing a concise task prompt and calling `await rlm('sub-task')`; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
+		"Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Harness skill entries are procedural specs with an explicit `arguments` contract unless metadata names an installed Python import and call pattern. Harness subagent entries are invoked by composing a concise task prompt and calling `await rlm('sub-task')`; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
 		"",
 	];
 
@@ -226,8 +244,12 @@ export function formatHarnessStateForPrompt(
 		totalEntries += entries.length;
 		lines.push(`${kind}: ${entries.length}`);
 		for (const entry of entries.slice(0, maxEntriesPerKind)) {
+			const argumentsText =
+				entry.kind === "skill" && Object.keys(entry.arguments).length > 0
+					? ` args=${compactText(JSON.stringify(entry.arguments), maxContentLength)}`
+					: "";
 			lines.push(
-				`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version}): ${compactText(
+				`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${argumentsText}: ${compactText(
 					entry.content,
 					maxContentLength,
 				)}`,
@@ -265,7 +287,11 @@ function overviewForPrompt(state: HarnessState): string {
 		lines.push(`${kind}: ${entries.length}`);
 		for (const entry of entries.slice(0, 40)) {
 			const content = entry.content.replace(/\s+/g, " ").slice(0, 240);
-			lines.push(`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version}): ${content}`);
+			const argumentsText =
+				entry.kind === "skill" && Object.keys(entry.arguments).length > 0
+					? ` args=${JSON.stringify(entry.arguments).slice(0, 240)}`
+					: "";
+			lines.push(`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${argumentsText}: ${content}`);
 		}
 		if (entries.length > 40) {
 			lines.push(`- +${entries.length - 40} more ${kind} entries`);
@@ -327,6 +353,7 @@ function parseProposal(text: string): RefinementProposal {
 				title: typeof edit.title === "string" ? edit.title : undefined,
 				content: typeof edit.content === "string" ? edit.content : undefined,
 				path: typeof edit.path === "string" ? edit.path : undefined,
+				arguments: objectRecord(edit.arguments),
 				metadata:
 					typeof edit.metadata === "object" && edit.metadata !== null && !Array.isArray(edit.metadata)
 						? (edit.metadata as Record<string, unknown>)
@@ -351,6 +378,9 @@ function validateEdit(edit: RefinementEdit): string | undefined {
 	}
 	if (edit.action !== "delete" && (!edit.title || !edit.content)) {
 		return `${edit.action} requires title and content`;
+	}
+	if (edit.action !== "delete" && edit.kind === "skill" && edit.arguments === undefined) {
+		return `${edit.action} skill requires arguments`;
 	}
 	return undefined;
 }
@@ -397,6 +427,7 @@ export function applyRefinementProposal(
 			title: edit.title ?? before?.title ?? id,
 			content: edit.content ?? before?.content ?? "",
 			path: edit.path ?? before?.path ?? "general",
+			arguments: edit.arguments ?? before?.arguments ?? {},
 			metadata: edit.metadata ?? before?.metadata ?? {},
 			source: "refine",
 			created_at: createdAt,
@@ -440,6 +471,7 @@ function rollbackProposal(target: RefinementResult): RefinementProposal {
 				title: edit.before.title,
 				content: edit.before.content,
 				path: edit.before.path,
+				arguments: edit.before.arguments,
 				metadata: edit.before.metadata,
 				reason: `Rollback ${target.id}`,
 			});

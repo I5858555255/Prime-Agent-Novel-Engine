@@ -58,6 +58,7 @@ class HarnessEntry:
     title: str
     content: str
     path: str = "general"
+    arguments: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     source: str = "agent"
     created_at: str = field(default_factory=_now)
@@ -121,6 +122,8 @@ class HarnessState:
                         if not isinstance(version, int):
                             version = 1
                         entry_data["version"] = version
+                        if not isinstance(entry_data.get("arguments"), dict):
+                            entry_data["arguments"] = {}
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
         self.entries = entries
 
@@ -166,6 +169,7 @@ class HarnessState:
         *,
         id: str | None = None,
         path: str = "general",
+        arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
@@ -178,6 +182,7 @@ class HarnessState:
             existing.title = title
             existing.content = content
             existing.path = path
+            existing.arguments = dict(arguments or {})
             existing.metadata = dict(metadata or {})
             existing.source = source
             existing.updated_at = _now()
@@ -190,6 +195,7 @@ class HarnessState:
                 title=title,
                 content=content,
                 path=path,
+                arguments=dict(arguments or {}),
                 metadata=dict(metadata or {}),
                 source=source,
             )
@@ -228,6 +234,7 @@ class HarnessState:
         *,
         id: str | None = None,
         path: str = "general",
+        arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
@@ -236,7 +243,16 @@ class HarnessState:
         entry_id = id or _slug(title, kind)
         if entry_id in self.entries[kind]:
             raise ValueError(f"{kind} entry {entry_id!r} already exists")
-        return self.upsert(kind, title, content, id=entry_id, path=path, metadata=metadata, source=source)
+        return self.upsert(
+            kind,
+            title,
+            content,
+            id=entry_id,
+            path=path,
+            arguments=arguments,
+            metadata=metadata,
+            source=source,
+        )
 
     def update(
         self,
@@ -246,6 +262,7 @@ class HarnessState:
         content: str,
         *,
         path: str = "general",
+        arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
@@ -253,7 +270,7 @@ class HarnessState:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         if id not in self.entries[kind]:
             raise ValueError(f"{kind} entry {id!r} does not exist")
-        return self.upsert(kind, title, content, id=id, path=path, metadata=metadata, source=source)
+        return self.upsert(kind, title, content, id=id, path=path, arguments=arguments, metadata=metadata, source=source)
 
     def create_memory(
         self,
@@ -312,9 +329,10 @@ class HarnessState:
         *,
         id: str | None = None,
         path: str = "general",
+        arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.create("skill", title, content, id=id, path=path, metadata=metadata)
+        return self.create("skill", title, content, id=id, path=path, arguments=arguments, metadata=metadata)
 
     def update_skill(
         self,
@@ -323,9 +341,10 @@ class HarnessState:
         content: str,
         *,
         path: str = "general",
+        arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.update("skill", id, title, content, path=path, metadata=metadata)
+        return self.update("skill", id, title, content, path=path, arguments=arguments, metadata=metadata)
 
     def delete_skill(self, id: str) -> bool:
         return self.delete("skill", id)
@@ -409,7 +428,15 @@ class HarnessState:
                 summary = entry.content.strip().replace("\n", " ")
                 if len(summary) > 120:
                     summary = f"{summary[:117]}..."
-                lines.append(f"  - [{entry.id}] {entry.title} ({entry.path}, v{entry.version}): {summary}")
+                argument_summary = ""
+                if entry.kind == "skill" and entry.arguments:
+                    argument_text = json.dumps(entry.arguments, ensure_ascii=False, sort_keys=True)
+                    if len(argument_text) > 120:
+                        argument_text = f"{argument_text[:117]}..."
+                    argument_summary = f" args={argument_text}"
+                lines.append(
+                    f"  - [{entry.id}] {entry.title} ({entry.path}, v{entry.version}){argument_summary}: {summary}"
+                )
             overflow = len(self.entries[kind]) - len(records)
             if overflow > 0:
                 lines.append(f"  - +{overflow} more")

@@ -36,6 +36,7 @@ class HarnessStateTest(unittest.TestCase):
                     "Skill content",
                     id="skill_entry",
                     path="skill/path",
+                    arguments={"target": {"type": "string", "required": True}},
                     metadata={"kind": "skill"},
                 ),
                 "subagent": state.create_subagent(
@@ -54,7 +55,12 @@ class HarnessStateTest(unittest.TestCase):
 
             state.update_prompt_note("prompt_entry", "Prompt note", "Prompt content updated")
             state.update_memory("memory_entry", "Memory", "Memory content updated")
-            state.update_skill("skill_entry", "Skill", "Skill content updated")
+            state.update_skill(
+                "skill_entry",
+                "Skill",
+                "Skill content updated",
+                arguments={"target": {"type": "string", "required": True}, "mode": {"type": "string"}},
+            )
             state.update_subagent("subagent_entry", "Subagent", "Subagent content updated")
 
             for kind in ("prompt", "memory", "skill", "subagent"):
@@ -81,6 +87,7 @@ class HarnessStateTest(unittest.TestCase):
                 "Check failures first",
                 "Inspect current failure evidence before editing code.",
                 id="failure_first",
+                arguments={"failure_log": {"type": "string", "description": "Current failure evidence."}},
             )
             subagent = state.create_subagent(
                 "Reviewer",
@@ -99,6 +106,7 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertEqual(reloaded.get("memory", memory.id).content, memory.content)
             self.assertEqual(reloaded.get("skill", skill.id).version, 1)
+            self.assertEqual(reloaded.get("skill", skill.id).arguments["failure_log"]["type"], "string")
             self.assertEqual(reloaded.get("subagent", subagent.id).metadata["max_turns"], 3)
             self.assertEqual(reloaded.refinements[0].id, event.id)
             self.assertIn("Prefer focused patches", reloaded.overview())
@@ -162,6 +170,38 @@ class HarnessStateTest(unittest.TestCase):
 
             updated = state.update_memory("known", "Known memory", "Updated content.")
             self.assertEqual(updated.version, 3)
+
+    def test_skill_arguments_are_first_class(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+
+            created = state.create_skill(
+                "Edit file",
+                "Apply a targeted edit.",
+                id="edit_file",
+                arguments={
+                    "path": {"type": "string", "required": True},
+                    "find": {"type": "string", "required": True},
+                    "replace": {"type": "string", "required": True},
+                },
+            )
+            updated = state.update_skill(
+                "edit_file",
+                "Edit file",
+                "Apply a targeted edit after reading context.",
+                arguments={
+                    "path": {"type": "string", "required": True},
+                    "find": {"type": "string", "required": True},
+                    "replace": {"type": "string", "required": True},
+                    "validate": {"type": "boolean", "default": True},
+                },
+            )
+            reloaded = HarnessState(state.file_path)
+
+            self.assertEqual(created.arguments["path"]["required"], True)
+            self.assertEqual(updated.version, 2)
+            self.assertEqual(reloaded.get("skill", "edit_file").arguments["validate"]["default"], True)
+            self.assertIn('"path"', reloaded.overview())
 
     def test_explicit_create_and_update_enforce_entry_existence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
