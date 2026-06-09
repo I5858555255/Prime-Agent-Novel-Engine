@@ -578,12 +578,11 @@ class AgentsViewMode implements Component, Focusable {
 				activeSessionId,
 			});
 			requireDaemonData(response);
-			const stoppedSummary = stoppedSessionSummary(row.summary);
 			this.pendingDeleteAgent = {
-				identity: getSummaryIdentity(stoppedSummary),
+				identity,
 				activeSessionId,
 				sessionFile: row.summary.sessionFile,
-				summary: stoppedSummary,
+				summary: row.summary,
 				stopped: true,
 			};
 			this.selectedActiveSessionId = activeSessionId;
@@ -732,8 +731,18 @@ class AgentsViewMode implements Component, Focusable {
 		if (!pending) {
 			return [...sessions];
 		}
-		const stillListed = sessions.some((summary) => getSummaryIdentity(summary) === pending.identity);
-		return stillListed ? [...sessions] : [...sessions, pending.summary];
+		if (!this.isDeleteConfirmationVisible()) {
+			return [...sessions];
+		}
+		let replaced = false;
+		const merged = sessions.map((summary) => {
+			if (getSummaryIdentity(summary) !== pending.identity) {
+				return summary;
+			}
+			replaced = true;
+			return pending.summary;
+		});
+		return replaced ? merged : [...merged, pending.summary];
 	}
 
 	private getSavedSessionStatus(summary: SessionSummary): SessionSummary["status"] | undefined {
@@ -905,8 +914,8 @@ class AgentsViewMode implements Component, Focusable {
 	private getPendingDeleteTitle(): string {
 		const deleteKey = keyText("app.agents.delete");
 		return this.pendingDeleteAgent?.stopped
-			? `stopped - ${deleteKey} again to deactivate`
-			: `${deleteKey} again to deactivate`;
+			? `stopped - ${deleteKey} again to remove`
+			: `${deleteKey} again to remove`;
 	}
 
 	private renderPrompt(width: number): string[] {
@@ -1053,19 +1062,6 @@ function isRunningSessionSummary(summary: SessionSummary): boolean {
 		summary.status === "model" ||
 		summary.status === "tool"
 	);
-}
-
-function stoppedSessionSummary(summary: SessionSummary): SessionSummary {
-	const stoppedSummary: SessionSummary = {
-		...summary,
-		status: "sleep",
-		isStreaming: false,
-		isCompacting: false,
-		pendingMessageCount: 0,
-		attachedClients: 0,
-	};
-	delete stoppedSummary.activeSessionId;
-	return stoppedSummary;
 }
 
 function createSessionName(text: string): string {
