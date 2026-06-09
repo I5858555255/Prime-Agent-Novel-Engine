@@ -66,6 +66,7 @@ export interface AgentsViewModeOptions {
 type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
+	statusMessage?: string;
 };
 
 type PromptCommand = Extract<DaemonCommand, { type: "prompt" }>;
@@ -172,18 +173,25 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 		}
 		persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
 
-		const { connection, summary } = await openAgentsViewSession(options, result.summary);
-		const uiServices = await resolveAgentsViewSessionUiServices(options, summary);
-		const interactiveMode = new InteractiveMode({
-			agentConnection: connection,
-			uiServices,
-			bindLocalSessionExtensions: false,
-			migratedProviders: options.migratedProviders,
-			modelFallbackMessage: summary.modelFallbackMessage ?? options.modelFallbackMessage,
-			verbose: options.verbose,
-			returnToAgentsView: true,
-		});
-		fullSessionResult = await interactiveMode.run();
+		let opened: { connection: DaemonAgentConnection; summary: SessionSummary } | undefined;
+		try {
+			opened = await openAgentsViewSession(options, result.summary);
+			const uiServices = await resolveAgentsViewSessionUiServices(options, opened.summary);
+			const interactiveMode = new InteractiveMode({
+				agentConnection: opened.connection,
+				uiServices,
+				bindLocalSessionExtensions: false,
+				migratedProviders: options.migratedProviders,
+				modelFallbackMessage: opened.summary.modelFallbackMessage ?? options.modelFallbackMessage,
+				verbose: options.verbose,
+				returnToAgentsView: true,
+			});
+			fullSessionResult = await interactiveMode.run();
+		} catch (error) {
+			await opened?.connection.dispose().catch(() => undefined);
+			persistentState.statusMessage = formatError("Failed to open agent", error);
+			fullSessionResult = "agents_view";
+		}
 	}
 }
 
@@ -269,6 +277,11 @@ class AgentsViewMode implements Component, Focusable {
 		this.ui.addChild(this);
 		this.ui.setFocus(this);
 		this.ui.start();
+		const startupStatusMessage = this.persistentState.statusMessage;
+		this.persistentState.statusMessage = undefined;
+		if (startupStatusMessage) {
+			this.setStatusMessage(startupStatusMessage, { render: false });
+		}
 		this.ui.requestRender(true);
 		onThemeChange(() => {
 			this.ui.invalidate();
@@ -488,6 +501,9 @@ class AgentsViewMode implements Component, Focusable {
 	private async submit(value: string): Promise<void> {
 		const text = value.trim();
 		if (!text) {
+			if (this.replyActiveSessionId) {
+				return;
+			}
 			this.openSelected();
 			return;
 		}
@@ -691,7 +707,7 @@ class AgentsViewMode implements Component, Focusable {
 			const response = await client.request({
 				type: "create",
 				config: this.options.config,
-				name: createSessionName(text),
+				name: createAgentsViewSessionName(text),
 			});
 			const summary = expectSessionSummary(requireDaemonData(response));
 			const activeSessionId = summary.activeSessionId ?? summary.id;
@@ -924,7 +940,16 @@ class AgentsViewMode implements Component, Focusable {
 			0,
 			Math.min(displayItems.length - visibleRows, selectedDisplayIndex - Math.floor(visibleRows / 2)),
 		);
-		const visibleItems = displayItems.slice(start, start + visibleRows);
+		const showLeadingEllipsis = start > 0;
+		let showTrailingEllipsis = start + visibleRows < displayItems.length;
+		if ((showLeadingEllipsis ? 1 : 0) + (showTrailingEllipsis ? 1 : 0) >= visibleRows) {
+			showTrailingEllipsis = false;
+		}
+		const contentVisibleRows = Math.max(
+			0,
+			visibleRows - (showLeadingEllipsis ? 1 : 0) - (showTrailingEllipsis ? 1 : 0),
+		);
+		const visibleItems = displayItems.slice(start, start + contentVisibleRows);
 		const lines = visibleItems.map((item) => {
 			if (item.type === "spacer") {
 				return "";
@@ -940,13 +965,13 @@ class AgentsViewMode implements Component, Focusable {
 			}
 			return this.renderRow(item.row, width);
 		});
-		if (start > 0) {
+		if (showLeadingEllipsis) {
 			lines.unshift(theme.fg("dim", "  ..."));
 		}
-		if (start + visibleRows < displayItems.length) {
+		if (showTrailingEllipsis) {
 			lines.push(theme.fg("dim", "  ..."));
 		}
-		return lines.slice(0, maxRows);
+		return lines;
 	}
 
 	private renderRow(row: AgentsViewRow, width: number): string {
@@ -1130,10 +1155,10 @@ function isRunningSessionSummary(summary: SessionSummary): boolean {
 	);
 }
 
-function createSessionName(text: string): string {
+export function createAgentsViewSessionName(text: string): string {
 	const normalized = text.replace(/\s+/g, " ").trim();
 	return normalized.length > SESSION_NAME_MAX_LENGTH
-		? `${normalized.slice(0, SESSION_NAME_MAX_LENGTH - 1)}...`
+		? `${normalized.slice(0, SESSION_NAME_MAX_LENGTH - 3)}...`
 		: normalized;
 }
 

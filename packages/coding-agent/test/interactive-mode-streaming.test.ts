@@ -25,6 +25,7 @@ const EMPTY_USAGE: Usage = {
 
 type HandleEventThis = {
 	isInitialized: boolean;
+	settingsManager: { getShowTerminalProgress(): boolean };
 	footer: { invalidate(): void };
 	ui: TUI;
 	chatContainer: Container;
@@ -37,14 +38,21 @@ type HandleEventThis = {
 	getMarkdownThemeWithSettings(): MarkdownTheme;
 	getOrCreatePendingToolComponent(): Promise<ToolExecutionComponent | undefined>;
 	getRetryAttempt(): number;
+	stopWorkingLoader(): void;
 	resetPendingToolState(): void;
+	checkShutdownRequested(): Promise<void>;
 };
 
 type HandleEvent = (this: HandleEventThis, event: AgentConnectionSessionEvent) => Promise<void>;
+type GetUserInput = (this: {
+	returnToAgentsViewRequested: boolean;
+	onInputCallback?: (text: string | undefined) => void;
+}) => Promise<string | undefined>;
 
 function createFakeInteractiveModeThis(): HandleEventThis {
 	const fakeThis = {
 		isInitialized: true,
+		settingsManager: { getShowTerminalProgress: () => false },
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() } as unknown as TUI,
 		chatContainer: new Container(),
@@ -57,7 +65,9 @@ function createFakeInteractiveModeThis(): HandleEventThis {
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		getOrCreatePendingToolComponent: vi.fn(async () => undefined),
 		getRetryAttempt: () => 0,
+		stopWorkingLoader: vi.fn(),
 		resetPendingToolState: vi.fn(),
+		checkShutdownRequested: vi.fn(async () => {}),
 	};
 	Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 	return fakeThis;
@@ -124,5 +134,32 @@ describe("InteractiveMode streaming events", () => {
 		expect(renderChat(fakeThis.chatContainer)).toContain("final response");
 		expect(fakeThis.streamingComponent).toBeUndefined();
 		expect(fakeThis.streamingMessage).toBeUndefined();
+	});
+
+	test("keeps attached partial assistant text when agent_end arrives without message_end", async () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+
+		await handleEvent.call(fakeThis, {
+			type: "message_update",
+			message: createAssistantMessage("partial response"),
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "partial response",
+				partial: createAssistantMessage("partial response"),
+			},
+		});
+		await handleEvent.call(fakeThis, { type: "agent_end", messages: [] });
+
+		expect(renderChat(fakeThis.chatContainer)).toContain("partial response");
+		expect(fakeThis.streamingComponent).toBeUndefined();
+		expect(fakeThis.streamingMessage).toBeUndefined();
+	});
+
+	test("resolves input immediately after return to agents view was requested", async () => {
+		const getUserInput = (InteractiveMode.prototype as unknown as { getUserInput: GetUserInput }).getUserInput;
+
+		await expect(getUserInput.call({ returnToAgentsViewRequested: true })).resolves.toBeUndefined();
 	});
 });

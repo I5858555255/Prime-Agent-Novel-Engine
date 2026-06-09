@@ -5,6 +5,7 @@ import type { SettingsManager } from "../src/core/settings-manager.js";
 import {
 	createAgentsViewReplyPlaceholder,
 	createAgentsViewResumeConfig,
+	createAgentsViewSessionName,
 	resolveAgentsViewSessionUiServices,
 } from "../src/modes/agents-view/agents-view-mode.js";
 import {
@@ -129,6 +130,7 @@ describe("agents view state", () => {
 
 		expect(shouldShowAgentsViewSession(inactiveHidden)).toBe(false);
 		expect(shouldShowAgentsViewSession(staleDaemonHidden, "hidden")).toBe(false);
+		expect(shouldShowAgentsViewSession(inactiveHidden, undefined)).toBe(false);
 		expect(shouldShowAgentsViewSession(makeSummary({ status: "idle" }), undefined, true)).toBe(false);
 		expect(shouldShowAgentsViewSession(makeSummary({ status: "hidden", activeSessionId: "active-1" }))).toBe(true);
 	});
@@ -153,6 +155,11 @@ describe("agents view state", () => {
 	test("uses latest assistant text as reply placeholder", () => {
 		expect(createAgentsViewReplyPlaceholder("  Done.\nNext step?  ")).toBe("Reply to: Done. Next step?");
 		expect(createAgentsViewReplyPlaceholder(undefined)).toBe("Write a reply to this agent");
+	});
+
+	test("caps generated session names at the configured limit", () => {
+		expect(createAgentsViewSessionName("x".repeat(120))).toHaveLength(80);
+		expect(createAgentsViewSessionName("short")).toBe("short");
 	});
 
 	test("uses session-specific UI services when opening an agent", async () => {

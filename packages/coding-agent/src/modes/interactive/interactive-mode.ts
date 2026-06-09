@@ -3664,7 +3664,11 @@ export class InteractiveMode {
 				}
 				this.stopWorkingLoader();
 				if (this.streamingComponent) {
-					this.chatContainer.removeChild(this.streamingComponent);
+					if (this.streamingMessage) {
+						this.streamingComponent.updateContent(this.streamingMessage);
+					} else {
+						this.chatContainer.removeChild(this.streamingComponent);
+					}
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
@@ -4441,6 +4445,9 @@ export class InteractiveMode {
 	}
 
 	async getUserInput(): Promise<string | undefined> {
+		if (this.returnToAgentsViewRequested) {
+			return undefined;
+		}
 		return new Promise((resolve) => {
 			this.onInputCallback = (text: string | undefined) => {
 				this.onInputCallback = undefined;
