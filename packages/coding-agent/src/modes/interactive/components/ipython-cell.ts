@@ -340,7 +340,13 @@ export class IPythonCellComponent implements Component {
 		} else if (!renderedTextOutput && this.state.executionStarted && !this.state.argsComplete) {
 			startOutput();
 			this.addWrapped(lines, "", theme.fg("muted", "waiting for output..."), width);
-		} else if (!renderedTextOutput && !details.error && this.state.executionStarted && imageCount === 0) {
+		} else if (
+			!renderedTextOutput &&
+			!traceback &&
+			!details.error &&
+			this.state.executionStarted &&
+			imageCount === 0
+		) {
 			startOutput();
 			this.addWrapped(lines, "", theme.fg("muted", "no output"), width);
 		}
