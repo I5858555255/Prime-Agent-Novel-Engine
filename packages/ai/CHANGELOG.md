@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added Claude Fable 5 model metadata with always-on adaptive thinking support.
 - Added Claude Opus 4.8 to the curated Prime Inference model list.
 
 ## [0.0.7] - 2026-06-01

@@ -476,11 +476,6 @@ function handleContentBlockStop(
 	}
 }
 
-/**
- * Check if the model supports adaptive thinking (Opus 4.6+, Sonnet 4.6).
- * Checks both model ID and model name to support application inference profiles
- * whose ARNs don't contain the model name.
- */
 function getModelMatchCandidates(modelId: string, modelName?: string): string[] {
 	const values = modelName ? [modelId, modelName] : [modelId];
 	return values.flatMap((value) => {
@@ -489,14 +484,37 @@ function getModelMatchCandidates(modelId: string, modelName?: string): string[] 
 	});
 }
 
+/**
+ * Check if the model uses always-on adaptive thinking. These models reject
+ * explicit disabled thinking and do not need a thinking config.
+ */
+function supportsAlwaysOnAdaptiveThinking(modelId: string, modelName?: string): boolean {
+	const candidates = getModelMatchCandidates(modelId, modelName);
+	return candidates.some((s) => s.includes("fable-5") || s.includes("mythos-5") || s.includes("mythos-preview"));
+}
+
+/**
+ * Check if the model supports adaptive thinking. Checks both model ID and model
+ * name to support application inference profiles whose ARNs don't contain the
+ * model name.
+ */
 function supportsAdaptiveThinking(modelId: string, modelName?: string): boolean {
 	const candidates = getModelMatchCandidates(modelId, modelName);
-	return candidates.some((s) => s.includes("opus-4-6") || s.includes("opus-4-7") || s.includes("sonnet-4-6"));
+	return candidates.some(
+		(s) =>
+			supportsAlwaysOnAdaptiveThinking(s) ||
+			s.includes("opus-4-6") ||
+			s.includes("opus-4-7") ||
+			s.includes("opus-4-8") ||
+			s.includes("sonnet-4-6"),
+	);
 }
 
 function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
 	const candidates = getModelMatchCandidates(model.id, model.name);
-	return candidates.some((s) => s.includes("opus-4-7"));
+	return candidates.some(
+		(s) => s.includes("fable-5") || s.includes("mythos-5") || s.includes("opus-4-7") || s.includes("opus-4-8"),
+	);
 }
 
 function mapThinkingLevelToEffort(
@@ -889,32 +907,36 @@ function buildAdditionalModelRequestFields(
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
 		const display = isGovCloudBedrockTarget(model, options) ? undefined : (options.thinkingDisplay ?? "summarized");
-		const result: Record<string, any> = supportsAdaptiveThinking(model.id, model.name)
+		const result: Record<string, any> = supportsAlwaysOnAdaptiveThinking(model.id, model.name)
 			? {
-					thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
 					output_config: { effort: mapThinkingLevelToEffort(model, options.reasoning) },
 				}
-			: (() => {
-					const defaultBudgets: Record<ThinkingLevel, number> = {
-						minimal: 1024,
-						low: 2048,
-						medium: 8192,
-						high: 16384,
-						xhigh: 16384, // Claude doesn't support xhigh, clamp to high
-					};
+			: supportsAdaptiveThinking(model.id, model.name)
+				? {
+						thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
+						output_config: { effort: mapThinkingLevelToEffort(model, options.reasoning) },
+					}
+				: (() => {
+						const defaultBudgets: Record<ThinkingLevel, number> = {
+							minimal: 1024,
+							low: 2048,
+							medium: 8192,
+							high: 16384,
+							xhigh: 16384, // Claude doesn't support xhigh, clamp to high
+						};
 
-					// Custom budgets override defaults (xhigh not in ThinkingBudgets, use high)
-					const level = options.reasoning === "xhigh" ? "high" : options.reasoning;
-					const budget = options.thinkingBudgets?.[level] ?? defaultBudgets[options.reasoning];
+						// Custom budgets override defaults (xhigh not in ThinkingBudgets, use high)
+						const level = options.reasoning === "xhigh" ? "high" : options.reasoning;
+						const budget = options.thinkingBudgets?.[level] ?? defaultBudgets[options.reasoning];
 
-					return {
-						thinking: {
-							type: "enabled",
-							budget_tokens: budget,
-							...(display !== undefined ? { display } : {}),
-						},
-					};
-				})();
+						return {
+							thinking: {
+								type: "enabled",
+								budget_tokens: budget,
+								...(display !== undefined ? { display } : {}),
+							},
+						};
+					})();
 
 		if (!supportsAdaptiveThinking(model.id, model.name) && (options.interleavedThinking ?? true)) {
 			result.anthropic_beta = ["interleaved-thinking-2025-05-14"];

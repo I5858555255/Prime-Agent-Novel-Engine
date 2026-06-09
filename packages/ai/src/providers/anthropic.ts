@@ -173,21 +173,22 @@ function getAnthropicCompat(model: Model<"anthropic-messages">): Required<Anthro
 
 export interface AnthropicOptions extends StreamOptions {
 	/**
-	 * Enable extended thinking.
-	 * For Opus 4.6 and Sonnet 4.6: uses adaptive thinking (model decides when/how much to think).
-	 * For older models: uses budget-based thinking with thinkingBudgetTokens.
+	 * Enable model thinking where configurable.
+	 * For adaptive models, Claude decides when/how much to think.
+	 * For always-on adaptive models, this is ignored and effort controls depth.
+	 * For older models, this uses budget-based thinking with thinkingBudgetTokens.
 	 */
 	thinkingEnabled?: boolean;
 	/**
 	 * Token budget for extended thinking (older models only).
-	 * Ignored for Opus 4.6 and Sonnet 4.6, which use adaptive thinking.
+	 * Ignored for adaptive thinking models.
 	 */
 	thinkingBudgetTokens?: number;
 	/**
-	 * Effort level for adaptive thinking (Opus 4.6+ and Sonnet 4.6).
+	 * Effort level for adaptive thinking.
 	 * Controls how much thinking Claude allocates:
-	 * - "max": Always thinks with no constraints (Opus 4.6 only)
-	 * - "xhigh": Highest reasoning level (Opus 4.7)
+	 * - "max": Always thinks with no constraints on supported models
+	 * - "xhigh": Extended capability for long-horizon work on supported models
 	 * - "high": Always thinks, deep reasoning (default)
 	 * - "medium": Moderate thinking, may skip for simple queries
 	 * - "low": Minimal thinking, skips for simple tasks
@@ -676,23 +677,48 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 };
 
 /**
- * Check if a model supports adaptive thinking (Opus 4.6+, Sonnet 4.6)
+ * Check if a model uses always-on adaptive thinking. These models reject
+ * explicit disabled thinking and do not need a thinking config.
+ */
+function isAlwaysOnAdaptiveThinkingModel(modelId: string): boolean {
+	const id = modelId.toLowerCase();
+	return id.includes("fable-5") || id.includes("mythos-5") || id.includes("mythos-preview");
+}
+
+/**
+ * Check if a model supports adaptive thinking.
  */
 function supportsAdaptiveThinking(modelId: string): boolean {
+	const id = modelId.toLowerCase();
 	// Adaptive-thinking model IDs (with or without date suffix)
 	return (
-		modelId.includes("opus-4-6") ||
-		modelId.includes("opus-4.6") ||
-		modelId.includes("opus-4-7") ||
-		modelId.includes("opus-4.7") ||
-		modelId.includes("sonnet-4-6") ||
-		modelId.includes("sonnet-4.6")
+		isAlwaysOnAdaptiveThinkingModel(id) ||
+		id.includes("opus-4-6") ||
+		id.includes("opus-4.6") ||
+		id.includes("opus-4-7") ||
+		id.includes("opus-4.7") ||
+		id.includes("opus-4-8") ||
+		id.includes("opus-4.8") ||
+		id.includes("sonnet-4-6") ||
+		id.includes("sonnet-4.6")
+	);
+}
+
+function supportsNativeXhighEffort(modelId: string): boolean {
+	const id = modelId.toLowerCase();
+	return (
+		id.includes("fable-5") ||
+		id.includes("mythos-5") ||
+		id.includes("opus-4-7") ||
+		id.includes("opus-4.7") ||
+		id.includes("opus-4-8") ||
+		id.includes("opus-4.8")
 	);
 }
 
 /**
  * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.
- * Note: effort "max" is only valid on Opus 4.6, while Opus 4.7 supports "xhigh".
+ * Model metadata handles provider-specific xhigh/max availability.
  */
 function mapThinkingLevelToEffort(
 	model: Model<"anthropic-messages">,
@@ -700,6 +726,7 @@ function mapThinkingLevelToEffort(
 ): AnthropicEffort {
 	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
 	if (typeof mapped === "string") return mapped as AnthropicEffort;
+	if (level === "xhigh" && supportsNativeXhighEffort(model.id)) return "xhigh";
 
 	switch (level) {
 		case "minimal":
@@ -726,11 +753,11 @@ export const streamSimpleAnthropic: StreamFunction<"anthropic-messages", SimpleS
 
 	const base = buildBaseOptions(model, options, apiKey);
 	if (!options?.reasoning) {
-		return streamAnthropic(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
+		const thinkingOptions = isAlwaysOnAdaptiveThinkingModel(model.id) ? {} : { thinkingEnabled: false };
+		return streamAnthropic(model, context, { ...base, ...thinkingOptions } satisfies AnthropicOptions);
 	}
 
-	// For Opus 4.6 and Sonnet 4.6: use adaptive thinking with effort level
-	// For older models: use budget-based thinking
+	// Adaptive models use effort; older models use budget-based thinking.
 	if (supportsAdaptiveThinking(model.id)) {
 		const effort = mapThinkingLevelToEffort(model, options.reasoning);
 		return streamAnthropic(model, context, {
@@ -865,6 +892,14 @@ function createClient(
 	return { client, isOAuthToken: false };
 }
 
+function setOutputConfigEffort(params: MessageCreateParamsStreaming, effort: AnthropicEffort): void {
+	// The Anthropic SDK types can lag newly supported effort values such as "xhigh".
+	params.output_config =
+		effort === "xhigh"
+			? ({ effort } as unknown as NonNullable<MessageCreateParamsStreaming["output_config"]>)
+			: { effort };
+}
+
 function buildParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -907,7 +942,7 @@ function buildParams(
 	}
 
 	// Temperature is incompatible with extended thinking (adaptive or budget-based).
-	if (options?.temperature !== undefined && !options?.thinkingEnabled) {
+	if (options?.temperature !== undefined && !options?.thinkingEnabled && !isAlwaysOnAdaptiveThinkingModel(model.id)) {
 		params.temperature = options.temperature;
 	}
 
@@ -920,10 +955,14 @@ function buildParams(
 		);
 	}
 
-	// Configure thinking mode: adaptive (Opus 4.6+ and Sonnet 4.6),
-	// budget-based (older models), or explicitly disabled.
+	// Configure thinking mode: always-on adaptive, opt-in adaptive,
+	// budget-based, or explicitly disabled.
 	if (model.reasoning) {
-		if (options?.thinkingEnabled) {
+		if (isAlwaysOnAdaptiveThinkingModel(model.id)) {
+			if (options?.effort) {
+				setOutputConfigEffort(params, options.effort);
+			}
+		} else if (options?.thinkingEnabled) {
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
 			// older Claude 4 models (whose API default is also "summarized").
 			const display: AnthropicThinkingDisplay = options.thinkingDisplay ?? "summarized";
@@ -931,13 +970,7 @@ function buildParams(
 				// Adaptive thinking: Claude decides when and how much to think.
 				params.thinking = { type: "adaptive", display };
 				if (options.effort) {
-					// The Anthropic SDK types can lag newly supported effort values such as "xhigh".
-					params.output_config =
-						options.effort === "xhigh"
-							? ({ effort: options.effort } as unknown as NonNullable<
-									MessageCreateParamsStreaming["output_config"]
-								>)
-							: { effort: options.effort };
+					setOutputConfigEffort(params, options.effort);
 				}
 			} else {
 				// Budget-based thinking for older models
