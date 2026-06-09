@@ -67,6 +67,7 @@ type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSu
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
 	statusMessage?: string;
+	initialPromptsSent?: boolean;
 };
 
 type PromptCommand = Extract<DaemonCommand, { type: "prompt" }>;
@@ -218,7 +219,6 @@ class AgentsViewMode implements Component, Focusable {
 	private readonly inactiveAgentIdentities = new Set<string>();
 	private statusMessage: string | undefined;
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
-	private initialPromptsSent = false;
 	private stopped = false;
 
 	constructor(
@@ -745,10 +745,10 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private async sendInitialPrompts(): Promise<void> {
-		if (this.initialPromptsSent) {
+		if (this.persistentState.initialPromptsSent) {
 			return;
 		}
-		this.initialPromptsSent = true;
+		this.persistentState.initialPromptsSent = true;
 		const initialMessages = this.options.initialMessages ?? [];
 		const firstMessage = this.options.initialMessage ?? initialMessages[0];
 		if (!firstMessage) {
