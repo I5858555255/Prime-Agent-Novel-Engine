@@ -159,9 +159,8 @@ describe("marquee TUI components", () => {
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
 		expect(collapsed).toContain("cat: /tmp/missing-file: No such file or directory");
-		expect(collapsed).toContain(
-			"CalledProcessError: Command 'cat /tmp/missing-file' returned non-zero exit status 1.",
-		);
+		expect(collapsed).toContain("CalledProcessError · traceback collapsed");
+		expect(collapsed).not.toContain("returned non-zero exit status 1.");
 		expect(collapsed).toContain("traceback collapsed");
 		expect(collapsed).not.toContain("get_ipython().run_cell_magic");
 		expect(collapsed).not.toContain("Cell In[15]");

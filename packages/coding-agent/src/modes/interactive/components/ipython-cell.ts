@@ -50,7 +50,7 @@ interface TracebackParts {
 	preview: string;
 }
 
-type CellBackground = "customMessageBg" | "toolPendingBg" | "toolErrorBg";
+type CellBackground = "toolPendingBg";
 type ExpandHintFormatter = (label: string) => string;
 
 const MAGIC_LINE_PATTERN = /^\s*!/;
@@ -162,7 +162,10 @@ function formatIpythonErrorSummary(error: IpythonErrorDetails): string {
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0)
 		.join(" ");
-	return value ? `${error.ename}: ${value}` : error.ename;
+	if (!value) {
+		return error.ename;
+	}
+	return visibleWidth(value) <= 48 ? `${error.ename}: ${value}` : error.ename;
 }
 
 export class IPythonCellComponent implements Component {
@@ -356,16 +359,24 @@ export class IPythonCellComponent implements Component {
 					details.error.traceback.join("\n") || formatIpythonErrorSummary(details.error),
 				);
 			} else {
-				this.addWrapped(lines, "", theme.fg("error", formatIpythonErrorSummary(details.error)), width);
-				this.addWrapped(lines, "", withExpandHint("traceback collapsed"), width);
+				this.addWrapped(
+					lines,
+					"",
+					`${theme.fg("muted", formatIpythonErrorSummary(details.error))} ${theme.fg("dim", "·")} ${withExpandHint("traceback collapsed")}`,
+					width,
+				);
 			}
 		} else if (traceback) {
 			startOutput();
 			if (this.state.expanded) {
 				this.renderTraceback(lines, width, traceback.traceback);
 			} else {
-				this.addWrapped(lines, "", theme.fg("error", traceback.preview), width);
-				this.addWrapped(lines, "", withExpandHint("traceback collapsed"), width);
+				this.addWrapped(
+					lines,
+					"",
+					`${theme.fg("muted", traceback.preview)} ${theme.fg("dim", "·")} ${withExpandHint("traceback collapsed")}`,
+					width,
+				);
 			}
 		}
 
@@ -385,7 +396,7 @@ export class IPythonCellComponent implements Component {
 		label: "out" | "err",
 		withExpandHint: ExpandHintFormatter,
 	): void {
-		const color = label === "err" ? "error" : "toolOutput";
+		const color = label === "err" ? "muted" : "toolOutput";
 		const allLines = text.split("\n");
 		const expanded = this.state.expanded ?? false;
 		const showCollapsed = !expanded && allLines.length > OUTPUT_PREVIEW_LINES;
@@ -403,7 +414,7 @@ export class IPythonCellComponent implements Component {
 
 	private renderTraceback(lines: string[], width: number, traceback: string): void {
 		for (const line of traceback.split("\n")) {
-			this.addWrapped(lines, "", theme.fg("error", line || " "), width);
+			this.addWrapped(lines, "", theme.fg("muted", line || " "), width);
 		}
 	}
 
@@ -426,16 +437,14 @@ export class IPythonCellComponent implements Component {
 		const truncated = truncateToWidth(line, contentWidth, "");
 		const paddedContent = truncated + " ".repeat(Math.max(0, contentWidth - visibleWidth(truncated)));
 		const padded = `${" ".repeat(this.paddingX)}${paddedContent}${" ".repeat(this.paddingX)}`;
-		return theme.bg(this.background(), padded);
+		const background = this.background();
+		return background ? theme.bg(background, padded) : padded;
 	}
 
-	private background(): CellBackground {
-		if (this.state.isError || readDetails(this.state.details).status === "error") {
-			return "toolErrorBg";
-		}
+	private background(): CellBackground | undefined {
 		if (this.state.isPartial || !this.state.executionStarted) {
 			return "toolPendingBg";
 		}
-		return "customMessageBg";
+		return undefined;
 	}
 }
