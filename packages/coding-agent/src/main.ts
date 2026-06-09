@@ -53,6 +53,7 @@ import {
 	defaultDaemonSocketPath,
 	InProcessAgentConnection,
 	InteractiveMode,
+	runAgentsViewMode,
 	runDaemonMode,
 	runPrintMode,
 	runRpcMode,
@@ -147,6 +148,18 @@ export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDeci
 		!options.help &&
 		options.listModels === undefined
 	);
+}
+
+export interface AgentsViewStartupDecision {
+	useDaemonInteractive: boolean;
+	session?: string;
+	resume?: boolean;
+	continue?: boolean;
+	fork?: string;
+}
+
+export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStartupDecision): boolean {
+	return options.useDaemonInteractive && !options.session && !options.resume && !options.continue && !options.fork;
 }
 
 export interface DaemonInteractiveSessionManagerDecision {
@@ -1196,6 +1209,55 @@ export async function main(args: string[], options?: MainOptions) {
 			console.log(chalk.dim(`Model scope: ${modelList} ${chalk.gray("(Ctrl+P to cycle)")}`));
 		}
 
+		const daemonUiServices = createInteractiveModeUiServicesFromServices({
+			services,
+			sessionManager,
+		});
+		if (
+			shouldOpenAgentsViewForDaemonInteractive({
+				useDaemonInteractive,
+				session: parsed.session,
+				resume: parsed.resume,
+				continue: parsed.continue,
+				fork: parsed.fork,
+			})
+		) {
+			await ensureInteractiveDaemonRunning(daemonSocketPath);
+			printTimings();
+			await runAgentsViewMode({
+				socketPath: daemonSocketPath,
+				config: defaultSessionConfig,
+				uiServices: daemonUiServices,
+				createUiServicesForSession: async (summary) => {
+					const attachedSessionManager = createSessionManagerForActiveDaemonSummary(
+						summary,
+						sessionManager.getCwd(),
+					);
+					const attachedPrepared = await prepareRuntimeServices({
+						config: mergeAgentSessionRuntimeConfig(defaultSessionConfig, {
+							cwd: attachedSessionManager.getCwd(),
+						}),
+						cwd: attachedSessionManager.getCwd(),
+						agentDir,
+						sessionManager: attachedSessionManager,
+						extensionFactories: options?.extensionFactories,
+					});
+					return createInteractiveModeUiServicesFromServices({
+						services: attachedPrepared.services,
+						sessionManager: attachedSessionManager,
+					});
+				},
+				migratedProviders,
+				modelFallbackMessage: startupModel.modelFallbackMessage,
+				startupModelId: startupModel.model?.id,
+				initialMessage,
+				initialImages,
+				initialMessages: parsed.messages,
+				verbose: parsed.verbose,
+			});
+			return;
+		}
+
 		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
 			socketPath: daemonSocketPath,
 			config: defaultSessionConfig,
@@ -1205,10 +1267,6 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionPath: activeDaemonSessionSummary ? undefined : getInteractiveDaemonSessionPath(parsed, sessionManager),
 		});
 
-		const daemonUiServices = createInteractiveModeUiServicesFromServices({
-			services,
-			sessionManager,
-		});
 		const interactiveMode = new InteractiveMode({
 			agentConnection,
 			uiServices: daemonUiServices,

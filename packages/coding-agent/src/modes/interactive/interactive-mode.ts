@@ -250,9 +250,19 @@ export function truncatePathMiddle(value: string, width: number): string {
 	return truncateToWidth(candidate, width);
 }
 
-class BrandSplashHeader implements Component {
-	private readonly logoRaw = PRIME_BUTTERFLY_LOGO.split("\n");
-	private readonly logoCanvasWidth = this.logoRaw.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+export interface BrandSplashMetadataLine {
+	label: string;
+	value: string;
+}
+
+export interface BrandSplashHeaderOptions {
+	logo?: string;
+	getExtraMetadata?: () => readonly BrandSplashMetadataLine[];
+}
+
+export class BrandSplashHeader implements Component {
+	private readonly logoRaw: string[];
+	private readonly logoCanvasWidth: number;
 	private readonly gutter = 4;
 	private readonly labelWidth = 9;
 
@@ -261,7 +271,11 @@ class BrandSplashHeader implements Component {
 		private readonly getModelId: () => string | undefined,
 		private readonly getCwd: () => string,
 		private readonly verboseInstructions?: string,
-	) {}
+		private readonly options: BrandSplashHeaderOptions = {},
+	) {
+		this.logoRaw = (options.logo ?? PRIME_BUTTERFLY_LOGO).split("\n");
+		this.logoCanvasWidth = this.logoRaw.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+	}
 
 	invalidate(): void {
 		// Render output is derived from current theme/session state.
@@ -279,11 +293,13 @@ class BrandSplashHeader implements Component {
 				label === "cwd" ? truncatePathMiddle(value, valueWidth) : truncateToWidth(value, valueWidth);
 			return theme.fg("dim", label.padEnd(this.labelWidth)) + theme.fg("muted", displayValue);
 		};
+		const extraMetadata = this.options.getExtraMetadata?.() ?? [];
 		const metaLines = showMeta
 			? [
 					labelled("version", `v${this.version}`),
 					labelled("model", this.getModelId() ?? "—"),
 					labelled("cwd", formatSplashCwd(this.getCwd())),
+					...extraMetadata.map((line) => labelled(line.label, line.value)),
 					"",
 					theme.fg("dim", "type to start"),
 				]
@@ -461,7 +477,11 @@ export interface InteractiveModeOptions {
 	uiServices?: InteractiveModeUiServices;
 	/** Extra cleanup for externally-owned UI service hosts. Runs after the connection is disposed and before process exit. */
 	onShutdown?: () => void | Promise<void>;
+	/** Allow returning from a full session to the agents view without stopping the daemon-owned agent. */
+	returnToAgentsView?: boolean;
 }
+
+export type InteractiveModeRunResult = "exit" | "agents_view";
 
 export class InteractiveMode {
 	private static readonly EXIT_HINT_DURATION_MS = 2000;
@@ -489,7 +509,8 @@ export class InteractiveMode {
 	private keybindings: KeybindingsManager;
 	private version: string;
 	private isInitialized = false;
-	private onInputCallback?: (text: string) => void;
+	private onInputCallback?: (text: string | undefined) => void;
+	private returnToAgentsViewRequested = false;
 	private loadingAnimation: Loader | undefined = undefined;
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
@@ -937,7 +958,7 @@ export class InteractiveMode {
 	 * Run the interactive mode. This is the main entry point.
 	 * Initializes the UI, shows warnings, processes initial messages, and starts the interactive loop.
 	 */
-	async run(): Promise<void> {
+	async run(): Promise<InteractiveModeRunResult> {
 		await this.init();
 
 		const newVersionPromise = checkForNewPiVersion(this.version);
@@ -1051,6 +1072,9 @@ export class InteractiveMode {
 		// Main interactive loop
 		while (true) {
 			const userInput = await this.getUserInput();
+			if (userInput === undefined || this.returnToAgentsViewRequested) {
+				return "agents_view";
+			}
 			if (!(await this.ensurePromptReady())) {
 				this.editor.setText(userInput);
 				this.showStatus("Complete onboarding to send the restored prompt.");
@@ -2888,6 +2912,9 @@ export class InteractiveMode {
 				if (!customEditor.onMoveBelowPrompt) {
 					customEditor.onMoveBelowPrompt = () => this.defaultEditor.onMoveBelowPrompt?.();
 				}
+				if (!customEditor.onAgentsBack) {
+					customEditor.onAgentsBack = () => this.defaultEditor.onAgentsBack?.();
+				}
 				if (!customEditor.onExtensionShortcut) {
 					customEditor.onExtensionShortcut = (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
 				}
@@ -3065,6 +3092,13 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.session.resume", () => {
 			void this.showSessionSelector();
 		});
+		this.defaultEditor.onAgentsBack = () => {
+			if (!this.options.returnToAgentsView || this.editor.getText().trim()) {
+				return false;
+			}
+			void this.returnToAgentsView();
+			return true;
+		};
 		this.defaultEditor.onMoveBelowPrompt = () => this.focusChildAgentSummary();
 
 		this.defaultEditor.onChange = (text: string) => {
@@ -3957,7 +3991,19 @@ export class InteractiveMode {
 	}
 
 	private getTrayLocationLabel(): string | undefined {
-		return this.footerDataProvider.getGitBranch() ?? formatSplashCwd(this.getCurrentCwd());
+		const location = this.footerDataProvider.getGitBranch() ?? formatSplashCwd(this.getCurrentCwd());
+		const agentsHint = this.getAgentsViewTrayHint();
+		return [location, agentsHint].filter((label): label is string => label !== undefined).join("  ");
+	}
+
+	private getAgentsViewTrayHint(): string | undefined {
+		if (!this.options.returnToAgentsView) {
+			return undefined;
+		}
+		if (this.editor.getText().trim()) {
+			return undefined;
+		}
+		return keyHint("app.agents.back", "agents");
 	}
 
 	private getTrayContextLabel(): string | undefined {
@@ -4378,9 +4424,9 @@ export class InteractiveMode {
 		};
 	}
 
-	async getUserInput(): Promise<string> {
+	async getUserInput(): Promise<string | undefined> {
 		return new Promise((resolve) => {
-			this.onInputCallback = (text: string) => {
+			this.onInputCallback = (text: string | undefined) => {
 				this.onInputCallback = undefined;
 				resolve(text);
 			};
@@ -4491,6 +4537,24 @@ export class InteractiveMode {
 			await this.options.onShutdown?.();
 		}
 		process.exit(0);
+	}
+
+	private async returnToAgentsView(): Promise<void> {
+		if (this.isShuttingDown || this.returnToAgentsViewRequested) return;
+		this.returnToAgentsViewRequested = true;
+		this.isShuttingDown = true;
+		this.unregisterSignalHandlers();
+
+		await this.ui.terminal.drainInput(1000);
+
+		this.stop();
+		stopThemeWatcher();
+		try {
+			await this.agentConnection.dispose();
+		} finally {
+			await this.options.onShutdown?.();
+		}
+		this.onInputCallback?.(undefined);
 	}
 
 	private emergencyTerminalExit(): never {

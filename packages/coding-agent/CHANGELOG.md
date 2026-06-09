@@ -8,6 +8,8 @@
 
 ### Added
 
+- Added a two-step `Ctrl+X` stop/delete interaction for selected agents in Agents View.
+- Added a daemon-backed Agents View as the default local interactive entrypoint.
 - Added versioned daemon protocol metadata, sequenced session events, attach snapshots, replay status, and artifact references for future Swarm gateway wrapping.
 - Added an `AgentConnection` client boundary with in-process and daemon adapters for interactive-mode decoupling.
 - Added daemon mode and CLI controls for starting on demand, creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
@@ -15,6 +17,11 @@
 
 ### Changed
 
+- Changed Agents View `Ctrl+C` handling to mirror the interactive chat view: the first press shows a bottom hint and the second exits Prime Agent.
+- Changed keybinding hints to render arrow keys as `↑`, `↓`, `←`, and `→`.
+- Changed Agents View to keep transient status and reply text out of the agent list area.
+- Changed Agents View `Ctrl+X` so the first press only stops sessions that are actively running.
+- Changed daemon-owned chat sessions opened from Agents View to show a `← agents` tray hint when the input is empty.
 - Changed active session creation to use per-session runtime config so active sessions can use different cwd, model, auth, and tool settings.
 - Changed interactive `Ctrl+C` to interrupt the current operation first and exit only on a second press while the exit hint is visible; `Escape` now clears the input bar without interrupting the agent.
 - Changed the IPython system prompt section to use the upstream rlm-harness IPYTHON_CONTROL_PROMPT: IPython is framed as a persistent control environment, not the target project's runtime. Shell commands should use `%%bash` cells instead of `!cmd` escapes. The agent should not install dependencies into the IPython kernel but use the project's own environment instead.
@@ -22,6 +29,12 @@
 
 ### Fixed
 
+- Fixed Agents View listing daemon-owned subagents as top-level selectable agents instead of nested child rows.
+- Fixed Agents View opening saved or stale sessions by creating a daemon runtime from the saved session file before attaching.
+- Fixed Agents View delete confirmation so the red stopped confirmation expires after two seconds without removing the stopped session row.
+- Fixed Agents View selected-row highlighting so it spans the full terminal width after prompt wrapping changes the layout.
+- Fixed Agents View prompt bar to show a placeholder for creating a new session.
+- Fixed Agents View opening sessions with the dashboard cwd's model registry, which could incorrectly show the model selector for daemon-owned sessions from another cwd.
 - Stopped showing changelog entries automatically on install, first launch, and update startup.
 - Fixed child-agent navigation to show contextual keybinding hints and a visible focused tray marker.
 - Fixed the release installer to ask before bootstrapping the IPython kernel runtime during install, avoiding default first-run `uv` prompts inside the TUI.

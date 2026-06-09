@@ -534,7 +534,9 @@ class AgentDaemon {
 			}
 
 			case "delete_saved_session": {
-				this.getSessionState(command.activeSessionId);
+				if (command.activeSessionId) {
+					this.getSessionState(command.activeSessionId);
+				}
 				if (this.findActiveSessionByFile(command.sessionPath)) {
 					throw new Error("Cannot delete the currently active session");
 				}

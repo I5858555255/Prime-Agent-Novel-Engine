@@ -210,7 +210,7 @@ export type DaemonCommand =
 	| { id?: string; type: "export_jsonl"; activeSessionId: string; outputPath?: string }
 	| { id?: string; type: "set_session_name"; activeSessionId: string; name: string }
 	| { id?: string; type: "rename_saved_session"; activeSessionId: string; sessionPath: string; name: string }
-	| { id?: string; type: "delete_saved_session"; activeSessionId: string; sessionPath: string }
+	| { id?: string; type: "delete_saved_session"; activeSessionId?: string; sessionPath: string }
 	| { id?: string; type: "get_session_context"; activeSessionId: string }
 	| { id?: string; type: "get_session_tree"; activeSessionId: string }
 	| { id?: string; type: "get_user_messages_for_forking"; activeSessionId: string }
