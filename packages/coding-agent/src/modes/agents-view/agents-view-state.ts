@@ -26,6 +26,10 @@ export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSe
 	return "completed";
 }
 
+export function shouldShowAgentsViewSession(summary: SessionSummary): boolean {
+	return summary.activeSessionId !== undefined || summary.status !== "hidden";
+}
+
 export function sectionTitle(section: AgentsViewSection): string {
 	switch (section) {
 		case "needs_input":

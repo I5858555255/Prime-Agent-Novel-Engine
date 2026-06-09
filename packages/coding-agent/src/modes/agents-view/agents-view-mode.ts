@@ -11,6 +11,7 @@ import {
 import { APP_TITLE, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import { SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
 import type { DaemonCommand, DaemonResponse } from "../daemon/daemon-protocol.js";
@@ -27,7 +28,13 @@ import {
 	stopThemeWatcher,
 	theme,
 } from "../interactive/theme/theme.js";
-import { type AgentsViewRow, type AgentsViewSection, buildAgentsViewRows, sectionTitle } from "./agents-view-state.js";
+import {
+	type AgentsViewRow,
+	type AgentsViewSection,
+	buildAgentsViewRows,
+	sectionTitle,
+	shouldShowAgentsViewSession,
+} from "./agents-view-state.js";
 
 const POLL_INTERVAL_MS = 1000;
 const WORKING_ICON_INTERVAL_MS = 250;
@@ -608,15 +615,12 @@ class AgentsViewMode implements Component, Focusable {
 					}
 				}
 			}
-			const inactiveSummary = stoppedSessionSummary(pending.summary);
-			this.pendingDeleteAgent = inactiveSummary.sessionFile
-				? {
-						identity: getSummaryIdentity(inactiveSummary),
-						sessionFile: inactiveSummary.sessionFile,
-						summary: inactiveSummary,
-						stopped: true,
-					}
-				: undefined;
+			if (pending.sessionFile) {
+				SessionManager.open(pending.sessionFile, this.options.config.sessionDir).appendSessionState({
+					status: "hidden",
+				});
+			}
+			this.pendingDeleteAgent = undefined;
 			this.clearDeleteConfirmation({ render: false });
 			this.selectedActiveSessionId = undefined;
 			this.setStatusMessage("Agent inactive", { render: false });
@@ -706,7 +710,8 @@ class AgentsViewMode implements Component, Focusable {
 			const response = await client.request(command);
 			const data = requireDaemonData(response);
 			const sessions = expectSessionList(data);
-			this.rows = buildAgentsViewRows(this.withPendingDeleteSession(sessions));
+			const visibleSessions = sessions.filter(shouldShowAgentsViewSession);
+			this.rows = buildAgentsViewRows(this.withPendingDeleteSession(visibleSessions));
 			this.restoreSelection();
 			this.ui.requestRender();
 		} catch (error) {

@@ -2,7 +2,12 @@ import { describe, expect, test, vi } from "vitest";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import type { SettingsManager } from "../src/core/settings-manager.js";
 import { resolveAgentsViewSessionUiServices } from "../src/modes/agents-view/agents-view-mode.js";
-import { buildAgentsViewRows, classifyAgentsViewSession, type SessionSummary } from "../src/modes/index.js";
+import {
+	buildAgentsViewRows,
+	classifyAgentsViewSession,
+	type SessionSummary,
+	shouldShowAgentsViewSession,
+} from "../src/modes/index.js";
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
 import type { Theme } from "../src/modes/interactive/theme/theme.js";
 
@@ -61,6 +66,14 @@ describe("agents view state", () => {
 		expect(rows.map((row) => row.title)).toEqual(["Parent", "Child", "Other"]);
 		expect(rows.map((row) => row.depth)).toEqual([0, 1, 0]);
 		expect(rows.map((row) => row.selectable)).toEqual([true, false, true]);
+	});
+
+	test("hides inactive hidden sessions while keeping active sessions visible", () => {
+		const inactiveHidden = makeSummary({ status: "hidden" });
+		delete inactiveHidden.activeSessionId;
+
+		expect(shouldShowAgentsViewSession(inactiveHidden)).toBe(false);
+		expect(shouldShowAgentsViewSession(makeSummary({ status: "hidden", activeSessionId: "active-1" }))).toBe(true);
 	});
 
 	test("uses session-specific UI services when opening an agent", async () => {
