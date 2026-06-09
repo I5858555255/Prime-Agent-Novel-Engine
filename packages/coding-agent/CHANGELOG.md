@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `old_str`/`new_str` parameter support to the edit tool, matching the rlm-harness edit tool interface. Models can now call `edit` with `{path, old_str, new_str}` in addition to the existing `{path, edits}` format.
+
 ### Changed
 
 - Changed interactive `Ctrl+C` to interrupt the current operation first and exit only on a second press while the exit hint is visible; `Escape` now clears the input bar without interrupting the agent.

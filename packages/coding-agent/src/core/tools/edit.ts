@@ -54,6 +54,8 @@ export type EditToolInput = Static<typeof editSchema>;
 type LegacyEditToolInput = EditToolInput & {
 	oldText?: unknown;
 	newText?: unknown;
+	old_str?: unknown;
+	new_str?: unknown;
 };
 
 export interface EditToolDetails {
@@ -103,13 +105,25 @@ function prepareEditArguments(input: unknown): EditToolInput {
 	}
 
 	const legacy = args as LegacyEditToolInput;
-	if (typeof legacy.oldText !== "string" || typeof legacy.newText !== "string") {
+
+	// Support rlm-harness interface: old_str / new_str
+	const oldStr = typeof legacy.old_str === "string" ? legacy.old_str : undefined;
+	const newStr = typeof legacy.new_str === "string" ? legacy.new_str : undefined;
+	// Support legacy interface: oldText / newText
+	const oldText = typeof legacy.oldText === "string" ? legacy.oldText : undefined;
+	const newText = typeof legacy.newText === "string" ? legacy.newText : undefined;
+
+	// Prefer oldText/newText over old_str/new_str when both are present
+	const legacyOld = oldText ?? oldStr;
+	const legacyNew = newText ?? newStr;
+
+	if (legacyOld === undefined || legacyNew === undefined) {
 		return args as EditToolInput;
 	}
 
 	const edits = Array.isArray(legacy.edits) ? [...legacy.edits] : [];
-	edits.push({ oldText: legacy.oldText, newText: legacy.newText });
-	const { oldText: _oldText, newText: _newText, ...rest } = legacy;
+	edits.push({ oldText: legacyOld, newText: legacyNew });
+	const { oldText: _oldText, newText: _newText, old_str: _oldStr, new_str: _newStr, ...rest } = legacy;
 	return { ...rest, edits } as EditToolInput;
 }
 
@@ -126,6 +140,8 @@ type RenderableEditArgs = {
 	edits?: Edit[];
 	oldText?: string;
 	newText?: string;
+	old_str?: string;
+	new_str?: string;
 };
 
 type EditToolResultLike = {
@@ -181,8 +197,11 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 		return { path, edits: args.edits };
 	}
 
-	if (typeof args.oldText === "string" && typeof args.newText === "string") {
-		return { path, edits: [{ oldText: args.oldText, newText: args.newText }] };
+	// Support oldText/newText (legacy) and old_str/new_str (rlm-harness)
+	const previewOld = args.oldText ?? args.old_str;
+	const previewNew = args.newText ?? args.new_str;
+	if (typeof previewOld === "string" && typeof previewNew === "string") {
+		return { path, edits: [{ oldText: previewOld, newText: previewNew }] };
 	}
 
 	return null;

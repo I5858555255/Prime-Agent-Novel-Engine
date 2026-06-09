@@ -119,3 +119,114 @@ describe("edit tool stringified edits", () => {
 		});
 	});
 });
+
+describe("edit tool rlm-harness interface (old_str/new_str)", () => {
+	it("keeps rlm-harness fields out of the public schema", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		expect(definition.parameters.properties).not.toHaveProperty("old_str");
+		expect(definition.parameters.properties).not.toHaveProperty("new_str");
+	});
+
+	it("folds top-level old_str/new_str into edits", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			old_str: "before",
+			new_str: "after",
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "before", newText: "after" }],
+		});
+	});
+
+	it("appends old_str/new_str replacement to existing edits", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			edits: [{ oldText: "a", newText: "b" }],
+			old_str: "c",
+			new_str: "d",
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [
+				{ oldText: "a", newText: "b" },
+				{ oldText: "c", newText: "d" },
+			],
+		});
+	});
+
+	it("prefers oldText/newText over old_str/new_str when both are present", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			oldText: "from-oldText",
+			newText: "to-newText",
+			old_str: "from-old_str",
+			new_str: "to-new_str",
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "from-oldText", newText: "to-newText" }],
+		});
+	});
+
+	it("prepared old_str/new_str args execute correctly", async () => {
+		const dir = await createTempDir();
+		const filePath = join(dir, "harness.txt");
+		await writeFile(filePath, "before\n", "utf8");
+
+		const definition = createEditToolDefinition(dir);
+		const prepared = definition.prepareArguments!({
+			path: "harness.txt",
+			old_str: "before",
+			new_str: "after",
+		});
+
+		const result = await definition.execute("tool-1", prepared, undefined, undefined, {} as ExtensionContext);
+		expect(result.content).toEqual([{ type: "text", text: "Successfully replaced 1 block(s) in harness.txt." }]);
+		expect(await readFile(filePath, "utf8")).toBe("after\n");
+	});
+
+	it("uses old_str/new_str when oldText/newText are non-string", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			oldText: 123,
+			newText: null,
+			old_str: "actual-old",
+			new_str: "actual-new",
+		});
+		expect(prepared).toEqual({
+			path: "file.txt",
+			edits: [{ oldText: "actual-old", newText: "actual-new" }],
+		});
+	});
+
+	it("does not fold old_str when new_str is missing", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			old_str: "before",
+		});
+		// old_str remains in output because it wasn't folded into edits
+		expect(prepared).toEqual({
+			path: "file.txt",
+			old_str: "before",
+		});
+	});
+
+	it("does not fold new_str when old_str is missing", () => {
+		const definition = createEditToolDefinition(process.cwd());
+		const prepared = definition.prepareArguments!({
+			path: "file.txt",
+			new_str: "after",
+		});
+		// new_str remains in output because it wasn't folded into edits
+		expect(prepared).toEqual({
+			path: "file.txt",
+			new_str: "after",
+		});
+	});
+});
