@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { CollapsibleErrorComponent, shouldCollapseErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -34,6 +35,7 @@ export class AssistantMessageComponent extends Container {
 	private hiddenThinkingLabel: string;
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
+	private expanded = false;
 
 	constructor(
 		message?: AssistantMessage,
@@ -74,6 +76,15 @@ export class AssistantMessageComponent extends Container {
 		this.hiddenThinkingLabel = label;
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
+		}
+	}
+
+	setExpanded(expanded: boolean): void {
+		if (this.expanded !== expanded) {
+			this.expanded = expanded;
+			if (this.lastMessage) {
+				this.updateContent(this.lastMessage);
+			}
 		}
 	}
 
@@ -153,12 +164,28 @@ export class AssistantMessageComponent extends Container {
 				} else {
 					this.contentContainer.addChild(new Spacer(1));
 				}
-				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), 1, 0));
+				this.contentContainer.addChild(this.createErrorComponent(abortMessage));
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), 1, 0));
+				this.contentContainer.addChild(this.createErrorComponent(errorMsg, "Error"));
 			}
 		}
+	}
+
+	private createErrorComponent(message: string, prefix?: string): Component {
+		if (!shouldCollapseErrorDetails(message)) {
+			const text = prefix ? `${prefix}: ${message}` : message;
+			return new Text(theme.fg("error", text), 1, 0);
+		}
+
+		const text = prefix ? `${prefix}: ${message}` : message;
+		const summary = prefix ? `${prefix}: ${summarizeErrorDetails(message)}` : summarizeErrorDetails(message);
+		return new CollapsibleErrorComponent({
+			text,
+			summary,
+			expanded: this.expanded,
+			collapseLabel: "error details collapsed",
+		});
 	}
 }

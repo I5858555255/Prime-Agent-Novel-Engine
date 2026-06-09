@@ -124,6 +124,54 @@ describe("marquee TUI components", () => {
 		}
 	});
 
+	test("renders structured ipython bash errors with traceback details collapsed", async () => {
+		const traceback = [
+			"Traceback (most recent call last):",
+			"  Cell In[15], line 1",
+			"----> 1 get_ipython().run_cell_magic('bash', '', 'cat /tmp/missing-file\\n')",
+			"CalledProcessError: Command 'cat /tmp/missing-file' returned non-zero exit status 1.",
+		];
+		const state: IPythonCellState = {
+			code: "%%bash\ncat /tmp/missing-file",
+			content: [
+				{
+					type: "text",
+					text: ["cat: /tmp/missing-file: No such file or directory", ...traceback].join("\n"),
+				},
+			],
+			details: {
+				status: "error",
+				durationMs: 29,
+				stdout: "",
+				stderr: "cat: /tmp/missing-file: No such file or directory\n",
+				error: {
+					ename: "CalledProcessError",
+					evalue: "Command 'cat /tmp/missing-file' returned non-zero exit status 1.",
+					traceback,
+				},
+			},
+			isError: true,
+			expanded: false,
+			executionStarted: true,
+			argsComplete: true,
+		};
+		const component = new IPythonCellComponent(state);
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("cat: /tmp/missing-file: No such file or directory");
+		expect(collapsed).toContain(
+			"CalledProcessError: Command 'cat /tmp/missing-file' returned non-zero exit status 1.",
+		);
+		expect(collapsed).toContain("traceback collapsed");
+		expect(collapsed).not.toContain("get_ipython().run_cell_magic");
+		expect(collapsed).not.toContain("Cell In[15]");
+
+		component.update({ ...state, expanded: true });
+		const expanded = stripAnsi(component.render(100).join("\n"));
+		expect(expanded).toContain("get_ipython().run_cell_magic");
+		expect(expanded).toContain("Cell In[15]");
+	});
+
 	test("caches ipython cell renders until state, width, or invalidation changes", () => {
 		const state: IPythonCellState = {
 			code: "value = 1\nprint(value)",
@@ -332,6 +380,42 @@ describe("marquee TUI components", () => {
 		expect(rendered).not.toMatch(/\x1b\[(?:4\d|10\d|48;)/);
 	});
 
+	test("collapses multiline assistant errors without changing short errors", () => {
+		const multilineError = [
+			"Provider request failed",
+			"Traceback (most recent call last):",
+			'  File "/tmp/internal.py", line 12, in run',
+			"RuntimeError: backend crashed",
+		].join("\n");
+		const message: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: multilineError,
+		};
+		const component = new AssistantMessageComponent(message);
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("Error: Provider request failed");
+		expect(collapsed).toContain("error details collapsed");
+		expect(collapsed).not.toContain("/tmp/internal.py");
+
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(100).join("\n"));
+		expect(expanded).toContain("/tmp/internal.py");
+
+		const shortMessage: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: "provider failure",
+		};
+		const shortComponent = new AssistantMessageComponent(shortMessage);
+		const short = stripAnsi(shortComponent.render(100).join("\n"));
+		expect(short).toContain("Error: provider failure");
+		expect(short).not.toContain("error details collapsed");
+	});
+
 	test("renders child agent summary and bounded inspector list", () => {
 		const summary = new ChildAgentSummaryComponent(
 			() => "agents-sidebar",
@@ -484,6 +568,33 @@ describe("marquee TUI components", () => {
 
 		const narrow = stripAnsi(component.render(24).join("\n"));
 		expect(narrow).toContain("inspect t…");
+	});
+
+	test("collapses multiline child agent system errors in detail view", () => {
+		const detailComponent = new ChildAgentDetailComponent(() => 20);
+		const errorText = [
+			"ChildProcessError: child exited with status 1",
+			"Traceback (most recent call last):",
+			'  File "/tmp/rlm_harness/internal.py", line 10, in run',
+			"ChildProcessError: child exited with status 1",
+		].join("\n");
+		detailComponent.setNode({
+			id: "sub-error",
+			label: "inspect failure",
+			status: "error",
+			sessionDir: "/tmp/session/sub-error",
+			transcript: [],
+			structuredTranscript: [{ type: "system", role: "system", text: errorText }],
+		});
+
+		const collapsed = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(collapsed).toContain("ChildProcessError: child exited with status 1");
+		expect(collapsed).toContain("error details collapsed");
+		expect(collapsed).not.toContain("/tmp/rlm_harness/internal.py");
+
+		detailComponent.setToolsExpanded(true);
+		const expanded = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(expanded).toContain("/tmp/rlm_harness/internal.py");
 	});
 
 	test("routes child agent detail tool expansion through app keybindings", () => {

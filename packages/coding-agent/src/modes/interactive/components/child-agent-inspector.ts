@@ -14,6 +14,7 @@ import {
 import type { ToolDefinition } from "../../../core/extensions/types.js";
 import { theme } from "../theme/theme.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
+import { CollapsibleErrorComponent, shouldCollapseErrorDetails } from "./collapsible-error.js";
 import { keyText } from "./keybinding-hints.js";
 import { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
@@ -554,7 +555,7 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 					components.push(this.createToolComponent(entry));
 					break;
 				case "system":
-					components.push(new Text(theme.fg("error", entry.text), 1, 0));
+					components.push(this.createSystemComponent(entry));
 					break;
 			}
 		}
@@ -574,6 +575,17 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 			this.options.getMarkdownTheme?.(),
 			this.options.getHiddenThinkingLabel?.() ?? "Thinking...",
 		);
+	}
+
+	private createSystemComponent(entry: ChildAgentSystemTranscriptEntry): Component {
+		if (!shouldCollapseErrorDetails(entry.text)) {
+			return new Text(theme.fg("error", entry.text), 1, 0);
+		}
+		return new CollapsibleErrorComponent({
+			text: entry.text,
+			expanded: this.toolsExpanded,
+			collapseLabel: "error details collapsed",
+		});
 	}
 
 	private createToolComponent(entry: ChildAgentToolTranscriptEntry): Component {
