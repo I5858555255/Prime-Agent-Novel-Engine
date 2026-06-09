@@ -62,6 +62,9 @@ export interface AgentsViewModeOptions {
 }
 
 type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary };
+type AgentsViewPersistentState = {
+	selectedRowIdentity?: string;
+};
 
 type PromptCommand = Extract<DaemonCommand, { type: "prompt" }>;
 type PendingDeleteAgent = {
@@ -146,13 +149,15 @@ function isUnknownActiveSessionError(error: unknown): boolean {
 
 export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise<void> {
 	let fullSessionResult: InteractiveModeRunResult = "agents_view";
+	const persistentState: AgentsViewPersistentState = {};
 
 	while (fullSessionResult === "agents_view") {
-		const view = new AgentsViewMode(options);
+		const view = new AgentsViewMode(options, persistentState);
 		const result = await view.run();
 		if (result.type === "exit") {
 			return;
 		}
+		persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
 
 		const { connection, summary } = await openAgentsViewSession(options, result.summary);
 		const uiServices = await resolveAgentsViewSessionUiServices(options, summary);
@@ -187,6 +192,7 @@ class AgentsViewMode implements Component, Focusable {
 	private workingIconFrame = 0;
 	private rows: AgentsViewRow[] = [];
 	private selectedIndex = 0;
+	private selectedRowIdentity: string | undefined;
 	private selectedActiveSessionId: string | undefined;
 	private replyActiveSessionId: string | undefined;
 	private pendingDeleteAgent: PendingDeleteAgent | undefined;
@@ -196,7 +202,11 @@ class AgentsViewMode implements Component, Focusable {
 	private initialPromptsSent = false;
 	private stopped = false;
 
-	constructor(private readonly options: AgentsViewModeOptions) {
+	constructor(
+		private readonly options: AgentsViewModeOptions,
+		private readonly persistentState: AgentsViewPersistentState = {},
+	) {
+		this.selectedRowIdentity = persistentState.selectedRowIdentity;
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		setRegisteredThemes(options.uiServices.getThemes());
@@ -454,7 +464,7 @@ class AgentsViewMode implements Component, Focusable {
 			: 0;
 		const nextPosition = Math.max(0, Math.min(selectableIndexes.length - 1, currentPosition + delta));
 		this.selectedIndex = selectableIndexes[nextPosition] ?? 0;
-		this.selectedActiveSessionId = this.getSelectedActiveSessionId();
+		this.syncSelectedRowState();
 		this.clearDeleteConfirmation({ render: false });
 		if (this.replyActiveSessionId && this.replyActiveSessionId !== this.selectedActiveSessionId) {
 			this.setReplyTarget(undefined);
@@ -645,7 +655,9 @@ class AgentsViewMode implements Component, Focusable {
 			await this.sendPrompt(activeSessionId, text, images);
 			this.setStatusMessage("Agent started");
 			await this.refreshSessions();
+			this.selectedRowIdentity = getSummaryIdentity(summary);
 			this.selectedActiveSessionId = activeSessionId;
+			this.persistentState.selectedRowIdentity = this.selectedRowIdentity;
 			this.restoreSelection();
 			return activeSessionId;
 		} catch (error) {
@@ -769,13 +781,20 @@ class AgentsViewMode implements Component, Focusable {
 			this.selectedActiveSessionId = undefined;
 			return;
 		}
-		const selectedId = this.selectedActiveSessionId;
-		const index =
-			selectedId === undefined
+		const selectedIdentity = this.selectedRowIdentity ?? this.persistentState.selectedRowIdentity;
+		let index =
+			selectedIdentity === undefined
 				? -1
-				: this.rows.findIndex(
-						(row) => row.selectable && (row.summary.activeSessionId ?? row.summary.id) === selectedId,
-					);
+				: this.rows.findIndex((row) => row.selectable && getSummaryIdentity(row.summary) === selectedIdentity);
+		const selectedId = this.selectedActiveSessionId;
+		if (index < 0) {
+			index =
+				selectedId === undefined
+					? -1
+					: this.rows.findIndex(
+							(row) => row.selectable && (row.summary.activeSessionId ?? row.summary.id) === selectedId,
+						);
+		}
 		if (index >= 0) {
 			this.selectedIndex = index;
 		} else if (!this.rows[this.selectedIndex]?.selectable) {
@@ -783,7 +802,7 @@ class AgentsViewMode implements Component, Focusable {
 		} else {
 			this.selectedIndex = Math.min(this.selectedIndex, this.rows.length - 1);
 		}
-		this.selectedActiveSessionId = this.getSelectedActiveSessionId();
+		this.syncSelectedRowState();
 	}
 
 	private getSelectedActiveSessionId(): string | undefined {
@@ -793,6 +812,13 @@ class AgentsViewMode implements Component, Focusable {
 
 	private getSelectableRowIndexes(): number[] {
 		return this.rows.flatMap((row, index) => (row.selectable ? [index] : []));
+	}
+
+	private syncSelectedRowState(): void {
+		const row = this.rows[this.selectedIndex];
+		this.selectedActiveSessionId = row?.selectable ? (row.summary.activeSessionId ?? row.summary.id) : undefined;
+		this.selectedRowIdentity = getSelectedRowIdentity(row);
+		this.persistentState.selectedRowIdentity = this.selectedRowIdentity;
 	}
 
 	private finish(result: AgentsViewRunResult): void {
