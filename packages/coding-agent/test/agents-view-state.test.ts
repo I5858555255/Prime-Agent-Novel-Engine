@@ -32,7 +32,7 @@ describe("agents view state", () => {
 		expect(rows.map((row) => row.section)).toEqual(["needs_input", "needs_input", "working", "completed"]);
 	});
 
-	test("nests subagent rows under their parent and marks them non-selectable", () => {
+	test("summarizes subagents on their parent and omits subagent rows", () => {
 		const rows = buildAgentsViewRows([
 			makeSummary({
 				id: "child-active",
@@ -44,6 +44,27 @@ describe("agents view state", () => {
 				parentSessionId: "parent-session",
 				isStreaming: true,
 				status: "model",
+			}),
+			makeSummary({
+				id: "second-child-active",
+				activeSessionId: "second-child-active",
+				sessionId: "second-child-session",
+				sessionName: "Second child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "parent-active",
+				parentSessionId: "parent-session",
+				status: "tool",
+			}),
+			makeSummary({
+				id: "completed-child-active",
+				activeSessionId: "completed-child-active",
+				sessionId: "completed-child-session",
+				sessionName: "Completed child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "parent-active",
+				parentSessionId: "parent-session",
+				status: "idle",
+				messageCount: 2,
 			}),
 			makeSummary({
 				id: "parent-active",
@@ -63,9 +84,10 @@ describe("agents view state", () => {
 			}),
 		]);
 
-		expect(rows.map((row) => row.title)).toEqual(["Parent", "Child", "Other"]);
-		expect(rows.map((row) => row.depth)).toEqual([0, 1, 0]);
-		expect(rows.map((row) => row.selectable)).toEqual([true, false, true]);
+		expect(rows.map((row) => row.title)).toEqual(["Parent", "Other"]);
+		expect(rows.map((row) => row.runningSubagentCount)).toEqual([2, 0]);
+		expect(rows.map((row) => row.depth)).toEqual([0, 0]);
+		expect(rows.map((row) => row.selectable)).toEqual([true, true]);
 	});
 
 	test("hides inactive hidden sessions while keeping active sessions visible", () => {

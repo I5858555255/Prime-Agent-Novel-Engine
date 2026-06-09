@@ -11,6 +11,7 @@ export interface AgentsViewRow {
 	statusLabel: string;
 	depth: number;
 	selectable: boolean;
+	runningSubagentCount: number;
 }
 
 export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSection {
@@ -62,6 +63,7 @@ export function buildAgentsViewRows(summaries: readonly SessionSummary[]): Agent
 			statusLabel: getSessionStatusLabel(summary),
 			depth: 0,
 			selectable: !isSubagentSummary(summary),
+			runningSubagentCount: 0,
 			children: [],
 		}),
 	);
@@ -73,10 +75,9 @@ export function buildAgentsViewRows(summaries: readonly SessionSummary[]): Agent
 			continue;
 		}
 		const parent = findParentRow(row.summary, rowsByKey);
-		if (!parent || parent === row) {
-			continue;
+		if (parent && parent !== row && row.section === "working") {
+			parent.runningSubagentCount += 1;
 		}
-		parent.children.push(row);
 		nestedRows.add(row);
 	}
 
@@ -119,6 +120,7 @@ function toAgentsViewRow(row: MutableAgentsViewRow): AgentsViewRow {
 		statusLabel: row.statusLabel,
 		depth: row.depth,
 		selectable: row.selectable,
+		runningSubagentCount: row.runningSubagentCount,
 	};
 }
 

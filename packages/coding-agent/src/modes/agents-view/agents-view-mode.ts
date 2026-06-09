@@ -866,6 +866,9 @@ class AgentsViewMode implements Component, Focusable {
 			if (item.type === "empty") {
 				return theme.fg("dim", "  No agents");
 			}
+			if (item.type === "subagents") {
+				return this.renderSubagentSummary(item.count, width);
+			}
 			return this.renderRow(item.row, width);
 		});
 		if (start > 0) {
@@ -896,6 +899,11 @@ class AgentsViewMode implements Component, Focusable {
 		const base = `${indent}${cells[0]} ${cells[1]} ${cells[2]}`;
 		const line = padLine(truncateToWidth(base, width, ""), width);
 		return selected ? `${SELECTED_ROW_MARKER}${line}` : line;
+	}
+
+	private renderSubagentSummary(count: number, width: number): string {
+		const label = `  ${count} subagents running`;
+		return padLine(truncateToWidth(theme.fg("dim", label), width), width);
 	}
 
 	private finalizeRenderedLine(line: string, width: number): string {
@@ -991,7 +999,8 @@ type DisplayItem =
 	| { type: "spacer" }
 	| { type: "heading"; section: AgentsViewSection }
 	| { type: "empty"; section: AgentsViewSection }
-	| { type: "row"; row: AgentsViewRow };
+	| { type: "row"; row: AgentsViewRow }
+	| { type: "subagents"; count: number };
 
 function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
@@ -1008,28 +1017,16 @@ function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
 		}
 		for (const row of sectionRows) {
 			items.push({ type: "row", row });
+			if (row.runningSubagentCount > 0) {
+				items.push({ type: "subagents", count: row.runningSubagentCount });
+			}
 		}
 	}
 	return items;
 }
 
 function getDisplayRowsForSection(rows: readonly AgentsViewRow[], section: AgentsViewSection): AgentsViewRow[] {
-	const sectionRows: AgentsViewRow[] = [];
-	for (let index = 0; index < rows.length; index++) {
-		const row = rows[index];
-		if (!row || row.depth !== 0 || row.section !== section) {
-			continue;
-		}
-		sectionRows.push(row);
-		for (let childIndex = index + 1; childIndex < rows.length; childIndex++) {
-			const childRow = rows[childIndex];
-			if (!childRow || childRow.depth === 0) {
-				break;
-			}
-			sectionRows.push(childRow);
-		}
-	}
-	return sectionRows;
+	return rows.filter((row) => row.depth === 0 && row.section === section);
 }
 
 function countRowsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSection, number> {
