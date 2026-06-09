@@ -574,6 +574,7 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 			this.options.getHideThinkingBlock?.() ?? false,
 			this.options.getMarkdownTheme?.(),
 			this.options.getHiddenThinkingLabel?.() ?? "Thinking...",
+			{ expanded: this.toolsExpanded },
 		);
 	}
 

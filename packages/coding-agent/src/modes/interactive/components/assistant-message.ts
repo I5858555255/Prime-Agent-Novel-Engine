@@ -7,6 +7,10 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
+export interface AssistantMessageComponentOptions {
+	expanded?: boolean;
+}
+
 function getThinkingMarkdownTheme(baseTheme: MarkdownTheme): MarkdownTheme {
 	const quiet = (text: string) => theme.fg("thinkingText", text);
 	return {
@@ -42,12 +46,14 @@ export class AssistantMessageComponent extends Container {
 		hideThinkingBlock = false,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		hiddenThinkingLabel = "Thinking...",
+		options: AssistantMessageComponentOptions = {},
 	) {
 		super();
 
 		this.hideThinkingBlock = hideThinkingBlock;
 		this.markdownTheme = markdownTheme;
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
+		this.expanded = options.expanded ?? false;
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();

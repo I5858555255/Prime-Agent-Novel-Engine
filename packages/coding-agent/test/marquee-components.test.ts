@@ -656,6 +656,46 @@ describe("marquee TUI components", () => {
 		expect(expanded).toContain("/tmp/rlm_harness/internal.py");
 	});
 
+	test("keeps child agent assistant errors expanded after transcript rebuilds", () => {
+		const detailComponent = new ChildAgentDetailComponent(() => 20);
+		detailComponent.setToolsExpanded(true);
+		const assistantError: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: [
+				"Provider request failed",
+				"Traceback (most recent call last):",
+				'  File "/tmp/internal.py", line 12, in run',
+				"RuntimeError: backend crashed",
+			].join("\n"),
+		};
+		detailComponent.setNode({
+			id: "sub-assistant-error",
+			label: "inspect failure",
+			status: "error",
+			sessionDir: "/tmp/session/sub-assistant-error",
+			transcript: [],
+			structuredTranscript: [
+				{
+					type: "message",
+					role: "assistant",
+					text: assistantError.errorMessage ?? "",
+					message: assistantError,
+				},
+			],
+		});
+
+		const expanded = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(expanded).toContain("/tmp/internal.py");
+		expect(expanded).not.toContain("Ctrl+O to expand");
+
+		detailComponent.invalidate();
+		const afterInvalidate = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(afterInvalidate).toContain("/tmp/internal.py");
+		expect(afterInvalidate).not.toContain("Ctrl+O to expand");
+	});
+
 	test("routes child agent detail tool expansion through app keybindings", () => {
 		setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+x" }));
 		try {
