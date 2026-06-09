@@ -160,14 +160,6 @@ const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.5",
 ]);
 
-const CLAUDE_FABLE_5_COST = {
-	input: 10,
-	output: 50,
-	cacheRead: 1,
-	cacheWrite: 12.5,
-} as const;
-const CLAUDE_FABLE_5_CONTEXT_WINDOW = 1000000;
-const CLAUDE_FABLE_5_MAX_TOKENS = 128000;
 const CLAUDE_ALWAYS_ON_ADAPTIVE_THINKING_MAP = { off: null, xhigh: "xhigh" } as const;
 
 function mergeThinkingLevelMap(model: Model<any>, map: NonNullable<Model<any>["thinkingLevelMap"]>): void {
@@ -1323,41 +1315,6 @@ async function generateModels() {
 			candidate.cost.cacheRead = 0.119;
 		}
 
-	}
-
-
-	// Add missing Claude Fable 5
-	if (!allModels.some((m) => m.provider === "anthropic" && m.id === "claude-fable-5")) {
-		allModels.push({
-			id: "claude-fable-5",
-			name: "Claude Fable 5",
-			api: "anthropic-messages",
-			baseUrl: "https://api.anthropic.com",
-			provider: "anthropic",
-			reasoning: true,
-			thinkingLevelMap: CLAUDE_ALWAYS_ON_ADAPTIVE_THINKING_MAP,
-			input: ["text", "image"],
-			cost: CLAUDE_FABLE_5_COST,
-			contextWindow: CLAUDE_FABLE_5_CONTEXT_WINDOW,
-			maxTokens: CLAUDE_FABLE_5_MAX_TOKENS,
-		});
-	}
-
-	// Add missing Bedrock Claude Fable 5
-	if (!allModels.some((m) => m.provider === "amazon-bedrock" && m.id === "anthropic.claude-fable-5")) {
-		allModels.push({
-			id: "anthropic.claude-fable-5",
-			name: "Claude Fable 5",
-			api: "bedrock-converse-stream",
-			provider: "amazon-bedrock",
-			baseUrl: getBedrockBaseUrl("anthropic.claude-fable-5"),
-			reasoning: true,
-			thinkingLevelMap: CLAUDE_ALWAYS_ON_ADAPTIVE_THINKING_MAP,
-			input: ["text", "image"],
-			cost: CLAUDE_FABLE_5_COST,
-			contextWindow: CLAUDE_FABLE_5_CONTEXT_WINDOW,
-			maxTokens: CLAUDE_FABLE_5_MAX_TOKENS,
-		});
 	}
 
 	// Add missing EU Opus 4.6 profile
