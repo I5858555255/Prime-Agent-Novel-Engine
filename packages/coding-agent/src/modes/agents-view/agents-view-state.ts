@@ -26,8 +26,15 @@ export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSe
 	return "completed";
 }
 
-export function shouldShowAgentsViewSession(summary: SessionSummary): boolean {
-	return summary.activeSessionId !== undefined || summary.status !== "hidden";
+export function shouldShowAgentsViewSession(
+	summary: SessionSummary,
+	savedStatus: SessionSummary["status"] | undefined = summary.status,
+	manuallyInactive = false,
+): boolean {
+	if (manuallyInactive) {
+		return false;
+	}
+	return summary.activeSessionId !== undefined || savedStatus !== "hidden";
 }
 
 export function sectionTitle(section: AgentsViewSection): string {

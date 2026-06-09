@@ -70,9 +70,13 @@ describe("agents view state", () => {
 
 	test("hides inactive hidden sessions while keeping active sessions visible", () => {
 		const inactiveHidden = makeSummary({ status: "hidden" });
+		const staleDaemonHidden = makeSummary({ status: "sleep" });
 		delete inactiveHidden.activeSessionId;
+		delete staleDaemonHidden.activeSessionId;
 
 		expect(shouldShowAgentsViewSession(inactiveHidden)).toBe(false);
+		expect(shouldShowAgentsViewSession(staleDaemonHidden, "hidden")).toBe(false);
+		expect(shouldShowAgentsViewSession(makeSummary({ status: "idle" }), undefined, true)).toBe(false);
 		expect(shouldShowAgentsViewSession(makeSummary({ status: "hidden", activeSessionId: "active-1" }))).toBe(true);
 	});
 

@@ -11,7 +11,7 @@ import {
 import { APP_TITLE, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
-import { SessionManager } from "../../core/session-manager.js";
+import { loadEntriesFromFile, SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
 import type { DaemonCommand, DaemonResponse } from "../daemon/daemon-protocol.js";
@@ -190,6 +190,7 @@ class AgentsViewMode implements Component, Focusable {
 	private selectedActiveSessionId: string | undefined;
 	private replyActiveSessionId: string | undefined;
 	private pendingDeleteAgent: PendingDeleteAgent | undefined;
+	private readonly inactiveAgentIdentities = new Set<string>();
 	private statusMessage: string | undefined;
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private initialPromptsSent = false;
@@ -620,6 +621,7 @@ class AgentsViewMode implements Component, Focusable {
 					status: "hidden",
 				});
 			}
+			this.inactiveAgentIdentities.add(pending.identity);
 			this.pendingDeleteAgent = undefined;
 			this.clearDeleteConfirmation({ render: false });
 			this.selectedActiveSessionId = undefined;
@@ -710,7 +712,13 @@ class AgentsViewMode implements Component, Focusable {
 			const response = await client.request(command);
 			const data = requireDaemonData(response);
 			const sessions = expectSessionList(data);
-			const visibleSessions = sessions.filter(shouldShowAgentsViewSession);
+			const visibleSessions = sessions.filter((summary) =>
+				shouldShowAgentsViewSession(
+					summary,
+					this.getSavedSessionStatus(summary),
+					this.inactiveAgentIdentities.has(getSummaryIdentity(summary)),
+				),
+			);
 			this.rows = buildAgentsViewRows(this.withPendingDeleteSession(visibleSessions));
 			this.restoreSelection();
 			this.ui.requestRender();
@@ -726,6 +734,24 @@ class AgentsViewMode implements Component, Focusable {
 		}
 		const stillListed = sessions.some((summary) => getSummaryIdentity(summary) === pending.identity);
 		return stillListed ? [...sessions] : [...sessions, pending.summary];
+	}
+
+	private getSavedSessionStatus(summary: SessionSummary): SessionSummary["status"] | undefined {
+		if (!summary.sessionFile || summary.activeSessionId) {
+			return undefined;
+		}
+		try {
+			const entries = loadEntriesFromFile(summary.sessionFile);
+			for (let index = entries.length - 1; index >= 0; index--) {
+				const entry = entries[index];
+				if (entry.type === "session_state") {
+					return entry.state.status;
+				}
+			}
+		} catch {
+			return undefined;
+		}
+		return undefined;
 	}
 
 	private restoreSelection(): void {
