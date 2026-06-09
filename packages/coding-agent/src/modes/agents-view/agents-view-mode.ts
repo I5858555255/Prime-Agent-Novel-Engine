@@ -16,7 +16,7 @@ import { DaemonClient } from "../daemon/daemon-client.js";
 import type { DaemonCommand, DaemonResponse } from "../daemon/daemon-protocol.js";
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
 import { CustomEditor } from "../interactive/components/custom-editor.js";
-import { keyHint, keyText, rawKeyHint } from "../interactive/components/keybinding-hints.js";
+import { keyText } from "../interactive/components/keybinding-hints.js";
 import { BrandSplashHeader, InteractiveMode, type InteractiveModeRunResult } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
 import {
@@ -33,6 +33,7 @@ const POLL_INTERVAL_MS = 1000;
 const WORKING_ICON_INTERVAL_MS = 250;
 const EXIT_HINT_DURATION_MS = 2000;
 const DELETE_CONFIRM_DURATION_MS = 2000;
+const STATUS_MESSAGE_DURATION_MS = 4500;
 const SESSION_NAME_MAX_LENGTH = 80;
 const NEEDS_INPUT_ROW_ICON = "◆";
 const COMPLETED_ROW_ICON = "✓";
@@ -183,6 +184,7 @@ class AgentsViewMode implements Component, Focusable {
 	private replyActiveSessionId: string | undefined;
 	private pendingDeleteAgent: PendingDeleteAgent | undefined;
 	private statusMessage: string | undefined;
+	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private initialPromptsSent = false;
 	private stopped = false;
 
@@ -413,6 +415,27 @@ class AgentsViewMode implements Component, Focusable {
 		return this.deleteConfirmExpiresAt > Date.now();
 	}
 
+	private setStatusMessage(message: string | undefined, options: { render?: boolean } = {}): void {
+		if (this.statusMessageTimer) {
+			clearTimeout(this.statusMessageTimer);
+			this.statusMessageTimer = undefined;
+		}
+		this.statusMessage = message;
+		if (message) {
+			this.statusMessageTimer = setTimeout(() => {
+				this.statusMessageTimer = undefined;
+				if (this.statusMessage === message) {
+					this.statusMessage = undefined;
+					this.ui.requestRender();
+				}
+			}, STATUS_MESSAGE_DURATION_MS);
+			this.statusMessageTimer.unref?.();
+		}
+		if (options.render !== false) {
+			this.ui.requestRender();
+		}
+	}
+
 	private moveSelection(delta: number): void {
 		const selectableIndexes = this.getSelectableRowIndexes();
 		if (selectableIndexes.length === 0) {
@@ -452,8 +475,7 @@ class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 		if (!row.summary.activeSessionId && !row.summary.sessionFile) {
-			this.statusMessage = "Cannot open agent without an active runtime or saved session file";
-			this.ui.requestRender();
+			this.setStatusMessage("Cannot open agent without an active runtime or saved session file");
 			return;
 		}
 		this.finish({ type: "open", summary: row.summary });
@@ -485,16 +507,14 @@ class AgentsViewMode implements Component, Focusable {
 			(candidate) => (candidate.summary.activeSessionId ?? candidate.summary.id) === activeSessionId,
 		);
 		const behavior = row?.summary.isStreaming ? "followUp" : undefined;
-		this.statusMessage = "Sending reply...";
-		this.ui.requestRender();
+		this.setStatusMessage("Sending reply...");
 		try {
 			await this.sendPrompt(activeSessionId, text, undefined, behavior);
-			this.statusMessage = "Reply sent";
+			this.setStatusMessage("Reply sent");
 			this.setReplyTarget(undefined);
 			await this.refreshSessions();
 		} catch (error) {
-			this.statusMessage = formatError("Failed to send reply", error);
-			this.ui.requestRender();
+			this.setStatusMessage(formatError("Failed to send reply", error));
 		}
 	}
 
@@ -506,7 +526,7 @@ class AgentsViewMode implements Component, Focusable {
 		const identity = getSummaryIdentity(row.summary);
 		if (this.pendingDeleteAgent?.identity === identity) {
 			if (this.isDeleteConfirmationVisible()) {
-				await this.deletePendingAgent();
+				await this.deactivatePendingAgent();
 				return;
 			}
 			this.showDeleteConfirmation();
@@ -525,7 +545,7 @@ class AgentsViewMode implements Component, Focusable {
 				summary: row.summary,
 				stopped: false,
 			};
-			this.statusMessage = undefined;
+			this.setStatusMessage(undefined, { render: false });
 			this.replyActiveSessionId = undefined;
 			this.showDeleteConfirmation();
 			return;
@@ -538,13 +558,12 @@ class AgentsViewMode implements Component, Focusable {
 				summary: row.summary,
 				stopped: false,
 			};
-			this.statusMessage = undefined;
+			this.setStatusMessage(undefined, { render: false });
 			this.replyActiveSessionId = undefined;
 			this.showDeleteConfirmation();
 			return;
 		}
-		this.statusMessage = "Stopping agent...";
-		this.ui.requestRender();
+		this.setStatusMessage("Stopping agent...");
 		try {
 			const response = await this.requireClient().request({
 				type: "kill",
@@ -561,29 +580,20 @@ class AgentsViewMode implements Component, Focusable {
 			};
 			this.selectedActiveSessionId = activeSessionId;
 			this.replyActiveSessionId = undefined;
-			this.statusMessage = undefined;
+			this.setStatusMessage(undefined, { render: false });
 			this.showDeleteConfirmation();
 			await this.refreshSessions();
 		} catch (error) {
-			this.statusMessage = formatError("Failed to stop agent", error);
-			this.ui.requestRender();
+			this.setStatusMessage(formatError("Failed to stop agent", error));
 		}
 	}
 
-	private async deletePendingAgent(): Promise<void> {
+	private async deactivatePendingAgent(): Promise<void> {
 		const pending = this.pendingDeleteAgent;
 		if (!pending) {
 			return;
 		}
-		if (!pending.sessionFile) {
-			this.pendingDeleteAgent = undefined;
-			this.clearDeleteConfirmation({ render: false });
-			this.statusMessage = "Stopped agent had no saved session file to delete";
-			await this.refreshSessions();
-			return;
-		}
-		this.statusMessage = "Deleting agent...";
-		this.ui.requestRender();
+		this.setStatusMessage("Deactivating agent...");
 		try {
 			if (pending.activeSessionId) {
 				try {
@@ -598,26 +608,27 @@ class AgentsViewMode implements Component, Focusable {
 					}
 				}
 			}
-			const response = await this.requireClient().request({
-				type: "delete_saved_session",
-				sessionPath: pending.sessionFile,
-			});
-			requireDaemonData(response);
-			this.pendingDeleteAgent = undefined;
+			const inactiveSummary = stoppedSessionSummary(pending.summary);
+			this.pendingDeleteAgent = inactiveSummary.sessionFile
+				? {
+						identity: getSummaryIdentity(inactiveSummary),
+						sessionFile: inactiveSummary.sessionFile,
+						summary: inactiveSummary,
+						stopped: true,
+					}
+				: undefined;
 			this.clearDeleteConfirmation({ render: false });
 			this.selectedActiveSessionId = undefined;
-			this.statusMessage = undefined;
+			this.setStatusMessage("Agent inactive", { render: false });
 			await this.refreshSessions();
 		} catch (error) {
-			this.statusMessage = formatError("Failed to delete agent", error);
-			this.ui.requestRender();
+			this.setStatusMessage(formatError("Failed to deactivate agent", error));
 		}
 	}
 
 	private async createAgentForPrompt(text: string, images?: ImageContent[]): Promise<string | undefined> {
 		const client = this.requireClient();
-		this.statusMessage = "Creating agent...";
-		this.ui.requestRender();
+		this.setStatusMessage("Creating agent...");
 		try {
 			const response = await client.request({
 				type: "create",
@@ -627,14 +638,13 @@ class AgentsViewMode implements Component, Focusable {
 			const summary = expectSessionSummary(requireDaemonData(response));
 			const activeSessionId = summary.activeSessionId ?? summary.id;
 			await this.sendPrompt(activeSessionId, text, images);
-			this.statusMessage = "Agent started";
+			this.setStatusMessage("Agent started");
 			await this.refreshSessions();
 			this.selectedActiveSessionId = activeSessionId;
 			this.restoreSelection();
 			return activeSessionId;
 		} catch (error) {
-			this.statusMessage = formatError("Failed to create agent", error);
-			this.ui.requestRender();
+			this.setStatusMessage(formatError("Failed to create agent", error));
 			return undefined;
 		}
 	}
@@ -679,7 +689,7 @@ class AgentsViewMode implements Component, Focusable {
 			try {
 				await this.sendPrompt(activeSessionId, message, undefined, "followUp");
 			} catch (error) {
-				this.statusMessage = formatError("Failed to send startup prompt", error);
+				this.setStatusMessage(formatError("Failed to send startup prompt", error));
 				break;
 			}
 		}
@@ -689,15 +699,18 @@ class AgentsViewMode implements Component, Focusable {
 	private async refreshSessions(): Promise<void> {
 		const client = this.requireClient();
 		try {
-			const response = await client.request({ type: "list" });
+			const command: Extract<DaemonCommand, { type: "list" }> = { type: "list", all: true };
+			if (this.options.config.sessionDir) {
+				command.sessionDir = this.options.config.sessionDir;
+			}
+			const response = await client.request(command);
 			const data = requireDaemonData(response);
 			const sessions = expectSessionList(data);
 			this.rows = buildAgentsViewRows(this.withPendingDeleteSession(sessions));
 			this.restoreSelection();
 			this.ui.requestRender();
 		} catch (error) {
-			this.statusMessage = formatError("Failed to refresh agents", error);
-			this.ui.requestRender();
+			this.setStatusMessage(formatError("Failed to refresh agents", error));
 		}
 	}
 
@@ -757,6 +770,7 @@ class AgentsViewMode implements Component, Focusable {
 		}
 		this.clearCtrlCExitHint({ render: false });
 		this.clearDeleteConfirmation({ render: false });
+		this.setStatusMessage(undefined, { render: false });
 		this.ui.stop();
 		if (result.type === "open") {
 			this.ui.terminal.clearScreen();
@@ -831,7 +845,7 @@ class AgentsViewMode implements Component, Focusable {
 		const icon = this.formatRowIcon(row.section, rawIcon);
 		const indent = "  ".repeat(row.depth);
 		const timeWidth = 10;
-		const titleWidth = Math.max(8, width - visibleWidth(indent) - visibleWidth(rawIcon) - timeWidth - 3);
+		const titleWidth = Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - timeWidth - 2);
 		const title = pendingDelete ? this.getPendingDeleteTitle() : row.title;
 		const titleCell = formatTableCell(title, titleWidth);
 		const cells = [
@@ -840,7 +854,7 @@ class AgentsViewMode implements Component, Focusable {
 			formatRightTableCell(formatSessionDuration(row.summary), timeWidth),
 		];
 		const base = `${indent}${cells[0]} ${cells[1]} ${cells[2]}`;
-		const line = padLine(truncateToWidth(base, width), width);
+		const line = padLine(truncateToWidth(base, width, ""), width);
 		return selected ? `${SELECTED_ROW_MARKER}${line}` : line;
 	}
 
@@ -860,8 +874,8 @@ class AgentsViewMode implements Component, Focusable {
 	private getPendingDeleteTitle(): string {
 		const deleteKey = keyText("app.agents.delete");
 		return this.pendingDeleteAgent?.stopped
-			? `stopped - ${deleteKey} again to delete`
-			: `${deleteKey} again to delete`;
+			? `stopped - ${deleteKey} again to deactivate`
+			: `${deleteKey} again to deactivate`;
 	}
 
 	private renderPrompt(width: number): string[] {
@@ -879,15 +893,15 @@ class AgentsViewMode implements Component, Focusable {
 			return truncateToWidth(theme.fg(tone, this.statusMessage), width);
 		}
 		const hints = [
-			rawKeyHint(`${keyText("tui.select.up")}/${keyText("tui.select.down")}`, "move"),
-			keyHint("tui.select.confirm", "open/send"),
-			keyHint("app.agents.reply", "reply"),
-			keyHint("app.agents.delete", "stop/delete"),
-			this.replyActiveSessionId ? keyHint("app.agents.back", "back") : undefined,
+			`${keyText("tui.select.up")}/${keyText("tui.select.down")} move`,
+			`${keyText("tui.select.confirm")} open/send`,
+			`${keyText("app.agents.reply")} reply`,
+			`${keyText("app.agents.delete")} stop/deactivate`,
+			this.replyActiveSessionId ? `${keyText("app.agents.back")} back` : undefined,
 		]
 			.filter((hint): hint is string => hint !== undefined)
-			.join(theme.fg("dim", "  "));
-		return truncateToWidth(hints, width);
+			.join("  ");
+		return truncateToWidth(theme.fg("muted", hints), width);
 	}
 
 	private visibleListRows(): number {

@@ -3993,7 +3993,7 @@ export class InteractiveMode {
 	private getTrayLocationLabel(): string | undefined {
 		const location = this.footerDataProvider.getGitBranch() ?? formatSplashCwd(this.getCurrentCwd());
 		const agentsHint = this.getAgentsViewTrayHint();
-		return [location, agentsHint].filter((label): label is string => label !== undefined).join("  ");
+		return [agentsHint, location].filter((label): label is string => label !== undefined).join("  ");
 	}
 
 	private getAgentsViewTrayHint(): string | undefined {
