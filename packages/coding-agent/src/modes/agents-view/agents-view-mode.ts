@@ -1093,8 +1093,7 @@ function formatSessionDuration(summary: SessionSummary): string {
 	}
 	const hours = Math.floor(minutes / 60);
 	if (hours < 24) {
-		const remainingMinutes = minutes % 60;
-		return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+		return `${hours}h`;
 	}
 	const days = Math.floor(hours / 24);
 	return `${days}d`;
