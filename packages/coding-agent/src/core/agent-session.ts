@@ -48,6 +48,7 @@ import {
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
+import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
@@ -1617,13 +1618,7 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
-		for (const run of this._activeRlmChildRuns.values()) {
-			if (run.status === "running" || run.status === "queued") {
-				run.status = "cancelled";
-				run.error = "Parent session disposed";
-				run.abort();
-			}
-		}
+		this._cancelActiveRlmChildRuns("Parent session disposed");
 		this._pendingNextTurnMessages = [];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
@@ -2281,6 +2276,7 @@ export class AgentSession {
 	 */
 	async abort(): Promise<void> {
 		this.abortRetry();
+		this._cancelActiveRlmChildRuns("Parent session aborted");
 		this._goalAbortInProgress = this._goalState.status === "active";
 		this.agent.abort();
 		try {
@@ -3527,6 +3523,16 @@ export class AgentSession {
 		return { session: child };
 	}
 
+	private _cancelActiveRlmChildRuns(reason: string): void {
+		for (const run of this._activeRlmChildRuns.values()) {
+			if (run.status === "running" || run.status === "queued") {
+				run.status = "cancelled";
+				run.error = reason;
+				run.abort();
+			}
+		}
+	}
+
 	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}): RlmChildRun {
 		const unsupportedKwargs = Object.keys(kwargs);
 		if (unsupportedKwargs.length > 0) {
@@ -3667,6 +3673,9 @@ export class AgentSession {
 
 		const task = (async (): Promise<RlmInternalRunResult> => {
 			try {
+				if (!(await ensureTool("rg", true))) {
+					throw new Error(MISSING_RIPGREP_MESSAGE);
+				}
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;
 				run.abort = () => {

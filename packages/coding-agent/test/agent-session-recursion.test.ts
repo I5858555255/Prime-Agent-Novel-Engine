@@ -19,7 +19,20 @@ import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { MISSING_RIPGREP_MESSAGE } from "../src/utils/tools-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
+
+const toolsManagerMock = vi.hoisted(() => ({
+	ensureTool: vi.fn(async (): Promise<string | undefined> => "rg"),
+}));
+
+vi.mock("../src/utils/tools-manager.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/tools-manager.js")>();
+	return {
+		...actual,
+		ensureTool: toolsManagerMock.ensureTool,
+	};
+});
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -194,6 +207,8 @@ describe("AgentSession rlm recursion", () => {
 	afterEach(() => {
 		session?.dispose();
 		session = undefined;
+		toolsManagerMock.ensureTool.mockReset();
+		toolsManagerMock.ensureTool.mockResolvedValue("rg");
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -265,6 +280,25 @@ describe("AgentSession rlm recursion", () => {
 				expect.objectContaining({ type: "message", role: "assistant", text: "child answer: summarize shard 1" }),
 			]),
 		);
+	});
+
+	it("surfaces missing ripgrep as one child-agent error before model work starts", async () => {
+		toolsManagerMock.ensureTool.mockResolvedValueOnce(undefined);
+		const streamFn = vi.fn((_model, context: Context) => streamAnswer(`child answer: ${userText(context)}`));
+		const root = createSession({ streamFn });
+		const childUpdates: Array<{ status: string; transcript: readonly { role: string; text: string }[] }> = [];
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") {
+				childUpdates.push(event.child);
+			}
+		});
+
+		await expect(root.runRlmChild("summarize shard 1")).rejects.toThrow(MISSING_RIPGREP_MESSAGE);
+
+		expect(toolsManagerMock.ensureTool).toHaveBeenCalledWith("rg", true);
+		expect(streamFn).not.toHaveBeenCalled();
+		const errorUpdate = [...childUpdates].reverse().find((update) => update.status === "error");
+		expect(errorUpdate?.transcript).toContainEqual({ role: "system", text: MISSING_RIPGREP_MESSAGE });
 	});
 
 	it("adds child usage to the parent session aggregate", async () => {
@@ -372,6 +406,40 @@ describe("AgentSession rlm recursion", () => {
 		expect(run.error).toBe("Parent session disposed");
 		releaseChild();
 		await expect(runPromise).rejects.toThrow();
+	});
+
+	it("cancels active rlm children when the parent session is aborted", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				if (text === "slow shard") {
+					childStarted = true;
+					void release.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				}
+				return stream;
+			},
+		});
+
+		const runPromise = root.runRlmChild("slow shard");
+		await waitFor(() => childStarted);
+		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		expect(runs.size).toBe(1);
+		const run = [...runs.values()][0];
+
+		await root.abort();
+
+		expect(run.status).toBe("cancelled");
+		expect(run.error).toBe("Parent session aborted");
+		releaseChild();
+		await expect(runPromise).rejects.toThrow("Parent session aborted");
 	});
 
 	it("runs parallel rlm comm requests independently", async () => {
@@ -589,7 +657,7 @@ print(_result.answer)
 		}
 	});
 
-	it("waits for in-flight rlm comm work during dispose and logs failures", async () => {
+	it("waits for in-flight rlm comm work during dispose and buffers failures", async () => {
 		let started = false;
 		let handlerSettled = false;
 		let released = false;
@@ -613,7 +681,7 @@ print(_result.answer)
 				}
 			},
 		});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
 		try {
 			const kernel = manager as unknown as KernelCommTestApi;
@@ -634,15 +702,14 @@ print(_result.answer)
 			await expectSettlesWithin(trackedDispose, 1000);
 			expect(handlerSettled).toBe(true);
 
-			const logLines = errorSpy.mock.calls.map((call) => call.map(String).join(" "));
-			expect(logLines.some((line) => line.includes("[kernel] rlm.run failed for comm comm-dispose"))).toBe(true);
-			expect(
-				logLines.some((line) => line.includes("[kernel] failed to send rlm.run error reply for comm comm-dispose")),
-			).toBe(true);
+			const kernelStderr = (manager as unknown as { kernelStderr: string }).kernelStderr;
+			expect(kernelStderr).toContain("[kernel] rlm.run failed for comm comm-dispose");
+			expect(kernelStderr).toContain("[kernel] failed to send rlm.run error reply for comm comm-dispose");
+			expect(stderrSpy).not.toHaveBeenCalled();
 		} finally {
 			releaseChild();
 			await manager.dispose();
-			errorSpy.mockRestore();
+			stderrSpy.mockRestore();
 		}
 	});
 });
