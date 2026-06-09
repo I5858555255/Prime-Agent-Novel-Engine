@@ -74,6 +74,67 @@ describe("buildRlmPrompt", () => {
 				"",
 				`The kernel has these Python imports available: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}. Import them directly; no pip install needed.`,
 				"",
+				"## File Operations — Prefer Python",
+				"",
+				"Use Python for reading, searching, and editing files. Shell commands work but Python gives you reusable variables you can slice, filter, and act on without re-reading.",
+				"",
+				"### Bash → Python",
+				"",
+				"| Instead of | Use |",
+				"|---|---|",
+				"| `cat file` | `Path(path).read_text()` |",
+				"| `head -N file` | `Path(path).read_text().splitlines()[:N]` |",
+				'| `grep -rn "pat" .` | `view(path)` to see line numbers, then search in Python |',
+				'| `grep -rl "pat" .` | `[p for p in Path(".").rglob("*.py") if "pat" in p.read_text()]` |',
+				'| `find . -name "*.py"` | `sorted(Path(".").rglob("*.py"))` |',
+				'| `sed -i \'s/old/new/g\' file` | `edit(path, old="old", new="new")` |',
+				'| `ls dir/` | `sorted(Path("dir").iterdir())` |',
+				"| `wc -l file` | `len(Path(path).read_text().splitlines())` |",
+				"",
+				"### Always assign to named variables",
+				"",
+				"Never call read/search and leave the result unbound. Always store in a descriptive variable so you can slice, filter, or inspect later without re-reading.",
+				"",
+				"```python",
+				"# ❌ print-and-forget",
+				'Path("config.py").read_text().splitlines()[:10]',
+				"",
+				"# ✅ keep it around",
+				'config_lines = Path("config.py").read_text().splitlines()',
+				"config_lines[:10]          # peek",
+				'"Optional" in config_lines # check',
+				'edit("config.py", ...)     # act',
+				"",
+				"# ❌ throwaway",
+				'[p for p in Path(".").rglob("*.py") if "Optional" in p.read_text()]',
+				"",
+				"# ✅ name it",
+				'optional_files = [p for p in Path(".").rglob("*.py") if "Optional" in p.read_text()]',
+				"optional_files[:5]  # peek",
+				"for f in optional_files:  # act",
+				"    edit(f, ...)",
+				"```",
+				"",
+				"### Tools",
+				"",
+				"```python",
+				"def view(path):",
+				'    """Print file with line numbers."""',
+				"    lines = Path(path).read_text().splitlines()",
+				"    for i, line in enumerate(lines, 1):",
+				'        print(f"{i:>4} | {line}")',
+				"",
+				"def edit(path, old, new):",
+				'    """Replace `old` with `new` in file. Fails if `old` not found."""',
+				"    p = Path(path)",
+				"    content = p.read_text()",
+				'    assert old in content, f"old not found in {path}"',
+				"    p.write_text(content.replace(old, new))",
+				"```",
+				"",
+				"### Shell is for project commands",
+				"`%%bash` is for `uv run`, `pytest`, `git`, `npm`, `docker`, and similar tools.",
+				"",
 				"Call at most one built-in tool per turn.",
 			].join("\n"),
 		);
@@ -135,6 +196,13 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("run it through that project's own environment");
 		expect(prompt).not.toContain("!cd build && make");
 		expect(prompt).not.toContain("out = !cmd");
+		expect(prompt).toContain("## File Operations — Prefer Python");
+		expect(prompt).toContain("### Bash → Python");
+		expect(prompt).toContain("### Always assign to named variables");
+		expect(prompt).toContain("### Tools");
+		expect(prompt).toContain("def view(path):");
+		expect(prompt).toContain("def edit(path, old, new):");
+		expect(prompt).toContain("### Shell is for project commands");
 		expect(prompt).toContain("Call at most one built-in tool per turn.");
 		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("Available tools:");

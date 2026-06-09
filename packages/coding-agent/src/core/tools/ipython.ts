@@ -34,6 +34,21 @@ except Exception as _prime_agent_rlm_error:
             return await self.run(prompt, **kwargs)
 
     rlm = _PrimeAgentMissingRlm()
+
+from pathlib import Path as _PrimeAgentPath
+
+def view(path):
+    """Print file with line numbers."""
+    lines = _PrimeAgentPath(path).read_text().splitlines()
+    for i, line in enumerate(lines, 1):
+        print(f"{i:>4} | {line}")
+
+def edit(path, old, new):
+    """Replace \`old\` with \`new\` in file. Fails if \`old\` not found."""
+    p = _PrimeAgentPath(path)
+    content = p.read_text()
+    assert old in content, f"old not found in {path}"
+    p.write_text(content.replace(old, new))
 `.trim();
 
 export function buildRlmBootstrapCode(pythonSkills: readonly PythonSkillRuntimeInfo[] = []): string {

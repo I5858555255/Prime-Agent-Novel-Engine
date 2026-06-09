@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `view()` and `edit()` helper functions to the IPython kernel bootstrap, available as built-ins in the persistent notebook.
+- Added "File Operations — Prefer Python" section to the IPython system prompt, guiding agents to use Python for file reading/searching/editing with `Path()`, `view()`, and `edit()` instead of shell commands, and to always assign results to named variables.
+
 ### Changed
 
 - Changed interactive `Ctrl+C` to interrupt the current operation first and exit only on a second press while the exit hint is visible; `Escape` now clears the input bar without interrupting the agent.
