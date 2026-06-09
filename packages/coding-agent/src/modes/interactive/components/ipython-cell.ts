@@ -6,7 +6,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { highlightCode, theme } from "../theme/theme.js";
-import { normalizeErrorDetails } from "./collapsible-error.js";
+import { normalizeErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
 import { keyHint } from "./keybinding-hints.js";
 
 export interface IPythonCellContentBlock {
@@ -50,7 +50,6 @@ interface TracebackParts {
 	preview: string;
 }
 
-type CellBackground = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 type ExpandHintFormatter = (label: string) => string;
 
 const MAGIC_LINE_PATTERN = /^\s*!/;
@@ -146,23 +145,17 @@ function splitTraceback(text: string, errorName: string | undefined): TracebackP
 
 	const output = lines.slice(0, tracebackIndex).join("\n").trimEnd();
 	const traceback = lines.slice(tracebackIndex).join("\n").trim();
-	const preview =
-		traceback
-			.split("\n")
-			.filter((line) => line.trim().length > 0)
-			.at(-1) ??
-		errorName ??
-		"error";
-	return { output, traceback, preview };
+	const preview = summarizeErrorDetails(traceback);
+	return { output, traceback, preview: preview === "Error" && errorName ? errorName : preview };
 }
 
 function formatIpythonErrorSummary(error: IpythonErrorDetails): string {
-	const value = normalizeErrorDetails(error.evalue)
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0)
-		.join(" ");
-	if (!value) {
+	const normalizedValue = normalizeErrorDetails(error.evalue);
+	if (!normalizedValue.trim()) {
+		return error.ename;
+	}
+	const value = summarizeErrorDetails(normalizedValue);
+	if (value === "Error") {
 		return error.ename;
 	}
 	return visibleWidth(value) <= 48 ? `${error.ename}: ${value}` : error.ename;
@@ -323,10 +316,12 @@ export class IPythonCellComponent implements Component {
 				renderedTextOutput = true;
 				this.renderOutputText(lines, width, normalizeErrorDetails(details.result), "out", withExpandHint);
 			}
-		} else if (traceback?.output) {
-			startOutput();
-			renderedTextOutput = true;
-			this.renderOutputText(lines, width, traceback.output, "out", withExpandHint);
+		} else if (traceback) {
+			if (traceback.output) {
+				startOutput();
+				renderedTextOutput = true;
+				this.renderOutputText(lines, width, traceback.output, "out", withExpandHint);
+			}
 		} else if (text.trim()) {
 			startOutput();
 			renderedTextOutput = true;
@@ -426,15 +421,7 @@ export class IPythonCellComponent implements Component {
 		const contentWidth = Math.max(1, width - this.paddingX * 2);
 		const truncated = truncateToWidth(line, contentWidth, "");
 		const paddedContent = truncated + " ".repeat(Math.max(0, contentWidth - visibleWidth(truncated)));
-		const padded = `${" ".repeat(this.paddingX)}${paddedContent}${" ".repeat(this.paddingX)}`;
-		return theme.bg(this.background(), padded);
-	}
-
-	private background(): CellBackground {
-		if (this.state.isPartial || !this.state.executionStarted) {
-			return "toolPendingBg";
-		}
-		const details = readDetails(this.state.details);
-		return this.state.isError || details.status === "error" ? "toolErrorBg" : "toolSuccessBg";
+		const rail = theme.bg("customMessageBg", " ");
+		return `${rail}${" ".repeat(this.paddingX - 1)}${paddedContent}${" ".repeat(this.paddingX)}`;
 	}
 }

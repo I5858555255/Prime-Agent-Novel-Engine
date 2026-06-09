@@ -172,6 +172,33 @@ describe("marquee TUI components", () => {
 		expect(expanded).toContain("Cell In[15]");
 	});
 
+	test("keeps ipython stack frame locations out of collapsed traceback previews", () => {
+		const state: IPythonCellState = {
+			code: "run_job()",
+			content: [
+				{
+					type: "text",
+					text: [
+						"Traceback (most recent call last):",
+						'  File "/tmp/internal.py", line 12, in run',
+						"    run_job()",
+					].join("\n"),
+				},
+			],
+			details: { status: "error", errorEname: "RuntimeError" },
+			isError: true,
+			expanded: false,
+			executionStarted: true,
+			argsComplete: true,
+		};
+		const component = new IPythonCellComponent(state);
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("RuntimeError · Ctrl+O to expand");
+		expect(collapsed).not.toContain("/tmp/internal.py");
+		expect(collapsed).not.toContain("line 12");
+	});
+
 	test("caches ipython cell renders until state, width, or invalidation changes", () => {
 		const state: IPythonCellState = {
 			code: "value = 1\nprint(value)",
@@ -421,6 +448,18 @@ describe("marquee TUI components", () => {
 		expect(tracebackFirstCollapsed).toContain("Error: RuntimeError: backend crashed");
 		expect(tracebackFirstCollapsed).not.toContain("Traceback (most recent call last):");
 		expect(tracebackFirstCollapsed).not.toContain("/tmp/internal.py");
+
+		const frameFirstMessage: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: ['  File "/tmp/internal.py", line 12, in run', "RuntimeError: backend crashed"].join("\n"),
+		};
+		const frameFirstComponent = new AssistantMessageComponent(frameFirstMessage);
+		const frameFirstCollapsed = stripAnsi(frameFirstComponent.render(100).join("\n"));
+		expect(frameFirstCollapsed).toContain("Error: RuntimeError: backend crashed");
+		expect(frameFirstCollapsed).not.toContain("/tmp/internal.py");
+		expect(frameFirstCollapsed).not.toContain("line 12");
 
 		const shortMessage: AssistantMessage = {
 			...createAssistantMessage(""),
@@ -729,6 +768,10 @@ describe("marquee TUI components", () => {
 
 		const rawOutput = component.render(100).join("\n");
 		expect(rawOutput).toMatch(/\x1b\[48;(?:2|5);/);
+		const railLine = component.render(100).find((line) => line.includes("\x1b[48;")) ?? "";
+		const backgroundResetIndex = railLine.indexOf("\x1b[49m");
+		expect(backgroundResetIndex).toBeGreaterThan(0);
+		expect(backgroundResetIndex).toBeLessThan(32);
 		const output = stripAnsi(rawOutput);
 		expect(output).toContain("done · 12ms");
 		expect(output).not.toContain("ipython");

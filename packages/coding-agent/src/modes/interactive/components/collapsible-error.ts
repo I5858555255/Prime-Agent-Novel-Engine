@@ -15,19 +15,60 @@ export function normalizeErrorDetails(text: string): string {
 	return stripAnsi(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
 }
 
-export function summarizeErrorDetails(text: string): string {
-	const normalized = normalizeErrorDetails(text);
-	const lines = normalized
+interface ErrorDetailLine {
+	raw: string;
+	trimmed: string;
+}
+
+function errorDetailLines(text: string): ErrorDetailLine[] {
+	return normalizeErrorDetails(text)
 		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0);
+		.map((raw) => ({ raw, trimmed: raw.trim() }))
+		.filter((line) => line.trimmed.length > 0);
+}
+
+function startsStackContext(line: ErrorDetailLine): boolean {
+	if (line.trimmed.startsWith("Traceback ")) {
+		return true;
+	}
+	if (line.trimmed.startsWith("File ") && line.trimmed.includes(", line ")) {
+		return true;
+	}
+	if (line.trimmed.startsWith("Cell In[") && line.trimmed.includes(", line ")) {
+		return true;
+	}
+	if (line.trimmed.startsWith("---->")) {
+		return true;
+	}
+	return false;
+}
+
+function isStackContextLine(line: ErrorDetailLine): boolean {
+	if (startsStackContext(line)) {
+		return true;
+	}
+	return line.raw.startsWith(" ") || line.raw.startsWith("\t");
+}
+
+function summarizeStackContext(lines: readonly ErrorDetailLine[]): string | undefined {
+	for (let index = lines.length - 1; index >= 0; index -= 1) {
+		const line = lines[index];
+		if (line && !isStackContextLine(line)) {
+			return line.trimmed;
+		}
+	}
+	return undefined;
+}
+
+export function summarizeErrorDetails(text: string): string {
+	const lines = errorDetailLines(text);
 	if (lines.length === 0) {
 		return "Error";
 	}
-	if (lines[0]?.startsWith("Traceback ")) {
-		return lines.at(-1) ?? "Error";
+	if (lines.length > 1 && startsStackContext(lines[0]!)) {
+		return summarizeStackContext(lines) ?? "Error";
 	}
-	return lines[0] ?? "Error";
+	return lines[0]?.trimmed ?? "Error";
 }
 
 export function shouldCollapseErrorDetails(text: string): boolean {
