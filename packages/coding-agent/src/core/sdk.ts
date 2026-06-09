@@ -224,7 +224,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const includeGoalTools = options.tools !== undefined || options.noTools !== "all";
 	const autoActivateGoalTools = options.tools === undefined && !options.noTools;
 	const defaultActiveToolNames: string[] =
-		includeGoalTools && autoActivateGoalTools ? ["ipython", ...GOAL_TOOL_NAMES] : ["ipython"];
+		includeGoalTools && autoActivateGoalTools ? ["ipython", "edit", ...GOAL_TOOL_NAMES] : ["ipython", "edit"];
 	const initialActiveToolNames: string[] = options.tools
 		? [...options.tools]
 		: options.noTools

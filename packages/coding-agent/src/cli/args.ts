@@ -354,6 +354,6 @@ ${chalk.bold("Environment Variables:")}
 ${chalk.bold("Built-in Tool Names:")}
   ipython - Execute Python in a persistent IPython kernel
   bash    - Execute bash commands (off by default)
-  edit    - Edit files with find/replace (off by default)
+  edit    - Edit files with find/replace (on by default)
 `);
 }

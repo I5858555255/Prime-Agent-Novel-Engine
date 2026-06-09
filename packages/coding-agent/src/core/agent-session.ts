@@ -3327,7 +3327,9 @@ export class AgentSession {
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 
-		const defaultActiveToolNames = this._baseToolsOverride ? Object.keys(this._baseToolsOverride) : ["ipython"];
+		const defaultActiveToolNames = this._baseToolsOverride
+			? Object.keys(this._baseToolsOverride)
+			: ["ipython", "edit"];
 		if (this._includeGoalTools && this._autoActivateGoalTools) {
 			defaultActiveToolNames.push(...GOAL_TOOL_NAMES);
 		}
