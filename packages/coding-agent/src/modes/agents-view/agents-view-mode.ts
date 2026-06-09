@@ -42,6 +42,8 @@ const EXIT_HINT_DURATION_MS = 2000;
 const DELETE_CONFIRM_DURATION_MS = 2000;
 const STATUS_MESSAGE_DURATION_MS = 4500;
 const SESSION_NAME_MAX_LENGTH = 80;
+const DEFAULT_PROMPT_PLACEHOLDER = "Describe a task for a new session";
+const REPLY_PROMPT_FALLBACK_PLACEHOLDER = "Write a reply to this agent";
 const NEEDS_INPUT_ROW_ICON = "◆";
 const COMPLETED_ROW_ICON = "✓";
 const WORKING_ICON_FRAMES = ["◇", "◈", "◆", "◈"] as const;
@@ -82,6 +84,17 @@ export async function resolveAgentsViewSessionUiServices(
 	return options.createUiServicesForSession ? await options.createUiServicesForSession(summary) : options.uiServices;
 }
 
+export function createAgentsViewResumeConfig(config: AgentSessionRuntimeConfig): AgentSessionRuntimeConfig {
+	const resumeConfig: AgentSessionRuntimeConfig = { ...config };
+	delete resumeConfig.cwd;
+	return resumeConfig;
+}
+
+export function createAgentsViewReplyPlaceholder(text: string | undefined): string {
+	const normalized = text?.replace(/\s+/g, " ").trim();
+	return normalized ? `Reply to: ${normalized}` : REPLY_PROMPT_FALLBACK_PLACEHOLDER;
+}
+
 async function openAgentsViewSession(
 	options: AgentsViewModeOptions,
 	summary: SessionSummary,
@@ -110,7 +123,7 @@ async function openAgentsViewSession(
 	try {
 		const response = await client.request({
 			type: "create",
-			config: options.config,
+			config: createAgentsViewResumeConfig(options.config),
 			sessionPath: summary.sessionFile,
 		});
 		const createdSummary = expectSessionSummary(requireDaemonData(response));
@@ -218,7 +231,7 @@ class AgentsViewMode implements Component, Focusable {
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: options.uiServices.settingsManager.getEditorPaddingX(),
 			autocompleteMaxVisible: options.uiServices.settingsManager.getAutocompleteMaxVisible(),
-			placeholder: "Describe a task for a new session",
+			placeholder: DEFAULT_PROMPT_PLACEHOLDER,
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
 		this.editor.focused = true;
@@ -512,12 +525,42 @@ class AgentsViewMode implements Component, Focusable {
 			this.setReplyTarget(undefined);
 			return;
 		}
-		this.setReplyTarget(activeSessionId);
+		this.setReplyTarget(activeSessionId, REPLY_PROMPT_FALLBACK_PLACEHOLDER);
+		try {
+			const latestAssistantText = await this.getLastAssistantText(activeSessionId);
+			if (this.replyActiveSessionId === activeSessionId) {
+				this.editor.setPlaceholder(createAgentsViewReplyPlaceholder(latestAssistantText));
+				this.ui.requestRender();
+			}
+		} catch (error) {
+			if (this.replyActiveSessionId === activeSessionId) {
+				this.setStatusMessage(formatError("Failed to load latest response", error));
+			}
+		}
 	}
 
-	private setReplyTarget(activeSessionId: string | undefined): void {
+	private setReplyTarget(activeSessionId: string | undefined, placeholder?: string): void {
 		this.replyActiveSessionId = activeSessionId;
+		this.editor.setPlaceholder(activeSessionId ? placeholder : DEFAULT_PROMPT_PLACEHOLDER);
 		this.ui.requestRender();
+	}
+
+	private async getLastAssistantText(activeSessionId: string): Promise<string | undefined> {
+		const response = await this.requireClient().request({
+			type: "get_last_assistant_text",
+			activeSessionId,
+		});
+		const data = requireDaemonData(response);
+		if (!isRecord(data)) {
+			throw new Error("Daemon returned an invalid last assistant response");
+		}
+		if (data.text === null || data.text === undefined) {
+			return undefined;
+		}
+		if (typeof data.text !== "string") {
+			throw new Error("Daemon returned an invalid last assistant response");
+		}
+		return data.text;
 	}
 
 	private async sendReply(activeSessionId: string, text: string): Promise<void> {

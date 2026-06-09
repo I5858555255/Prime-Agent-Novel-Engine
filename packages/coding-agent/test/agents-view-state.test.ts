@@ -1,7 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
+import type { AgentSessionRuntimeConfig } from "../src/core/agent-session-config.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import type { SettingsManager } from "../src/core/settings-manager.js";
-import { resolveAgentsViewSessionUiServices } from "../src/modes/agents-view/agents-view-mode.js";
+import {
+	createAgentsViewReplyPlaceholder,
+	createAgentsViewResumeConfig,
+	resolveAgentsViewSessionUiServices,
+} from "../src/modes/agents-view/agents-view-mode.js";
 import {
 	buildAgentsViewRows,
 	classifyAgentsViewSession,
@@ -90,6 +95,32 @@ describe("agents view state", () => {
 		expect(rows.map((row) => row.selectable)).toEqual([true, true]);
 	});
 
+	test("omits subagents when their parent is not visible", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "child-active",
+				activeSessionId: "child-active",
+				sessionId: "child-session",
+				sessionName: "Child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "removed-parent-active",
+				parentSessionId: "removed-parent-session",
+				isStreaming: true,
+				status: "model",
+			}),
+			makeSummary({
+				id: "other-active",
+				activeSessionId: "other-active",
+				sessionId: "other-session",
+				sessionName: "Other",
+				status: "idle",
+				messageCount: 2,
+			}),
+		]);
+
+		expect(rows.map((row) => row.title)).toEqual(["Other"]);
+	});
+
 	test("hides inactive hidden sessions while keeping active sessions visible", () => {
 		const inactiveHidden = makeSummary({ status: "hidden" });
 		const staleDaemonHidden = makeSummary({ status: "sleep" });
@@ -100,6 +131,28 @@ describe("agents view state", () => {
 		expect(shouldShowAgentsViewSession(staleDaemonHidden, "hidden")).toBe(false);
 		expect(shouldShowAgentsViewSession(makeSummary({ status: "idle" }), undefined, true)).toBe(false);
 		expect(shouldShowAgentsViewSession(makeSummary({ status: "hidden", activeSessionId: "active-1" }))).toBe(true);
+	});
+
+	test("does not override saved session cwd when reopening inactive agents", () => {
+		const config: AgentSessionRuntimeConfig = {
+			cwd: "/tmp/dashboard",
+			agentDir: "/tmp/agents",
+			sessionDir: "/tmp/sessions",
+			model: "openai/gpt-5",
+		};
+
+		const resumeConfig = createAgentsViewResumeConfig(config);
+
+		expect("cwd" in resumeConfig).toBe(false);
+		expect(resumeConfig.agentDir).toBe("/tmp/agents");
+		expect(resumeConfig.sessionDir).toBe("/tmp/sessions");
+		expect(resumeConfig.model).toBe("openai/gpt-5");
+		expect(config.cwd).toBe("/tmp/dashboard");
+	});
+
+	test("uses latest assistant text as reply placeholder", () => {
+		expect(createAgentsViewReplyPlaceholder("  Done.\nNext step?  ")).toBe("Reply to: Done. Next step?");
+		expect(createAgentsViewReplyPlaceholder(undefined)).toBe("Write a reply to this agent");
 	});
 
 	test("uses session-specific UI services when opening an agent", async () => {

@@ -20,7 +20,7 @@ export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
 	private defaultPromptPrefix: string;
 	private readonly configuredPaddingX: number;
-	private readonly placeholder: string | undefined;
+	private placeholder: string | undefined;
 	private readonly placeholderColor: (text: string) => string;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
@@ -89,6 +89,11 @@ export class CustomEditor extends Editor {
 			return lines;
 		}
 		return [lines[0]!, this.renderPlaceholderLine(width), ...lines.slice(2)];
+	}
+
+	setPlaceholder(placeholder: string | undefined): void {
+		this.placeholder = placeholder;
+		this.invalidate();
 	}
 
 	handleInput(data: string): void {
