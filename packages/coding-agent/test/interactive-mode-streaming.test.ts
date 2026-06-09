@@ -1,0 +1,128 @@
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import { Container, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
+import stripAnsi from "strip-ansi";
+import { beforeAll, describe, expect, test, vi } from "vitest";
+import type { AgentConnectionSessionEvent } from "../src/modes/agent-connection/index.js";
+import type { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";
+import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
+
+const EMPTY_USAGE: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		total: 0,
+	},
+};
+
+type HandleEventThis = {
+	isInitialized: boolean;
+	footer: { invalidate(): void };
+	ui: TUI;
+	chatContainer: Container;
+	hideThinkingBlock: boolean;
+	hiddenThinkingLabel: string;
+	streamingComponent: AssistantMessageComponent | undefined;
+	streamingMessage: AssistantMessage | undefined;
+	pendingTools: Map<string, ToolExecutionComponent>;
+	updateConnectionStateFromEvent(event: AgentConnectionSessionEvent): void;
+	getMarkdownThemeWithSettings(): MarkdownTheme;
+	getOrCreatePendingToolComponent(): Promise<ToolExecutionComponent | undefined>;
+	getRetryAttempt(): number;
+	resetPendingToolState(): void;
+};
+
+type HandleEvent = (this: HandleEventThis, event: AgentConnectionSessionEvent) => Promise<void>;
+
+function createFakeInteractiveModeThis(): HandleEventThis {
+	const fakeThis = {
+		isInitialized: true,
+		footer: { invalidate: vi.fn() },
+		ui: { requestRender: vi.fn() } as unknown as TUI,
+		chatContainer: new Container(),
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		streamingComponent: undefined,
+		streamingMessage: undefined,
+		pendingTools: new Map<string, ToolExecutionComponent>(),
+		updateConnectionStateFromEvent: vi.fn(),
+		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+		getOrCreatePendingToolComponent: vi.fn(async () => undefined),
+		getRetryAttempt: () => 0,
+		resetPendingToolState: vi.fn(),
+	};
+	Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+	return fakeThis;
+}
+
+function createAssistantMessage(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "test-api",
+		provider: "test-provider",
+		model: "test-model",
+		usage: EMPTY_USAGE,
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+function renderChat(container: Container): string {
+	return stripAnsi(container.render(120).join("\n"));
+}
+
+describe("InteractiveMode streaming events", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	test("renders assistant updates when attaching after message_start", async () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+
+		await handleEvent.call(fakeThis, {
+			type: "message_update",
+			message: createAssistantMessage("partial response"),
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "partial response",
+				partial: createAssistantMessage("partial response"),
+			},
+		});
+
+		expect(renderChat(fakeThis.chatContainer)).toContain("partial response");
+
+		await handleEvent.call(fakeThis, {
+			type: "message_end",
+			message: createAssistantMessage("final response"),
+		});
+
+		expect(renderChat(fakeThis.chatContainer)).toContain("final response");
+		expect(fakeThis.streamingComponent).toBeUndefined();
+		expect(fakeThis.streamingMessage).toBeUndefined();
+	});
+
+	test("renders assistant end events when attaching after all updates", async () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+
+		await handleEvent.call(fakeThis, {
+			type: "message_end",
+			message: createAssistantMessage("final response"),
+		});
+
+		expect(renderChat(fakeThis.chatContainer)).toContain("final response");
+		expect(fakeThis.streamingComponent).toBeUndefined();
+		expect(fakeThis.streamingMessage).toBeUndefined();
+	});
+});

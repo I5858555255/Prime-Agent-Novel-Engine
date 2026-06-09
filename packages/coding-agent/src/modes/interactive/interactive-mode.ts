@@ -3563,23 +3563,15 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
-					this.streamingComponent = new AssistantMessageComponent(
-						undefined,
-						this.hideThinkingBlock,
-						this.getMarkdownThemeWithSettings(),
-						this.hiddenThinkingLabel,
-					);
-					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.startAssistantStreamingMessage(event.message);
 					this.ui.requestRender();
 				}
 				break;
 
 			case "message_update":
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.ensureAssistantStreamingComponent(event.message).updateContent(this.streamingMessage);
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
@@ -3592,7 +3584,7 @@ export class InteractiveMode {
 
 			case "message_end":
 				if (event.message.role === "user") break;
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
@@ -3603,7 +3595,7 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.ensureAssistantStreamingComponent(event.message).updateContent(this.streamingMessage);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
@@ -3798,6 +3790,30 @@ export class InteractiveMode {
 				this.handleGoalUpdate(event.goal);
 				break;
 		}
+	}
+
+	private startAssistantStreamingMessage(message: AssistantMessage): void {
+		this.streamingComponent = new AssistantMessageComponent(
+			undefined,
+			this.hideThinkingBlock,
+			this.getMarkdownThemeWithSettings(),
+			this.hiddenThinkingLabel,
+		);
+		this.streamingMessage = message;
+		this.chatContainer.addChild(this.streamingComponent);
+		this.streamingComponent.updateContent(this.streamingMessage);
+	}
+
+	private ensureAssistantStreamingComponent(message: AssistantMessage): AssistantMessageComponent {
+		let component = this.streamingComponent;
+		if (!component) {
+			this.startAssistantStreamingMessage(message);
+			component = this.streamingComponent;
+		}
+		if (!component) {
+			throw new Error("Failed to create assistant streaming component");
+		}
+		return component;
 	}
 
 	private handleGoalUpdate(goal: GoalState): void {
