@@ -11,6 +11,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { GoalState } from "../../core/goals.js";
+import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
 
@@ -521,6 +522,7 @@ export interface AgentConnection {
 	setAutoCompactionEnabled(enabled: boolean): Promise<void>;
 
 	compact(customInstructions?: string): Promise<CompactionResult>;
+	refine(options?: { instructions?: string; rollbackId?: string }): Promise<RefinementResult>;
 	abortCompaction(): Promise<void>;
 	abortBranchSummary(): Promise<void>;
 	abortRetry(): Promise<void>;

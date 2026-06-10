@@ -3,8 +3,10 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
 const handleRefineCommand = Reflect.get(InteractiveMode.prototype, "handleRefineCommand") as (
 	this: {
-		sessionManager: { getEntries: () => Array<{ type: string }> };
-		session: { refine: ReturnType<typeof vi.fn> };
+		agentConnection: {
+			getSessionStats: ReturnType<typeof vi.fn>;
+			refine: ReturnType<typeof vi.fn>;
+		};
 		stopWorkingLoader: ReturnType<typeof vi.fn>;
 		showStatus: ReturnType<typeof vi.fn>;
 		showWarning: ReturnType<typeof vi.fn>;
@@ -16,8 +18,10 @@ const handleRefineCommand = Reflect.get(InteractiveMode.prototype, "handleRefine
 describe("InteractiveMode.handleRefineCommand", () => {
 	test("requires a refinement id for rollback", async () => {
 		const context = {
-			sessionManager: { getEntries: () => [{ type: "message" }, { type: "message" }] },
-			session: { refine: vi.fn() },
+			agentConnection: {
+				getSessionStats: vi.fn().mockResolvedValue({ totalMessages: 2 }),
+				refine: vi.fn(),
+			},
 			stopWorkingLoader: vi.fn(),
 			showStatus: vi.fn(),
 			showWarning: vi.fn(),
@@ -27,7 +31,7 @@ describe("InteractiveMode.handleRefineCommand", () => {
 		await handleRefineCommand.call(context, "rollback");
 
 		expect(context.showWarning).toHaveBeenCalledWith("Usage: /refine rollback <refinement-id>");
-		expect(context.session.refine).not.toHaveBeenCalled();
+		expect(context.agentConnection.refine).not.toHaveBeenCalled();
 		expect(context.stopWorkingLoader).not.toHaveBeenCalled();
 	});
 });

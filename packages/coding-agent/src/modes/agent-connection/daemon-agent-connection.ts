@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import type { DaemonClient } from "../daemon/daemon-client.js";
@@ -409,6 +410,15 @@ export class DaemonAgentConnection implements AgentConnection {
 			type: "compact",
 			activeSessionId: this.activeSessionId,
 			customInstructions,
+		});
+	}
+
+	async refine(options: { instructions?: string; rollbackId?: string } = {}): Promise<RefinementResult> {
+		return this.requestData<RefinementResult>({
+			type: "refine",
+			activeSessionId: this.activeSessionId,
+			instructions: options.instructions,
+			rollbackId: options.rollbackId,
 		});
 	}
 

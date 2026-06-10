@@ -106,6 +106,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"set_follow_up_mode",
 	"set_auto_compaction",
 	"compact",
+	"refine",
 	"abort_compaction",
 	"abort_branch_summary",
 	"abort_retry",
@@ -762,6 +763,15 @@ class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const result = await state.runtime.session.compact(command.customInstructions);
 				return success(command.id, "compact", result);
+			}
+
+			case "refine": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.session.refine({
+					instructions: command.instructions,
+					rollbackId: command.rollbackId,
+				});
+				return success(command.id, "refine", result);
 			}
 
 			case "abort_compaction": {

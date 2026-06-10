@@ -7265,8 +7265,14 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 	}
 
 	private async handleRefineCommand(args?: string): Promise<void> {
-		const entries = this.sessionManager.getEntries();
-		const messageCount = entries.filter((e) => e.type === "message").length;
+		let messageCount: number;
+		try {
+			const stats = await this.agentConnection.getSessionStats();
+			messageCount = stats.totalMessages;
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return;
+		}
 
 		if (messageCount < 2) {
 			this.showWarning("Nothing to refine (no trajectory yet)");
@@ -7290,7 +7296,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 		);
 
 		try {
-			const result = await this.session.refine(options);
+			const result = await this.agentConnection.refine(options);
 			const applied = result.appliedEdits.filter((edit) => edit.applied).length;
 			const failed = result.appliedEdits.length - applied;
 			const failedSuffix = failed > 0 ? `, ${failed} failed` : "";
