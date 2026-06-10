@@ -522,7 +522,14 @@ class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 		const keep = new Set<string>();
-		let parentIdentity = this.rows[this.selectedIndex]?.parentIdentity;
+		const selectedRow = this.rows[this.selectedIndex];
+		// Selecting the expanded agent itself still counts as inside its list;
+		// only moving past the block (above the parent or below the last child)
+		// collapses it.
+		if (selectedRow && this.expandedSubagentParents.has(selectedRow.identity)) {
+			keep.add(selectedRow.identity);
+		}
+		let parentIdentity = selectedRow?.parentIdentity;
 		while (parentIdentity !== undefined && !keep.has(parentIdentity)) {
 			keep.add(parentIdentity);
 			const target: string = parentIdentity;
