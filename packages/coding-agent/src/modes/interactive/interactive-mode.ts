@@ -934,8 +934,11 @@ export class InteractiveMode {
 
 		// Jump straight into a subagent's read-only detail view when the agents
 		// view opened this session targeting one of its subagents.
-		if (this.options.initialSubagentNodeId) {
-			this.openChildAgentDetail(this.options.initialSubagentNodeId);
+		if (this.options.initialSubagentNodeId && !this.openChildAgentDetail(this.options.initialSubagentNodeId)) {
+			// The subagent can finish and get released between the agents view
+			// listing it and this session attaching; say so instead of silently
+			// landing in the parent chat.
+			this.showStatus("Subagent already finished; showing its parent session");
 		}
 
 		// Set up theme file watcher
@@ -4136,10 +4139,10 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private openChildAgentDetail(nodeId: string): void {
+	private openChildAgentDetail(nodeId: string): boolean {
 		const node = this.findChildAgentInspectorNode(nodeId);
 		if (!node) {
-			return;
+			return false;
 		}
 		this.childAgentPanelMode = "detail";
 		this.childAgentDetailNodeId = nodeId;
@@ -4150,6 +4153,7 @@ export class InteractiveMode {
 		this.mainViewContainer.addChild(this.childAgentDetail);
 		this.ui.setFocus(this.childAgentDetail);
 		this.ui.requestRender();
+		return true;
 	}
 
 	private focusChildAgentInspector(): void {
