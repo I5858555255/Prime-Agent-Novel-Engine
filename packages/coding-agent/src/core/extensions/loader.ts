@@ -319,6 +319,11 @@ function createExtensionAPI(
 	return api;
 }
 
+// Replaced with `true` by the esbuild CLI bundle (scripts/bundle.mjs); stays
+// undefined in unbundled dist/ and under tsx.
+declare const __PI_BUNDLED__: boolean | undefined;
+const isBundledCli = typeof __PI_BUNDLED__ !== "undefined" && __PI_BUNDLED__ === true;
+
 async function loadExtensionModule(extensionPath: string) {
 	// jiti and the bundled virtual modules are loaded lazily so that importing
 	// the loader (which nearly every startup path does transitively) doesn't pay
@@ -327,10 +332,12 @@ async function loadExtensionModule(extensionPath: string) {
 	const { createJiti } = await import("jiti/static");
 	const jiti = createJiti(import.meta.url, {
 		moduleCache: false,
-		// In Bun binary: use virtualModules for bundled packages (no filesystem resolution)
+		// In the Bun binary and the esbuild CLI bundle: serve pi packages from
+		// virtualModules so extensions share the bundle's module instances
+		// (file-path aliases would load a second, divergent copy of each package).
 		// Also disable tryNative so jiti handles ALL imports (not just the entry point)
 		// In Node.js/dev: use aliases to resolve to node_modules paths
-		...(isBunBinary
+		...(isBunBinary || isBundledCli
 			? { virtualModules: (await import("./bundled-modules.js")).VIRTUAL_MODULES, tryNative: false }
 			: { alias: getAliases() }),
 	});
