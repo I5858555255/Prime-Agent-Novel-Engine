@@ -134,6 +134,7 @@ const DAEMON_SERVER_CAPABILITIES: readonly DaemonClientCapability[] = [
 	"attach_snapshot",
 	"event_sequence",
 	"extension_ui",
+	"slim_attach",
 ];
 
 const DAEMON_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SERVER_CAPABILITIES);
@@ -506,15 +507,20 @@ class AgentDaemon {
 				state.clients.add(client);
 				client.attachedActiveSessionIds.add(state.activeSessionId);
 				const result = this.createAttachResult(client, state, command);
-				this.write(client, {
-					type: "session_attached",
-					activeSessionId: state.activeSessionId,
-					state: result.state,
-					messages: result.messages,
-					snapshot: result.snapshot,
-					replay: result.replay,
-					lastEventSequence: result.lastEventSequence,
-				});
+				// Slim clients consume only the command response; legacy clients (e.g.
+				// the plain daemon attach REPL) read state/messages off this event.
+				// Skipping it for slim clients halves the attach payload.
+				if (result.state && result.messages) {
+					this.write(client, {
+						type: "session_attached",
+						activeSessionId: state.activeSessionId,
+						state: result.state,
+						messages: result.messages,
+						snapshot: result.snapshot,
+						replay: result.replay,
+						lastEventSequence: result.lastEventSequence,
+					});
+				}
 				return success(command.id, "attach", result);
 			}
 
@@ -922,11 +928,13 @@ class AgentDaemon {
 						reason: "resume_cursor_session_mismatch",
 					}
 				: createDaemonReplayInfo(command.resumeCursor, state.lastEventSequence);
+		// Slim clients read summary/messages from the snapshot; duplicating them at
+		// the top level would serialize the full history twice more per attach.
+		const slim = client.capabilities.has("slim_attach");
 		return {
 			protocol: DAEMON_PROTOCOL_INFO,
 			activeSessionId: state.activeSessionId,
-			state: snapshot.summary,
-			messages: snapshot.messages,
+			...(slim ? {} : { state: snapshot.summary, messages: snapshot.messages }),
 			snapshot,
 			replay,
 			lastEventSequence: state.lastEventSequence,
