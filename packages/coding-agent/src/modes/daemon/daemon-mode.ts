@@ -138,12 +138,8 @@ const DAEMON_SERVER_CAPABILITIES: readonly DaemonClientCapability[] = [
 
 const DAEMON_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SERVER_CAPABILITIES);
 
-export async function runDaemonMode(initialRuntime: AgentSessionRuntime, options: DaemonModeOptions): Promise<never> {
+export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
-	// main() creates a runtime before dispatching modes. Daemon mode should not
-	// expose that bootstrap runtime as a user session; live sessions are created
-	// explicitly through the daemon protocol.
-	await initialRuntime.dispose();
 	const daemon = new AgentDaemon(socketPath, options);
 	await daemon.start();
 	return new Promise(() => {});

@@ -868,7 +868,7 @@ async function shutdownStaleDaemonIfIdle(socketPath: string): Promise<boolean> {
 		if (!(await canConnectToDaemon(socketPath, 250))) {
 			return true;
 		}
-		await delay(100);
+		await delay(25);
 	}
 	return false;
 }
@@ -910,7 +910,7 @@ async function ensureInteractiveDaemonRunning(socketPath: string): Promise<void>
 		if (await canConnectToDaemon(socketPath, 250)) {
 			return;
 		}
-		await delay(100);
+		await delay(25);
 	}
 
 	throw new Error(`Timed out waiting for daemon to start on ${socketPath}`);
@@ -943,7 +943,7 @@ async function createDaemonInteractiveConnection(options: {
 	continueRecent?: boolean;
 	activeSessionId?: string;
 }): Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> {
-	await ensureInteractiveDaemonRunning(options.socketPath);
+	// Caller must have awaited ensureInteractiveDaemonRunning for this socket.
 	const client = new DaemonClient(options.socketPath);
 	await client.connect();
 
@@ -1140,12 +1140,18 @@ export async function main(args: string[], options?: MainOptions) {
 		getSessionDirEnvOverride() ??
 		startupSettingsManager.getSessionDir();
 	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
+	// Kick off daemon spawn/readiness immediately so it overlaps session-manager
+	// and runtime-services preparation; awaited wherever the daemon is first used.
+	const daemonReady = useDaemonInteractive ? ensureInteractiveDaemonRunning(daemonSocketPath) : undefined;
+	// Errors are rethrown at the await sites below; this only avoids an unhandled
+	// rejection if startup exits before reaching them.
+	daemonReady?.catch(() => {});
 	const shouldLookupDaemonActiveSession = shouldEnsureDaemonBeforeActiveSessionLookup({
 		useDaemonInteractive,
 		session: parsed.session,
 	});
-	if (shouldLookupDaemonActiveSession) {
-		await ensureInteractiveDaemonRunning(daemonSocketPath);
+	if (shouldLookupDaemonActiveSession && daemonReady) {
+		await daemonReady;
 	}
 	const activeDaemonSessionSummary =
 		shouldLookupDaemonActiveSession && parsed.session
@@ -1234,6 +1240,19 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
+	// Daemon mode never uses the bootstrap runtime, so skip the heavy
+	// createAgentSessionRuntime below and start listening immediately; sessions
+	// are created on demand through the daemon protocol via createRuntime.
+	// --help/--list-models still take the full path to print and exit.
+	if (appMode === "daemon" && !parsed.help && parsed.listModels === undefined) {
+		printTimings();
+		await runDaemonMode({
+			socketPath: parsed.daemonSocket,
+			defaultSessionConfig,
+			createRuntime,
+		});
+		return;
+	}
 	if (useDaemonInteractive) {
 		const prepared = await prepareRuntimeServices({
 			config: defaultSessionConfig,
@@ -1293,7 +1312,7 @@ export async function main(args: string[], options?: MainOptions) {
 				fork: parsed.fork,
 			})
 		) {
-			await ensureInteractiveDaemonRunning(daemonSocketPath);
+			await daemonReady;
 			printTimings();
 			await runAgentsViewMode({
 				socketPath: daemonSocketPath,
@@ -1329,6 +1348,7 @@ export async function main(args: string[], options?: MainOptions) {
 			return;
 		}
 
+		await daemonReady;
 		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
 			socketPath: daemonSocketPath,
 			config: defaultSessionConfig,
@@ -1418,13 +1438,6 @@ export async function main(args: string[], options?: MainOptions) {
 	if (appMode === "rpc") {
 		printTimings();
 		await runRpcMode(runtime);
-	} else if (appMode === "daemon") {
-		printTimings();
-		await runDaemonMode(runtime, {
-			socketPath: parsed.daemonSocket,
-			defaultSessionConfig,
-			createRuntime,
-		});
 	} else if (appMode === "interactive") {
 		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
 			const modelList = scopedModels
