@@ -127,6 +127,10 @@ class HarnessState:
                             entry_data.get("content"), str
                         ):
                             continue
+                        if not isinstance(entry_data.get("path"), str):
+                            entry_data["path"] = "general"
+                        if not isinstance(entry_data.get("source"), str):
+                            entry_data["source"] = "agent"
                         version = entry_data.get("version", 1)
                         if isinstance(version, str):
                             try:

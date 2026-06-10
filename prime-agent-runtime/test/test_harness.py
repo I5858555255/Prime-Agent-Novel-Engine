@@ -145,6 +145,8 @@ class HarnessStateTest(unittest.TestCase):
                                     "kind": "skill",
                                     "title": "Known memory",
                                     "content": "Loaded despite extra keys.",
+                                    "path": 123,
+                                    "source": None,
                                     "version": "2",
                                     "metadata": "not a dict",
                                     "unexpected": True,
@@ -176,6 +178,8 @@ class HarnessStateTest(unittest.TestCase):
             self.assertEqual(state.get("memory", "known").content, "Loaded despite extra keys.")
             self.assertEqual(state.get("memory", "known").id, "known")
             self.assertEqual(state.get("memory", "known").kind, "memory")
+            self.assertEqual(state.get("memory", "known").path, "general")
+            self.assertEqual(state.get("memory", "known").source, "agent")
             self.assertIsNone(state.get("memory", "mismatched"))
             self.assertEqual(state.get("memory", "known").version, 2)
             self.assertEqual(state.get("memory", "known").metadata, {})
