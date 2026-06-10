@@ -5,7 +5,6 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { type Api, type ImageContent, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
@@ -13,6 +12,11 @@ import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.js";
 import { handleDaemonCommand, normalizeDaemonStartArgs } from "./cli/daemon-command.js";
+import {
+	ensureInteractiveDaemonRunning,
+	isDaemonSessionSummary,
+	listActiveDaemonSessionSummaries,
+} from "./cli/daemon-launch.js";
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
@@ -48,7 +52,6 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import {
 	createInteractiveModeLocalSessionHost,
 	createInteractiveModeUiServicesFromServices,
-	DAEMON_PROTOCOL_VERSION,
 	DaemonAgentConnection,
 	DaemonClient,
 	defaultDaemonSocketPath,
@@ -727,18 +730,6 @@ async function promptForMissingSessionCwd(
 	});
 }
 
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isDaemonSessionSummary(value: unknown): value is SessionSummary {
-	if (!value || typeof value !== "object") {
-		return false;
-	}
-	const summary = value as { activeSessionId?: unknown; id?: unknown };
-	return typeof summary.activeSessionId === "string" || typeof summary.id === "string";
-}
-
 function getDaemonSummaryActiveSessionId(summary: SessionSummary): string {
 	return summary.activeSessionId ?? summary.id;
 }
@@ -799,121 +790,6 @@ function createSessionManagerForActiveDaemonSummary(summary: SessionSummary, fal
 		}
 	}
 	return SessionManager.inMemory(cwd);
-}
-
-async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promise<boolean> {
-	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(timeoutMs);
-		return true;
-	} catch {
-		return false;
-	} finally {
-		client.close();
-	}
-}
-
-type DaemonVersionProbe = "absent" | "current" | "stale";
-
-/** Connect to a running daemon and check whether it matches this client's protocol and app version. */
-async function probeDaemonVersion(socketPath: string): Promise<DaemonVersionProbe> {
-	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(250);
-	} catch {
-		client.close();
-		return "absent";
-	}
-	try {
-		const hello = await client.waitForHello(2000);
-		const current = hello.protocol.version === DAEMON_PROTOCOL_VERSION && hello.appVersion === VERSION;
-		return current ? "current" : "stale";
-	} catch {
-		// Connected but no recognizable greeting: assume a stale daemon.
-		return "stale";
-	} finally {
-		client.close();
-	}
-}
-
-/**
- * Stop a stale daemon so a current-version one can replace it, but only when it
- * has no live sessions. Returns true once the daemon is no longer accepting
- * connections.
- */
-async function shutdownStaleDaemonIfIdle(socketPath: string): Promise<boolean> {
-	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(1000);
-		let hasLiveSessions = true;
-		try {
-			const summaries = await listActiveDaemonSessionSummaries(client);
-			hasLiveSessions = summaries.some((summary) => summary.activeSessionId !== undefined);
-		} catch {
-			// If we cannot confirm the daemon is idle, leave it running rather than
-			// risking a shutdown of live sessions on a transient list failure.
-		}
-		if (hasLiveSessions) {
-			return false;
-		}
-		await client.request({ type: "shutdown" }).catch(() => undefined);
-	} catch {
-		// Connection failures mean the daemon is already gone.
-	} finally {
-		client.close();
-	}
-
-	const deadline = Date.now() + 5000;
-	while (Date.now() < deadline) {
-		if (!(await canConnectToDaemon(socketPath, 250))) {
-			return true;
-		}
-		await delay(25);
-	}
-	return false;
-}
-
-async function ensureInteractiveDaemonRunning(socketPath: string): Promise<void> {
-	const probe = await probeDaemonVersion(socketPath);
-	if (probe === "current") {
-		return;
-	}
-	if (probe === "stale") {
-		const stopped = await shutdownStaleDaemonIfIdle(socketPath);
-		if (!stopped) {
-			console.error(
-				`Warning: the daemon on ${socketPath} runs a different prime-agent version but has active sessions, so it was left running. Run "prime-agent daemon shutdown" when its sessions are done to upgrade it.`,
-			);
-			return;
-		}
-	}
-
-	const entrypoint = process.argv[1];
-	if (!entrypoint) {
-		throw new Error("Cannot determine current CLI entrypoint for daemon launch");
-	}
-
-	const child = spawn(
-		process.execPath,
-		[...process.execArgv, entrypoint, "--mode", "daemon", "--daemon-socket", socketPath],
-		{
-			cwd: process.cwd(),
-			detached: true,
-			env: process.env,
-			stdio: "ignore",
-		},
-	);
-	child.unref();
-
-	const deadline = Date.now() + 10000;
-	while (Date.now() < deadline) {
-		if (await canConnectToDaemon(socketPath, 250)) {
-			return;
-		}
-		await delay(25);
-	}
-
-	throw new Error(`Timed out waiting for daemon to start on ${socketPath}`);
 }
 
 function getInteractiveDaemonSessionPath(parsed: Args, sessionManager: SessionManager): string | undefined {
@@ -988,25 +864,6 @@ async function createDaemonInteractiveConnection(options: {
 		client.close();
 		throw error;
 	}
-}
-
-async function listActiveDaemonSessionSummaries(client: DaemonClient): Promise<SessionSummary[]> {
-	const response = await client.request({ type: "list" });
-	if (!response.success) {
-		throw new Error(response.error);
-	}
-	const data = response.data;
-	if (!data || typeof data !== "object" || !("sessions" in data)) {
-		throw new Error("Daemon returned an invalid session list response");
-	}
-	const sessions = (data as { sessions: unknown }).sessions;
-	if (!Array.isArray(sessions)) {
-		throw new Error("Daemon returned an invalid session list response");
-	}
-	if (!sessions.every(isDaemonSessionSummary)) {
-		throw new Error("Daemon returned an invalid session summary");
-	}
-	return sessions;
 }
 
 async function findAttachedDaemonSessionSummary(
