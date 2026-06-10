@@ -1121,11 +1121,13 @@ class AgentsViewMode implements Component, Focusable {
 			const tone = this.statusMessage.startsWith("Failed") ? "error" : "muted";
 			return truncateToWidth(theme.fg(tone, this.statusMessage), width);
 		}
+		// Subagents are read-only: reply and stop/deactivate don't apply to them.
+		const selectedAgent = this.rows[this.selectedIndex]?.kind === "agent";
 		const hints = [
 			`${keyText("tui.select.up")}/${keyText("tui.select.down")} move`,
 			`${keyText("tui.select.confirm")} open/send`,
-			`${keyText("app.agents.reply")} reply`,
-			`${keyText("app.agents.delete")} stop/deactivate`,
+			selectedAgent ? `${keyText("app.agents.reply")} reply` : undefined,
+			selectedAgent ? `${keyText("app.agents.delete")} stop/deactivate` : undefined,
 			this.replyActiveSessionId ? `${keyText("app.agents.back")} back` : undefined,
 		]
 			.filter((hint): hint is string => hint !== undefined)
