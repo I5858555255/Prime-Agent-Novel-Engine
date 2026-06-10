@@ -24,6 +24,10 @@ import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode }
 
 type SessionScope = "current" | "all";
 
+// Mirrors the agents view delete flow: press the delete key once to arm, again
+// within this window to confirm; anything else (or the timeout) cancels.
+const DELETE_CONFIRM_DURATION_MS = 2000;
+
 function shortenPath(path: string): string {
 	const home = os.homedir();
 	if (!path) return path;
@@ -152,7 +156,7 @@ class SessionSelectorHeader implements Component {
 		let hintLine1: string;
 		let hintLine2: string;
 		if (this.confirmingDeletePath !== null) {
-			const confirmHint = `Delete session? ${keyHint("tui.select.confirm", "confirm")} · ${keyHint("tui.select.cancel", "cancel")}`;
+			const confirmHint = `Press ${keyText("app.agents.delete")} again to delete`;
 			hintLine1 = theme.fg("error", truncateToWidth(confirmHint, width, "…"));
 			hintLine2 = "";
 		} else if (this.statusMessage) {
@@ -167,7 +171,7 @@ class SessionSelectorHeader implements Component {
 			const hint2Parts = [
 				keyHint("app.session.toggleSort", "sort"),
 				keyHint("app.session.toggleNamedFilter", "named"),
-				keyHint("app.session.delete", "delete"),
+				keyHint("app.agents.delete", "delete"),
 				keyHint("app.session.togglePath", `path ${pathState}`),
 			];
 			if (this.showRenameHint) {
@@ -277,6 +281,7 @@ class SessionList implements Component, Focusable {
 	private keybindings: KeybindingsManager;
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
+	private deleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 	private currentSessionCanonicalPath?: string;
 	public onSelect?: (sessionPath: string) => void;
 	public onCancel?: () => void;
@@ -330,6 +335,10 @@ class SessionList implements Component, Focusable {
 		};
 	}
 
+	setMaxVisible(maxVisible: number): void {
+		this.maxVisible = Math.max(3, maxVisible);
+	}
+
 	setSortMode(sortMode: SortMode): void {
 		this.sortMode = sortMode;
 		this.filterSessions(this.searchInput.getValue());
@@ -373,6 +382,16 @@ class SessionList implements Component, Focusable {
 		this.onDeleteConfirmationChange?.(path);
 	}
 
+	private clearDeleteConfirmation(): void {
+		if (this.deleteConfirmTimer) {
+			clearTimeout(this.deleteConfirmTimer);
+			this.deleteConfirmTimer = null;
+		}
+		if (this.confirmingDeletePath !== null) {
+			this.setConfirmingDeletePath(null);
+		}
+	}
+
 	private startDeleteConfirmationForSelectedSession(): void {
 		const selected = this.filteredSessions[this.selectedIndex];
 		if (!selected) return;
@@ -383,7 +402,21 @@ class SessionList implements Component, Focusable {
 			return;
 		}
 
+		// Second press within the window confirms.
+		if (this.confirmingDeletePath === selected.session.path) {
+			const pathToDelete = this.confirmingDeletePath;
+			this.clearDeleteConfirmation();
+			void this.onDeleteSession?.(pathToDelete);
+			return;
+		}
+
+		this.clearDeleteConfirmation();
 		this.setConfirmingDeletePath(selected.session.path);
+		this.deleteConfirmTimer = setTimeout(() => {
+			this.deleteConfirmTimer = null;
+			this.setConfirmingDeletePath(null);
+		}, DELETE_CONFIRM_DURATION_MS);
+		this.deleteConfirmTimer.unref?.();
 	}
 
 	private isCurrentSessionPath(path: string): boolean {
@@ -438,9 +471,11 @@ class SessionList implements Component, Focusable {
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
 
-			// Session display text (name or first message)
-			const hasName = !!session.name;
-			const displayText = session.name ?? session.firstMessage;
+			// Session display text (name or first message); an armed delete shows
+			// the confirm prompt in place of the title like the agents view.
+			const displayText = isConfirmingDelete
+				? `${keyText("app.agents.delete")} again to remove`
+				: (session.name ?? session.firstMessage);
 			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 
 			// Right side: message count and age
@@ -467,10 +502,7 @@ class SessionList implements Component, Focusable {
 
 			const truncatedMsg = truncateToWidth(normalizedMessage, Math.max(10, availableForMsg), "…");
 
-			let styledMsg = isConfirmingDelete ? theme.fg("error", truncatedMsg) : truncatedMsg;
-			if (hasName) {
-				styledMsg = theme.bold(styledMsg);
-			}
+			const styledMsg = isConfirmingDelete ? theme.fg("error", truncatedMsg) : truncatedMsg;
 
 			// Build line
 			const leftPart = `${theme.fg("dim", prefix)}${icon} ${styledMsg}`;
@@ -509,20 +541,14 @@ class SessionList implements Component, Focusable {
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
 
-		// Handle delete confirmation state first - intercept all keys
-		if (this.confirmingDeletePath !== null) {
-			if (kb.matches(keyData, "tui.select.confirm")) {
-				const pathToDelete = this.confirmingDeletePath;
-				this.setConfirmingDeletePath(null);
-				void this.onDeleteSession?.(pathToDelete);
-				return;
-			}
-			if (kb.matches(keyData, "tui.select.cancel")) {
-				this.setConfirmingDeletePath(null);
-				return;
-			}
-			// Ignore all other keys while confirming
-			return;
+		// Any key other than another delete press cancels an armed confirmation
+		// and is then handled normally, like the agents view.
+		if (
+			this.confirmingDeletePath !== null &&
+			!kb.matches(keyData, "app.agents.delete") &&
+			!kb.matches(keyData, "app.session.deleteNoninvasive")
+		) {
+			this.clearDeleteConfirmation();
 		}
 
 		if (kb.matches(keyData, "tui.input.tab")) {
@@ -549,8 +575,8 @@ class SessionList implements Component, Focusable {
 			return;
 		}
 
-		// Ctrl+D: initiate delete confirmation (useful on terminals that don't distinguish Ctrl+Backspace from Backspace)
-		if (kb.matches(keyData, "app.session.delete")) {
+		// Same binding as the agents view: arm on first press, confirm on second.
+		if (kb.matches(keyData, "app.agents.delete")) {
 			this.startDeleteConfirmationForSelectedSession();
 			return;
 		}
@@ -636,6 +662,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private canRename = true;
+	private readonly frameless: boolean;
 	private sessionList: SessionList;
 	private header: SessionSelectorHeader;
 	private keybindings: KeybindingsManager;
@@ -675,15 +702,19 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private buildBaseLayout(content: Component, options?: { showHeader?: boolean }): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
-		this.addChild(new Spacer(1));
+		if (!this.frameless) {
+			this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
+			this.addChild(new Spacer(1));
+		}
 		if (options?.showHeader ?? true) {
 			this.addChild(this.header);
 			this.addChild(new Spacer(1));
 		}
 		this.addChild(content);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
+		if (!this.frameless) {
+			this.addChild(new Spacer(1));
+			this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
+		}
 	}
 
 	constructor(
@@ -698,10 +729,13 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			deleteSession?: SessionDeleter;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
+			/** Skip the framing borders; used when the selector fills the whole screen. */
+			frameless?: boolean;
 		},
 		currentSessionFilePath?: string,
 	) {
 		super();
+		this.frameless = options?.frameless ?? false;
 		this.keybindings = options?.keybindings ?? KeybindingsManager.create();
 		this.currentSessionsLoader = currentSessionsLoader;
 		this.allSessionsLoader = allSessionsLoader;
@@ -970,6 +1004,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.header.setLoading(this.currentLoading);
 		this.sessionList.setSessions(this.currentSessions ?? [], false);
 		this.requestRender();
+	}
+
+	setListMaxVisible(maxVisible: number): void {
+		this.sessionList.setMaxVisible(maxVisible);
 	}
 
 	getSessionList(): SessionList {
