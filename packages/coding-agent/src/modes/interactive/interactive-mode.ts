@@ -479,6 +479,8 @@ export interface InteractiveModeOptions {
 	onShutdown?: () => void | Promise<void>;
 	/** Allow returning from a full session to the agents view without stopping the daemon-owned agent. */
 	returnToAgentsView?: boolean;
+	/** Open the read-only detail view for this subagent node right after startup. */
+	initialSubagentNodeId?: string;
 }
 
 export type InteractiveModeRunResult = "agents_view";
@@ -929,6 +931,12 @@ export class InteractiveMode {
 
 		// Render initial messages AFTER showing loaded resources
 		await this.renderInitialMessages();
+
+		// Jump straight into a subagent's read-only detail view when the agents
+		// view opened this session targeting one of its subagents.
+		if (this.options.initialSubagentNodeId) {
+			this.openChildAgentDetail(this.options.initialSubagentNodeId);
+		}
 
 		// Set up theme file watcher
 		onThemeChange(() => {
