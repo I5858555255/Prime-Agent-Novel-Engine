@@ -30,20 +30,13 @@ interface MathToken {
 	text: string;
 }
 
-// Math tokens are captured by custom tokenizers (which marked tries before its
-// built-in ones) so LaTeX survives intact: otherwise \[ ... \] collapses to
-// [ ... ] via escape handling and underscores inside formulas turn into
-// emphasis. Unterminated delimiters never match, so partially streamed math
-// stays plain text until the closing delimiter arrives.
-// Leading indentation is tolerated (and consumed) because models often indent
-// display math by four or more spaces, which markdown would otherwise lex as
-// an indented code block. Block extensions run before the built-in code
-// tokenizer, so matching here keeps indented math out of that path.
+// Math must tokenize before marked's escape/emphasis handling, or \[ collapses
+// to [ and underscores inside formulas become italics. Unterminated delimiters
+// never match, so partially streamed math stays plain text until the closing
+// delimiter arrives. Leading indentation is consumed because models often
+// indent display math, which would otherwise lex as an indented code block.
 const BLOCK_MATH_REGEX = /^[ \t]*(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])[ \t]*(?:\n|$)/;
 
-// start() hooks run on every paragraph continuation (block) and every inline
-// position, so they use indexOf scans instead of regexes, and the tokenizers
-// bail on a first-character check before touching their regexes.
 function minIndex(a: number, b: number): number | undefined {
 	if (a === -1) {
 		return b === -1 ? undefined : b;
@@ -54,9 +47,8 @@ function minIndex(a: number, b: number): number | undefined {
 const blockMathExtension: TokenizerExtension = {
 	name: "blockMath",
 	level: "block",
-	// start() decides whether math can interrupt the paragraph being built, so
-	// only the current paragraph (up to the next blank line) needs scanning:
-	// math past it is caught at its own block boundary by the tokenizer.
+	// start() runs on every paragraph continuation; scanning only the current
+	// paragraph keeps it cheap, and later math is caught at its block boundary.
 	start: (src: string) => {
 		const paragraphEnd = src.indexOf("\n\n");
 		const window = paragraphEnd === -1 ? src : src.slice(0, paragraphEnd);
@@ -89,10 +81,8 @@ const INLINE_MATH_PATTERNS = [
 const inlineMathExtension: TokenizerExtension = {
 	name: "inlineMath",
 	level: "inline",
-	// Only "$" needs a start() hint: it is not an inline special character, so
-	// without one the text tokenizer would swallow it. "\(" and "\[" already
-	// terminate text runs (backslash starts an escape), and extensions are
-	// tried at that position anyway.
+	// Only "$" needs a start() hint: backslashes already terminate text runs,
+	// but the text tokenizer would swallow a bare "$" without one.
 	start: (src: string) => {
 		const index = src.indexOf("$");
 		return index === -1 ? undefined : index;
@@ -118,10 +108,8 @@ markdownParser.setOptions({
 	tokenizer: new StrictStrikethroughTokenizer(),
 });
 
-// Registering extensions makes marked consult their start() hooks at every
-// block and inline position, which measurably slows lexing even when they
-// never match. Math-free text (the common case) therefore uses a parser
-// without them; pickMarkdownParser() gates on a cheap substring scan.
+// Registered extensions measurably slow marked's lexing even when they never
+// match, so math-free text (the common case) uses a parser without them.
 const mathMarkdownParser = new Marked();
 mathMarkdownParser.setOptions({
 	tokenizer: new StrictStrikethroughTokenizer(),

@@ -623,8 +623,7 @@ class LatexParser {
 				continue;
 			}
 			if (ch === "&") {
-				// Alignment marker (aligned/cases/matrix environments): becomes a
-				// separating space unless one is already there.
+				// Alignment marker: becomes a separating space unless one is there.
 				this.pos++;
 				if (!/\s$/.test(result)) {
 					result += " ";
@@ -694,8 +693,7 @@ class LatexParser {
 		if (mapped !== undefined) {
 			return mapped;
 		}
-		// Not all characters have sub/superscript forms; keep TeX notation, which
-		// stays lossless and readable (x_θ, x_{best}).
+		// No Unicode form for every character: keep lossless TeX notation (x_θ).
 		return [...content].length === 1 ? `${operator}${content}` : `${operator}{${content}}`;
 	}
 
