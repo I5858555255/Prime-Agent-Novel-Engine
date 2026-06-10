@@ -121,7 +121,7 @@ class HarnessState:
                 for entry_id, raw_entry in raw_kind_entries.items():
                     if isinstance(raw_entry, dict):
                         entry_data = {key: value for key, value in raw_entry.items() if key in _ENTRY_FIELDS}
-                        entry_data.setdefault("id", str(entry_id))
+                        entry_data["id"] = str(entry_id)
                         entry_data.setdefault("kind", kind)
                         if not isinstance(entry_data.get("title"), str) or not isinstance(
                             entry_data.get("content"), str
