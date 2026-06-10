@@ -110,6 +110,40 @@ describe("daemon extension binding", () => {
 		return runtime;
 	}
 
+	it("strips the duplicated partial message from broadcast message_update events", async () => {
+		const runtime = await createRuntimeForTest(() => {}, ["streamed reply"]);
+
+		const outbound: DaemonOutbound[] = [];
+		const state: ActiveSessionState = {
+			activeSessionId: "active-slim",
+			runtime,
+			clients: new Set(),
+			extensionUiRequests: new Map(),
+			lastEventSequence: 0,
+		};
+		await bindActiveSessionState(state, {
+			broadcast: (_state, message) => {
+				outbound.push(message);
+			},
+			shutdown: () => {},
+		});
+
+		await runtime.session.prompt("hello");
+
+		const updates = outbound.filter(
+			(message): message is Extract<DaemonOutbound, { type: "session_event" }> =>
+				message.type === "session_event" && message.event.type === "message_update",
+		);
+		expect(updates.length).toBeGreaterThan(0);
+		for (const update of updates) {
+			expect(update.event).toHaveProperty("message");
+			expect(update.event).toHaveProperty("assistantMessageEvent");
+			expect((update.event as { assistantMessageEvent: object }).assistantMessageEvent).not.toHaveProperty(
+				"partial",
+			);
+		}
+	});
+
 	it("keeps extension replacement callbacks daemon-side and rebinds before withSession", async () => {
 		const phases: string[] = [];
 		let oldSessionFile: string | undefined;
