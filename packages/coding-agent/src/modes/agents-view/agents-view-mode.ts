@@ -504,7 +504,13 @@ class AgentsViewMode implements Component, Focusable {
 		this.collapseSubagentListsOutsideSelection();
 		this.syncSelectedRowState();
 		this.clearDeleteConfirmation({ render: false });
-		if (this.replyActiveSessionId && this.replyActiveSessionId !== this.selectedActiveSessionId) {
+		// Reply stays armed only while the selection sits on the agent row it
+		// targets; nested rows share the parent's session id but are read-only.
+		const selectedRow = this.rows[this.selectedIndex];
+		if (
+			this.replyActiveSessionId &&
+			(selectedRow?.kind !== "agent" || this.replyActiveSessionId !== this.selectedActiveSessionId)
+		) {
 			this.setReplyTarget(undefined);
 		}
 		this.ui.requestRender();
