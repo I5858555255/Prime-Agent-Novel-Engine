@@ -11,6 +11,7 @@ import {
 import { APP_TITLE, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import { SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
 import type { DaemonCommand, DaemonResponse } from "../daemon/daemon-protocol.js";
@@ -707,6 +708,16 @@ class AgentsViewMode implements Component, Focusable {
 					if (!isUnknownActiveSessionError(error)) {
 						throw error;
 					}
+				}
+			}
+			if (pending.sessionFile) {
+				// The kill above normally persists sleep, but it can be skipped or
+				// hit an unknown session (e.g. the daemon died after listing). Make
+				// sure the file is not left marked active, or a restarted daemon
+				// would resurrect a deliberately deactivated agent.
+				const sessionManager = SessionManager.open(pending.sessionFile, this.options.config.sessionDir);
+				if (sessionManager.getSessionState()?.status === "active") {
+					sessionManager.appendSessionState({ status: "sleep" });
 				}
 			}
 			this.inactiveAgentIdentities.add(pending.identity);
