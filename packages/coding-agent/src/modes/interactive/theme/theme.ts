@@ -571,7 +571,8 @@ function parseThemeJson(label: string, json: unknown): ThemeJson {
 		// Validator not loaded yet (first custom-theme parse during startup):
 		// apply a minimal structural check now and report full schema errors
 		// asynchronously once the validator is ready.
-		if (!json || typeof json !== "object" || typeof (json as ThemeJson).colors !== "object") {
+		const colors = (json as Partial<ThemeJson> | null)?.colors;
+		if (!json || typeof json !== "object" || !colors || typeof colors !== "object") {
 			throw new Error(`Invalid theme "${label}": expected a JSON object with a "colors" object`);
 		}
 		void preloadThemeValidator().then(() => {

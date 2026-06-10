@@ -8,7 +8,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { VERSION } from "../config.js";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { expandTildePath, VERSION } from "../config.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
@@ -117,7 +119,7 @@ async function shutdownStaleDaemonIfIdle(socketPath: string): Promise<boolean> {
 	return false;
 }
 
-async function ensureDaemonRunning(socketPath: string): Promise<void> {
+async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promise<void> {
 	const probe = await probeDaemonVersion(socketPath);
 	if (probe === "current") {
 		return;
@@ -141,7 +143,7 @@ async function ensureDaemonRunning(socketPath: string): Promise<void> {
 		process.execPath,
 		[...process.execArgv, entrypoint, "--mode", "daemon", "--daemon-socket", socketPath],
 		{
-			cwd: process.cwd(),
+			cwd: spawnCwd ?? process.cwd(),
 			detached: true,
 			env: process.env,
 			stdio: "ignore",
@@ -168,10 +170,10 @@ const ensurePromises = new Map<string, Promise<void>>();
  * main.ts share one probe/spawn; failed attempts are forgotten so a later call
  * retries (and surfaces the real error at its await site).
  */
-export function ensureInteractiveDaemonRunning(socketPath: string): Promise<void> {
+export function ensureInteractiveDaemonRunning(socketPath: string, spawnCwd?: string): Promise<void> {
 	let promise = ensurePromises.get(socketPath);
 	if (!promise) {
-		promise = ensureDaemonRunning(socketPath);
+		promise = ensureDaemonRunning(socketPath, spawnCwd);
 		ensurePromises.set(socketPath, promise);
 		promise.catch(() => {
 			ensurePromises.delete(socketPath);
@@ -227,5 +229,14 @@ export function maybeStartInteractiveDaemonEarly(args: readonly string[]): void 
 	const socketIndex = args.indexOf("--daemon-socket");
 	const socketPath =
 		socketIndex !== -1 && args[socketIndex + 1] ? (args[socketIndex + 1] as string) : defaultDaemonSocketPath();
-	void ensureInteractiveDaemonRunning(socketPath);
+	// Honor --cwd: main() chdirs after parsing, but this runs before; spawn the
+	// daemon from the target directory so it matches the old post-chdir behavior.
+	const cwdIndex = args.indexOf("--cwd");
+	const cwdArg = cwdIndex !== -1 ? args[cwdIndex + 1] : undefined;
+	const spawnCwd = cwdArg ? resolve(expandTildePath(cwdArg)) : undefined;
+	if (spawnCwd && !existsSync(spawnCwd)) {
+		// Invalid --cwd: skip the early spawn; main() reports the error.
+		return;
+	}
+	void ensureInteractiveDaemonRunning(socketPath, spawnCwd);
 }

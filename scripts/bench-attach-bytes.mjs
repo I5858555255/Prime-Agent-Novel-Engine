@@ -64,20 +64,31 @@ function session(commands, until) {
 				while (idx !== -1) {
 					const line = buffer.slice(0, idx);
 					buffer = buffer.slice(idx + 1);
+					let msg;
 					try {
-						const msg = JSON.parse(line);
-						const next = until(msg);
-						if (next === "done") {
-							clearTimeout(t);
-							socket.destroy();
-							resolve(bytes);
-							return;
-						}
-						if (typeof next === "object" && next) {
-							request(socket, next);
-						}
+						msg = JSON.parse(line);
 					} catch {
-						// partial line noise
+						// non-JSON noise on the stream; skip the line
+						idx = buffer.indexOf("\n");
+						continue;
+					}
+					let next;
+					try {
+						next = until(msg);
+					} catch (error) {
+						clearTimeout(t);
+						socket.destroy();
+						reject(error);
+						return;
+					}
+					if (next === "done") {
+						clearTimeout(t);
+						socket.destroy();
+						resolve(bytes);
+						return;
+					}
+					if (typeof next === "object" && next) {
+						request(socket, next);
 					}
 					idx = buffer.indexOf("\n");
 				}

@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = join(fileURLToPath(import.meta.url), "..", "..");
 const entrypoint = join(repoRoot, "packages", "coding-agent", "dist", "bundle", "cli.js");
-const runs = Number(process.argv[process.argv.indexOf("--runs") + 1] || 3);
+const runsIndex = process.argv.indexOf("--runs");
+const runs = Number(runsIndex !== -1 ? process.argv[runsIndex + 1] : 3) || 3;
 
 function tryConnect(socketPath) {
 	return new Promise((resolve) => {
