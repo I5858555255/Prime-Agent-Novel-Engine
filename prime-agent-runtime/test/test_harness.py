@@ -142,6 +142,7 @@ class HarnessStateTest(unittest.TestCase):
                             "memory": {
                                 "known": {
                                     "id": "mismatched",
+                                    "kind": "skill",
                                     "title": "Known memory",
                                     "content": "Loaded despite extra keys.",
                                     "version": "2",
@@ -174,6 +175,7 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertEqual(state.get("memory", "known").content, "Loaded despite extra keys.")
             self.assertEqual(state.get("memory", "known").id, "known")
+            self.assertEqual(state.get("memory", "known").kind, "memory")
             self.assertIsNone(state.get("memory", "mismatched"))
             self.assertEqual(state.get("memory", "known").version, 2)
             self.assertEqual(state.get("memory", "known").metadata, {})
