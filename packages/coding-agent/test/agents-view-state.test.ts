@@ -140,6 +140,7 @@ describe("agents view state", () => {
 
 		const collapsed = buildAgentsViewRows(summaries);
 		expect(collapsed.map((row) => row.kind)).toEqual(["agent", "subagent-summary"]);
+		expect(collapsed[1]?.title).toBe("1 subagent running");
 
 		const parentIdentity = collapsed[0]?.identity;
 		const expanded = buildAgentsViewRows(summaries, new Set([parentIdentity ?? ""]));
@@ -149,6 +150,37 @@ describe("agents view state", () => {
 			["Completed child", "subagent", 1],
 		]);
 		expect(expanded.slice(1).every((row) => row.selectable && row.parentIdentity === parentIdentity)).toBe(true);
+	});
+
+	test("keeps finished subagents reachable via the summary row", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "done-child",
+				activeSessionId: "done-child",
+				sessionId: "done-child-session",
+				sessionFile: "/tmp/done-child.jsonl",
+				sessionName: "Done child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "parent-active",
+				status: "idle",
+				messageCount: 2,
+			}),
+			makeSummary({
+				id: "parent-active",
+				activeSessionId: "parent-active",
+				sessionId: "parent-session",
+				sessionFile: "/tmp/parent.jsonl",
+				sessionName: "Parent",
+				status: "idle",
+				messageCount: 4,
+			}),
+		]);
+
+		expect(rows.map((row) => [row.title, row.kind])).toEqual([
+			["Parent", "agent"],
+			["1 subagent", "subagent-summary"],
+		]);
+		expect(rows[1]?.selectable).toBe(true);
 	});
 
 	test("treats parent-linked summaries without runtimeKind as subagents", () => {

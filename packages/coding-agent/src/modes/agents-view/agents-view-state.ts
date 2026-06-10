@@ -116,8 +116,8 @@ export function buildAgentsViewRows(
 				child.parentIdentity = row.identity;
 				emit(child, depth + 1);
 			}
-		} else if (row.runningSubagentCount > 0) {
-			flattened.push(createSubagentSummaryRow(row, depth + 1));
+		} else {
+			flattened.push(createSubagentSummaryRow(row, children.length, depth + 1));
 		}
 	};
 	for (const root of roots.sort(compareAgentsViewRows)) {
@@ -128,18 +128,24 @@ export function buildAgentsViewRows(
 
 type MutableAgentsViewRow = AgentsViewRow;
 
-function createSubagentSummaryRow(parent: AgentsViewRow, depth: number): AgentsViewRow {
-	const count = parent.runningSubagentCount;
+function createSubagentSummaryRow(parent: AgentsViewRow, totalCount: number, depth: number): AgentsViewRow {
+	const running = parent.runningSubagentCount;
+	// Finished subagents stay reachable through the summary row even when
+	// nothing is running anymore.
+	const title =
+		running > 0
+			? `${running} ${running === 1 ? "subagent" : "subagents"} running`
+			: `${totalCount} ${totalCount === 1 ? "subagent" : "subagents"}`;
 	return {
 		kind: "subagent-summary",
 		section: parent.section,
 		summary: parent.summary,
-		title: `${count} ${count === 1 ? "subagent" : "subagents"} running`,
+		title,
 		subtitle: "",
 		statusLabel: "",
 		depth,
 		selectable: true,
-		runningSubagentCount: count,
+		runningSubagentCount: running,
 		identity: `subagents:${parent.identity}`,
 		parentIdentity: parent.identity,
 	};
