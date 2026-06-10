@@ -61,7 +61,7 @@ import {
 	type SessionSummary,
 } from "./modes/index.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.js";
-import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
+import { initTheme, preloadCodeHighlighter, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
 import { isLocalPath } from "./utils/paths.js";
 
@@ -1313,6 +1313,7 @@ export async function main(args: string[], options?: MainOptions) {
 			})
 		) {
 			await daemonReady;
+			await preloadCodeHighlighter();
 			printTimings();
 			await runAgentsViewMode({
 				socketPath: daemonSocketPath,
@@ -1370,6 +1371,7 @@ export async function main(args: string[], options?: MainOptions) {
 			verbose: parsed.verbose,
 		});
 
+		await preloadCodeHighlighter();
 		printTimings();
 		await interactiveMode.run();
 		return;
@@ -1475,6 +1477,7 @@ export async function main(args: string[], options?: MainOptions) {
 			return;
 		}
 
+		await preloadCodeHighlighter();
 		printTimings();
 		await interactiveMode.run();
 	} else {
