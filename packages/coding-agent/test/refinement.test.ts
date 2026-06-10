@@ -705,6 +705,34 @@ describe("harness refinement", () => {
 		expect(state.entries.prompt.base_system_prompt).toBeUndefined();
 	});
 
+	it("rejects base system prompt edits when the id is derived from title", () => {
+		const state = loadHarnessState(makeTempDir());
+		const result = applyRefinementProposal(
+			state,
+			{
+				summary: "Bad create",
+				rationale: "Should not apply.",
+				expectedOutcome: "No change.",
+				edits: [
+					{
+						action: "create",
+						kind: "prompt",
+						title: "Base System Prompt",
+						content: "Replace everything.",
+					},
+				],
+			},
+			{ id: "refine_1" },
+		);
+
+		expect(result.appliedEdits[0]).toMatchObject({
+			id: "base_system_prompt",
+			applied: false,
+		});
+		expect(result.appliedEdits[0].error).toContain("base system prompt");
+		expect(state.entries.prompt.base_system_prompt).toBeUndefined();
+	});
+
 	it("rolls back created, updated, and deleted entries from refinement history", async () => {
 		const state = loadHarnessState(makeTempDir());
 		seedEntry(state, "memory", "kept_memory");

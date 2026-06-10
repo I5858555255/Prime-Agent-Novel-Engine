@@ -140,6 +140,8 @@ class HarnessState:
                             entry_data["reference"] = {}
                         if not isinstance(entry_data.get("arguments"), dict):
                             entry_data["arguments"] = {}
+                        if not isinstance(entry_data.get("metadata"), dict):
+                            entry_data["metadata"] = {}
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
         self.entries = entries
 

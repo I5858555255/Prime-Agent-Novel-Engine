@@ -144,6 +144,7 @@ class HarnessStateTest(unittest.TestCase):
                                     "title": "Known memory",
                                     "content": "Loaded despite extra keys.",
                                     "version": "2",
+                                    "metadata": "not a dict",
                                     "unexpected": True,
                                 },
                                 "missing_content": {
@@ -172,6 +173,7 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertEqual(state.get("memory", "known").content, "Loaded despite extra keys.")
             self.assertEqual(state.get("memory", "known").version, 2)
+            self.assertEqual(state.get("memory", "known").metadata, {})
             self.assertIsNone(state.get("memory", "missing_content"))
             self.assertEqual(state.refinements[0].id, "refine_extra")
             self.assertEqual(state.refinements[0].changes, ["1", "loaded"])

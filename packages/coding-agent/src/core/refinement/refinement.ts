@@ -378,14 +378,14 @@ function parseProposal(text: string): RefinementProposal {
 	};
 }
 
-function validateEdit(edit: RefinementEdit): string | undefined {
+function validateEdit(edit: RefinementEdit, computedId?: string): string | undefined {
 	if (!["create", "update", "delete"].includes(edit.action)) {
 		return `unsupported action ${String(edit.action)}`;
 	}
 	if (!["prompt", "memory", "skill", "subagent"].includes(edit.kind)) {
 		return `unsupported kind ${String(edit.kind)}`;
 	}
-	if (edit.kind === "prompt" && edit.id === "base_system_prompt") {
+	if (edit.kind === "prompt" && (edit.id === "base_system_prompt" || computedId === "base_system_prompt")) {
 		return "base system prompt is not editable";
 	}
 	if (edit.action !== "create" && !edit.id) {
@@ -428,14 +428,15 @@ export function applyRefinementProposal(
 ): RefinementResult {
 	const appliedEdits: AppliedRefinementEdit[] = [];
 	for (const edit of proposal.edits) {
-		const validationError = validateEdit(edit);
+		const computedId = edit.id ?? (edit.action === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
+		const id = computedId ?? "";
+		const validationError = validateEdit(edit, id);
 		if (validationError) {
-			appliedEdits.push({ ...edit, id: edit.id ?? "", applied: false, error: validationError });
+			appliedEdits.push({ ...edit, id, applied: false, error: validationError });
 			continue;
 		}
 
 		const records = state.entries[edit.kind];
-		const id = edit.id ?? slug(edit.title ?? edit.kind, edit.kind);
 		const before = cloneEntry(records[id]);
 		if (edit.action === "delete") {
 			if (!before) {

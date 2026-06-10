@@ -7273,10 +7273,15 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			return;
 		}
 
+		const trimmedArgs = args?.trim();
+		if (trimmedArgs === "rollback") {
+			this.showWarning("Usage: /refine rollback <refinement-id>");
+			return;
+		}
 		const rollbackPrefix = "rollback ";
 		const options =
-			args?.startsWith(rollbackPrefix) && args.slice(rollbackPrefix.length).trim()
-				? { rollbackId: args.slice(rollbackPrefix.length).trim() }
+			trimmedArgs?.startsWith(rollbackPrefix) && trimmedArgs.slice(rollbackPrefix.length).trim()
+				? { rollbackId: trimmedArgs.slice(rollbackPrefix.length).trim() }
 				: { instructions: args };
 
 		this.stopWorkingLoader();
