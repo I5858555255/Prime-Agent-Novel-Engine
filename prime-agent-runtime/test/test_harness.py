@@ -10,6 +10,13 @@ from rlm import harness as package_harness
 from rlm import rlm as callable_rlm
 from rlm.harness import HarnessState, get_harness_state
 
+PYTHON_REFERENCE = {
+    "type": "python",
+    "import": "agent_skills.example",
+    "callable": "run",
+    "call_pattern": "await run(...)",
+}
+
 
 class HarnessStateTest(unittest.TestCase):
     def test_crud_for_all_entry_kinds(self) -> None:
@@ -36,6 +43,7 @@ class HarnessStateTest(unittest.TestCase):
                     "Skill content",
                     id="skill_entry",
                     path="skill/path",
+                    reference=PYTHON_REFERENCE,
                     arguments={"target": {"type": "string", "required": True}},
                     metadata={"kind": "skill"},
                 ),
@@ -59,6 +67,7 @@ class HarnessStateTest(unittest.TestCase):
                 "skill_entry",
                 "Skill",
                 "Skill content updated",
+                reference=PYTHON_REFERENCE,
                 arguments={"target": {"type": "string", "required": True}, "mode": {"type": "string"}},
             )
             state.update_subagent("subagent_entry", "Subagent", "Subagent content updated")
@@ -87,6 +96,7 @@ class HarnessStateTest(unittest.TestCase):
                 "Check failures first",
                 "Inspect current failure evidence before editing code.",
                 id="failure_first",
+                reference=PYTHON_REFERENCE,
                 arguments={"failure_log": {"type": "string", "description": "Current failure evidence."}},
             )
             subagent = state.create_subagent(
@@ -179,6 +189,12 @@ class HarnessStateTest(unittest.TestCase):
                 "Edit file",
                 "Apply a targeted edit.",
                 id="edit_file",
+                reference={
+                    "type": "python",
+                    "import": "agent_skills.file_edit",
+                    "callable": "file_edit",
+                    "call_pattern": "await file_edit(path=..., find=..., replace=...)",
+                },
                 arguments={
                     "path": {"type": "string", "required": True},
                     "find": {"type": "string", "required": True},
@@ -189,6 +205,12 @@ class HarnessStateTest(unittest.TestCase):
                 "edit_file",
                 "Edit file",
                 "Apply a targeted edit after reading context.",
+                reference={
+                    "type": "python",
+                    "import": "agent_skills.file_edit",
+                    "callable": "file_edit",
+                    "call_pattern": "await file_edit(path=..., find=..., replace=...)",
+                },
                 arguments={
                     "path": {"type": "string", "required": True},
                     "find": {"type": "string", "required": True},
@@ -199,21 +221,47 @@ class HarnessStateTest(unittest.TestCase):
             reloaded = HarnessState(state.file_path)
 
             self.assertEqual(created.arguments["path"]["required"], True)
+            self.assertEqual(created.reference["type"], "python")
             self.assertEqual(updated.version, 2)
             self.assertEqual(reloaded.get("skill", "edit_file").arguments["validate"]["default"], True)
+            self.assertEqual(reloaded.get("skill", "edit_file").reference["import"], "agent_skills.file_edit")
             self.assertIn('"path"', reloaded.overview())
+            self.assertIn("agent_skills", reloaded.overview())
+
+    def test_skill_references_must_be_python(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+
+            with self.assertRaisesRegex(ValueError, "Python reference"):
+                state.create_skill("No reference", "missing", arguments={})
+            with self.assertRaisesRegex(ValueError, "reference.type must be 'python'"):
+                state.create_skill(
+                    "Shell reference",
+                    "bad",
+                    reference={"type": "shell", "command": "edit"},
+                    arguments={},
+                )
+            with self.assertRaisesRegex(ValueError, "Python import"):
+                state.create_skill("No import", "bad", reference={"type": "python", "callable": "run"}, arguments={})
+            with self.assertRaisesRegex(ValueError, "callable or call_pattern"):
+                state.create_skill(
+                    "No callable",
+                    "bad",
+                    reference={"type": "python", "import": "agent_skills.bad"},
+                    arguments={},
+                )
 
     def test_explicit_create_and_update_enforce_entry_existence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
 
-            first = state.create_skill("Triage", "old", id="triage")
+            first = state.create_skill("Triage", "old", id="triage", reference=PYTHON_REFERENCE, arguments={})
             with self.assertRaisesRegex(ValueError, "already exists"):
-                state.create_skill("Triage", "duplicate", id="triage")
+                state.create_skill("Triage", "duplicate", id="triage", reference=PYTHON_REFERENCE, arguments={})
             with self.assertRaisesRegex(ValueError, "does not exist"):
-                state.update_skill("missing", "Missing", "missing")
+                state.update_skill("missing", "Missing", "missing", reference=PYTHON_REFERENCE, arguments={})
 
-            second = state.update_skill("triage", "Triage", "new")
+            second = state.update_skill("triage", "Triage", "new", reference=PYTHON_REFERENCE, arguments={})
 
             self.assertEqual(first.id, second.id)
             self.assertEqual(second.content, "new")

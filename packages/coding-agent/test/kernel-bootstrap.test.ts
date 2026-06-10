@@ -26,7 +26,7 @@ function writeBootstrapVersion(venv: string, pythonSkills: readonly KernelPython
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
 		`${JSON.stringify({
-			schema: 5,
+			schema: 6,
 			ipykernel: "ipykernel",
 			runtime: "prime-agent-runtime",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
@@ -174,7 +174,7 @@ describe("kernel bootstrap", () => {
 		}
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version).toEqual({
-			schema: 5,
+			schema: 6,
 			ipykernel: "ipykernel",
 			runtime: "prime-agent-runtime",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,

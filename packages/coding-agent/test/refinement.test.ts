@@ -33,6 +33,12 @@ function makeTempDir(): string {
 }
 
 const kinds = ["prompt", "memory", "skill", "subagent"] as const satisfies readonly RefinementKind[];
+const skillReference = {
+	type: "python",
+	import: "agent_skills.example",
+	callable: "run",
+	call_pattern: "await run(...)",
+};
 
 function proposal(summary: string, edits: RefinementProposal["edits"]): RefinementProposal {
 	return {
@@ -45,7 +51,12 @@ function proposal(summary: string, edits: RefinementProposal["edits"]): Refineme
 
 function seedEntry(state: HarnessState, kind: RefinementKind, id = `${kind}_entry`): void {
 	const skillArguments =
-		kind === "skill" ? { arguments: { input: { type: "string", required: true, description: "Task input" } } } : {};
+		kind === "skill"
+			? {
+					reference: skillReference,
+					arguments: { input: { type: "string", required: true, description: "Task input" } },
+				}
+			: {};
 	applyRefinementProposal(
 		state,
 		proposal(`seed ${kind}`, [
@@ -80,7 +91,10 @@ describe("harness refinement", () => {
 					content: `${kind} content`,
 					path: `${kind}/created`,
 					...(kind === "skill"
-						? { arguments: { input: { type: "string", required: true, description: "Task input" } } }
+						? {
+								reference: skillReference,
+								arguments: { input: { type: "string", required: true, description: "Task input" } },
+							}
 						: {}),
 					metadata: { kind },
 				})),
@@ -119,7 +133,12 @@ describe("harness refinement", () => {
 					content: `${kind} content updated`,
 					path: `${kind}/updated`,
 					...(kind === "skill"
-						? { arguments: { input: { type: "string", required: true, description: "Updated task input" } } }
+						? {
+								reference: skillReference,
+								arguments: {
+									input: { type: "string", required: true, description: "Updated task input" },
+								},
+							}
 						: {}),
 					metadata: { updated: kind },
 				})),
@@ -190,6 +209,12 @@ describe("harness refinement", () => {
 						id: "native_check",
 						title: "Native check",
 						content: "Use documented project commands for validation.",
+						reference: {
+							type: "python",
+							import: "agent_skills.native_check",
+							callable: "native_check",
+							call_pattern: "await native_check(command=...)",
+						},
 						arguments: {
 							command: { type: "string", required: false, description: "Optional command to validate." },
 						},
@@ -211,6 +236,12 @@ describe("harness refinement", () => {
 						id: "native_check",
 						title: "Native check",
 						content: "Use `npm run check` for this repo after code changes.",
+						reference: {
+							type: "python",
+							import: "agent_skills.native_check",
+							callable: "native_check",
+							call_pattern: "await native_check(command=...)",
+						},
 						arguments: {
 							command: { type: "string", required: false, description: "Optional command to validate." },
 						},
@@ -244,6 +275,12 @@ describe("harness refinement", () => {
 					kind: "skill",
 					title: "Native Check!",
 					content: "Run project-native checks.",
+					reference: {
+						type: "python",
+						import: "agent_skills.native_check",
+						callable: "native_check",
+						call_pattern: "await native_check(command=...)",
+					},
 					arguments: {
 						command: { type: "string", required: false, description: "Optional command override." },
 					},
@@ -258,6 +295,12 @@ describe("harness refinement", () => {
 			after: {
 				id: "native_check",
 				path: "general",
+				reference: {
+					type: "python",
+					import: "agent_skills.native_check",
+					callable: "native_check",
+					call_pattern: "await native_check(command=...)",
+				},
 				arguments: {
 					command: { type: "string", required: false, description: "Optional command override." },
 				},
@@ -293,6 +336,7 @@ describe("harness refinement", () => {
 					id: "no_input_skill",
 					title: "No input skill",
 					content: "This skill intentionally needs no external inputs.",
+					reference: skillReference,
 					arguments: {},
 				},
 			]),
@@ -308,6 +352,51 @@ describe("harness refinement", () => {
 			applied: true,
 			after: { arguments: {} },
 		});
+	});
+
+	it("requires Python references for harness-created skills", () => {
+		const state = loadHarnessState(makeTempDir());
+
+		const missingReference = applyRefinementProposal(
+			state,
+			proposal("Create skill without reference", [
+				{
+					action: "create",
+					kind: "skill",
+					id: "unbacked_skill",
+					title: "Unbacked skill",
+					content: "This should not be accepted without a Python reference.",
+					arguments: {},
+				},
+			]),
+			{ id: "refine_missing_skill_reference" },
+		);
+		const nonPythonReference = applyRefinementProposal(
+			state,
+			proposal("Create skill with non-python reference", [
+				{
+					action: "create",
+					kind: "skill",
+					id: "shell_skill",
+					title: "Shell skill",
+					content: "This should not be accepted as a harness skill.",
+					reference: { type: "shell", command: "edit" },
+					arguments: {},
+				},
+			]),
+			{ id: "refine_non_python_skill_reference" },
+		);
+
+		expect(missingReference.appliedEdits[0]).toMatchObject({
+			applied: false,
+			error: "create skill requires python reference",
+		});
+		expect(nonPythonReference.appliedEdits[0]).toMatchObject({
+			applied: false,
+			error: "create skill reference.type must be python",
+		});
+		expect(state.entries.skill.unbacked_skill).toBeUndefined();
+		expect(state.entries.skill.shell_skill).toBeUndefined();
 	});
 
 	it("uses a global harness state directory under the agent dir by default", () => {
@@ -405,7 +494,12 @@ describe("harness refinement", () => {
 					title: "replacement",
 					content: "replacement",
 					...(kind === "skill"
-						? { arguments: { input: { type: "string", required: true, description: "Replacement input" } } }
+						? {
+								reference: skillReference,
+								arguments: {
+									input: { type: "string", required: true, description: "Replacement input" },
+								},
+							}
 						: {}),
 				},
 			]),
@@ -438,7 +532,10 @@ describe("harness refinement", () => {
 					title: "missing",
 					content: "missing",
 					...(kind === "skill"
-						? { arguments: { input: { type: "string", required: true, description: "Missing input" } } }
+						? {
+								reference: skillReference,
+								arguments: { input: { type: "string", required: true, description: "Missing input" } },
+							}
 						: {}),
 				},
 			]),
@@ -667,6 +764,7 @@ describe("harness refinement", () => {
 			title: "skill title",
 			content: "skill content",
 			path: "skill/path",
+			reference: skillReference,
 			arguments: { input: { type: "string", required: true, description: "Task input" } },
 			metadata: { seeded: true },
 			version: 1,

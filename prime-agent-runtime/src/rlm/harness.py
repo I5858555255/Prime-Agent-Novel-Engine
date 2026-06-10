@@ -58,6 +58,7 @@ class HarnessEntry:
     title: str
     content: str
     path: str = "general"
+    reference: dict[str, Any] = field(default_factory=dict)
     arguments: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     source: str = "agent"
@@ -80,6 +81,19 @@ class RefinementEvent:
 
 _ENTRY_FIELDS = {field.name for field in fields(HarnessEntry)}
 _REFINEMENT_FIELDS = {field.name for field in fields(RefinementEvent)}
+
+
+def _validate_python_skill_reference(reference: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(reference, dict):
+        raise ValueError("skill entries require a Python reference")
+    normalized = dict(reference)
+    if normalized.get("type") != "python":
+        raise ValueError("skill reference.type must be 'python'")
+    if not any(isinstance(normalized.get(key), str) and normalized[key] for key in ("import", "python_import")):
+        raise ValueError("skill reference requires a Python import")
+    if not any(isinstance(normalized.get(key), str) and normalized[key] for key in ("callable", "call_pattern")):
+        raise ValueError("skill reference requires a callable or call_pattern")
+    return normalized
 
 
 class HarnessState:
@@ -122,6 +136,8 @@ class HarnessState:
                         if not isinstance(version, int):
                             version = 1
                         entry_data["version"] = version
+                        if not isinstance(entry_data.get("reference"), dict):
+                            entry_data["reference"] = {}
                         if not isinstance(entry_data.get("arguments"), dict):
                             entry_data["arguments"] = {}
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
@@ -169,6 +185,7 @@ class HarnessState:
         *,
         id: str | None = None,
         path: str = "general",
+        reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
@@ -182,6 +199,7 @@ class HarnessState:
             existing.title = title
             existing.content = content
             existing.path = path
+            existing.reference = dict(reference or {})
             existing.arguments = dict(arguments or {})
             existing.metadata = dict(metadata or {})
             existing.source = source
@@ -195,6 +213,7 @@ class HarnessState:
                 title=title,
                 content=content,
                 path=path,
+                reference=dict(reference or {}),
                 arguments=dict(arguments or {}),
                 metadata=dict(metadata or {}),
                 source=source,
@@ -234,6 +253,7 @@ class HarnessState:
         *,
         id: str | None = None,
         path: str = "general",
+        reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
@@ -249,6 +269,7 @@ class HarnessState:
             content,
             id=entry_id,
             path=path,
+            reference=reference,
             arguments=arguments,
             metadata=metadata,
             source=source,
@@ -262,6 +283,7 @@ class HarnessState:
         content: str,
         *,
         path: str = "general",
+        reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
@@ -270,7 +292,17 @@ class HarnessState:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         if id not in self.entries[kind]:
             raise ValueError(f"{kind} entry {id!r} does not exist")
-        return self.upsert(kind, title, content, id=id, path=path, arguments=arguments, metadata=metadata, source=source)
+        return self.upsert(
+            kind,
+            title,
+            content,
+            id=id,
+            path=path,
+            reference=reference,
+            arguments=arguments,
+            metadata=metadata,
+            source=source,
+        )
 
     def create_memory(
         self,
@@ -329,10 +361,20 @@ class HarnessState:
         *,
         id: str | None = None,
         path: str = "general",
+        reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.create("skill", title, content, id=id, path=path, arguments=arguments, metadata=metadata)
+        return self.create(
+            "skill",
+            title,
+            content,
+            id=id,
+            path=path,
+            reference=_validate_python_skill_reference(reference),
+            arguments=arguments,
+            metadata=metadata,
+        )
 
     def update_skill(
         self,
@@ -341,10 +383,20 @@ class HarnessState:
         content: str,
         *,
         path: str = "general",
+        reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
-        return self.update("skill", id, title, content, path=path, arguments=arguments, metadata=metadata)
+        return self.update(
+            "skill",
+            id,
+            title,
+            content,
+            path=path,
+            reference=_validate_python_skill_reference(reference),
+            arguments=arguments,
+            metadata=metadata,
+        )
 
     def delete_skill(self, id: str) -> bool:
         return self.delete("skill", id)
@@ -417,7 +469,7 @@ class HarnessState:
         lines = [
             f"Harness state: {self.file_path}",
             "Call contract: installed Python skills use await <skill_import>(...) or a matching shell CLI; "
-            "harness skill entries are procedural specs unless metadata names an installed Python import. "
+            "harness skill entries are Python REPL skills and must include a Python reference plus arguments. "
             "Subagent specs are invoked by composing a concise task prompt and calling await rlm('sub-task'), "
             "or asyncio.gather(rlm('task1'), rlm('task2')) for independent parallel subagents.",
         ]
@@ -434,8 +486,15 @@ class HarnessState:
                     if len(argument_text) > 120:
                         argument_text = f"{argument_text[:117]}..."
                     argument_summary = f" args={argument_text}"
+                reference_summary = ""
+                if entry.kind == "skill" and entry.reference:
+                    reference_text = json.dumps(entry.reference, ensure_ascii=False, sort_keys=True)
+                    if len(reference_text) > 120:
+                        reference_text = f"{reference_text[:117]}..."
+                    reference_summary = f" ref={reference_text}"
                 lines.append(
-                    f"  - [{entry.id}] {entry.title} ({entry.path}, v{entry.version}){argument_summary}: {summary}"
+                    f"  - [{entry.id}] {entry.title} ({entry.path}, v{entry.version})"
+                    f"{reference_summary}{argument_summary}: {summary}"
                 )
             overflow = len(self.entries[kind]) - len(records)
             if overflow > 0:

@@ -23,6 +23,7 @@ export interface HarnessEntry {
 	title: string;
 	content: string;
 	path: string;
+	reference: Record<string, unknown>;
 	arguments: Record<string, unknown>;
 	metadata: Record<string, unknown>;
 	source: string;
@@ -53,6 +54,7 @@ export interface RefinementEdit {
 	title?: string;
 	content?: string;
 	path?: string;
+	reference?: Record<string, unknown>;
 	arguments?: Record<string, unknown>;
 	metadata?: Record<string, unknown>;
 	reason?: string;
@@ -97,7 +99,7 @@ conversation you emit precise Create, Update, or Delete edits to reusable state.
 Editable components:
 - prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.
 - memory: durable facts, decisions, failures, preferences, and outcomes.
-- skill: reusable procedures or tactics the agent should apply later. A skill entry is a spec, not automatically executable code. Skill create/update edits MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints; use \`{}\` only when the skill truly needs no external inputs. If it refers to an installed Python skill, include the RLM-native call form \`await <skill_import>(...)\` and put \`python_import\` / \`call_pattern\` in metadata.
+- skill: installed Python REPL skill. Skill create/update edits MUST include a \`reference\` object with \`{"type":"python"}\`, a Python import, and a callable or call pattern; they also MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints. Use \`{}\` for \`arguments\` only when the Python callable truly needs no external inputs. Include the RLM-native call form \`await <skill_import>(...)\`.
 - subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: create a concise task prompt and call \`await rlm("sub-task")\`; for independent parallel subagents use \`await asyncio.gather(rlm("task1"), rlm("task2"))\`. Do not invent wrappers like \`run_subagent(...)\`.
 
 Use the trajectory, current harness state, and prior refinement history. Prefer
@@ -117,6 +119,7 @@ JSON only with this exact shape:
       "title": "required for create/update except delete",
       "content": "required for create/update except delete",
       "path": "optional grouping path",
+      "reference": {"type": "python", "import": "package.module", "callable": "function_name", "call_pattern": "await function_name(...)"},
       "arguments": {"name": {"type": "string", "required": true, "description": "accepted input"}},
       "metadata": {},
       "reason": "why this edit is useful"
@@ -186,6 +189,7 @@ export function loadHarnessState(harnessStateDir: string = getGlobalHarnessState
 				if (!entry) continue;
 				state.entries[kind][id] = {
 					...(entry as unknown as HarnessEntry),
+					reference: objectRecord(entry.reference) ?? {},
 					arguments: objectRecord(entry.arguments) ?? {},
 					metadata: objectRecord(entry.metadata) ?? {},
 				};
@@ -232,7 +236,7 @@ export function formatHarnessStateForPrompt(
 		"",
 		"When to call `/refine`: after a repeated failure, a reusable tactic emerges, a user corrects behavior that should persist, validation shows a harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `/refine` edits small and evidence-backed.",
 		"",
-		"Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Harness skill entries are procedural specs with an explicit `arguments` contract unless metadata names an installed Python import and call pattern. Harness subagent entries are invoked by composing a concise task prompt and calling `await rlm('sub-task')`; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
+		"Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Harness subagent entries are invoked by composing a concise task prompt and calling `await rlm('sub-task')`; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
 		"",
 	];
 
@@ -248,8 +252,12 @@ export function formatHarnessStateForPrompt(
 				entry.kind === "skill" && Object.keys(entry.arguments).length > 0
 					? ` args=${compactText(JSON.stringify(entry.arguments), maxContentLength)}`
 					: "";
+			const referenceText =
+				entry.kind === "skill" && Object.keys(entry.reference).length > 0
+					? ` ref=${compactText(JSON.stringify(entry.reference), maxContentLength)}`
+					: "";
 			lines.push(
-				`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${argumentsText}: ${compactText(
+				`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${compactText(
 					entry.content,
 					maxContentLength,
 				)}`,
@@ -291,7 +299,13 @@ function overviewForPrompt(state: HarnessState): string {
 				entry.kind === "skill" && Object.keys(entry.arguments).length > 0
 					? ` args=${JSON.stringify(entry.arguments).slice(0, 240)}`
 					: "";
-			lines.push(`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${argumentsText}: ${content}`);
+			const referenceText =
+				entry.kind === "skill" && Object.keys(entry.reference).length > 0
+					? ` ref=${JSON.stringify(entry.reference).slice(0, 240)}`
+					: "";
+			lines.push(
+				`- [${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${content}`,
+			);
 		}
 		if (entries.length > 40) {
 			lines.push(`- +${entries.length - 40} more ${kind} entries`);
@@ -353,6 +367,7 @@ function parseProposal(text: string): RefinementProposal {
 				title: typeof edit.title === "string" ? edit.title : undefined,
 				content: typeof edit.content === "string" ? edit.content : undefined,
 				path: typeof edit.path === "string" ? edit.path : undefined,
+				reference: objectRecord(edit.reference),
 				arguments: objectRecord(edit.arguments),
 				metadata:
 					typeof edit.metadata === "object" && edit.metadata !== null && !Array.isArray(edit.metadata)
@@ -381,6 +396,27 @@ function validateEdit(edit: RefinementEdit): string | undefined {
 	}
 	if (edit.action !== "delete" && edit.kind === "skill" && edit.arguments === undefined) {
 		return `${edit.action} skill requires arguments`;
+	}
+	if (edit.action !== "delete" && edit.kind === "skill") {
+		const reference = edit.reference;
+		if (!reference) {
+			return `${edit.action} skill requires python reference`;
+		}
+		if (reference.type !== "python") {
+			return `${edit.action} skill reference.type must be python`;
+		}
+		const hasImport =
+			(typeof reference.import === "string" && reference.import.length > 0) ||
+			(typeof reference.python_import === "string" && reference.python_import.length > 0);
+		const hasCallable =
+			(typeof reference.callable === "string" && reference.callable.length > 0) ||
+			(typeof reference.call_pattern === "string" && reference.call_pattern.length > 0);
+		if (!hasImport) {
+			return `${edit.action} skill requires python import`;
+		}
+		if (!hasCallable) {
+			return `${edit.action} skill requires callable or call_pattern`;
+		}
 	}
 	return undefined;
 }
@@ -427,6 +463,7 @@ export function applyRefinementProposal(
 			title: edit.title ?? before?.title ?? id,
 			content: edit.content ?? before?.content ?? "",
 			path: edit.path ?? before?.path ?? "general",
+			reference: edit.reference ?? before?.reference ?? {},
 			arguments: edit.arguments ?? before?.arguments ?? {},
 			metadata: edit.metadata ?? before?.metadata ?? {},
 			source: "refine",
@@ -471,6 +508,7 @@ function rollbackProposal(target: RefinementResult): RefinementProposal {
 				title: edit.before.title,
 				content: edit.before.content,
 				path: edit.before.path,
+				reference: edit.before.reference,
 				arguments: edit.before.arguments,
 				metadata: edit.before.metadata,
 				reason: `Rollback ${target.id}`,
