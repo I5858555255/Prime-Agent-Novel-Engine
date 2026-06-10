@@ -238,8 +238,8 @@ describe("session selector path/delete interactions", () => {
 
 		expect(allLoadCalls).toBe(1);
 		const output = selector.render(120).join("\n");
-		expect(output).toContain("Resume Session (Current Folder)");
-		expect(output).not.toContain("Resume Session (All)");
+		expect(output).toContain("current folder");
+		expect(output).not.toContain("all projects");
 	});
 
 	it("does not start redundant All loads when toggling scopes while All is already loading", async () => {
@@ -305,7 +305,7 @@ describe("session selector path/delete interactions", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("Parent");
-		expect(output).toContain("└─ Child");
+		expect(output).toContain("└─ ✓ Child");
 	});
 
 	it("treats the current session as active across symlink aliases", async () => {

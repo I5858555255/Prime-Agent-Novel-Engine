@@ -129,26 +129,21 @@ class SessionSelectorHeader implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const title = this.scope === "current" ? "Resume Session (Current Folder)" : "Resume Session (All)";
-		const leftText = theme.bold(title);
+		const leftText = theme.bold("Resume Session");
 
-		const sortLabel = this.sortMode === "threaded" ? "Threaded" : this.sortMode === "recent" ? "Recent" : "Fuzzy";
-		const sortText = theme.fg("muted", "Sort: ") + theme.fg("accent", sortLabel);
-
-		const nameLabel = this.nameFilter === "all" ? "All" : "Named";
-		const nameText = theme.fg("muted", "Name: ") + theme.fg("accent", nameLabel);
-
-		let scopeText: string;
+		const sortLabel = this.sortMode === "threaded" ? "threaded" : this.sortMode === "recent" ? "recent" : "fuzzy";
+		const segments: string[] = [];
 		if (this.loading) {
 			const progressText = this.loadProgress ? `${this.loadProgress.loaded}/${this.loadProgress.total}` : "...";
-			scopeText = `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", `Loading ${progressText}`)}`;
-		} else if (this.scope === "current") {
-			scopeText = `${theme.fg("accent", "◉ Current Folder")}${theme.fg("muted", " | ○ All")}`;
+			segments.push(`loading ${progressText}`);
 		} else {
-			scopeText = `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", "◉ All")}`;
+			segments.push(this.scope === "current" ? "current folder" : "all projects");
 		}
-
-		const rightText = truncateToWidth(`${scopeText}  ${nameText}  ${sortText}`, width, "");
+		segments.push(`sort: ${sortLabel}`);
+		if (this.nameFilter === "named") {
+			segments.push("named only");
+		}
+		const rightText = truncateToWidth(theme.fg("muted", segments.join("  ")), width, "");
 		const availableLeft = Math.max(0, width - visibleWidth(rightText) - 1);
 		const left = truncateToWidth(leftText, availableLeft, "");
 		const spacing = Math.max(0, width - visibleWidth(left) - visibleWidth(rightText));
@@ -432,7 +427,7 @@ class SessionList implements Component, Focusable {
 		);
 		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredSessions.length);
 
-		// Render visible sessions (one line each with tree structure)
+		// Render visible sessions like agents view rows: icon, title, right-aligned details.
 		for (let i = startIndex; i < endIndex; i++) {
 			const node = this.filteredSessions[i]!;
 			const session = node.session;
@@ -450,48 +445,43 @@ class SessionList implements Component, Focusable {
 
 			// Right side: message count and age
 			const age = formatSessionDate(session.modified);
-			const msgCount = String(session.messageCount);
-			let rightPart = `${msgCount} ${age}`;
+			let rightPart = `${session.messageCount} · ${age}`;
 			if (this.showCwd && session.cwd) {
-				rightPart = `${shortenPath(session.cwd)} ${rightPart}`;
+				rightPart = `${shortenPath(session.cwd)}  ${rightPart}`;
 			}
 			if (this.showPath) {
-				rightPart = `${shortenPath(session.path)} ${rightPart}`;
+				rightPart = `${shortenPath(session.path)}  ${rightPart}`;
 			}
 
-			// Cursor
-			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
+			const rawIcon = isConfirmingDelete ? "✗" : "✓";
+			const icon = isConfirmingDelete
+				? theme.fg("error", rawIcon)
+				: isCurrent
+					? theme.fg("accent", rawIcon)
+					: theme.fg("success", rawIcon);
 
 			// Calculate available width for message
 			const prefixWidth = visibleWidth(prefix);
 			const rightWidth = visibleWidth(rightPart) + 2; // +2 for spacing
-			const availableForMsg = width - 2 - prefixWidth - rightWidth; // -2 for cursor
+			const availableForMsg = width - 2 - prefixWidth - rightWidth - 2; // icon + gap
 
 			const truncatedMsg = truncateToWidth(normalizedMessage, Math.max(10, availableForMsg), "…");
 
-			// Style message
-			let messageColor: "error" | "warning" | "accent" | null = null;
-			if (isConfirmingDelete) {
-				messageColor = "error";
-			} else if (isCurrent) {
-				messageColor = "accent";
-			} else if (hasName) {
-				messageColor = "warning";
-			}
-			let styledMsg = messageColor ? theme.fg(messageColor, truncatedMsg) : truncatedMsg;
-			if (isSelected) {
+			let styledMsg = isConfirmingDelete ? theme.fg("error", truncatedMsg) : truncatedMsg;
+			if (hasName) {
 				styledMsg = theme.bold(styledMsg);
 			}
 
 			// Build line
-			const leftPart = cursor + theme.fg("dim", prefix) + styledMsg;
+			const leftPart = `${theme.fg("dim", prefix)}${icon} ${styledMsg}`;
 			const leftWidth = visibleWidth(leftPart);
 			const spacing = Math.max(1, width - leftWidth - visibleWidth(rightPart));
 			const styledRight = theme.fg(isConfirmingDelete ? "error" : "dim", rightPart);
 
 			let line = leftPart + " ".repeat(spacing) + styledRight;
 			if (isSelected) {
-				line = theme.bg("selectedBg", line);
+				const padded = truncateToWidth(line, width);
+				line = theme.bg("selectedBg", padded + " ".repeat(Math.max(0, width - visibleWidth(padded))));
 			}
 			lines.push(truncateToWidth(line, width));
 		}
@@ -685,7 +675,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private buildBaseLayout(content: Component, options?: { showHeader?: boolean }): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
+		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
 		this.addChild(new Spacer(1));
 		if (options?.showHeader ?? true) {
 			this.addChild(this.header);
@@ -693,7 +683,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		}
 		this.addChild(content);
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
+		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
 	}
 
 	constructor(
