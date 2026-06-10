@@ -187,7 +187,11 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				modelFallbackMessage: opened.summary.modelFallbackMessage ?? options.modelFallbackMessage,
 				verbose: options.verbose,
 				returnToAgentsView: true,
-				initialSubagentNodeId: result.subagent?.rlmChildId,
+				// Matches the node id scheme used by snapshot child seeding
+				// (rlmChildId, falling back to the child's active session id).
+				initialSubagentNodeId: result.subagent
+					? (result.subagent.rlmChildId ?? result.subagent.activeSessionId)
+					: undefined,
 			});
 			await interactiveMode.run();
 		} catch (error) {
