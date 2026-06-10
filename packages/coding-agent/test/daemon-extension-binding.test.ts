@@ -96,7 +96,7 @@ describe("daemon extension binding", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			sessionManager: SessionManager.create(tempDir, join(tempDir, "sessions")),
 		});
 
 		cleanups.push(async () => {
