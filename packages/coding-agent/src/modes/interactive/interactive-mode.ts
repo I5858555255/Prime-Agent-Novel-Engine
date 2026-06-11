@@ -3759,7 +3759,9 @@ export class InteractiveMode {
 					);
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
-					if (event.reason === "manual") {
+					if (event.errorSeverity === "warning") {
+						this.showWarning(event.errorMessage);
+					} else if (event.reason === "manual") {
 						this.showError(event.errorMessage);
 					} else {
 						this.chatContainer.addChild(new Spacer(1));

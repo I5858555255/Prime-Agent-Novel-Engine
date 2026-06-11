@@ -466,6 +466,8 @@ export type AgentConnectionSessionEvent =
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
+			/** "warning" for benign skips (nothing to compact), "error" for real failures */
+			errorSeverity?: "warning" | "error";
 			customInstructions?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
