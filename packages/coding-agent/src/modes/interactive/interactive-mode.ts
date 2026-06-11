@@ -3712,9 +3712,12 @@ export class InteractiveMode {
 				// Keep editor active; submissions are queued during compaction.
 				this.statusContainer.clear();
 				const cancelHint = `(${keyText("app.clear")} to cancel)`;
+				const focus = event.customInstructions
+					? ` (focus: ${truncateToWidth(event.customInstructions, 60, "…")})`
+					: "";
 				const label =
 					event.reason === "manual"
-						? `Compacting context... ${cancelHint}`
+						? `Compacting context${focus}... ${cancelHint}`
 						: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
 				this.autoCompactionLoader = new Loader(
 					this.ui,
@@ -3750,6 +3753,7 @@ export class InteractiveMode {
 							event.result.summary,
 							event.result.tokensBefore,
 							new Date().toISOString(),
+							event.customInstructions,
 						),
 					);
 					this.footer.invalidate();

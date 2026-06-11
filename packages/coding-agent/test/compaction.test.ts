@@ -5,6 +5,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+	buildSummarizationPrompt,
 	type CompactionSettings,
 	calculateContextTokens,
 	compact,
@@ -173,6 +174,31 @@ function extractText(messages: AgentMessage[]): string {
 // ============================================================================
 // Unit tests
 // ============================================================================
+
+describe("buildSummarizationPrompt", () => {
+	it("omits user instructions block when no instructions given", () => {
+		const prompt = buildSummarizationPrompt();
+		expect(prompt).not.toContain("<user-instructions>");
+		expect(prompt).toContain("## Goal");
+		expect(prompt).toContain("IPython kernel");
+	});
+
+	it("includes user instructions in a delimited block before the kernel warning", () => {
+		const prompt = buildSummarizationPrompt("focus on the auth refactor, remember the migration command");
+		expect(prompt).toContain("<user-instructions>");
+		expect(prompt).toContain("focus on the auth refactor, remember the migration command");
+		expect(prompt).toContain("</user-instructions>");
+		expect(prompt.indexOf("</user-instructions>")).toBeLessThan(prompt.indexOf("IPython kernel"));
+	});
+
+	it("uses the update template when a previous summary exists", () => {
+		const initial = buildSummarizationPrompt("focus on xyz");
+		const update = buildSummarizationPrompt("focus on xyz", "## Goal\nprevious summary");
+		expect(initial).not.toContain("existing summary provided in <previous-summary> tags");
+		expect(update).toContain("existing summary provided in <previous-summary> tags");
+		expect(update).toContain("<user-instructions>");
+	});
+});
 
 describe("Token calculation", () => {
 	it("should calculate total context tokens from usage", () => {

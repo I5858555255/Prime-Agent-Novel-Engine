@@ -29,6 +29,7 @@ describe("InteractiveMode compaction events", () => {
 				aborted: boolean;
 				willRetry: boolean;
 				errorMessage?: string;
+				customInstructions?: string;
 			},
 		) => Promise<void>;
 
@@ -54,5 +55,26 @@ describe("InteractiveMode compaction events", () => {
 			}),
 		);
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+
+		await handleEvent.call(fakeThis, {
+			type: "compaction_end",
+			reason: "manual",
+			result: {
+				tokensBefore: 456,
+				summary: "focused summary",
+			},
+			aborted: false,
+			willRetry: false,
+			customInstructions: "focus on xyz",
+		});
+
+		expect(fakeThis.addMessageToChat).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				role: "compactionSummary",
+				tokensBefore: 456,
+				summary: "focused summary",
+				customInstructions: "focus on xyz",
+			}),
+		);
 	});
 });
