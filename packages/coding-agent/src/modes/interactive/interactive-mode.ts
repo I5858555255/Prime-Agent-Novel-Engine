@@ -645,9 +645,13 @@ export class InteractiveMode {
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
-		this.childAgentInspector = new ChildAgentInspectorComponent(() => this.getChildAgentPanelRows());
+		this.childAgentInspector = new ChildAgentInspectorComponent(
+			() => this.getChildAgentPanelRows(),
+			() => this.ui.requestRender(),
+		);
 		this.childAgentInspector.onCancel = () => this.closeChildAgentPanel();
 		this.childAgentInspector.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
+		this.childAgentInspector.onKill = (nodeId) => void this.killChildAgent(nodeId);
 		this.childAgentDetail = new ChildAgentDetailComponent(() => this.getChildAgentPanelRows(), {
 			ui: this.ui,
 			getCwd: () => this.getCurrentCwd(),
@@ -663,6 +667,7 @@ export class InteractiveMode {
 		});
 		this.childAgentDetail.onCancel = () => this.showChildAgentList();
 		this.childAgentDetail.onToggleToolsExpanded = () => this.toggleToolOutputExpansion();
+		this.childAgentDetail.onKill = (nodeId) => void this.killChildAgent(nodeId);
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
 		this.keybindings = KeybindingsManager.create();
@@ -4110,6 +4115,18 @@ export class InteractiveMode {
 			return;
 		}
 		this.showChildAgentList();
+	}
+
+	private async killChildAgent(nodeId: string): Promise<void> {
+		try {
+			const cancelled = await this.agentConnection.cancelRlmChild(nodeId);
+			if (!cancelled) {
+				this.showError("Subagent already finished");
+			}
+		} catch (error) {
+			this.showError(`Failed to stop subagent: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		this.ui.requestRender();
 	}
 
 	private showChildAgentList(): void {

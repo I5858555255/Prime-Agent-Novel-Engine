@@ -352,6 +352,15 @@ export class DaemonAgentConnection implements AgentConnection {
 		await this.requestOk({ type: "abort", activeSessionId: this.activeSessionId });
 	}
 
+	async cancelRlmChild(childId: string): Promise<boolean> {
+		const result = await this.requestData<{ cancelled: boolean }>({
+			type: "cancel_rlm_child",
+			activeSessionId: this.activeSessionId,
+			childId,
+		});
+		return result.cancelled;
+	}
+
 	async waitForIdle(): Promise<void> {
 		await this.requestOk({ type: "wait_for_idle", activeSessionId: this.activeSessionId });
 	}
