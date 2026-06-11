@@ -2815,6 +2815,8 @@ export class AgentSession {
 					result: undefined,
 					aborted: false,
 					willRetry: false,
+					errorMessage: "Auto-compaction skipped: nothing to summarize outside the recent-context window",
+					errorSeverity: "warning",
 				});
 				return false;
 			}

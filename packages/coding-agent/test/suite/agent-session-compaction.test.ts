@@ -162,6 +162,26 @@ describe("AgentSession compaction characterization", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("emits a warning when auto-compaction has nothing to summarize", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const endEvents: Array<{ errorMessage?: string; errorSeverity?: string }> = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				endEvents.push({ errorMessage: event.errorMessage, errorSeverity: event.errorSeverity });
+			}
+		});
+
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		await sessionInternals._runAutoCompaction("threshold", false);
+
+		expect(endEvents).toHaveLength(1);
+		expect(endEvents[0].errorSeverity).toBe("warning");
+		expect(endEvents[0].errorMessage).toContain("Auto-compaction skipped");
+	});
+
 	it("does not retry overflow recovery more than once", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
