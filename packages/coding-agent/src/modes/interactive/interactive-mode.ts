@@ -6365,6 +6365,9 @@ export class InteractiveMode {
 				},
 				signal: browserAbort.signal,
 			});
+			// Promise.race observes the rejection below, but keep a dedicated handler
+			// so an aborted browser flow can never surface as an unhandled rejection.
+			browserLogin.catch(() => {});
 
 			const result = await Promise.race([browserLogin, manualKeyEntry]);
 			if (dialog.signal.aborted) {
