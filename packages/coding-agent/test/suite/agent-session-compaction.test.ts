@@ -56,6 +56,7 @@ describe("AgentSession compaction characterization", () => {
 
 	it("manually compacts using an extension-provided summary", async () => {
 		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_before_compact", async (event) => ({
@@ -99,6 +100,7 @@ describe("AgentSession compaction characterization", () => {
 
 	it("cancels in-progress manual compaction when abortCompaction is called", async () => {
 		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_before_compact", async (event) => {

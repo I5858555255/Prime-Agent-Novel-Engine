@@ -431,6 +431,22 @@ describe("buildSessionContext", () => {
 	});
 });
 
+describe("prepareCompaction with small sessions", () => {
+	it("returns undefined when everything fits in the keep-recent window", () => {
+		// Session well under keepRecentTokens (20k default): nothing to summarize,
+		// so compaction should be skipped instead of summarizing an empty conversation
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("hello")),
+			createMessageEntry(createAssistantMessage("hi there", createMockUsage(5000, 1000))),
+			createMessageEntry(createUserMessage("how are you")),
+			createMessageEntry(createAssistantMessage("great", createMockUsage(8000, 2000))),
+		];
+
+		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
+		expect(preparation).toBeUndefined();
+	});
+});
+
 describe("prepareCompaction with previous compaction", () => {
 	it("should preserve kept messages across repeated compactions when they still fit", () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));

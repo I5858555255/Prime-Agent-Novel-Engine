@@ -683,6 +683,12 @@ export function prepareCompaction(
 		}
 	}
 
+	// Everything fits in the keep-recent window and there is no previous summary
+	// to carry forward — compacting would summarize an empty conversation.
+	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0 && !previousSummary) {
+		return undefined;
+	}
+
 	// Extract file operations from messages and previous compaction
 	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);
 
