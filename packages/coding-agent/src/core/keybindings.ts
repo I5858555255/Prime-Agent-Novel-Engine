@@ -89,7 +89,7 @@ export const KEYBINDINGS = {
 		description: "Cycle to previous model",
 	},
 	"app.model.select": { defaultKeys: "ctrl+l", description: "Open model selector" },
-	"app.provider.add": { defaultKeys: "alt+p", description: "Add provider" },
+	"app.provider.add": { defaultKeys: "ctrl+n", description: "Add provider" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.thinking.toggle": {
 		defaultKeys: "ctrl+t",
