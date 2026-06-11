@@ -13,6 +13,8 @@ export interface SlashCommandInfo {
 export interface BuiltinSlashCommand {
 	name: string;
 	description: string;
+	/** Shown in autocomplete before the description, e.g. "[instructions]" */
+	argumentHint?: string;
 }
 
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
@@ -36,7 +38,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "new", description: "Start a new session" },
 	{
 		name: "compact",
-		description: "Compact the session context; optional text guides the summary (/compact <instructions>)",
+		description: "Compact the session context; optional instructions focus the summary",
+		argumentHint: "[instructions]",
 	},
 	{ name: "goal", description: "Set or view a persistent goal; supports pause, resume, and clear" },
 	{ name: "resume", description: "Resume a different session" },
