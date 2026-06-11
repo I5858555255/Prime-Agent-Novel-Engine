@@ -485,6 +485,9 @@ describe("AgentSession rlm recursion", () => {
 		expect(root.cancelRlmChildRun(childId)).toBe(true);
 		expect(run?.status).toBe("cancelled");
 		expect(run?.error).toBe("Cancelled by user");
+		// The cancelled update is pushed at cancel time, before the (possibly
+		// stuck) child unwinds; viewers must not keep showing a running child.
+		expect(childStatuses[childStatuses.length - 1]).toBe("cancelled");
 		releaseChild();
 		await expect(runPromise).rejects.toThrow("Cancelled by user");
 		expect(childStatuses[childStatuses.length - 1]).toBe("cancelled");

@@ -324,6 +324,8 @@ interface RlmChildRun {
 	abort: () => void;
 	/** Child session, once its runtime exists. Used to cancel nested child runs. */
 	session?: AgentSession;
+	/** Re-emits the run's rlm_child_update snapshot with its current status. */
+	emitUpdate?: () => void;
 }
 
 // ============================================================================
@@ -3538,6 +3540,10 @@ export class AgentSession {
 		run.status = "cancelled";
 		run.error = reason;
 		run.abort();
+		// Surface the cancellation immediately; the run's own terminal update is
+		// delayed indefinitely when the child is stuck mid-stream, which is
+		// exactly when users reach for the kill.
+		run.emitUpdate?.();
 		return true;
 	}
 
@@ -3618,6 +3624,7 @@ export class AgentSession {
 				},
 			});
 		};
+		run.emitUpdate = emitChildUpdate;
 		const recordAssistantMessage = (message: AssistantMessage) => {
 			const text = compactRlmText(readAssistantText(message));
 			const thinking = compactRlmText(readAssistantThinking(message));
