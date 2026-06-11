@@ -392,6 +392,11 @@ export class ChildAgentInspectorComponent implements Component, Focusable {
 			return;
 		}
 
+		// Any input other than the kill key disarms the pending confirmation,
+		// matching the agents view delete flow.
+		if (!kb.matches(data, "app.agents.delete")) {
+			this.clearKillConfirmation({ render: false });
+		}
 		if (kb.matches(data, "app.agents.back")) {
 			this.onCancel?.();
 			return;
@@ -471,7 +476,6 @@ export class ChildAgentInspectorComponent implements Component, Focusable {
 		if (flat.length === 0) {
 			return;
 		}
-		this.clearKillConfirmation({ render: false });
 		const current = Math.max(
 			0,
 			flat.findIndex((entry) => entry.node.id === this.selectedId),
@@ -628,6 +632,11 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 
 	handleInput(data: string): void {
 		const kb = getKeybindings();
+		// Any input other than the kill key disarms the pending confirmation,
+		// matching the agents view delete flow.
+		if (!kb.matches(data, "app.agents.delete")) {
+			this.clearKillConfirmation({ render: false });
+		}
 		if (kb.matches(data, "app.tools.expand")) {
 			this.onToggleToolsExpanded?.();
 			return;

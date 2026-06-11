@@ -3541,6 +3541,11 @@ export class AgentSession {
 		return true;
 	}
 
+	/** Status of a direct RLM child run, while the run is still tracked. */
+	getRlmChildRunStatus(childId: string): RlmChildAgentStatus | undefined {
+		return this._activeRlmChildRuns.get(childId)?.status;
+	}
+
 	/**
 	 * Cancel a single RLM child run by id, searching nested child sessions.
 	 *

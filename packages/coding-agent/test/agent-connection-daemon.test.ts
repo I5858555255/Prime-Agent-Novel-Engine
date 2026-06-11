@@ -205,6 +205,14 @@ class FakeDaemonClient {
 			case "detach":
 				return { type: "response", command: command.type, success: true };
 			case "cancel_rlm_child":
+				if (command.childId === "stale-daemon") {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: cancel_rlm_child",
+					};
+				}
 				return {
 					type: "response",
 					command: command.type,
@@ -715,6 +723,12 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-1",
 			childId: "child-1",
 		});
+
+		// A daemon from a build that predates the command reports a restart hint
+		// instead of the raw protocol error.
+		await expect(connection.cancelRlmChild("stale-daemon")).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
 	});
 
 	it("loads resource snapshots through the daemon protocol", async () => {

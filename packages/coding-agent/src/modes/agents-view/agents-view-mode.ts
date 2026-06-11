@@ -759,10 +759,11 @@ class AgentsViewMode implements Component, Focusable {
 		await this.stopAgentForDeletion(row);
 	}
 
+	// Subagent rows only stay visible while the daemon hosts their session, and
+	// the daemon releases a child session as soon as its run settles, so any
+	// visible subagent is part of an active run regardless of its idle/streaming
+	// status. A kill that races completion reports "already finished".
 	private async handleKillSubagentSelected(row: AgentsViewRow): Promise<void> {
-		if (!isRunningSessionSummary(row.summary)) {
-			return;
-		}
 		const identity = getSummaryIdentity(row.summary);
 		if (this.pendingKillSubagent?.identity === identity && this.isDeleteConfirmationVisible()) {
 			const pending = this.pendingKillSubagent;
@@ -1210,16 +1211,16 @@ class AgentsViewMode implements Component, Focusable {
 			const tone = this.statusMessage.startsWith("Failed") ? "error" : "muted";
 			return truncateToWidth(theme.fg(tone, this.statusMessage), width);
 		}
-		// Replying is reserved for top-level agents; running subagents can be stopped.
+		// Replying is reserved for top-level agents; subagents can be stopped.
 		const selectedRow = this.rows[this.selectedIndex];
 		const selectedAgent = selectedRow?.kind === "agent";
-		const selectedRunningSubagent = selectedRow?.kind === "subagent" && isRunningSessionSummary(selectedRow.summary);
+		const selectedSubagent = selectedRow?.kind === "subagent";
 		const hints = [
 			`${keyText("tui.select.up")}/${keyText("tui.select.down")} move`,
 			`${keyText("tui.select.confirm")} open/send`,
 			selectedAgent ? `${keyText("app.agents.reply")} reply` : undefined,
 			selectedAgent ? `${keyText("app.agents.delete")} stop/deactivate` : undefined,
-			selectedRunningSubagent ? `${keyText("app.agents.delete")} stop` : undefined,
+			selectedSubagent ? `${keyText("app.agents.delete")} stop` : undefined,
 			this.replyActiveSessionId ? `${keyText("app.agents.back")} back` : undefined,
 		]
 			.filter((hint): hint is string => hint !== undefined)
