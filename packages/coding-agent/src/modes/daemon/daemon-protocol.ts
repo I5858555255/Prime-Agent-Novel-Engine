@@ -257,6 +257,14 @@ export function isDaemonDialogExtensionUiRequest(method: string): boolean {
 	return method === "select" || method === "confirm" || method === "input" || method === "editor";
 }
 
+/**
+ * True when a daemon rejected a command it does not know, i.e. the daemon
+ * process was started from a build that predates the command.
+ */
+export function isUnknownDaemonCommandError(error: unknown, command: DaemonCommand["type"]): boolean {
+	return error instanceof Error && error.message.includes(`Unknown daemon command: ${command}`);
+}
+
 export interface DaemonRequestProgress {
 	id?: string;
 	type: "session_list_progress";

@@ -117,6 +117,7 @@ import type {
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
+import { isUnknownDaemonCommandError } from "../daemon/daemon-protocol.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -4124,7 +4125,11 @@ export class InteractiveMode {
 				this.showError("Subagent already finished");
 			}
 		} catch (error) {
-			this.showError(`Failed to stop subagent: ${error instanceof Error ? error.message : String(error)}`);
+			this.showError(
+				isUnknownDaemonCommandError(error, "cancel_rlm_child")
+					? "Failed to stop subagent: the daemon is running an older build; restart the daemon and try again"
+					: `Failed to stop subagent: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		this.ui.requestRender();
 	}
