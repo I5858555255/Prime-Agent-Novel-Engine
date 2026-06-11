@@ -3985,14 +3985,38 @@ export class InteractiveMode {
 	}
 
 	private updateChildAgentInspector(child: AgentConnectionRlmChildAgentSnapshot): void {
-		this.childAgentSnapshots.set(child.id, child);
+		// Cancelled subagents were deliberately stopped; drop them from the
+		// viewer instead of keeping a dead row around.
+		if (child.status === "cancelled") {
+			this.removeChildAgentSnapshot(child.id);
+		} else {
+			this.childAgentSnapshots.set(child.id, child);
+		}
 		this.childAgentNodes = this.buildChildAgentInspectorNodes();
 		this.childAgentSummary.setNodes(this.childAgentNodes);
 		this.childAgentInspector.setNodes(this.childAgentNodes);
 		if (this.childAgentDetailNodeId) {
-			this.childAgentDetail.setNode(this.findChildAgentInspectorNode(this.childAgentDetailNodeId));
+			const detailNode = this.findChildAgentInspectorNode(this.childAgentDetailNodeId);
+			if (!detailNode && this.childAgentPanelMode === "detail") {
+				this.showChildAgentList();
+				return;
+			}
+			this.childAgentDetail.setNode(detailNode);
+		}
+		if (this.childAgentPanelMode === "list" && this.childAgentNodes.length === 0) {
+			this.closeChildAgentPanel();
+			return;
 		}
 		this.ui.requestRender();
+	}
+
+	private removeChildAgentSnapshot(id: string): void {
+		this.childAgentSnapshots.delete(id);
+		for (const child of [...this.childAgentSnapshots.values()]) {
+			if (child.parentId === id) {
+				this.removeChildAgentSnapshot(child.id);
+			}
+		}
 	}
 
 	private restoreMainAgentView(): void {
