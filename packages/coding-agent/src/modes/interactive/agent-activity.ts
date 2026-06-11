@@ -119,7 +119,7 @@ export class AgentActivityTracker {
 		return this.completedTokens + Math.max(this.streamingUsageTokens, this.estimatedStreamingTokens());
 	}
 
-	private reset(): void {
+	reset(): void {
 		this.activity = "waiting";
 		this.completedTokens = 0;
 		this.streamingUsageTokens = 0;

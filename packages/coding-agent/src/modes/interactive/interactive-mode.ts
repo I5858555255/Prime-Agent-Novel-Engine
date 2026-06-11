@@ -2125,6 +2125,7 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		this.activityTracker.reset();
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
