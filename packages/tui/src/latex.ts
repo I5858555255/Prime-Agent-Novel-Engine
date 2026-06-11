@@ -510,22 +510,11 @@ const ALPHABETS: Record<string, AlphabetStyle> = {
 	},
 };
 
-/** Commands whose single group argument renders as plain text. */
-const PLAIN_TEXT_COMMANDS = new Set([
-	"text",
-	"textrm",
-	"textit",
-	"textsf",
-	"texttt",
-	"mbox",
-	"hbox",
-	"mathrm",
-	"mathit",
-	"mathsf",
-	"mathtt",
-	"mathnormal",
-	"operatorname",
-]);
+/** Text-mode commands: their argument is literal text, so ^ and _ stay as-is. */
+const TEXT_COMMANDS = new Set(["text", "textrm", "textit", "textsf", "texttt", "mbox", "hbox"]);
+
+/** Math-mode font commands rendered unstyled; scripts inside still apply. */
+const MATH_FONT_COMMANDS = new Set(["mathrm", "mathit", "mathsf", "mathtt", "mathnormal", "operatorname"]);
 
 /** Size/style commands that take no argument and render as nothing. */
 const IGNORED_COMMANDS = new Set([
@@ -590,7 +579,7 @@ function mapScript(text: string, table: Record<string, string>): string | undefi
 
 /** True when a fraction/sqrt operand reads unambiguously without parentheses. */
 function isSimpleOperand(text: string): boolean {
-	return [...text].length === 1 || /^[\p{L}\p{N}]+$/u.test(text);
+	return [...text].length === 1 || /^[\p{L}\p{N}\p{M}]+$/u.test(text);
 }
 
 function parenthesize(text: string): string {
@@ -600,6 +589,7 @@ function parenthesize(text: string): string {
 class LatexParser {
 	private readonly src: string;
 	private pos = 0;
+	private textMode = false;
 
 	constructor(src: string) {
 		this.src = src;
@@ -617,7 +607,7 @@ class LatexParser {
 			if (ch === "}") {
 				break;
 			}
-			if (ch === "^" || ch === "_") {
+			if ((ch === "^" || ch === "_") && !this.textMode) {
 				this.pos++;
 				result += this.parseScript(ch === "^" ? SUPERSCRIPTS : SUBSCRIPTS, ch);
 				continue;
@@ -736,7 +726,14 @@ class LatexParser {
 			}
 			return "";
 		}
-		if (PLAIN_TEXT_COMMANDS.has(name)) {
+		if (TEXT_COMMANDS.has(name)) {
+			const wasTextMode = this.textMode;
+			this.textMode = true;
+			const content = this.parseArgument();
+			this.textMode = wasTextMode;
+			return content;
+		}
+		if (MATH_FONT_COMMANDS.has(name)) {
 			return this.parseArgument();
 		}
 		const alphabet = ALPHABETS[name];

@@ -82,6 +82,17 @@ describe("latexToUnicode", () => {
 	it("renders matrix environments as rows", () => {
 		assert.strictEqual(latexToUnicode("\\begin{pmatrix}\n1 & 2 \\\\\n3 & 4\n\\end{pmatrix}").trim(), "1 2 \n3 4");
 	});
+
+	it("treats accented characters as simple fraction operands", () => {
+		assert.strictEqual(latexToUnicode("\\frac{\\hat{x}}{2}"), "x̂/2");
+	});
+
+	it("keeps underscores literal inside text-mode commands", () => {
+		assert.strictEqual(latexToUnicode("\\text{x_i}"), "x_i");
+		assert.strictEqual(latexToUnicode("\\text{learning_rate} = 0.1"), "learning_rate = 0.1");
+		// Math-mode font commands still apply scripts, as TeX does.
+		assert.strictEqual(latexToUnicode("\\mathrm{x_i}"), "xᵢ");
+	});
 });
 
 describe("Markdown math rendering", () => {
@@ -94,6 +105,12 @@ describe("Markdown math rendering", () => {
 
 	it("renders $$ ... $$ display math as a Unicode block", () => {
 		const lines = renderPlain("$$\nE = mc^2\n$$");
+		assert.ok(lines.some((line) => line.includes("E = mc²")));
+	});
+
+	it("renders display math with CRLF line endings", () => {
+		// marked normalizes \r\n before tokenizers run; pin that assumption.
+		const lines = renderPlain("\\[\r\nE = mc^2\r\n\\]\r\n");
 		assert.ok(lines.some((line) => line.includes("E = mc²")));
 	});
 
