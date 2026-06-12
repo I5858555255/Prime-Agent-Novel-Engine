@@ -20,7 +20,7 @@ import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connecti
 import { DaemonClient } from "../daemon/daemon-client.js";
 import { type DaemonCommand, type DaemonResponse, isUnknownDaemonCommandError } from "../daemon/daemon-protocol.js";
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
-import { ProviderAuthFlows } from "../interactive/auth-flows.js";
+import { getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "../interactive/auth-flows.js";
 import { showFullPaneOverlay } from "../interactive/components/centered-overlay.js";
 import { CustomEditor } from "../interactive/components/custom-editor.js";
 import { keyText } from "../interactive/components/keybinding-hints.js";
@@ -259,6 +259,7 @@ class AgentsViewMode implements Component, Focusable {
 	private statusMessage: string | undefined;
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
+	private anthropicSubscriptionWarningShown = false;
 
 	constructor(
 		private readonly options: AgentsViewModeOptions,
@@ -667,7 +668,25 @@ class AgentsViewMode implements Component, Focusable {
 			showStatus: (message) => this.setStatusMessage(message),
 			showError: (message) => this.setStatusMessage(message),
 			getAvailableModels: async () => modelRegistry.getAvailable(),
+			onLoginCompleted: () => {
+				void this.maybeWarnAboutAnthropicSubscriptionAuth(this.getDefaultModelForNewAgents());
+			},
 		});
+	}
+
+	private async maybeWarnAboutAnthropicSubscriptionAuth(model: Model<Api> | undefined): Promise<void> {
+		if (this.options.uiServices.settingsManager.getWarnings().anthropicExtraUsage === false) {
+			return;
+		}
+		if (this.anthropicSubscriptionWarningShown) {
+			return;
+		}
+		const warning = await getAnthropicSubscriptionAuthWarning(this.options.uiServices.modelRegistry, model);
+		if (!warning) {
+			return;
+		}
+		this.anthropicSubscriptionWarningShown = true;
+		this.setStatusMessage(warning);
 	}
 
 	private showModelSelector(initialSearchInput?: string): Promise<void> {
@@ -719,6 +738,7 @@ class AgentsViewMode implements Component, Focusable {
 		this.options.config.model = model.id;
 		this.options.startupModelId = model.id;
 		this.setStatusMessage(`Model for new agents: ${model.id}`);
+		void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 	}
 
 	private createAutocompleteProvider(): CombinedAutocompleteProvider {
