@@ -238,6 +238,15 @@ export type AgentSessionEvent =
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
+/** Payload of the bash_end event for a user-initiated bash command */
+type UserBashEndDetails = {
+	exitCode: number | undefined;
+	cancelled: boolean;
+	truncated: boolean;
+	fullOutputPath?: string;
+	errorMessage?: string;
+};
+
 /** Thrown when compaction is skipped for a benign reason (surfaced as a warning, not an error) */
 export class CompactionSkippedError extends Error {}
 
@@ -650,6 +659,7 @@ export class AgentSession {
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
 	private _userBashRunning = false;
+	private _userBashAbortRequested = false;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
@@ -4134,14 +4144,19 @@ export class AgentSession {
 		// executeBash installs its abort controller, which would let a second command
 		// slip through during the user_bash extension dispatch below.
 		this._userBashRunning = true;
+		this._userBashAbortRequested = false;
+		let end: UserBashEndDetails;
 		try {
-			await this.runUserBashLocked(command, options?.excludeFromContext ?? false);
+			end = await this.runUserBashLocked(command, options?.excludeFromContext ?? false);
 		} finally {
 			this._userBashRunning = false;
 		}
+		// Emitted after the slot is released so clients never observe a bash_end
+		// while the session still rejects new commands as already running.
+		this._emit({ type: "bash_end", ...end });
 	}
 
-	private async runUserBashLocked(command: string, excludeFromContext: boolean): Promise<void> {
+	private async runUserBashLocked(command: string, excludeFromContext: boolean): Promise<UserBashEndDetails> {
 		const eventResult = await this._extensionRunner.emitUserBash({
 			type: "user_bash",
 			command,
@@ -4158,35 +4173,42 @@ export class AgentSession {
 					this._emit({ type: "bash_output", chunk: result.output });
 				}
 				this.recordBashResult(command, result, { excludeFromContext });
-				this._emit({
-					type: "bash_end",
+				return {
 					exitCode: result.exitCode,
 					cancelled: result.cancelled,
 					truncated: result.truncated,
 					fullOutputPath: result.fullOutputPath,
-				});
-				return;
+				};
+			}
+
+			// An abort that arrived before the process spawned (during extension
+			// dispatch) has no abort controller to act on; honor it here instead.
+			if (this._userBashAbortRequested) {
+				this.recordBashResult(
+					command,
+					{ output: "", exitCode: undefined, cancelled: true, truncated: false },
+					{ excludeFromContext },
+				);
+				return { exitCode: undefined, cancelled: true, truncated: false };
 			}
 
 			const result = await this.executeBash(command, (chunk) => this._emit({ type: "bash_output", chunk }), {
 				excludeFromContext,
 				operations: eventResult?.operations,
 			});
-			this._emit({
-				type: "bash_end",
+			return {
 				exitCode: result.exitCode,
 				cancelled: result.cancelled,
 				truncated: result.truncated,
 				fullOutputPath: result.fullOutputPath,
-			});
+			};
 		} catch (error) {
-			this._emit({
-				type: "bash_end",
+			return {
 				exitCode: undefined,
 				cancelled: false,
 				truncated: false,
 				errorMessage: error instanceof Error ? error.message : String(error),
-			});
+			};
 		}
 	}
 
@@ -4224,6 +4246,11 @@ export class AgentSession {
 	 * Cancel running bash command.
 	 */
 	abortBash(): void {
+		// A user bash command may not have spawned yet (extension dispatch in
+		// progress); flag the request so runUserBash cancels before executing.
+		if (this._userBashRunning && this._bashAbortController === undefined) {
+			this._userBashAbortRequested = true;
+		}
 		this._bashAbortController?.abort();
 	}
 

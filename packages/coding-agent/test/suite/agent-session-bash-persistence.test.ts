@@ -287,6 +287,47 @@ describe("AgentSession bash and persistence characterization", () => {
 		expect(events[0]?.errorMessage).toBe("spawn failure");
 	});
 
+	it("cancels runUserBash when abortBash arrives before execution starts", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const events: Array<{ type: string; cancelled?: boolean }> = [];
+		const unsubscribe = harness.session.subscribe((event) => {
+			if (event.type === "bash_output" || event.type === "bash_end") {
+				events.push(event);
+			}
+		});
+
+		// Abort lands during the user_bash extension dispatch, before any process spawns
+		const run = harness.session.runUserBash("echo should-not-run");
+		harness.session.abortBash();
+		await run;
+		unsubscribe();
+
+		expect(events).toEqual([{ type: "bash_end", exitCode: undefined, cancelled: true, truncated: false }]);
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1];
+		expect(lastMessage?.role).toBe("bashExecution");
+		if (lastMessage?.role === "bashExecution") {
+			expect(lastMessage.cancelled).toBe(true);
+			expect(lastMessage.output).toBe("");
+		}
+	});
+
+	it("releases the bash slot before bash_end reaches subscribers", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let runningAtBashEnd: boolean | undefined;
+		const unsubscribe = harness.session.subscribe((event) => {
+			if (event.type === "bash_end") {
+				runningAtBashEnd = harness.session.isBashRunning;
+			}
+		});
+
+		await harness.session.runUserBash("echo done");
+		unsubscribe();
+
+		expect(runningAtBashEnd).toBe(false);
+	});
+
 	it("rejects a second runUserBash issued before the first starts executing", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

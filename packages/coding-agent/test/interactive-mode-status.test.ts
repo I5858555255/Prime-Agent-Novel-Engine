@@ -173,6 +173,7 @@ type SubmitHandlerHarness = {
 	showWarning: (message: string) => void;
 	showError: (message: string) => void;
 	isBashRunning: () => boolean;
+	patchConnectionState: (patch: Record<string, unknown>) => void;
 	agentConnection: {
 		prompt: (message: string) => Promise<void>;
 		executeBash: (command: string, options?: { excludeFromContext?: boolean }) => Promise<void>;
@@ -186,6 +187,7 @@ function createSubmitHandlerHarness(overrides: Partial<SubmitHandlerHarness> = {
 		showWarning: vi.fn(),
 		showError: vi.fn(),
 		isBashRunning: () => false,
+		patchConnectionState: vi.fn(),
 		agentConnection: { prompt: vi.fn(async () => {}), executeBash: vi.fn(async () => {}) },
 		...overrides,
 	};

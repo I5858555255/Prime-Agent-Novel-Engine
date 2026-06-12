@@ -3268,9 +3268,13 @@ export class InteractiveMode {
 					}
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
+					// Optimistic: bash_start only fires after extension dispatch, and the
+					// clear key must already route to abortBash in that window.
+					this.patchConnectionState({ isBashRunning: true });
 					try {
 						await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
 					} catch (error) {
+						this.patchConnectionState({ isBashRunning: false });
 						this.showError(error instanceof Error ? error.message : String(error));
 					}
 					return;
