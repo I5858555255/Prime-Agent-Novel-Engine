@@ -221,6 +221,16 @@ describe("InteractiveMode submit handling", () => {
 		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
 	});
 
+	test("ignores bare ! and !! input instead of prompting the agent", async () => {
+		const fakeThis = createSubmitHandlerHarness();
+
+		await fakeThis.defaultEditor.onSubmit?.("!");
+		await fakeThis.defaultEditor.onSubmit?.("!!");
+
+		expect(fakeThis.agentConnection.executeBash).not.toHaveBeenCalled();
+		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+
 	test("warns instead of executing when a bash command is already running", async () => {
 		const fakeThis = createSubmitHandlerHarness({ isBashRunning: () => true });
 

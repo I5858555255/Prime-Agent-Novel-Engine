@@ -3262,26 +3262,26 @@ export class InteractiveMode {
 			if (text.startsWith("!")) {
 				const isExcluded = text.startsWith("!!");
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
-				if (command) {
-					if (this.isBashRunning()) {
-						this.showWarning(
-							`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`,
-						);
-						return;
-					}
-					this.editor.addToHistory?.(text);
-					this.editor.setText("");
-					// Optimistic: bash_start only fires after extension dispatch, and the
-					// clear key must already route to abortBash in that window.
-					this.patchConnectionState({ isBashRunning: true });
-					try {
-						await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
-					} catch (error) {
-						this.patchConnectionState({ isBashRunning: false });
-						this.showError(error instanceof Error ? error.message : String(error));
-					}
+				if (!command) {
+					// Bare ! / !! is bash mode with nothing to run; don't send it as a prompt
 					return;
 				}
+				if (this.isBashRunning()) {
+					this.showWarning(`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`);
+					return;
+				}
+				this.editor.addToHistory?.(text);
+				this.editor.setText("");
+				// Optimistic: bash_start only fires after extension dispatch, and the
+				// clear key must already route to abortBash in that window.
+				this.patchConnectionState({ isBashRunning: true });
+				try {
+					await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
+				} catch (error) {
+					this.patchConnectionState({ isBashRunning: false });
+					this.showError(error instanceof Error ? error.message : String(error));
+				}
+				return;
 			}
 
 			// Queue input during compaction (extension commands execute immediately)
