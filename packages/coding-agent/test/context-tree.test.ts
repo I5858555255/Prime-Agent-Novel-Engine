@@ -358,6 +358,24 @@ describe("AgentSession.getContextTree", () => {
 		// In-memory session, no rlm dir: completed children cannot be discovered.
 		expect(tree.children).toEqual([]);
 	});
+
+	it("keeps pre-compaction spend in the totals after compaction", () => {
+		// Intentional: /context reports cumulative session spend. Compaction
+		// shrinks the model-facing context, but tokens already paid for must not
+		// vanish from the totals (the old /usage undercounted here).
+		const { session, sessionManager } = createSession();
+		sessionManager.appendMessage(createUserMessage("expensive early work"));
+		sessionManager.appendMessage(createAssistantMessage("done", createUsage(5000, 1000, 0.5)));
+		const keptId = sessionManager.appendMessage(createUserMessage("later work"));
+		sessionManager.appendCompaction("summary of early work", keptId, 6000);
+		sessionManager.appendMessage(createAssistantMessage("after compaction", createUsage(200, 50, 0.02)));
+		syncAgentMessages(session, sessionManager);
+
+		const tree = session.getContextTree();
+		expect(tree.totalUsage.input).toBe(5200);
+		expect(tree.totalUsage.cost.total).toBeCloseTo(0.52);
+		expect(tree.ownUsage.input).toBe(5200);
+	});
 });
 
 describe("formatContextTree", () => {

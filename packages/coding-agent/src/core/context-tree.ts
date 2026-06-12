@@ -73,6 +73,10 @@ function compactLabel(text: string, maxLength = 80): string {
  * target assistant's usage no matter which branch they were appended on, so a
  * fork that keeps the assistant but drops the attribution entry must still
  * subtract it.
+ *
+ * Totals are deliberately cumulative across compactions: compaction shrinks
+ * the model-facing context, not what the session has spent, so assistants
+ * dropped from the resolved context still count here.
  */
 export function computeOwnAndTotalUsage(
 	branch: SessionEntry[],
