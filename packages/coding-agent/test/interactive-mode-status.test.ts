@@ -178,6 +178,7 @@ type SubmitHandlerHarness = {
 	agentConnection: {
 		prompt: (message: string) => Promise<void>;
 		executeBash: (command: string, options?: { excludeFromContext?: boolean }) => Promise<void>;
+		getState: () => Promise<{ isBashRunning: boolean }>;
 	};
 };
 
@@ -189,7 +190,11 @@ function createSubmitHandlerHarness(overrides: Partial<SubmitHandlerHarness> = {
 		showError: vi.fn(),
 		isBashRunning: () => false,
 		patchConnectionState: vi.fn(),
-		agentConnection: { prompt: vi.fn(async () => {}), executeBash: vi.fn(async () => {}) },
+		agentConnection: {
+			prompt: vi.fn(async () => {}),
+			executeBash: vi.fn(async () => {}),
+			getState: vi.fn(async () => ({ isBashRunning: false })),
+		},
 		...overrides,
 	};
 	(
@@ -248,12 +253,31 @@ describe("InteractiveMode submit handling", () => {
 				executeBash: vi.fn(async () => {
 					throw new Error("the daemon is running an older build; restart the daemon and try again");
 				}),
+				getState: vi.fn(async () => ({ isBashRunning: false })),
 			},
 		});
 
 		await fakeThis.defaultEditor.onSubmit?.("!pwd");
 
 		expect(fakeThis.showError).toHaveBeenCalledWith(expect.stringContaining("older build"));
+		expect(fakeThis.patchConnectionState).toHaveBeenLastCalledWith({ isBashRunning: false });
+	});
+
+	test("re-syncs the bash flag from connection state when executeBash is rejected", async () => {
+		const fakeThis = createSubmitHandlerHarness({
+			agentConnection: {
+				prompt: vi.fn(async () => {}),
+				executeBash: vi.fn(async () => {
+					throw new Error("A bash command is already running");
+				}),
+				// Another attached client holds the bash slot
+				getState: vi.fn(async () => ({ isBashRunning: true })),
+			},
+		});
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.patchConnectionState).toHaveBeenLastCalledWith({ isBashRunning: true });
 	});
 });
 

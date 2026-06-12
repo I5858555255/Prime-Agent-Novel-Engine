@@ -3281,7 +3281,14 @@ export class InteractiveMode {
 				try {
 					await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
 				} catch (error) {
-					this.patchConnectionState({ isBashRunning: false });
+					// Re-sync rather than assume idle: the rejection may mean another
+					// client's bash run already holds the slot.
+					try {
+						const state = await this.agentConnection.getState();
+						this.patchConnectionState({ isBashRunning: state.isBashRunning });
+					} catch {
+						this.patchConnectionState({ isBashRunning: false });
+					}
 					this.showError(error instanceof Error ? error.message : String(error));
 				}
 				return;
