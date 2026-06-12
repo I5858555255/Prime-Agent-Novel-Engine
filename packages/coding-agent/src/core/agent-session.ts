@@ -649,6 +649,7 @@ export class AgentSession {
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
+	private _userBashRunning = false;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
@@ -4129,7 +4130,18 @@ export class AgentSession {
 		if (this.isBashRunning) {
 			throw new Error("A bash command is already running");
 		}
-		const excludeFromContext = options?.excludeFromContext ?? false;
+		// Claim the bash slot synchronously: isBashRunning is otherwise false until
+		// executeBash installs its abort controller, which would let a second command
+		// slip through during the user_bash extension dispatch below.
+		this._userBashRunning = true;
+		try {
+			await this.runUserBashLocked(command, options?.excludeFromContext ?? false);
+		} finally {
+			this._userBashRunning = false;
+		}
+	}
+
+	private async runUserBashLocked(command: string, excludeFromContext: boolean): Promise<void> {
 		const eventResult = await this._extensionRunner.emitUserBash({
 			type: "user_bash",
 			command,
@@ -4217,7 +4229,7 @@ export class AgentSession {
 
 	/** Whether a bash command is currently running */
 	get isBashRunning(): boolean {
-		return this._bashAbortController !== undefined;
+		return this._bashAbortController !== undefined || this._userBashRunning;
 	}
 
 	/** Whether there are pending bash messages waiting to be flushed */

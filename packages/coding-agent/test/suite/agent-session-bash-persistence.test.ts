@@ -287,6 +287,20 @@ describe("AgentSession bash and persistence characterization", () => {
 		expect(events[0]?.errorMessage).toBe("spawn failure");
 	});
 
+	it("rejects a second runUserBash issued before the first starts executing", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// Same-tick overlap: the guard must trip before the first command reaches
+		// executeBash, i.e. during the async user_bash extension dispatch.
+		const first = harness.session.runUserBash("echo first");
+		await expect(harness.session.runUserBash("echo second")).rejects.toThrow("already running");
+		await first;
+
+		const bashMessages = harness.session.messages.filter((message) => message.role === "bashExecution");
+		expect(bashMessages).toHaveLength(1);
+	});
+
 	it("rejects runUserBash while another bash command is running", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
