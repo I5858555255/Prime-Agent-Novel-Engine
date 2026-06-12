@@ -3718,6 +3718,7 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
+				this.flushPendingBashComponents();
 				this.resetPendingToolState();
 
 				await this.checkShutdownRequested();
@@ -4595,14 +4596,16 @@ export class InteractiveMode {
 			void this.agentConnection.abortBranchSummary();
 			return;
 		}
+		// Bash outranks the agent stream: the already-running warning tells the user
+		// this key cancels the bash command, and the stream stays one press away.
+		if (this.isBashRunning()) {
+			void this.agentConnection.abortBash();
+			return;
+		}
 		if (this.isAgentStreaming()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
-			return;
-		}
-		if (this.isBashRunning()) {
-			void this.agentConnection.abortBash();
 			return;
 		}
 	}
@@ -5039,6 +5042,11 @@ export class InteractiveMode {
 
 	private updatePendingMessagesDisplay(): void {
 		this.pendingMessagesContainer.clear();
+		// Keep in-flight bash output visible across queue refreshes; clear() detaches
+		// the components but they stay tracked in pendingBashComponents until flushed.
+		for (const component of this.pendingBashComponents) {
+			this.pendingMessagesContainer.addChild(component);
+		}
 		const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
 		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));

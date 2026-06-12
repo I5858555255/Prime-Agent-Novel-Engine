@@ -244,6 +244,46 @@ describe("InteractiveMode submit handling", () => {
 	});
 });
 
+describe("InteractiveMode pending bash components", () => {
+	const bashComponent = () => ({ render: () => [], invalidate: () => {} });
+
+	test("keeps pending bash components visible across queue refreshes", () => {
+		const pendingMessagesContainer = new Container();
+		const component = bashComponent();
+		const fakeThis = {
+			pendingMessagesContainer,
+			pendingBashComponents: [component],
+			getAllQueuedMessages: () => ({ steering: [], followUp: [] }),
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as { updatePendingMessagesDisplay(this: unknown): void }
+		).updatePendingMessagesDisplay.call(fakeThis);
+
+		expect(pendingMessagesContainer.children).toContain(component);
+	});
+
+	test("flushes pending bash components from the pending area to chat", () => {
+		const pendingMessagesContainer = new Container();
+		const chatContainer = new Container();
+		const component = bashComponent();
+		pendingMessagesContainer.addChild(component);
+		const fakeThis = {
+			pendingMessagesContainer,
+			chatContainer,
+			pendingBashComponents: [component],
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as { flushPendingBashComponents(this: unknown): void }
+		).flushPendingBashComponents.call(fakeThis);
+
+		expect(pendingMessagesContainer.children).not.toContain(component);
+		expect(chatContainer.children).toContain(component);
+		expect((fakeThis as unknown as { pendingBashComponents: unknown[] }).pendingBashComponents).toHaveLength(0);
+	});
+});
+
 describe("InteractiveMode connection events", () => {
 	test("clears extension UI when a connection-backed session is replaced", async () => {
 		type SessionReplacedEvent = { type: "session_replaced"; state: AgentConnectionState; messages: [] };
