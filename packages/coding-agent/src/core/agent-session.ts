@@ -222,7 +222,18 @@ export type AgentSessionEvent =
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
-	| { type: "goal_update"; goal: GoalState };
+	| { type: "goal_update"; goal: GoalState }
+	| { type: "bash_start"; command: string; excludeFromContext: boolean }
+	| { type: "bash_output"; chunk: string }
+	| {
+			type: "bash_end";
+			exitCode: number | undefined;
+			cancelled: boolean;
+			truncated: boolean;
+			fullOutputPath?: string;
+			/** Set when execution failed before producing a result (e.g. spawn failure) */
+			errorMessage?: string;
+	  };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -4102,6 +4113,68 @@ export class AgentSession {
 			return result;
 		} finally {
 			this._bashAbortController = undefined;
+		}
+	}
+
+	/**
+	 * Run a user-initiated bash command (! / !! prefix), emitting bash_start,
+	 * bash_output, and bash_end session events so any attached client can render
+	 * streaming output. Extensions can intercept execution via the user_bash event.
+	 * Execution failures are reported through bash_end rather than a rejected promise;
+	 * only the already-running guard and extension dispatch errors reject.
+	 * @param command The bash command to execute
+	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
+	 */
+	async runUserBash(command: string, options?: { excludeFromContext?: boolean }): Promise<void> {
+		if (this.isBashRunning) {
+			throw new Error("A bash command is already running");
+		}
+		const excludeFromContext = options?.excludeFromContext ?? false;
+		const eventResult = await this._extensionRunner.emitUserBash({
+			type: "user_bash",
+			command,
+			excludeFromContext,
+			cwd: this.sessionManager.getCwd(),
+		});
+
+		this._emit({ type: "bash_start", command, excludeFromContext });
+		try {
+			// If an extension returned a full result, surface it without executing
+			if (eventResult?.result) {
+				const result = eventResult.result;
+				if (result.output) {
+					this._emit({ type: "bash_output", chunk: result.output });
+				}
+				this.recordBashResult(command, result, { excludeFromContext });
+				this._emit({
+					type: "bash_end",
+					exitCode: result.exitCode,
+					cancelled: result.cancelled,
+					truncated: result.truncated,
+					fullOutputPath: result.fullOutputPath,
+				});
+				return;
+			}
+
+			const result = await this.executeBash(command, (chunk) => this._emit({ type: "bash_output", chunk }), {
+				excludeFromContext,
+				operations: eventResult?.operations,
+			});
+			this._emit({
+				type: "bash_end",
+				exitCode: result.exitCode,
+				cancelled: result.cancelled,
+				truncated: result.truncated,
+				fullOutputPath: result.fullOutputPath,
+			});
+		} catch (error) {
+			this._emit({
+				type: "bash_end",
+				exitCode: undefined,
+				cancelled: false,
+				truncated: false,
+				errorMessage: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 

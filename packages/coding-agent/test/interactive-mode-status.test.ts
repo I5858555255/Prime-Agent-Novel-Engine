@@ -54,6 +54,7 @@ function createConnectionState(overrides: Partial<AgentConnectionState> = {}): A
 		availableThinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
 		isStreaming: false,
 		isCompacting: false,
+		isBashRunning: false,
 		retryAttempt: 0,
 		steeringMode: "all",
 		followUpMode: "all",
@@ -168,33 +169,78 @@ describe("InteractiveMode.showStatus", () => {
 
 type SubmitHandlerHarness = {
 	defaultEditor: { onSubmit?: (text: string) => Promise<void> };
-	editor: { setText: (text: string) => void };
+	editor: { setText: (text: string) => void; addToHistory?: (text: string) => void };
 	showWarning: (message: string) => void;
-	agentConnection: { prompt: (message: string) => Promise<void> };
+	showError: (message: string) => void;
+	isBashRunning: () => boolean;
+	agentConnection: {
+		prompt: (message: string) => Promise<void>;
+		executeBash: (command: string, options?: { excludeFromContext?: boolean }) => Promise<void>;
+	};
 };
 
-describe("InteractiveMode submit handling", () => {
-	test("rejects legacy bash shortcuts before reaching the agent connection", async () => {
-		const fakeThis: SubmitHandlerHarness = {
-			defaultEditor: {},
-			editor: { setText: vi.fn() },
-			showWarning: vi.fn(),
-			agentConnection: { prompt: vi.fn(async () => {}) },
-		};
+function createSubmitHandlerHarness(overrides: Partial<SubmitHandlerHarness> = {}): SubmitHandlerHarness {
+	const fakeThis: SubmitHandlerHarness = {
+		defaultEditor: {},
+		editor: { setText: vi.fn(), addToHistory: vi.fn() },
+		showWarning: vi.fn(),
+		showError: vi.fn(),
+		isBashRunning: () => false,
+		agentConnection: { prompt: vi.fn(async () => {}), executeBash: vi.fn(async () => {}) },
+		...overrides,
+	};
+	(
+		InteractiveMode.prototype as unknown as {
+			setupEditorSubmitHandler(this: SubmitHandlerHarness): void;
+		}
+	).setupEditorSubmitHandler.call(fakeThis);
+	return fakeThis;
+}
 
-		(
-			InteractiveMode.prototype as unknown as {
-				setupEditorSubmitHandler(this: SubmitHandlerHarness): void;
-			}
-		).setupEditorSubmitHandler.call(fakeThis);
+describe("InteractiveMode submit handling", () => {
+	test("routes ! shortcuts to executeBash on the agent connection", async () => {
+		const fakeThis = createSubmitHandlerHarness();
 
 		await fakeThis.defaultEditor.onSubmit?.("!pwd");
 
-		expect(fakeThis.showWarning).toHaveBeenCalledWith(
-			"Bash commands are not available in interactive mode. Use IPython for shell commands.",
-		);
+		expect(fakeThis.agentConnection.executeBash).toHaveBeenCalledWith("pwd", { excludeFromContext: false });
+		expect(fakeThis.editor.addToHistory).toHaveBeenCalledWith("!pwd");
 		expect(fakeThis.editor.setText).toHaveBeenCalledWith("");
 		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+
+	test("routes !! shortcuts to executeBash with excludeFromContext", async () => {
+		const fakeThis = createSubmitHandlerHarness();
+
+		await fakeThis.defaultEditor.onSubmit?.("!!git status");
+
+		expect(fakeThis.agentConnection.executeBash).toHaveBeenCalledWith("git status", { excludeFromContext: true });
+		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+
+	test("warns instead of executing when a bash command is already running", async () => {
+		const fakeThis = createSubmitHandlerHarness({ isBashRunning: () => true });
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.showWarning).toHaveBeenCalledWith(expect.stringContaining("A bash command is already running"));
+		expect(fakeThis.agentConnection.executeBash).not.toHaveBeenCalled();
+		expect(fakeThis.editor.setText).not.toHaveBeenCalled();
+	});
+
+	test("surfaces executeBash transport failures via showError", async () => {
+		const fakeThis = createSubmitHandlerHarness({
+			agentConnection: {
+				prompt: vi.fn(async () => {}),
+				executeBash: vi.fn(async () => {
+					throw new Error("the daemon is running an older build; restart the daemon and try again");
+				}),
+			},
+		});
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.showError).toHaveBeenCalledWith(expect.stringContaining("older build"));
 	});
 });
 

@@ -476,6 +476,10 @@ export class InteractiveMode {
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
 
+	// User bash execution tracking (! / !! prefix), driven by bash_* session events
+	private activeBashComponent: BashExecutionComponent | undefined = undefined;
+	private pendingBashComponents: BashExecutionComponent[] = [];
+
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private pendingToolCreations = new Set<string>();
@@ -1977,6 +1981,12 @@ export class InteractiveMode {
 			case "goal_update":
 				this.patchConnectionState({ goal: event.goal });
 				break;
+			case "bash_start":
+				this.patchConnectionState({ isBashRunning: true });
+				break;
+			case "bash_end":
+				this.patchConnectionState({ isBashRunning: false });
+				break;
 		}
 	}
 
@@ -2002,6 +2012,10 @@ export class InteractiveMode {
 
 	private isAgentCompacting(): boolean {
 		return this.connectionState?.isCompacting ?? false;
+	}
+
+	private isBashRunning(): boolean {
+		return this.connectionState?.isBashRunning ?? false;
 	}
 
 	private getRetryAttempt(): number {
@@ -2063,6 +2077,8 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		this.activeBashComponent = undefined;
+		this.pendingBashComponents = [];
 		this.activityTracker.reset();
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
@@ -3239,11 +3255,26 @@ export class InteractiveMode {
 				return;
 			}
 
-			// Legacy bash shortcuts are intentionally not transported through AgentConnection.
+			// Handle bash command (! for normal, !! for excluded from context)
 			if (text.startsWith("!")) {
-				this.showWarning("Bash commands are not available in interactive mode. Use IPython for shell commands.");
-				this.editor.setText("");
-				return;
+				const isExcluded = text.startsWith("!!");
+				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+				if (command) {
+					if (this.isBashRunning()) {
+						this.showWarning(
+							`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`,
+						);
+						return;
+					}
+					this.editor.addToHistory?.(text);
+					this.editor.setText("");
+					try {
+						await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
+					} catch (error) {
+						this.showError(error instanceof Error ? error.message : String(error));
+					}
+					return;
+				}
 			}
 
 			// Queue input during compaction (extension commands execute immediately)
@@ -3268,6 +3299,10 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				return;
 			}
+
+			// Normal message submission
+			// First, move any pending bash components to chat
+			this.flushPendingBashComponents();
 
 			if (this.onInputCallback) {
 				this.onInputCallback(text);
@@ -3523,6 +3558,42 @@ export class InteractiveMode {
 			case "thinking_level_changed":
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
+				break;
+
+			case "bash_start": {
+				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext);
+				if (this.isAgentStreaming()) {
+					this.pendingMessagesContainer.addChild(component);
+					this.pendingBashComponents.push(component);
+				} else {
+					this.chatContainer.addChild(component);
+				}
+				this.activeBashComponent = component;
+				this.ui.requestRender();
+				break;
+			}
+
+			case "bash_output":
+				if (this.activeBashComponent) {
+					this.activeBashComponent.appendOutput(event.chunk);
+					this.ui.requestRender();
+				}
+				break;
+
+			case "bash_end":
+				if (this.activeBashComponent) {
+					this.activeBashComponent.setComplete(
+						event.exitCode,
+						event.cancelled,
+						event.truncated ? ({ truncated: true } as TruncationResult) : undefined,
+						event.fullOutputPath,
+					);
+					this.activeBashComponent = undefined;
+				}
+				if (event.errorMessage) {
+					this.showError(`Bash command failed: ${event.errorMessage}`);
+				}
+				this.ui.requestRender();
 				break;
 
 			case "message_start":
@@ -4530,6 +4601,10 @@ export class InteractiveMode {
 			});
 			return;
 		}
+		if (this.isBashRunning()) {
+			void this.agentConnection.abortBash();
+			return;
+		}
 	}
 
 	private showCtrlCExitHint(): void {
@@ -4979,6 +5054,15 @@ export class InteractiveMode {
 			const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
 			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
+	}
+
+	/** Move pending bash components from pending area to chat */
+	private flushPendingBashComponents(): void {
+		for (const component of this.pendingBashComponents) {
+			this.pendingMessagesContainer.removeChild(component);
+			this.chatContainer.addChild(component);
+		}
+		this.pendingBashComponents = [];
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
