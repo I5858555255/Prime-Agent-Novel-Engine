@@ -2077,6 +2077,9 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		// The discarded component's loader interval keeps firing otherwise; no
+		// bash_end will reach it once the reference is dropped.
+		this.activeBashComponent?.setComplete(undefined, true);
 		this.activeBashComponent = undefined;
 		this.pendingBashComponents = [];
 		this.activityTracker.reset();

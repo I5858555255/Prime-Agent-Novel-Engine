@@ -391,7 +391,14 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async abortBash(): Promise<void> {
-		await this.requestOk({ type: "abort_bash", activeSessionId: this.activeSessionId });
+		try {
+			await this.requestOk({ type: "abort_bash", activeSessionId: this.activeSessionId });
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "abort_bash")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
 	}
 
 	async setModel(provider: string, modelId: string): Promise<AgentConnectionModel> {

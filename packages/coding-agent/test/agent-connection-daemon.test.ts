@@ -23,6 +23,7 @@ class FakeDaemonClient {
 	readonly requests: DaemonCommand[] = [];
 	attachResultFactory: ((command: Extract<DaemonCommand, { type: "attach" }>) => DaemonAttachResult) | undefined;
 	closeCount = 0;
+	abortBashUnknownCommand = false;
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 
@@ -230,6 +231,14 @@ class FakeDaemonClient {
 				}
 				return { type: "response", command: command.type, success: true };
 			case "abort_bash":
+				if (this.abortBashUnknownCommand) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: abort_bash",
+					};
+				}
 				return { type: "response", command: command.type, success: true };
 			case "delete_saved_session":
 				return {
@@ -763,6 +772,10 @@ describe("DaemonAgentConnection", () => {
 		// A daemon from a build that predates the command reports a restart hint
 		// instead of the raw protocol error.
 		await expect(connection.executeBash("stale-daemon")).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
+		fakeClient.abortBashUnknownCommand = true;
+		await expect(connection.abortBash()).rejects.toThrow(
 			"the daemon is running an older build; restart the daemon and try again",
 		);
 	});

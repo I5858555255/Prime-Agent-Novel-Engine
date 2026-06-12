@@ -22,6 +22,7 @@ import type {
 	AgentConnectionState,
 } from "../src/modes/agent-connection/types.js";
 import { AgentActivityTracker } from "../src/modes/interactive/agent-activity.js";
+import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
 import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -247,6 +248,10 @@ describe("InteractiveMode submit handling", () => {
 });
 
 describe("InteractiveMode pending bash components", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
 	const bashComponent = () => ({ render: () => [], invalidate: () => {} });
 
 	test("keeps pending bash components visible across queue refreshes", () => {
@@ -283,6 +288,39 @@ describe("InteractiveMode pending bash components", () => {
 		expect(pendingMessagesContainer.children).not.toContain(component);
 		expect(chatContainer.children).toContain(component);
 		expect((fakeThis as unknown as { pendingBashComponents: unknown[] }).pendingBashComponents).toHaveLength(0);
+	});
+
+	test("stops an orphaned bash loader when session render state resets", () => {
+		const tuiStub = {
+			terminal: { columns: 120, rows: 24 },
+			requestRender: () => {},
+		} as unknown as ConstructorParameters<typeof BashExecutionComponent>[1];
+		const component = new BashExecutionComponent("sleep 99", tuiStub);
+		const loader = (component as unknown as { loader: { intervalId: unknown } }).loader;
+		expect(loader.intervalId).not.toBeNull();
+
+		const fakeThis = {
+			chatContainer: new Container(),
+			pendingMessagesContainer: new Container(),
+			compactionQueuedMessages: [],
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			activeBashComponent: component,
+			pendingBashComponents: [component],
+			activityTracker: { reset: vi.fn() },
+			resetPendingToolState: vi.fn(),
+			resetChildAgentInspector: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			syncGoalTray: vi.fn(),
+			getGoalState: () => emptyGoalState(),
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as { resetCurrentSessionRenderState(this: unknown): void }
+		).resetCurrentSessionRenderState.call(fakeThis);
+
+		expect(loader.intervalId).toBeNull();
+		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBeUndefined();
 	});
 });
 
