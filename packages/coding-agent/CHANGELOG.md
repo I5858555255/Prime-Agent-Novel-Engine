@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-06-12
+
+### Added
+
+- Added a `/context` command showing a tree overview of the main agent and all sub-agents with per-agent tokens, cost, and context-window usage, plus session totals and a token/cost breakdown.
+- Added `/clear` as an alias for `/new`.
+
+### Changed
+
+- Changed `/usage` to be an alias for the new `/context` command.
+
+### Fixed
+
+- Fixed the stale "no models available" warning appearing for sessions that already have a working model.
+- Fixed the `!` and `!!` bash shortcuts in interactive mode by running bash through the agent connection, restoring streaming output, history, and Ctrl+C abort for both in-process and daemon-attached clients.
+
+## [0.1.2] - 2026-06-12
+
+### Fixed
+
+- Fixed the model selector showing no models after logging in with Prime Inference during onboarding by reloading auth storage from disk when the model registry refreshes ([#151](https://github.com/PrimeIntellect-ai/prime-agent/issues/151)).
+
+## [0.1.1] - 2026-06-11
+
+### Fixed
+
+- Fixed first launch to run onboarding before opening the Agents View ([#147](https://github.com/PrimeIntellect-ai/prime-agent/issues/147)).
+- Fixed multiline status errors in Agents View to render as a single flattened line so they cannot overlap the input ([#146](https://github.com/PrimeIntellect-ai/prime-agent/issues/146)).
+- Fixed slash commands in the main Agents View ([#149](https://github.com/PrimeIntellect-ai/prime-agent/issues/149)).
+
+## [0.1.0] - 2026-06-11
+
 ### Breaking Changes
 
 - Changed `InteractiveMode` construction to require an `AgentConnection` and explicit UI services or local session host.
@@ -14,6 +46,7 @@
 - Added an `AgentConnection` client boundary with in-process and daemon adapters for interactive-mode decoupling.
 - Added daemon mode and CLI controls for starting on demand, creating, listing, attaching, detaching, killing, renaming, and prompting live sessions.
 - Added rich TUI attach for already-active daemon sessions via `--session <selector>` and live `daemon <selector>` shorthand.
+- Added a built-in `skill-creator` skill that teaches the agent to create new skills: markdown layout, frontmatter rules, placement and precedence, and the Python-backed skill contract (package layout, `run()` convention, optional CLI, kernel venv behavior) with a test-verified working template.
 - Added built-in skills shipped with prime-agent, starting with `prime-intellect`: ecosystem knowledge and prime CLI workflows for verifiers environments, evaluations, Hosted Training, sandboxes, inference, and compute. Built-in skills have the lowest precedence (user, project, and package skills with the same name win) and can be disabled with the `enableBuiltinSkills` setting or `--no-skills`.
 - Added a session-backed `rlm.harness` state helper for reset-free prompt notes, memory, skills, subagent specs, and refinement events.
 - Added `/refine` to update editable harness state with Create/Update/Delete edits and rollback support based on refinement history.
@@ -32,6 +65,7 @@
 
 ### Fixed
 
+- Fixed confusing transcript formatting around thinking blocks and tool calls: ipython cells and default-shell tools (bash and extension tools) now share one panel style with a subtle neutral background instead of a status-colored box or a left rail, and tool status headers name the tool (`python · done · 7ms`, `bash · running`) so they no longer read as floating labels for the preceding thinking block. Themes gain a required `toolPanelBg` color for the panel background.
 - Fixed `prime-agent` to detect a daemon left running by a previous version after self-update: the daemon now reports its app version on connect, and idle stale daemons are restarted automatically (daemons with active sessions are left running with a warning).
 - Fixed Agents View listing daemon-owned subagents as top-level selectable agents instead of nested child rows.
 - Fixed Agents View opening saved or stale sessions by creating a daemon runtime from the saved session file before attaching.

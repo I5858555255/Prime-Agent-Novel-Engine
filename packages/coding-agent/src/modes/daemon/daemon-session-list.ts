@@ -2,9 +2,15 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { compactRlmText } from "../../core/agent-session.js";
+import type { AgentSessionRuntimeMetadata } from "../../core/agent-session-runtime.js";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.js";
 import type { SessionInfo } from "../../core/session-manager.js";
-import type { AgentConnectionSavedSessionStateStatus } from "../agent-connection/types.js";
+import type {
+	AgentConnectionRlmChildAgentSnapshot,
+	AgentConnectionRlmChildAgentTranscriptLine,
+	AgentConnectionSavedSessionStateStatus,
+} from "../agent-connection/types.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 
 export type SessionStatus = "user" | "idle" | "tool" | "model" | AgentConnectionSavedSessionStateStatus;
@@ -37,6 +43,24 @@ export interface SessionSummary {
 	rlmParentNodeId?: string;
 	modelFallbackMessage?: string;
 	diagnostics?: AgentSessionRuntimeDiagnostic[];
+}
+
+/**
+ * Pick the model fallback message to show when attaching to a daemon session.
+ *
+ * The daemon's summary is authoritative. The attaching process's own startup
+ * snapshot only applies when the summary reports no model: a UI process may
+ * compute "no models available" merely because it cannot see credentials the
+ * daemon resolves fine (e.g. an env var set only for the daemon).
+ */
+export function resolveAttachModelFallbackMessage(
+	summary: SessionSummary,
+	startupModelFallbackMessage: string | undefined,
+): string | undefined {
+	if (summary.modelFallbackMessage) {
+		return summary.modelFallbackMessage;
+	}
+	return summary.model ? undefined : startupModelFallbackMessage;
 }
 
 export function buildSessionList(
@@ -104,7 +128,9 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 		streamingMessage: session.state.streamingMessage,
 		created: savedSession?.created.toISOString(),
 		modified,
-		firstMessage: savedSession?.firstMessage,
+		// Subagent sessions live in artifact dirs that the saved-session scan
+		// never sees; their spawn prompt is the most identifying title we have.
+		firstMessage: savedSession?.firstMessage ?? (metadata.prompt ? compactRlmText(metadata.prompt, 120) : undefined),
 		parentActiveSessionId: metadata.parentActiveSessionId,
 		parentSessionId: metadata.parentSessionId,
 		parentSessionPath: savedSession?.parentSessionPath ?? metadata.parentSessionFile,
@@ -133,6 +159,100 @@ export function summaryForInactiveSession(session: SessionInfo): SessionSummary 
 		firstMessage: session.firstMessage,
 		parentSessionPath: session.parentSessionPath,
 	};
+}
+
+/**
+ * Build snapshots for all RLM child sessions hosted by the daemon under the
+ * given session, including grandchildren. Mirrors the shape of live
+ * rlm_child_update events so attach clients can seed their subagent state
+ * from daemon memory instead of replaying the event stream.
+ */
+export function buildRlmChildSnapshots(
+	rootActiveSessionId: string,
+	activeSessions: readonly ActiveSessionState[],
+): AgentConnectionRlmChildAgentSnapshot[] {
+	const childrenByParent = new Map<string, ActiveSessionState[]>();
+	for (const candidate of activeSessions) {
+		const metadata = candidate.runtime.metadata;
+		if (metadata.kind !== "subagent" || !metadata.parentActiveSessionId) {
+			continue;
+		}
+		const siblings = childrenByParent.get(metadata.parentActiveSessionId) ?? [];
+		siblings.push(candidate);
+		childrenByParent.set(metadata.parentActiveSessionId, siblings);
+	}
+
+	const snapshots: AgentConnectionRlmChildAgentSnapshot[] = [];
+	const visit = (parent: ActiveSessionState | undefined, parentActiveSessionId: string): void => {
+		const parentNodeId = parent?.runtime.metadata.rlmChildId;
+		for (const child of childrenByParent.get(parentActiveSessionId) ?? []) {
+			snapshots.push(rlmChildSnapshotForActiveSession(child, child.runtime.metadata, parentNodeId, parent));
+			// A child passes its own node id to its children as their parent id.
+			visit(child, child.activeSessionId);
+		}
+	};
+	const root = activeSessions.find((candidate) => candidate.activeSessionId === rootActiveSessionId);
+	visit(root, rootActiveSessionId);
+	return snapshots;
+}
+
+function rlmChildSnapshotForActiveSession(
+	activeSession: ActiveSessionState,
+	metadata: AgentSessionRuntimeMetadata,
+	parentNodeId: string | undefined,
+	parent: ActiveSessionState | undefined,
+): AgentConnectionRlmChildAgentSnapshot {
+	const session = activeSession.runtime.session;
+	const transcript: AgentConnectionRlmChildAgentTranscriptLine[] = [];
+	let answerPreview: string | undefined;
+	for (const message of session.messages) {
+		if (message.role !== "user" && message.role !== "assistant") {
+			continue;
+		}
+		const text = compactRlmText(readMessageText(message.content));
+		if (!text) {
+			continue;
+		}
+		transcript.push({ role: message.role, text });
+		if (message.role === "assistant") {
+			answerPreview = text;
+		}
+	}
+	// The parent session's run tracker is the source of truth for child status;
+	// a daemon-hosted child whose agent is momentarily idle is still part of an
+	// active run. The streaming heuristic only covers parents the daemon does
+	// not host (e.g. children attributed to a session created by an older build).
+	const runStatus = metadata.rlmChildId
+		? parent?.runtime.session.getRlmChildRunStatus(metadata.rlmChildId)
+		: undefined;
+	return {
+		id: metadata.rlmChildId ?? activeSession.activeSessionId,
+		parentId: parentNodeId,
+		label: compactRlmText(metadata.prompt ?? "", 80) || "child agent",
+		status: runStatus ?? (session.isStreaming || session.pendingMessageCount > 0 ? "running" : "done"),
+		answerPreview,
+		sessionDir: metadata.sessionDir ?? session.sessionManager.getSessionDir(),
+		transcript,
+	};
+}
+
+function readMessageText(content: unknown): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	if (!Array.isArray(content)) {
+		return "";
+	}
+	return content
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				typeof block === "object" &&
+				block !== null &&
+				(block as { type?: unknown }).type === "text" &&
+				typeof (block as { text?: unknown }).text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
 }
 
 function activeStatusForSession(activeSession: ActiveSessionState): SessionStatus {

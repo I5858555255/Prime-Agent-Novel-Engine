@@ -8,17 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import {
-	type Api,
-	type AssistantMessage,
-	getProviders,
-	type ImageContent,
-	type Message,
-	type Model,
-	type OAuthProviderId,
-	type OAuthSelectPrompt,
-	type ToolCall,
-} from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, ImageContent, Message, Model, ToolCall } from "@earendil-works/pi-ai";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -49,16 +39,8 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
-import {
-	APP_TITLE,
-	getAgentDir,
-	getAuthPath,
-	getDebugLogPath,
-	getDocsPath,
-	getShareViewerUrl,
-	VERSION,
-} from "../../config.js";
-import { formatNoModelsAvailableMessage } from "../../core/auth-guidance.js";
+import { APP_TITLE, getAgentDir, getDebugLogPath, getShareViewerUrl, VERSION } from "../../config.js";
+import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -75,16 +57,6 @@ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.j
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { DefaultPackageManager } from "../../core/package-manager.js";
-import {
-	checkPrimeInferenceAccess,
-	fetchPrimeTeams,
-	loadPrimeCliConfig,
-	loginPrimeInference,
-	PRIME_INFERENCE_PROVIDER_ID,
-	PRIME_INFERENCE_PROVIDER_NAME,
-	type PrimeTeam,
-} from "../../core/prime-inference-auth.js";
-import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
@@ -117,12 +89,14 @@ import type {
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
+import { AGENT_ACTIVITY_LABELS, AgentActivityTracker, formatTokenCount } from "./agent-activity.js";
+import { type AuthenticationResult, getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "./auth-flows.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
-import { CenteredOverlayComponent } from "./components/centered-overlay.js";
+import { showFullPaneOverlay } from "./components/centered-overlay.js";
 import {
 	ChildAgentDetailComponent,
 	ChildAgentInspectorComponent,
@@ -132,6 +106,7 @@ import {
 	type ChildAgentTranscriptLine,
 } from "./components/child-agent-inspector.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
+import { formatContextTree } from "./components/context-tree-format.js";
 import { CountdownTimer } from "./components/countdown-timer.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
@@ -143,15 +118,8 @@ import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
 import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
-import { LoginDialogComponent } from "./components/login-dialog.js";
 import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
-import {
-	type AuthSelectorProvider,
-	compareAuthSelectorProviders,
-	OAuthSelectorComponent,
-} from "./components/oauth-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
-import { PrimeTeamSelectorComponent } from "./components/prime-team-selector.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -165,6 +133,13 @@ import type {
 	InteractiveModeLocalToolRendererDefinition,
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
+import {
+	isOnboardingModelReady,
+	type OnboardingStartupState,
+	shouldRunOnboarding,
+	shouldRunPrimeCliOnboardingSplash,
+} from "./onboarding.js";
+import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -342,16 +317,6 @@ type GoalAnnouncementSnapshot = {
 	lastError?: string;
 };
 
-type AuthenticationResult =
-	| {
-			status: "success";
-			providerId: string;
-			providerName: string;
-			authType: "oauth" | "api_key";
-	  }
-	| { status: "cancelled" }
-	| { status: "failed" };
-
 type ModelSelectionResult = { status: "selected" } | { status: "cancelled" } | { status: "action"; actionId: string };
 
 type ModelFallbackWarningAction = "show" | "suppress" | "wait";
@@ -368,31 +333,6 @@ function isDeadTerminalError(error: unknown): boolean {
 	}
 	const code = (error as NodeJS.ErrnoException).code;
 	return code !== undefined && DEAD_TERMINAL_ERROR_CODES.has(code);
-}
-
-const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
-	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage.";
-
-function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
-	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
-}
-
-const BEDROCK_PROVIDER_ID = "amazon-bedrock";
-
-const BUILT_IN_MODEL_PROVIDERS = new Set<string>(getProviders());
-
-export function isApiKeyLoginProvider(
-	providerId: string,
-	oauthProviderIds: ReadonlySet<string>,
-	builtInProviderIds: ReadonlySet<string> = BUILT_IN_MODEL_PROVIDERS,
-): boolean {
-	if (BUILT_IN_PROVIDER_DISPLAY_NAMES[providerId]) {
-		return true;
-	}
-	if (builtInProviderIds.has(providerId)) {
-		return false;
-	}
-	return !oauthProviderIds.has(providerId);
 }
 
 function getPayloadString(payload: Record<string, unknown>, key: string): string | undefined {
@@ -479,6 +419,8 @@ export interface InteractiveModeOptions {
 	onShutdown?: () => void | Promise<void>;
 	/** Allow returning from a full session to the agents view without stopping the daemon-owned agent. */
 	returnToAgentsView?: boolean;
+	/** Open the read-only detail view for this subagent node right after startup. */
+	initialSubagentNodeId?: string;
 }
 
 export type InteractiveModeRunResult = "agents_view";
@@ -517,7 +459,7 @@ export class InteractiveMode {
 	private workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 	private workingStartedAt: number | undefined = undefined;
 	private workingTimer: NodeJS.Timeout | undefined = undefined;
-	private readonly defaultWorkingMessage = "Working...";
+	private readonly activityTracker = new AgentActivityTracker();
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
@@ -534,6 +476,13 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+
+	// User bash execution tracking (! / !! prefix), driven by bash_* session events
+	private activeBashComponent: BashExecutionComponent | undefined = undefined;
+	private pendingBashComponents: BashExecutionComponent[] = [];
+
+	// Serializes session event handling; see subscribeToAgent
+	private sessionEventQueue: Promise<void> = Promise.resolve();
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -643,9 +592,13 @@ export class InteractiveMode {
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
-		this.childAgentInspector = new ChildAgentInspectorComponent(() => this.getChildAgentPanelRows());
+		this.childAgentInspector = new ChildAgentInspectorComponent(
+			() => this.getChildAgentPanelRows(),
+			() => this.ui.requestRender(),
+		);
 		this.childAgentInspector.onCancel = () => this.closeChildAgentPanel();
 		this.childAgentInspector.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
+		this.childAgentInspector.onKill = (nodeId) => void this.killChildAgent(nodeId);
 		this.childAgentDetail = new ChildAgentDetailComponent(() => this.getChildAgentPanelRows(), {
 			ui: this.ui,
 			getCwd: () => this.getCurrentCwd(),
@@ -661,6 +614,7 @@ export class InteractiveMode {
 		});
 		this.childAgentDetail.onCancel = () => this.showChildAgentList();
 		this.childAgentDetail.onToggleToolsExpanded = () => this.toggleToolOutputExpansion();
+		this.childAgentDetail.onKill = (nodeId) => void this.killChildAgent(nodeId);
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
 		this.keybindings = KeybindingsManager.create();
@@ -759,6 +713,7 @@ export class InteractiveMode {
 		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
 			name: command.name,
 			description: command.description,
+			argumentHint: command.argumentHint,
 		}));
 
 		const modelCommand = slashCommands.find((command) => command.name === "model");
@@ -876,10 +831,6 @@ export class InteractiveMode {
 						hint("app.suspend", "to suspend"),
 						keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
 						hint("app.thinking.cycle", "to cycle thinking level"),
-						rawKeyHint(
-							`${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`,
-							"to cycle models",
-						),
 						hint("app.model.select", "to select model"),
 						hint("app.tools.expand", "to expand tools"),
 						hint("app.thinking.toggle", "to expand thinking"),
@@ -929,6 +880,15 @@ export class InteractiveMode {
 
 		// Render initial messages AFTER showing loaded resources
 		await this.renderInitialMessages();
+
+		// Jump straight into a subagent's read-only detail view when the agents
+		// view opened this session targeting one of its subagents.
+		if (this.options.initialSubagentNodeId && !this.openChildAgentDetail(this.options.initialSubagentNodeId)) {
+			// The subagent can finish and get released between the agents view
+			// listing it and this session attaching; say so instead of silently
+			// landing in the parent chat.
+			this.showStatus("Subagent already finished; showing its parent session");
+		}
 
 		// Set up theme file watcher
 		onThemeChange(() => {
@@ -1104,42 +1064,39 @@ export class InteractiveMode {
 		if (!modelFallbackMessage) {
 			return "suppress";
 		}
-		if (
-			startupNeededOnboarding &&
-			modelFallbackMessage === formatNoModelsAvailableMessage() &&
-			!this.shouldRunOnboarding()
-		) {
+		// The no-models warning is a snapshot from whichever process created the
+		// session; trust the live connection over it (e.g. credentials only
+		// visible to the daemon, or added after the snapshot was taken).
+		if (isNoModelsAvailableMessage(modelFallbackMessage) && this.getCurrentModel()) {
 			return "suppress";
 		}
-		if (startupNeededOnboarding && modelFallbackMessage === formatNoModelsAvailableMessage()) {
+		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage) && !this.shouldRunOnboarding()) {
+			return "suppress";
+		}
+		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage)) {
 			return "wait";
 		}
 		return "show";
 	}
 
+	private getOnboardingState(): OnboardingStartupState {
+		return {
+			settingsManager: this.settingsManager,
+			modelRegistry: this.modelRegistry,
+			model: this.getCurrentModel(),
+		};
+	}
+
 	private shouldRunOnboarding(): boolean {
-		this.modelRegistry.refresh();
-		if (this.shouldRunPrimeCliOnboardingSplash()) {
-			return true;
-		}
-		return !this.isCurrentModelReady();
+		return shouldRunOnboarding(this.getOnboardingState());
 	}
 
 	private shouldRunPrimeCliOnboardingSplash(): boolean {
-		if (this.settingsManager.getOnboardingCompleted()) {
-			return false;
-		}
-		const model = this.getCurrentModel();
-		if (!model || model.provider !== PRIME_INFERENCE_PROVIDER_ID) {
-			return false;
-		}
-		const authStatus = this.modelRegistry.getProviderAuthStatus(PRIME_INFERENCE_PROVIDER_ID);
-		return authStatus.source === "prime_cli";
+		return shouldRunPrimeCliOnboardingSplash(this.getOnboardingState());
 	}
 
 	private isCurrentModelReady(): boolean {
-		const model = this.getCurrentModel();
-		return model !== undefined && this.modelRegistry.hasConfiguredAuth(model);
+		return isOnboardingModelReady(this.getOnboardingState());
 	}
 
 	private completeOnboarding(): void {
@@ -2030,6 +1987,12 @@ export class InteractiveMode {
 			case "goal_update":
 				this.patchConnectionState({ goal: event.goal });
 				break;
+			case "bash_start":
+				this.patchConnectionState({ isBashRunning: true });
+				break;
+			case "bash_end":
+				this.patchConnectionState({ isBashRunning: false });
+				break;
 		}
 	}
 
@@ -2057,6 +2020,10 @@ export class InteractiveMode {
 		return this.connectionState?.isCompacting ?? false;
 	}
 
+	private isBashRunning(): boolean {
+		return this.connectionState?.isBashRunning ?? false;
+	}
+
 	private getRetryAttempt(): number {
 		return this.connectionState?.retryAttempt ?? 0;
 	}
@@ -2075,10 +2042,6 @@ export class InteractiveMode {
 
 	private getScopedModelState(): AgentConnectionState["scopedModels"] {
 		return this.connectionState?.scopedModels ?? [];
-	}
-
-	private hasScopedModelState(): boolean {
-		return this.getScopedModelState().length > 0;
 	}
 
 	private async rebindCurrentSession(): Promise<void> {
@@ -2120,6 +2083,12 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		// The discarded component's loader interval keeps firing otherwise; no
+		// bash_end will reach it once the reference is dropped.
+		this.activeBashComponent?.setComplete(undefined, true);
+		this.activeBashComponent = undefined;
+		this.pendingBashComponents = [];
+		this.activityTracker.reset();
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
@@ -2323,11 +2292,23 @@ export class InteractiveMode {
 	}
 
 	private getWorkingLoaderMessage(): string {
-		const message = this.workingMessage ?? this.defaultWorkingMessage;
-		if (this.workingStartedAt === undefined) {
-			return message;
+		const elapsed =
+			this.workingStartedAt === undefined
+				? undefined
+				: this.formatWorkingElapsed(Date.now() - this.workingStartedAt);
+		if (this.workingMessage !== undefined) {
+			// Extensions and tool bootstrap own the message; keep the plain "<message> <elapsed>" form.
+			return elapsed === undefined ? this.workingMessage : `${this.workingMessage} ${elapsed}`;
 		}
-		return `${message} ${this.formatWorkingElapsed(Date.now() - this.workingStartedAt)}`;
+		const status = this.activityTracker.getStatus();
+		const parts = [AGENT_ACTIVITY_LABELS[status.activity]];
+		if (elapsed !== undefined) {
+			parts.push(elapsed);
+		}
+		if (status.tokens > 0) {
+			parts.push(`${status.direction === "down" ? "↓" : "↑"} ${formatTokenCount(status.tokens)} tokens`);
+		}
+		return parts.join(" · ");
 	}
 
 	private createWorkingLoader(): Loader {
@@ -3077,8 +3058,6 @@ export class InteractiveMode {
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
 		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
-		this.defaultEditor.onAction("app.model.cycleForward", () => this.cycleModel("forward"));
-		this.defaultEditor.onAction("app.model.cycleBackward", () => this.cycleModel("backward"));
 
 		// Global debug handler on TUI (works regardless of focus)
 		this.ui.onDebug = () => {
@@ -3198,8 +3177,8 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/usage") {
-				await this.handleUsageCommand();
+			if (text === "/context" || text === "/usage") {
+				await this.handleContextCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -3243,7 +3222,7 @@ export class InteractiveMode {
 				await this.showOAuthSelector("logout");
 				return;
 			}
-			if (text === "/new") {
+			if (text === "/new" || text === "/clear") {
 				this.editor.setText("");
 				await this.handleClearCommand();
 				return;
@@ -3291,10 +3270,36 @@ export class InteractiveMode {
 				return;
 			}
 
-			// Legacy bash shortcuts are intentionally not transported through AgentConnection.
+			// Handle bash command (! for normal, !! for excluded from context)
 			if (text.startsWith("!")) {
-				this.showWarning("Bash commands are not available in interactive mode. Use IPython for shell commands.");
+				const isExcluded = text.startsWith("!!");
+				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+				if (!command) {
+					// Bare ! / !! is bash mode with nothing to run; don't send it as a prompt
+					return;
+				}
+				if (this.isBashRunning()) {
+					this.showWarning(`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`);
+					return;
+				}
+				this.editor.addToHistory?.(text);
 				this.editor.setText("");
+				// Optimistic: bash_start only fires after extension dispatch, and the
+				// clear key must already route to abortBash in that window.
+				this.patchConnectionState({ isBashRunning: true });
+				try {
+					await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
+				} catch (error) {
+					// Re-sync rather than assume idle: the rejection may mean another
+					// client's bash run already holds the slot.
+					try {
+						const state = await this.agentConnection.getState();
+						this.patchConnectionState({ isBashRunning: state.isBashRunning });
+					} catch {
+						this.patchConnectionState({ isBashRunning: false });
+					}
+					this.showError(error instanceof Error ? error.message : String(error));
+				}
 				return;
 			}
 
@@ -3321,6 +3326,10 @@ export class InteractiveMode {
 				return;
 			}
 
+			// Normal message submission
+			// First, move any pending bash components to chat
+			this.flushPendingBashComponents();
+
 			if (this.onInputCallback) {
 				this.onInputCallback(text);
 			}
@@ -3332,7 +3341,12 @@ export class InteractiveMode {
 		this.unsubscribe = this.agentConnection.subscribe(async (event) => {
 			try {
 				if (event.type === "session_event") {
-					await this.handleEvent(event.event);
+					// Connection adapters dispatch without awaiting, so a handler that
+					// suspends would let later events overtake it; queue session events
+					// to keep paired events like bash_start/bash_end in emission order.
+					const run = this.sessionEventQueue.then(() => this.handleEvent(event.event));
+					this.sessionEventQueue = run.catch(() => {});
+					await run;
 				} else if (event.type === "session_replaced") {
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
@@ -3533,6 +3547,8 @@ export class InteractiveMode {
 
 		this.footer.invalidate();
 		this.updateConnectionStateFromEvent(event);
+		this.activityTracker.handleEvent(event);
+		this.updateWorkingLoaderMessage();
 
 		switch (event.type) {
 			case "agent_start":
@@ -3575,6 +3591,45 @@ export class InteractiveMode {
 				this.updateEditorBorderColor();
 				break;
 
+			case "bash_start": {
+				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext);
+				if (this.isAgentStreaming()) {
+					this.pendingMessagesContainer.addChild(component);
+					this.pendingBashComponents.push(component);
+				} else {
+					this.chatContainer.addChild(component);
+				}
+				this.activeBashComponent = component;
+				this.ui.requestRender();
+				break;
+			}
+
+			case "bash_output":
+				if (this.activeBashComponent) {
+					this.activeBashComponent.appendOutput(event.chunk);
+					this.ui.requestRender();
+				}
+				break;
+
+			case "bash_end":
+				if (this.activeBashComponent) {
+					if (event.errorMessage) {
+						this.activeBashComponent.setFailed(event.errorMessage);
+					} else {
+						this.activeBashComponent.setComplete(
+							event.exitCode,
+							event.cancelled,
+							event.truncated ? ({ truncated: true } as TruncationResult) : undefined,
+							event.fullOutputPath,
+						);
+					}
+					this.activeBashComponent = undefined;
+				} else if (event.errorMessage) {
+					this.showError(`Bash command failed: ${event.errorMessage}`);
+				}
+				this.ui.requestRender();
+				break;
+
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
@@ -3610,10 +3665,14 @@ export class InteractiveMode {
 					let errorMessage: string | undefined;
 					if (this.streamingMessage.stopReason === "aborted") {
 						const retryAttempt = this.getRetryAttempt();
+						const elapsedSuffix =
+							this.workingStartedAt === undefined
+								? ""
+								: ` · ${this.formatWorkingElapsed(Date.now() - this.workingStartedAt)}`;
 						errorMessage =
 							retryAttempt > 0
-								? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-								: "Operation aborted";
+								? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}${elapsedSuffix}`
+								: `Operation aborted${elapsedSuffix}`;
 						this.streamingMessage.errorMessage = errorMessage;
 					}
 					this.ensureAssistantStreamingComponent(event.message).updateContent(this.streamingMessage);
@@ -3693,6 +3752,7 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
+				this.flushPendingBashComponents();
 				this.resetPendingToolState();
 
 				await this.checkShutdownRequested();
@@ -3707,9 +3767,12 @@ export class InteractiveMode {
 				// Keep editor active; submissions are queued during compaction.
 				this.statusContainer.clear();
 				const cancelHint = `(${keyText("app.clear")} to cancel)`;
+				const focus = event.customInstructions
+					? ` (focus: ${truncateToWidth(event.customInstructions, 60, "…")})`
+					: "";
 				const label =
 					event.reason === "manual"
-						? `Compacting context... ${cancelHint}`
+						? `Compacting context${focus}... ${cancelHint}`
 						: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
 				this.autoCompactionLoader = new Loader(
 					this.ui,
@@ -3745,11 +3808,14 @@ export class InteractiveMode {
 							event.result.summary,
 							event.result.tokensBefore,
 							new Date().toISOString(),
+							event.customInstructions,
 						),
 					);
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
-					if (event.reason === "manual") {
+					if (event.errorSeverity === "warning") {
+						this.showWarning(event.errorMessage);
+					} else if (event.reason === "manual") {
 						this.showError(event.errorMessage);
 					} else {
 						this.chatContainer.addChild(new Spacer(1));
@@ -3970,15 +4036,52 @@ export class InteractiveMode {
 		return `: ${truncateToWidth(detail, availableWidth)}`;
 	}
 
+	private seedChildAgentInspector(children: readonly AgentConnectionRlmChildAgentSnapshot[] | undefined): void {
+		if (!children?.length) {
+			return;
+		}
+		for (const child of children) {
+			// Live rlm_child_update events are richer than the snapshot; never
+			// clobber state that already arrived from the event stream.
+			if (!this.childAgentSnapshots.has(child.id)) {
+				this.updateChildAgentInspector(child);
+			}
+		}
+	}
+
 	private updateChildAgentInspector(child: AgentConnectionRlmChildAgentSnapshot): void {
-		this.childAgentSnapshots.set(child.id, child);
+		// Cancelled subagents were deliberately stopped; drop them from the
+		// viewer instead of keeping a dead row around.
+		if (child.status === "cancelled") {
+			this.removeChildAgentSnapshot(child.id);
+		} else {
+			this.childAgentSnapshots.set(child.id, child);
+		}
 		this.childAgentNodes = this.buildChildAgentInspectorNodes();
 		this.childAgentSummary.setNodes(this.childAgentNodes);
 		this.childAgentInspector.setNodes(this.childAgentNodes);
 		if (this.childAgentDetailNodeId) {
-			this.childAgentDetail.setNode(this.findChildAgentInspectorNode(this.childAgentDetailNodeId));
+			const detailNode = this.findChildAgentInspectorNode(this.childAgentDetailNodeId);
+			if (!detailNode && this.childAgentPanelMode === "detail") {
+				this.showChildAgentList();
+				return;
+			}
+			this.childAgentDetail.setNode(detailNode);
+		}
+		if (this.childAgentPanelMode === "list" && this.childAgentNodes.length === 0) {
+			this.closeChildAgentPanel();
+			return;
 		}
 		this.ui.requestRender();
+	}
+
+	private removeChildAgentSnapshot(id: string): void {
+		this.childAgentSnapshots.delete(id);
+		for (const child of [...this.childAgentSnapshots.values()]) {
+			if (child.parentId === id) {
+				this.removeChildAgentSnapshot(child.id);
+			}
+		}
 	}
 
 	private restoreMainAgentView(): void {
@@ -4104,6 +4207,18 @@ export class InteractiveMode {
 		this.showChildAgentList();
 	}
 
+	private async killChildAgent(nodeId: string): Promise<void> {
+		try {
+			const cancelled = await this.agentConnection.cancelRlmChild(nodeId);
+			if (!cancelled) {
+				this.showError("Subagent already finished");
+			}
+		} catch (error) {
+			this.showError(`Failed to stop subagent: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		this.ui.requestRender();
+	}
+
 	private showChildAgentList(): void {
 		if (this.childAgentNodes.length === 0) {
 			this.closeChildAgentPanel();
@@ -4121,10 +4236,10 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private openChildAgentDetail(nodeId: string): void {
+	private openChildAgentDetail(nodeId: string): boolean {
 		const node = this.findChildAgentInspectorNode(nodeId);
 		if (!node) {
-			return;
+			return false;
 		}
 		this.childAgentPanelMode = "detail";
 		this.childAgentDetailNodeId = nodeId;
@@ -4135,6 +4250,7 @@ export class InteractiveMode {
 		this.mainViewContainer.addChild(this.childAgentDetail);
 		this.ui.setFocus(this.childAgentDetail);
 		this.ui.requestRender();
+		return true;
 	}
 
 	private focusChildAgentInspector(): void {
@@ -4397,7 +4513,9 @@ export class InteractiveMode {
 								errorMessage =
 									retryAttempt > 0
 										? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-										: "Operation aborted";
+										: message.errorMessage && message.errorMessage !== "Request was aborted"
+											? message.errorMessage
+											: "Operation aborted";
 							} else {
 								errorMessage = message.errorMessage || "Error";
 							}
@@ -4439,6 +4557,7 @@ export class InteractiveMode {
 			this.initialConnectionSnapshotConsumed = true;
 			context = this.getSessionContextFromConnectionSnapshot(snapshot);
 			state = snapshot.state;
+			this.seedChildAgentInspector(snapshot.children);
 		}
 		this.applyConnectionStateSnapshot(state);
 		await this.renderSessionContext(context, {
@@ -4511,6 +4630,12 @@ export class InteractiveMode {
 			void this.agentConnection.abortBranchSummary();
 			return;
 		}
+		// Bash outranks the agent stream: the already-running warning tells the user
+		// this key cancels the bash command, and the stream stays one press away.
+		if (this.isBashRunning()) {
+			void this.agentConnection.abortBash();
+			return;
+		}
 		if (this.isAgentStreaming()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
@@ -4574,6 +4699,9 @@ export class InteractiveMode {
 		this.unregisterSignalHandlers();
 		this.clearCtrlCExitHint({ render: false });
 
+		// Fetch while the connection is still alive; exit must not fail on a stats error.
+		const sessionStats = await this.agentConnection.getSessionStats().catch(() => undefined);
+
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		await this.ui.terminal.drainInput(1000);
@@ -4583,6 +4711,10 @@ export class InteractiveMode {
 			await this.agentConnection.dispose();
 		} finally {
 			await this.options.onShutdown?.();
+		}
+		const resumeHint = formatResumeHint(sessionStats);
+		if (resumeHint) {
+			console.log(resumeHint);
 		}
 		process.exit(0);
 	}
@@ -4762,30 +4894,6 @@ export class InteractiveMode {
 			.catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
-	}
-
-	private async cycleModel(direction: "forward" | "backward"): Promise<void> {
-		try {
-			const result = await this.agentConnection.cycleModel(direction);
-			if (result === undefined) {
-				const msg = this.hasScopedModelState() ? "Only one model in scope" : "Only one model available";
-				this.showStatus(msg);
-			} else {
-				this.patchConnectionState({
-					model: result.model,
-					thinkingLevel: result.thinkingLevel,
-				});
-				this.footer.invalidate();
-				this.updateEditorBorderColor();
-				this.completeOnboardingIfCurrentModelReady();
-				const thinkingStr =
-					result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
-				this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
-				void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
-			}
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-		}
 	}
 
 	private toggleToolOutputExpansion(): void {
@@ -4968,6 +5076,11 @@ export class InteractiveMode {
 
 	private updatePendingMessagesDisplay(): void {
 		this.pendingMessagesContainer.clear();
+		// Keep in-flight bash output visible across queue refreshes; clear() detaches
+		// the components but they stay tracked in pendingBashComponents until flushed.
+		for (const component of this.pendingBashComponents) {
+			this.pendingMessagesContainer.addChild(component);
+		}
 		const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
 		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
@@ -4983,6 +5096,15 @@ export class InteractiveMode {
 			const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
 			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
+	}
+
+	/** Move pending bash components from pending area to chat */
+	private flushPendingBashComponents(): void {
+		for (const component of this.pendingBashComponents) {
+			this.pendingMessagesContainer.removeChild(component);
+			this.chatContainer.addChild(component);
+		}
+		this.pendingBashComponents = [];
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
@@ -5122,18 +5244,7 @@ export class InteractiveMode {
 	}
 
 	private showFullPaneOverlay(component: Component, maxContentWidth = 80): OverlayHandle {
-		return this.ui.showOverlay(
-			new CenteredOverlayComponent(component, {
-				getRows: () => this.ui.terminal.rows,
-				maxContentWidth,
-			}),
-			{
-				width: "100%",
-				maxHeight: "100%",
-				row: 0,
-				col: 0,
-			},
-		);
+		return showFullPaneOverlay(this.ui, component, maxContentWidth);
 	}
 
 	private async showSettingsSelector(): Promise<void> {
@@ -5406,27 +5517,12 @@ export class InteractiveMode {
 		if (this.anthropicSubscriptionWarningShown) {
 			return;
 		}
-		if (!model || model.provider !== "anthropic") {
+		const warning = await getAnthropicSubscriptionAuthWarning(this.modelRegistry, model);
+		if (!warning) {
 			return;
 		}
-
-		const storedCredential = this.modelRegistry.authStorage.get("anthropic");
-		if (storedCredential?.type === "oauth") {
-			this.anthropicSubscriptionWarningShown = true;
-			this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
-			return;
-		}
-
-		try {
-			const apiKey = await this.modelRegistry.getApiKeyForProvider(model.provider);
-			if (!isAnthropicSubscriptionAuthKey(apiKey)) {
-				return;
-			}
-			this.anthropicSubscriptionWarningShown = true;
-			this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
-		} catch {
-			// Ignore auth lookup failures for warning-only checks.
-		}
+		this.anthropicSubscriptionWarningShown = true;
+		this.showWarning(warning);
 	}
 
 	private showModelSelector(initialSearchInput?: string): void {
@@ -5910,51 +6006,6 @@ export class InteractiveMode {
 		}
 	}
 
-	private getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[] {
-		const authStorage = this.modelRegistry.authStorage;
-		const oauthProviders = authStorage.getOAuthProviders();
-		const oauthProviderIds = new Set(oauthProviders.map((provider) => provider.id));
-		const options: AuthSelectorProvider[] = oauthProviders.map((provider) => ({
-			id: provider.id,
-			name: provider.name,
-			authType: "oauth",
-		}));
-
-		const modelProviders = new Set(this.modelRegistry.getAll().map((model) => model.provider));
-		for (const providerId of modelProviders) {
-			if (!isApiKeyLoginProvider(providerId, oauthProviderIds)) {
-				continue;
-			}
-			options.push({
-				id: providerId,
-				name: this.modelRegistry.getProviderDisplayName(providerId),
-				authType: "api_key",
-			});
-		}
-
-		const filteredOptions = authType ? options.filter((option) => option.authType === authType) : options;
-		return filteredOptions.sort(compareAuthSelectorProviders);
-	}
-
-	private getLogoutProviderOptions(): AuthSelectorProvider[] {
-		const authStorage = this.modelRegistry.authStorage;
-		const options: AuthSelectorProvider[] = [];
-
-		for (const providerId of authStorage.list()) {
-			const credential = authStorage.get(providerId);
-			if (!credential) {
-				continue;
-			}
-			options.push({
-				id: providerId,
-				name: this.modelRegistry.getProviderDisplayName(providerId),
-				authType: credential.type,
-			});
-		}
-
-		return options.sort((a, b) => a.name.localeCompare(b.name));
-	}
-
 	private showOnboardingPrimeLogin(): Promise<AuthenticationResult> {
 		return new Promise((resolve) => {
 			let settled = false;
@@ -5975,7 +6026,7 @@ export class InteractiveMode {
 			selector = new PrimeOnboardingSplashComponent(
 				() => {
 					close();
-					void this.showPrimeInferenceLoginDialog().then(settle);
+					void this.createAuthFlows().runPrimeInferenceLogin().then(settle);
 				},
 				() => {
 					close();
@@ -6036,51 +6087,26 @@ export class InteractiveMode {
 		});
 	}
 
-	private showLoginProviderSelector(authType?: "oauth" | "api_key"): Promise<AuthenticationResult> {
-		const providerOptions = this.getLoginProviderOptions(authType);
-		if (providerOptions.length === 0) {
-			this.showStatus(
-				authType === "oauth"
-					? "No subscription providers available."
-					: authType === "api_key"
-						? "No API key providers available."
-						: "No providers available.",
-			);
-			return Promise.resolve({ status: "failed" });
-		}
-
-		return new Promise((resolve) => {
-			let handle: OverlayHandle | undefined;
-			const close = () => {
-				handle?.hide();
-				this.ui.requestRender();
-			};
-			const selector = new OAuthSelectorComponent(
-				"login",
-				this.modelRegistry.authStorage,
-				providerOptions,
-				async (providerOption: AuthSelectorProvider) => {
-					close();
-
-					if (providerOption.authType === "oauth") {
-						resolve(await this.showLoginDialog(providerOption.id, providerOption.name));
-					} else if (providerOption.id === PRIME_INFERENCE_PROVIDER_ID) {
-						resolve(await this.showPrimeInferenceApiKeyLoginDialog());
-					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
-						resolve(await this.showBedrockSetupDialog(providerOption.id, providerOption.name));
-					} else {
-						resolve(await this.showApiKeyLoginDialog(providerOption.id, providerOption.name));
-					}
-				},
-				() => {
-					close();
-					resolve({ status: "cancelled" });
-				},
-				(providerId) => this.modelRegistry.getProviderAuthStatus(providerId),
-				{ getRows: () => this.ui.terminal.rows },
-			);
-			handle = this.showFullPaneOverlay(selector, 78);
+	private createAuthFlows(): ProviderAuthFlows {
+		return new ProviderAuthFlows({
+			ui: this.ui,
+			modelRegistry: this.modelRegistry,
+			showStatus: (message) => this.showStatus(message),
+			showError: (message) => this.showError(message),
+			getAvailableModels: () => this.getConnectionAvailableModels(),
+			onAuthChanged: async () => {
+				await this.updateAvailableProviderCount();
+				this.footer.invalidate();
+				this.updateEditorBorderColor();
+			},
+			onLoginCompleted: () => {
+				void this.maybeWarnAboutAnthropicSubscriptionAuth();
+			},
 		});
+	}
+
+	private showLoginProviderSelector(authType?: "oauth" | "api_key"): Promise<AuthenticationResult> {
+		return this.createAuthFlows().runLogin(authType);
 	}
 
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
@@ -6092,500 +6118,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		const providerOptions = this.getLogoutProviderOptions();
-		if (providerOptions.length === 0) {
-			this.showStatus(
-				"No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
-			);
-			return;
-		}
-
-		this.showSelector((done) => {
-			const selector = new OAuthSelectorComponent(
-				mode,
-				this.modelRegistry.authStorage,
-				providerOptions,
-				async (providerOption: AuthSelectorProvider) => {
-					done();
-
-					try {
-						this.modelRegistry.authStorage.logout(providerOption.id);
-						this.modelRegistry.refresh();
-						await this.updateAvailableProviderCount();
-						const message =
-							providerOption.authType === "oauth"
-								? `Logged out of ${providerOption.name}`
-								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
-						this.showStatus(message);
-					} catch (error: unknown) {
-						this.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
-					}
-				},
-				() => {
-					done();
-					this.ui.requestRender();
-				},
-				undefined,
-				{ getRows: () => this.ui.terminal.rows },
-			);
-			return { component: selector, focus: selector };
-		});
-	}
-
-	private async completeProviderAuthentication(
-		providerId: string,
-		providerName: string,
-		authType: "oauth" | "api_key",
-		statusSuffix?: string,
-	): Promise<AuthenticationResult> {
-		this.modelRegistry.refresh();
-
-		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
-		await this.updateAvailableProviderCount();
-		this.footer.invalidate();
-		this.updateEditorBorderColor();
-		this.showStatus(
-			`${actionLabel}. Credentials saved to ${getAuthPath()}${statusSuffix ? `. ${statusSuffix}` : ""}`,
-		);
-		void this.maybeWarnAboutAnthropicSubscriptionAuth();
-		return {
-			status: "success",
-			providerId,
-			providerName,
-			authType,
-		};
-	}
-
-	private async completeExternalProviderSetup(
-		providerId: string,
-		providerName: string,
-	): Promise<AuthenticationResult> {
-		this.modelRegistry.refresh();
-		await this.updateAvailableProviderCount();
-		this.footer.invalidate();
-		this.updateEditorBorderColor();
-		this.showStatus(`${providerName} uses external credentials. Select a model after configuring them.`);
-		return {
-			status: "success",
-			providerId,
-			providerName,
-			authType: "api_key",
-		};
-	}
-
-	private async hasAvailableProviderModels(providerId: string): Promise<boolean> {
-		const models = await this.getConnectionAvailableModels();
-		return models.some((model) => model.provider === providerId);
-	}
-
-	private async showBedrockSetupDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
-		const dialog = new LoginDialogComponent(
-			this.ui,
-			providerId,
-			() => {
-				// Completion handled below.
-			},
-			providerName,
-			"Amazon Bedrock setup",
-		);
-		const handle = this.showFullPaneOverlay(dialog, 88);
-		const closeDialog = () => {
-			handle.hide();
-			this.ui.requestRender();
-		};
-
-		try {
-			await dialog.showContinueInfo([
-				theme.fg("text", "Amazon Bedrock uses AWS credentials instead of a single API key."),
-				theme.fg("text", "Configure an AWS profile, IAM keys, bearer token, or role-based credentials."),
-				theme.fg("muted", "See:"),
-				theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
-			]);
-			closeDialog();
-			if (!(await this.hasAvailableProviderModels(providerId))) {
-				this.showStatus(`${providerName} credentials were not detected. Configure them, then reopen /model.`);
-				return { status: "cancelled" };
-			}
-			return await this.completeExternalProviderSetup(providerId, providerName);
-		} catch (error: unknown) {
-			closeDialog();
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			if (errorMsg !== "Login cancelled") {
-				this.showError(`Failed to set up ${providerName}: ${errorMsg}`);
-				return { status: "failed" };
-			}
-			return { status: "cancelled" };
-		}
-	}
-
-	private showPrimeTeamSelector(
-		teams: PrimeTeam[],
-		currentTeamId: string | undefined,
-	): Promise<PrimeTeam | null | undefined> {
-		return new Promise((resolve) => {
-			let handle: OverlayHandle | undefined;
-			const close = () => {
-				handle?.hide();
-				this.ui.requestRender();
-			};
-			const selector = new PrimeTeamSelectorComponent(
-				teams,
-				currentTeamId,
-				(team) => {
-					close();
-					resolve(team);
-				},
-				() => {
-					close();
-					resolve(undefined);
-				},
-				{ getRows: () => this.ui.terminal.rows },
-			);
-			handle = this.showFullPaneOverlay(selector, 78);
-		});
-	}
-
-	private getPrimeInferenceDefaultTeamStatus(): string {
-		const storedTeam = this.modelRegistry.authStorage.getPrimeInferenceTeamSelection();
-		if (storedTeam) {
-			return `Using team "${storedTeam.name}".`;
-		}
-		if (storedTeam === null) {
-			return "Using personal account.";
-		}
-		let config: ReturnType<typeof loadPrimeCliConfig>;
-		try {
-			config = loadPrimeCliConfig();
-		} catch {
-			return "Using personal account.";
-		}
-		if (config.teamIdFromEnv) {
-			return "Using team from PRIME_TEAM_ID.";
-		}
-		if (config.teamName) {
-			return `Using team "${config.teamName}".`;
-		}
-		if (config.teamId) {
-			return "Using Prime CLI team.";
-		}
-		return "Using personal account.";
-	}
-
-	private async selectPrimeInferenceTeam(apiKey: string, dialog: LoginDialogComponent): Promise<string | undefined> {
-		try {
-			const config = loadPrimeCliConfig();
-			if (config.teamIdFromEnv) {
-				this.modelRegistry.authStorage.reload();
-				return "Using team from PRIME_TEAM_ID.";
-			}
-
-			dialog.showProgress("Loading Prime teams...");
-			const teams = await fetchPrimeTeams(apiKey, config.baseUrl, { signal: dialog.signal });
-			if (dialog.signal.aborted) {
-				return this.getPrimeInferenceDefaultTeamStatus();
-			}
-			if (teams.length === 0) {
-				this.modelRegistry.authStorage.setPrimeInferenceTeamSelection(null);
-				return "Using personal account.";
-			}
-
-			const storedTeam = this.modelRegistry.authStorage.getPrimeInferenceTeamSelection();
-			const currentTeamId = storedTeam === null ? undefined : (storedTeam?.teamId ?? config.teamId);
-			const selectedTeam = await this.showPrimeTeamSelector(teams, currentTeamId);
-			if (selectedTeam !== undefined) {
-				this.modelRegistry.authStorage.setPrimeInferenceTeamSelection(selectedTeam);
-			}
-			return selectedTeam
-				? `Using team "${selectedTeam.name}".`
-				: selectedTeam === null
-					? "Using personal account."
-					: this.getPrimeInferenceDefaultTeamStatus();
-		} catch {
-			this.modelRegistry.authStorage.reload();
-			return this.getPrimeInferenceDefaultTeamStatus();
-		}
-	}
-
-	private async showPrimeInferenceLoginDialog(): Promise<AuthenticationResult> {
-		const dialog = new LoginDialogComponent(
-			this.ui,
-			PRIME_INFERENCE_PROVIDER_ID,
-			(_success, _message) => {
-				// Completion handled below.
-			},
-			PRIME_INFERENCE_PROVIDER_NAME,
-		);
-
-		const handle = this.showFullPaneOverlay(dialog, 88);
-
-		const closeDialog = () => {
-			handle.hide();
-			this.ui.requestRender();
-		};
-
-		try {
-			const result = await loginPrimeInference({
-				onAuth: (info) => {
-					dialog.showAuth(info.url, info.instructions);
-					dialog.showWaiting("Waiting for browser authentication...");
-				},
-				onProgress: (message) => {
-					dialog.showProgress(message);
-				},
-				signal: dialog.signal,
-			});
-
-			if (dialog.signal.aborted) {
-				closeDialog();
-				return { status: "cancelled" };
-			}
-
-			const previousPrimeCredential = this.modelRegistry.authStorage.get(PRIME_INFERENCE_PROVIDER_ID);
-			const previousPrimeTeam =
-				previousPrimeCredential?.type === "api_key" ? previousPrimeCredential.primeTeam : undefined;
-			this.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, {
-				type: "api_key",
-				key: result.apiKey,
-				...(previousPrimeTeam !== undefined ? { primeTeam: previousPrimeTeam } : {}),
-			});
-			const teamStatus = await this.selectPrimeInferenceTeam(result.apiKey, dialog);
-
-			closeDialog();
-			return await this.completeProviderAuthentication(
-				PRIME_INFERENCE_PROVIDER_ID,
-				PRIME_INFERENCE_PROVIDER_NAME,
-				"api_key",
-				teamStatus,
-			);
-		} catch (error: unknown) {
-			closeDialog();
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			if (errorMsg !== "Login cancelled") {
-				this.showError(`Failed to login to ${PRIME_INFERENCE_PROVIDER_NAME}: ${errorMsg}`);
-				return { status: "failed" };
-			}
-			return { status: "cancelled" };
-		}
-	}
-
-	private async showPrimeInferenceApiKeyLoginDialog(): Promise<AuthenticationResult> {
-		const dialog = new LoginDialogComponent(
-			this.ui,
-			PRIME_INFERENCE_PROVIDER_ID,
-			(_success, _message) => {
-				// Completion handled below
-			},
-			PRIME_INFERENCE_PROVIDER_NAME,
-		);
-
-		const handle = this.showFullPaneOverlay(dialog, 88);
-
-		const closeDialog = () => {
-			handle.hide();
-			this.ui.requestRender();
-		};
-
-		try {
-			const apiKey = (await dialog.showPrompt("Enter API key:")).trim();
-			if (!apiKey) {
-				throw new Error("API key cannot be empty.");
-			}
-
-			dialog.showProgress("Checking Prime Inference access...");
-			const config = loadPrimeCliConfig();
-			const access = await checkPrimeInferenceAccess(apiKey, config.baseUrl, { signal: dialog.signal });
-			if (dialog.signal.aborted) {
-				closeDialog();
-				return { status: "cancelled" };
-			}
-			if (!access.ok) {
-				const status = access.status === undefined ? "" : `HTTP ${access.status}: `;
-				throw new Error(`Prime API key does not have Prime Inference access (${status}${access.message})`);
-			}
-
-			const previousPrimeCredential = this.modelRegistry.authStorage.get(PRIME_INFERENCE_PROVIDER_ID);
-			const previousPrimeTeam =
-				previousPrimeCredential?.type === "api_key" ? previousPrimeCredential.primeTeam : undefined;
-			this.modelRegistry.authStorage.set(PRIME_INFERENCE_PROVIDER_ID, {
-				type: "api_key",
-				key: apiKey,
-				...(previousPrimeTeam !== undefined ? { primeTeam: previousPrimeTeam } : {}),
-			});
-			const teamStatus = await this.selectPrimeInferenceTeam(apiKey, dialog);
-
-			closeDialog();
-			return await this.completeProviderAuthentication(
-				PRIME_INFERENCE_PROVIDER_ID,
-				PRIME_INFERENCE_PROVIDER_NAME,
-				"api_key",
-				teamStatus,
-			);
-		} catch (error: unknown) {
-			closeDialog();
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			if (errorMsg !== "Login cancelled") {
-				this.showError(`Failed to save API key for ${PRIME_INFERENCE_PROVIDER_NAME}: ${errorMsg}`);
-				return { status: "failed" };
-			}
-			return { status: "cancelled" };
-		}
-	}
-
-	private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
-		const dialog = new LoginDialogComponent(
-			this.ui,
-			providerId,
-			(_success, _message) => {
-				// Completion handled below
-			},
-			providerName,
-		);
-
-		const handle = this.showFullPaneOverlay(dialog, 88);
-
-		const closeDialog = () => {
-			handle.hide();
-			this.ui.requestRender();
-		};
-
-		try {
-			const apiKey = (await dialog.showPrompt("Enter API key:")).trim();
-			if (!apiKey) {
-				throw new Error("API key cannot be empty.");
-			}
-
-			this.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
-
-			closeDialog();
-			return await this.completeProviderAuthentication(providerId, providerName, "api_key");
-		} catch (error: unknown) {
-			closeDialog();
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			if (errorMsg !== "Login cancelled") {
-				this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
-				return { status: "failed" };
-			}
-			return { status: "cancelled" };
-		}
-	}
-
-	private showOAuthLoginSelect(dialogHandle: OverlayHandle, prompt: OAuthSelectPrompt): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			dialogHandle.setHidden(true);
-			let selectorHandle: OverlayHandle | undefined;
-			const restoreDialog = () => {
-				selectorHandle?.hide();
-				dialogHandle.setHidden(false);
-				dialogHandle.focus();
-				this.ui.requestRender();
-			};
-			const labels = prompt.options.map((option) => option.label);
-			const selector = new ExtensionSelectorComponent(
-				prompt.message,
-				labels,
-				(optionLabel) => {
-					restoreDialog();
-					resolve(prompt.options.find((option) => option.label === optionLabel)?.id);
-				},
-				() => {
-					restoreDialog();
-					resolve(undefined);
-				},
-				{ getRows: () => this.ui.terminal.rows },
-			);
-			selectorHandle = this.showFullPaneOverlay(selector, 76);
-		});
-	}
-
-	private async showLoginDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
-		const providerInfo = this.modelRegistry.authStorage
-			.getOAuthProviders()
-			.find((provider) => provider.id === providerId);
-
-		// Providers that use callback servers (can paste redirect URL)
-		const usesCallbackServer = providerInfo?.usesCallbackServer ?? false;
-
-		// Create login dialog component
-		const dialog = new LoginDialogComponent(
-			this.ui,
-			providerId,
-			(_success, _message) => {
-				// Completion handled below
-			},
-			providerName,
-		);
-
-		const dialogHandle = this.showFullPaneOverlay(dialog, 88);
-
-		// Promise for manual code input (racing with callback server)
-		let manualCodeResolve: ((code: string) => void) | undefined;
-		let manualCodeReject: ((err: Error) => void) | undefined;
-		const manualCodePromise = new Promise<string>((resolve, reject) => {
-			manualCodeResolve = resolve;
-			manualCodeReject = reject;
-		});
-
-		// Close dialog overlay helper.
-		const closeDialog = () => {
-			dialogHandle.hide();
-			this.ui.requestRender();
-		};
-
-		try {
-			await this.modelRegistry.authStorage.login(providerId as OAuthProviderId, {
-				onAuth: (info: { url: string; instructions?: string }) => {
-					dialog.showAuth(info.url, info.instructions);
-
-					if (usesCallbackServer) {
-						// Show input for manual paste, racing with callback
-						dialog
-							.showManualInput("Paste redirect URL below, or complete login in browser:")
-							.then((value) => {
-								if (value && manualCodeResolve) {
-									manualCodeResolve(value);
-									manualCodeResolve = undefined;
-								}
-							})
-							.catch(() => {
-								if (manualCodeReject) {
-									manualCodeReject(new Error("Login cancelled"));
-									manualCodeReject = undefined;
-								}
-							});
-					} else if (providerId === "github-copilot") {
-						// GitHub Copilot polls after onAuth
-						dialog.showWaiting("Waiting for browser authentication...");
-					}
-					// For Anthropic: onPrompt is called immediately after
-				},
-
-				onPrompt: async (prompt: { message: string; placeholder?: string }) => {
-					return dialog.showPrompt(prompt.message, prompt.placeholder);
-				},
-
-				onProgress: (message: string) => {
-					dialog.showProgress(message);
-				},
-
-				onSelect: (prompt: OAuthSelectPrompt) => this.showOAuthLoginSelect(dialogHandle, prompt),
-
-				onManualCodeInput: () => manualCodePromise,
-
-				signal: dialog.signal,
-			});
-
-			// Success
-			closeDialog();
-			return await this.completeProviderAuthentication(providerId, providerName, "oauth");
-		} catch (error: unknown) {
-			closeDialog();
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			if (errorMsg !== "Login cancelled") {
-				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
-				return { status: "failed" };
-			}
-			return { status: "cancelled" };
-		}
+		await this.createAuthFlows().runLogout();
 	}
 
 	// =========================================================================
@@ -6912,52 +6445,26 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}\n`;
 		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
 		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
-		info += theme.fg("dim", "Use /usage for token, cost, and context usage.");
+		info += theme.fg("dim", "Use /context for token, cost, and context usage.");
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
 	}
 
-	private async handleUsageCommand(): Promise<void> {
-		const stats = await this.agentConnection.getSessionStats();
-		const state = await this.agentConnection.getState();
-		this.applyConnectionStateSnapshot(state);
-		const model = state.model;
-
-		let info = `${theme.bold("Usage")}\n\n`;
-		if (model) {
-			info += `${theme.fg("dim", "Model:")} ${model.provider}/${model.id}\n\n`;
-		}
-		info += `${theme.bold("Tokens")}\n`;
-		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		if (stats.tokens.cacheRead > 0) {
-			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
-		}
-		if (stats.tokens.cacheWrite > 0) {
-			info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
-		}
-		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-
-		if (stats.cost > 0) {
-			info += `\n${theme.bold("Cost")}\n`;
-			info += `${theme.fg("dim", "Total:")} $${stats.cost.toFixed(4)}\n`;
-		}
-
-		const contextUsage = stats.contextUsage;
-		if (contextUsage) {
-			info += `\n${theme.bold("Context")}\n`;
-			if (contextUsage.tokens === null || contextUsage.percent === null) {
-				info += `${theme.fg("dim", "Current:")} unknown after compaction\n`;
-			} else {
-				const percent = `${Math.round(contextUsage.percent * 10) / 10}%`;
-				info += `${theme.fg("dim", "Current:")} ${contextUsage.tokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} (${percent})\n`;
-			}
+	private async handleContextCommand(): Promise<void> {
+		let info: string;
+		try {
+			const tree = await this.agentConnection.getContextTree();
+			const width = Math.max(60, Math.min(this.ui.terminal.columns - 2, 120));
+			info = formatContextTree(tree, width);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return;
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info.trimEnd(), 1, 0));
+		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
 	}
 
@@ -7080,13 +6587,11 @@ export class InteractiveMode {
 		const exit = this.getAppKeyDisplay("app.exit");
 		const suspend = this.getAppKeyDisplay("app.suspend");
 		const cycleThinkingLevel = this.getAppKeyDisplay("app.thinking.cycle");
-		const cycleModelForward = this.getAppKeyDisplay("app.model.cycleForward");
 		const selectModel = this.getAppKeyDisplay("app.model.select");
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
 		const focusSubagents = this.getAppKeyDisplay("app.subagents.focus");
 		const externalEditor = this.getAppKeyDisplay("app.editor.external");
-		const cycleModelBackward = this.getAppKeyDisplay("app.model.cycleBackward");
 		const followUp = this.getAppKeyDisplay("app.message.followUp");
 		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
 		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
@@ -7125,7 +6630,6 @@ export class InteractiveMode {
 ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
 | \`${cycleThinkingLevel}\` | Cycle thinking level |
-| \`${cycleModelForward}\` / \`${cycleModelBackward}\` | Cycle models |
 | \`${selectModel}\` | Open model selector |
 | \`${expandTools}\` | Toggle tool output expansion |
 | \`${toggleThinking}\` | Toggle thinking block visibility |

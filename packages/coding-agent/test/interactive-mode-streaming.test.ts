@@ -3,6 +3,7 @@ import { Container, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui"
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentConnectionSessionEvent } from "../src/modes/agent-connection/index.js";
+import { AgentActivityTracker } from "../src/modes/interactive/agent-activity.js";
 import type { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";
 import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -54,12 +55,15 @@ function createFakeInteractiveModeThis(): HandleEventThis {
 		isInitialized: true,
 		settingsManager: { getShowTerminalProgress: () => false },
 		footer: { invalidate: vi.fn() },
+		activityTracker: new AgentActivityTracker(),
 		ui: { requestRender: vi.fn() } as unknown as TUI,
 		chatContainer: new Container(),
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		streamingComponent: undefined,
 		streamingMessage: undefined,
+		pendingMessagesContainer: new Container(),
+		pendingBashComponents: [],
 		pendingTools: new Map<string, ToolExecutionComponent>(),
 		updateConnectionStateFromEvent: vi.fn(),
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),

@@ -61,6 +61,13 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.js";
+import {
+	type ContextTreeNode,
+	type ContextWindowResolver,
+	computeOwnAndTotalUsage,
+	loadContextTreeChildFromDisk,
+	loadContextTreeChildrenFromDisk,
+} from "./context-tree.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
@@ -106,7 +113,6 @@ import {
 	validateGoalBudget,
 	validateGoalObjective,
 } from "./goals.js";
-import type { KernelManager } from "./kernel/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -142,8 +148,9 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions } from "./tools/index.js";
+import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
-import { cloneUsage, emptyUsage } from "./usage.js";
+import { addAssistantUsage, cloneUsage, emptyUsage } from "./usage.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -213,7 +220,7 @@ export type AgentSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow"; customInstructions?: string }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
@@ -223,14 +230,40 @@ export type AgentSessionEvent =
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
+			/** "warning" for benign skips (nothing to compact), "error" for real failures */
+			errorSeverity?: "warning" | "error";
+			customInstructions?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
-	| { type: "goal_update"; goal: GoalState };
+	| { type: "goal_update"; goal: GoalState }
+	| { type: "bash_start"; command: string; excludeFromContext: boolean }
+	| { type: "bash_output"; chunk: string }
+	| {
+			type: "bash_end";
+			exitCode: number | undefined;
+			cancelled: boolean;
+			truncated: boolean;
+			fullOutputPath?: string;
+			/** Set when execution failed before producing a result (e.g. spawn failure) */
+			errorMessage?: string;
+	  };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
+
+/** Payload of the bash_end event for a user-initiated bash command */
+type UserBashEndDetails = {
+	exitCode: number | undefined;
+	cancelled: boolean;
+	truncated: boolean;
+	fullOutputPath?: string;
+	errorMessage?: string;
+};
+
+/** Thrown when compaction is skipped for a benign reason (surfaced as a warning, not an error) */
+export class CompactionSkippedError extends Error {}
 
 // ============================================================================
 // Types
@@ -278,6 +311,13 @@ export interface AgentSessionConfig {
 	rlmParentNodeId?: string;
 	/** Host responsible for creating RLM subagent runtimes. */
 	subagentRuntimeHost?: SubagentRuntimeHost;
+	/**
+	 * Boot the IPython kernel in the background as soon as the session is created,
+	 * so the first ipython tool call doesn't pay the kernel cold start.
+	 *
+	 * Only applies to main agents (rlmDepth 0); subagent kernels stay lazy. Default: false.
+	 */
+	prewarmIpythonKernel?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -330,6 +370,10 @@ interface RlmChildRun {
 	error?: string;
 	task?: Promise<RlmInternalRunResult>;
 	abort: () => void;
+	/** Child session, once its runtime exists. Used to cancel nested child runs. */
+	session?: AgentSession;
+	/** Re-emits the run's rlm_child_update snapshot with its current status. */
+	emitUpdate?: () => void;
 }
 
 // ============================================================================
@@ -376,20 +420,7 @@ function addUsage(total: RlmUsage, usage: Usage): void {
 	total.completion_tokens += usage.output;
 }
 
-function addAssistantUsage(total: Usage, usage: Usage): void {
-	total.input += usage.input;
-	total.output += usage.output;
-	total.cacheRead += usage.cacheRead;
-	total.cacheWrite += usage.cacheWrite;
-	total.totalTokens += usage.totalTokens;
-	total.cost.input += usage.cost.input;
-	total.cost.output += usage.cost.output;
-	total.cost.cacheRead += usage.cost.cacheRead;
-	total.cost.cacheWrite += usage.cost.cacheWrite;
-	total.cost.total += usage.cost.total;
-}
-
-function compactRlmText(text: string, maxLength = 160): string {
+export function compactRlmText(text: string, maxLength = 160): string {
 	const compact = text.replace(/\s+/g, " ").trim();
 	if (compact.length <= maxLength) {
 		return compact;
@@ -629,6 +660,8 @@ export class AgentSession {
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
+	private _userBashRunning = false;
+	private _userBashAbortRequested = false;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
 
 	// Extension system
@@ -652,7 +685,8 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _disposed = false;
-	private _ipythonKernelManagerRef: { current?: KernelManager } = {};
+	private _ipythonKernelProvisioner?: IpythonKernelProvisioner;
+	private readonly _prewarmIpythonKernel: boolean;
 	private _rlmDepth: number;
 	private _rlmMaxDepth: number;
 	private _rlmSessionDir?: string;
@@ -691,6 +725,7 @@ export class AgentSession {
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
 		this._rlmMaxDepth = config.rlmMaxDepth ?? parseDepth(process.env.RLM_MAX_DEPTH, 1, "RLM_MAX_DEPTH");
+		this._prewarmIpythonKernel = (config.prewarmIpythonKernel ?? false) && this._rlmDepth === 0;
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
@@ -2483,7 +2518,7 @@ export class AgentSession {
 	}
 
 	private async _restartIpythonKernelAfterCompaction(): Promise<void> {
-		await this._ipythonKernelManagerRef.current?.restart();
+		await this._ipythonKernelProvisioner?.restart();
 	}
 
 	// =========================================================================
@@ -2521,7 +2556,7 @@ export class AgentSession {
 		this._disconnectFromAgent();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
-		this._emit({ type: "compaction_start", reason: "manual" });
+		this._emit({ type: "compaction_start", reason: "manual", customInstructions });
 
 		try {
 			if (!this.model) {
@@ -2538,9 +2573,9 @@ export class AgentSession {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
 				if (lastEntry?.type === "compaction") {
-					throw new Error("Already compacted");
+					throw new CompactionSkippedError("Already compacted");
 				}
-				throw new Error("Nothing to compact (session too small)");
+				throw new CompactionSkippedError("Session is too short to compact — try again once it grows");
 			}
 
 			let extensionCompaction: CompactionResult | undefined;
@@ -2597,7 +2632,14 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
+			this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				customInstructions,
+			);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2628,18 +2670,22 @@ export class AgentSession {
 				result: compactionResult,
 				aborted: false,
 				willRetry: false,
+				customInstructions,
 			});
 			return compactionResult;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+			const skipped = error instanceof CompactionSkippedError;
 			this._emit({
 				type: "compaction_end",
 				reason: "manual",
 				result: undefined,
 				aborted,
 				willRetry: false,
-				errorMessage: aborted ? undefined : `Compaction failed: ${message}`,
+				errorMessage: aborted ? undefined : skipped ? message : `Compaction failed: ${message}`,
+				errorSeverity: skipped ? "warning" : "error",
+				customInstructions,
 			});
 			throw error;
 		} finally {
@@ -2848,6 +2894,8 @@ export class AgentSession {
 					result: undefined,
 					aborted: false,
 					willRetry: false,
+					errorMessage: "Auto-compaction skipped: nothing to summarize outside the recent-context window",
+					errorSeverity: "warning",
 				});
 				return false;
 			}
@@ -3299,23 +3347,29 @@ export class AgentSession {
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
 		const pythonSkills = getPythonSkillRuntimeInfo(this._resourceLoader.getSkills().skills);
-		const configuredBaseToolDefinitions = this._baseToolsOverride
-			? Object.fromEntries(
-					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
-						name,
-						createToolDefinitionFromAgentTool(tool),
-					]),
-				)
-			: createAllToolDefinitions(this._cwd, {
-					ipython: {
-						kernelManagerRef: this._ipythonKernelManagerRef,
-						env: this._rlmKernelEnv(),
-						sessionId: this.sessionId,
-						rlmRunHandler: ({ prompt, kwargs }) => this.runRlmChild(prompt, kwargs),
-						pythonSkills,
-					},
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
-				});
+		let configuredBaseToolDefinitions: Record<string, ToolDefinition>;
+		if (this._baseToolsOverride) {
+			configuredBaseToolDefinitions = Object.fromEntries(
+				Object.entries(this._baseToolsOverride).map(([name, tool]) => [
+					name,
+					createToolDefinitionFromAgentTool(tool),
+				]),
+			);
+		} else {
+			// Rebuilding (e.g. /reload) replaces the provisioner; drop the previous
+			// kernel so the session never holds two live kernels.
+			void this._ipythonKernelProvisioner?.dispose();
+			this._ipythonKernelProvisioner = new IpythonKernelProvisioner(this._cwd, {
+				env: this._rlmKernelEnv(),
+				sessionId: this.sessionId,
+				rlmRunHandler: ({ prompt, kwargs }) => this.runRlmChild(prompt, kwargs),
+				pythonSkills,
+			});
+			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
+				ipython: { provisioner: this._ipythonKernelProvisioner },
+				bash: { commandPrefix: shellCommandPrefix, shellPath },
+			});
+		}
 		const goalToolDefinitions = this._includeGoalTools
 			? createGoalToolDefinitions({
 					getGoalState: () => this.goalState,
@@ -3364,6 +3418,10 @@ export class AgentSession {
 			activeToolNames: [...new Set(baseActiveToolNames)],
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
+
+		if (this._prewarmIpythonKernel && this.getActiveToolNames().includes("ipython")) {
+			this._ipythonKernelProvisioner?.prewarm();
+		}
 	}
 
 	async reload(): Promise<void> {
@@ -3576,12 +3634,46 @@ export class AgentSession {
 
 	private _cancelActiveRlmChildRuns(reason: string): void {
 		for (const run of this._activeRlmChildRuns.values()) {
-			if (run.status === "running" || run.status === "queued") {
-				run.status = "cancelled";
-				run.error = reason;
-				run.abort();
+			this._cancelRlmChildRun(run, reason);
+		}
+	}
+
+	private _cancelRlmChildRun(run: RlmChildRun, reason: string): boolean {
+		if (run.status !== "running" && run.status !== "queued") {
+			return false;
+		}
+		run.status = "cancelled";
+		run.error = reason;
+		run.abort();
+		// Surface the cancellation immediately; the run's own terminal update is
+		// delayed indefinitely when the child is stuck mid-stream, which is
+		// exactly when users reach for the kill.
+		run.emitUpdate?.();
+		return true;
+	}
+
+	/** Status of a direct RLM child run, while the run is still tracked. */
+	getRlmChildRunStatus(childId: string): RlmChildAgentStatus | undefined {
+		return this._activeRlmChildRuns.get(childId)?.status;
+	}
+
+	/**
+	 * Cancel a single RLM child run by id, searching nested child sessions.
+	 *
+	 * @returns true when a running or queued run was cancelled; false when the
+	 * id is unknown or the run already finished.
+	 */
+	cancelRlmChildRun(childId: string, reason = "Cancelled by user"): boolean {
+		const run = this._activeRlmChildRuns.get(childId);
+		if (run) {
+			return this._cancelRlmChildRun(run, reason);
+		}
+		for (const candidate of this._activeRlmChildRuns.values()) {
+			if (candidate.session?.cancelRlmChildRun(childId, reason)) {
+				return true;
 			}
 		}
+		return false;
 	}
 
 	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}): RlmChildRun {
@@ -3637,6 +3729,7 @@ export class AgentSession {
 				},
 			});
 		};
+		run.emitUpdate = emitChildUpdate;
 		const recordAssistantMessage = (message: AssistantMessage) => {
 			const text = compactRlmText(readAssistantText(message));
 			const thinking = compactRlmText(readAssistantThinking(message));
@@ -3729,6 +3822,7 @@ export class AgentSession {
 				}
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;
+				run.session = child;
 				run.abort = () => {
 					void child.abort();
 				};
@@ -3873,6 +3967,7 @@ export class AgentSession {
 					await this._releaseRlmSubagentRuntime(childRuntime, subagentOptions);
 				}
 				run.abort = noopRlmChildAbort;
+				run.session = undefined;
 				this._activeRlmChildRuns.delete(run.id);
 			}
 		})();
@@ -4078,6 +4173,99 @@ export class AgentSession {
 	}
 
 	/**
+	 * Run a user-initiated bash command (! / !! prefix), emitting bash_start,
+	 * bash_output, and bash_end session events so any attached client can render
+	 * streaming output. Extensions can intercept execution via the user_bash event.
+	 * Execution failures are reported through bash_end rather than a rejected promise;
+	 * only the already-running guard and extension dispatch errors reject.
+	 * @param command The bash command to execute
+	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
+	 */
+	async runUserBash(command: string, options?: { excludeFromContext?: boolean }): Promise<void> {
+		if (this.isBashRunning) {
+			throw new Error("A bash command is already running");
+		}
+		// Claim the bash slot synchronously: isBashRunning is otherwise false until
+		// executeBash installs its abort controller, which would let a second command
+		// slip through during the user_bash extension dispatch below.
+		this._userBashRunning = true;
+		this._userBashAbortRequested = false;
+		let end: UserBashEndDetails;
+		try {
+			end = await this.runUserBashLocked(command, options?.excludeFromContext ?? false);
+		} finally {
+			this._userBashRunning = false;
+		}
+		// Emitted after the slot is released so clients never observe a bash_end
+		// while the session still rejects new commands as already running.
+		this._emit({ type: "bash_end", ...end });
+	}
+
+	private async runUserBashLocked(command: string, excludeFromContext: boolean): Promise<UserBashEndDetails> {
+		const eventResult = await this._extensionRunner.emitUserBash({
+			type: "user_bash",
+			command,
+			excludeFromContext,
+			cwd: this.sessionManager.getCwd(),
+		});
+
+		this._emit({ type: "bash_start", command, excludeFromContext });
+		try {
+			// If an extension returned a full result, surface it without executing
+			if (eventResult?.result) {
+				const result = eventResult.result;
+				if (result.output) {
+					this._emit({ type: "bash_output", chunk: result.output });
+				}
+				this.recordBashResult(command, result, { excludeFromContext });
+				return {
+					exitCode: result.exitCode,
+					cancelled: result.cancelled,
+					truncated: result.truncated,
+					fullOutputPath: result.fullOutputPath,
+				};
+			}
+
+			// An abort that arrived before the process spawned (during extension
+			// dispatch) has no abort controller to act on; honor it here instead.
+			if (this._userBashAbortRequested) {
+				this.recordBashResult(
+					command,
+					{ output: "", exitCode: undefined, cancelled: true, truncated: false },
+					{ excludeFromContext },
+				);
+				return { exitCode: undefined, cancelled: true, truncated: false };
+			}
+
+			const result = await this.executeBash(command, (chunk) => this._emit({ type: "bash_output", chunk }), {
+				excludeFromContext,
+				operations: eventResult?.operations,
+			});
+			return {
+				exitCode: result.exitCode,
+				cancelled: result.cancelled,
+				truncated: result.truncated,
+				fullOutputPath: result.fullOutputPath,
+			};
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			// Persist the failure like every other outcome so replayed transcripts
+			// and the LLM context reflect that the command did not run.
+			this.recordBashResult(
+				command,
+				{ output: `bash failed: ${errorMessage}`, exitCode: undefined, cancelled: false, truncated: false },
+				{ excludeFromContext },
+			);
+			return {
+				exitCode: undefined,
+				cancelled: false,
+				truncated: false,
+				errorMessage,
+			};
+		}
+	}
+
+	/**
 	 * Record a bash execution result in session history.
 	 * Used by executeBash and by extensions that handle bash execution themselves.
 	 */
@@ -4111,12 +4299,17 @@ export class AgentSession {
 	 * Cancel running bash command.
 	 */
 	abortBash(): void {
+		// A user bash command may not have spawned yet (extension dispatch in
+		// progress); flag the request so runUserBash cancels before executing.
+		if (this._userBashRunning && this._bashAbortController === undefined) {
+			this._userBashAbortRequested = true;
+		}
 		this._bashAbortController?.abort();
 	}
 
 	/** Whether a bash command is currently running */
 	get isBashRunning(): boolean {
-		return this._bashAbortController !== undefined;
+		return this._bashAbortController !== undefined || this._userBashRunning;
 	}
 
 	/** Whether there are pending bash messages waiting to be flushed */
@@ -4478,6 +4671,60 @@ export class AgentSession {
 			tokens: estimate.tokens,
 			contextWindow,
 			percent,
+		};
+	}
+
+	/** RLM session dir holding sub-* child sessions, without creating directories. */
+	private _rlmSessionDirForReading(): string | undefined {
+		return this._rlmSessionDir ?? this.sessionManager.getSessionArtifactDir();
+	}
+
+	private _contextWindowResolver(): ContextWindowResolver {
+		return (provider, modelId) => this._modelRegistry.find(provider, modelId)?.contextWindow;
+	}
+
+	/**
+	 * Build the agent context overview for /context: this session as the root
+	 * plus one node per RLM sub-agent, recursively. Running children are read
+	 * from their live sessions; completed children from their persisted session
+	 * dirs, so the tree survives child disposal and session resume.
+	 */
+	getContextTree(): ContextTreeNode {
+		const resolveContextWindow = this._contextWindowResolver();
+		const { ownUsage, totalUsage } = computeOwnAndTotalUsage(
+			this.sessionManager.getBranch(),
+			this.sessionManager.getEntries(),
+		);
+
+		const children: ContextTreeNode[] = [];
+		const liveIds = new Set<string>();
+		for (const run of this._activeRlmChildRuns.values()) {
+			liveIds.add(run.id);
+			const node =
+				run.session?.getContextTree() ?? loadContextTreeChildFromDisk(run.sessionDir, resolveContextWindow);
+			children.push({
+				...(node ?? {
+					ownUsage: emptyUsage(),
+					totalUsage: emptyUsage(),
+					children: [],
+				}),
+				id: run.id,
+				label: compactRlmText(run.prompt, 80) || "child agent",
+				status: run.status,
+			});
+		}
+		children.push(...loadContextTreeChildrenFromDisk(this._rlmSessionDirForReading(), resolveContextWindow, liveIds));
+
+		const model = this.model;
+		return {
+			id: "root",
+			label: this.sessionName ?? "main agent",
+			status: "active",
+			model: model ? { provider: model.provider, id: model.id } : undefined,
+			ownUsage,
+			totalUsage,
+			contextUsage: this.getContextUsage(),
+			children,
 		};
 	}
 

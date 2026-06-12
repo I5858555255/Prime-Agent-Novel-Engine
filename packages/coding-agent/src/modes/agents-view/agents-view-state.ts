@@ -1,9 +1,12 @@
 import { basename } from "node:path";
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
 
-export type AgentsViewSection = "needs_input" | "working" | "completed";
+export type AgentsViewSection = "working" | "completed";
+
+export type AgentsViewRowKind = "agent" | "subagent-summary" | "subagent";
 
 export interface AgentsViewRow {
+	kind: AgentsViewRowKind;
 	section: AgentsViewSection;
 	summary: SessionSummary;
 	title: string;
@@ -12,6 +15,10 @@ export interface AgentsViewRow {
 	depth: number;
 	selectable: boolean;
 	runningSubagentCount: number;
+	/** Unique selection identity for this row. */
+	identity: string;
+	/** Identity of the agent row this row is nested under. */
+	parentIdentity?: string;
 }
 
 export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSection {
@@ -21,27 +28,20 @@ export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSe
 	if (summary.status === "model" || summary.status === "tool") {
 		return "working";
 	}
-	if (summary.status === "user" || summary.messageCount === 0) {
-		return "needs_input";
-	}
 	return "completed";
 }
 
-export function shouldShowAgentsViewSession(
-	summary: SessionSummary,
-	savedStatus: SessionSummary["status"] | undefined = summary.status,
-	manuallyInactive = false,
-): boolean {
+// The agents view shows daemon-resident sessions only; saved (slept) sessions
+// stay out of the list until they are resumed back into the daemon.
+export function shouldShowAgentsViewSession(summary: SessionSummary, manuallyInactive = false): boolean {
 	if (manuallyInactive) {
 		return false;
 	}
-	return summary.activeSessionId !== undefined || savedStatus !== "hidden";
+	return summary.activeSessionId !== undefined;
 }
 
 export function sectionTitle(section: AgentsViewSection): string {
 	switch (section) {
-		case "needs_input":
-			return "Needs Input";
 		case "working":
 			return "Working";
 		case "completed":
@@ -53,40 +53,102 @@ export function sectionTitle(section: AgentsViewSection): string {
 	}
 }
 
-export function buildAgentsViewRows(summaries: readonly SessionSummary[]): AgentsViewRow[] {
-	const rows = summaries.map(
+export function getAgentsViewSummaryIdentity(summary: SessionSummary): string {
+	if (summary.sessionFile) {
+		return `file:${summary.sessionFile}`;
+	}
+	if (summary.activeSessionId) {
+		return `active:${summary.activeSessionId}`;
+	}
+	return `session:${summary.sessionId}`;
+}
+
+export function buildAgentsViewRows(
+	summaries: readonly SessionSummary[],
+	expandedSubagentParents: ReadonlySet<string> = new Set(),
+): AgentsViewRow[] {
+	const baseRows = summaries.map(
 		(summary): MutableAgentsViewRow => ({
+			kind: isSubagentSummary(summary) ? "subagent" : "agent",
 			section: classifyAgentsViewSession(summary),
 			summary,
 			title: getSessionTitle(summary),
 			subtitle: getSessionSubtitle(summary),
 			statusLabel: getSessionStatusLabel(summary),
 			depth: 0,
-			selectable: !isSubagentSummary(summary),
+			selectable: true,
 			runningSubagentCount: 0,
-			children: [],
+			identity: getAgentsViewSummaryIdentity(summary),
 		}),
 	);
-	const rowsByKey = buildRowKeyMap(rows);
+	const rowsByKey = buildRowKeyMap(baseRows);
+	const childrenByParent = new Map<MutableAgentsViewRow, MutableAgentsViewRow[]>();
 	const nestedRows = new Set<MutableAgentsViewRow>();
 
-	for (const row of rows) {
-		if (!isSubagentSummary(row.summary)) {
+	for (const row of baseRows) {
+		if (row.kind !== "subagent") {
 			continue;
 		}
+		nestedRows.add(row);
 		const parent = findParentRow(row.summary, rowsByKey);
-		if (parent && parent !== row && row.section === "working") {
+		if (!parent || parent === row) {
+			continue;
+		}
+		if (row.section === "working") {
 			parent.runningSubagentCount += 1;
 		}
-		nestedRows.add(row);
+		const siblings = childrenByParent.get(parent) ?? [];
+		siblings.push(row);
+		childrenByParent.set(parent, siblings);
 	}
 
-	const roots = rows.filter((row) => !nestedRows.has(row));
-	return flattenRows(roots);
+	const roots = baseRows.filter((row) => !nestedRows.has(row));
+	const flattened: AgentsViewRow[] = [];
+	const emit = (row: MutableAgentsViewRow, depth: number): void => {
+		row.depth = depth;
+		flattened.push(row);
+		const children = childrenByParent.get(row) ?? [];
+		if (children.length === 0) {
+			return;
+		}
+		if (expandedSubagentParents.has(row.identity)) {
+			for (const child of children.sort(compareAgentsViewRows)) {
+				child.parentIdentity = row.identity;
+				emit(child, depth + 1);
+			}
+		} else {
+			flattened.push(createSubagentSummaryRow(row, children.length, depth + 1));
+		}
+	};
+	for (const root of roots.sort(compareAgentsViewRows)) {
+		emit(root, 0);
+	}
+	return flattened;
 }
 
-interface MutableAgentsViewRow extends AgentsViewRow {
-	children: MutableAgentsViewRow[];
+type MutableAgentsViewRow = AgentsViewRow;
+
+function createSubagentSummaryRow(parent: AgentsViewRow, totalCount: number, depth: number): AgentsViewRow {
+	const running = parent.runningSubagentCount;
+	// Finished subagents stay reachable through the summary row even when
+	// nothing is running anymore.
+	const title =
+		running > 0
+			? `${running} ${running === 1 ? "subagent" : "subagents"} running`
+			: `${totalCount} ${totalCount === 1 ? "subagent" : "subagents"}`;
+	return {
+		kind: "subagent-summary",
+		section: parent.section,
+		summary: parent.summary,
+		title,
+		subtitle: "",
+		statusLabel: "",
+		depth,
+		selectable: true,
+		runningSubagentCount: running,
+		identity: `subagents:${parent.identity}`,
+		parentIdentity: parent.identity,
+	};
 }
 
 function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
@@ -99,29 +161,6 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 		return modifiedDiff;
 	}
 	return a.title.localeCompare(b.title);
-}
-
-function flattenRows(rows: MutableAgentsViewRow[], depth = 0): AgentsViewRow[] {
-	const flattened: AgentsViewRow[] = [];
-	for (const row of rows.sort(compareAgentsViewRows)) {
-		row.depth = depth;
-		flattened.push(toAgentsViewRow(row));
-		flattened.push(...flattenRows(row.children, depth + 1));
-	}
-	return flattened;
-}
-
-function toAgentsViewRow(row: MutableAgentsViewRow): AgentsViewRow {
-	return {
-		section: row.section,
-		summary: row.summary,
-		title: row.title,
-		subtitle: row.subtitle,
-		statusLabel: row.statusLabel,
-		depth: row.depth,
-		selectable: row.selectable,
-		runningSubagentCount: row.runningSubagentCount,
-	};
 }
 
 function buildRowKeyMap(rows: readonly MutableAgentsViewRow[]): Map<string, MutableAgentsViewRow> {
@@ -173,12 +212,10 @@ function isSubagentSummary(summary: SessionSummary): boolean {
 
 function sectionRank(section: AgentsViewSection): number {
 	switch (section) {
-		case "needs_input":
-			return 0;
 		case "working":
-			return 1;
+			return 0;
 		case "completed":
-			return 2;
+			return 1;
 		default: {
 			const _exhaustive: never = section;
 			return _exhaustive;

@@ -7,6 +7,7 @@ import {
 	createAgentsViewResumeConfig,
 	createAgentsViewSessionName,
 	formatAgentsViewRelativeTime,
+	formatAgentsViewStatusLine,
 	resolveAgentsViewSessionUiServices,
 } from "../src/modes/agents-view/agents-view-mode.js";
 import {
@@ -22,21 +23,21 @@ describe("agents view state", () => {
 	test("classifies active daemon sessions into coarse fleet sections", () => {
 		expect(classifyAgentsViewSession(makeSummary({ isStreaming: true, status: "model" }))).toBe("working");
 		expect(classifyAgentsViewSession(makeSummary({ pendingMessageCount: 1 }))).toBe("working");
-		expect(classifyAgentsViewSession(makeSummary({ status: "user", messageCount: 2 }))).toBe("needs_input");
-		expect(classifyAgentsViewSession(makeSummary({ status: "idle", messageCount: 0 }))).toBe("needs_input");
+		expect(classifyAgentsViewSession(makeSummary({ status: "tool" }))).toBe("working");
+		expect(classifyAgentsViewSession(makeSummary({ status: "user", messageCount: 2 }))).toBe("completed");
+		expect(classifyAgentsViewSession(makeSummary({ status: "idle", messageCount: 0 }))).toBe("completed");
 		expect(classifyAgentsViewSession(makeSummary({ status: "idle", messageCount: 4 }))).toBe("completed");
 	});
 
 	test("sorts rows by section and most recent modified time", () => {
 		const rows = buildAgentsViewRows([
 			makeSummary({ sessionName: "completed", status: "idle", messageCount: 2, modified: "2026-01-01T00:00:00Z" }),
-			makeSummary({ sessionName: "working", isStreaming: true, modified: "2026-01-01T00:00:00Z" }),
-			makeSummary({ sessionName: "older input", status: "user", modified: "2026-01-01T00:00:00Z" }),
-			makeSummary({ sessionName: "newer input", status: "user", modified: "2026-01-02T00:00:00Z" }),
+			makeSummary({ sessionName: "older working", isStreaming: true, modified: "2026-01-01T00:00:00Z" }),
+			makeSummary({ sessionName: "newer working", isStreaming: true, modified: "2026-01-02T00:00:00Z" }),
 		]);
 
-		expect(rows.map((row) => row.title)).toEqual(["newer input", "older input", "working", "completed"]);
-		expect(rows.map((row) => row.section)).toEqual(["needs_input", "needs_input", "working", "completed"]);
+		expect(rows.map((row) => row.title)).toEqual(["newer working", "older working", "completed"]);
+		expect(rows.map((row) => row.section)).toEqual(["working", "working", "completed"]);
 	});
 
 	test("summarizes subagents on their parent and omits subagent rows", () => {
@@ -91,10 +92,96 @@ describe("agents view state", () => {
 			}),
 		]);
 
-		expect(rows.map((row) => row.title)).toEqual(["Parent", "Other"]);
-		expect(rows.map((row) => row.runningSubagentCount)).toEqual([2, 0]);
-		expect(rows.map((row) => row.depth)).toEqual([0, 0]);
-		expect(rows.map((row) => row.selectable)).toEqual([true, true]);
+		expect(rows.map((row) => [row.title, row.kind])).toEqual([
+			["Parent", "agent"],
+			["2 subagents running", "subagent-summary"],
+			["Other", "agent"],
+		]);
+		expect(rows.map((row) => row.runningSubagentCount)).toEqual([2, 2, 0]);
+		expect(rows.map((row) => row.depth)).toEqual([0, 1, 0]);
+		expect(rows.map((row) => row.selectable)).toEqual([true, true, true]);
+		expect(rows[1]?.parentIdentity).toBe(rows[0]?.identity);
+		expect(rows[1]?.identity).not.toBe(rows[0]?.identity);
+	});
+
+	test("expands subagent rows for expanded parents and collapses otherwise", () => {
+		const summaries = [
+			makeSummary({
+				id: "child-active",
+				activeSessionId: "child-active",
+				sessionId: "child-session",
+				sessionFile: "/tmp/child.jsonl",
+				sessionName: "Child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "parent-active",
+				isStreaming: true,
+				status: "model",
+			}),
+			makeSummary({
+				id: "completed-child-active",
+				activeSessionId: "completed-child-active",
+				sessionId: "completed-child-session",
+				sessionFile: "/tmp/completed-child.jsonl",
+				sessionName: "Completed child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "parent-active",
+				status: "idle",
+				messageCount: 2,
+			}),
+			makeSummary({
+				id: "parent-active",
+				activeSessionId: "parent-active",
+				sessionId: "parent-session",
+				sessionFile: "/tmp/parent.jsonl",
+				sessionName: "Parent",
+				isStreaming: true,
+				status: "tool",
+			}),
+		];
+
+		const collapsed = buildAgentsViewRows(summaries);
+		expect(collapsed.map((row) => row.kind)).toEqual(["agent", "subagent-summary"]);
+		expect(collapsed[1]?.title).toBe("1 subagent running");
+
+		const parentIdentity = collapsed[0]?.identity;
+		const expanded = buildAgentsViewRows(summaries, new Set([parentIdentity ?? ""]));
+		expect(expanded.map((row) => [row.title, row.kind, row.depth])).toEqual([
+			["Parent", "agent", 0],
+			["Child", "subagent", 1],
+			["Completed child", "subagent", 1],
+		]);
+		expect(expanded.slice(1).every((row) => row.selectable && row.parentIdentity === parentIdentity)).toBe(true);
+	});
+
+	test("keeps finished subagents reachable via the summary row", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "done-child",
+				activeSessionId: "done-child",
+				sessionId: "done-child-session",
+				sessionFile: "/tmp/done-child.jsonl",
+				sessionName: "Done child",
+				runtimeKind: "subagent",
+				parentActiveSessionId: "parent-active",
+				status: "idle",
+				messageCount: 2,
+			}),
+			makeSummary({
+				id: "parent-active",
+				activeSessionId: "parent-active",
+				sessionId: "parent-session",
+				sessionFile: "/tmp/parent.jsonl",
+				sessionName: "Parent",
+				status: "idle",
+				messageCount: 4,
+			}),
+		]);
+
+		expect(rows.map((row) => [row.title, row.kind])).toEqual([
+			["Parent", "agent"],
+			["1 subagent", "subagent-summary"],
+		]);
+		expect(rows[1]?.selectable).toBe(true);
 	});
 
 	test("treats parent-linked summaries without runtimeKind as subagents", () => {
@@ -127,8 +214,11 @@ describe("agents view state", () => {
 			}),
 		]);
 
-		expect(rows.map((row) => row.title)).toEqual(["Parent"]);
-		expect(rows.map((row) => row.runningSubagentCount)).toEqual([1]);
+		expect(rows.map((row) => [row.title, row.kind])).toEqual([
+			["Parent", "agent"],
+			["1 subagent running", "subagent-summary"],
+		]);
+		expect(rows[0]?.runningSubagentCount).toBe(1);
 	});
 
 	test("omits subagents when their parent is not visible", () => {
@@ -157,17 +247,16 @@ describe("agents view state", () => {
 		expect(rows.map((row) => row.title)).toEqual(["Other"]);
 	});
 
-	test("hides inactive hidden sessions while keeping active sessions visible", () => {
+	test("shows daemon-resident sessions only", () => {
 		const inactiveHidden = makeSummary({ status: "hidden" });
-		const staleDaemonHidden = makeSummary({ status: "sleep" });
+		const inactiveSleep = makeSummary({ status: "sleep" });
 		delete inactiveHidden.activeSessionId;
-		delete staleDaemonHidden.activeSessionId;
+		delete inactiveSleep.activeSessionId;
 
 		expect(shouldShowAgentsViewSession(inactiveHidden)).toBe(false);
-		expect(shouldShowAgentsViewSession(staleDaemonHidden, "hidden")).toBe(false);
-		expect(shouldShowAgentsViewSession(inactiveHidden, undefined)).toBe(false);
-		expect(shouldShowAgentsViewSession(makeSummary({ status: "idle" }), undefined, true)).toBe(false);
-		expect(shouldShowAgentsViewSession(makeSummary({ status: "hidden", activeSessionId: "active-1" }))).toBe(true);
+		expect(shouldShowAgentsViewSession(inactiveSleep)).toBe(false);
+		expect(shouldShowAgentsViewSession(makeSummary({ status: "idle" }))).toBe(true);
+		expect(shouldShowAgentsViewSession(makeSummary({ status: "idle" }), true)).toBe(false);
 	});
 
 	test("does not override saved session cwd when reopening inactive agents", () => {
@@ -202,6 +291,17 @@ describe("agents view state", () => {
 		expect(formatAgentsViewRelativeTime("2025-12-30T12:00:00Z", now)).toBe("3d");
 		expect(formatAgentsViewRelativeTime(undefined, now)).toBe("");
 		expect(formatAgentsViewRelativeTime("not a timestamp", now)).toBe("");
+	});
+
+	test("flattens multiline status messages so they fit the single-row hint slot", () => {
+		expect(formatAgentsViewStatusLine("Failed to send reply: connection lost\nat Socket.emit\nat process")).toBe(
+			"Failed to send reply: connection lost at Socket.emit at process",
+		);
+		expect(formatAgentsViewStatusLine('Failed:\r\n\t{\r\n\t"error": "boom"\r\n}')).toBe(
+			'Failed: { "error": "boom" }',
+		);
+		expect(formatAgentsViewStatusLine("  already   flat  ")).toBe("already flat");
+		expect(formatAgentsViewStatusLine("\n \r\n ")).toBe("");
 	});
 
 	test("caps generated session names at the configured limit", () => {

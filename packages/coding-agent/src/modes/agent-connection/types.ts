@@ -10,6 +10,7 @@ import type {
 	UserMessage,
 } from "@earendil-works/pi-ai";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { ContextTreeNode } from "../../core/context-tree.js";
 import type { GoalState } from "../../core/goals.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
@@ -39,7 +40,7 @@ export type AgentConnectionQueueMode = "all" | "one-at-a-time";
 export type AgentConnectionModel = Model<Api>;
 export type AgentConnectionSavedSessionScope = "current" | "all";
 
-export type AgentConnectionSavedSessionStateStatus = "sleep" | "crash" | "hidden";
+export type AgentConnectionSavedSessionStateStatus = "active" | "sleep" | "crash" | "hidden";
 
 export type AgentConnectionSourceScope = "user" | "project" | "temporary";
 export type AgentConnectionSourceOrigin = "package" | "top-level";
@@ -222,6 +223,8 @@ export interface AgentConnectionSnapshot {
 	sessionContext?: AgentConnectionSessionContext;
 	sessionTree?: { tree: AgentConnectionSessionTreeNode[]; leafId: string | null };
 	parent?: AgentConnectionParentMetadata;
+	/** Live RLM child agents (including grandchildren) known to the host at snapshot time. */
+	children?: AgentConnectionRlmChildAgentSnapshot[];
 	lastEventSequence?: number;
 	replay?: AgentConnectionReplayInfo;
 }
@@ -245,6 +248,7 @@ export interface AgentConnectionState {
 	availableThinkingLevels: ThinkingLevel[];
 	isStreaming: boolean;
 	isCompacting: boolean;
+	isBashRunning: boolean;
 	retryAttempt: number;
 	steeringMode: AgentConnectionQueueMode;
 	followUpMode: AgentConnectionQueueMode;
@@ -347,6 +351,10 @@ export interface AgentConnectionToolDefinition {
 export interface AgentConnectionPromptOptions {
 	images?: ImageContent[];
 	streamingBehavior?: "steer" | "followUp";
+}
+
+export interface AgentConnectionExecuteBashOptions {
+	excludeFromContext?: boolean;
 }
 
 export interface AgentConnectionNewSessionOptions {
@@ -455,7 +463,7 @@ export type AgentConnectionSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow"; customInstructions?: string }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
@@ -465,11 +473,25 @@ export type AgentConnectionSessionEvent =
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
+			/** "warning" for benign skips (nothing to compact), "error" for real failures */
+			errorSeverity?: "warning" | "error";
+			customInstructions?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "rlm_child_update"; child: AgentConnectionRlmChildAgentSnapshot }
-	| { type: "goal_update"; goal: GoalState };
+	| { type: "goal_update"; goal: GoalState }
+	| { type: "bash_start"; command: string; excludeFromContext: boolean }
+	| { type: "bash_output"; chunk: string }
+	| {
+			type: "bash_end";
+			exitCode: number | undefined;
+			cancelled: boolean;
+			truncated: boolean;
+			fullOutputPath?: string;
+			/** Set when execution failed before producing a result (e.g. spawn failure) */
+			errorMessage?: string;
+	  };
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }
@@ -491,6 +513,7 @@ export interface AgentConnection {
 	getResourceSnapshot(): Promise<AgentConnectionResourceSnapshot>;
 	getAvailableModels(): Promise<AgentConnectionModel[]>;
 	getSessionStats(): Promise<SessionStats>;
+	getContextTree(): Promise<ContextTreeNode>;
 	getSessionContext(): Promise<AgentConnectionSessionContext>;
 	getSessionTree(): Promise<{ tree: AgentConnectionSessionTreeNode[]; leafId: string | null }>;
 	listSavedSessions(
@@ -509,7 +532,16 @@ export interface AgentConnection {
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;
 	abort(): Promise<void>;
+	cancelRlmChild(childId: string): Promise<boolean>;
 	waitForIdle(): Promise<void>;
+
+	/**
+	 * Run a user-initiated bash command (! / !! prefix). Resolution timing is
+	 * adapter-specific; rendering must be driven by the bash_start/bash_output/
+	 * bash_end session events, which reach every attached client.
+	 */
+	executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void>;
+	abortBash(): Promise<void>;
 
 	setModel(provider: string, modelId: string): Promise<AgentConnectionModel>;
 	cycleModel(direction?: "forward" | "backward"): Promise<AgentConnectionModelCycleResult | undefined>;

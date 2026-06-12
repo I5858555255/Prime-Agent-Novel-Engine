@@ -57,6 +57,7 @@ import {
 	defaultDaemonSocketPath,
 	InProcessAgentConnection,
 	InteractiveMode,
+	resolveAttachModelFallbackMessage,
 	runAgentsViewMode,
 	runDaemonMode,
 	runPrintMode,
@@ -64,6 +65,7 @@ import {
 	type SessionSummary,
 } from "./modes/index.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.js";
+import { shouldRunOnboarding } from "./modes/interactive/onboarding.js";
 import { initTheme, preloadCodeHighlighter, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
 import { isLocalPath } from "./utils/paths.js";
@@ -156,6 +158,7 @@ export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDeci
 
 export interface AgentsViewStartupDecision {
 	useDaemonInteractive: boolean;
+	needsOnboarding: boolean;
 	session?: string;
 	resume?: boolean;
 	continue?: boolean;
@@ -163,7 +166,17 @@ export interface AgentsViewStartupDecision {
 }
 
 export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStartupDecision): boolean {
-	return options.useDaemonInteractive && !options.session && !options.resume && !options.continue && !options.fork;
+	return (
+		options.useDaemonInteractive &&
+		// Onboarding lives in InteractiveMode, so a first run must take the
+		// direct session path; the agents view would otherwise require creating
+		// an agent before the onboarding splash ever renders.
+		!options.needsOnboarding &&
+		!options.session &&
+		!options.resume &&
+		!options.continue &&
+		!options.fork
+	);
 }
 
 export interface DaemonInteractiveSessionManagerDecision {
@@ -417,6 +430,7 @@ export async function createSessionManager(
 			const selectedPath = await selectSession(
 				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
 				SessionManager.listAll,
+				{ cwd },
 			);
 			if (!selectedPath) {
 				console.log(chalk.dim("No session selected"));
@@ -1084,6 +1098,9 @@ export async function main(args: string[], options?: MainOptions) {
 			rlmSessionDir: runtimeSessionOptions?.rlmSessionDir,
 			rlmParentNodeId: runtimeSessionOptions?.rlmParentNodeId,
 			subagentRuntimeHost: runtimeSessionOptions?.subagentRuntimeHost,
+			// Main agents boot their kernel in the background at session creation;
+			// subagent sessions (rlmDepth > 0) keep the lazy first-call start.
+			prewarmIpythonKernel: true,
 		});
 		const cliThinkingOverride = config.thinking !== undefined || prepared.cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
@@ -1160,18 +1177,7 @@ export async function main(args: string[], options?: MainOptions) {
 			services,
 			sessionManager,
 		});
-		if (
-			shouldOpenAgentsViewForDaemonInteractive({
-				useDaemonInteractive,
-				session: parsed.session,
-				resume: parsed.resume,
-				continue: parsed.continue,
-				fork: parsed.fork,
-			})
-		) {
-			await daemonReady;
-			await preloadCodeHighlighter();
-			printTimings();
+		const launchAgentsView = async (includeInitialPrompts: boolean) => {
 			await runAgentsViewMode({
 				socketPath: daemonSocketPath,
 				config: defaultSessionConfig,
@@ -1198,11 +1204,28 @@ export async function main(args: string[], options?: MainOptions) {
 				migratedProviders,
 				modelFallbackMessage: startupModel.modelFallbackMessage,
 				startupModelId: startupModel.model?.id,
-				initialMessage,
-				initialImages,
-				initialMessages: parsed.messages,
+				...(includeInitialPrompts ? { initialMessage, initialImages, initialMessages: parsed.messages } : {}),
 				verbose: parsed.verbose,
 			});
+		};
+		if (
+			shouldOpenAgentsViewForDaemonInteractive({
+				useDaemonInteractive,
+				needsOnboarding: shouldRunOnboarding({
+					settingsManager,
+					modelRegistry: services.modelRegistry,
+					model: startupModel.model,
+				}),
+				session: parsed.session,
+				resume: parsed.resume,
+				continue: parsed.continue,
+				fork: parsed.fork,
+			})
+		) {
+			await daemonReady;
+			await preloadCodeHighlighter();
+			printTimings();
+			await launchAgentsView(true);
 			return;
 		}
 
@@ -1221,16 +1244,20 @@ export async function main(args: string[], options?: MainOptions) {
 			uiServices: daemonUiServices,
 			bindLocalSessionExtensions: false,
 			migratedProviders,
-			modelFallbackMessage: summary.modelFallbackMessage ?? startupModel.modelFallbackMessage,
+			modelFallbackMessage: resolveAttachModelFallbackMessage(summary, startupModel.modelFallbackMessage),
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
+			// Resumed/attached daemon sessions are part of the same fleet; left
+			// arrow takes them to the agents view like any other session.
+			returnToAgentsView: true,
 		});
 
 		await preloadCodeHighlighter();
 		printTimings();
 		await interactiveMode.run();
+		await launchAgentsView(false);
 		return;
 	}
 

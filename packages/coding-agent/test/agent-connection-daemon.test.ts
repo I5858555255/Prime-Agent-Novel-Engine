@@ -23,6 +23,7 @@ class FakeDaemonClient {
 	readonly requests: DaemonCommand[] = [];
 	attachResultFactory: ((command: Extract<DaemonCommand, { type: "attach" }>) => DaemonAttachResult) | undefined;
 	closeCount = 0;
+	abortBashUnknownCommand = false;
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 
@@ -204,6 +205,41 @@ class FakeDaemonClient {
 			case "extension_ui_response":
 			case "detach":
 				return { type: "response", command: command.type, success: true };
+			case "cancel_rlm_child":
+				if (command.childId === "stale-daemon") {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: cancel_rlm_child",
+					};
+				}
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { cancelled: command.childId === "child-1" },
+				};
+			case "execute_bash":
+				if (command.command === "stale-daemon") {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: execute_bash",
+					};
+				}
+				return { type: "response", command: command.type, success: true };
+			case "abort_bash":
+				if (this.abortBashUnknownCommand) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: abort_bash",
+					};
+				}
+				return { type: "response", command: command.type, success: true };
 			case "delete_saved_session":
 				return {
 					type: "response",
@@ -288,6 +324,7 @@ function createConnectionState(activeSessionId: string, sessionId: string): Agen
 		availableThinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
 		isStreaming: false,
 		isCompacting: false,
+		isBashRunning: false,
 		retryAttempt: 0,
 		steeringMode: "all",
 		followUpMode: "one-at-a-time",
@@ -693,6 +730,54 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-1",
 			scopedModels: [{ model, thinkingLevel: "high" }],
 		});
+	});
+
+	it("cancels rlm child runs through the daemon protocol", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+
+		await expect(connection.cancelRlmChild("child-1")).resolves.toBe(true);
+		await expect(connection.cancelRlmChild("finished-child")).resolves.toBe(false);
+
+		expect(fakeClient.requests[1]).toMatchObject({
+			type: "cancel_rlm_child",
+			activeSessionId: "active-1",
+			childId: "child-1",
+		});
+
+		// A daemon from a build that predates the command reports a restart hint
+		// instead of the raw protocol error.
+		await expect(connection.cancelRlmChild("stale-daemon")).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
+	});
+
+	it("sends bash commands through the daemon protocol", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+
+		await connection.executeBash("echo hi", { excludeFromContext: true });
+		await connection.abortBash();
+
+		expect(fakeClient.requests[1]).toMatchObject({
+			type: "execute_bash",
+			activeSessionId: "active-1",
+			command: "echo hi",
+			excludeFromContext: true,
+		});
+		expect(fakeClient.requests[2]).toMatchObject({ type: "abort_bash", activeSessionId: "active-1" });
+
+		// A daemon from a build that predates the command reports a restart hint
+		// instead of the raw protocol error.
+		await expect(connection.executeBash("stale-daemon")).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
+		fakeClient.abortBashUnknownCommand = true;
+		await expect(connection.abortBash()).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
 	});
 
 	it("loads resource snapshots through the daemon protocol", async () => {

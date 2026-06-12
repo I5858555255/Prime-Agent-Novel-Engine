@@ -2,19 +2,21 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { ContextTreeNode } from "../../core/context-tree.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import type { DaemonClient } from "../daemon/daemon-client.js";
 import { deserializeDaemonError } from "../daemon/daemon-errors.js";
-import type {
-	DaemonAttachResult,
-	DaemonCommand,
-	DaemonDeleteSavedSessionResult,
-	DaemonOutbound,
-	DaemonReplayInfo,
-	DaemonSavedSessionInfo,
-	DaemonSessionSnapshot,
+import {
+	type DaemonAttachResult,
+	type DaemonCommand,
+	type DaemonDeleteSavedSessionResult,
+	type DaemonOutbound,
+	type DaemonReplayInfo,
+	type DaemonSavedSessionInfo,
+	type DaemonSessionSnapshot,
+	isUnknownDaemonCommandError,
 } from "../daemon/daemon-protocol.js";
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
 import type {
@@ -22,6 +24,7 @@ import type {
 	AgentConnectionBeforeSessionInvalidateListener,
 	AgentConnectionEvent,
 	AgentConnectionEventListener,
+	AgentConnectionExecuteBashOptions,
 	AgentConnectionExtensionUiResponse,
 	AgentConnectionForkOptions,
 	AgentConnectionModel,
@@ -169,11 +172,17 @@ export class DaemonAgentConnection implements AgentConnection {
 				activeSessionId: this.activeSessionId,
 			}),
 		]);
+		// Children only travel in the attach snapshot; a session event arriving
+		// before the first read marks the cache stale, but the attach-time child
+		// roster is still the best seed available (live rlm_child_update events
+		// overwrite each entry anyway).
+		const children = this.latestSnapshot?.children;
 		this.latestSnapshot = {
 			state,
 			messages: messagesData.messages,
 			sessionContext: sessionContextData.context,
 			sessionTree,
+			...(children ? { children } : {}),
 		};
 		if (this.lastEventSequence !== undefined) {
 			this.latestSnapshot.lastEventSequence = this.lastEventSequence;
@@ -219,6 +228,13 @@ export class DaemonAgentConnection implements AgentConnection {
 	async getSessionStats(): Promise<SessionStats> {
 		return this.requestData<SessionStats>({
 			type: "get_session_stats",
+			activeSessionId: this.activeSessionId,
+		});
+	}
+
+	async getContextTree(): Promise<ContextTreeNode> {
+		return this.requestData<ContextTreeNode>({
+			type: "get_context_tree",
 			activeSessionId: this.activeSessionId,
 		});
 	}
@@ -347,8 +363,51 @@ export class DaemonAgentConnection implements AgentConnection {
 		await this.requestOk({ type: "abort", activeSessionId: this.activeSessionId });
 	}
 
+	async cancelRlmChild(childId: string): Promise<boolean> {
+		try {
+			const result = await this.requestData<{ cancelled: boolean }>({
+				type: "cancel_rlm_child",
+				activeSessionId: this.activeSessionId,
+				childId,
+			});
+			return result.cancelled;
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "cancel_rlm_child")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
+	}
+
 	async waitForIdle(): Promise<void> {
 		await this.requestOk({ type: "wait_for_idle", activeSessionId: this.activeSessionId });
+	}
+
+	async executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void> {
+		try {
+			await this.requestOk({
+				type: "execute_bash",
+				activeSessionId: this.activeSessionId,
+				command,
+				excludeFromContext: options?.excludeFromContext,
+			});
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "execute_bash")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
+	}
+
+	async abortBash(): Promise<void> {
+		try {
+			await this.requestOk({ type: "abort_bash", activeSessionId: this.activeSessionId });
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "abort_bash")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
 	}
 
 	async setModel(provider: string, modelId: string): Promise<AgentConnectionModel> {
@@ -670,6 +729,9 @@ function mapDaemonSessionSnapshot(snapshot: DaemonSessionSnapshot, replay?: Daem
 	}
 	if (snapshot.parent) {
 		connectionSnapshot.parent = snapshot.parent;
+	}
+	if (snapshot.children) {
+		connectionSnapshot.children = snapshot.children;
 	}
 	if (replay) {
 		connectionSnapshot.replay = replay;

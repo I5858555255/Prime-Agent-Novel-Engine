@@ -56,7 +56,7 @@ import {
 	isDaemonDialogExtensionUiRequest,
 	success,
 } from "./daemon-protocol.js";
-import { buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
+import { buildRlmChildSnapshots, buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
 import {
 	cleanupDaemonSocketPath,
 	defaultDaemonSocketPath,
@@ -86,11 +86,15 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"steer",
 	"follow_up",
 	"abort",
+	"execute_bash",
+	"abort_bash",
+	"cancel_rlm_child",
 	"wait_for_idle",
 	"get_state",
 	"get_connection_state",
 	"get_messages",
 	"get_session_stats",
+	"get_context_tree",
 	"get_commands",
 	"get_resource_snapshot",
 	"get_available_models",
@@ -197,6 +201,42 @@ class AgentDaemon {
 
 		this.registerSignalHandlers();
 		console.error(`Prime Agent daemon listening on ${this.socketPath}`);
+		void this.restoreActiveSessions();
+	}
+
+	/**
+	 * Reload sessions that were daemon-resident when the previous daemon
+	 * exited (clean shutdown or crash). Runs in the background after the
+	 * socket starts listening so startup latency is unaffected; clients see
+	 * restored sessions appear in list results as each one loads.
+	 */
+	private async restoreActiveSessions(): Promise<void> {
+		let saved: SessionInfo[];
+		try {
+			saved = await SessionManager.listAll(undefined, this.options.defaultSessionConfig.sessionDir);
+		} catch (error) {
+			console.error(
+				`Failed to scan sessions for restore: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		for (const info of saved) {
+			// Empty sessions carry no work worth restoring; leaving them out keeps
+			// abandoned create-and-quit sessions from resurrecting on every restart.
+			if (info.state?.status !== "active" || info.messageCount === 0) {
+				continue;
+			}
+			if (this.shuttingDown) {
+				return;
+			}
+			try {
+				await this.createRuntime({ type: "create", sessionPath: info.path });
+			} catch (error) {
+				console.error(
+					`Failed to restore session ${info.path}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 	}
 
 	private cleanupSocketPath(): void {
@@ -231,6 +271,16 @@ class AgentDaemon {
 		this.sessions.set(state.activeSessionId, state);
 		if (name) {
 			state.runtime.session.setSessionName(name);
+		}
+		if (runtime.metadata.kind !== "subagent") {
+			// Mark the session as daemon-resident so a restarted daemon can
+			// restore it. Closes for kill/completed/replaced flip this back to
+			// sleep; clean shutdowns leave it in place on purpose.
+			try {
+				runtime.session.sessionManager.appendSessionState({ status: "active" });
+			} catch {
+				// Marking is best-effort; the session still works unrestored.
+			}
 		}
 		return state;
 	}
@@ -628,6 +678,36 @@ class AgentDaemon {
 				return success(command.id, "abort");
 			}
 
+			case "execute_bash": {
+				const state = this.getSessionState(command.activeSessionId);
+				if (state.runtime.session.isBashRunning) {
+					throw new Error("A bash command is already running");
+				}
+				// Respond before completion (bash can outlive the client request
+				// timeout); output and completion stream via bash_* session events.
+				void state.runtime.session
+					.runUserBash(command.command, { excludeFromContext: command.excludeFromContext })
+					.catch((error) => {
+						this.broadcastToSession(
+							state,
+							failure(undefined, "execute_bash", error, serializeDaemonError(error)),
+						);
+					});
+				return success(command.id, "execute_bash");
+			}
+
+			case "abort_bash": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.abortBash();
+				return success(command.id, "abort_bash");
+			}
+
+			case "cancel_rlm_child": {
+				const state = this.getSessionState(command.activeSessionId);
+				const cancelled = state.runtime.session.cancelRlmChildRun(command.childId);
+				return success(command.id, "cancel_rlm_child", { cancelled });
+			}
+
 			case "wait_for_idle": {
 				const state = this.getSessionState(command.activeSessionId);
 				await state.runtime.session.agent.waitForIdle();
@@ -657,6 +737,11 @@ class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const stats: SessionStats = state.runtime.session.getSessionStats();
 				return success(command.id, "get_session_stats", stats);
+			}
+
+			case "get_context_tree": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_context_tree", state.runtime.session.getContextTree());
 			}
 
 			case "get_commands": {
@@ -967,6 +1052,7 @@ class AgentDaemon {
 						...(metadata.rlmChildId ? { childId: metadata.rlmChildId } : {}),
 					}
 				: undefined;
+		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
 		return {
 			activeSessionId: state.activeSessionId,
 			summary: summaryForActiveSession(state),
@@ -979,6 +1065,7 @@ class AgentDaemon {
 			},
 			lastEventSequence: state.lastEventSequence,
 			...(parent ? { parent } : {}),
+			...(children.length > 0 ? { children } : {}),
 		};
 	}
 
@@ -1028,10 +1115,12 @@ class AgentDaemon {
 		}
 		const cascadeError = await this.closeChildSessions(state, reason);
 		let persistError: unknown;
-		try {
-			state.runtime.session.sessionManager.appendSessionState({ status: "sleep" });
-		} catch (error) {
-			persistError = error;
+		if (reason !== "shutdown") {
+			try {
+				state.runtime.session.sessionManager.appendSessionState({ status: "sleep" });
+			} catch (error) {
+				persistError = error;
+			}
 		}
 		cancelPendingExtensionUiRequests(state);
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {

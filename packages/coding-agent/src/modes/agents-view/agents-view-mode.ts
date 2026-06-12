@@ -1,7 +1,10 @@
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { AutocompleteItem, OverlayHandle, SlashCommand } from "@earendil-works/pi-tui";
 import {
+	CombinedAutocompleteProvider,
 	type Component,
 	type Focusable,
+	fuzzyFilter,
 	ProcessTerminal,
 	setKeybindings,
 	TUI,
@@ -11,13 +14,17 @@ import {
 import { APP_TITLE, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
-import { loadEntriesFromFile, SessionManager } from "../../core/session-manager.js";
+import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
+import { SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
-import type { DaemonCommand, DaemonResponse } from "../daemon/daemon-protocol.js";
-import type { SessionSummary } from "../daemon/daemon-session-list.js";
+import { type DaemonCommand, type DaemonResponse, isUnknownDaemonCommandError } from "../daemon/daemon-protocol.js";
+import { resolveAttachModelFallbackMessage, type SessionSummary } from "../daemon/daemon-session-list.js";
+import { getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "../interactive/auth-flows.js";
+import { showFullPaneOverlay } from "../interactive/components/centered-overlay.js";
 import { CustomEditor } from "../interactive/components/custom-editor.js";
 import { keyText } from "../interactive/components/keybinding-hints.js";
+import { ModelSelectorComponent } from "../interactive/components/model-selector.js";
 import { BrandSplashHeader, InteractiveMode } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
 import {
@@ -29,9 +36,17 @@ import {
 	theme,
 } from "../interactive/theme/theme.js";
 import {
+	AGENTS_VIEW_SLASH_COMMANDS,
+	type AgentsViewCommandName,
+	classifyAgentsViewCommand,
+	type ParsedSlashCommand,
+	parseSlashCommand,
+} from "./agents-view-commands.js";
+import {
 	type AgentsViewRow,
 	type AgentsViewSection,
 	buildAgentsViewRows,
+	getAgentsViewSummaryIdentity as getSummaryIdentity,
 	sectionTitle,
 	shouldShowAgentsViewSession,
 } from "./agents-view-state.js";
@@ -44,7 +59,6 @@ const STATUS_MESSAGE_DURATION_MS = 4500;
 const SESSION_NAME_MAX_LENGTH = 80;
 const DEFAULT_PROMPT_PLACEHOLDER = "Describe a task for a new session";
 const REPLY_PROMPT_FALLBACK_PLACEHOLDER = "Write a reply to this agent";
-const NEEDS_INPUT_ROW_ICON = "◆";
 const COMPLETED_ROW_ICON = "✓";
 const WORKING_ICON_FRAMES = ["◇", "◈", "◆", "◈"] as const;
 const SELECTED_ROW_MARKER = "\0agents-view-selected-row\0";
@@ -63,7 +77,7 @@ export interface AgentsViewModeOptions {
 	verbose?: boolean;
 }
 
-type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary };
+type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary; subagent?: SessionSummary };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
 	statusMessage?: string;
@@ -78,6 +92,11 @@ type PendingDeleteAgent = {
 	summary: SessionSummary;
 	stopped: boolean;
 };
+type PendingKillSubagent = {
+	identity: string;
+	rootActiveSessionId: string;
+	childId: string;
+};
 
 export async function resolveAgentsViewSessionUiServices(
 	options: Pick<AgentsViewModeOptions, "createUiServicesForSession" | "uiServices">,
@@ -90,6 +109,13 @@ export function createAgentsViewResumeConfig(config: AgentSessionRuntimeConfig):
 	const resumeConfig: AgentSessionRuntimeConfig = { ...config };
 	delete resumeConfig.cwd;
 	return resumeConfig;
+}
+
+// Status messages render in a single-row hint slot below the editor; embedded
+// newlines would make that row taller than the layout accounts for and overlap
+// the input, so flatten all whitespace runs to single spaces.
+export function formatAgentsViewStatusLine(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
 }
 
 export function createAgentsViewReplyHeadline(text: string | undefined): string | undefined {
@@ -184,9 +210,14 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				uiServices,
 				bindLocalSessionExtensions: false,
 				migratedProviders: options.migratedProviders,
-				modelFallbackMessage: opened.summary.modelFallbackMessage ?? options.modelFallbackMessage,
+				modelFallbackMessage: resolveAttachModelFallbackMessage(opened.summary, options.modelFallbackMessage),
 				verbose: options.verbose,
 				returnToAgentsView: true,
+				// Matches the node id scheme used by snapshot child seeding
+				// (rlmChildId, falling back to the child's active session id).
+				initialSubagentNodeId: result.subagent
+					? (result.subagent.rlmChildId ?? result.subagent.activeSessionId)
+					: undefined,
 			});
 			await interactiveMode.run();
 		} catch (error) {
@@ -213,6 +244,8 @@ class AgentsViewMode implements Component, Focusable {
 	private deleteConfirmTimer: ReturnType<typeof setTimeout> | undefined;
 	private workingIconFrame = 0;
 	private rows: AgentsViewRow[] = [];
+	private lastVisibleSummaries: SessionSummary[] = [];
+	private expandedSubagentParents = new Set<string>();
 	private selectedIndex = 0;
 	private selectedRowIdentity: string | undefined;
 	private selectedActiveSessionId: string | undefined;
@@ -221,10 +254,14 @@ class AgentsViewMode implements Component, Focusable {
 	private replyLastAssistantTextLoading = false;
 	private replyHeaderTime = "";
 	private pendingDeleteAgent: PendingDeleteAgent | undefined;
+	private pendingKillSubagent: PendingKillSubagent | undefined;
 	private readonly inactiveAgentIdentities = new Set<string>();
 	private statusMessage: string | undefined;
+	private statusMessageTone: "muted" | "error" | "warning" = "muted";
+	private statusMessageSticky = false;
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
+	private anthropicSubscriptionWarningShown = false;
 
 	constructor(
 		private readonly options: AgentsViewModeOptions,
@@ -246,6 +283,7 @@ class AgentsViewMode implements Component, Focusable {
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
 		this.editor.focused = true;
+		this.editor.setAutocompleteProvider(this.createAutocompleteProvider());
 		this.editor.getHeaderLine = () => this.renderReplyHeaderLine();
 		this.editor.onSubmit = (value) => {
 			void this.submit(value);
@@ -313,6 +351,7 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
+		this.clearStickyStatusMessage();
 		if (this.keybindings.matches(data, "app.clear")) {
 			this.handleCtrlC();
 			return;
@@ -446,6 +485,7 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private clearDeleteConfirmation(options: { render?: boolean } = {}): void {
+		this.pendingKillSubagent = undefined;
 		if (!this.deleteConfirmTimer && this.deleteConfirmExpiresAt === 0) {
 			return;
 		}
@@ -463,16 +503,24 @@ class AgentsViewMode implements Component, Focusable {
 		return this.deleteConfirmExpiresAt > Date.now();
 	}
 
-	private setStatusMessage(message: string | undefined, options: { render?: boolean } = {}): void {
+	private setStatusMessage(
+		message: string | undefined,
+		options: { render?: boolean; tone?: "muted" | "error" | "warning"; sticky?: boolean } = {},
+	): void {
+		const statusLine = message === undefined ? undefined : formatAgentsViewStatusLine(message);
 		if (this.statusMessageTimer) {
 			clearTimeout(this.statusMessageTimer);
 			this.statusMessageTimer = undefined;
 		}
-		this.statusMessage = message;
-		if (message) {
+		this.statusMessage = statusLine;
+		// Errors come both from explicit tones and from formatError-style messages.
+		this.statusMessageTone = options.tone ?? (statusLine?.startsWith("Failed") ? "error" : "muted");
+		// Sticky messages stay up until the next keypress instead of a timer.
+		this.statusMessageSticky = options.sticky === true && statusLine !== undefined;
+		if (statusLine && !this.statusMessageSticky) {
 			this.statusMessageTimer = setTimeout(() => {
 				this.statusMessageTimer = undefined;
-				if (this.statusMessage === message) {
+				if (this.statusMessage === statusLine) {
 					this.statusMessage = undefined;
 					this.ui.requestRender();
 				}
@@ -482,6 +530,16 @@ class AgentsViewMode implements Component, Focusable {
 		if (options.render !== false) {
 			this.ui.requestRender();
 		}
+	}
+
+	/** Sticky messages (e.g. billing warnings) stay until the user acknowledges them with any keypress. */
+	private clearStickyStatusMessage(): void {
+		if (!this.statusMessageSticky) {
+			return;
+		}
+		this.statusMessageSticky = false;
+		this.statusMessage = undefined;
+		this.ui.requestRender();
 	}
 
 	private moveSelection(delta: number): void {
@@ -494,12 +552,59 @@ class AgentsViewMode implements Component, Focusable {
 			: 0;
 		const nextPosition = Math.max(0, Math.min(selectableIndexes.length - 1, currentPosition + delta));
 		this.selectedIndex = selectableIndexes[nextPosition] ?? 0;
+		this.collapseSubagentListsOutsideSelection();
 		this.syncSelectedRowState();
 		this.clearDeleteConfirmation({ render: false });
-		if (this.replyActiveSessionId && this.replyActiveSessionId !== this.selectedActiveSessionId) {
+		// Reply stays armed only while the selection sits on the agent row it
+		// targets; nested rows share the parent's session id but are read-only.
+		const selectedRow = this.rows[this.selectedIndex];
+		if (
+			this.replyActiveSessionId &&
+			(selectedRow?.kind !== "agent" || this.replyActiveSessionId !== this.selectedActiveSessionId)
+		) {
 			this.setReplyTarget(undefined);
 		}
 		this.ui.requestRender();
+	}
+
+	/** Expanded subagent lists collapse back to their summary row once selection leaves them. */
+	private collapseSubagentListsOutsideSelection(): void {
+		if (this.expandedSubagentParents.size === 0) {
+			return;
+		}
+		const keep = new Set<string>();
+		const selectedRow = this.rows[this.selectedIndex];
+		// Selecting the expanded agent itself still counts as inside its list;
+		// only moving past the block (above the parent or below the last child)
+		// collapses it.
+		if (selectedRow && this.expandedSubagentParents.has(selectedRow.identity)) {
+			keep.add(selectedRow.identity);
+		}
+		let parentIdentity = selectedRow?.parentIdentity;
+		while (parentIdentity !== undefined && !keep.has(parentIdentity)) {
+			keep.add(parentIdentity);
+			const target: string = parentIdentity;
+			parentIdentity = this.rows.find((row) => row.identity === target)?.parentIdentity;
+		}
+		const next = new Set([...this.expandedSubagentParents].filter((identity) => keep.has(identity)));
+		if (next.size === this.expandedSubagentParents.size) {
+			return;
+		}
+		this.expandedSubagentParents = next;
+		this.rebuildRows();
+	}
+
+	/** Rebuild rows from the last fetched summaries, keeping selection on the same row. */
+	private rebuildRows(): void {
+		const selectedIdentity = this.rows[this.selectedIndex]?.identity;
+		this.rows = buildAgentsViewRows(this.lastVisibleSummaries, this.expandedSubagentParents);
+		const index =
+			selectedIdentity === undefined ? -1 : this.rows.findIndex((row) => row.identity === selectedIdentity);
+		if (index >= 0) {
+			this.selectedIndex = index;
+		} else {
+			this.restoreSelection();
+		}
 	}
 
 	private async submit(value: string): Promise<void> {
@@ -512,6 +617,26 @@ class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 
+		// Only built-in interactive commands are intercepted here; unknown "/..."
+		// text still reaches the daemon session, which expands prompt templates,
+		// skills, and extension commands.
+		const command = parseSlashCommand(text);
+		if (command) {
+			const kind = classifyAgentsViewCommand(command.name);
+			if (kind === "agents-view") {
+				this.editor.setText("");
+				await this.runSlashCommand(command);
+				return;
+			}
+			if (kind === "session-only") {
+				this.editor.setText("");
+				this.setStatusMessage(
+					`/${command.name} is only available inside an agent session — press ${keyText("tui.select.confirm")} on an agent to open it`,
+				);
+				return;
+			}
+		}
+
 		this.editor.setText("");
 		if (this.replyActiveSessionId) {
 			await this.sendReply(this.replyActiveSessionId, text);
@@ -520,9 +645,161 @@ class AgentsViewMode implements Component, Focusable {
 		await this.createAgentForPrompt(text);
 	}
 
+	private async runSlashCommand(command: ParsedSlashCommand): Promise<void> {
+		switch (command.name as AgentsViewCommandName) {
+			case "login":
+				await this.createAuthFlows().runLogin();
+				return;
+			case "logout":
+				await this.createAuthFlows().runLogout();
+				return;
+			case "model": {
+				const searchTerm = command.args || undefined;
+				if (searchTerm) {
+					// Mirror the in-session /model behavior: an exact provider/id or
+					// unique model id reference applies directly without the picker.
+					const match = findExactModelReferenceMatch(
+						searchTerm,
+						this.options.uiServices.modelRegistry.getAvailable(),
+					);
+					if (match) {
+						this.applyDefaultModel(match);
+						return;
+					}
+				}
+				await this.showModelSelector(searchTerm);
+				return;
+			}
+			case "quit":
+				this.finish({ type: "exit" });
+				return;
+			default: {
+				const _exhaustive: never = command.name as never;
+				return _exhaustive;
+			}
+		}
+	}
+
+	private createAuthFlows(): ProviderAuthFlows {
+		const modelRegistry = this.options.uiServices.modelRegistry;
+		return new ProviderAuthFlows({
+			ui: this.ui,
+			modelRegistry,
+			showStatus: (message) => this.setStatusMessage(message),
+			showError: (message) => this.setStatusMessage(message, { tone: "error" }),
+			getAvailableModels: async () => modelRegistry.getAvailable(),
+			onLoginCompleted: () => {
+				void this.maybeWarnAboutAnthropicSubscriptionAuth(this.getDefaultModelForNewAgents());
+			},
+		});
+	}
+
+	private async maybeWarnAboutAnthropicSubscriptionAuth(model: Model<Api> | undefined): Promise<void> {
+		if (this.options.uiServices.settingsManager.getWarnings().anthropicExtraUsage === false) {
+			return;
+		}
+		if (this.anthropicSubscriptionWarningShown) {
+			return;
+		}
+		const warning = await getAnthropicSubscriptionAuthWarning(this.options.uiServices.modelRegistry, model);
+		if (!warning) {
+			return;
+		}
+		this.anthropicSubscriptionWarningShown = true;
+		this.setStatusMessage(warning, { tone: "warning", sticky: true });
+	}
+
+	private showModelSelector(initialSearchInput?: string): Promise<void> {
+		const modelRegistry = this.options.uiServices.modelRegistry;
+		const availableModels = modelRegistry.getAvailable();
+		if (availableModels.length === 0) {
+			this.setStatusMessage("No models available. Add credentials with /login.");
+			return Promise.resolve();
+		}
+		return new Promise((resolve) => {
+			let handle: OverlayHandle | undefined;
+			const close = () => {
+				handle?.hide();
+				this.ui.requestRender();
+			};
+			const selector = new ModelSelectorComponent(
+				this.ui,
+				this.getDefaultModelForNewAgents(),
+				modelRegistry,
+				[],
+				(model) => {
+					close();
+					this.applyDefaultModel(model);
+					resolve();
+				},
+				() => {
+					close();
+					resolve();
+				},
+				initialSearchInput,
+				{ availableModels, getRows: () => this.ui.terminal.rows },
+			);
+			handle = showFullPaneOverlay(this.ui, selector, 96);
+		});
+	}
+
+	private getDefaultModelForNewAgents(): Model<Api> | undefined {
+		const settings = this.options.uiServices.settingsManager;
+		const provider = settings.getDefaultProvider();
+		const modelId = settings.getDefaultModel();
+		return provider && modelId ? this.options.uiServices.modelRegistry.find(provider, modelId) : undefined;
+	}
+
+	private applyDefaultModel(model: Model<Api>): void {
+		this.options.uiServices.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		// New agents are created from this shared config; pin the model explicitly
+		// so the daemon does not fall back to its own settings snapshot.
+		this.options.config.provider = model.provider;
+		this.options.config.model = model.id;
+		this.options.startupModelId = model.id;
+		this.setStatusMessage(`Model for new agents: ${model.id}`);
+		void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+	}
+
+	private createAutocompleteProvider(): CombinedAutocompleteProvider {
+		const commands: SlashCommand[] = AGENTS_VIEW_SLASH_COMMANDS.map((command) => ({
+			name: command.name,
+			description: command.description,
+			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+		}));
+		const modelCommand = commands.find((command) => command.name === "model");
+		if (modelCommand) {
+			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const models = this.options.uiServices.modelRegistry.getAvailable();
+				if (models.length === 0) {
+					return null;
+				}
+				const items = models.map((model) => ({
+					id: model.id,
+					provider: model.provider,
+					label: `${model.provider}/${model.id}`,
+				}));
+				const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
+				if (filtered.length === 0) {
+					return null;
+				}
+				return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
+			};
+		}
+		return new CombinedAutocompleteProvider(commands, this.options.uiServices.getInitialCwd(), null);
+	}
+
 	private openSelected(): void {
 		const row = this.rows[this.selectedIndex];
 		if (!row?.selectable || this.isPendingDeleteRow(row)) {
+			return;
+		}
+		if (row.kind === "subagent-summary") {
+			this.expandSubagentList(row);
+			return;
+		}
+		if (row.kind === "subagent") {
+			this.openSelectedSubagent(row);
 			return;
 		}
 		if (!row.summary.activeSessionId && !row.summary.sessionFile) {
@@ -532,9 +809,51 @@ class AgentsViewMode implements Component, Focusable {
 		this.finish({ type: "open", summary: row.summary });
 	}
 
+	private expandSubagentList(row: AgentsViewRow): void {
+		if (!row.parentIdentity) {
+			return;
+		}
+		this.expandedSubagentParents.add(row.parentIdentity);
+		this.rebuildRows();
+		const firstChild = this.rows.findIndex(
+			(candidate) => candidate.kind === "subagent" && candidate.parentIdentity === row.parentIdentity,
+		);
+		if (firstChild >= 0) {
+			this.selectedIndex = firstChild;
+		}
+		this.syncSelectedRowState();
+		this.ui.requestRender();
+	}
+
+	private openSelectedSubagent(row: AgentsViewRow): void {
+		const root = this.findSubagentRootRow(row);
+		if (!root || !(root.summary.activeSessionId || root.summary.sessionFile)) {
+			this.setStatusMessage("Cannot open subagent without its parent agent");
+			return;
+		}
+		this.finish({ type: "open", summary: root.summary, subagent: row.summary });
+	}
+
+	/**
+	 * The whole subagent tree belongs to the root agent's session, so nested
+	 * subagents also resolve to their top-level ancestor.
+	 */
+	private findSubagentRootRow(row: AgentsViewRow): AgentsViewRow | undefined {
+		let root = this.rows.find((candidate) => candidate.identity === row.parentIdentity);
+		while (root && root.kind !== "agent") {
+			const parentIdentity = root.parentIdentity;
+			root = this.rows.find((candidate) => candidate.identity === parentIdentity);
+		}
+		return root;
+	}
+
 	private async toggleReplyTarget(): Promise<void> {
 		const selectedRow = this.rows[this.selectedIndex];
-		const activeSessionId = selectedRow?.summary.activeSessionId;
+		// Subagents are read-only; replying is reserved for top-level agents.
+		if (selectedRow?.kind !== "agent") {
+			return;
+		}
+		const activeSessionId = selectedRow.summary.activeSessionId;
 		if (!activeSessionId) {
 			return;
 		}
@@ -627,6 +946,15 @@ class AgentsViewMode implements Component, Focusable {
 		if (!row?.selectable) {
 			return;
 		}
+		if (row.kind === "subagent") {
+			this.pendingDeleteAgent = undefined;
+			await this.handleKillSubagentSelected(row);
+			return;
+		}
+		if (row.kind !== "agent") {
+			return;
+		}
+		this.pendingKillSubagent = undefined;
 		const identity = getSummaryIdentity(row.summary);
 		if (this.pendingDeleteAgent?.identity === identity) {
 			if (this.isDeleteConfirmationVisible()) {
@@ -637,6 +965,49 @@ class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 		await this.stopAgentForDeletion(row);
+	}
+
+	// Subagent rows only stay visible while the daemon hosts their session, and
+	// the daemon releases a child session as soon as its run settles, so any
+	// visible subagent is part of an active run regardless of its idle/streaming
+	// status. A kill that races completion reports "already finished".
+	private async handleKillSubagentSelected(row: AgentsViewRow): Promise<void> {
+		const identity = getSummaryIdentity(row.summary);
+		if (this.pendingKillSubagent?.identity === identity && this.isDeleteConfirmationVisible()) {
+			const pending = this.pendingKillSubagent;
+			this.clearDeleteConfirmation({ render: false });
+			await this.killSubagent(pending);
+			return;
+		}
+		const childId = row.summary.rlmChildId;
+		const rootActiveSessionId = this.findSubagentRootRow(row)?.summary.activeSessionId;
+		if (!childId || !rootActiveSessionId) {
+			this.setStatusMessage("Cannot stop subagent without its parent agent");
+			return;
+		}
+		this.pendingKillSubagent = { identity, rootActiveSessionId, childId };
+		this.showDeleteConfirmation();
+	}
+
+	private async killSubagent(pending: PendingKillSubagent): Promise<void> {
+		this.setStatusMessage("Stopping subagent...");
+		try {
+			const response = await this.requireClient().request({
+				type: "cancel_rlm_child",
+				activeSessionId: pending.rootActiveSessionId,
+				childId: pending.childId,
+			});
+			const data = requireDaemonData(response);
+			const cancelled = isRecord(data) && data.cancelled === true;
+			this.setStatusMessage(cancelled ? "Subagent stopped" : "Subagent already finished", { render: false });
+			await this.refreshSessions();
+		} catch (error) {
+			this.setStatusMessage(
+				isUnknownDaemonCommandError(error, "cancel_rlm_child")
+					? "Failed to stop subagent: the daemon is running an older build; restart the daemon and try again"
+					: formatError("Failed to stop subagent", error),
+			);
+		}
 	}
 
 	private async stopAgentForDeletion(row: AgentsViewRow): Promise<void> {
@@ -712,9 +1083,14 @@ class AgentsViewMode implements Component, Focusable {
 				}
 			}
 			if (pending.sessionFile) {
-				SessionManager.open(pending.sessionFile, this.options.config.sessionDir).appendSessionState({
-					status: "hidden",
-				});
+				// The kill above normally persists sleep, but it can be skipped or
+				// hit an unknown session (e.g. the daemon died after listing). Make
+				// sure the file is not left marked active, or a restarted daemon
+				// would resurrect a deliberately deactivated agent.
+				const sessionManager = SessionManager.open(pending.sessionFile, this.options.config.sessionDir);
+				if (sessionManager.getSessionState()?.status === "active") {
+					sessionManager.appendSessionState({ status: "sleep" });
+				}
 			}
 			this.inactiveAgentIdentities.add(pending.identity);
 			this.pendingDeleteAgent = undefined;
@@ -810,13 +1186,10 @@ class AgentsViewMode implements Component, Focusable {
 			const data = requireDaemonData(response);
 			const sessions = expectSessionList(data);
 			const visibleSessions = sessions.filter((summary) =>
-				shouldShowAgentsViewSession(
-					summary,
-					this.getSavedSessionStatus(summary),
-					this.inactiveAgentIdentities.has(getSummaryIdentity(summary)),
-				),
+				shouldShowAgentsViewSession(summary, this.inactiveAgentIdentities.has(getSummaryIdentity(summary))),
 			);
-			this.rows = buildAgentsViewRows(this.withPendingDeleteSession(visibleSessions));
+			this.lastVisibleSummaries = this.withPendingDeleteSession(visibleSessions);
+			this.rows = buildAgentsViewRows(this.lastVisibleSummaries, this.expandedSubagentParents);
 			this.restoreSelection();
 			this.ui.requestRender();
 		} catch (error) {
@@ -843,24 +1216,6 @@ class AgentsViewMode implements Component, Focusable {
 		return replaced ? merged : [...merged, pending.summary];
 	}
 
-	private getSavedSessionStatus(summary: SessionSummary): SessionSummary["status"] | undefined {
-		if (!summary.sessionFile || summary.activeSessionId) {
-			return undefined;
-		}
-		try {
-			const entries = loadEntriesFromFile(summary.sessionFile);
-			for (let index = entries.length - 1; index >= 0; index--) {
-				const entry = entries[index];
-				if (entry.type === "session_state") {
-					return entry.state.status;
-				}
-			}
-		} catch {
-			return undefined;
-		}
-		return undefined;
-	}
-
 	private restoreSelection(): void {
 		if (this.rows.length === 0) {
 			this.selectedIndex = 0;
@@ -871,7 +1226,7 @@ class AgentsViewMode implements Component, Focusable {
 		let index =
 			selectedIdentity === undefined
 				? -1
-				: this.rows.findIndex((row) => row.selectable && getSummaryIdentity(row.summary) === selectedIdentity);
+				: this.rows.findIndex((row) => row.selectable && row.identity === selectedIdentity);
 		const selectedId = this.selectedActiveSessionId;
 		if (index < 0) {
 			index =
@@ -889,11 +1244,6 @@ class AgentsViewMode implements Component, Focusable {
 			this.selectedIndex = Math.min(this.selectedIndex, this.rows.length - 1);
 		}
 		this.syncSelectedRowState();
-	}
-
-	private getSelectedActiveSessionId(): string | undefined {
-		const row = this.rows[this.selectedIndex];
-		return row?.selectable ? (row.summary.activeSessionId ?? row.summary.id) : undefined;
 	}
 
 	private getSelectableRowIndexes(): number[] {
@@ -943,7 +1293,7 @@ class AgentsViewMode implements Component, Focusable {
 
 	private getAgentCountsText(): string {
 		const counts = countRowsBySection(this.rows);
-		return `${counts.needs_input} need input, ${counts.working} working, ${counts.completed} completed`;
+		return `${counts.working} working, ${counts.completed} completed`;
 	}
 
 	private renderSessionRows(width: number, maxRows: number): string[] {
@@ -952,15 +1302,15 @@ class AgentsViewMode implements Component, Focusable {
 		}
 		if (this.rows.length === 0) {
 			return [
-				theme.bold(sectionTitle("needs_input")),
+				theme.bold(sectionTitle("working")),
 				theme.fg("dim", "  No agents yet. Describe a task below to start one."),
 			].slice(0, maxRows);
 		}
 
 		const displayItems = buildDisplayItems(this.rows);
-		const selectedId = this.getSelectedActiveSessionId();
+		const selectedIdentity = this.rows[this.selectedIndex]?.identity;
 		const selectedDisplayIndex = displayItems.findIndex(
-			(item) => item.type === "row" && (item.row.summary.activeSessionId ?? item.row.summary.id) === selectedId,
+			(item) => item.type === "row" && item.row.identity === selectedIdentity,
 		);
 		const visibleRows = Math.min(maxRows, this.visibleListRows());
 		const start = Math.max(
@@ -987,9 +1337,6 @@ class AgentsViewMode implements Component, Focusable {
 			if (item.type === "empty") {
 				return theme.fg("dim", "  No agents");
 			}
-			if (item.type === "subagents") {
-				return this.renderSubagentSummary(item.count, width);
-			}
 			return this.renderRow(item.row, width);
 		});
 		if (showLeadingEllipsis) {
@@ -1002,19 +1349,29 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private renderRow(row: AgentsViewRow, width: number): string {
-		const activeSessionId = row.summary.activeSessionId ?? row.summary.id;
-		const selected = row.selectable && activeSessionId === this.getSelectedActiveSessionId();
-		const pendingDelete = this.isPendingDeleteRow(row);
+		const selected = row.selectable && row.identity === this.rows[this.selectedIndex]?.identity;
+		if (row.kind === "subagent-summary") {
+			const indent = "  ".repeat(row.depth);
+			const label = theme.fg("dim", `▸ ${row.title}`);
+			const line = padLine(truncateToWidth(`${indent}${label}`, width, ""), width);
+			return selected ? `${SELECTED_ROW_MARKER}${line}` : line;
+		}
+		const pendingDelete = row.kind === "agent" && this.isPendingDeleteRow(row);
+		const pendingKill = row.kind === "subagent" && this.isPendingKillSubagentRow(row);
 		const rawIcon = this.getRowIcon(row.section);
 		const icon = this.formatRowIcon(row.section, rawIcon);
 		const indent = "  ".repeat(row.depth);
 		const timeWidth = 10;
 		const titleWidth = Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - timeWidth - 2);
-		const title = pendingDelete ? this.getPendingDeleteTitle() : row.title;
+		const title = pendingDelete
+			? this.getPendingDeleteTitle()
+			: pendingKill
+				? `${keyText("app.agents.delete")} again to stop`
+				: row.title;
 		const titleCell = formatTableCell(title, titleWidth);
 		const cells = [
 			icon,
-			pendingDelete ? theme.fg("error", titleCell) : titleCell,
+			pendingDelete || pendingKill ? theme.fg("error", titleCell) : titleCell,
 			formatRightTableCell(formatSessionDuration(row.summary), timeWidth),
 		];
 		const base = `${indent}${cells[0]} ${cells[1]} ${cells[2]}`;
@@ -1022,14 +1379,14 @@ class AgentsViewMode implements Component, Focusable {
 		return selected ? `${SELECTED_ROW_MARKER}${line}` : line;
 	}
 
-	private renderSubagentSummary(count: number, width: number): string {
-		const label = `  ${count} subagents running`;
-		return padLine(truncateToWidth(theme.fg("dim", label), width), width);
-	}
-
 	private finalizeRenderedLine(line: string, width: number): string {
 		const selected = line.startsWith(SELECTED_ROW_MARKER);
-		const content = selected ? line.slice(SELECTED_ROW_MARKER.length) : line;
+		let content = selected ? line.slice(SELECTED_ROW_MARKER.length) : line;
+		// Each rendered line must occupy exactly one terminal row; a stray
+		// newline would shift every line below it and overlap the editor.
+		if (content.includes("\n") || content.includes("\r")) {
+			content = content.replace(/[\r\n]+/g, " ");
+		}
 		const padded = padLine(truncateToWidth(content, width), width);
 		return selected ? theme.bg("selectedBg", padded) : padded;
 	}
@@ -1037,6 +1394,12 @@ class AgentsViewMode implements Component, Focusable {
 	private isPendingDeleteRow(row: AgentsViewRow): boolean {
 		return (
 			getSummaryIdentity(row.summary) === this.pendingDeleteAgent?.identity && this.isDeleteConfirmationVisible()
+		);
+	}
+
+	private isPendingKillSubagentRow(row: AgentsViewRow): boolean {
+		return (
+			getSummaryIdentity(row.summary) === this.pendingKillSubagent?.identity && this.isDeleteConfirmationVisible()
 		);
 	}
 
@@ -1058,14 +1421,19 @@ class AgentsViewMode implements Component, Focusable {
 			return truncateToWidth(theme.fg("muted", hint), width);
 		}
 		if (this.statusMessage) {
-			const tone = this.statusMessage.startsWith("Failed") ? "error" : "muted";
-			return truncateToWidth(theme.fg(tone, this.statusMessage), width);
+			return truncateToWidth(theme.fg(this.statusMessageTone, this.statusMessage), width);
 		}
+		// Replying is reserved for top-level agents; subagents can be stopped.
+		const selectedRow = this.rows[this.selectedIndex];
+		const selectedAgent = selectedRow?.kind === "agent";
+		const selectedSubagent = selectedRow?.kind === "subagent";
 		const hints = [
 			`${keyText("tui.select.up")}/${keyText("tui.select.down")} move`,
 			`${keyText("tui.select.confirm")} open/send`,
-			`${keyText("app.agents.reply")} reply`,
-			`${keyText("app.agents.delete")} stop/deactivate`,
+			"/ commands",
+			selectedAgent ? `${keyText("app.agents.reply")} reply` : undefined,
+			selectedAgent ? `${keyText("app.agents.delete")} stop/deactivate` : undefined,
+			selectedSubagent ? `${keyText("app.agents.delete")} stop` : undefined,
 			this.replyActiveSessionId ? `${keyText("app.agents.back")} back` : undefined,
 		]
 			.filter((hint): hint is string => hint !== undefined)
@@ -1087,10 +1455,8 @@ class AgentsViewMode implements Component, Focusable {
 
 	private getRowIcon(section: AgentsViewSection): string {
 		switch (section) {
-			case "needs_input":
-				return NEEDS_INPUT_ROW_ICON;
 			case "working":
-				return WORKING_ICON_FRAMES[this.workingIconFrame % WORKING_ICON_FRAMES.length] ?? NEEDS_INPUT_ROW_ICON;
+				return WORKING_ICON_FRAMES[this.workingIconFrame % WORKING_ICON_FRAMES.length] ?? WORKING_ICON_FRAMES[0];
 			case "completed":
 				return COMPLETED_ROW_ICON;
 			default: {
@@ -1102,8 +1468,6 @@ class AgentsViewMode implements Component, Focusable {
 
 	private formatRowIcon(section: AgentsViewSection, icon: string): string {
 		switch (section) {
-			case "needs_input":
-				return theme.fg("warning", icon);
 			case "working":
 				return theme.bold(icon);
 			case "completed":
@@ -1120,12 +1484,11 @@ type DisplayItem =
 	| { type: "spacer" }
 	| { type: "heading"; section: AgentsViewSection }
 	| { type: "empty"; section: AgentsViewSection }
-	| { type: "row"; row: AgentsViewRow }
-	| { type: "subagents"; count: number };
+	| { type: "row"; row: AgentsViewRow };
 
 function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
-	const sections: AgentsViewSection[] = ["needs_input", "working", "completed"];
+	const sections: AgentsViewSection[] = ["working", "completed"];
 	for (const [index, section] of sections.entries()) {
 		if (index > 0) {
 			items.push({ type: "spacer" });
@@ -1138,38 +1501,37 @@ function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
 		}
 		for (const row of sectionRows) {
 			items.push({ type: "row", row });
-			if (row.runningSubagentCount > 0) {
-				items.push({ type: "subagents", count: row.runningSubagentCount });
-			}
 		}
 	}
 	return items;
 }
 
+// Nested rows (subagent summaries and expanded subagents) always render in
+// their top-level agent's section block, regardless of their own section.
 function getDisplayRowsForSection(rows: readonly AgentsViewRow[], section: AgentsViewSection): AgentsViewRow[] {
-	return rows.filter((row) => row.depth === 0 && row.section === section);
+	const result: AgentsViewRow[] = [];
+	let include = false;
+	for (const row of rows) {
+		if (row.depth === 0) {
+			include = row.section === section;
+		}
+		if (include) {
+			result.push(row);
+		}
+	}
+	return result;
 }
 
 function countRowsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSection, number> {
+	const agents = rows.filter((row) => row.kind === "agent");
 	return {
-		needs_input: rows.filter((row) => row.section === "needs_input").length,
-		working: rows.filter((row) => row.section === "working").length,
-		completed: rows.filter((row) => row.section === "completed").length,
+		working: agents.filter((row) => row.section === "working").length,
+		completed: agents.filter((row) => row.section === "completed").length,
 	};
 }
 
 function getSelectedRowIdentity(row: AgentsViewRow | undefined): string | undefined {
-	return row ? getSummaryIdentity(row.summary) : undefined;
-}
-
-function getSummaryIdentity(summary: SessionSummary): string {
-	if (summary.sessionFile) {
-		return `file:${summary.sessionFile}`;
-	}
-	if (summary.activeSessionId) {
-		return `active:${summary.activeSessionId}`;
-	}
-	return `session:${summary.sessionId}`;
+	return row?.identity;
 }
 
 function isRunningSessionSummary(summary: SessionSummary): boolean {
@@ -1266,7 +1628,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatError(prefix: string, error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
-	return `${prefix}: ${message}`;
+	return formatAgentsViewStatusLine(`${prefix}: ${message}`);
 }
 
 function padLine(line: string, width: number): string {
