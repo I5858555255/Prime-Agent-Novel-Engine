@@ -2,8 +2,9 @@ import type { AgentContext, AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext, ExtensionFactory } from "../../src/core/extensions/types.js";
-import { GOAL_TOOL_NAMES } from "../../src/core/goals.js";
+import type { AgentSession } from "../../src/core/agent-session.js";
+import type { ExtensionFactory } from "../../src/core/extensions/types.js";
+import type { GoalHostResponse } from "../../src/core/goals.js";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
 function assistantWithUsage(message: string | AssistantMessage, usage: Partial<Usage>): AssistantMessage {
@@ -49,6 +50,43 @@ async function waitForCondition(predicate: () => boolean): Promise<void> {
 	}
 	throw new Error("condition was not met");
 }
+
+/**
+ * Stand-in for the real ipython tool. Goal calls reach the host over the
+ * kernel comm bridge while an ipython cell executes; this stub mirrors that
+ * timing by dispatching `goal.*` host requests from inside tool execution.
+ *
+ * Cell format: `goal.<op>` optionally followed by a JSON payload, e.g.
+ * `goal.create {"objective": "write a note"}`.
+ */
+function createFauxIpythonTool(sessionRef: { current?: AgentSession }): AgentTool {
+	return {
+		name: "ipython",
+		label: "ipython",
+		description: "Execute Python code in the agent kernel.",
+		parameters: Type.Object({ code: Type.String() }),
+		execute: async (_toolCallId, params) => {
+			const session = sessionRef.current;
+			if (!session) {
+				throw new Error("test session is not initialized");
+			}
+			const code = (params as { code: string }).code.trim();
+			let text = "";
+			if (code.startsWith("goal.")) {
+				const spaceIndex = code.indexOf(" ");
+				const type = spaceIndex < 0 ? code : code.slice(0, spaceIndex);
+				const payload = spaceIndex < 0 ? {} : JSON.parse(code.slice(spaceIndex + 1));
+				text = JSON.stringify(session.handleGoalHostRequest(type, payload));
+			}
+			return {
+				content: [{ type: "text", text }],
+				details: {},
+			};
+		},
+	};
+}
+
+const COMPLETE_GOAL_CELL = { code: "goal.complete" };
 
 function createWaitingTool(): {
 	tool: AgentTool;
@@ -108,13 +146,20 @@ describe("AgentSession goals", () => {
 		}
 	});
 
-	it("keeps continuing until the model calls update_goal complete", async () => {
-		const harness = await createHarness();
+	async function createGoalHarness(extraTools: AgentTool[] = []): Promise<Harness> {
+		const sessionRef: { current?: AgentSession } = {};
+		const harness = await createHarness({ tools: [createFauxIpythonTool(sessionRef), ...extraTools] });
+		sessionRef.current = harness.session;
 		harnesses.push(harness);
+		return harness;
+	}
+
+	it("keeps continuing until the model completes the goal through ipython", async () => {
+		const harness = await createGoalHarness();
 		harness.setResponses([
 			fauxAssistantMessage("I need another step."),
 			fauxAssistantMessage("The work is complete."),
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 
@@ -136,12 +181,11 @@ describe("AgentSession goals", () => {
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
-	it("counts tokens from the update_goal completion turn", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
+	it("counts tokens from the goal completion turn", async () => {
+		const harness = await createGoalHarness();
 		harness.setResponses([
 			assistantWithUsage(
-				fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 				{
 					input: 4,
 					output: 2,
@@ -160,59 +204,91 @@ describe("AgentSession goals", () => {
 		expect(harness.session.goalState.tokensUsed).toBeGreaterThan(0);
 	});
 
-	it("activates goal tools when a slash goal starts from an inactive tool set", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
+	it("returns the goal snapshot and completion report over the host bridge", async () => {
+		const harness = await createGoalHarness();
+
+		expect(harness.session.handleGoalHostRequest("goal.get")).toEqual({
+			goal: null,
+			remaining_tokens: null,
+			completion_budget_report: null,
+		});
+
+		const created = harness.session.handleGoalHostRequest("goal.create", {
+			objective: "write a benchmark note",
+			token_budget: 50,
+		});
+		expect(created.goal).toMatchObject({
+			objective: "write a benchmark note",
+			status: "active",
+			token_budget: 50,
+			tokens_used: 0,
+		});
+		expect(created.remaining_tokens).toBe(50);
+
+		const completed = harness.session.handleGoalHostRequest("goal.complete");
+		expect(completed.goal).toMatchObject({ status: "complete" });
+		expect(completed.completion_budget_report).toContain("tokens used: 0 of 50");
+	});
+
+	it("rejects malformed and unknown goal host requests", async () => {
+		const harness = await createGoalHarness();
+
+		expect(() => harness.session.handleGoalHostRequest("goal.create", {})).toThrow(
+			"goal.create objective must be a string",
+		);
+		expect(() => harness.session.handleGoalHostRequest("goal.nonsense")).toThrow(
+			'unknown goal request type "goal.nonsense"',
+		);
+		expect(() => harness.session.handleGoalHostRequest("goal.complete")).toThrow(
+			"cannot complete goal because this thread has no goal",
+		);
+
+		harness.session.handleGoalHostRequest("goal.create", { objective: "first goal" });
+		expect(() => harness.session.handleGoalHostRequest("goal.create", { objective: "second goal" })).toThrow(
+			"already has a goal",
+		);
+	});
+
+	it("activates ipython when a slash goal starts from an inactive tool set", async () => {
+		const harness = await createGoalHarness();
 		harness.session.setActiveToolsByName([]);
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 
 		await harness.session.prompt("/goal finish the task");
 
-		expect(harness.session.getActiveToolNames()).toEqual([...GOAL_TOOL_NAMES]);
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython"]);
 		expect(harness.session.goalState).toMatchObject({
 			active: false,
 			status: "complete",
 		});
 	});
 
-	it("adds goal tools to the live continuation context when inactive at run start", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-		const createGoalTool = harness.session.getToolDefinition("create_goal");
-		if (!createGoalTool) {
-			throw new Error("expected create_goal tool");
-		}
-		await createGoalTool.execute(
-			"create-goal",
-			{ objective: "finish the active goal" },
-			undefined,
-			undefined,
-			{} as ExtensionContext,
-		);
+	it("adds ipython to the live continuation context when inactive at run start", async () => {
+		const harness = await createGoalHarness();
+		harness.session.handleGoalHostRequest("goal.create", { objective: "finish the active goal" });
 		harness.session.setActiveToolsByName([]);
 		harness.setResponses([
 			fauxAssistantMessage("Still working."),
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 
 		await harness.session.prompt("continue");
 
 		expect(visibleAssistantTexts(harness)).toEqual(["Still working.", "Goal complete."]);
-		expect(harness.session.getActiveToolNames()).toEqual([...GOAL_TOOL_NAMES]);
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython"]);
 		expect(harness.session.goalState).toMatchObject({
 			active: false,
 			status: "complete",
 		});
 	});
 
-	it("does not re-add deactivated goal tools on runtime rebuild without an active goal", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-		expect(harness.session.getActiveToolNames()).toEqual(["ipython", ...GOAL_TOOL_NAMES]);
+	it("does not re-add deactivated tools on runtime rebuild without an active goal", async () => {
+		const harness = await createGoalHarness();
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython"]);
 
 		harness.session.setActiveToolsByName([]);
 		await harness.session.reload();
@@ -220,40 +296,18 @@ describe("AgentSession goals", () => {
 		expect(harness.session.getActiveToolNames()).toEqual([]);
 	});
 
-	it("does not duplicate goal tools on active-goal runtime rebuild", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-		const createGoalTool = harness.session.getToolDefinition("create_goal");
-		if (!createGoalTool) {
-			throw new Error("expected create_goal tool");
-		}
-		await createGoalTool.execute(
-			"create-goal",
-			{ objective: "finish the active goal" },
-			undefined,
-			undefined,
-			{} as ExtensionContext,
-		);
+	it("keeps ipython active on active-goal runtime rebuild", async () => {
+		const harness = await createGoalHarness();
+		harness.session.handleGoalHostRequest("goal.create", { objective: "finish the active goal" });
 
 		await harness.session.reload();
 
-		expect(harness.session.getActiveToolNames()).toEqual(["ipython", ...GOAL_TOOL_NAMES]);
+		expect(harness.session.getActiveToolNames()).toEqual(["ipython"]);
 	});
 
 	it("does not reject continuation when goal error update listeners throw", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-		const createGoalTool = harness.session.getToolDefinition("create_goal");
-		if (!createGoalTool) {
-			throw new Error("expected create_goal tool");
-		}
-		await createGoalTool.execute(
-			"create-goal",
-			{ objective: "finish the active goal" },
-			undefined,
-			undefined,
-			{} as ExtensionContext,
-		);
+		const harness = await createGoalHarness();
+		harness.session.handleGoalHostRequest("goal.create", { objective: "finish the active goal" });
 		harness.session.subscribe((event) => {
 			if (event.type === "goal_update") {
 				throw new Error("listener failed");
@@ -268,12 +322,11 @@ describe("AgentSession goals", () => {
 		});
 	});
 
-	it("does not infer completion from an assistant claim without update_goal", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
+	it("does not infer completion from an assistant claim without goal.complete", async () => {
+		const harness = await createGoalHarness();
 		harness.setResponses([
 			fauxAssistantMessage("Done."),
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 
@@ -288,15 +341,17 @@ describe("AgentSession goals", () => {
 		});
 	});
 
-	it("lets the model create a persistent goal with create_goal", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
+	it("lets the model create a persistent goal through ipython", async () => {
+		const harness = await createGoalHarness();
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("create_goal", { objective: "write a benchmark note" }), {
-				stopReason: "toolUse",
-			}),
+			fauxAssistantMessage(
+				fauxToolCall("ipython", { code: 'goal.create {"objective": "write a benchmark note"}' }),
+				{
+					stopReason: "toolUse",
+				},
+			),
 			fauxAssistantMessage("Started the note."),
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 
@@ -312,8 +367,7 @@ describe("AgentSession goals", () => {
 	});
 
 	it("reloads goal state after tree navigation", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
+		const harness = await createGoalHarness();
 		harness.setResponses([fauxAssistantMessage("before goal")]);
 		await harness.session.prompt("normal prompt");
 		const beforeGoalEntry = harness.sessionManager
@@ -324,7 +378,7 @@ describe("AgentSession goals", () => {
 		}
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 		await harness.session.prompt("/goal finish the task");
@@ -340,12 +394,11 @@ describe("AgentSession goals", () => {
 
 	it("keeps active goals sticky across normal user prompts", async () => {
 		const waiting = createWaitingTool();
-		const harness = await createHarness({ tools: [waiting.tool] });
-		harnesses.push(harness);
+		const harness = await createGoalHarness([waiting.tool]);
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("answered the side question"),
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 
@@ -372,8 +425,7 @@ describe("AgentSession goals", () => {
 		{ command: "/goal pause", status: "paused" },
 	])("removes queued goal context after $command while streaming", async ({ command, status }) => {
 		const waiting = createWaitingTool();
-		const harness = await createHarness({ tools: [waiting.tool] });
-		harnesses.push(harness);
+		const harness = await createGoalHarness([waiting.tool]);
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("stale goal response"),
@@ -395,8 +447,7 @@ describe("AgentSession goals", () => {
 
 	it("pauses an active goal with /goal pause", async () => {
 		const waiting = createWaitingTool();
-		const harness = await createHarness({ tools: [waiting.tool] });
-		harnesses.push(harness);
+		const harness = await createGoalHarness([waiting.tool]);
 		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
 
 		const waitForStart = waiting.waitForStart(harness);
@@ -416,8 +467,7 @@ describe("AgentSession goals", () => {
 
 	it("resumes a paused goal with /goal resume", async () => {
 		const waiting = createWaitingTool();
-		const harness = await createHarness({ tools: [waiting.tool] });
-		harnesses.push(harness);
+		const harness = await createGoalHarness([waiting.tool]);
 		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
 
 		const waitForStart = waiting.waitForStart(harness);
@@ -428,7 +478,7 @@ describe("AgentSession goals", () => {
 		await promptPromise;
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 		await harness.session.prompt("/goal resume");
@@ -441,10 +491,9 @@ describe("AgentSession goals", () => {
 	});
 
 	it("does not resume a completed goal", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
+		const harness = await createGoalHarness();
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 			fauxAssistantMessage("should not run"),
 		]);
@@ -477,13 +526,12 @@ describe("AgentSession goals", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
-	it("reports active goal elapsed time on status reads and get_goal", async () => {
+	it("reports active goal elapsed time on status reads and goal.get", async () => {
 		vi.useFakeTimers();
 		try {
 			vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 			const waiting = createWaitingTool();
-			const harness = await createHarness({ tools: [waiting.tool] });
-			harnesses.push(harness);
+			const harness = await createGoalHarness([waiting.tool]);
 			harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
 
 			const waitForStart = waiting.waitForStart(harness);
@@ -492,13 +540,8 @@ describe("AgentSession goals", () => {
 			vi.setSystemTime(new Date("2026-01-01T00:00:05Z"));
 
 			expect(harness.session.goalState.timeUsedSeconds).toBe(5);
-			const getGoalTool = harness.session.getToolDefinition("get_goal");
-			if (!getGoalTool) {
-				throw new Error("expected get_goal tool");
-			}
-			const result = await getGoalTool.execute("get-goal", {}, undefined, undefined, {} as ExtensionContext);
-			const details = result.details as { goal: { timeUsedSeconds: number } | null };
-			expect(details.goal?.timeUsedSeconds).toBe(5);
+			const response: GoalHostResponse = harness.session.handleGoalHostRequest("goal.get");
+			expect(response.goal?.time_used_seconds).toBe(5);
 
 			await harness.session.prompt("/goal pause");
 			waiting.release();
@@ -626,19 +669,8 @@ describe("AgentSession goals", () => {
 	});
 
 	it("does not continue when a terminal error reaches the continuation hook", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-		const createGoalTool = harness.session.getToolDefinition("create_goal");
-		if (!createGoalTool) {
-			throw new Error("expected create_goal tool");
-		}
-		await createGoalTool.execute(
-			"create-goal",
-			{ objective: "finish the active goal" },
-			undefined,
-			undefined,
-			{} as ExtensionContext,
-		);
+		const harness = await createGoalHarness();
+		harness.session.handleGoalHostRequest("goal.create", { objective: "finish the active goal" });
 		const errorMessage = fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid_api_key" });
 
 		const continuationMessages = await harness.session.agent.getContinuationMessages?.({
@@ -672,8 +704,7 @@ describe("AgentSession goals", () => {
 
 	it("lets the user abort a goal turn, prompt in between, then resume the goal", async () => {
 		const waiting = createWaitingTool();
-		const harness = await createHarness({ tools: [waiting.tool] });
-		harnesses.push(harness);
+		const harness = await createGoalHarness([waiting.tool]);
 		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
 
 		const waitForStart = waiting.waitForStart(harness);
@@ -689,7 +720,7 @@ describe("AgentSession goals", () => {
 
 		harness.setResponses([
 			fauxAssistantMessage("answered the interjection"),
-			fauxAssistantMessage(fauxToolCall("update_goal", { status: "complete" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Goal complete."),
 		]);
 
