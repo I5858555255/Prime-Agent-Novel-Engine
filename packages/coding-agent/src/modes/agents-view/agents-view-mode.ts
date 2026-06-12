@@ -1,7 +1,10 @@
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { AutocompleteItem, OverlayHandle, SlashCommand } from "@earendil-works/pi-tui";
 import {
+	CombinedAutocompleteProvider,
 	type Component,
 	type Focusable,
+	fuzzyFilter,
 	ProcessTerminal,
 	setKeybindings,
 	TUI,
@@ -16,8 +19,11 @@ import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connecti
 import { DaemonClient } from "../daemon/daemon-client.js";
 import { type DaemonCommand, type DaemonResponse, isUnknownDaemonCommandError } from "../daemon/daemon-protocol.js";
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
+import { ProviderAuthFlows } from "../interactive/auth-flows.js";
+import { showFullPaneOverlay } from "../interactive/components/centered-overlay.js";
 import { CustomEditor } from "../interactive/components/custom-editor.js";
 import { keyText } from "../interactive/components/keybinding-hints.js";
+import { ModelSelectorComponent } from "../interactive/components/model-selector.js";
 import { BrandSplashHeader, InteractiveMode } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
 import {
@@ -28,6 +34,13 @@ import {
 	stopThemeWatcher,
 	theme,
 } from "../interactive/theme/theme.js";
+import {
+	AGENTS_VIEW_SLASH_COMMANDS,
+	type AgentsViewCommandName,
+	classifyAgentsViewCommand,
+	type ParsedSlashCommand,
+	parseSlashCommand,
+} from "./agents-view-commands.js";
 import {
 	type AgentsViewRow,
 	type AgentsViewSection,
@@ -259,6 +272,7 @@ class AgentsViewMode implements Component, Focusable {
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
 		this.editor.focused = true;
+		this.editor.setAutocompleteProvider(this.createAutocompleteProvider());
 		this.editor.getHeaderLine = () => this.renderReplyHeaderLine();
 		this.editor.onSubmit = (value) => {
 			void this.submit(value);
@@ -573,12 +587,143 @@ class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 
+		// Only built-in interactive commands are intercepted here; unknown "/..."
+		// text still reaches the daemon session, which expands prompt templates,
+		// skills, and extension commands.
+		const command = parseSlashCommand(text);
+		if (command) {
+			const kind = classifyAgentsViewCommand(command.name);
+			if (kind === "agents-view") {
+				this.editor.setText("");
+				await this.runSlashCommand(command);
+				return;
+			}
+			if (kind === "session-only") {
+				this.editor.setText("");
+				this.setStatusMessage(
+					`/${command.name} is only available inside an agent session — press ${keyText("tui.select.confirm")} on an agent to open it`,
+				);
+				return;
+			}
+		}
+
 		this.editor.setText("");
 		if (this.replyActiveSessionId) {
 			await this.sendReply(this.replyActiveSessionId, text);
 			return;
 		}
 		await this.createAgentForPrompt(text);
+	}
+
+	private async runSlashCommand(command: ParsedSlashCommand): Promise<void> {
+		switch (command.name as AgentsViewCommandName) {
+			case "login":
+				await this.createAuthFlows().runLogin();
+				return;
+			case "logout":
+				await this.createAuthFlows().runLogout();
+				return;
+			case "model":
+				await this.showModelSelector(command.args || undefined);
+				return;
+			case "quit":
+				this.finish({ type: "exit" });
+				return;
+			default: {
+				const _exhaustive: never = command.name as never;
+				return _exhaustive;
+			}
+		}
+	}
+
+	private createAuthFlows(): ProviderAuthFlows {
+		const modelRegistry = this.options.uiServices.modelRegistry;
+		return new ProviderAuthFlows({
+			ui: this.ui,
+			modelRegistry,
+			showStatus: (message) => this.setStatusMessage(message),
+			showError: (message) => this.setStatusMessage(message),
+			getAvailableModels: async () => modelRegistry.getAvailable(),
+		});
+	}
+
+	private showModelSelector(initialSearchInput?: string): Promise<void> {
+		const modelRegistry = this.options.uiServices.modelRegistry;
+		const availableModels = modelRegistry.getAvailable();
+		if (availableModels.length === 0) {
+			this.setStatusMessage("No models available. Add credentials with /login.");
+			return Promise.resolve();
+		}
+		return new Promise((resolve) => {
+			let handle: OverlayHandle | undefined;
+			const close = () => {
+				handle?.hide();
+				this.ui.requestRender();
+			};
+			const selector = new ModelSelectorComponent(
+				this.ui,
+				this.getDefaultModelForNewAgents(),
+				modelRegistry,
+				[],
+				(model) => {
+					close();
+					this.applyDefaultModel(model);
+					resolve();
+				},
+				() => {
+					close();
+					resolve();
+				},
+				initialSearchInput,
+				{ availableModels, getRows: () => this.ui.terminal.rows },
+			);
+			handle = showFullPaneOverlay(this.ui, selector, 96);
+		});
+	}
+
+	private getDefaultModelForNewAgents(): Model<Api> | undefined {
+		const settings = this.options.uiServices.settingsManager;
+		const provider = settings.getDefaultProvider();
+		const modelId = settings.getDefaultModel();
+		return provider && modelId ? this.options.uiServices.modelRegistry.find(provider, modelId) : undefined;
+	}
+
+	private applyDefaultModel(model: Model<Api>): void {
+		this.options.uiServices.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		// New agents are created from this shared config; pin the model explicitly
+		// so the daemon does not fall back to its own settings snapshot.
+		this.options.config.provider = model.provider;
+		this.options.config.model = model.id;
+		this.options.startupModelId = model.id;
+		this.setStatusMessage(`Model for new agents: ${model.id}`);
+	}
+
+	private createAutocompleteProvider(): CombinedAutocompleteProvider {
+		const commands: SlashCommand[] = AGENTS_VIEW_SLASH_COMMANDS.map((command) => ({
+			name: command.name,
+			description: command.description,
+			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+		}));
+		const modelCommand = commands.find((command) => command.name === "model");
+		if (modelCommand) {
+			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const models = this.options.uiServices.modelRegistry.getAvailable();
+				if (models.length === 0) {
+					return null;
+				}
+				const items = models.map((model) => ({
+					id: model.id,
+					provider: model.provider,
+					label: `${model.provider}/${model.id}`,
+				}));
+				const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
+				if (filtered.length === 0) {
+					return null;
+				}
+				return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
+			};
+		}
+		return new CombinedAutocompleteProvider(commands, this.options.uiServices.getInitialCwd(), null);
 	}
 
 	private openSelected(): void {
@@ -1218,6 +1363,7 @@ class AgentsViewMode implements Component, Focusable {
 		const hints = [
 			`${keyText("tui.select.up")}/${keyText("tui.select.down")} move`,
 			`${keyText("tui.select.confirm")} open/send`,
+			"/ commands",
 			selectedAgent ? `${keyText("app.agents.reply")} reply` : undefined,
 			selectedAgent ? `${keyText("app.agents.delete")} stop/deactivate` : undefined,
 			selectedSubagent ? `${keyText("app.agents.delete")} stop` : undefined,
