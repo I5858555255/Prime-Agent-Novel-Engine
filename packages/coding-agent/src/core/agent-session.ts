@@ -1305,12 +1305,23 @@ export class AgentSession {
 	}
 
 	private _createGoalFromHost(objective: string, tokenBudget: number | undefined): GoalState {
-		if (this._goalState.status !== "idle") {
-			throw new Error(
-				"cannot create a new goal because this thread already has a goal; use goal.complete() only when the existing goal is complete",
-			);
+		switch (this._goalState.status) {
+			case "active":
+				throw new Error(
+					"cannot create a new goal because this thread already has an active goal; run `await goal.complete()` when it is achieved, or ask the user to clear it with /goal clear",
+				);
+			case "paused":
+				throw new Error(
+					"cannot create a new goal because a paused goal exists; ask the user to resume it with /goal resume or clear it with /goal clear",
+				);
+			case "budget_limited":
+				throw new Error(
+					"cannot create a new goal because a budget-limited goal exists; ask the user to resume it with /goal resume or clear it with /goal clear",
+				);
+			default:
+				// idle, or a terminal record (complete / error): nothing pending, start fresh.
+				return this._startGoal(objective, tokenBudget);
 		}
-		return this._startGoal(objective, tokenBudget);
 	}
 
 	private _completeGoalFromHost(): GoalState {

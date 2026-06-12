@@ -25,7 +25,8 @@ async def get() -> dict[str, Any]:
 async def create(objective: str, token_budget: int | None = None) -> dict[str, Any]:
     """Start a new active thread goal.
 
-    Fails when the thread already has a goal. Only create a goal when the user
+    Fails while a goal is still pending (active, paused, or budget-limited);
+    a completed or errored goal is replaced. Only create a goal when the user
     or system/developer instructions explicitly ask for a persistent
     long-running goal. Set `token_budget` only when an explicit token budget is
     requested.

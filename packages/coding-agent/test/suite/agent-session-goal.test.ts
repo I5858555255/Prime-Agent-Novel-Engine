@@ -245,7 +245,42 @@ describe("AgentSession goals", () => {
 
 		harness.session.handleGoalHostRequest("goal.create", { objective: "first goal" });
 		expect(() => harness.session.handleGoalHostRequest("goal.create", { objective: "second goal" })).toThrow(
-			"already has a goal",
+			"already has an active goal",
+		);
+	});
+
+	it("lets the model create a fresh goal after the previous one completed", async () => {
+		const harness = await createGoalHarness();
+
+		const first = harness.session.handleGoalHostRequest("goal.create", { objective: "first goal" });
+		harness.session.handleGoalHostRequest("goal.complete");
+
+		const second = harness.session.handleGoalHostRequest("goal.create", { objective: "second goal" });
+		expect(second.goal).toMatchObject({ objective: "second goal", status: "active", tokens_used: 0 });
+		expect(second.goal?.goal_id).not.toBe(first.goal?.goal_id);
+		expect(harness.session.goalState).toMatchObject({
+			active: true,
+			status: "active",
+			objective: "second goal",
+			continuationsUsed: 0,
+		});
+	});
+
+	it("rejects goal.create while a goal is paused", async () => {
+		const waiting = createWaitingTool();
+		const harness = await createGoalHarness([waiting.tool]);
+		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
+
+		const waitForStart = waiting.waitForStart(harness);
+		const promptPromise = harness.session.prompt("/goal long task");
+		await waitForStart;
+		await harness.session.prompt("/goal pause");
+		waiting.release();
+		await promptPromise;
+
+		expect(harness.session.goalState.status).toBe("paused");
+		expect(() => harness.session.handleGoalHostRequest("goal.create", { objective: "replacement" })).toThrow(
+			"a paused goal exists; ask the user to resume it with /goal resume or clear it with /goal clear",
 		);
 	});
 

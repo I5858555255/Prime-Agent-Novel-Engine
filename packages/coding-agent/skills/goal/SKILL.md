@@ -23,10 +23,11 @@ await goal.complete()
   carries `objective`, `status`, `token_budget`, `tokens_used`,
   `time_used_seconds`, and timestamps.
 - `await goal.create(objective, token_budget=None)` — start a new active goal.
-  Fails when the thread already has a goal. Only create a goal when the user or
-  system/developer instructions explicitly ask for a persistent long-running
-  goal; do not infer goals from ordinary tasks. Set `token_budget` only when an
-  explicit token budget is requested.
+  Fails while a goal is still pending (active, paused, or budget-limited); a
+  completed or errored goal is replaced by the new one. Only create a goal when
+  the user or system/developer instructions explicitly ask for a persistent
+  long-running goal; do not infer goals from ordinary tasks. Set `token_budget`
+  only when an explicit token budget is requested.
 - `await goal.complete()` — mark the existing goal achieved. Use only when the
   objective has actually been achieved and no required work remains; do not
   call it merely because the budget is nearly exhausted or because you are
