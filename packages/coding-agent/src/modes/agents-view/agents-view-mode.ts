@@ -257,6 +257,7 @@ class AgentsViewMode implements Component, Focusable {
 	private pendingKillSubagent: PendingKillSubagent | undefined;
 	private readonly inactiveAgentIdentities = new Set<string>();
 	private statusMessage: string | undefined;
+	private statusMessageTone: "muted" | "error" = "muted";
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private anthropicSubscriptionWarningShown = false;
@@ -500,13 +501,18 @@ class AgentsViewMode implements Component, Focusable {
 		return this.deleteConfirmExpiresAt > Date.now();
 	}
 
-	private setStatusMessage(message: string | undefined, options: { render?: boolean } = {}): void {
+	private setStatusMessage(
+		message: string | undefined,
+		options: { render?: boolean; tone?: "muted" | "error" } = {},
+	): void {
 		const statusLine = message === undefined ? undefined : formatAgentsViewStatusLine(message);
 		if (this.statusMessageTimer) {
 			clearTimeout(this.statusMessageTimer);
 			this.statusMessageTimer = undefined;
 		}
 		this.statusMessage = statusLine;
+		// Errors come both from explicit tones and from formatError-style messages.
+		this.statusMessageTone = options.tone ?? (statusLine?.startsWith("Failed") ? "error" : "muted");
 		if (statusLine) {
 			this.statusMessageTimer = setTimeout(() => {
 				this.statusMessageTimer = undefined;
@@ -666,7 +672,7 @@ class AgentsViewMode implements Component, Focusable {
 			ui: this.ui,
 			modelRegistry,
 			showStatus: (message) => this.setStatusMessage(message),
-			showError: (message) => this.setStatusMessage(message),
+			showError: (message) => this.setStatusMessage(message, { tone: "error" }),
 			getAvailableModels: async () => modelRegistry.getAvailable(),
 			onLoginCompleted: () => {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(this.getDefaultModelForNewAgents());
@@ -1401,8 +1407,7 @@ class AgentsViewMode implements Component, Focusable {
 			return truncateToWidth(theme.fg("muted", hint), width);
 		}
 		if (this.statusMessage) {
-			const tone = this.statusMessage.startsWith("Failed") ? "error" : "muted";
-			return truncateToWidth(theme.fg(tone, this.statusMessage), width);
+			return truncateToWidth(theme.fg(this.statusMessageTone, this.statusMessage), width);
 		}
 		// Replying is reserved for top-level agents; subagents can be stopped.
 		const selectedRow = this.rows[this.selectedIndex];
