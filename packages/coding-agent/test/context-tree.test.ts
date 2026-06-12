@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -169,6 +169,69 @@ describe("loadContextTreeChildrenFromDisk", () => {
 
 		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
 		expect(nodes[0].contextUsage).toEqual({ tokens: null, contextWindow: 200000, percent: null });
+	});
+
+	it("derives error and cancelled status from the last assistant stop reason", () => {
+		const rlmDir = makeTempDir();
+		const errored = writeChildSession(join(rlmDir, "sub-err00001"), "fail", createUsage(100, 10, 0.01));
+		errored.sessionManager.appendMessage({
+			...createAssistantMessage("boom", createUsage(50, 5, 0.01)),
+			stopReason: "error",
+		});
+		const aborted = writeChildSession(join(rlmDir, "sub-abr00001"), "stop", createUsage(100, 10, 0.01));
+		aborted.sessionManager.appendMessage({
+			...createAssistantMessage("", createUsage(50, 5, 0.01)),
+			stopReason: "aborted",
+		});
+
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const byId = new Map(nodes.map((n) => [n.id, n]));
+		expect(byId.get("sub-err00001")?.status).toBe("error");
+		expect(byId.get("sub-abr00001")?.status).toBe("cancelled");
+	});
+
+	it("sums only the current branch, excluding abandoned forked paths", () => {
+		const rlmDir = makeTempDir();
+		const childDir = join(rlmDir, "sub-fork0001");
+		mkdirSync(childDir, { recursive: true });
+
+		// Hand-written session with a fork: u1 -> a1 (abandoned) and u1 -> a2 (leaf).
+		const header = {
+			type: "session",
+			version: 3,
+			id: "11111111-2222-7333-8444-555555555555",
+			timestamp: new Date().toISOString(),
+			cwd: process.cwd(),
+		};
+		const entry = (id: string, parentId: string | null, message: unknown) => ({
+			type: "message",
+			id,
+			parentId,
+			timestamp: new Date().toISOString(),
+			message,
+		});
+		const lines = [
+			header,
+			{
+				type: "model_change",
+				id: "m1",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				provider: model.provider,
+				modelId: model.id,
+			},
+			entry("u1", "m1", createUserMessage("forked work")),
+			entry("a1", "u1", createAssistantMessage("abandoned", createUsage(9000, 900, 0.9))),
+			entry("a2", "u1", createAssistantMessage("kept", createUsage(1000, 100, 0.1))),
+		];
+		writeFileSync(join(childDir, `${header.id}.jsonl`), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		expect(nodes).toHaveLength(1);
+		// Only the leaf branch (u1 -> a2) counts; the abandoned a1 path does not.
+		expect(nodes[0].ownUsage.input).toBe(1000);
+		expect(nodes[0].totalUsage.input).toBe(1000);
+		expect(nodes[0].contextUsage?.tokens).toBe(1100);
 	});
 
 	it("skips children that are already represented live", () => {

@@ -112,6 +112,49 @@ function sessionEntriesFromFile(file: string): SessionEntry[] {
 	return loadEntriesFromFile(file).filter((entry: FileEntry): entry is SessionEntry => entry.type !== "session");
 }
 
+/**
+ * Entries on the current branch, root to leaf, mirroring
+ * SessionManager.getBranch(): the leaf is the last appended entry and the
+ * branch is its parentId chain. Keeps forked/abandoned paths out of usage
+ * sums so disk nodes match what a live session would report.
+ */
+function branchEntries(entries: SessionEntry[]): SessionEntry[] {
+	if (entries.length === 0) {
+		return [];
+	}
+	const byId = new Map(entries.map((entry) => [entry.id, entry]));
+	const branch: SessionEntry[] = [];
+	const seen = new Set<string>();
+	let current: SessionEntry | undefined = entries[entries.length - 1];
+	while (current && !seen.has(current.id)) {
+		seen.add(current.id);
+		branch.push(current);
+		current = current.parentId ? byId.get(current.parentId) : undefined;
+	}
+	return branch.reverse();
+}
+
+/**
+ * Terminal status for a persisted child, inferred from how its last assistant
+ * turn ended: errored and aborted runs should not render as successful.
+ */
+function statusFromBranch(entries: SessionEntry[]): "done" | "error" | "cancelled" {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (!isAssistantEntry(entry)) {
+			continue;
+		}
+		if (entry.message.stopReason === "error") {
+			return "error";
+		}
+		if (entry.message.stopReason === "aborted") {
+			return "cancelled";
+		}
+		return "done";
+	}
+	return "done";
+}
+
 function findSessionFile(dir: string): string | undefined {
 	let newest: { path: string; mtime: number } | undefined;
 	for (const name of readdirSync(dir)) {
@@ -172,7 +215,7 @@ export function loadContextTreeChildFromDisk(
 	if (!sessionFile) {
 		return undefined;
 	}
-	const entries = sessionEntriesFromFile(sessionFile);
+	const entries = branchEntries(sessionEntriesFromFile(sessionFile));
 	if (entries.length === 0) {
 		return undefined;
 	}
@@ -212,7 +255,7 @@ export function loadContextTreeChildFromDisk(
 	return {
 		id: basename(childSessionDir),
 		label: label || "child agent",
-		status: "done",
+		status: statusFromBranch(entries),
 		model,
 		ownUsage,
 		totalUsage,
