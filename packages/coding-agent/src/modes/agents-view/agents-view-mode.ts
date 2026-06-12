@@ -14,6 +14,7 @@ import {
 import { APP_TITLE, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
 import { SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
@@ -631,9 +632,23 @@ class AgentsViewMode implements Component, Focusable {
 			case "logout":
 				await this.createAuthFlows().runLogout();
 				return;
-			case "model":
-				await this.showModelSelector(command.args || undefined);
+			case "model": {
+				const searchTerm = command.args || undefined;
+				if (searchTerm) {
+					// Mirror the in-session /model behavior: an exact provider/id or
+					// unique model id reference applies directly without the picker.
+					const match = findExactModelReferenceMatch(
+						searchTerm,
+						this.options.uiServices.modelRegistry.getAvailable(),
+					);
+					if (match) {
+						this.applyDefaultModel(match);
+						return;
+					}
+				}
+				await this.showModelSelector(searchTerm);
 				return;
+			}
 			case "quit":
 				this.finish({ type: "exit" });
 				return;
