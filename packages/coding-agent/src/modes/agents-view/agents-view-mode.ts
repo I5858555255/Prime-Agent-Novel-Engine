@@ -110,6 +110,13 @@ export function createAgentsViewResumeConfig(config: AgentSessionRuntimeConfig):
 	return resumeConfig;
 }
 
+// Status messages render in a single-row hint slot below the editor; embedded
+// newlines would make that row taller than the layout accounts for and overlap
+// the input, so flatten all whitespace runs to single spaces.
+export function formatAgentsViewStatusLine(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
 export function createAgentsViewReplyHeadline(text: string | undefined): string | undefined {
 	return text
 		?.split("\n")
@@ -492,15 +499,16 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private setStatusMessage(message: string | undefined, options: { render?: boolean } = {}): void {
+		const statusLine = message === undefined ? undefined : formatAgentsViewStatusLine(message);
 		if (this.statusMessageTimer) {
 			clearTimeout(this.statusMessageTimer);
 			this.statusMessageTimer = undefined;
 		}
-		this.statusMessage = message;
-		if (message) {
+		this.statusMessage = statusLine;
+		if (statusLine) {
 			this.statusMessageTimer = setTimeout(() => {
 				this.statusMessageTimer = undefined;
-				if (this.statusMessage === message) {
+				if (this.statusMessage === statusLine) {
 					this.statusMessage = undefined;
 					this.ui.requestRender();
 				}
@@ -1318,7 +1326,12 @@ class AgentsViewMode implements Component, Focusable {
 
 	private finalizeRenderedLine(line: string, width: number): string {
 		const selected = line.startsWith(SELECTED_ROW_MARKER);
-		const content = selected ? line.slice(SELECTED_ROW_MARKER.length) : line;
+		let content = selected ? line.slice(SELECTED_ROW_MARKER.length) : line;
+		// Each rendered line must occupy exactly one terminal row; a stray
+		// newline would shift every line below it and overlap the editor.
+		if (content.includes("\n") || content.includes("\r")) {
+			content = content.replace(/[\r\n]+/g, " ");
+		}
 		const padded = padLine(truncateToWidth(content, width), width);
 		return selected ? theme.bg("selectedBg", padded) : padded;
 	}
@@ -1561,7 +1574,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatError(prefix: string, error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
-	return `${prefix}: ${message}`;
+	return formatAgentsViewStatusLine(`${prefix}: ${message}`);
 }
 
 function padLine(line: string, width: number): string {
