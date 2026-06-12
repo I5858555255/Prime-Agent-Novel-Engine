@@ -57,7 +57,6 @@ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.j
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { DefaultPackageManager } from "../../core/package-manager.js";
-import { PRIME_INFERENCE_PROVIDER_ID } from "../../core/prime-inference-auth.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
