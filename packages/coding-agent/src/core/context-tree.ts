@@ -1,0 +1,248 @@
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import type { RlmChildAgentStatus } from "./agent-session.js";
+import { calculateContextTokens } from "./compaction/index.js";
+import type { ContextUsage } from "./extensions/index.js";
+import { type FileEntry, loadEntriesFromFile, type SessionEntry } from "./session-manager.js";
+import { addAssistantUsage, cloneUsage, emptyUsage, subtractAssistantUsage } from "./usage.js";
+
+/** Resolves a model's context window so disk-only nodes can report utilization. */
+export type ContextWindowResolver = (provider: string, modelId: string) => number | undefined;
+
+/**
+ * One agent in the context overview: the main session or an RLM (sub-)agent.
+ *
+ * `ownUsage` excludes descendant usage (child usage attributions subtracted),
+ * so own usage summed over a tree never double-counts. `totalUsage` is the
+ * attributed aggregate: own plus all completed descendants, matching what
+ * /usage reports for the session.
+ */
+export interface ContextTreeNode {
+	/** "root" for the session itself, the RLM child node id (sub-xxxx) otherwise. */
+	id: string;
+	label: string;
+	status: "active" | RlmChildAgentStatus;
+	model?: { provider: string; id: string };
+	ownUsage: Usage;
+	totalUsage: Usage;
+	contextUsage?: ContextUsage;
+	children: ContextTreeNode[];
+}
+
+function isAssistantEntry(entry: SessionEntry): entry is SessionEntry & {
+	type: "message";
+	message: AssistantMessage;
+} {
+	return entry.type === "message" && entry.message.role === "assistant";
+}
+
+function readUserMessageText(content: unknown): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	if (!Array.isArray(content)) {
+		return "";
+	}
+	return content
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				typeof block === "object" &&
+				block !== null &&
+				(block as { type?: unknown }).type === "text" &&
+				typeof (block as { text?: unknown }).text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
+}
+
+/** Compact a prompt into a one-line label, mirroring compactRlmText in agent-session.ts. */
+function compactLabel(text: string, maxLength = 80): string {
+	const compact = text.replace(/\s+/g, " ").trim();
+	if (compact.length <= maxLength) {
+		return compact;
+	}
+	return `${compact.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+/**
+ * Current context utilization from persisted entries, mirroring
+ * AgentSession.getContextUsage(): only assistant usage recorded after the
+ * latest compaction reflects the live context size; without one the context
+ * token count is unknown until the next response.
+ */
+function computeContextUsageFromEntries(
+	entries: SessionEntry[],
+	contextWindow: number | undefined,
+): ContextUsage | undefined {
+	if (!contextWindow || contextWindow <= 0) {
+		return undefined;
+	}
+
+	let latestCompactionIndex = -1;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		if (entries[i].type === "compaction") {
+			latestCompactionIndex = i;
+			break;
+		}
+	}
+
+	for (let i = entries.length - 1; i > latestCompactionIndex; i--) {
+		const entry = entries[i];
+		if (!isAssistantEntry(entry)) {
+			continue;
+		}
+		const assistant = entry.message;
+		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
+			continue;
+		}
+		const tokens = calculateContextTokens(assistant.usage);
+		if (tokens > 0) {
+			return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
+		}
+	}
+
+	if (latestCompactionIndex >= 0) {
+		return { tokens: null, contextWindow, percent: null };
+	}
+	return undefined;
+}
+
+function sessionEntriesFromFile(file: string): SessionEntry[] {
+	return loadEntriesFromFile(file).filter((entry: FileEntry): entry is SessionEntry => entry.type !== "session");
+}
+
+function findSessionFile(dir: string): string | undefined {
+	let newest: { path: string; mtime: number } | undefined;
+	for (const name of readdirSync(dir)) {
+		if (!name.endsWith(".jsonl")) {
+			continue;
+		}
+		const path = join(dir, name);
+		try {
+			const mtime = statSync(path).mtime.getTime();
+			if (!newest || mtime > newest.mtime) {
+				newest = { path, mtime };
+			}
+		} catch {
+			// Skip unreadable files.
+		}
+	}
+	return newest?.path;
+}
+
+function listChildSessionDirs(rlmSessionDir: string): string[] {
+	let names: string[];
+	try {
+		names = readdirSync(rlmSessionDir);
+	} catch {
+		return [];
+	}
+	return names
+		.filter((name) => name.startsWith("sub-"))
+		.map((name) => join(rlmSessionDir, name))
+		.filter((path) => {
+			try {
+				return statSync(path).isDirectory();
+			} catch {
+				return false;
+			}
+		})
+		.sort((a, b) => {
+			try {
+				return statSync(a).mtime.getTime() - statSync(b).mtime.getTime();
+			} catch {
+				return 0;
+			}
+		});
+}
+
+/**
+ * Build a context node for a completed RLM child from its persisted session
+ * dir (sub-xxxx/). Children that already attributed grandchild usage carry the
+ * aggregate on their assistant messages (applyChildUsageAttributions), so own
+ * usage is recovered by subtracting the attribution entries. Returns undefined
+ * when the dir holds no readable session.
+ */
+export function loadContextTreeChildFromDisk(
+	childSessionDir: string,
+	resolveContextWindow: ContextWindowResolver,
+): ContextTreeNode | undefined {
+	const sessionFile = findSessionFile(childSessionDir);
+	if (!sessionFile) {
+		return undefined;
+	}
+	const entries = sessionEntriesFromFile(sessionFile);
+	if (entries.length === 0) {
+		return undefined;
+	}
+
+	const totalUsage = emptyUsage();
+	for (const entry of entries) {
+		if (isAssistantEntry(entry)) {
+			addAssistantUsage(totalUsage, entry.message.usage);
+		}
+	}
+	const ownUsage = cloneUsage(totalUsage);
+	for (const entry of entries) {
+		if (entry.type === "child_usage_attributed") {
+			subtractAssistantUsage(ownUsage, entry.childUsage);
+		}
+	}
+
+	let model: { provider: string; id: string } | undefined;
+	for (const entry of entries) {
+		if (entry.type === "model_change") {
+			model = { provider: entry.provider, id: entry.modelId };
+		}
+	}
+
+	let label = "";
+	for (const entry of entries) {
+		if (entry.type === "message" && entry.message.role === "user") {
+			label = compactLabel(readUserMessageText(entry.message.content));
+			if (label) {
+				break;
+			}
+		}
+	}
+
+	const contextWindow = model ? resolveContextWindow(model.provider, model.id) : undefined;
+
+	return {
+		id: basename(childSessionDir),
+		label: label || "child agent",
+		status: "done",
+		model,
+		ownUsage,
+		totalUsage,
+		contextUsage: computeContextUsageFromEntries(entries, contextWindow),
+		children: loadContextTreeChildrenFromDisk(childSessionDir, resolveContextWindow),
+	};
+}
+
+/**
+ * Build context nodes for all persisted RLM children under an RLM session
+ * dir, recursing into nested sub-* dirs for grandchildren. `skipIds`
+ * excludes children that are already represented live.
+ */
+export function loadContextTreeChildrenFromDisk(
+	rlmSessionDir: string | undefined,
+	resolveContextWindow: ContextWindowResolver,
+	skipIds?: ReadonlySet<string>,
+): ContextTreeNode[] {
+	if (!rlmSessionDir || !existsSync(rlmSessionDir)) {
+		return [];
+	}
+	const nodes: ContextTreeNode[] = [];
+	for (const childDir of listChildSessionDirs(rlmSessionDir)) {
+		if (skipIds?.has(basename(childDir))) {
+			continue;
+		}
+		const node = loadContextTreeChildFromDisk(childDir, resolveContextWindow);
+		if (node) {
+			nodes.push(node);
+		}
+	}
+	return nodes;
+}
