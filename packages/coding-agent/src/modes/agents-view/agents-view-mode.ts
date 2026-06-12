@@ -257,7 +257,8 @@ class AgentsViewMode implements Component, Focusable {
 	private pendingKillSubagent: PendingKillSubagent | undefined;
 	private readonly inactiveAgentIdentities = new Set<string>();
 	private statusMessage: string | undefined;
-	private statusMessageTone: "muted" | "error" = "muted";
+	private statusMessageTone: "muted" | "error" | "warning" = "muted";
+	private statusMessageSticky = false;
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private anthropicSubscriptionWarningShown = false;
@@ -350,6 +351,7 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
+		this.clearStickyStatusMessage();
 		if (this.keybindings.matches(data, "app.clear")) {
 			this.handleCtrlC();
 			return;
@@ -503,7 +505,7 @@ class AgentsViewMode implements Component, Focusable {
 
 	private setStatusMessage(
 		message: string | undefined,
-		options: { render?: boolean; tone?: "muted" | "error" } = {},
+		options: { render?: boolean; tone?: "muted" | "error" | "warning"; sticky?: boolean } = {},
 	): void {
 		const statusLine = message === undefined ? undefined : formatAgentsViewStatusLine(message);
 		if (this.statusMessageTimer) {
@@ -513,7 +515,9 @@ class AgentsViewMode implements Component, Focusable {
 		this.statusMessage = statusLine;
 		// Errors come both from explicit tones and from formatError-style messages.
 		this.statusMessageTone = options.tone ?? (statusLine?.startsWith("Failed") ? "error" : "muted");
-		if (statusLine) {
+		// Sticky messages stay up until the next keypress instead of a timer.
+		this.statusMessageSticky = options.sticky === true && statusLine !== undefined;
+		if (statusLine && !this.statusMessageSticky) {
 			this.statusMessageTimer = setTimeout(() => {
 				this.statusMessageTimer = undefined;
 				if (this.statusMessage === statusLine) {
@@ -526,6 +530,16 @@ class AgentsViewMode implements Component, Focusable {
 		if (options.render !== false) {
 			this.ui.requestRender();
 		}
+	}
+
+	/** Sticky messages (e.g. billing warnings) stay until the user acknowledges them with any keypress. */
+	private clearStickyStatusMessage(): void {
+		if (!this.statusMessageSticky) {
+			return;
+		}
+		this.statusMessageSticky = false;
+		this.statusMessage = undefined;
+		this.ui.requestRender();
 	}
 
 	private moveSelection(delta: number): void {
@@ -692,7 +706,7 @@ class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 		this.anthropicSubscriptionWarningShown = true;
-		this.setStatusMessage(warning);
+		this.setStatusMessage(warning, { tone: "warning", sticky: true });
 	}
 
 	private showModelSelector(initialSearchInput?: string): Promise<void> {
