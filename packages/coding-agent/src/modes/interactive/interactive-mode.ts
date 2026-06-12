@@ -3586,15 +3586,18 @@ export class InteractiveMode {
 
 			case "bash_end":
 				if (this.activeBashComponent) {
-					this.activeBashComponent.setComplete(
-						event.exitCode,
-						event.cancelled,
-						event.truncated ? ({ truncated: true } as TruncationResult) : undefined,
-						event.fullOutputPath,
-					);
+					if (event.errorMessage) {
+						this.activeBashComponent.setFailed(event.errorMessage);
+					} else {
+						this.activeBashComponent.setComplete(
+							event.exitCode,
+							event.cancelled,
+							event.truncated ? ({ truncated: true } as TruncationResult) : undefined,
+							event.fullOutputPath,
+						);
+					}
 					this.activeBashComponent = undefined;
-				}
-				if (event.errorMessage) {
+				} else if (event.errorMessage) {
 					this.showError(`Bash command failed: ${event.errorMessage}`);
 				}
 				this.ui.requestRender();
