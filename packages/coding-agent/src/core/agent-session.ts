@@ -4203,11 +4203,19 @@ export class AgentSession {
 				fullOutputPath: result.fullOutputPath,
 			};
 		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			// Persist the failure like every other outcome so replayed transcripts
+			// and the LLM context reflect that the command did not run.
+			this.recordBashResult(
+				command,
+				{ output: `bash failed: ${errorMessage}`, exitCode: undefined, cancelled: false, truncated: false },
+				{ excludeFromContext },
+			);
 			return {
 				exitCode: undefined,
 				cancelled: false,
 				truncated: false,
-				errorMessage: error instanceof Error ? error.message : String(error),
+				errorMessage,
 			};
 		}
 	}

@@ -285,6 +285,13 @@ describe("AgentSession bash and persistence characterization", () => {
 
 		expect(events).toHaveLength(1);
 		expect(events[0]?.errorMessage).toBe("spawn failure");
+
+		// The failure is persisted like every other outcome
+		const lastMessage = harness.session.messages[harness.session.messages.length - 1];
+		expect(lastMessage?.role).toBe("bashExecution");
+		if (lastMessage?.role === "bashExecution") {
+			expect(lastMessage.output).toContain("spawn failure");
+		}
 	});
 
 	it("cancels runUserBash when abortBash arrives before execution starts", async () => {
