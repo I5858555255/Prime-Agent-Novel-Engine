@@ -611,6 +611,33 @@ describe("AgentSession goals", () => {
 		expect(harness.session.messages).toEqual([]);
 	});
 
+	it("completes a goal whose completing turn crosses the budget without a stale budget-limit steer", async () => {
+		const harness = await createGoalHarness();
+		harness.setResponses([
+			assistantWithUsage(
+				fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
+				{ input: 6, output: 5, totalTokens: 11 },
+			),
+			fauxAssistantMessage("Goal complete."),
+		]);
+
+		await harness.session.prompt("/goal --budget 10 finish the task");
+
+		expect(visibleAssistantTexts(harness)).toEqual(["Goal complete."]);
+		const contextKinds = goalContextMessages(harness).map(
+			(message) => (message as { details?: { kind?: string } }).details?.kind,
+		);
+		expect(contextKinds).not.toContain("budget_limit");
+		expect(harness.session.goalState).toMatchObject({
+			active: false,
+			status: "complete",
+			tokenBudget: 10,
+			lastReason: "Goal achieved",
+		});
+		expect(harness.session.goalState.tokensUsed).toBeGreaterThanOrEqual(10);
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
 	it("marks an active goal budget_limited when token budget is reached", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

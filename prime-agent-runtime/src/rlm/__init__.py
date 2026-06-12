@@ -137,9 +137,19 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
                     comm.close()
 
             loop.call_soon_threadsafe(_resolve_error)
+            return
+
+        unexpected = f"host request {request_type} returned unexpected status: {status!r}"
+        def _resolve_unexpected() -> None:
+            if not future.done():
+                future.set_exception(RuntimeError(unexpected))
+                comm.close()
+
+        loop.call_soon_threadsafe(_resolve_unexpected)
 
     comm.on_msg(_on_msg)
-    comm.open(data={"type": request_type, **(payload or {})})
+    # request_type goes last so a payload "type" key cannot reroute the request.
+    comm.open(data={**(payload or {}), "type": request_type})
     return await future
 
 

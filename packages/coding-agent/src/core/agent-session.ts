@@ -1330,6 +1330,10 @@ export class AgentSession {
 		}
 		const goal = this._goalWithAccountedWallClock();
 		this._goalCompletionRequested = true;
+		// A turn can cross the budget and complete the goal at once: accounting
+		// runs at message_end, before the completing ipython cell executes, so a
+		// budget-limit context may already be steered. It is stale now — drop it.
+		this._clearQueuedGoalContexts();
 		this._setGoalState({
 			...goal,
 			active: false,

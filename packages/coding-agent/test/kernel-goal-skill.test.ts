@@ -112,5 +112,40 @@ except RuntimeError as error:
 		expect(unavailable.stdout.trim()).toBe(
 			'RuntimeError: host request type "goal.get" is not available in this session',
 		);
+
+		// A "type" key smuggled into the payload must not reroute the request.
+		const reroute = await manager.execute(`
+import rlm as _rlm
+try:
+    await _rlm.host_request("goal.get", {"type": "goal.complete"})
+except RuntimeError as error:
+    print(f"RuntimeError: {error}")
+`);
+		expect(reroute.status).toBe("ok");
+		expect(reroute.stdout.trim()).toBe('RuntimeError: host request type "goal.get" is not available in this session');
+	});
+
+	it("rejects replies with an unexpected status instead of hanging", async () => {
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledGoalSkill()],
+			hostHandlers: {
+				"goal.get": async () => ({ goal: null, remaining_tokens: null, completion_budget_report: null }),
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		type CommSender = { sendCommMessage: (commId: string, data: Record<string, unknown>) => Promise<void> };
+		const kernel = manager as unknown as CommSender;
+		const originalSend = kernel.sendCommMessage.bind(manager);
+		kernel.sendCommMessage = (commId, _data) => originalSend(commId, { status: "partial" });
+
+		const result = await manager.execute(`
+try:
+    await goal.get()
+except RuntimeError as error:
+    print(f"RuntimeError: {error}")
+`);
+		expect(result.status).toBe("ok");
+		expect(result.stdout.trim()).toBe("RuntimeError: host request goal.get returned unexpected status: 'partial'");
 	});
 });
