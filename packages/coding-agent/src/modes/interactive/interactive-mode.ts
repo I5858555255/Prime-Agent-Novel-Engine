@@ -480,6 +480,9 @@ export class InteractiveMode {
 	private activeBashComponent: BashExecutionComponent | undefined = undefined;
 	private pendingBashComponents: BashExecutionComponent[] = [];
 
+	// Serializes session event handling; see subscribeToAgent
+	private sessionEventQueue: Promise<void> = Promise.resolve();
+
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private pendingToolCreations = new Set<string>();
@@ -3322,7 +3325,12 @@ export class InteractiveMode {
 		this.unsubscribe = this.agentConnection.subscribe(async (event) => {
 			try {
 				if (event.type === "session_event") {
-					await this.handleEvent(event.event);
+					// Connection adapters dispatch without awaiting, so a handler that
+					// suspends would let later events overtake it; queue session events
+					// to keep paired events like bash_start/bash_end in emission order.
+					const run = this.sessionEventQueue.then(() => this.handleEvent(event.event));
+					this.sessionEventQueue = run.catch(() => {});
+					await run;
 				} else if (event.type === "session_replaced") {
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);

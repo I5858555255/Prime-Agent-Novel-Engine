@@ -300,6 +300,39 @@ describe("InteractiveMode pending bash components", () => {
 		expect((fakeThis as unknown as { pendingBashComponents: unknown[] }).pendingBashComponents).toHaveLength(0);
 	});
 
+	test("handles session events in emission order even when a handler suspends", async () => {
+		type ConnectionListener = (event: { type: string; event: { type: string } }) => Promise<void>;
+		let listener: ConnectionListener | undefined;
+		const order: string[] = [];
+		const fakeThis = {
+			agentConnection: {
+				subscribe: (l: ConnectionListener) => {
+					listener = l;
+					return () => {};
+				},
+			},
+			sessionEventQueue: Promise.resolve(),
+			showError: vi.fn(),
+			handleEvent: async (event: { type: string }) => {
+				order.push(`start:${event.type}`);
+				if (event.type === "bash_start") {
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				order.push(`end:${event.type}`);
+			},
+		} as unknown as InteractiveMode;
+
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: unknown): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+
+		const first = listener?.({ type: "session_event", event: { type: "bash_start" } });
+		const second = listener?.({ type: "session_event", event: { type: "bash_end" } });
+		await Promise.all([first, second]);
+
+		expect(order).toEqual(["start:bash_start", "end:bash_start", "start:bash_end", "end:bash_end"]);
+	});
+
 	test("stops an orphaned bash loader when session render state resets", () => {
 		const tuiStub = {
 			terminal: { columns: 120, rows: 24 },
