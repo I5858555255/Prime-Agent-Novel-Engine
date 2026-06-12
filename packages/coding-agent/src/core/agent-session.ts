@@ -64,6 +64,7 @@ import {
 import {
 	type ContextTreeNode,
 	type ContextWindowResolver,
+	computeOwnAndTotalUsage,
 	loadContextTreeChildFromDisk,
 	loadContextTreeChildrenFromDisk,
 } from "./context-tree.js";
@@ -141,7 +142,7 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.js"
 import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
-import { addAssistantUsage, cloneUsage, emptyUsage, subtractAssistantUsage } from "./usage.js";
+import { addAssistantUsage, cloneUsage, emptyUsage } from "./usage.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -4519,13 +4520,10 @@ export class AgentSession {
 	 */
 	getContextTree(): ContextTreeNode {
 		const resolveContextWindow = this._contextWindowResolver();
-		const totalUsage = this._assistantUsageForCurrentMessages();
-		const ownUsage = cloneUsage(totalUsage);
-		for (const entry of this.sessionManager.getBranch()) {
-			if (entry.type === "child_usage_attributed") {
-				subtractAssistantUsage(ownUsage, entry.childUsage);
-			}
-		}
+		const { ownUsage, totalUsage } = computeOwnAndTotalUsage(
+			this.sessionManager.getBranch(),
+			this.sessionManager.getEntries(),
+		);
 
 		const children: ContextTreeNode[] = [];
 		const liveIds = new Set<string>();

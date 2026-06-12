@@ -234,6 +234,68 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		expect(nodes[0].contextUsage?.tokens).toBe(1100);
 	});
 
+	it("subtracts attributions targeting branch assistants even when the attribution entry is off-branch", () => {
+		const rlmDir = makeTempDir();
+		const childDir = join(rlmDir, "sub-attr0001");
+		mkdirSync(childDir, { recursive: true });
+
+		// a1 received a grandchild attribution, then the session forked from a1:
+		// the attribution entry is off-branch but a1 (whose usage was rewritten
+		// to the aggregate) is still on it.
+		const grandchildUsage = createUsage(500, 50, 0.05);
+		const ownAssistantUsage = createUsage(1000, 100, 0.1);
+		const aggregate = cloneUsage(ownAssistantUsage);
+		addAssistantUsage(aggregate, grandchildUsage);
+		const header = {
+			type: "session",
+			version: 3,
+			id: "11111111-2222-7333-8444-666666666666",
+			timestamp: new Date().toISOString(),
+			cwd: process.cwd(),
+		};
+		const entry = (id: string, parentId: string | null, message: unknown) => ({
+			type: "message",
+			id,
+			parentId,
+			timestamp: new Date().toISOString(),
+			message,
+		});
+		const lines = [
+			header,
+			entry("u1", null, createUserMessage("attributed work")),
+			entry("a1", "u1", createAssistantMessage("answer", cloneUsage(ownAssistantUsage))),
+			{
+				type: "child_usage_attributed",
+				id: "x1",
+				parentId: "a1",
+				timestamp: new Date().toISOString(),
+				targetId: "a1",
+				childUsage: grandchildUsage,
+				aggregateUsage: aggregate,
+			},
+			entry("u2", "a1", createUserMessage("forked follow-up")),
+		];
+		writeFileSync(join(childDir, `${header.id}.jsonl`), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		expect(nodes).toHaveLength(1);
+		// a1 carries the aggregate (1500) on the branch; own must subtract the
+		// off-branch attribution back out.
+		expect(nodes[0].totalUsage.input).toBe(1500);
+		expect(nodes[0].ownUsage.input).toBe(1000);
+	});
+
+	it("includes trailing messages after the last assistant in context usage", () => {
+		const rlmDir = makeTempDir();
+		const child = writeChildSession(join(rlmDir, "sub-trail001"), "trailing", createUsage(1500, 500, 0.02));
+		child.sessionManager.appendMessage(createUserMessage("a trailing user message that has not reached the model"));
+
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const tokens = nodes[0].contextUsage?.tokens;
+		// Last assistant usage is 2000; the trailing message adds an estimate on top.
+		expect(tokens).toBeGreaterThan(2000);
+	});
+
 	it("skips children that are already represented live", () => {
 		const rlmDir = makeTempDir();
 		writeChildSession(join(rlmDir, "sub-live0001"), "live child", createUsage(100, 10, 0.01));

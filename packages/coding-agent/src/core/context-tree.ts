@@ -2,9 +2,9 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { RlmChildAgentStatus } from "./agent-session.js";
-import { calculateContextTokens } from "./compaction/index.js";
+import { calculateContextTokens, estimateContextTokens } from "./compaction/index.js";
 import type { ContextUsage } from "./extensions/index.js";
-import { type FileEntry, loadEntriesFromFile, type SessionEntry } from "./session-manager.js";
+import { buildSessionContext, type FileEntry, loadEntriesFromFile, type SessionEntry } from "./session-manager.js";
 import { addAssistantUsage, cloneUsage, emptyUsage, subtractAssistantUsage } from "./usage.js";
 
 /** Resolves a model's context window so disk-only nodes can report utilization. */
@@ -66,13 +66,45 @@ function compactLabel(text: string, maxLength = 80): string {
 }
 
 /**
+ * Usage totals for one agent: `totalUsage` sums the branch's assistant usage
+ * (attributed aggregates, so descendants are included), `ownUsage` removes the
+ * attributions targeting those assistants. Attribution entries are matched by
+ * target across ALL entries, not just the branch: attributions rewrite the
+ * target assistant's usage no matter which branch they were appended on, so a
+ * fork that keeps the assistant but drops the attribution entry must still
+ * subtract it.
+ */
+export function computeOwnAndTotalUsage(
+	branch: SessionEntry[],
+	allEntries: SessionEntry[],
+): { ownUsage: Usage; totalUsage: Usage } {
+	const totalUsage = emptyUsage();
+	const branchAssistantIds = new Set<string>();
+	for (const entry of branch) {
+		if (isAssistantEntry(entry)) {
+			branchAssistantIds.add(entry.id);
+			addAssistantUsage(totalUsage, entry.message.usage);
+		}
+	}
+	const ownUsage = cloneUsage(totalUsage);
+	for (const entry of allEntries) {
+		if (entry.type === "child_usage_attributed" && branchAssistantIds.has(entry.targetId)) {
+			subtractAssistantUsage(ownUsage, entry.childUsage);
+		}
+	}
+	return { ownUsage, totalUsage };
+}
+
+/**
  * Current context utilization from persisted entries, mirroring
- * AgentSession.getContextUsage(): only assistant usage recorded after the
- * latest compaction reflects the live context size; without one the context
- * token count is unknown until the next response.
+ * AgentSession.getContextUsage(): unknown right after a compaction until the
+ * next assistant response, otherwise the last assistant usage plus an
+ * estimate for trailing messages (tool results, queued user input) that have
+ * not hit the model yet.
  */
 function computeContextUsageFromEntries(
-	entries: SessionEntry[],
+	allEntries: SessionEntry[],
+	branch: SessionEntry[],
 	contextWindow: number | undefined,
 ): ContextUsage | undefined {
 	if (!contextWindow || contextWindow <= 0) {
@@ -80,32 +112,39 @@ function computeContextUsageFromEntries(
 	}
 
 	let latestCompactionIndex = -1;
-	for (let i = entries.length - 1; i >= 0; i--) {
-		if (entries[i].type === "compaction") {
+	for (let i = branch.length - 1; i >= 0; i--) {
+		if (branch[i].type === "compaction") {
 			latestCompactionIndex = i;
 			break;
 		}
 	}
 
-	for (let i = entries.length - 1; i > latestCompactionIndex; i--) {
-		const entry = entries[i];
-		if (!isAssistantEntry(entry)) {
-			continue;
+	if (latestCompactionIndex >= 0) {
+		let hasPostCompactionUsage = false;
+		for (let i = branch.length - 1; i > latestCompactionIndex; i--) {
+			const entry = branch[i];
+			if (!isAssistantEntry(entry)) {
+				continue;
+			}
+			const assistant = entry.message;
+			if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
+				continue;
+			}
+			if (calculateContextTokens(assistant.usage) > 0) {
+				hasPostCompactionUsage = true;
+			}
+			break;
 		}
-		const assistant = entry.message;
-		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
-			continue;
-		}
-		const tokens = calculateContextTokens(assistant.usage);
-		if (tokens > 0) {
-			return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
+		if (!hasPostCompactionUsage) {
+			return { tokens: null, contextWindow, percent: null };
 		}
 	}
 
-	if (latestCompactionIndex >= 0) {
-		return { tokens: null, contextWindow, percent: null };
+	const estimate = estimateContextTokens(buildSessionContext(allEntries).messages);
+	if (estimate.tokens <= 0) {
+		return undefined;
 	}
-	return undefined;
+	return { tokens: estimate.tokens, contextWindow, percent: (estimate.tokens / contextWindow) * 100 };
 }
 
 function sessionEntriesFromFile(file: string): SessionEntry[] {
@@ -215,33 +254,23 @@ export function loadContextTreeChildFromDisk(
 	if (!sessionFile) {
 		return undefined;
 	}
-	const entries = branchEntries(sessionEntriesFromFile(sessionFile));
-	if (entries.length === 0) {
+	const allEntries = sessionEntriesFromFile(sessionFile);
+	const branch = branchEntries(allEntries);
+	if (branch.length === 0) {
 		return undefined;
 	}
 
-	const totalUsage = emptyUsage();
-	for (const entry of entries) {
-		if (isAssistantEntry(entry)) {
-			addAssistantUsage(totalUsage, entry.message.usage);
-		}
-	}
-	const ownUsage = cloneUsage(totalUsage);
-	for (const entry of entries) {
-		if (entry.type === "child_usage_attributed") {
-			subtractAssistantUsage(ownUsage, entry.childUsage);
-		}
-	}
+	const { ownUsage, totalUsage } = computeOwnAndTotalUsage(branch, allEntries);
 
 	let model: { provider: string; id: string } | undefined;
-	for (const entry of entries) {
+	for (const entry of branch) {
 		if (entry.type === "model_change") {
 			model = { provider: entry.provider, id: entry.modelId };
 		}
 	}
 
 	let label = "";
-	for (const entry of entries) {
+	for (const entry of branch) {
 		if (entry.type === "message" && entry.message.role === "user") {
 			label = compactLabel(readUserMessageText(entry.message.content));
 			if (label) {
@@ -255,11 +284,11 @@ export function loadContextTreeChildFromDisk(
 	return {
 		id: basename(childSessionDir),
 		label: label || "child agent",
-		status: statusFromBranch(entries),
+		status: statusFromBranch(branch),
 		model,
 		ownUsage,
 		totalUsage,
-		contextUsage: computeContextUsageFromEntries(entries, contextWindow),
+		contextUsage: computeContextUsageFromEntries(allEntries, branch, contextWindow),
 		children: loadContextTreeChildrenFromDisk(childSessionDir, resolveContextWindow),
 	};
 }
