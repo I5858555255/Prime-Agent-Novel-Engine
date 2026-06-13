@@ -1,7 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type * as PiAi from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	applyRefinementProposal,
 	getGlobalHarnessStateDir,
@@ -18,7 +21,23 @@ import {
 } from "../src/core/refinement/index.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
 
+const { completeSimpleMock } = vi.hoisted(() => ({
+	completeSimpleMock: vi.fn(),
+}));
+
+vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
+	const actual = await importOriginal<typeof PiAi>();
+	return {
+		...actual,
+		completeSimple: completeSimpleMock,
+	};
+});
+
 let tempDir: string | undefined;
+
+beforeEach(() => {
+	completeSimpleMock.mockReset();
+});
 
 afterEach(() => {
 	if (tempDir) {
@@ -46,6 +65,41 @@ function proposal(summary: string, edits: RefinementProposal["edits"]): Refineme
 		rationale: `${summary} rationale`,
 		expectedOutcome: `${summary} outcome`,
 		edits,
+	};
+}
+
+function createRefineModel(reasoning: boolean): Model<"openai-completions"> {
+	return {
+		id: "openai/gpt-5.5",
+		name: "GPT 5.5",
+		api: "openai-completions",
+		provider: "prime-inference",
+		baseUrl: "https://inference.primeintellect.ai/v1",
+		reasoning,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200000,
+		maxTokens: 8192,
+	};
+}
+
+function assistantText(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-completions",
+		provider: "prime-inference",
+		model: "openai/gpt-5.5",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
 	};
 }
 
@@ -731,6 +785,57 @@ describe("harness refinement", () => {
 		});
 		expect(result.appliedEdits[0].error).toContain("base system prompt");
 		expect(state.entries.prompt.base_system_prompt).toBeUndefined();
+	});
+
+	it("requests JSON refinement without model reasoning even when session thinking is enabled", async () => {
+		const state = loadHarnessState(makeTempDir());
+		completeSimpleMock.mockResolvedValueOnce(
+			assistantText(
+				JSON.stringify({
+					summary: "Remember native validation",
+					rationale: "The conversation repeated native validation guidance.",
+					expectedOutcome: "Future sessions use native validation commands.",
+					edits: [
+						{
+							action: "create",
+							kind: "memory",
+							id: "native_validation",
+							title: "Native validation",
+							content: "Run validation through the target project environment.",
+						},
+					],
+				}),
+			),
+		);
+
+		const result = await refineHarness(
+			[{ role: "user", content: "Use native validation.", timestamp: Date.now() } satisfies AgentMessage],
+			state,
+			[],
+			createRefineModel(true),
+			"api-key",
+			{},
+			{ "x-test-header": "1" },
+			undefined,
+			"xhigh",
+		);
+
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({
+			maxTokens: 4096,
+			apiKey: "api-key",
+			headers: { "x-test-header": "1" },
+		});
+		expect(completeSimpleMock.mock.calls[0][2]).not.toHaveProperty("reasoning");
+		expect(result.appliedEdits[0]).toMatchObject({
+			action: "create",
+			kind: "memory",
+			id: "native_validation",
+			applied: true,
+		});
+		expect(state.entries.memory.native_validation.content).toBe(
+			"Run validation through the target project environment.",
+		);
 	});
 
 	it("rolls back created, updated, and deleted entries from refinement history", async () => {

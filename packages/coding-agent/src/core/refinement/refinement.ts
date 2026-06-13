@@ -574,15 +574,19 @@ export async function refineHarness(
 		.filter(Boolean)
 		.join("\n\n");
 
+	// /refine requires a parseable JSON object in the final text. Some reasoning-capable
+	// OpenAI-compatible models can spend the response on visible thinking and return no
+	// final text, which makes otherwise successful daemon /refine calls fail parsing.
+	// Keep the refinement request non-reasoning regardless of the interactive session
+	// thinking level so the model uses its output budget for the JSON object.
+	void thinkingLevel;
 	const response = await completeSimple(
 		model,
 		{
 			systemPrompt: REFINEMENT_SYSTEM_PROMPT,
 			messages: [{ role: "user", content: [{ type: "text", text: userPrompt }], timestamp: Date.now() }],
 		},
-		model.reasoning && thinkingLevel && thinkingLevel !== "off"
-			? { maxTokens: 4096, signal, apiKey, headers, reasoning: thinkingLevel }
-			: { maxTokens: 4096, signal, apiKey, headers },
+		{ maxTokens: 4096, signal, apiKey, headers },
 	);
 
 	if (response.stopReason === "error") {

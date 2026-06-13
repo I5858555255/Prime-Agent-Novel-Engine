@@ -53,6 +53,8 @@ import type {
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
 
+export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+
 export interface DaemonAgentConnectionOptions {
 	closeClientOnDispose?: boolean;
 }
@@ -473,12 +475,15 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async refine(options: { instructions?: string; rollbackId?: string } = {}): Promise<RefinementResult> {
-		return this.requestData<RefinementResult>({
-			type: "refine",
-			activeSessionId: this.activeSessionId,
-			instructions: options.instructions,
-			rollbackId: options.rollbackId,
-		});
+		return this.requestData<RefinementResult>(
+			{
+				type: "refine",
+				activeSessionId: this.activeSessionId,
+				instructions: options.instructions,
+				rollbackId: options.rollbackId,
+			},
+			DAEMON_REFINE_REQUEST_TIMEOUT_MS,
+		);
 	}
 
 	async abortCompaction(): Promise<void> {
@@ -605,8 +610,8 @@ export class DaemonAgentConnection implements AgentConnection {
 		await this.requestData<unknown>(command);
 	}
 
-	private async requestData<T>(command: DaemonCommandBody): Promise<T> {
-		const response = await this.client.request(command);
+	private async requestData<T>(command: DaemonCommandBody, timeoutMs?: number): Promise<T> {
+		const response = await this.client.request(command, timeoutMs);
 		if (!response.success) {
 			throw deserializeDaemonError(response);
 		}
