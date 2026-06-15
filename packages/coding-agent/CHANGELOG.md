@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a first draft of daemon-backed cron jobs for scheduling prompts against long-running sessions without using `/goal`.
+
 ## [0.1.3] - 2026-06-12
 
 ### Added

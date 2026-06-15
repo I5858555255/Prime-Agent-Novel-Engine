@@ -41,6 +41,7 @@ import {
 import { spawn, spawnSync } from "child_process";
 import { APP_TITLE, getAgentDir, getDebugLogPath, getShareViewerUrl, VERSION } from "../../config.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
+import { type AgentCronJob, parseHeartbeatCommand } from "../../core/cron-jobs.js";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -3184,6 +3185,11 @@ export class InteractiveMode {
 			}
 			if (text === "/goal" || text === "/goal status") {
 				this.handleGoalStatusCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/heartbeat" || text.startsWith("/heartbeat ")) {
+				await this.handleHeartbeatCommand(text);
 				this.editor.setText("");
 				return;
 			}
@@ -6498,6 +6504,78 @@ export class InteractiveMode {
 			lines.push(`${theme.fg("dim", "Error:")} ${goal.lastError}`);
 		}
 
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private async handleHeartbeatCommand(text: string): Promise<void> {
+		try {
+			const command = parseHeartbeatCommand(text);
+			switch (command.type) {
+				case "status": {
+					const heartbeat = await this.agentConnection.getHeartbeat();
+					this.showHeartbeat(heartbeat);
+					return;
+				}
+				case "set": {
+					const heartbeat = await this.agentConnection.setHeartbeat(command.schedule, command.instruction);
+					this.showStatus(`Heartbeat set\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
+					return;
+				}
+				case "pause": {
+					const heartbeat = await this.agentConnection.updateHeartbeat("pause");
+					if (!heartbeat) {
+						this.showStatus("No active heartbeat");
+						return;
+					}
+					this.showStatus("Heartbeat paused");
+					return;
+				}
+				case "resume": {
+					const heartbeat = await this.agentConnection.updateHeartbeat("resume");
+					if (!heartbeat) {
+						this.showStatus("No active heartbeat");
+						return;
+					}
+					this.showStatus(`Heartbeat resumed\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
+					return;
+				}
+				case "clear": {
+					const heartbeat = await this.agentConnection.updateHeartbeat("clear");
+					if (!heartbeat) {
+						this.showStatus("No active heartbeat");
+						return;
+					}
+					this.showStatus("Heartbeat cleared");
+					return;
+				}
+			}
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private showHeartbeat(job: AgentCronJob | undefined): void {
+		if (!job) {
+			this.showStatus("No active heartbeat");
+			return;
+		}
+		const next = job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : "-";
+		const last = job.lastRunAt ? new Date(job.lastRunAt).toLocaleString() : "-";
+		const lines = [
+			theme.bold("Heartbeat"),
+			"",
+			`${theme.fg("dim", "Status:")} ${job.status}`,
+			`${theme.fg("dim", "Every:")} ${job.schedule.expression}`,
+			`${theme.fg("dim", "Instruction:")} ${job.prompt}`,
+			`${theme.fg("dim", "Next:")} ${next}`,
+			`${theme.fg("dim", "Last:")} ${last}`,
+			`${theme.fg("dim", "Runs:")} ${job.runCount}`,
+		];
+		if (job.lastError) {
+			lines.push(`${theme.fg("dim", "Error:")} ${job.lastError}`);
+		}
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
 		this.ui.requestRender();

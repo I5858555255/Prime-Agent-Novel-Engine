@@ -8,13 +8,22 @@
 
 import { createServer, type Server, type Socket } from "node:net";
 import { resolve } from "node:path";
-import { VERSION } from "../../config.js";
+import { getCronJobsPath, VERSION } from "../../config.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
 	AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntime,
 } from "../../core/agent-session-runtime.js";
+import {
+	type AgentCronJob,
+	AgentCronJobStore,
+	AgentCronScheduler,
+	type AgentHeartbeatUpdateAction,
+	createAgentHeartbeatToolDefinitions,
+	DEFAULT_HEARTBEAT_SCHEDULE,
+	normalizeHeartbeatSchedule,
+} from "../../core/cron-jobs.js";
 import type {
 	CreateRlmSubagentRuntimeOptions,
 	RlmSubagentRuntime,
@@ -100,6 +109,12 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_available_models",
 	"get_queue",
 	"clear_queue",
+	"cron_list",
+	"cron_add",
+	"cron_cancel",
+	"heartbeat_get",
+	"heartbeat_set",
+	"heartbeat_update",
 	"set_model",
 	"cycle_model",
 	"set_scoped_models",
@@ -159,11 +174,24 @@ class AgentDaemon {
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly closingSessions = new Map<string, Promise<void>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
+	private readonly cronStore: AgentCronJobStore;
+	private readonly cronScheduler: AgentCronScheduler;
 
 	constructor(
 		private readonly socketPath: string,
 		private readonly options: DaemonModeOptions,
-	) {}
+	) {
+		if (!options.defaultSessionConfig.agentDir) {
+			throw new Error("Daemon config is missing agentDir");
+		}
+		this.cronStore = new AgentCronJobStore(getCronJobsPath(options.defaultSessionConfig.agentDir));
+		this.cronScheduler = new AgentCronScheduler(this.cronStore, {
+			runJob: (job) => this.runCronJob(job),
+			onError: (job, error) => {
+				console.error(`Cron job ${job.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+			},
+		});
+	}
 
 	async start(): Promise<void> {
 		await prepareDaemonSocketPath(this.socketPath);
@@ -202,6 +230,7 @@ class AgentDaemon {
 		this.registerSignalHandlers();
 		console.error(`Prime Agent daemon listening on ${this.socketPath}`);
 		void this.restoreActiveSessions();
+		this.cronScheduler.start();
 	}
 
 	/**
@@ -318,13 +347,106 @@ class AgentDaemon {
 			// visible in session lists again.
 			sessionManager.appendSessionState({ status: "sleep" });
 		}
+		let stateRef: ActiveSessionState | undefined;
 		const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
 			cwd: sessionManager.getCwd(),
 			agentDir: config.agentDir,
 			sessionManager,
 			sessionConfig: config,
+			sessionOptions: {
+				customTools: [
+					...createAgentHeartbeatToolDefinitions({
+						getHeartbeat: () => {
+							if (!stateRef) {
+								throw new Error("Heartbeat state is not ready for this session yet");
+							}
+							return this.cronStore.getHeartbeat(stateRef.activeSessionId);
+						},
+						createHeartbeat: (instruction, interval) => {
+							if (!stateRef) {
+								throw new Error("Heartbeat state is not ready for this session yet");
+							}
+							return this.createHeartbeatForState(stateRef, interval ?? DEFAULT_HEARTBEAT_SCHEDULE, instruction);
+						},
+						updateHeartbeat: (action) => {
+							if (!stateRef) {
+								throw new Error("Heartbeat state is not ready for this session yet");
+							}
+							return this.updateHeartbeatForState(stateRef, action);
+						},
+					}),
+				],
+			},
 		});
-		return this.addRuntime(runtime, command.name);
+		const state = await this.addRuntime(runtime, command.name);
+		stateRef = state;
+		return state;
+	}
+
+	private async runCronJob(job: AgentCronJob): Promise<void> {
+		const state = await this.getOrCreateCronJobSession(job);
+		await state.runtime.session.prompt(job.prompt, {
+			streamingBehavior: state.runtime.session.isStreaming ? "followUp" : undefined,
+			source: "rpc",
+		});
+	}
+
+	private createCronJobForState(state: ActiveSessionState, schedule: string, prompt: string): AgentCronJob {
+		const session = state.runtime.session;
+		const sessionFile = session.sessionFile;
+		if (!sessionFile) {
+			throw new Error("Heartbeats require a persisted session file");
+		}
+		const job = this.cronStore.create({
+			activeSessionId: state.activeSessionId,
+			sessionId: session.sessionId,
+			sessionFile,
+			cwd: state.runtime.cwd,
+			scheduleText: schedule,
+			prompt,
+		});
+		this.cronScheduler.wake();
+		return job;
+	}
+
+	private createHeartbeatForState(state: ActiveSessionState, schedule: string, instruction: string): AgentCronJob {
+		const session = state.runtime.session;
+		const sessionFile = session.sessionFile;
+		if (!sessionFile) {
+			throw new Error("Heartbeats require a persisted session file");
+		}
+		const job = this.cronStore.createHeartbeat({
+			activeSessionId: state.activeSessionId,
+			sessionId: session.sessionId,
+			sessionFile,
+			cwd: state.runtime.cwd,
+			scheduleText: normalizeHeartbeatSchedule(schedule),
+			prompt: instruction,
+		});
+		this.cronScheduler.wake();
+		return job;
+	}
+
+	private updateHeartbeatForState(
+		state: ActiveSessionState,
+		action: AgentHeartbeatUpdateAction,
+	): AgentCronJob | undefined {
+		const job =
+			action === "pause"
+				? this.cronStore.pauseHeartbeat(state.activeSessionId)
+				: action === "resume"
+					? this.cronStore.resumeHeartbeat(state.activeSessionId)
+					: this.cronStore.clearHeartbeat(state.activeSessionId);
+		this.cronScheduler.wake();
+		return job;
+	}
+
+	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState> {
+		const current = this.sessions.get(job.activeSessionId) ?? this.findSessionBySessionFile(job.sessionFile);
+		if (current) {
+			return current;
+		}
+		return this.createRuntime({ type: "create", sessionPath: job.sessionFile });
 	}
 
 	private findSessionBySessionFile(sessionFile: string | undefined): ActiveSessionState | undefined {
@@ -389,6 +511,7 @@ class AgentDaemon {
 		if (options.parentSession.sessionFile) {
 			sessionManager.newSession({ parentSession: options.parentSession.sessionFile });
 		}
+		let stateRef: ActiveSessionState | undefined;
 		const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
 			cwd: sessionManager.getCwd(),
 			agentDir: parentState.runtime.services.agentDir,
@@ -401,7 +524,29 @@ class AgentDaemon {
 				scopedModels: options.scopedModels,
 				initialActiveToolNames: options.activeToolNames,
 				allowedToolNames: options.allowedToolNames,
-				customTools: options.customTools,
+				customTools: [
+					...(options.customTools ?? []),
+					...createAgentHeartbeatToolDefinitions({
+						getHeartbeat: () => {
+							if (!stateRef) {
+								throw new Error("Heartbeat state is not ready for this session yet");
+							}
+							return this.cronStore.getHeartbeat(stateRef.activeSessionId);
+						},
+						createHeartbeat: (instruction, interval) => {
+							if (!stateRef) {
+								throw new Error("Heartbeat state is not ready for this session yet");
+							}
+							return this.createHeartbeatForState(stateRef, interval ?? DEFAULT_HEARTBEAT_SCHEDULE, instruction);
+						},
+						updateHeartbeat: (action) => {
+							if (!stateRef) {
+								throw new Error("Heartbeat state is not ready for this session yet");
+							}
+							return this.updateHeartbeatForState(stateRef, action);
+						},
+					}),
+				],
 				includeGoals: options.includeGoals,
 				rlmDepth: options.rlmDepth,
 				rlmMaxDepth: options.rlmMaxDepth,
@@ -420,7 +565,8 @@ class AgentDaemon {
 				sessionDir: options.sessionDir,
 			},
 		});
-		await this.addRuntime(runtime);
+		const state = await this.addRuntime(runtime);
+		stateRef = state;
 		return runtime;
 	}
 
@@ -778,6 +924,51 @@ class AgentDaemon {
 			case "clear_queue": {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "clear_queue", state.runtime.session.clearQueue());
+			}
+
+			case "cron_list": {
+				const jobs = this.cronStore.list().filter((job) => {
+					if (!command.includeInactive && job.status !== "active") {
+						return false;
+					}
+					if (command.activeSessionId && job.activeSessionId !== command.activeSessionId) {
+						return false;
+					}
+					return true;
+				});
+				return success(command.id, "cron_list", { jobs });
+			}
+
+			case "cron_add": {
+				const state = this.getSessionState(command.activeSessionId);
+				const job = this.createCronJobForState(state, command.schedule, command.prompt);
+				return success(command.id, "cron_add", { job });
+			}
+
+			case "cron_cancel": {
+				const job = this.cronStore.cancel(command.jobId);
+				if (!job) {
+					throw new Error(`No cron job found: ${command.jobId}`);
+				}
+				this.cronScheduler.wake();
+				return success(command.id, "cron_cancel", { job });
+			}
+
+			case "heartbeat_get": {
+				const heartbeat = this.cronStore.getHeartbeat(command.activeSessionId);
+				return success(command.id, "heartbeat_get", { heartbeat: heartbeat ?? null });
+			}
+
+			case "heartbeat_set": {
+				const state = this.getSessionState(command.activeSessionId);
+				const heartbeat = this.createHeartbeatForState(state, command.schedule, command.prompt);
+				return success(command.id, "heartbeat_set", { heartbeat });
+			}
+
+			case "heartbeat_update": {
+				const state = this.getSessionState(command.activeSessionId);
+				const heartbeat = this.updateHeartbeatForState(state, command.action);
+				return success(command.id, "heartbeat_update", { heartbeat: heartbeat ?? null });
 			}
 
 			case "set_model": {
@@ -1209,6 +1400,7 @@ class AgentDaemon {
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
 		}
+		this.cronScheduler.stop();
 		for (const state of [...this.sessions.values()]) {
 			await this.closeSession(state, "shutdown");
 		}
