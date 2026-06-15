@@ -362,18 +362,6 @@ class AgentDaemon {
 							}
 							return this.cronStore.getHeartbeat(stateRef.activeSessionId);
 						},
-						createHeartbeat: (instruction, interval) => {
-							if (!stateRef) {
-								throw new Error("Heartbeat state is not ready for this session yet");
-							}
-							return this.createHeartbeatForState(stateRef, interval ?? DEFAULT_HEARTBEAT_SCHEDULE, instruction);
-						},
-						updateHeartbeat: (action) => {
-							if (!stateRef) {
-								throw new Error("Heartbeat state is not ready for this session yet");
-							}
-							return this.updateHeartbeatForState(stateRef, action);
-						},
 					}),
 				],
 				rlmHeartbeatController: {

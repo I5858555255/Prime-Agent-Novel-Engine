@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 import type { ToolDefinition } from "./extensions/types.js";
 
 export type AgentCronJobStatus = "active" | "paused" | "completed" | "cancelled";
@@ -62,35 +62,6 @@ const ONE_SECOND_MS = 1000;
 const ONE_MINUTE_MS = 60_000;
 export const DEFAULT_HEARTBEAT_SCHEDULE = "every 5m";
 
-const createHeartbeatSchema = Type.Object(
-	{
-		instruction: Type.String({
-			description:
-				"Required instruction to inject into this same session on each heartbeat. Include enough context for the future turn to act safely.",
-		}),
-		interval: Type.Optional(
-			Type.String({
-				description:
-					"Optional heartbeat cadence. Defaults to 'every 5m'. Examples: '30s', 'every 10m', '@hourly', or '*/30 * * * *'.",
-			}),
-		),
-	},
-	{ additionalProperties: false },
-);
-
-const updateHeartbeatSchema = Type.Object(
-	{
-		action: Type.Union([Type.Literal("pause"), Type.Literal("resume"), Type.Literal("clear")], {
-			description:
-				"Heartbeat lifecycle action. Use 'pause' to stop firing temporarily, 'resume' to continue, or 'clear' to remove it.",
-		}),
-	},
-	{ additionalProperties: false },
-);
-
-type CreateHeartbeatArgs = Static<typeof createHeartbeatSchema>;
-type UpdateHeartbeatArgs = Static<typeof updateHeartbeatSchema>;
-
 export type ParsedHeartbeatCommand =
 	| { type: "status" }
 	| { type: "pause" }
@@ -100,8 +71,6 @@ export type ParsedHeartbeatCommand =
 
 export interface AgentCronToolController {
 	getHeartbeat(): AgentCronJob | undefined;
-	createHeartbeat(instruction: string, interval?: string): AgentCronJob;
-	updateHeartbeat(action: AgentHeartbeatUpdateAction): AgentCronJob | undefined;
 }
 
 export interface AgentRlmHeartbeatController {
@@ -703,42 +672,6 @@ export function createAgentHeartbeatToolDefinitions(controller: AgentCronToolCon
 			parameters: Type.Object({}, { additionalProperties: false }),
 			execute: async () => {
 				const job = controller.getHeartbeat();
-				return {
-					content: [{ type: "text", text: JSON.stringify({ heartbeat: job ?? null }, null, 2) }],
-					details: job ?? null,
-				};
-			},
-		},
-		{
-			name: "create_heartbeat",
-			label: "Create Heartbeat",
-			description:
-				"Create or replace the single persistent heartbeat for this same daemon-backed session. Use this only when the user explicitly asks for a recurring check-in, reminder, heartbeat, or continuation.",
-			promptGuidelines: [
-				"Use create_heartbeat when the user explicitly asks this session to keep checking in or continue itself on a cadence.",
-				"Do not create heartbeats on your own initiative. If the requested instruction is ambiguous, ask a concise follow-up.",
-				"The interval defaults to every 5 minutes when the user does not specify one.",
-			],
-			parameters: createHeartbeatSchema,
-			execute: async (_toolCallId: string, params: CreateHeartbeatArgs) => {
-				const job = controller.createHeartbeat(params.instruction, params.interval);
-				return {
-					content: [{ type: "text", text: JSON.stringify({ heartbeat: job }, null, 2) }],
-					details: job,
-				};
-			},
-		},
-		{
-			name: "update_heartbeat",
-			label: "Update Heartbeat",
-			description:
-				"Pause, resume, or clear the persistent heartbeat for this daemon-backed session. Use this only when the user explicitly asks to change heartbeat lifecycle state.",
-			promptGuidelines: [
-				"Use update_heartbeat only when the user explicitly asks to pause, resume, stop, or clear the heartbeat.",
-			],
-			parameters: updateHeartbeatSchema,
-			execute: async (_toolCallId: string, params: UpdateHeartbeatArgs) => {
-				const job = controller.updateHeartbeat(params.action);
 				return {
 					content: [{ type: "text", text: JSON.stringify({ heartbeat: job ?? null }, null, 2) }],
 					details: job ?? null,

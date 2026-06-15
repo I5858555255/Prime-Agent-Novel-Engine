@@ -432,47 +432,15 @@ describe("AgentCronScheduler", () => {
 });
 
 describe("createAgentHeartbeatToolDefinitions", () => {
-	it("lets the model create a heartbeat when explicitly requested", async () => {
+	it("exposes only read-only user heartbeat inspection to the model", () => {
 		const tools = createAgentHeartbeatToolDefinitions({
 			getHeartbeat: () => undefined,
-			createHeartbeat: (instruction, interval) =>
-				({
-					id: "job-1",
-					status: "active",
-					source: "heartbeat",
-					activeSessionId: "active-1",
-					sessionId: "session-1",
-					sessionFile: "/tmp/session.jsonl",
-					cwd: "/tmp/project",
-					prompt: instruction,
-					schedule: { kind: "interval", expression: interval ?? "every 5m", intervalMs: 30_000 },
-					createdAt: start.toISOString(),
-					updatedAt: start.toISOString(),
-					nextRunAt: "2026-01-01T12:34:30.000Z",
-					runCount: 0,
-				}) as const,
-			updateHeartbeat: () => undefined,
 		});
-		const tool = tools.find((candidate) => candidate.name === "create_heartbeat");
 
-		expect(tool).toBeDefined();
-
-		const result = await tool!.execute(
-			"tool-1",
-			{ interval: "every 30s", instruction: "check on me" },
-			undefined,
-			undefined,
-			{} as never,
-		);
-
-		expect(result.details).toMatchObject({
-			id: "job-1",
-			schedule: { expression: "every 30s" },
-			prompt: "check on me",
-		});
+		expect(tools.map((tool) => tool.name)).toEqual(["get_heartbeat"]);
 	});
 
-	it("lets the model inspect and update heartbeat state", async () => {
+	it("lets the model inspect heartbeat state without mutating it", async () => {
 		const tools = createAgentHeartbeatToolDefinitions({
 			getHeartbeat: () =>
 				({
@@ -490,35 +458,15 @@ describe("createAgentHeartbeatToolDefinitions", () => {
 					nextRunAt: "2026-01-01T12:34:30.000Z",
 					runCount: 0,
 				}) as const,
-			createHeartbeat: () => {
-				throw new Error("not used");
-			},
-			updateHeartbeat: (action) =>
-				({
-					id: "job-1",
-					status: action === "pause" ? "paused" : "cancelled",
-					source: "heartbeat",
-					activeSessionId: "active-1",
-					sessionId: "session-1",
-					sessionFile: "/tmp/session.jsonl",
-					cwd: "/tmp/project",
-					prompt: "check on me",
-					schedule: { kind: "interval", expression: "every 30s", intervalMs: 30_000 },
-					createdAt: start.toISOString(),
-					updatedAt: start.toISOString(),
-					runCount: 0,
-				}) as const,
 		});
 
 		const getResult = await tools
 			.find((candidate) => candidate.name === "get_heartbeat")!
 			.execute("tool-1", {}, undefined, undefined, {} as never);
-		const updateResult = await tools
-			.find((candidate) => candidate.name === "update_heartbeat")!
-			.execute("tool-2", { action: "pause" }, undefined, undefined, {} as never);
 
 		expect(getResult.details).toMatchObject({ id: "job-1", status: "active" });
-		expect(updateResult.details).toMatchObject({ id: "job-1", status: "paused" });
+		expect(tools.find((candidate) => candidate.name === "create_heartbeat")).toBeUndefined();
+		expect(tools.find((candidate) => candidate.name === "update_heartbeat")).toBeUndefined();
 	});
 });
 
