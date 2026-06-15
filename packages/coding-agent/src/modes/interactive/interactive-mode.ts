@@ -6479,6 +6479,9 @@ export class InteractiveMode {
 			case "too_large":
 				return `Trace upload skipped: session file is ${result.size.toLocaleString()} bytes; limit is ${result.maxBytes.toLocaleString()} bytes.`;
 			case "failed":
+				if (result.statusCode === 404) {
+					return "Trace upload endpoint was not found. The platform API may not be deployed yet, or PRIME_AGENT_TRACES_BASE_URL points at the wrong API.";
+				}
 				return `Trace upload failed: ${result.statusCode ? `HTTP ${result.statusCode}: ` : ""}${result.message}`;
 		}
 	}
