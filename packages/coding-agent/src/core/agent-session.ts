@@ -68,6 +68,7 @@ import {
 	loadContextTreeChildFromDisk,
 	loadContextTreeChildrenFromDisk,
 } from "./context-tree.js";
+import type { AgentCronJob, AgentRlmHeartbeatController, AgentRlmHeartbeatStatusUpdate } from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
@@ -298,6 +299,11 @@ export interface AgentSessionConfig {
 	 * Default: true.
 	 */
 	includeGoals?: boolean;
+	/**
+	 * Optional host-side controller for the bundled rlm-heartbeat Python skill.
+	 * When omitted, rlm_heartbeat.* host requests are unavailable.
+	 */
+	rlmHeartbeatController?: AgentRlmHeartbeatController;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -684,6 +690,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _includeGoals: boolean;
+	private _rlmHeartbeatController?: AgentRlmHeartbeatController;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -727,6 +734,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._includeGoals = config.includeGoals ?? true;
+		this._rlmHeartbeatController = config.rlmHeartbeatController;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
@@ -1318,6 +1326,90 @@ export class AgentSession {
 				return goalHostResponse(this._completeGoalFromHost(), true);
 			default:
 				throw new Error(`unknown goal request type "${type}"`);
+		}
+	}
+
+	/**
+	 * Handle an rlm_heartbeat.* request from the bundled rlm-heartbeat skill.
+	 * These heartbeats are internal to this active session and never read or
+	 * mutate the user-level /heartbeat.
+	 */
+	handleRlmHeartbeatHostRequest(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
+		const controller = this._rlmHeartbeatController;
+		if (!controller) {
+			throw new Error("RLM heartbeat skill is not available in this session");
+		}
+		switch (type) {
+			case "rlm_heartbeat.list": {
+				const includeInactive = payload.include_inactive === true || payload.includeInactive === true;
+				return {
+					heartbeats: controller
+						.listRlmHeartbeats({ includeInactive })
+						.map((heartbeat) => rlmHeartbeatHostResponse(heartbeat)),
+				};
+			}
+			case "rlm_heartbeat.create": {
+				if (typeof payload.instruction !== "string") {
+					throw new Error("rlm_heartbeat.create instruction must be a string");
+				}
+				if (payload.interval !== undefined && typeof payload.interval !== "string") {
+					throw new Error("rlm_heartbeat.create interval must be a string when provided");
+				}
+				if (payload.label !== undefined && typeof payload.label !== "string") {
+					throw new Error("rlm_heartbeat.create label must be a string when provided");
+				}
+				return {
+					heartbeat: rlmHeartbeatHostResponse(
+						controller.createRlmHeartbeat({
+							instruction: payload.instruction,
+							interval: payload.interval,
+							label: payload.label,
+						}),
+					),
+				};
+			}
+			case "rlm_heartbeat.update": {
+				if (typeof payload.id !== "string") {
+					throw new Error("rlm_heartbeat.update id must be a string");
+				}
+				if (payload.instruction !== undefined && typeof payload.instruction !== "string") {
+					throw new Error("rlm_heartbeat.update instruction must be a string when provided");
+				}
+				if (payload.interval !== undefined && typeof payload.interval !== "string") {
+					throw new Error("rlm_heartbeat.update interval must be a string when provided");
+				}
+				if (payload.label !== undefined && typeof payload.label !== "string") {
+					throw new Error("rlm_heartbeat.update label must be a string when provided");
+				}
+				if (payload.status !== undefined && !isRlmHeartbeatStatusUpdate(payload.status)) {
+					throw new Error('rlm_heartbeat.update status must be "pause" or "resume" when provided');
+				}
+				if (
+					payload.instruction === undefined &&
+					payload.interval === undefined &&
+					payload.label === undefined &&
+					payload.status === undefined
+				) {
+					throw new Error("rlm_heartbeat.update requires at least one field to update");
+				}
+				const heartbeat = controller.updateRlmHeartbeat({
+					id: payload.id,
+					instruction: payload.instruction,
+					interval: payload.interval,
+					label: payload.label,
+					status: payload.status,
+				});
+				return { heartbeat: heartbeat ? rlmHeartbeatHostResponse(heartbeat) : null };
+			}
+			case "rlm_heartbeat.delete": {
+				if (typeof payload.id !== "string") {
+					throw new Error("rlm_heartbeat.delete id must be a string");
+				}
+				const heartbeat = controller.deleteRlmHeartbeat(payload.id);
+				return { heartbeat: heartbeat ? rlmHeartbeatHostResponse(heartbeat) : null };
+			}
+			default:
+				throw new Error(`unknown RLM heartbeat request type "${type}"`);
 		}
 	}
 
@@ -3484,6 +3576,16 @@ export class AgentSession {
 				handlers[type] = async (payload) => this.handleGoalHostRequest(type, payload);
 			}
 		}
+		if (this._rlmHeartbeatController) {
+			for (const type of [
+				"rlm_heartbeat.list",
+				"rlm_heartbeat.create",
+				"rlm_heartbeat.update",
+				"rlm_heartbeat.delete",
+			]) {
+				handlers[type] = async (payload) => this.handleRlmHeartbeatHostRequest(type, payload);
+			}
+		}
 		return handlers;
 	}
 
@@ -4907,4 +5009,24 @@ export class AgentSession {
 	get extensionRunner(): ExtensionRunner {
 		return this._extensionRunner;
 	}
+}
+
+function isRlmHeartbeatStatusUpdate(value: unknown): value is AgentRlmHeartbeatStatusUpdate {
+	return value === "pause" || value === "resume";
+}
+
+function rlmHeartbeatHostResponse(job: AgentCronJob): Record<string, unknown> {
+	return {
+		id: job.id,
+		status: job.status,
+		label: job.label ?? null,
+		instruction: job.prompt,
+		schedule: job.schedule,
+		created_at: job.createdAt,
+		updated_at: job.updatedAt,
+		next_run_at: job.nextRunAt ?? null,
+		last_run_at: job.lastRunAt ?? null,
+		last_error: job.lastError ?? null,
+		run_count: job.runCount,
+	};
 }

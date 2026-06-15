@@ -6,8 +6,9 @@ import type { ToolDefinition } from "./extensions/types.js";
 
 export type AgentCronJobStatus = "active" | "paused" | "completed" | "cancelled";
 export type AgentCronScheduleKind = "once" | "cron" | "interval";
-export type AgentCronJobSource = "cron" | "heartbeat";
+export type AgentCronJobSource = "cron" | "heartbeat" | "rlm_heartbeat";
 export type AgentHeartbeatUpdateAction = "pause" | "resume" | "clear";
+export type AgentRlmHeartbeatStatusUpdate = "pause" | "resume";
 
 export interface AgentCronSchedule {
 	kind: AgentCronScheduleKind;
@@ -23,6 +24,7 @@ export interface AgentCronJob {
 	sessionId: string;
 	sessionFile: string;
 	cwd: string;
+	label?: string;
 	prompt: string;
 	schedule: AgentCronSchedule;
 	createdAt: string;
@@ -38,6 +40,7 @@ export interface CreateAgentCronJobInput {
 	sessionId: string;
 	sessionFile: string;
 	cwd: string;
+	label?: string;
 	prompt: string;
 	scheduleText: string;
 	source?: AgentCronJobSource;
@@ -101,6 +104,19 @@ export interface AgentCronToolController {
 	updateHeartbeat(action: AgentHeartbeatUpdateAction): AgentCronJob | undefined;
 }
 
+export interface AgentRlmHeartbeatController {
+	listRlmHeartbeats(options?: { includeInactive?: boolean }): AgentCronJob[];
+	createRlmHeartbeat(input: { instruction: string; interval?: string; label?: string }): AgentCronJob;
+	updateRlmHeartbeat(input: {
+		id: string;
+		instruction?: string;
+		interval?: string;
+		label?: string;
+		status?: AgentRlmHeartbeatStatusUpdate;
+	}): AgentCronJob | undefined;
+	deleteRlmHeartbeat(id: string): AgentCronJob | undefined;
+}
+
 export class AgentCronJobStore {
 	constructor(private readonly filePath: string) {}
 
@@ -124,6 +140,7 @@ export class AgentCronJobStore {
 			sessionId: input.sessionId,
 			sessionFile: input.sessionFile,
 			cwd: input.cwd,
+			label: normalizeOptionalLabel(input.label),
 			prompt,
 			schedule: parsed.schedule,
 			createdAt: nowIso,
@@ -176,6 +193,7 @@ export class AgentCronJobStore {
 			sessionId: input.sessionId,
 			sessionFile: input.sessionFile,
 			cwd: input.cwd,
+			label: normalizeOptionalLabel(input.label),
 			prompt,
 			schedule: parsed.schedule,
 			createdAt: nowIso,
@@ -185,6 +203,128 @@ export class AgentCronJobStore {
 		};
 		this.writeJobs([...existing, job]);
 		return job;
+	}
+
+	listRlmHeartbeats(activeSessionId: string, options: { includeInactive?: boolean } = {}): AgentCronJob[] {
+		return this.readJobs()
+			.filter((job) => {
+				if (job.activeSessionId !== activeSessionId || job.source !== "rlm_heartbeat") {
+					return false;
+				}
+				if (options.includeInactive) {
+					return true;
+				}
+				return job.status === "active" || job.status === "paused";
+			})
+			.sort((a, b) => compareOptionalIso(a.nextRunAt, b.nextRunAt));
+	}
+
+	createRlmHeartbeat(input: CreateAgentCronJobInput): AgentCronJob {
+		const now = input.now ?? new Date();
+		const parsed = parseAgentCronSchedule(input.scheduleText, now);
+		if (parsed.schedule.kind === "once") {
+			throw new Error("RLM heartbeat schedule must be recurring");
+		}
+		const prompt = input.prompt.trim();
+		if (!prompt) {
+			throw new Error("RLM heartbeat instruction cannot be empty");
+		}
+		const nowIso = now.toISOString();
+		const job: AgentCronJob = {
+			id: randomUUID(),
+			status: "active",
+			source: "rlm_heartbeat",
+			activeSessionId: input.activeSessionId,
+			sessionId: input.sessionId,
+			sessionFile: input.sessionFile,
+			cwd: input.cwd,
+			label: normalizeOptionalLabel(input.label),
+			prompt,
+			schedule: parsed.schedule,
+			createdAt: nowIso,
+			updatedAt: nowIso,
+			nextRunAt: parsed.nextRunAt.toISOString(),
+			runCount: 0,
+		};
+		this.writeJobs([...this.readJobs(), job]);
+		return job;
+	}
+
+	updateRlmHeartbeat(
+		activeSessionId: string,
+		id: string,
+		update: {
+			label?: string;
+			prompt?: string;
+			scheduleText?: string;
+			status?: AgentRlmHeartbeatStatusUpdate;
+			now?: Date;
+		},
+	): AgentCronJob | undefined {
+		const now = update.now ?? new Date();
+		let updated: AgentCronJob | undefined;
+		let matchedRlmHeartbeat = false;
+		const jobs = this.readJobs().map((job) => {
+			if (job.id !== id || job.activeSessionId !== activeSessionId || job.source !== "rlm_heartbeat") {
+				return job;
+			}
+			matchedRlmHeartbeat = true;
+			if (job.status === "cancelled" || job.status === "completed") {
+				updated = job;
+				return job;
+			}
+			let nextJob: AgentCronJob = { ...job };
+			if (update.label !== undefined) {
+				nextJob = { ...nextJob, label: normalizeOptionalLabel(update.label) };
+			}
+			if (update.prompt !== undefined) {
+				const prompt = update.prompt.trim();
+				if (!prompt) {
+					throw new Error("RLM heartbeat instruction cannot be empty");
+				}
+				nextJob = { ...nextJob, prompt };
+			}
+			if (update.scheduleText !== undefined) {
+				const parsed = parseAgentCronSchedule(update.scheduleText, now);
+				if (parsed.schedule.kind === "once") {
+					throw new Error("RLM heartbeat schedule must be recurring");
+				}
+				nextJob =
+					nextJob.status === "paused"
+						? withoutNextRunAt({ ...nextJob, schedule: parsed.schedule })
+						: { ...nextJob, schedule: parsed.schedule, nextRunAt: parsed.nextRunAt.toISOString() };
+			}
+			if (update.status === "pause") {
+				nextJob = withoutNextRunAt({ ...nextJob, status: "paused" });
+			} else if (update.status === "resume") {
+				const nextRunAt = nextRunAtForSchedule(nextJob.schedule, now);
+				if (!nextRunAt) {
+					throw new Error("RLM heartbeat schedule must be recurring");
+				}
+				nextJob = { ...nextJob, status: "active", nextRunAt: nextRunAt.toISOString() };
+			}
+			updated = { ...nextJob, updatedAt: now.toISOString() };
+			return updated;
+		});
+		if (matchedRlmHeartbeat && updated) {
+			this.writeJobs(jobs);
+		}
+		return updated;
+	}
+
+	deleteRlmHeartbeat(activeSessionId: string, id: string, now = new Date()): AgentCronJob | undefined {
+		let deleted: AgentCronJob | undefined;
+		const jobs = this.readJobs().map((job) => {
+			if (job.id !== id || job.activeSessionId !== activeSessionId || job.source !== "rlm_heartbeat") {
+				return job;
+			}
+			deleted = withoutNextRunAt({ ...job, status: "cancelled", updatedAt: now.toISOString() });
+			return deleted;
+		});
+		if (deleted) {
+			this.writeJobs(jobs);
+		}
+		return deleted;
 	}
 
 	pauseHeartbeat(activeSessionId: string, now = new Date()): AgentCronJob | undefined {
@@ -547,7 +687,8 @@ export function formatAgentCronJob(job: AgentCronJob): string {
 	const last = job.lastRunAt ? new Date(job.lastRunAt).toLocaleString() : "-";
 	const preview = job.prompt.replace(/\s+/g, " ").slice(0, 80);
 	const error = job.lastError ? ` error=${job.lastError}` : "";
-	return `${job.id} ${job.status} next=${next} last=${last} runs=${job.runCount} schedule="${job.schedule.expression}" prompt="${preview}"${error}`;
+	const label = job.label ? ` label="${job.label}"` : "";
+	return `${job.id} ${job.status}${label} next=${next} last=${last} runs=${job.runCount} schedule="${job.schedule.expression}" prompt="${preview}"${error}`;
 }
 
 export function createAgentHeartbeatToolDefinitions(controller: AgentCronToolController): ToolDefinition[] {
@@ -773,6 +914,16 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function normalizeOptionalLabel(label: string | undefined): string | undefined {
+	const trimmed = label?.trim();
+	return trimmed ? trimmed : undefined;
+}
+
+function withoutNextRunAt(job: AgentCronJob): AgentCronJob {
+	const { nextRunAt: _nextRunAt, ...rest } = job;
+	return rest;
+}
+
 function isAgentCronJob(value: unknown): value is AgentCronJob {
 	if (!value || typeof value !== "object") {
 		return false;
@@ -784,11 +935,15 @@ function isAgentCronJob(value: unknown): value is AgentCronJob {
 			candidate.status === "paused" ||
 			candidate.status === "completed" ||
 			candidate.status === "cancelled") &&
-		(candidate.source === undefined || candidate.source === "cron" || candidate.source === "heartbeat") &&
+		(candidate.source === undefined ||
+			candidate.source === "cron" ||
+			candidate.source === "heartbeat" ||
+			candidate.source === "rlm_heartbeat") &&
 		typeof candidate.activeSessionId === "string" &&
 		typeof candidate.sessionId === "string" &&
 		typeof candidate.sessionFile === "string" &&
 		typeof candidate.cwd === "string" &&
+		(candidate.label === undefined || typeof candidate.label === "string") &&
 		typeof candidate.prompt === "string" &&
 		typeof candidate.schedule === "object" &&
 		candidate.schedule !== null &&

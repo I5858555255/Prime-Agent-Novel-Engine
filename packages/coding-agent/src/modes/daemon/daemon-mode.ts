@@ -376,6 +376,32 @@ class AgentDaemon {
 						},
 					}),
 				],
+				rlmHeartbeatController: {
+					listRlmHeartbeats: (listOptions) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
+					},
+					createRlmHeartbeat: (input) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.createRlmHeartbeatForState(stateRef, input);
+					},
+					updateRlmHeartbeat: (input) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.updateRlmHeartbeatForState(stateRef, input);
+					},
+					deleteRlmHeartbeat: (id) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.deleteRlmHeartbeatForState(stateRef, id);
+					},
+				},
 			},
 		});
 		const state = await this.addRuntime(runtime, command.name);
@@ -438,6 +464,52 @@ class AgentDaemon {
 					? this.cronStore.resumeHeartbeat(state.activeSessionId)
 					: this.cronStore.clearHeartbeat(state.activeSessionId);
 		this.cronScheduler.wake();
+		return job;
+	}
+
+	private createRlmHeartbeatForState(
+		state: ActiveSessionState,
+		input: { instruction: string; interval?: string; label?: string },
+	): AgentCronJob {
+		const session = state.runtime.session;
+		const sessionFile = session.sessionFile;
+		if (!sessionFile) {
+			throw new Error("RLM heartbeats require a persisted session file");
+		}
+		const job = this.cronStore.createRlmHeartbeat({
+			activeSessionId: state.activeSessionId,
+			sessionId: session.sessionId,
+			sessionFile,
+			cwd: state.runtime.cwd,
+			label: input.label,
+			scheduleText: normalizeHeartbeatSchedule(input.interval ?? DEFAULT_HEARTBEAT_SCHEDULE),
+			prompt: input.instruction,
+		});
+		this.cronScheduler.wake();
+		return job;
+	}
+
+	private updateRlmHeartbeatForState(
+		state: ActiveSessionState,
+		input: { id: string; instruction?: string; interval?: string; label?: string; status?: "pause" | "resume" },
+	): AgentCronJob | undefined {
+		const job = this.cronStore.updateRlmHeartbeat(state.activeSessionId, input.id, {
+			label: input.label,
+			prompt: input.instruction,
+			scheduleText: input.interval ? normalizeHeartbeatSchedule(input.interval) : undefined,
+			status: input.status,
+		});
+		if (job) {
+			this.cronScheduler.wake();
+		}
+		return job;
+	}
+
+	private deleteRlmHeartbeatForState(state: ActiveSessionState, id: string): AgentCronJob | undefined {
+		const job = this.cronStore.deleteRlmHeartbeat(state.activeSessionId, id);
+		if (job) {
+			this.cronScheduler.wake();
+		}
 		return job;
 	}
 
@@ -524,30 +596,34 @@ class AgentDaemon {
 				scopedModels: options.scopedModels,
 				initialActiveToolNames: options.activeToolNames,
 				allowedToolNames: options.allowedToolNames,
-				customTools: [
-					...(options.customTools ?? []),
-					...createAgentHeartbeatToolDefinitions({
-						getHeartbeat: () => {
-							if (!stateRef) {
-								throw new Error("Heartbeat state is not ready for this session yet");
-							}
-							return this.cronStore.getHeartbeat(stateRef.activeSessionId);
-						},
-						createHeartbeat: (instruction, interval) => {
-							if (!stateRef) {
-								throw new Error("Heartbeat state is not ready for this session yet");
-							}
-							return this.createHeartbeatForState(stateRef, interval ?? DEFAULT_HEARTBEAT_SCHEDULE, instruction);
-						},
-						updateHeartbeat: (action) => {
-							if (!stateRef) {
-								throw new Error("Heartbeat state is not ready for this session yet");
-							}
-							return this.updateHeartbeatForState(stateRef, action);
-						},
-					}),
-				],
+				customTools: options.customTools,
 				includeGoals: options.includeGoals,
+				rlmHeartbeatController: {
+					listRlmHeartbeats: (listOptions) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
+					},
+					createRlmHeartbeat: (input) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.createRlmHeartbeatForState(stateRef, input);
+					},
+					updateRlmHeartbeat: (input) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.updateRlmHeartbeatForState(stateRef, input);
+					},
+					deleteRlmHeartbeat: (id) => {
+						if (!stateRef) {
+							throw new Error("RLM heartbeat state is not ready for this session yet");
+						}
+						return this.deleteRlmHeartbeatForState(stateRef, id);
+					},
+				},
 				rlmDepth: options.rlmDepth,
 				rlmMaxDepth: options.rlmMaxDepth,
 				rlmSessionDir: options.sessionDir,
