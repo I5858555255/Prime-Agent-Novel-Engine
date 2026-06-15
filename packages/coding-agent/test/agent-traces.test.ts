@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAgentTraceUpload, installAgentTraceUpload, uploadAgentTraceFile } from "../src/core/agent-traces.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { PRIME_AGENT_TRACES_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
@@ -80,6 +80,7 @@ describe("agent trace upload", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		if (originalTraceApiKey === undefined) {
 			delete process.env.PRIME_AGENT_TRACES_API_KEY;
 		} else {
@@ -182,5 +183,38 @@ describe("agent trace upload", () => {
 		await flushAgentTraceUpload(sessionManager);
 		expect(calls).toHaveLength(1);
 		expect(calls[0].url).toBe("https://api.example.test/api/v1/agent-traces/sessions/listener-session");
+	});
+
+	it("schedules automatic uploads at most once per minute and only after new entries persist", async () => {
+		vi.useFakeTimers();
+		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		const cwd = join(tempDir, "project");
+		const sessionDir = join(tempDir, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		const sessionManager = SessionManager.create(cwd, sessionDir);
+		sessionManager.newSession({ id: "throttled-session" });
+
+		const calls: FetchCall[] = [];
+		installAgentTraceUpload(sessionManager, {
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn: createFetchRecorder(calls),
+		});
+
+		sessionManager.appendMessage(createUserMessage("hello"));
+		sessionManager.appendMessage(createAssistantMessage("hi"));
+		expect(Number(setTimeoutSpy.mock.calls.at(-1)?.[1])).toBe(1_000);
+		await flushAgentTraceUpload(sessionManager);
+		expect(calls).toHaveLength(1);
+
+		await flushAgentTraceUpload(sessionManager);
+		expect(calls).toHaveLength(1);
+
+		setTimeoutSpy.mockClear();
+		sessionManager.appendMessage(createUserMessage("next"));
+		expect(Number(setTimeoutSpy.mock.calls.at(-1)?.[1])).toBe(60_000);
 	});
 });

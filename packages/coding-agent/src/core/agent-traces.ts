@@ -16,7 +16,7 @@ const DEFAULT_PRIME_API_BASE_URL = "https://api.primeintellect.ai";
 const MAX_TRACE_BYTES = 20 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const TRACE_UPLOAD_DEBOUNCE_MS = 1_000;
-const TRACE_UPLOAD_MIN_INTERVAL_MS = 12_000;
+const TRACE_UPLOAD_MIN_INTERVAL_MS = 60_000;
 
 export type AgentTraceCredentialSource = "environment" | "stored" | "prime-inference" | "prime-cli";
 
@@ -371,7 +371,8 @@ class AgentTraceUploadController {
 	private timeout: NodeJS.Timeout | undefined;
 	private pending = false;
 	private inFlight: Promise<AgentTraceUploadResult> | undefined;
-	private lastUploadStartedAt = 0;
+	private lastUploadStartedAt: number | undefined;
+	private lastUploadedSignature: string | undefined;
 
 	constructor(
 		private readonly sessionManager: SessionManager,
@@ -387,8 +388,9 @@ class AgentTraceUploadController {
 		if (this.timeout) {
 			clearTimeout(this.timeout);
 		}
-		const elapsed = Date.now() - this.lastUploadStartedAt;
-		const throttleDelay = Math.max(0, TRACE_UPLOAD_MIN_INTERVAL_MS - elapsed);
+		const elapsed = this.lastUploadStartedAt === undefined ? 0 : Date.now() - this.lastUploadStartedAt;
+		const throttleDelay =
+			this.lastUploadStartedAt === undefined ? 0 : Math.max(0, TRACE_UPLOAD_MIN_INTERVAL_MS - elapsed);
 		this.timeout = setTimeout(
 			() => {
 				this.timeout = undefined;
@@ -397,6 +399,19 @@ class AgentTraceUploadController {
 			Math.max(TRACE_UPLOAD_DEBOUNCE_MS, throttleDelay),
 		);
 	};
+
+	private async getCurrentFileSignature(): Promise<string | undefined> {
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile) {
+			return undefined;
+		}
+		try {
+			const stats = await stat(sessionFile);
+			return `${sessionFile}:${stats.size}:${stats.mtimeMs}`;
+		} catch {
+			return undefined;
+		}
+	}
 
 	async flush(): Promise<AgentTraceUploadResult | undefined> {
 		if (this.timeout) {
@@ -410,6 +425,12 @@ class AgentTraceUploadController {
 			return undefined;
 		}
 
+		const signature = await this.getCurrentFileSignature();
+		if (signature && signature === this.lastUploadedSignature) {
+			this.pending = false;
+			return undefined;
+		}
+
 		this.pending = false;
 		this.lastUploadStartedAt = Date.now();
 		this.inFlight = uploadAgentTraceSession({
@@ -417,7 +438,11 @@ class AgentTraceUploadController {
 			sessionManager: this.sessionManager,
 		});
 		try {
-			return await this.inFlight;
+			const result = await this.inFlight;
+			if (result.status === "uploaded" && signature) {
+				this.lastUploadedSignature = signature;
+			}
+			return result;
 		} finally {
 			this.inFlight = undefined;
 		}
