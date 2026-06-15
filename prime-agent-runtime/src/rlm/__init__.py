@@ -141,7 +141,12 @@ async def run(prompt: str, **kwargs: Any) -> RLMResult:
     return _result_from_payload(payload)
 
 
-_harness_state = get_harness_state()
+try:
+    _harness_state = get_harness_state()
+except Exception:  # pragma: no cover - harness state must never break `import rlm`
+    # Importing rlm runs inside the kernel; a failure here would take down the whole
+    # kernel. Fall back to an in-memory store so refinement is degraded, not fatal.
+    _harness_state = HarnessState(file_path=None)
 
 
 class _RLMCallable:

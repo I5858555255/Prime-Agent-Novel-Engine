@@ -179,7 +179,19 @@ export function loadHarnessState(harnessStateDir: string = getGlobalHarnessState
 	if (!existsSync(statePath)) {
 		return emptyHarnessState();
 	}
-	const parsed = JSON.parse(readFileSync(statePath, "utf8")) as Partial<HarnessState>;
+	let parsed: Partial<HarnessState>;
+	try {
+		const raw = JSON.parse(readFileSync(statePath, "utf8"));
+		// loadHarnessState runs on every system-prompt build and before each /refine, so
+		// a corrupt or unreadable (or non-object) state file must degrade to empty rather
+		// than throw and break the session. The next saveHarnessState rewrites it cleanly.
+		if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+			return emptyHarnessState();
+		}
+		parsed = raw as Partial<HarnessState>;
+	} catch {
+		return emptyHarnessState();
+	}
 	const state = emptyHarnessState();
 	state.schema = typeof parsed.schema === "number" ? parsed.schema : 1;
 	for (const kind of Object.keys(state.entries) as RefinementKind[]) {

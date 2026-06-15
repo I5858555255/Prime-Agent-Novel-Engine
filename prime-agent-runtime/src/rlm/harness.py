@@ -131,8 +131,17 @@ class HarnessState:
             self._loaded_mtime = None
             return self
         mtime = self._disk_mtime()
-        with self.file_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with self.file_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            # A corrupt or unreadable state file must not crash the kernel or block
+            # refinement. Treat it as empty; the next save() rewrites it cleanly.
+            data = {}
+        # json.load returns non-dict types for valid JSON like `null`, `[]`, or a bare
+        # string; coerce those to an empty object before attribute access.
+        if not isinstance(data, dict):
+            data = {}
 
         entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
         raw_entries = data.get("entries", {})
@@ -260,9 +269,15 @@ class HarnessState:
             existing.title = title
             existing.content = content
             existing.path = path
-            existing.reference = dict(reference or {})
-            existing.arguments = dict(arguments or {})
-            existing.metadata = dict(metadata or {})
+            # Preserve reference/arguments/metadata when the caller omits them (None) so
+            # updating only a skill's title or content does not wipe its existing
+            # argument or reference contract. An explicit {} still clears them.
+            if reference is not None:
+                existing.reference = dict(reference)
+            if arguments is not None:
+                existing.arguments = dict(arguments)
+            if metadata is not None:
+                existing.metadata = dict(metadata)
             existing.source = source
             existing.updated_at = _now()
             existing.version += 1

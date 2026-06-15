@@ -262,6 +262,39 @@ class HarnessStateTest(unittest.TestCase):
                     arguments={},
                 )
 
+    def test_load_tolerates_corrupt_or_non_object_state(self) -> None:
+        for payload in ("not json at all", "null", "[]", '"a string"', "123"):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                state_path = Path(temp_dir) / "harness_state.json"
+                state_path.write_text(payload, encoding="utf-8")
+
+                state = HarnessState(state_path)
+
+                self.assertEqual(state.list(), [])
+                self.assertEqual(state.refinements, [])
+                # The store must remain usable and self-heal on the next write.
+                created = state.create_memory("Recovered", "Works after corruption.", id="recovered")
+                self.assertEqual(HarnessState(state_path).get("memory", "recovered").content, created.content)
+
+    def test_update_skill_preserves_omitted_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            state.create_skill(
+                "Edit file",
+                "Apply an edit.",
+                id="edit_file",
+                reference=PYTHON_REFERENCE,
+                arguments={"path": {"type": "string", "required": True}},
+            )
+
+            # Updating only title/content (arguments omitted) must keep the contract.
+            state.update_skill("edit_file", "Edit file", "Apply an edit carefully.", reference=PYTHON_REFERENCE)
+            self.assertEqual(state.get("skill", "edit_file").arguments, {"path": {"type": "string", "required": True}})
+
+            # An explicit empty dict still clears it.
+            state.update_skill("edit_file", "Edit file", "Now argument-free.", reference=PYTHON_REFERENCE, arguments={})
+            self.assertEqual(state.get("skill", "edit_file").arguments, {})
+
     def test_reloads_external_writes_before_mutating(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "harness_state.json"

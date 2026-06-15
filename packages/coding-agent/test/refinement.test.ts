@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -499,6 +499,29 @@ describe("harness refinement", () => {
 			changes: ["create prompt:focused_edits"],
 		});
 	});
+
+	it.each(["not json at all", "null", "[]", '"a string"', "123"])(
+		"loads empty harness state from a corrupt or non-object file (%s)",
+		(payload) => {
+			const dir = makeTempDir();
+			writeFileSync(getHarnessStatePath(dir), payload, "utf8");
+
+			const state = loadHarnessState(dir);
+
+			expect(state.entries).toEqual({ prompt: {}, memory: {}, skill: {}, subagent: {} });
+			expect(state.refinements).toEqual([]);
+			// Still usable: a refinement applies and persists cleanly over the bad file.
+			applyRefinementProposal(
+				state,
+				proposal("Recover", [
+					{ action: "create", kind: "memory", id: "recovered", title: "Recovered", content: "ok" },
+				]),
+				{ id: "refine_recover" },
+			);
+			saveHarnessState(dir, state);
+			expect(loadHarnessState(dir).entries.memory.recovered.content).toBe("ok");
+		},
+	);
 
 	it("extracts refinement history from custom session entries", () => {
 		const result: RefinementResult = {
