@@ -99,8 +99,13 @@ def _validate_python_skill_reference(reference: dict[str, Any] | None) -> dict[s
 class HarnessState:
     """CRUD store for reset-free harness refinement state."""
 
-    def __init__(self, file_path: str | Path | None = None):
-        self.file_path = Path(file_path).expanduser().resolve() if file_path else _state_file()
+    def __init__(self, file_path: str | Path | None = None, *, in_memory: bool = False):
+        # in_memory mode never resolves or touches a path. It is the safe fallback when
+        # path resolution itself fails, so constructing it cannot re-raise that error.
+        if in_memory:
+            self.file_path: Path | None = None
+        else:
+            self.file_path = Path(file_path).expanduser().resolve() if file_path else _state_file()
         self.entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
         self.refinements: list[RefinementEvent] = []
         # mtime of the file as of the last load/save, used to detect out-of-process
@@ -109,6 +114,8 @@ class HarnessState:
         self.load()
 
     def _disk_mtime(self) -> int | None:
+        if self.file_path is None:
+            return None
         try:
             return self.file_path.stat().st_mtime_ns
         except OSError:
@@ -127,7 +134,7 @@ class HarnessState:
             self.load()
 
     def load(self) -> "HarnessState":
-        if not self.file_path.exists():
+        if self.file_path is None or not self.file_path.exists():
             self._loaded_mtime = None
             return self
         mtime = self._disk_mtime()
@@ -203,6 +210,9 @@ class HarnessState:
         return self
 
     def save(self) -> "HarnessState":
+        if self.file_path is None:
+            # in_memory fallback: nothing to persist.
+            return self
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "schema": 1,
@@ -250,7 +260,7 @@ class HarnessState:
         content: str,
         *,
         id: str | None = None,
-        path: str = "general",
+        path: str | None = None,
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -268,10 +278,12 @@ class HarnessState:
         if existing:
             existing.title = title
             existing.content = content
-            existing.path = path
-            # Preserve reference/arguments/metadata when the caller omits them (None) so
-            # updating only a skill's title or content does not wipe its existing
-            # argument or reference contract. An explicit {} still clears them.
+            # Preserve path/reference/arguments/metadata when the caller omits them
+            # (None) so updating only an entry's title or content does not reset its
+            # grouping path or wipe a skill's reference/argument contract. An explicit
+            # value (including {}) still overwrites.
+            if path is not None:
+                existing.path = path
             if reference is not None:
                 existing.reference = dict(reference)
             if arguments is not None:
@@ -288,7 +300,7 @@ class HarnessState:
                 kind=kind,
                 title=title,
                 content=content,
-                path=path,
+                path=path if path is not None else "general",
                 reference=dict(reference or {}),
                 arguments=dict(arguments or {}),
                 metadata=dict(metadata or {}),
@@ -362,7 +374,7 @@ class HarnessState:
         title: str,
         content: str,
         *,
-        path: str = "general",
+        path: str | None = None,
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -402,7 +414,7 @@ class HarnessState:
         title: str,
         content: str,
         *,
-        path: str = "general",
+        path: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
         return self.update("memory", id, title, content, path=path, metadata=metadata)
@@ -427,7 +439,7 @@ class HarnessState:
         title: str,
         content: str,
         *,
-        path: str = "policy",
+        path: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
         return self.update("prompt", id, title, content, path=path, metadata=metadata)
@@ -463,18 +475,22 @@ class HarnessState:
         title: str,
         content: str,
         *,
-        path: str = "general",
+        path: str | None = None,
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
+        # Only validate a reference when one is supplied; omitting it preserves the
+        # existing reference (see _upsert) rather than forcing every title/content-only
+        # update to re-send the full Python reference.
+        validated_reference = _validate_python_skill_reference(reference) if reference is not None else None
         return self.update(
             "skill",
             id,
             title,
             content,
             path=path,
-            reference=_validate_python_skill_reference(reference),
+            reference=validated_reference,
             arguments=arguments,
             metadata=metadata,
         )
@@ -499,7 +515,7 @@ class HarnessState:
         title: str,
         content: str,
         *,
-        path: str = "general",
+        path: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HarnessEntry:
         return self.update("subagent", id, title, content, path=path, metadata=metadata)

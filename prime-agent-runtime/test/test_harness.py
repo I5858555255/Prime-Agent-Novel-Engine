@@ -295,6 +295,59 @@ class HarnessStateTest(unittest.TestCase):
             state.update_skill("edit_file", "Edit file", "Now argument-free.", reference=PYTHON_REFERENCE, arguments={})
             self.assertEqual(state.get("skill", "edit_file").arguments, {})
 
+    def test_update_skill_without_reference_preserves_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            state.create_skill(
+                "Edit file",
+                "Apply an edit.",
+                id="edit_file",
+                reference=PYTHON_REFERENCE,
+                arguments={"path": {"type": "string", "required": True}},
+            )
+
+            # A title/content-only update must not require re-sending the reference,
+            # and must preserve the existing reference and arguments.
+            updated = state.update_skill("edit_file", "Edit file", "Apply an edit carefully.")
+
+            self.assertEqual(updated.version, 2)
+            self.assertEqual(updated.reference, PYTHON_REFERENCE)
+            self.assertEqual(updated.arguments, {"path": {"type": "string", "required": True}})
+            self.assertEqual(updated.content, "Apply an edit carefully.")
+
+    def test_update_preserves_omitted_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            state.create_memory("Grouped", "content", id="grouped", path="repo/testing")
+
+            # Updating without a path keeps the custom grouping path.
+            state.update_memory("grouped", "Grouped", "new content")
+            self.assertEqual(state.get("memory", "grouped").path, "repo/testing")
+
+            # An explicit path still moves it.
+            state.update_memory("grouped", "Grouped", "newer", path="repo/other")
+            self.assertEqual(state.get("memory", "grouped").path, "repo/other")
+
+    def test_in_memory_state_never_touches_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous = os.environ.get("RLM_HARNESS_STATE_DIR")
+            os.environ["RLM_HARNESS_STATE_DIR"] = temp_dir
+            try:
+                state = HarnessState(in_memory=True)
+                created = state.create_memory("Volatile", "in memory only", id="volatile")
+                state.record_refinement("trigger", ["change"])
+            finally:
+                if previous is None:
+                    os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_HARNESS_STATE_DIR"] = previous
+
+            self.assertIsNone(state.file_path)
+            self.assertEqual(created.content, "in memory only")
+            self.assertEqual(state.get("memory", "volatile").content, "in memory only")
+            # No path was resolved, so nothing was persisted anywhere under the dir.
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
     def test_reloads_external_writes_before_mutating(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "harness_state.json"
