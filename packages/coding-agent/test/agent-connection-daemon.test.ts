@@ -3,7 +3,10 @@ import { getModel } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { MissingSessionCwdError } from "../src/core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../src/core/session-import-errors.js";
-import { DaemonAgentConnection } from "../src/modes/agent-connection/daemon-agent-connection.js";
+import {
+	DAEMON_REFINE_REQUEST_TIMEOUT_MS,
+	DaemonAgentConnection,
+} from "../src/modes/agent-connection/daemon-agent-connection.js";
 import type { AgentConnectionEvent, AgentConnectionState } from "../src/modes/agent-connection/types.js";
 import type {
 	DaemonClient,
@@ -21,17 +24,20 @@ import {
 
 class FakeDaemonClient {
 	readonly requests: DaemonCommand[] = [];
+	readonly requestTimeouts: number[] = [];
 	attachResultFactory: ((command: Extract<DaemonCommand, { type: "attach" }>) => DaemonAttachResult) | undefined;
 	closeCount = 0;
+	abortBashUnknownCommand = false;
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 
 	async request(
 		command: DaemonCommand,
-		_timeoutMs = 30000,
+		timeoutMs = 30000,
 		options: DaemonClientRequestOptions = {},
 	): Promise<DaemonResponse> {
 		this.requests.push(command);
+		this.requestTimeouts.push(timeoutMs);
 		switch (command.type) {
 			case "attach":
 				if (command.activeSessionId === "missing") {
@@ -219,12 +225,46 @@ class FakeDaemonClient {
 					success: true,
 					data: { cancelled: command.childId === "child-1" },
 				};
+			case "execute_bash":
+				if (command.command === "stale-daemon") {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: execute_bash",
+					};
+				}
+				return { type: "response", command: command.type, success: true };
+			case "abort_bash":
+				if (this.abortBashUnknownCommand) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: abort_bash",
+					};
+				}
+				return { type: "response", command: command.type, success: true };
 			case "delete_saved_session":
 				return {
 					type: "response",
 					command: command.type,
 					success: true,
 					data: { ok: true, method: "trash" },
+				};
+			case "refine":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: {
+						id: "refine_daemon",
+						summary: "Daemon refinement",
+						rationale: "Test daemon refine timeout",
+						expectedOutcome: "Refine request completes",
+						appliedEdits: [],
+						harnessStatePath: "/tmp/harness_state.json",
+					},
 				};
 			case "switch_session":
 				return {
@@ -303,6 +343,7 @@ function createConnectionState(activeSessionId: string, sessionId: string): Agen
 		availableThinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
 		isStreaming: false,
 		isCompacting: false,
+		isBashRunning: false,
 		retryAttempt: 0,
 		steeringMode: "all",
 		followUpMode: "one-at-a-time",
@@ -731,6 +772,33 @@ describe("DaemonAgentConnection", () => {
 		);
 	});
 
+	it("sends bash commands through the daemon protocol", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+
+		await connection.executeBash("echo hi", { excludeFromContext: true });
+		await connection.abortBash();
+
+		expect(fakeClient.requests[1]).toMatchObject({
+			type: "execute_bash",
+			activeSessionId: "active-1",
+			command: "echo hi",
+			excludeFromContext: true,
+		});
+		expect(fakeClient.requests[2]).toMatchObject({ type: "abort_bash", activeSessionId: "active-1" });
+
+		// A daemon from a build that predates the command reports a restart hint
+		// instead of the raw protocol error.
+		await expect(connection.executeBash("stale-daemon")).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
+		fakeClient.abortBashUnknownCommand = true;
+		await expect(connection.abortBash()).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
+	});
+
 	it("loads resource snapshots through the daemon protocol", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
@@ -965,6 +1033,28 @@ describe("DaemonAgentConnection", () => {
 			requestId: "request-1",
 			response: { confirmed: true },
 		});
+	});
+
+	it("uses an extended timeout for refine requests through the daemon protocol", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+
+		await expect(
+			connection.refine({ instructions: "remember this", rollbackId: "refine_previous" }),
+		).resolves.toMatchObject({
+			id: "refine_daemon",
+			appliedEdits: [],
+		});
+
+		expect(fakeClient.requests[1]).toMatchObject({
+			type: "refine",
+			activeSessionId: "active-1",
+			instructions: "remember this",
+			rollbackId: "refine_previous",
+		});
+		expect(fakeClient.requestTimeouts[0]).toBe(30000);
+		expect(fakeClient.requestTimeouts[1]).toBe(DAEMON_REFINE_REQUEST_TIMEOUT_MS);
 	});
 
 	it("lists and renames saved sessions through the daemon protocol", async () => {

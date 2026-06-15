@@ -3,6 +3,8 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { ContextTreeNode } from "../../core/context-tree.js";
+import type { RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
 import { SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
@@ -18,6 +20,7 @@ import type {
 	AgentConnectionBeforeSessionInvalidateListener,
 	AgentConnectionEvent,
 	AgentConnectionEventListener,
+	AgentConnectionExecuteBashOptions,
 	AgentConnectionExtensionUiResponse,
 	AgentConnectionForkOptions,
 	AgentConnectionModel,
@@ -108,6 +111,10 @@ export class InProcessAgentConnection implements AgentConnection {
 		return this.session.getSessionStats();
 	}
 
+	async getContextTree(): Promise<ContextTreeNode> {
+		return this.session.getContextTree();
+	}
+
 	async getSessionContext(): Promise<AgentConnectionSessionContext> {
 		return this.session.sessionManager.buildSessionContext();
 	}
@@ -191,6 +198,14 @@ export class InProcessAgentConnection implements AgentConnection {
 		await this.session.agent.waitForIdle();
 	}
 
+	async executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void> {
+		await this.session.runUserBash(command, options);
+	}
+
+	async abortBash(): Promise<void> {
+		this.session.abortBash();
+	}
+
 	async setModel(provider: string, modelId: string): Promise<AgentConnectionModel> {
 		this.session.modelRegistry.refresh();
 		const model = this.session.modelRegistry.getAvailable().find((candidate) => {
@@ -240,6 +255,10 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		return this.session.compact(customInstructions);
+	}
+
+	async refine(options: { instructions?: string; rollbackId?: string } = {}): Promise<RefinementResult> {
+		return this.session.refine(options);
 	}
 
 	async abortCompaction(): Promise<void> {

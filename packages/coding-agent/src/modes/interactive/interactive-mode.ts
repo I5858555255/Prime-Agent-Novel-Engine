@@ -106,6 +106,7 @@ import {
 	type ChildAgentTranscriptLine,
 } from "./components/child-agent-inspector.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
+import { formatContextTree } from "./components/context-tree-format.js";
 import { CountdownTimer } from "./components/countdown-timer.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
@@ -475,6 +476,13 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+
+	// User bash execution tracking (! / !! prefix), driven by bash_* session events
+	private activeBashComponent: BashExecutionComponent | undefined = undefined;
+	private pendingBashComponents: BashExecutionComponent[] = [];
+
+	// Serializes session event handling; see subscribeToAgent
+	private sessionEventQueue: Promise<void> = Promise.resolve();
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -1979,6 +1987,12 @@ export class InteractiveMode {
 			case "goal_update":
 				this.patchConnectionState({ goal: event.goal });
 				break;
+			case "bash_start":
+				this.patchConnectionState({ isBashRunning: true });
+				break;
+			case "bash_end":
+				this.patchConnectionState({ isBashRunning: false });
+				break;
 		}
 	}
 
@@ -2004,6 +2018,10 @@ export class InteractiveMode {
 
 	private isAgentCompacting(): boolean {
 		return this.connectionState?.isCompacting ?? false;
+	}
+
+	private isBashRunning(): boolean {
+		return this.connectionState?.isBashRunning ?? false;
 	}
 
 	private getRetryAttempt(): number {
@@ -2065,6 +2083,11 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		// The discarded component's loader interval keeps firing otherwise; no
+		// bash_end will reach it once the reference is dropped.
+		this.activeBashComponent?.setComplete(undefined, true);
+		this.activeBashComponent = undefined;
+		this.pendingBashComponents = [];
 		this.activityTracker.reset();
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
@@ -3154,8 +3177,8 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/usage") {
-				await this.handleUsageCommand();
+			if (text === "/context" || text === "/usage") {
+				await this.handleContextCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -3210,6 +3233,12 @@ export class InteractiveMode {
 				await this.handleCompactCommand(customInstructions);
 				return;
 			}
+			if (text === "/refine" || text.startsWith("/refine ")) {
+				const refineArgs = text.startsWith("/refine ") ? text.slice(8).trim() : undefined;
+				this.editor.setText("");
+				await this.handleRefineCommand(refineArgs);
+				return;
+			}
 			if (text === "/reload") {
 				this.editor.setText("");
 				await this.handleReloadCommand();
@@ -3241,10 +3270,36 @@ export class InteractiveMode {
 				return;
 			}
 
-			// Legacy bash shortcuts are intentionally not transported through AgentConnection.
+			// Handle bash command (! for normal, !! for excluded from context)
 			if (text.startsWith("!")) {
-				this.showWarning("Bash commands are not available in interactive mode. Use IPython for shell commands.");
+				const isExcluded = text.startsWith("!!");
+				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+				if (!command) {
+					// Bare ! / !! is bash mode with nothing to run; don't send it as a prompt
+					return;
+				}
+				if (this.isBashRunning()) {
+					this.showWarning(`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`);
+					return;
+				}
+				this.editor.addToHistory?.(text);
 				this.editor.setText("");
+				// Optimistic: bash_start only fires after extension dispatch, and the
+				// clear key must already route to abortBash in that window.
+				this.patchConnectionState({ isBashRunning: true });
+				try {
+					await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
+				} catch (error) {
+					// Re-sync rather than assume idle: the rejection may mean another
+					// client's bash run already holds the slot.
+					try {
+						const state = await this.agentConnection.getState();
+						this.patchConnectionState({ isBashRunning: state.isBashRunning });
+					} catch {
+						this.patchConnectionState({ isBashRunning: false });
+					}
+					this.showError(error instanceof Error ? error.message : String(error));
+				}
 				return;
 			}
 
@@ -3271,6 +3326,10 @@ export class InteractiveMode {
 				return;
 			}
 
+			// Normal message submission
+			// First, move any pending bash components to chat
+			this.flushPendingBashComponents();
+
 			if (this.onInputCallback) {
 				this.onInputCallback(text);
 			}
@@ -3282,7 +3341,12 @@ export class InteractiveMode {
 		this.unsubscribe = this.agentConnection.subscribe(async (event) => {
 			try {
 				if (event.type === "session_event") {
-					await this.handleEvent(event.event);
+					// Connection adapters dispatch without awaiting, so a handler that
+					// suspends would let later events overtake it; queue session events
+					// to keep paired events like bash_start/bash_end in emission order.
+					const run = this.sessionEventQueue.then(() => this.handleEvent(event.event));
+					this.sessionEventQueue = run.catch(() => {});
+					await run;
 				} else if (event.type === "session_replaced") {
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
@@ -3527,6 +3591,45 @@ export class InteractiveMode {
 				this.updateEditorBorderColor();
 				break;
 
+			case "bash_start": {
+				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext);
+				if (this.isAgentStreaming()) {
+					this.pendingMessagesContainer.addChild(component);
+					this.pendingBashComponents.push(component);
+				} else {
+					this.chatContainer.addChild(component);
+				}
+				this.activeBashComponent = component;
+				this.ui.requestRender();
+				break;
+			}
+
+			case "bash_output":
+				if (this.activeBashComponent) {
+					this.activeBashComponent.appendOutput(event.chunk);
+					this.ui.requestRender();
+				}
+				break;
+
+			case "bash_end":
+				if (this.activeBashComponent) {
+					if (event.errorMessage) {
+						this.activeBashComponent.setFailed(event.errorMessage);
+					} else {
+						this.activeBashComponent.setComplete(
+							event.exitCode,
+							event.cancelled,
+							event.truncated ? ({ truncated: true } as TruncationResult) : undefined,
+							event.fullOutputPath,
+						);
+					}
+					this.activeBashComponent = undefined;
+				} else if (event.errorMessage) {
+					this.showError(`Bash command failed: ${event.errorMessage}`);
+				}
+				this.ui.requestRender();
+				break;
+
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
@@ -3649,6 +3752,7 @@ export class InteractiveMode {
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
+				this.flushPendingBashComponents();
 				this.resetPendingToolState();
 
 				await this.checkShutdownRequested();
@@ -4526,6 +4630,12 @@ export class InteractiveMode {
 			void this.agentConnection.abortBranchSummary();
 			return;
 		}
+		// Bash outranks the agent stream: the already-running warning tells the user
+		// this key cancels the bash command, and the stream stays one press away.
+		if (this.isBashRunning()) {
+			void this.agentConnection.abortBash();
+			return;
+		}
 		if (this.isAgentStreaming()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
@@ -4966,6 +5076,11 @@ export class InteractiveMode {
 
 	private updatePendingMessagesDisplay(): void {
 		this.pendingMessagesContainer.clear();
+		// Keep in-flight bash output visible across queue refreshes; clear() detaches
+		// the components but they stay tracked in pendingBashComponents until flushed.
+		for (const component of this.pendingBashComponents) {
+			this.pendingMessagesContainer.addChild(component);
+		}
 		const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
 		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
@@ -4981,6 +5096,15 @@ export class InteractiveMode {
 			const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
 			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
+	}
+
+	/** Move pending bash components from pending area to chat */
+	private flushPendingBashComponents(): void {
+		for (const component of this.pendingBashComponents) {
+			this.pendingMessagesContainer.removeChild(component);
+			this.chatContainer.addChild(component);
+		}
+		this.pendingBashComponents = [];
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
@@ -6321,52 +6445,26 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}\n`;
 		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
 		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
-		info += theme.fg("dim", "Use /usage for token, cost, and context usage.");
+		info += theme.fg("dim", "Use /context for token, cost, and context usage.");
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
 	}
 
-	private async handleUsageCommand(): Promise<void> {
-		const stats = await this.agentConnection.getSessionStats();
-		const state = await this.agentConnection.getState();
-		this.applyConnectionStateSnapshot(state);
-		const model = state.model;
-
-		let info = `${theme.bold("Usage")}\n\n`;
-		if (model) {
-			info += `${theme.fg("dim", "Model:")} ${model.provider}/${model.id}\n\n`;
-		}
-		info += `${theme.bold("Tokens")}\n`;
-		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		if (stats.tokens.cacheRead > 0) {
-			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
-		}
-		if (stats.tokens.cacheWrite > 0) {
-			info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
-		}
-		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-
-		if (stats.cost > 0) {
-			info += `\n${theme.bold("Cost")}\n`;
-			info += `${theme.fg("dim", "Total:")} $${stats.cost.toFixed(4)}\n`;
-		}
-
-		const contextUsage = stats.contextUsage;
-		if (contextUsage) {
-			info += `\n${theme.bold("Context")}\n`;
-			if (contextUsage.tokens === null || contextUsage.percent === null) {
-				info += `${theme.fg("dim", "Current:")} unknown after compaction\n`;
-			} else {
-				const percent = `${Math.round(contextUsage.percent * 10) / 10}%`;
-				info += `${theme.fg("dim", "Current:")} ${contextUsage.tokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} (${percent})\n`;
-			}
+	private async handleContextCommand(): Promise<void> {
+		let info: string;
+		try {
+			const tree = await this.agentConnection.getContextTree();
+			const width = Math.max(60, Math.min(this.ui.terminal.columns - 2, 120));
+			info = formatContextTree(tree, width);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return;
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info.trimEnd(), 1, 0));
+		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
 	}
 
@@ -6667,6 +6765,54 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			await this.agentConnection.compact(customInstructions);
 		} catch {
 			// Ignore, will be emitted as an event
+		}
+	}
+
+	private async handleRefineCommand(args?: string): Promise<void> {
+		const trimmedArgs = args?.trim();
+		const rollbackPrefix = "rollback ";
+		let options: { instructions?: string; rollbackId?: string };
+
+		if (trimmedArgs === "rollback") {
+			this.showWarning("Usage: /refine rollback <refinement-id>");
+			return;
+		}
+
+		if (trimmedArgs?.startsWith(rollbackPrefix) && trimmedArgs.slice(rollbackPrefix.length).trim()) {
+			// Rollback uses the global refinement history, not the current trajectory,
+			// so it must work even in a fresh session with no messages yet.
+			options = { rollbackId: trimmedArgs.slice(rollbackPrefix.length).trim() };
+		} else {
+			let messageCount: number;
+			try {
+				const stats = await this.agentConnection.getSessionStats();
+				messageCount = stats.totalMessages;
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
+
+			if (messageCount < 2) {
+				this.showWarning("Nothing to refine (no trajectory yet)");
+				return;
+			}
+			options = { instructions: args };
+		}
+
+		this.stopWorkingLoader();
+		this.showStatus(
+			options.rollbackId ? `Rolling back refinement ${options.rollbackId}...` : "Refining harness state...",
+		);
+
+		try {
+			const result = await this.agentConnection.refine(options);
+			const applied = result.appliedEdits.filter((edit) => edit.applied).length;
+			const failed = result.appliedEdits.length - applied;
+			const failedSuffix = failed > 0 ? `, ${failed} failed` : "";
+			this.showStatus(`Refined harness state: ${applied} edit${applied === 1 ? "" : "s"} applied${failedSuffix}`);
+			this.showStatus(`Harness state: ${result.harnessStatePath}`);
+		} catch (error) {
+			this.showError(`Refinement failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 

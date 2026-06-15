@@ -86,12 +86,15 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"steer",
 	"follow_up",
 	"abort",
+	"execute_bash",
+	"abort_bash",
 	"cancel_rlm_child",
 	"wait_for_idle",
 	"get_state",
 	"get_connection_state",
 	"get_messages",
 	"get_session_stats",
+	"get_context_tree",
 	"get_commands",
 	"get_resource_snapshot",
 	"get_available_models",
@@ -107,6 +110,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"set_follow_up_mode",
 	"set_auto_compaction",
 	"compact",
+	"refine",
 	"abort_compaction",
 	"abort_branch_summary",
 	"abort_retry",
@@ -673,6 +677,30 @@ class AgentDaemon {
 				return success(command.id, "abort");
 			}
 
+			case "execute_bash": {
+				const state = this.getSessionState(command.activeSessionId);
+				if (state.runtime.session.isBashRunning) {
+					throw new Error("A bash command is already running");
+				}
+				// Respond before completion (bash can outlive the client request
+				// timeout); output and completion stream via bash_* session events.
+				void state.runtime.session
+					.runUserBash(command.command, { excludeFromContext: command.excludeFromContext })
+					.catch((error) => {
+						this.broadcastToSession(
+							state,
+							failure(undefined, "execute_bash", error, serializeDaemonError(error)),
+						);
+					});
+				return success(command.id, "execute_bash");
+			}
+
+			case "abort_bash": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.abortBash();
+				return success(command.id, "abort_bash");
+			}
+
 			case "cancel_rlm_child": {
 				const state = this.getSessionState(command.activeSessionId);
 				const cancelled = state.runtime.session.cancelRlmChildRun(command.childId);
@@ -708,6 +736,11 @@ class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const stats: SessionStats = state.runtime.session.getSessionStats();
 				return success(command.id, "get_session_stats", stats);
+			}
+
+			case "get_context_tree": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "get_context_tree", state.runtime.session.getContextTree());
 			}
 
 			case "get_commands": {
@@ -814,6 +847,15 @@ class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const result = await state.runtime.session.compact(command.customInstructions);
 				return success(command.id, "compact", result);
+			}
+
+			case "refine": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.session.refine({
+					instructions: command.instructions,
+					rollbackId: command.rollbackId,
+				});
+				return success(command.id, "refine", result);
 			}
 
 			case "abort_compaction": {

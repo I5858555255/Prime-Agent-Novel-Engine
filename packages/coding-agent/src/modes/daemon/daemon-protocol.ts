@@ -173,12 +173,21 @@ export type DaemonCommand =
 	| { id?: string; type: "steer"; activeSessionId: string; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; activeSessionId: string; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort"; activeSessionId: string }
+	| {
+			id?: string;
+			type: "execute_bash";
+			activeSessionId: string;
+			command: string;
+			excludeFromContext?: boolean;
+	  }
+	| { id?: string; type: "abort_bash"; activeSessionId: string }
 	| { id?: string; type: "cancel_rlm_child"; activeSessionId: string; childId: string }
 	| { id?: string; type: "wait_for_idle"; activeSessionId: string }
 	| { id?: string; type: "get_state"; activeSessionId: string }
 	| { id?: string; type: "get_connection_state"; activeSessionId: string }
 	| { id?: string; type: "get_messages"; activeSessionId: string }
 	| { id?: string; type: "get_session_stats"; activeSessionId: string }
+	| { id?: string; type: "get_context_tree"; activeSessionId: string }
 	| { id?: string; type: "get_commands"; activeSessionId: string }
 	| { id?: string; type: "get_resource_snapshot"; activeSessionId: string }
 	| { id?: string; type: "get_available_models"; activeSessionId: string }
@@ -194,6 +203,7 @@ export type DaemonCommand =
 	| { id?: string; type: "set_follow_up_mode"; activeSessionId: string; mode: AgentConnectionQueueMode }
 	| { id?: string; type: "set_auto_compaction"; activeSessionId: string; enabled: boolean }
 	| { id?: string; type: "compact"; activeSessionId: string; customInstructions?: string }
+	| { id?: string; type: "refine"; activeSessionId: string; instructions?: string; rollbackId?: string }
 	| { id?: string; type: "abort_compaction"; activeSessionId: string }
 	| { id?: string; type: "abort_branch_summary"; activeSessionId: string }
 	| { id?: string; type: "abort_retry"; activeSessionId: string }
