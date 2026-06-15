@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	checkPrimeAgentTracesAccess,
 	checkPrimeInferenceAccess,
 	fetchPrimeTeams,
 	loadPrimeCliConfig,
+	loginPrimeAgentTraces,
 	loginPrimeInference,
 } from "../src/core/prime-inference-auth.js";
 
@@ -187,6 +189,20 @@ describe("Prime Inference auth", () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
+	it("checks Prime Agent trace access with Prime whoami permissions", async () => {
+		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			expect(getUrl(input)).toBe("https://prime-api.example/api/v1/user/whoami");
+			expect(init?.method).toBe("GET");
+			expect(getAuthorization(init)).toBe("Bearer prime-key");
+			return jsonResponse({ data: { scope: { agent_traces: { read: true, write: true } } } });
+		});
+
+		await expect(
+			checkPrimeAgentTracesAccess("prime-key", "https://prime-api.example", { fetchFn: fetchMock }),
+		).resolves.toEqual({ ok: true });
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
 	it("throws contextual errors for invalid Prime whoami JSON", async () => {
 		const fetchMock = vi.fn(async (): Promise<Response> => {
 			return new Response("not json", {
@@ -288,6 +304,47 @@ describe("Prime Inference auth", () => {
 			instructions: "Code: challenge-code",
 		});
 		expect(progress.join("\n")).toContain("Existing Prime CLI key cannot access Prime Inference");
+	});
+
+	it("requests agent trace scope during Prime Agent trace browser login", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				base_url: "https://prime-api.example",
+				frontend_url: "https://prime-app.example",
+			}),
+		);
+		let challengePublicKey = "";
+		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			const url = getUrl(input);
+			if (url === "https://prime-api.example/api/v1/auth_challenge/generate") {
+				challengePublicKey = String(getJsonBody(init).encryptionPublicKey);
+				return jsonResponse({ challenge: "challenge-code", status_auth_token: "status-token" });
+			}
+			if (url.startsWith("https://prime-api.example/api/v1/auth_challenge/status")) {
+				expect(getAuthorization(init)).toBe("Bearer status-token");
+				return jsonResponse({ result: encryptChallengeResult(challengePublicKey, "trace-key") });
+			}
+			if (url === "https://prime-api.example/api/v1/user/whoami") {
+				expect(getAuthorization(init)).toBe("Bearer trace-key");
+				return jsonResponse({ data: { scope: { agent_traces: { read: true, write: true } } } });
+			}
+			throw new Error(`Unexpected fetch URL: ${url}`);
+		});
+		const onAuth = vi.fn();
+
+		const result = await loginPrimeAgentTraces(
+			{
+				onAuth,
+			},
+			{ configPath, fetchFn: fetchMock, pollIntervalMs: 0, requestTimeoutMs: 1000 },
+		);
+
+		expect(result).toEqual({ apiKey: "trace-key", source: "browser" });
+		expect(onAuth).toHaveBeenCalledWith({
+			url: "https://prime-app.example/dashboard/tokens/challenge?code=challenge-code&scope=agent_traces",
+			instructions: "Code: challenge-code",
+		});
 	});
 
 	it("rejects an expired browser challenge", async () => {

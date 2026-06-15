@@ -27,6 +27,11 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "copy", description: "Copy last agent message to clipboard" },
 	{ name: "name", description: "Set session display name" },
 	{ name: "session", description: "Show session info" },
+	{
+		name: "traces",
+		description: "Opt in or out of Prime Agent trace sharing",
+		argumentHint: "[status|on|off|upload|login]",
+	},
 	{ name: "context", description: "Show token, cost, and context usage for agent and sub-agents" },
 	{ name: "usage", description: "Show token, cost, and context usage (alias for /context)" },
 	{ name: "changelog", description: "Show changelog entries" },
