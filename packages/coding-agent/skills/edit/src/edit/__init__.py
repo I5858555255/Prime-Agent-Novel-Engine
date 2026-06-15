@@ -13,7 +13,8 @@ async def run(path: str, old_str: str, new_str: str) -> str:
     over rewriting a whole file for targeted edits.
 
     Args:
-        path: File to edit, relative to the working directory or absolute.
+        path: File to edit, relative to the working directory, absolute, or
+            `~`-prefixed (the leading `~`/`~user` is expanded to the home dir).
         old_str: Exact text to find. Must occur exactly once in the file.
         new_str: Replacement text.
 
@@ -24,7 +25,7 @@ async def run(path: str, old_str: str, new_str: str) -> str:
         FileNotFoundError: If ``path`` does not exist.
         ValueError: If ``old_str`` is absent or matches more than once.
     """
-    filepath = Path(path)
+    filepath = Path(path).expanduser()
     if not filepath.exists():
         raise FileNotFoundError(f"{path} not found")
     content = filepath.read_text(encoding="utf-8")
