@@ -34,6 +34,11 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		skillLines.push(
 			"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 		);
+		if (installedSkills.includes("edit")) {
+			skillLines.push(
+				"For targeted existing-file edits, prefer the pre-imported async `edit` skill from IPython: `old = '''...'''; new = '''...'''; await edit(path=\"pkg/file.py\", old_str=old, new_str=new)`. Use exact old/new strings; if the text contains triple double quotes, use triple single-quoted variables or build `old`/`new` from inspected file slices.",
+			);
+		}
 	}
 	if (skillLines.length > 0) {
 		parts.push("", ...skillLines);
@@ -51,7 +56,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	if (activeTools.includes("ipython")) {
 		parts.push(
 			"",
-			"Use `ipython` for both Python and shell work. For repository shell commands, prefer IPython shell syntax: `!rg ...`, `!npm run check`, or `%%bash` for multi-line scripts. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
+			"Use `ipython` for both Python and shell work. When running shell commands from IPython, use `%%bash` cells. If you use `%%bash`, it must be the first line of the code cell: no comments, spaces, blank lines, imports, or Python statements before it. Avoid `!cmd` shell escapes for project commands so shell behavior is explicit and multi-line commands share one shell context. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
 		);
 	}
 

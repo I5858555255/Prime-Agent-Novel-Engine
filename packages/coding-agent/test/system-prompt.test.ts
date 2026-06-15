@@ -42,11 +42,45 @@ describe("buildRlmPrompt", () => {
 				"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
 				"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 				"",
-				"Use `ipython` for both Python and shell work. For repository shell commands, prefer IPython shell syntax: `!rg ...`, `!npm run check`, or `%%bash` for multi-line scripts. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
+				"Use `ipython` for both Python and shell work. When running shell commands from IPython, use `%%bash` cells. If you use `%%bash`, it must be the first line of the code cell: no comments, spaces, blank lines, imports, or Python statements before it. Avoid `!cmd` shell escapes for project commands so shell behavior is explicit and multi-line commands share one shell context. Do not wrap ordinary shell commands in Python subprocesses unless you need Python-level processing.",
 				"",
 				"Call at most one built-in tool per turn.",
 			].join("\n"),
 		);
+	});
+
+	test("documents the %%bash first-line rule when ipython is active", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			activeTools: ["ipython"],
+			allowRecursion: false,
+		});
+
+		expect(prompt).toContain("it must be the first line of the code cell");
+	});
+
+	test("includes the edit skill guidance only when the edit skill is installed", () => {
+		const withEdit = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["edit"],
+			activeTools: ["ipython"],
+			allowRecursion: false,
+		});
+
+		expect(withEdit).toContain('await edit(path="pkg/file.py", old_str=old, new_str=new)');
+		expect(withEdit).toContain("triple double quotes");
+
+		const withoutEdit = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["websearch"],
+			activeTools: ["ipython"],
+			allowRecursion: false,
+		});
+
+		expect(withoutEdit).not.toContain("await edit(path=");
 	});
 
 	test("only documents ipython shell prefixes when ipython is active", () => {
@@ -91,7 +125,8 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("notify='wake'");
 		expect(prompt).not.toContain("notify='silent'");
 		expect(prompt).toContain("Use `ipython` for both Python and shell work");
-		expect(prompt).toContain("prefer IPython shell syntax");
+		expect(prompt).toContain("use `%%bash` cells");
+		expect(prompt).toContain("Avoid `!cmd` shell escapes for project commands");
 		expect(prompt).toContain("Do not wrap ordinary shell commands in Python subprocesses");
 		expect(prompt).toContain("Call at most one built-in tool per turn.");
 		expect(prompt).not.toContain("# IPython Kernel Guidance");
