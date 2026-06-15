@@ -204,6 +204,31 @@ describe("AgentSession goals", () => {
 		expect(harness.session.goalState.tokensUsed).toBeGreaterThan(0);
 	});
 
+	it("does not count post-completion turns against the finished goal", async () => {
+		const harness = await createGoalHarness();
+		harness.setResponses([
+			assistantWithUsage(
+				fauxAssistantMessage(fauxToolCall("ipython", COMPLETE_GOAL_CELL), { stopReason: "toolUse" }),
+				{ input: 4, output: 2, totalTokens: 6 },
+			),
+			assistantWithUsage(
+				"Goal complete; here is a long closing summary that must not be billed to the finished goal.",
+				{ input: 20, output: 10, totalTokens: 30 },
+			),
+		]);
+
+		await harness.session.prompt("/goal finish the task");
+
+		expect(harness.session.goalState.status).toBe("complete");
+		const completeUpdates = harness.eventsOfType("goal_update").filter((event) => event.goal.status === "complete");
+		expect(completeUpdates.length).toBeGreaterThan(0);
+		const tokensAtCompletion = completeUpdates[0].goal.tokensUsed;
+		expect(tokensAtCompletion).toBeGreaterThan(0);
+		// The closing-summary turn runs after goal.complete() over the host bridge;
+		// it must not increase the finished goal's token usage.
+		expect(harness.session.goalState.tokensUsed).toBe(tokensAtCompletion);
+	});
+
 	it("returns the goal snapshot and completion report over the host bridge", async () => {
 		const harness = await createGoalHarness();
 

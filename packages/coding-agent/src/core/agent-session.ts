@@ -650,12 +650,6 @@ export class AgentSession {
 	private _goalAccountingStartedAt: number | undefined = undefined;
 	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
 	private _goalAbortInProgress = false;
-	/**
-	 * Set when goal.complete arrives over the kernel host bridge so usage
-	 * accounting still attributes the completing turn to the goal (the goal is
-	 * already "complete" by the time the assistant message is accounted).
-	 */
-	private _goalCompletionRequested = false;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -973,14 +967,12 @@ export class AgentSession {
 			updatedAt: now,
 		};
 		this._goalAccountingStartedAt = now;
-		this._goalCompletionRequested = false;
 		this._setGoalState(goal);
 		return this._goalState;
 	}
 
 	private _clearGoal(): void {
 		this._clearQueuedGoalContexts();
-		this._goalCompletionRequested = false;
 		this._setGoalState(emptyGoalState());
 	}
 
@@ -1232,25 +1224,22 @@ export class AgentSession {
 		if (this._goalAccountedAssistantMessages.has(message)) {
 			return false;
 		}
-		// goal.complete() arrives over the kernel host bridge mid-turn, so the
-		// goal can already be "complete" when the turn's assistant message is
-		// accounted. Attribute that completing turn to the goal exactly once.
-		const completionRequested = this._goalCompletionRequested;
-		if (this._goalState.status !== "active" && !(this._goalState.status === "complete" && completionRequested)) {
+		// Usage is attributed at the assistant message's message_end, which fires
+		// before that turn's ipython cell runs. goal.complete() only arrives later
+		// over the kernel host bridge, so the completing turn is always accounted
+		// while the goal is still active. Only count turns spent pursuing the goal;
+		// post-completion turns (e.g. a closing summary) must not be attributed.
+		if (this._goalState.status !== "active") {
 			return false;
 		}
 		this._goalAccountedAssistantMessages.add(message);
-		if (this._goalState.status === "complete") {
-			this._goalCompletionRequested = false;
-		}
 		const tokenDelta = goalTokenDeltaForUsage(message.usage);
 		const goal = this._goalWithAccountedWallClock();
 		const nextGoal: GoalState = {
 			...goal,
 			tokensUsed: goal.tokensUsed + tokenDelta,
 		};
-		const budgetReached =
-			!completionRequested && nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
+		const budgetReached = nextGoal.tokenBudget !== undefined && nextGoal.tokensUsed >= nextGoal.tokenBudget;
 		if (!budgetReached) {
 			this._setGoalState(nextGoal);
 			return false;
@@ -1357,7 +1346,6 @@ export class AgentSession {
 			throw new Error("cannot complete goal because this thread has no goal");
 		}
 		const goal = this._goalWithAccountedWallClock();
-		this._goalCompletionRequested = true;
 		// A turn can cross the budget and complete the goal at once: accounting
 		// runs at message_end, before the completing ipython cell executes, so a
 		// budget-limit context may already be steered. It is stale now — drop it.
@@ -1545,8 +1533,6 @@ export class AgentSession {
 			if (!compactionWillRetry) {
 				this._finishGoalForTerminalAssistantMessage(msg);
 			}
-			// Completion accounting is scoped to the run where goal.complete arrived.
-			this._goalCompletionRequested = false;
 		}
 	}
 
