@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -6,12 +6,16 @@ import type * as PiAi from "@earendil-works/pi-ai";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	appendGlobalRefinement,
 	applyRefinementProposal,
 	getGlobalHarnessStateDir,
 	getHarnessStatePath,
 	getRefinementHistory,
+	getRefinementHistoryPath,
 	type HarnessState,
+	loadGlobalRefinementHistory,
 	loadHarnessState,
+	mergeRefinementHistory,
 	type RefinementAction,
 	type RefinementKind,
 	type RefinementProposal,
@@ -911,5 +915,91 @@ describe("harness refinement", () => {
 		await expect(
 			refineHarness([], state, [], {} as never, "api-key", { rollbackId: "missing_refinement" }),
 		).rejects.toThrow("Refinement missing_refinement not found");
+	});
+});
+
+describe("global refinement history", () => {
+	function sampleResult(id: string, overrides: Partial<RefinementResult> = {}): RefinementResult {
+		return {
+			id,
+			summary: `${id} summary`,
+			rationale: `${id} rationale`,
+			expectedOutcome: `${id} outcome`,
+			appliedEdits: [],
+			harnessStatePath: "/tmp/harness_state.json",
+			...overrides,
+		};
+	}
+
+	it("appends and reloads refinement results across calls", () => {
+		const dir = makeTempDir();
+		expect(loadGlobalRefinementHistory(dir)).toEqual([]);
+
+		const first = sampleResult("refine_1");
+		const second = sampleResult("refine_2");
+		const historyPath = appendGlobalRefinement(dir, first);
+		appendGlobalRefinement(dir, second);
+
+		expect(historyPath).toBe(getRefinementHistoryPath(dir));
+		expect(loadGlobalRefinementHistory(dir)).toEqual([first, second]);
+	});
+
+	it("skips malformed history lines without throwing", () => {
+		const dir = makeTempDir();
+		const valid = sampleResult("refine_valid");
+		appendGlobalRefinement(dir, valid);
+		// Corrupt append: a non-JSON line and a JSON object that is not a refinement result.
+		appendFileSync(getRefinementHistoryPath(dir), "not json\n", "utf8");
+		appendFileSync(getRefinementHistoryPath(dir), `${JSON.stringify({ id: "x" })}\n`, "utf8");
+
+		expect(loadGlobalRefinementHistory(dir)).toEqual([valid]);
+	});
+
+	it("merges global and session history, preferring session entries by id", () => {
+		const globalOld = sampleResult("refine_shared", { summary: "global version" });
+		const globalOnly = sampleResult("refine_global_only");
+		const sessionNew = sampleResult("refine_shared", { summary: "session version" });
+		const sessionOnly = sampleResult("refine_session_only");
+
+		const merged = mergeRefinementHistory([globalOld, globalOnly], [sessionNew, sessionOnly]);
+
+		expect(merged).toHaveLength(3);
+		expect(merged.find((item) => item.id === "refine_shared")?.summary).toBe("session version");
+		expect(merged.map((item) => item.id)).toEqual(
+			expect.arrayContaining(["refine_shared", "refine_global_only", "refine_session_only"]),
+		);
+	});
+
+	it("rolls back a refinement recorded in a different session via global history", async () => {
+		const dir = makeTempDir();
+		const sessionAState = loadHarnessState(dir);
+		const applied = applyRefinementProposal(
+			sessionAState,
+			proposal("Session A refinement", [
+				{
+					action: "create",
+					kind: "memory",
+					id: "session_a_memory",
+					title: "Session A memory",
+					content: "Created in session A.",
+				},
+			]),
+			{ id: "refine_session_a" },
+		);
+		applied.harnessStatePath = saveHarnessState(dir, sessionAState);
+		appendGlobalRefinement(dir, applied);
+
+		// A fresh session loads the global state and the global history (its own session
+		// has no record of refine_session_a) and can still roll it back.
+		const sessionBState = loadHarnessState(dir);
+		expect(sessionBState.entries.memory.session_a_memory).toBeDefined();
+
+		const globalHistory = mergeRefinementHistory(loadGlobalRefinementHistory(dir), getRefinementHistory([]));
+		const rollback = await refineHarness([], sessionBState, globalHistory, {} as never, "api-key", {
+			rollbackId: "refine_session_a",
+		});
+
+		expect(rollback.rollbackOf).toBe("refine_session_a");
+		expect(sessionBState.entries.memory.session_a_memory).toBeUndefined();
 	});
 });

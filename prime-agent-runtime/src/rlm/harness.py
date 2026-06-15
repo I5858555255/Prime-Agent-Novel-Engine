@@ -103,11 +103,34 @@ class HarnessState:
         self.file_path = Path(file_path).expanduser().resolve() if file_path else _state_file()
         self.entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
         self.refinements: list[RefinementEvent] = []
+        # mtime of the file as of the last load/save, used to detect out-of-process
+        # writes (e.g. the host `/refine` command) and avoid clobbering them.
+        self._loaded_mtime: int | None = None
         self.load()
+
+    def _disk_mtime(self) -> int | None:
+        try:
+            return self.file_path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _sync_from_disk(self) -> None:
+        """Reload if another process rewrote the state file since we last touched it.
+
+        The kernel keeps a long-lived ``HarnessState`` in memory while the host
+        ``/refine`` command rewrites the same file from a separate process. Without
+        this guard the next in-kernel ``save()`` would overwrite host edits with a
+        stale snapshot. We re-read whenever the on-disk mtime no longer matches the
+        value recorded at our last load/save.
+        """
+        if self._disk_mtime() != self._loaded_mtime:
+            self.load()
 
     def load(self) -> "HarnessState":
         if not self.file_path.exists():
+            self._loaded_mtime = None
             return self
+        mtime = self._disk_mtime()
         with self.file_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -167,6 +190,7 @@ class HarnessState:
                     elif not isinstance(changes, list):
                         continue
                     self.refinements.append(RefinementEvent(**event_data))
+        self._loaded_mtime = mtime
         return self
 
     def save(self) -> "HarnessState":
@@ -181,6 +205,7 @@ class HarnessState:
         }
         with self.file_path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        self._loaded_mtime = self._disk_mtime()
         return self
 
     def upsert(
@@ -196,6 +221,7 @@ class HarnessState:
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
+        self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
 
@@ -229,11 +255,13 @@ class HarnessState:
         return entry
 
     def get(self, kind: HarnessKind, id: str) -> HarnessEntry | None:
+        self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         return self.entries[kind].get(id)
 
     def delete(self, kind: HarnessKind, id: str) -> bool:
+        self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         if id not in self.entries[kind]:
@@ -243,6 +271,7 @@ class HarnessState:
         return True
 
     def list(self, kind: HarnessKind | None = None) -> list[HarnessEntry]:
+        self._sync_from_disk()
         kinds = [kind] if kind else list(_KINDS)
         records: list[HarnessEntry] = []
         for current_kind in kinds:
@@ -264,6 +293,7 @@ class HarnessState:
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
+        self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         entry_id = id or _slug(title, kind)
@@ -294,6 +324,7 @@ class HarnessState:
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
+        self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         if id not in self.entries[kind]:
@@ -441,6 +472,7 @@ class HarnessState:
         outcome: str = "",
         id: str | None = None,
     ) -> RefinementEvent:
+        self._sync_from_disk()
         event_id = id or f"refine_{len(self.refinements) + 1:04d}"
         normalized_changes = [changes] if isinstance(changes, str) else list(changes)
         event = RefinementEvent(
@@ -472,6 +504,7 @@ class HarnessState:
         return plan
 
     def overview(self, *, max_entries_per_kind: int = 20) -> str:
+        self._sync_from_disk()
         lines = [
             f"Harness state: {self.file_path}",
             "Call contract: installed Python skills use await <skill_import>(...) or a matching shell CLI; "
@@ -514,6 +547,7 @@ class HarnessState:
         return "\n".join(lines)
 
     def snapshot(self) -> dict[str, Any]:
+        self._sync_from_disk()
         return {
             "file_path": str(self.file_path),
             "entries": {

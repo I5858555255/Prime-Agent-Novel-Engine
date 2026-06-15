@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
@@ -10,6 +10,7 @@ import type { CustomEntry } from "../session-manager.js";
 
 export const REFINEMENT_CUSTOM_TYPE = "prime-agent.refinement";
 const HARNESS_STATE_DIR_NAME = "harness";
+const REFINEMENT_HISTORY_FILE_NAME = "refinements.jsonl";
 const DEFAULT_OVERVIEW_ENTRY_LIMIT = 6;
 const DEFAULT_OVERVIEW_REFINEMENT_LIMIT = 5;
 const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
@@ -207,6 +208,66 @@ export function saveHarnessState(harnessStateDir: string, state: HarnessState): 
 	mkdirSync(harnessStateDir, { recursive: true });
 	writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 	return statePath;
+}
+
+export function getRefinementHistoryPath(harnessStateDir: string = getGlobalHarnessStateDir()): string {
+	return join(harnessStateDir, REFINEMENT_HISTORY_FILE_NAME);
+}
+
+function isRefinementResult(data: unknown): data is RefinementResult {
+	return typeof data === "object" && data !== null && "id" in data && "appliedEdits" in data;
+}
+
+/**
+ * Append a refinement result to the global, cross-session history log. The harness
+ * state itself is global, so rollback evidence must also be global; relying only on
+ * per-session JSONL entries makes a refinement applied in one session impossible to
+ * roll back from another.
+ */
+export function appendGlobalRefinement(harnessStateDir: string, result: RefinementResult): string {
+	const historyPath = getRefinementHistoryPath(harnessStateDir);
+	mkdirSync(harnessStateDir, { recursive: true });
+	appendFileSync(historyPath, `${JSON.stringify(result)}\n`, "utf8");
+	return historyPath;
+}
+
+export function loadGlobalRefinementHistory(harnessStateDir: string = getGlobalHarnessStateDir()): RefinementResult[] {
+	const historyPath = getRefinementHistoryPath(harnessStateDir);
+	if (!existsSync(historyPath)) {
+		return [];
+	}
+	const results: RefinementResult[] = [];
+	for (const line of readFileSync(historyPath, "utf8").split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (isRefinementResult(parsed)) {
+				results.push(parsed);
+			}
+		} catch {
+			// Skip malformed lines so a single bad append cannot break rollback.
+		}
+	}
+	return results;
+}
+
+/**
+ * Merge global and session refinement history, de-duplicating by id. Session entries
+ * win on conflict so a session that is mid-flight still resolves its own latest result.
+ */
+export function mergeRefinementHistory(
+	global: readonly RefinementResult[],
+	session: readonly RefinementResult[],
+): RefinementResult[] {
+	const byId = new Map<string, RefinementResult>();
+	for (const result of global) {
+		byId.set(result.id, result);
+	}
+	for (const result of session) {
+		byId.set(result.id, result);
+	}
+	return [...byId.values()];
 }
 
 function compactText(text: string, maxLength: number): string {

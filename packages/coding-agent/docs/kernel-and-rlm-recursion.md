@@ -109,9 +109,13 @@ rlm.harness.record_refinement(
 print(rlm.harness.overview())
 ```
 
-The store writes `harness_state.json` in `RLM_SESSION_DIR`, which is derived from
-the session JSONL path when sessions are persisted. It is intentionally a state
-ledger, not a second execution engine: child-agent execution still uses
+The store writes `harness_state.json` in the global agent harness directory
+(`RLM_HARNESS_STATE_DIR`, e.g. `~/.prime/agent/harness/`), so learned state is
+shared across sessions. Because the long-lived kernel and the host `/refine`
+command write the same file from separate processes, the kernel-side store
+reloads the file whenever its on-disk mtime changes before reading or mutating,
+so concurrent host edits are merged rather than clobbered. It is intentionally a
+state ledger, not a second execution engine: child-agent execution still uses
 `await rlm(...)`, installed Python skills still use the configured skill surface,
 and file/code edits still go through the normal Prime Agent tools.
 
@@ -131,9 +135,13 @@ edits to the editable components only:
 /refine rollback refine_20260608142312
 ```
 
-Rollback uses the before/after snapshots stored in `prime-agent.refinement`
-session custom entries. The base system prompt remains immutable; `/refine`
-can only create or update supplemental prompt notes.
+Rollback uses the before/after snapshots stored for each refinement. Because the
+harness state is global, the snapshots are appended to a global
+`refinements.jsonl` log in the harness directory (in addition to a
+`prime-agent.refinement` custom entry in the originating session), so a
+refinement applied in one session can be rolled back from any later session. The
+base system prompt remains immutable; `/refine` can only create or update
+supplemental prompt notes.
 
 ## ZeroMQ Jupyter Kernel Setup
 

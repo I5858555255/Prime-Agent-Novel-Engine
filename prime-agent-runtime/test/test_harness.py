@@ -262,6 +262,31 @@ class HarnessStateTest(unittest.TestCase):
                     arguments={},
                 )
 
+    def test_reloads_external_writes_before_mutating(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            kernel_state = HarnessState(state_path)
+            kernel_state.create_memory("Kernel note", "Written from the kernel.", id="kernel")
+
+            # Simulate the host /refine command rewriting the same file from another
+            # process. A second instance loads the current file, adds an entry, saves.
+            host_state = HarnessState(state_path)
+            host_state.create_memory("Host note", "Written by /refine.", id="host")
+            # Guarantee the mtime advances even on coarse-resolution filesystems.
+            future = state_path.stat().st_mtime + 5
+            os.utime(state_path, (future, future))
+
+            # A read on the long-lived kernel state must observe the host write.
+            self.assertEqual(kernel_state.get("memory", "host").content, "Written by /refine.")
+
+            # A mutation must merge onto the host write instead of clobbering it.
+            kernel_state.create_memory("Second kernel note", "Written later.", id="kernel_2")
+
+            reloaded = HarnessState(state_path)
+            self.assertIsNotNone(reloaded.get("memory", "kernel"))
+            self.assertIsNotNone(reloaded.get("memory", "host"))
+            self.assertIsNotNone(reloaded.get("memory", "kernel_2"))
+
     def test_explicit_create_and_update_enforce_entry_existence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")

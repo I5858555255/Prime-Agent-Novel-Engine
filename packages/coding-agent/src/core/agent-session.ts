@@ -117,9 +117,12 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
+	appendGlobalRefinement,
 	getGlobalHarnessStateDir,
 	getRefinementHistory,
+	loadGlobalRefinementHistory,
 	loadHarnessState,
+	mergeRefinementHistory,
 	type RefinementResult,
 	refineHarness,
 	saveHarnessState,
@@ -2719,8 +2722,12 @@ export class AgentSession {
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
 			const harnessStateDir = getGlobalHarnessStateDir();
 			const state = loadHarnessState(harnessStateDir);
-			const history = getRefinementHistory(
-				this.sessionManager.getEntries().filter((entry) => entry.type === "custom"),
+			// Harness state is global, so rollback history must be too: merge the global
+			// cross-session log with this session's entries so a refinement applied in any
+			// session can be rolled back from here.
+			const history = mergeRefinementHistory(
+				loadGlobalRefinementHistory(harnessStateDir),
+				getRefinementHistory(this.sessionManager.getEntries().filter((entry) => entry.type === "custom")),
 			);
 			const result = await refineHarness(
 				this.agent.state.messages,
@@ -2734,6 +2741,7 @@ export class AgentSession {
 				this.thinkingLevel,
 			);
 			result.harnessStatePath = saveHarnessState(harnessStateDir, state);
+			appendGlobalRefinement(harnessStateDir, result);
 			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
