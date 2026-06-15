@@ -60,7 +60,12 @@ import { DefaultPackageManager } from "../../core/package-manager.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
-import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
+import {
+	BUILTIN_SLASH_COMMANDS,
+	isBuiltinSlashCommandName,
+	parseSlashCommand,
+	resolveBuiltinSlashCommandName,
+} from "../../core/slash-commands.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import { PRIME_BUTTERFLY_LOGO } from "../../themes/prime-logo.js";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog.js";
@@ -694,10 +699,9 @@ export class InteractiveMode {
 	private getBuiltInCommandConflictDiagnostics(
 		commands: readonly AgentConnectionSlashCommand[],
 	): AgentConnectionResourceDiagnostic[] {
-		const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
 		return commands
 			.filter((command) => command.source === "extension")
-			.filter((command) => builtinNames.has(command.registeredName ?? command.name))
+			.filter((command) => isBuiltinSlashCommandName(command.registeredName ?? command.name))
 			.map((command) => ({
 				type: "warning" as const,
 				message:
@@ -712,6 +716,7 @@ export class InteractiveMode {
 		// Define commands for autocomplete
 		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
 			name: command.name,
+			aliases: command.aliases,
 			description: command.description,
 			argumentHint: command.argumentHint,
 		}));
@@ -756,10 +761,9 @@ export class InteractiveMode {
 			}));
 
 		// Convert extension commands to SlashCommand format
-		const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
 		const extensionCommands: SlashCommand[] = connectionCommands
 			.filter((cmd) => cmd.source === "extension")
-			.filter((cmd) => !builtinCommandNames.has(cmd.name))
+			.filter((cmd) => !isBuiltinSlashCommandName(cmd.name))
 			.map((cmd) => ({
 				name: cmd.name,
 				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
@@ -3130,115 +3134,126 @@ export class InteractiveMode {
 			text = text.trim();
 			if (!text) return;
 
+			const slashCommand = parseSlashCommand(text);
+			const commandName = slashCommand ? resolveBuiltinSlashCommandName(slashCommand.name) : undefined;
+			const commandArgs = slashCommand?.args ?? "";
+			const canonicalCommandText = commandName ? `/${commandName}${commandArgs ? ` ${commandArgs}` : ""}` : text;
+
 			// Handle commands
-			if (text === "/settings") {
+			if (commandName === "settings" && !commandArgs) {
 				await this.showSettingsSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/scoped-models") {
+			if (commandName === "scoped-models" && !commandArgs) {
 				this.editor.setText("");
 				await this.showModelsSelector();
 				return;
 			}
-			if (text === "/model" || text.startsWith("/model ")) {
-				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
+			if (commandName === "model") {
+				const searchTerm = commandArgs || undefined;
 				this.editor.setText("");
 				await this.handleModelCommand(searchTerm);
 				return;
 			}
-			if (text === "/export" || text.startsWith("/export ")) {
-				await this.handleExportCommand(text);
+			if (commandName === "export") {
+				await this.handleExportCommand(canonicalCommandText);
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/import" || text.startsWith("/import ")) {
-				await this.handleImportCommand(text);
+			if (commandName === "import") {
+				await this.handleImportCommand(canonicalCommandText);
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/share") {
+			if (commandName === "share" && !commandArgs) {
 				await this.handleShareCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/copy") {
+			if (commandName === "copy" && !commandArgs) {
 				await this.handleCopyCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/name" || text.startsWith("/name ")) {
-				await this.handleNameCommand(text);
+			if (commandName === "name") {
+				await this.handleNameCommand(canonicalCommandText);
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/session") {
+			if (commandName === "session" && !commandArgs) {
 				await this.handleSessionCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/context" || text === "/usage") {
+			if (commandName === "context" && !commandArgs) {
 				await this.handleContextCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/goal" || text === "/goal status") {
+			if (commandName === "goal" && (!commandArgs || commandArgs === "status")) {
 				this.handleGoalStatusCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/changelog") {
+			if (commandName === "changelog" && !commandArgs) {
 				this.handleChangelogCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/hotkeys") {
+			if (commandName === "hotkeys" && !commandArgs) {
 				this.handleHotkeysCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/fork") {
+			if (commandName === "fork" && !commandArgs) {
 				void this.showUserMessageSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/clone") {
+			if (commandName === "clone" && !commandArgs) {
 				this.editor.setText("");
 				await this.handleCloneCommand();
 				return;
 			}
-			if (text === "/tree") {
+			if (commandName === "tree" && !commandArgs) {
 				void this.showTreeSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/login") {
+			if (commandName === "login" && !commandArgs) {
 				this.editor.setText("");
 				await this.showOAuthSelector("login");
 				return;
 			}
-			if (text === "/logout") {
+			if (commandName === "logout" && !commandArgs) {
 				this.editor.setText("");
 				await this.showOAuthSelector("logout");
 				return;
 			}
-			if (text === "/new" || text === "/clear") {
+			if (commandName === "new" && !commandArgs) {
 				this.editor.setText("");
 				await this.handleClearCommand();
 				return;
 			}
-			if (text === "/compact" || text.startsWith("/compact ")) {
-				const customInstructions = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
+			if (commandName === "compact") {
+				const customInstructions = commandArgs || undefined;
 				this.editor.setText("");
 				await this.handleCompactCommand(customInstructions);
 				return;
 			}
-			if (text === "/reload") {
+			if (commandName === "refine") {
+				const refineArgs = commandArgs || undefined;
+				this.editor.setText("");
+				await this.handleRefineCommand(refineArgs);
+				return;
+			}
+			if (commandName === "reload" && !commandArgs) {
 				this.editor.setText("");
 				await this.handleReloadCommand();
 				return;
 			}
-			if (text === "/debug") {
+			if (commandName === "debug" && !commandArgs) {
 				await this.handleDebugCommand();
 				this.editor.setText("");
 				return;
@@ -6759,6 +6774,54 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			await this.agentConnection.compact(customInstructions);
 		} catch {
 			// Ignore, will be emitted as an event
+		}
+	}
+
+	private async handleRefineCommand(args?: string): Promise<void> {
+		const trimmedArgs = args?.trim();
+		const rollbackPrefix = "rollback ";
+		let options: { instructions?: string; rollbackId?: string };
+
+		if (trimmedArgs === "rollback") {
+			this.showWarning("Usage: /refine rollback <refinement-id>");
+			return;
+		}
+
+		if (trimmedArgs?.startsWith(rollbackPrefix) && trimmedArgs.slice(rollbackPrefix.length).trim()) {
+			// Rollback uses the global refinement history, not the current trajectory,
+			// so it must work even in a fresh session with no messages yet.
+			options = { rollbackId: trimmedArgs.slice(rollbackPrefix.length).trim() };
+		} else {
+			let messageCount: number;
+			try {
+				const stats = await this.agentConnection.getSessionStats();
+				messageCount = stats.totalMessages;
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
+
+			if (messageCount < 2) {
+				this.showWarning("Nothing to refine (no trajectory yet)");
+				return;
+			}
+			options = { instructions: args };
+		}
+
+		this.stopWorkingLoader();
+		this.showStatus(
+			options.rollbackId ? `Rolling back refinement ${options.rollbackId}...` : "Refining harness state...",
+		);
+
+		try {
+			const result = await this.agentConnection.refine(options);
+			const applied = result.appliedEdits.filter((edit) => edit.applied).length;
+			const failed = result.appliedEdits.length - applied;
+			const failedSuffix = failed > 0 ? `, ${failed} failed` : "";
+			this.showStatus(`Refined harness state: ${applied} edit${applied === 1 ? "" : "s"} applied${failedSuffix}`);
+			this.showStatus(`Harness state: ${result.harnessStatePath}`);
+		} catch (error) {
+			this.showError(`Refinement failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 

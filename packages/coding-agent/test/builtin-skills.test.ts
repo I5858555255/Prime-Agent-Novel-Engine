@@ -163,6 +163,24 @@ describe("builtin skills", () => {
 			expect(skills.map((s) => s.name)).toContain("skill-creator");
 		});
 
+		it("loads the bundled goal skill as a python skill", () => {
+			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
+
+			const goal = skills.find((s) => s.name === "goal");
+			expect(goal).toBeDefined();
+			expect(goal?.kind).toBe("python");
+			expect(goal?.kind === "python" && goal.python.importName).toBe("goal");
+		});
+
+		it("ships the edit skill as a python skill importable as `edit`", () => {
+			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
+
+			const edit = skills.find((s) => s.name === "edit");
+			expect(edit).toBeDefined();
+			expect(edit?.kind).toBe("python");
+			expect(edit?.kind === "python" && edit.python.importName).toBe("edit");
+		});
+
 		it("loads the skill-creator python template as a valid python skill", () => {
 			const referencePath = join(getBundledSkillsDir(), "skill-creator", "references", "python-skills.md");
 			const reference = readFileSync(referencePath, "utf-8");
