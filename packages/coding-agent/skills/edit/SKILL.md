@@ -1,6 +1,6 @@
 ---
 name: edit
-description: Replace an exact, unique string in an existing file. Call as `await edit(path, old_str, new_str)` — keyword args are path, old_str, new_str. Use for targeted single-occurrence edits from the IPython kernel instead of rewriting the whole file.
+description: Replace an exact, unique string in an existing file. Use for targeted single-occurrence edits to files from the IPython kernel instead of rewriting the whole file.
 ---
 
 # Edit
