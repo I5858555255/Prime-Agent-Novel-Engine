@@ -396,6 +396,39 @@ describe("AgentCronScheduler", () => {
 			nextRunAt: "2026-01-01T12:35:00.000Z",
 		});
 	});
+
+	it("does not run an RLM heartbeat that was deleted before it became due", async () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const job = store.createRlmHeartbeat({
+			activeSessionId: "rlm-1",
+			sessionId: "session-rlm-1",
+			sessionFile: "/tmp/session-rlm.jsonl",
+			cwd: "/tmp/project",
+			label: "delete-before-fire",
+			scheduleText: "every 30s",
+			prompt: "this should never run",
+			now: start,
+		});
+		store.deleteRlmHeartbeat("rlm-1", job.id, new Date("2026-01-01T12:34:10.000Z"));
+		const prompts: string[] = [];
+		const scheduler = new AgentCronScheduler(store, {
+			now: () => new Date("2026-01-01T12:34:31.000Z"),
+			runJob: async (dueJob) => {
+				prompts.push(dueJob.prompt);
+			},
+		});
+
+		const handled = await scheduler.runDue(new Date("2026-01-01T12:34:31.000Z"));
+
+		expect(handled).toBe(0);
+		expect(prompts).toEqual([]);
+		expect(store.listRlmHeartbeats("rlm-1")).toEqual([]);
+		expect(store.listRlmHeartbeats("rlm-1", { includeInactive: true })[0]).toMatchObject({
+			id: job.id,
+			status: "cancelled",
+			runCount: 0,
+		});
+	});
 });
 
 describe("createAgentHeartbeatToolDefinitions", () => {
