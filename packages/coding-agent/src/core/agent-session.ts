@@ -118,13 +118,14 @@ import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
 	appendGlobalRefinement,
+	applyRefinementProposal,
 	getGlobalHarnessStateDir,
 	getRefinementHistory,
 	loadGlobalRefinementHistory,
 	loadHarnessState,
 	mergeRefinementHistory,
+	planRefinement,
 	type RefinementResult,
-	refineHarness,
 	saveHarnessState,
 } from "./refinement/index.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
@@ -2721,7 +2722,7 @@ export class AgentSession {
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
 			const harnessStateDir = getGlobalHarnessStateDir();
-			const state = loadHarnessState(harnessStateDir);
+			const planningState = loadHarnessState(harnessStateDir);
 			// Harness state is global, so rollback history must be too: merge the global
 			// cross-session log with this session's entries so a refinement applied in any
 			// session can be rolled back from here.
@@ -2729,9 +2730,9 @@ export class AgentSession {
 				loadGlobalRefinementHistory(harnessStateDir),
 				getRefinementHistory(this.sessionManager.getEntries().filter((entry) => entry.type === "custom")),
 			);
-			const result = await refineHarness(
+			const plan = await planRefinement(
 				this.agent.state.messages,
-				state,
+				planningState,
 				history,
 				this.model,
 				apiKey,
@@ -2740,6 +2741,10 @@ export class AgentSession {
 				undefined,
 				this.thinkingLevel,
 			);
+			// Re-read the shared state immediately before applying so concurrent kernel
+			// (`rlm.harness`) or cross-session writes during the LLM pass are not clobbered.
+			const state = loadHarnessState(harnessStateDir);
+			const result = applyRefinementProposal(state, plan.proposal, { id: plan.id, rollbackOf: plan.rollbackOf });
 			result.harnessStatePath = saveHarnessState(harnessStateDir, state);
 			appendGlobalRefinement(harnessStateDir, result);
 			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);

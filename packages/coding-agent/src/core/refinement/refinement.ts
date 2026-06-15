@@ -601,7 +601,20 @@ export function getRefinementHistory(entries: readonly CustomEntry[]): Refinemen
 		});
 }
 
-export async function refineHarness(
+export interface RefinementPlan {
+	proposal: RefinementProposal;
+	id: string;
+	rollbackOf?: string;
+}
+
+/**
+ * Produce a refinement proposal (the LLM pass, or a rollback proposal) without
+ * mutating any harness state. Separated from {@link applyRefinementProposal} so
+ * callers can re-read the harness file immediately before applying — the LLM call
+ * here can take many seconds, during which the kernel or another session may write
+ * the shared `harness_state.json`.
+ */
+export async function planRefinement(
 	messages: AgentMessage[],
 	state: HarnessState,
 	history: RefinementResult[],
@@ -611,7 +624,7 @@ export async function refineHarness(
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
-): Promise<RefinementResult> {
+): Promise<RefinementPlan> {
 	const id = `refine_${new Date()
 		.toISOString()
 		.replace(/[^0-9]/g, "")
@@ -621,7 +634,7 @@ export async function refineHarness(
 		if (!target) {
 			throw new Error(`Refinement ${options.rollbackId} not found`);
 		}
-		return applyRefinementProposal(state, rollbackProposal(target), { id, rollbackOf: target.id });
+		return { proposal: rollbackProposal(target), id, rollbackOf: target.id };
 	}
 
 	const conversationText = serializeConversation(convertToLlm(messages)).slice(-80_000);
@@ -658,5 +671,20 @@ export async function refineHarness(
 		.filter((content): content is { type: "text"; text: string } => content.type === "text")
 		.map((content) => content.text)
 		.join("\n");
-	return applyRefinementProposal(state, parseProposal(text), { id });
+	return { proposal: parseProposal(text), id };
+}
+
+export async function refineHarness(
+	messages: AgentMessage[],
+	state: HarnessState,
+	history: RefinementResult[],
+	model: Model<any>,
+	apiKey: string,
+	options: RefineOptions = {},
+	headers?: Record<string, string>,
+	signal?: AbortSignal,
+	thinkingLevel?: ThinkingLevel,
+): Promise<RefinementResult> {
+	const plan = await planRefinement(messages, state, history, model, apiKey, options, headers, signal, thinkingLevel);
+	return applyRefinementProposal(state, plan.proposal, { id: plan.id, rollbackOf: plan.rollbackOf });
 }

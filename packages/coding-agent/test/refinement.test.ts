@@ -16,6 +16,7 @@ import {
 	loadGlobalRefinementHistory,
 	loadHarnessState,
 	mergeRefinementHistory,
+	planRefinement,
 	type RefinementAction,
 	type RefinementKind,
 	type RefinementProposal,
@@ -968,6 +969,71 @@ describe("global refinement history", () => {
 		expect(merged.map((item) => item.id)).toEqual(
 			expect.arrayContaining(["refine_shared", "refine_global_only", "refine_session_only"]),
 		);
+	});
+
+	it("plans a proposal without mutating harness state", async () => {
+		const dir = makeTempDir();
+		const state = loadHarnessState(dir);
+		completeSimpleMock.mockResolvedValueOnce(
+			assistantText(
+				JSON.stringify({
+					summary: "Add a memory",
+					rationale: "useful",
+					expectedOutcome: "remembered",
+					edits: [
+						{
+							action: "create",
+							kind: "memory",
+							id: "planned_memory",
+							title: "Planned memory",
+							content: "Created only when applied.",
+						},
+					],
+				}),
+			),
+		);
+
+		const plan = await planRefinement(
+			[{ role: "user", content: "remember this", timestamp: Date.now() } satisfies AgentMessage],
+			state,
+			[],
+			createRefineModel(false),
+			"api-key",
+			{},
+		);
+
+		// planRefinement must not touch state: the host re-reads the file before applying,
+		// so applying must be the only thing that mutates state.
+		expect(plan.proposal.edits).toHaveLength(1);
+		expect(plan.id).toMatch(/^refine_/);
+		expect(state.entries.memory.planned_memory).toBeUndefined();
+		expect(state.refinements).toHaveLength(0);
+
+		const result = applyRefinementProposal(state, plan.proposal, { id: plan.id });
+		expect(result.appliedEdits[0]).toMatchObject({ id: "planned_memory", applied: true });
+		expect(state.entries.memory.planned_memory).toBeDefined();
+	});
+
+	it("plans a rollback without mutating harness state", async () => {
+		const dir = makeTempDir();
+		const state = loadHarnessState(dir);
+		const target = applyRefinementProposal(
+			state,
+			proposal("Target", [
+				{ action: "create", kind: "memory", id: "rollback_me", title: "Rollback me", content: "content" },
+			]),
+			{ id: "refine_rollback_target" },
+		);
+
+		const plan = await planRefinement([], state, [target], {} as never, "api-key", {
+			rollbackId: "refine_rollback_target",
+		});
+
+		expect(plan.rollbackOf).toBe("refine_rollback_target");
+		// The entry still exists until the proposal is applied.
+		expect(state.entries.memory.rollback_me).toBeDefined();
+		applyRefinementProposal(state, plan.proposal, { id: plan.id, rollbackOf: plan.rollbackOf });
+		expect(state.entries.memory.rollback_me).toBeUndefined();
 	});
 
 	it("rolls back a refinement recorded in a different session via global history", async () => {

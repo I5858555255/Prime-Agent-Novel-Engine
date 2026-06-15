@@ -222,6 +222,35 @@ class HarnessState:
         source: str = "agent",
     ) -> HarnessEntry:
         self._sync_from_disk()
+        return self._upsert(
+            kind,
+            title,
+            content,
+            id=id,
+            path=path,
+            reference=reference,
+            arguments=arguments,
+            metadata=metadata,
+            source=source,
+        )
+
+    def _upsert(
+        self,
+        kind: HarnessKind,
+        title: str,
+        content: str,
+        *,
+        id: str | None = None,
+        path: str = "general",
+        reference: dict[str, Any] | None = None,
+        arguments: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        source: str = "agent",
+    ) -> HarnessEntry:
+        # Caller is responsible for syncing from disk first. create()/update() sync
+        # once and then call this directly so their existence check and the write are
+        # not separated by a second reload (which could turn create-or-fail into a
+        # silent update).
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
 
@@ -299,7 +328,7 @@ class HarnessState:
         entry_id = id or _slug(title, kind)
         if entry_id in self.entries[kind]:
             raise ValueError(f"{kind} entry {entry_id!r} already exists")
-        return self.upsert(
+        return self._upsert(
             kind,
             title,
             content,
@@ -329,7 +358,7 @@ class HarnessState:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         if id not in self.entries[kind]:
             raise ValueError(f"{kind} entry {id!r} does not exist")
-        return self.upsert(
+        return self._upsert(
             kind,
             title,
             content,

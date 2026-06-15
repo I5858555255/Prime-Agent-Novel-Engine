@@ -287,6 +287,22 @@ class HarnessStateTest(unittest.TestCase):
             self.assertIsNotNone(reloaded.get("memory", "host"))
             self.assertIsNotNone(reloaded.get("memory", "kernel_2"))
 
+    def test_create_detects_externally_written_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state = HarnessState(state_path)
+
+            # Another process creates the same entry on disk after our last load.
+            other = HarnessState(state_path)
+            other.create_memory("External", "Written elsewhere.", id="dup")
+            future = state_path.stat().st_mtime + 5
+            os.utime(state_path, (future, future))
+
+            # create() must observe the external entry and honor create-or-fail.
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                state.create_memory("Local", "Should not overwrite.", id="dup")
+            self.assertEqual(state.get("memory", "dup").content, "Written elsewhere.")
+
     def test_explicit_create_and_update_enforce_entry_existence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")

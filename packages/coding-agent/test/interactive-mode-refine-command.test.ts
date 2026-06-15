@@ -34,4 +34,42 @@ describe("InteractiveMode.handleRefineCommand", () => {
 		expect(context.agentConnection.refine).not.toHaveBeenCalled();
 		expect(context.stopWorkingLoader).not.toHaveBeenCalled();
 	});
+
+	test("rolls back even when the session has no trajectory yet", async () => {
+		const context = {
+			agentConnection: {
+				getSessionStats: vi.fn().mockResolvedValue({ totalMessages: 0 }),
+				refine: vi.fn().mockResolvedValue({ appliedEdits: [], harnessStatePath: "/tmp/harness_state.json" }),
+			},
+			stopWorkingLoader: vi.fn(),
+			showStatus: vi.fn(),
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		await handleRefineCommand.call(context, "rollback refine_123");
+
+		// Rollback uses global history, so the empty-trajectory guard must not block it.
+		expect(context.agentConnection.getSessionStats).not.toHaveBeenCalled();
+		expect(context.showWarning).not.toHaveBeenCalled();
+		expect(context.agentConnection.refine).toHaveBeenCalledWith({ rollbackId: "refine_123" });
+	});
+
+	test("blocks plain refinement when there is no trajectory", async () => {
+		const context = {
+			agentConnection: {
+				getSessionStats: vi.fn().mockResolvedValue({ totalMessages: 1 }),
+				refine: vi.fn(),
+			},
+			stopWorkingLoader: vi.fn(),
+			showStatus: vi.fn(),
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		await handleRefineCommand.call(context, "focus on validation");
+
+		expect(context.showWarning).toHaveBeenCalledWith("Nothing to refine (no trajectory yet)");
+		expect(context.agentConnection.refine).not.toHaveBeenCalled();
+	});
 });

@@ -6769,30 +6769,35 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 	}
 
 	private async handleRefineCommand(args?: string): Promise<void> {
-		let messageCount: number;
-		try {
-			const stats = await this.agentConnection.getSessionStats();
-			messageCount = stats.totalMessages;
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-			return;
-		}
-
-		if (messageCount < 2) {
-			this.showWarning("Nothing to refine (no trajectory yet)");
-			return;
-		}
-
 		const trimmedArgs = args?.trim();
+		const rollbackPrefix = "rollback ";
+		let options: { instructions?: string; rollbackId?: string };
+
 		if (trimmedArgs === "rollback") {
 			this.showWarning("Usage: /refine rollback <refinement-id>");
 			return;
 		}
-		const rollbackPrefix = "rollback ";
-		const options =
-			trimmedArgs?.startsWith(rollbackPrefix) && trimmedArgs.slice(rollbackPrefix.length).trim()
-				? { rollbackId: trimmedArgs.slice(rollbackPrefix.length).trim() }
-				: { instructions: args };
+
+		if (trimmedArgs?.startsWith(rollbackPrefix) && trimmedArgs.slice(rollbackPrefix.length).trim()) {
+			// Rollback uses the global refinement history, not the current trajectory,
+			// so it must work even in a fresh session with no messages yet.
+			options = { rollbackId: trimmedArgs.slice(rollbackPrefix.length).trim() };
+		} else {
+			let messageCount: number;
+			try {
+				const stats = await this.agentConnection.getSessionStats();
+				messageCount = stats.totalMessages;
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
+
+			if (messageCount < 2) {
+				this.showWarning("Nothing to refine (no trajectory yet)");
+				return;
+			}
+			options = { instructions: args };
+		}
 
 		this.stopWorkingLoader();
 		this.showStatus(
