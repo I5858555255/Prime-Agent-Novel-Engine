@@ -37,6 +37,14 @@ import {
 	type DaemonSocketClient,
 	resolveActiveSessionState,
 } from "./active-session-state.js";
+import {
+	type AgentSessionMessageEndpoint,
+	type AgentSessionMessageSender,
+	createAgentSessionMessagePrompt,
+	createAgentSessionMessageReceipt,
+	normalizeAgentSessionMessage,
+	resolveAgentSessionMessageStreamingBehavior,
+} from "./agent-session-bus.js";
 import { serializeDaemonError } from "./daemon-errors.js";
 import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
@@ -85,6 +93,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"prompt",
 	"steer",
 	"follow_up",
+	"send_message",
 	"abort",
 	"execute_bash",
 	"abort_bash",
@@ -671,6 +680,57 @@ class AgentDaemon {
 				return success(command.id, "follow_up");
 			}
 
+			case "send_message": {
+				const targetState = this.getSessionState(command.targetActiveSessionId);
+				const fromState = command.fromActiveSessionId
+					? this.getSessionState(command.fromActiveSessionId)
+					: undefined;
+				const message = normalizeAgentSessionMessage(command.message);
+				const payload = {
+					message,
+					from: this.createAgentSessionMessageSender(fromState, client.id),
+					target: this.createAgentSessionMessageEndpoint(targetState),
+					deliveryMode: command.deliveryMode ?? "auto",
+				};
+				const streamingBehavior = resolveAgentSessionMessageStreamingBehavior(
+					targetState.runtime.session.isStreaming,
+					payload.deliveryMode,
+				);
+				let responseSent = false;
+				const sendSuccessResponse = () => {
+					if (responseSent) {
+						return;
+					}
+					responseSent = true;
+					this.write(client, success(command.id, "send_message", createAgentSessionMessageReceipt(payload)));
+				};
+				void targetState.runtime.session
+					.prompt(createAgentSessionMessagePrompt(payload), {
+						expandPromptTemplates: false,
+						streamingBehavior,
+						source: "rpc",
+						preflightResult: (didSucceed) => {
+							if (didSucceed) {
+								sendSuccessResponse();
+							}
+						},
+					})
+					.then(() => {
+						sendSuccessResponse();
+					})
+					.catch((error) => {
+						if (responseSent) {
+							this.broadcastToSession(
+								targetState,
+								failure(undefined, "send_message", error, serializeDaemonError(error)),
+							);
+						} else {
+							this.write(client, failure(command.id, "send_message", error, serializeDaemonError(error)));
+						}
+					});
+				return undefined;
+			}
+
 			case "abort": {
 				const state = this.getSessionState(command.activeSessionId);
 				await state.runtime.session.abort();
@@ -1056,6 +1116,27 @@ class AgentDaemon {
 			lastEventSequence: state.lastEventSequence,
 			...(parent ? { parent } : {}),
 			...(children.length > 0 ? { children } : {}),
+		};
+	}
+
+	private createAgentSessionMessageEndpoint(state: ActiveSessionState): AgentSessionMessageEndpoint {
+		return {
+			activeSessionId: state.activeSessionId,
+			sessionId: state.runtime.session.sessionId,
+			...(state.runtime.session.sessionName ? { sessionName: state.runtime.session.sessionName } : {}),
+		};
+	}
+
+	private createAgentSessionMessageSender(
+		state: ActiveSessionState | undefined,
+		clientId: string,
+	): AgentSessionMessageSender {
+		if (!state) {
+			return { clientId };
+		}
+		return {
+			...this.createAgentSessionMessageEndpoint(state),
+			clientId,
 		};
 	}
 

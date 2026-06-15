@@ -8,6 +8,10 @@ const daemonClientMock = vi.hoisted(() => {
 		name?: string;
 		sessionPath?: string;
 		config?: { extensionFlagValues?: Record<string, boolean | string> };
+		targetActiveSessionId?: string;
+		fromActiveSessionId?: string;
+		deliveryMode?: string;
+		message?: string;
 	};
 	type Response =
 		| { type: "response"; command: string; success: true }
@@ -219,6 +223,31 @@ describe("daemon command", () => {
 		expect(client?.requests[0]).toMatchObject({
 			type: "create",
 			sessionPath: "abc123",
+		});
+	});
+
+	it("routes daemon send as an agent-to-agent message command", async () => {
+		await expect(
+			handleDaemonCommand([
+				"daemon",
+				"--socket",
+				"/tmp/prime-agent.sock",
+				"send",
+				"--from",
+				"planner",
+				"--follow-up",
+				"worker",
+				"use this context",
+			]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toEqual({
+			type: "send_message",
+			targetActiveSessionId: "worker",
+			fromActiveSessionId: "planner",
+			deliveryMode: "follow_up",
+			message: "use this context",
 		});
 	});
 });

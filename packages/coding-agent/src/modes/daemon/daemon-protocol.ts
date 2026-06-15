@@ -15,6 +15,7 @@ import type {
 	AgentConnectionSessionTreeNode,
 	AgentConnectionState,
 } from "../agent-connection/types.js";
+import type { AgentSessionMessageDeliveryMode, AgentSessionMessageReceipt } from "./agent-session-bus.js";
 import type { SessionSummary } from "./daemon-session-list.js";
 
 /**
@@ -172,6 +173,14 @@ export type DaemonCommand =
 	  }
 	| { id?: string; type: "steer"; activeSessionId: string; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; activeSessionId: string; message: string; images?: ImageContent[] }
+	| {
+			id?: string;
+			type: "send_message";
+			targetActiveSessionId: string;
+			message: string;
+			fromActiveSessionId?: string;
+			deliveryMode?: AgentSessionMessageDeliveryMode;
+	  }
 	| { id?: string; type: "abort"; activeSessionId: string }
 	| {
 			id?: string;
@@ -300,6 +309,8 @@ export interface DaemonSavedSessionInfo {
 export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;
 
 export type DaemonResourceSnapshot = AgentConnectionResourceSnapshot;
+
+export type DaemonAgentSessionMessageReceipt = AgentSessionMessageReceipt;
 
 export type DaemonOutbound =
 	| DaemonResponse
