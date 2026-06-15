@@ -85,6 +85,8 @@ interface JupyterMessage {
 
 interface ActiveExecution {
 	requestMsgId: string;
+	/** Source of the cell currently executing; surfaced to rlm.run spawns. */
+	code: string;
 	started: number;
 	maxChars: number;
 	opts: ExecuteOptions;
@@ -304,6 +306,10 @@ export class KernelManager {
 	/** Serializes execute() calls — Jupyter shell channel is request/reply. */
 	private executionQueue: Promise<unknown> = Promise.resolve();
 	private activeExecution?: ActiveExecution;
+	// Source of the most recently started cell, retained after it finishes so
+	// rlm.run spawns from detached asyncio tasks (cell already idle) can still
+	// attribute their spawning program.
+	private lastCellCode?: string;
 	private readonly inFlightRlmRuns = new Set<Promise<void>>();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
 	/** Memoized so concurrent callers all await the same in-flight startup. */
@@ -553,6 +559,7 @@ export class KernelManager {
 			const result = createDeferred<ExecuteResult>();
 			const execution: ActiveExecution = {
 				requestMsgId,
+				code,
 				started,
 				maxChars,
 				opts,
@@ -565,6 +572,7 @@ export class KernelManager {
 				reject: result.reject,
 			};
 			this.activeExecution = execution;
+			this.lastCellCode = code;
 			try {
 				await shell.send(encode(msg, conn.key));
 			} catch (error) {
@@ -776,7 +784,11 @@ export class KernelManager {
 				throw new Error("rlm.run prompt must be a string");
 			}
 			const kwargs = isRecord(data.kwargs) ? data.kwargs : {};
-			return handler({ prompt: data.prompt, kwargs });
+			// A blocking rlm.run is still the in-flight execution, so its source is
+			// the active cell. Detached spawns (asyncio.create_task) fire after the
+			// scheduling cell goes idle, so fall back to that last cell's source.
+			const cellSourceCode = this.activeExecution?.code ?? this.lastCellCode;
+			return handler({ prompt: data.prompt, kwargs, cellSourceCode });
 		}
 
 		throw new Error("rlm.run comm payload must have a supported type");

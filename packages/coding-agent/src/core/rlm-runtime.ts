@@ -11,6 +11,8 @@ export interface RlmUsage {
 export interface RlmRunRequest {
 	prompt: string;
 	kwargs: Record<string, unknown>;
+	/** Source of the IPython cell that issued this rlm.run call, when available. */
+	cellSourceCode?: string;
 }
 
 export interface RlmRunResult {
@@ -46,6 +48,8 @@ export interface CreateRlmSubagentRuntimeOptions {
 	rlmDepth: number;
 	rlmMaxDepth: number;
 	rlmParentNodeId: string;
+	/** Source of the IPython cell that spawned this subagent, for display. */
+	spawnCode?: string;
 }
 
 export interface SubagentRuntimeHost {
