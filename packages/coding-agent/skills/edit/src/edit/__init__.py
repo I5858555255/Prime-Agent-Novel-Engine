@@ -27,7 +27,7 @@ async def run(path: str, old_str: str, new_str: str) -> str:
     filepath = Path(path)
     if not filepath.exists():
         raise FileNotFoundError(f"{path} not found")
-    content = filepath.read_text()
+    content = filepath.read_text(encoding="utf-8")
     count = content.count(old_str)
     if count == 0:
         raise ValueError(f"string not found in {path}")
@@ -36,5 +36,5 @@ async def run(path: str, old_str: str, new_str: str) -> str:
             f"found {count} occurrences in {path}, need exactly 1 — "
             "widen the snippet to make it unique"
         )
-    filepath.write_text(content.replace(old_str, new_str, 1))
+    filepath.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
     return f"Edited {path}"
