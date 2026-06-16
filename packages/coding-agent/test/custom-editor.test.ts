@@ -106,6 +106,18 @@ describe("CustomEditor", () => {
 		}
 	});
 
+	it("routes Cmd+C to the copy-prompt action without mutating the text", () => {
+		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
+		const handler = vi.fn();
+		editor.onAction("app.clipboard.copyPrompt", handler);
+		editor.setText("hello world");
+
+		editor.handleInput("\x1b[99;9u"); // super+c (Cmd+C)
+
+		expect(handler).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("hello world");
+	});
+
 	it("renders no header when the callback returns undefined", () => {
 		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
 		const withoutCallback = editor.render(40);

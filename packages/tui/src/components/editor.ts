@@ -282,8 +282,10 @@ export class Editor implements Component, Focusable {
 	// to.
 	private snappedFromCursorCol: number | null = null;
 
-	// Undo support
+	// Undo/redo support. Editing pushes onto undoStack and clears redoStack;
+	// undo moves the current state onto redoStack, redo moves it back.
 	private undoStack = new UndoStack<EditorState>();
+	private redoStack = new UndoStack<EditorState>();
 
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
@@ -653,9 +655,13 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		// Undo
+		// Undo / redo
 		if (kb.matches(data, "tui.editor.undo")) {
 			this.undo();
+			return;
+		}
+		if (kb.matches(data, "tui.editor.redo")) {
+			this.redo();
 			return;
 		}
 
@@ -2031,12 +2037,30 @@ export class Editor implements Component, Focusable {
 
 	private pushUndoSnapshot(): void {
 		this.undoStack.push(this.state);
+		// A fresh edit invalidates the redo future.
+		this.redoStack.clear();
 	}
 
 	private undo(): void {
 		this.historyIndex = -1; // Exit history browsing mode
 		const snapshot = this.undoStack.pop();
 		if (!snapshot) return;
+		// Preserve the pre-undo state so it can be redone.
+		this.redoStack.push(this.state);
+		Object.assign(this.state, snapshot);
+		this.lastAction = null;
+		this.preferredVisualCol = null;
+		if (this.onChange) {
+			this.onChange(this.getText());
+		}
+	}
+
+	private redo(): void {
+		this.historyIndex = -1; // Exit history browsing mode
+		const snapshot = this.redoStack.pop();
+		if (!snapshot) return;
+		// Preserve the pre-redo state so it can be undone again.
+		this.undoStack.push(this.state);
 		Object.assign(this.state, snapshot);
 		this.lastAction = null;
 		this.preferredVisualCol = null;

@@ -3059,6 +3059,7 @@ export class InteractiveMode {
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onAction("app.interrupt", () => this.handleInterruptKey());
+		this.defaultEditor.onAction("app.clipboard.copyPrompt", () => void this.handleCopyPromptCommand());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
 		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
@@ -6413,6 +6414,25 @@ export class InteractiveMode {
 		try {
 			await copyToClipboard(text);
 			this.showStatus("Copied last agent message to clipboard");
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/**
+	 * Copy the current prompt to the clipboard as plain text. Paste markers are
+	 * expanded and only logical newlines are kept - the cosmetic line breaks
+	 * introduced by terminal soft-wrapping never exist in the editor buffer.
+	 */
+	private async handleCopyPromptCommand(): Promise<void> {
+		const text = this.editor.getExpandedText?.() ?? this.editor.getText();
+		if (!text) {
+			return;
+		}
+
+		try {
+			await copyToClipboard(text);
+			this.showStatus("Copied prompt to clipboard");
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 		}

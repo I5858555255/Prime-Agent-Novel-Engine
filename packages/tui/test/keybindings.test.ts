@@ -35,4 +35,18 @@ describe("KeybindingsManager", () => {
 		]);
 		assert.deepStrictEqual(keybindings.getKeys("tui.editor.cursorLeft"), ["left", "ctrl+b"]);
 	});
+
+	it("binds Cmd+Z to undo and Cmd+Shift+Z to redo by default", () => {
+		const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
+
+		assert.deepStrictEqual(keybindings.getKeys("tui.editor.undo"), ["ctrl+-", "super+z"]);
+		assert.deepStrictEqual(keybindings.getKeys("tui.editor.redo"), ["super+shift+z", "alt+shift+z"]);
+	});
+
+	it("matches Cmd+Z / Cmd+Shift+Z kitty sequences to undo / redo", () => {
+		const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
+
+		assert.ok(keybindings.matches("\x1b[122;9u", "tui.editor.undo"));
+		assert.ok(keybindings.matches("\x1b[122;10u", "tui.editor.redo"));
+	});
 });

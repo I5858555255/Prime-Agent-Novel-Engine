@@ -10,7 +10,10 @@ After editing `keybindings.json`, run `/reload` in pi to apply the changes witho
 
 ## Key Format
 
-`modifier+key` where modifiers are `ctrl`, `shift`, `alt` (combinable) and keys are:
+`modifier+key` where modifiers are `ctrl`, `shift`, `alt`, `super` (combinable) and keys are:
+
+`super` is the Command key on macOS and the Windows/Meta key elsewhere. It is only delivered to the terminal when the terminal forwards it (e.g. via the Kitty keyboard protocol); terminals that intercept Command/Meta will not trigger `super` bindings, so a non-`super` fallback is kept where it matters.
+
 
 - **Letters:** `a-z`
 - **Digits:** `0-9`
@@ -64,7 +67,8 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 |--------|---------|-------------|
 | `tui.editor.yank` | `ctrl+y` | Paste most recently deleted text |
 | `tui.editor.yankPop` | `alt+y` | Cycle through deleted text after yank |
-| `tui.editor.undo` | `ctrl+-` | Undo last edit |
+| `tui.editor.undo` | `ctrl+-`, `super+z` | Undo last edit |
+| `tui.editor.redo` | `super+shift+z`, `alt+shift+z` | Redo last undone edit |
 
 ### TUI Clipboard and Selection
 
@@ -89,6 +93,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
 | `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image from clipboard |
+| `app.clipboard.copyPrompt` | `super+c` | Copy the current prompt to the clipboard (plain text, no soft-wrap newlines) |
 
 ### Sessions
 

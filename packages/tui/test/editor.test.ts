@@ -3831,4 +3831,93 @@ describe("Editor component", () => {
 			assert.strictEqual(submitted, pastedText);
 		});
 	});
+
+	describe("Undo and redo", () => {
+		const UNDO = "\x1f"; // ctrl+-
+		const SUPER_Z = "\x1b[122;9u"; // super+z (Cmd+Z)
+		const SUPER_SHIFT_Z = "\x1b[122;10u"; // super+shift+z (Cmd+Shift+Z)
+
+		function type(editor: Editor, text: string): void {
+			for (const ch of text) editor.handleInput(ch);
+		}
+
+		it("undo reverts a typed word", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			type(editor, "hello");
+			assert.strictEqual(editor.getText(), "hello");
+
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("redo re-applies an undone change", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			type(editor, "hello");
+
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+
+			editor.handleInput(SUPER_SHIFT_Z);
+			assert.strictEqual(editor.getText(), "hello");
+		});
+
+		it("Cmd+Z undoes and Cmd+Shift+Z redoes", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			type(editor, "world");
+
+			editor.handleInput(SUPER_Z);
+			assert.strictEqual(editor.getText(), "");
+
+			editor.handleInput(SUPER_SHIFT_Z);
+			assert.strictEqual(editor.getText(), "world");
+		});
+
+		it("a fresh edit clears the redo future", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			type(editor, "hi");
+
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "");
+
+			type(editor, "x");
+			// Redo must be a no-op now that a new edit invalidated the future.
+			editor.handleInput(SUPER_SHIFT_Z);
+			assert.strictEqual(editor.getText(), "x");
+		});
+
+		it("redo is a no-op when nothing has been undone", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			type(editor, "abc");
+
+			editor.handleInput(SUPER_SHIFT_Z);
+			assert.strictEqual(editor.getText(), "abc");
+		});
+
+		it("undo restores text cleared via setText, and redo clears it again", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			// Simulate Esc-to-clear: parent calls setText("") on a non-empty prompt.
+			editor.setText("draft prompt");
+			editor.setText("");
+			assert.strictEqual(editor.getText(), "");
+
+			editor.handleInput(SUPER_Z);
+			assert.strictEqual(editor.getText(), "draft prompt");
+
+			editor.handleInput(SUPER_SHIFT_Z);
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("undo reverts a paste as a single step", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			type(editor, "before ");
+			editor.handleInput("\x1b[200~pasted text\x1b[201~");
+			assert.strictEqual(editor.getText(), "before pasted text");
+
+			editor.handleInput(UNDO);
+			assert.strictEqual(editor.getText(), "before ");
+
+			editor.handleInput(SUPER_SHIFT_Z);
+			assert.strictEqual(editor.getText(), "before pasted text");
+		});
+	});
 });
