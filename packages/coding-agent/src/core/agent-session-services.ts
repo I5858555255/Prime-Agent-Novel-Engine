@@ -50,8 +50,7 @@ export interface AgentSessionCreationOptions {
 	customTools?: ToolDefinition[];
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
-	includeGoalTools?: boolean;
-	autoActivateGoalTools?: boolean;
+	includeGoals?: boolean;
 	rlmDepth?: number;
 	rlmMaxDepth?: number;
 	rlmSessionDir?: string;
@@ -214,8 +213,7 @@ export async function createAgentSessionFromServices(
 		customTools: options.customTools,
 		initialActiveToolNames: options.initialActiveToolNames,
 		allowedToolNames: options.allowedToolNames,
-		includeGoalTools: options.includeGoalTools,
-		autoActivateGoalTools: options.autoActivateGoalTools,
+		includeGoals: options.includeGoals,
 		rlmDepth: options.rlmDepth,
 		rlmMaxDepth: options.rlmMaxDepth,
 		rlmSessionDir: options.rlmSessionDir,

@@ -57,6 +57,8 @@ export interface AgentSessionRuntimeMetadata {
 	rlmChildId?: string;
 	rlmParentNodeId?: string;
 	prompt?: string;
+	/** Source of the IPython cell that spawned this subagent, for display. */
+	spawnCode?: string;
 	sessionDir?: string;
 }
 
@@ -265,8 +267,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 				initialActiveToolNames: options.activeToolNames,
 				allowedToolNames: options.allowedToolNames,
 				customTools: options.customTools,
-				includeGoalTools: options.includeGoalTools,
-				autoActivateGoalTools: options.autoActivateGoalTools,
+				includeGoals: options.includeGoals,
 				rlmDepth: options.rlmDepth,
 				rlmMaxDepth: options.rlmMaxDepth,
 				rlmSessionDir: options.sessionDir,
@@ -280,6 +281,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 				rlmChildId: options.id,
 				rlmParentNodeId: options.rlmParentNodeId,
 				prompt: options.prompt,
+				spawnCode: options.spawnCode,
 				sessionDir: options.sessionDir,
 			},
 		});
