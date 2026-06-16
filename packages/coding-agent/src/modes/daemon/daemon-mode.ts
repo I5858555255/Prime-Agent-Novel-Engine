@@ -63,6 +63,12 @@ import {
 	prepareDaemonSocketPath,
 	restrictDaemonSocketPath,
 } from "./daemon-socket.js";
+import {
+	type AgentActivity,
+	type OrchestratorActivitySnapshot,
+	OrchestratorReporter,
+	readReporterConfigFromEnv,
+} from "./orchestrator-reporter.js";
 
 export interface DaemonModeOptions {
 	socketPath?: string;
@@ -159,6 +165,7 @@ class AgentDaemon {
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly closingSessions = new Map<string, Promise<void>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
+	private reporter?: OrchestratorReporter;
 
 	constructor(
 		private readonly socketPath: string,
@@ -202,6 +209,46 @@ class AgentDaemon {
 		this.registerSignalHandlers();
 		console.error(`Prime Agent daemon listening on ${this.socketPath}`);
 		void this.restoreActiveSessions();
+		this.startOrchestratorReporting();
+	}
+
+	/**
+	 * When running as a cloud agent (bootstrap env vars present), report
+	 * liveness and activity to the Prime Agent Swarm control plane. No-op for
+	 * local daemons.
+	 */
+	private startOrchestratorReporting(): void {
+		const config = readReporterConfigFromEnv();
+		if (!config) {
+			return;
+		}
+		this.reporter = new OrchestratorReporter(config, () => this.deriveActivity(), {
+			log: (message) => console.error(`[orchestrator] ${message}`),
+		});
+		this.reporter.start();
+	}
+
+	/**
+	 * Collapse the daemon's live sessions into a single control-plane activity.
+	 * Heuristic starting point: any streaming/pending/model/tool session means
+	 * the agent is working; otherwise it is waiting (needs_input) when sessions
+	 * exist, or completed when idle with none.
+	 */
+	private deriveActivity(): OrchestratorActivitySnapshot {
+		const summaries = buildSessionList([...this.sessions.values()], []);
+		const topLevel = summaries.filter((summary) => summary.runtimeKind !== "subagent");
+		const working = summaries.some(
+			(summary) =>
+				summary.isStreaming ||
+				summary.pendingMessageCount > 0 ||
+				summary.status === "model" ||
+				summary.status === "tool",
+		);
+		const status: AgentActivity = working ? "working" : topLevel.length > 0 ? "needs_input" : "completed";
+		return {
+			status,
+			rootAgentSessionId: topLevel[0]?.activeSessionId ?? topLevel[0]?.sessionId,
+		};
 	}
 
 	/**
@@ -1206,6 +1253,7 @@ class AgentDaemon {
 			process.exit(exitCode);
 		}
 		this.shuttingDown = true;
+		this.reporter?.stop();
 
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
