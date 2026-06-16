@@ -211,6 +211,7 @@ export async function createAgentSessionFromServices(
 		initialActiveToolNames: options.initialActiveToolNames,
 		allowedToolNames: options.allowedToolNames,
 		includeGoals: options.includeGoals,
+		agentMessageController: options.agentMessageController,
 		rlmDepth: options.rlmDepth,
 		rlmMaxDepth: options.rlmMaxDepth,
 		rlmSessionDir: options.rlmSessionDir,
