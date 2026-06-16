@@ -3569,7 +3569,9 @@ export class AgentSession {
 	/** Typed handlers for host requests arriving from the IPython kernel comm bridge. */
 	private _createKernelHostHandlers(): HostRequestHandlers {
 		const handlers: HostRequestHandlers = {
-			"rlm.run": createRlmRunHostHandler(({ prompt, kwargs }) => this.runRlmChild(prompt, kwargs)),
+			"rlm.run": createRlmRunHostHandler(({ prompt, kwargs, cellSourceCode }) =>
+				this.runRlmChild(prompt, kwargs, cellSourceCode),
+			),
 		};
 		if (this._includeGoals) {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
@@ -3702,6 +3704,7 @@ export class AgentSession {
 	private _createRlmSubagentRuntimeOptions(options: {
 		id: string;
 		prompt: string;
+		spawnCode?: string;
 		sessionDir: string;
 		model: Model<any>;
 	}): CreateRlmSubagentRuntimeOptions {
@@ -3709,6 +3712,7 @@ export class AgentSession {
 			parentSession: this,
 			id: options.id,
 			prompt: options.prompt,
+			spawnCode: options.spawnCode,
 			sessionDir: options.sessionDir,
 			model: options.model,
 			thinkingLevel: this.thinkingLevel,
@@ -3839,7 +3843,7 @@ export class AgentSession {
 		return false;
 	}
 
-	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}): RlmChildRun {
+	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): RlmChildRun {
 		const unsupportedKwargs = Object.keys(kwargs);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
@@ -3972,6 +3976,7 @@ export class AgentSession {
 		const subagentOptions = this._createRlmSubagentRuntimeOptions({
 			id: childNodeId,
 			prompt,
+			spawnCode,
 			sessionDir: childSessionDir,
 			model,
 		});
@@ -4138,8 +4143,8 @@ export class AgentSession {
 		return run;
 	}
 
-	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}): Promise<RlmRunResult> {
-		const run = this._startRlmChildRun(prompt, kwargs);
+	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): Promise<RlmRunResult> {
+		const run = this._startRlmChildRun(prompt, kwargs, spawnCode);
 		if (!run.task) {
 			throw new Error("RLM child failed to start");
 		}
