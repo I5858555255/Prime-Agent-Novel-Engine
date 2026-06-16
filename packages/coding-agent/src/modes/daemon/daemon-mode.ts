@@ -37,6 +37,7 @@ import {
 	type DaemonSocketClient,
 	resolveActiveSessionState,
 } from "./active-session-state.js";
+import { DaemonConnectListener, readConnectConfigFromEnv } from "./connect-listener.js";
 import { serializeDaemonError } from "./daemon-errors.js";
 import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
@@ -166,6 +167,7 @@ class AgentDaemon {
 	private readonly closingSessions = new Map<string, Promise<void>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 	private reporter?: OrchestratorReporter;
+	private connectListener?: DaemonConnectListener;
 
 	constructor(
 		private readonly socketPath: string,
@@ -210,6 +212,23 @@ class AgentDaemon {
 		console.error(`Prime Agent daemon listening on ${this.socketPath}`);
 		void this.restoreActiveSessions();
 		this.startOrchestratorReporting();
+		this.startConnectListener();
+	}
+
+	/**
+	 * For a cloud agent (connect public key + daemon port shipped in), accept
+	 * token-authenticated TCP connections on the exposed port and hand them to
+	 * the normal daemon handler. No-op for local daemons.
+	 */
+	private startConnectListener(): void {
+		const config = readConnectConfigFromEnv();
+		if (!config) {
+			return;
+		}
+		this.connectListener = new DaemonConnectListener(config, (socket) => this.handleConnection(socket), {
+			log: (message) => console.error(`[connect] ${message}`),
+		});
+		this.connectListener.start();
 	}
 
 	/**
@@ -1254,6 +1273,7 @@ class AgentDaemon {
 		}
 		this.shuttingDown = true;
 		this.reporter?.stop();
+		this.connectListener?.stop();
 
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
