@@ -349,6 +349,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		initialActiveToolNames,
 		allowedToolNames,
 		includeGoals,
+		agentObserveController: options.agentObserveController,
 		extensionRunnerRef,
 		rlmDepth: options.rlmDepth,
 		rlmMaxDepth: options.rlmMaxDepth,

@@ -9,6 +9,17 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { VERSION } from "../../config.js";
+import {
+	type AgentObserveAgentSnapshot,
+	type AgentObserveAgentSummary,
+	type AgentObserveController,
+	type AgentObserveListResult,
+	type AgentObserveRecentMessagesInput,
+	type AgentObserveRecentMessagesResult,
+	createAgentObserveMessagePreview,
+	normalizeObserveLimit,
+	normalizeObserveMaxChars,
+} from "../../core/agent-observe.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
 	AgentSessionRuntime,
@@ -318,13 +329,19 @@ class AgentDaemon {
 			// visible in session lists again.
 			sessionManager.appendSessionState({ status: "sleep" });
 		}
+		let stateRef: ActiveSessionState | undefined;
 		const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
 			cwd: sessionManager.getCwd(),
 			agentDir: config.agentDir,
 			sessionManager,
 			sessionConfig: config,
+			sessionOptions: {
+				agentObserveController: this.createAgentObserveController(() => stateRef),
+			},
 		});
-		return this.addRuntime(runtime, command.name);
+		const state = await this.addRuntime(runtime, command.name);
+		stateRef = state;
+		return state;
 	}
 
 	private findSessionBySessionFile(sessionFile: string | undefined): ActiveSessionState | undefined {
@@ -389,6 +406,7 @@ class AgentDaemon {
 		if (options.parentSession.sessionFile) {
 			sessionManager.newSession({ parentSession: options.parentSession.sessionFile });
 		}
+		let stateRef: ActiveSessionState | undefined;
 		const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
 			cwd: sessionManager.getCwd(),
 			agentDir: parentState.runtime.services.agentDir,
@@ -403,6 +421,7 @@ class AgentDaemon {
 				allowedToolNames: options.allowedToolNames,
 				customTools: options.customTools,
 				includeGoals: options.includeGoals,
+				agentObserveController: this.createAgentObserveController(() => stateRef),
 				rlmDepth: options.rlmDepth,
 				rlmMaxDepth: options.rlmMaxDepth,
 				rlmSessionDir: options.sessionDir,
@@ -421,8 +440,89 @@ class AgentDaemon {
 				sessionDir: options.sessionDir,
 			},
 		});
-		await this.addRuntime(runtime);
+		const state = await this.addRuntime(runtime);
+		stateRef = state;
 		return runtime;
+	}
+
+	private createAgentObserveController(getCurrentState: () => ActiveSessionState | undefined): AgentObserveController {
+		const requireCurrentState = () => {
+			const current = getCurrentState();
+			if (!current) {
+				throw new Error("Agent observe state is not ready for this session yet");
+			}
+			return current;
+		};
+		return {
+			listAgents: () => this.createAgentObserveListResult(requireCurrentState()),
+			getAgent: (target) => this.createAgentObserveAgentSnapshot(requireCurrentState(), target),
+			recentMessages: (input) => this.createAgentObserveRecentMessages(requireCurrentState(), input),
+		};
+	}
+
+	private createAgentObserveListResult(currentState: ActiveSessionState): AgentObserveListResult {
+		return {
+			current: this.createAgentObserveSummary(currentState, currentState),
+			agents: [...this.sessions.values()].map((state) => this.createAgentObserveSummary(state, currentState)),
+		};
+	}
+
+	private createAgentObserveAgentSnapshot(
+		currentState: ActiveSessionState,
+		target: string,
+	): AgentObserveAgentSnapshot {
+		return {
+			agent: this.createAgentObserveSummary(this.getSessionState(target), currentState),
+		};
+	}
+
+	private createAgentObserveRecentMessages(
+		currentState: ActiveSessionState,
+		input: AgentObserveRecentMessagesInput,
+	): AgentObserveRecentMessagesResult {
+		const targetState = this.getSessionState(input.target);
+		const limit = normalizeObserveLimit(input.limit);
+		const maxChars = normalizeObserveMaxChars(input.maxChars);
+		const messages = targetState.runtime.session.messages;
+		const startIndex = Math.max(0, messages.length - limit);
+		return {
+			agent: this.createAgentObserveSummary(targetState, currentState),
+			messages: messages
+				.slice(startIndex)
+				.map((message, offset) => createAgentObserveMessagePreview(message, startIndex + offset, maxChars)),
+			limit,
+			maxChars,
+			truncated: startIndex > 0,
+		};
+	}
+
+	private createAgentObserveSummary(
+		state: ActiveSessionState,
+		currentState: ActiveSessionState,
+	): AgentObserveAgentSummary {
+		const summary = summaryForActiveSession(state);
+		const messages = state.runtime.session.messages;
+		const latest = messages.at(-1);
+		return {
+			activeSessionId: state.activeSessionId,
+			sessionId: summary.sessionId,
+			...(summary.sessionName ? { sessionName: summary.sessionName } : {}),
+			...(summary.runtimeKind ? { runtimeKind: summary.runtimeKind } : {}),
+			cwd: summary.cwd,
+			status: summary.status,
+			isCurrent: state.activeSessionId === currentState.activeSessionId,
+			isStreaming: summary.isStreaming,
+			isCompacting: summary.isCompacting,
+			attachedClients: summary.attachedClients,
+			messageCount: summary.messageCount,
+			pendingMessageCount: summary.pendingMessageCount,
+			...(summary.parentActiveSessionId ? { parentActiveSessionId: summary.parentActiveSessionId } : {}),
+			...(summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
+			...(summary.rlmChildId ? { rlmChildId: summary.rlmChildId } : {}),
+			...(summary.rlmParentNodeId ? { rlmParentNodeId: summary.rlmParentNodeId } : {}),
+			...(summary.firstMessage ? { firstMessage: summary.firstMessage } : {}),
+			...(latest ? { latestMessage: createAgentObserveMessagePreview(latest, messages.length - 1, 240) } : {}),
+		};
 	}
 
 	private handleConnection(socket: Socket): void {

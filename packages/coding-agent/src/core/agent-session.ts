@@ -49,6 +49,16 @@ import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
+import {
+	AGENT_OBSERVE_SKILL_NAME,
+	type AgentObserveAgentSnapshot,
+	type AgentObserveController,
+	type AgentObserveListResult,
+	type AgentObserveRecentMessagesResult,
+	createAgentObserveHostHandlers,
+	normalizeObserveLimit,
+	normalizeObserveMaxChars,
+} from "./agent-observe.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
@@ -298,6 +308,8 @@ export interface AgentSessionConfig {
 	 * Default: true.
 	 */
 	includeGoals?: boolean;
+	/** Daemon-backed read-only active-session observation bridge. Omitted for local-only sessions. */
+	agentObserveController?: AgentObserveController;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -684,6 +696,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _includeGoals: boolean;
+	private _agentObserveController?: AgentObserveController;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -727,6 +740,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._includeGoals = config.includeGoals ?? true;
+		this._agentObserveController = config.agentObserveController;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
@@ -1318,6 +1332,38 @@ export class AgentSession {
 				return goalHostResponse(this._completeGoalFromHost(), true);
 			default:
 				throw new Error(`unknown goal request type "${type}"`);
+		}
+	}
+
+	handleAgentObserveHostRequest(
+		type: string,
+		payload: Record<string, unknown> = {},
+	): AgentObserveListResult | AgentObserveAgentSnapshot | AgentObserveRecentMessagesResult {
+		const controller = this._agentObserveController;
+		if (!controller) {
+			throw new Error("agent observation is not available in this session");
+		}
+		switch (type) {
+			case "agent_observe.list":
+				return controller.listAgents();
+			case "agent_observe.get": {
+				if (typeof payload.target !== "string") {
+					throw new Error("agent_observe.get target must be a string");
+				}
+				return controller.getAgent(payload.target);
+			}
+			case "agent_observe.recent": {
+				if (typeof payload.target !== "string") {
+					throw new Error("agent_observe.recent target must be a string");
+				}
+				return controller.recentMessages({
+					target: payload.target,
+					limit: normalizeObserveLimit(payload.limit as number | undefined),
+					maxChars: normalizeObserveMaxChars((payload.max_chars ?? payload.maxChars) as number | undefined),
+				});
+			}
+			default:
+				throw new Error(`unknown agent observe request type "${type}"`);
 		}
 	}
 
@@ -3467,11 +3513,16 @@ export class AgentSession {
 	 * skill is withheld when goals are disabled for this session.
 	 */
 	private _modelVisibleSkills(): Skill[] {
-		const skills = this._resourceLoader.getSkills().skills;
+		let skills = this._resourceLoader.getSkills().skills;
 		if (this._includeGoals) {
-			return skills;
+			// Keep goal skill visible.
+		} else {
+			skills = skills.filter((skill) => skill.name !== GOAL_SKILL_NAME);
 		}
-		return skills.filter((skill) => skill.name !== GOAL_SKILL_NAME);
+		if (!this._agentObserveController) {
+			skills = skills.filter((skill) => skill.name !== AGENT_OBSERVE_SKILL_NAME);
+		}
+		return skills;
 	}
 
 	/** Typed handlers for host requests arriving from the IPython kernel comm bridge. */
@@ -3485,6 +3536,22 @@ export class AgentSession {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
 				handlers[type] = async (payload) => this.handleGoalHostRequest(type, payload);
 			}
+		}
+		if (this._agentObserveController) {
+			Object.assign(
+				handlers,
+				createAgentObserveHostHandlers({
+					listAgents: () => this.handleAgentObserveHostRequest("agent_observe.list") as AgentObserveListResult,
+					getAgent: (target) =>
+						this.handleAgentObserveHostRequest("agent_observe.get", { target }) as AgentObserveAgentSnapshot,
+					recentMessages: (input) =>
+						this.handleAgentObserveHostRequest("agent_observe.recent", {
+							target: input.target,
+							limit: input.limit,
+							max_chars: input.maxChars,
+						}) as AgentObserveRecentMessagesResult,
+				}),
+			);
 		}
 		return handlers;
 	}
