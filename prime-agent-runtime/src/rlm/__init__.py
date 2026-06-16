@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .harness import HarnessEntry, HarnessState, RefinementEvent, get_harness_state
+
 try:
     from ipykernel.comm import Comm
 except Exception:  # pragma: no cover - depends on ipykernel version
@@ -19,6 +21,8 @@ try:
     from IPython import get_ipython
 except Exception:  # pragma: no cover - only available in kernels
     get_ipython = None  # type: ignore[assignment]
+
+HOST_COMM_TARGET = "host.request"
 
 
 @dataclass
@@ -92,14 +96,25 @@ def _result_from_payload(payload: dict[str, Any]) -> RLMResult:
     )
 
 
-async def _host_request(data: dict[str, Any]) -> dict[str, Any]:
+async def host_request(request_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send a typed request to the Prime Agent host and await its reply.
+
+    This is the kernel side of the generic host bridge: Python skills call
+    ``await host_request("<type>", {...})`` and the TypeScript host dispatches
+    on the type. Raises RuntimeError when the host reports an error or when no
+    handler for the type is registered in this session.
+    """
+    if not isinstance(request_type, str) or not request_type:
+        raise TypeError("request_type must be a non-empty str")
+    if payload is not None and not isinstance(payload, dict):
+        raise TypeError(f"payload must be a dict or None, got {type(payload).__name__}")
     if Comm is None:
         raise RuntimeError("Jupyter comm support is unavailable in this kernel")
     _install_control_comm_handlers()
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[dict[str, Any]] = loop.create_future()
-    comm = Comm(target_name="rlm.run", primary=False)
+    comm = Comm(target_name=HOST_COMM_TARGET, primary=False)
 
     def _on_msg(msg: dict[str, Any]) -> None:
         content = msg.get("content", {})
@@ -111,22 +126,32 @@ async def _host_request(data: dict[str, Any]) -> dict[str, Any]:
         if status == "ok":
             def _resolve_result() -> None:
                 if not future.done():
-                    future.set_result(reply)
+                    future.set_result({k: v for k, v in reply.items() if k != "status"})
                     comm.close()
 
             loop.call_soon_threadsafe(_resolve_result)
             return
         if status == "error":
-            message = reply.get("error") or "rlm.run failed"
+            message = reply.get("error") or f"host request {request_type} failed"
             def _resolve_error() -> None:
                 if not future.done():
                     future.set_exception(RuntimeError(str(message)))
                     comm.close()
 
             loop.call_soon_threadsafe(_resolve_error)
+            return
+
+        unexpected = f"host request {request_type} returned unexpected status: {status!r}"
+        def _resolve_unexpected() -> None:
+            if not future.done():
+                future.set_exception(RuntimeError(unexpected))
+                comm.close()
+
+        loop.call_soon_threadsafe(_resolve_unexpected)
 
     comm.on_msg(_on_msg)
-    comm.open(data=data)
+    # request_type goes last so a payload "type" key cannot reroute the request.
+    comm.open(data={**(payload or {}), "type": request_type})
     return await future
 
 
@@ -135,11 +160,23 @@ async def run(prompt: str, **kwargs: Any) -> RLMResult:
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     _ensure_recursion_allowed()
-    payload = await _host_request({"type": "run", "prompt": prompt, "kwargs": kwargs})
+    payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _result_from_payload(payload)
 
 
+try:
+    _harness_state = get_harness_state()
+except Exception:  # pragma: no cover - harness state must never break `import rlm`
+    # Importing rlm runs inside the kernel; a failure here would take down the whole
+    # kernel. Fall back to a true in-memory store (no path resolution, no disk) so the
+    # failure cannot recur and refinement is merely degraded, not fatal.
+    _harness_state = HarnessState(in_memory=True)
+
+
 class _RLMCallable:
+    harness = _harness_state
+    get_harness_state = staticmethod(get_harness_state)
+
     async def run(self, prompt: str, **kwargs: Any) -> RLMResult:
         return await run(prompt, **kwargs)
 
@@ -148,6 +185,7 @@ class _RLMCallable:
 
 
 rlm = _RLMCallable()
+harness = _harness_state
 
 
 class _CallableModule(types.ModuleType):
@@ -158,8 +196,14 @@ class _CallableModule(types.ModuleType):
 sys.modules[__name__].__class__ = _CallableModule
 
 __all__ = [
+    "HarnessEntry",
+    "HarnessState",
     "RLMResult",
+    "RefinementEvent",
     "TokenUsage",
+    "get_harness_state",
+    "harness",
+    "host_request",
     "rlm",
     "run",
 ]

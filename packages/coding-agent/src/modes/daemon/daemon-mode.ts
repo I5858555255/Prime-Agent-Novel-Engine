@@ -119,6 +119,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"set_follow_up_mode",
 	"set_auto_compaction",
 	"compact",
+	"refine",
 	"abort_compaction",
 	"abort_branch_summary",
 	"abort_retry",
@@ -410,8 +411,7 @@ class AgentDaemon {
 				initialActiveToolNames: options.activeToolNames,
 				allowedToolNames: options.allowedToolNames,
 				customTools: options.customTools,
-				includeGoalTools: options.includeGoalTools,
-				autoActivateGoalTools: options.autoActivateGoalTools,
+				includeGoals: options.includeGoals,
 				rlmDepth: options.rlmDepth,
 				rlmMaxDepth: options.rlmMaxDepth,
 				rlmSessionDir: options.sessionDir,
@@ -426,6 +426,7 @@ class AgentDaemon {
 				rlmChildId: options.id,
 				rlmParentNodeId: options.rlmParentNodeId,
 				prompt: options.prompt,
+				spawnCode: options.spawnCode,
 				sessionDir: options.sessionDir,
 			},
 		});
@@ -907,6 +908,15 @@ class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const result = await state.runtime.session.compact(command.customInstructions);
 				return success(command.id, "compact", result);
+			}
+
+			case "refine": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.session.refine({
+					instructions: command.instructions,
+					rollbackId: command.rollbackId,
+				});
+				return success(command.id, "refine", result);
 			}
 
 			case "abort_compaction": {

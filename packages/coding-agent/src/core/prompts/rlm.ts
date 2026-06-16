@@ -14,17 +14,25 @@ const IPYTHON_CONTROL_PROMPT = [
 	"",
 	"Do not assume IPython is the native runtime of the external thing being investigated. A repository, package, service, dataset, paper, website, benchmark, or API may have its own environment and normal interface. Evaluate external systems through their own interface, then use IPython to coordinate the process and analyze what comes back.",
 	"",
-	"When running shell commands from IPython, use `%%bash` cells. Avoid `!cmd` shell escapes for project commands so shell behavior is explicit and multi-line commands share one shell context.",
+	"When running shell commands from IPython, use `%%bash` cells. If you use `%%bash`, it must be the first line of the code cell: no comments, spaces, blank lines, imports, or Python statements before it. Avoid `!cmd` shell escapes for project commands so shell behavior is explicit and multi-line commands share one shell context.",
 	"",
 	'Project import checks are target-environment checks. If the user asks whether the current project, package, or repository imports from Python, do not run `import <project>` directly in IPython. Use a `%%bash` cell with the target environment, such as `uv run python -c "import <package>"`, `.venv/bin/python -c "import <package>"`, or the documented project command.',
 	"",
 	"Important: do not install dependencies into the IPython kernel just to make an external project import or run there. If a project import, test, script, CLI, or dependency check is needed, run it through that project's own environment and normal command interface. For example, in a Python repo use its documented commands, `uv run ...`, `.venv/bin/python ...`, or the active project interpreter from the repo root. Treat failures from that native environment as the relevant result.",
+	"",
+	"Use Python for reading, searching, and editing files — it gives you reusable variables you can slice, filter, and act on without re-reading. Always assign read/search results to named variables so you can revisit them later.",
 	"",
 	"Each `%%bash` cell runs in a throw-away subshell, so shell-level state (`cd`, `export`, `source`, shell variables) does NOT carry to later cells. Keep dependent shell steps inside one `%%bash` cell when they need shared shell state, or use kernel-level equivalents that survive across calls: `%cd <dir>` for the working directory and `os.environ['VAR'] = '...'` (or `%env VAR=...`) for environment variables — these apply to all subsequent `%%bash` calls.",
 	"",
 	"Python state in the kernel, by contrast, persists across cells: named variables, helper functions, classes, imports, notes, parsed outputs, and helper data structures all remain available in every later turn. Tool calls are themselves Python `await` expressions, so their return values can be bound to variables and composed into program logic just like any other call.",
 	"",
 	`The kernel has these Python imports available: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}. Import them directly; no pip install needed.`,
+	"",
+	"Global continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. Use it to record reset-free improvements to prompt notes, memory, reusable skills, and subagent specs that should persist across Prime Agent sessions. Use explicit CRUD calls such as `rlm.harness.create_memory(...)`, `rlm.harness.update_memory(...)`, `rlm.harness.delete_memory(...)`, `rlm.harness.create_skill(...)`, `rlm.harness.update_skill(...)`, `rlm.harness.delete_skill(...)`, `rlm.harness.create_subagent(...)`, `rlm.harness.update_subagent(...)`, `rlm.harness.delete_subagent(...)`, `rlm.harness.create_prompt_note(...)`, `rlm.harness.update_prompt_note(...)`, `rlm.harness.delete_prompt_note(...)`, plus `rlm.harness.record_refinement(...)` and `rlm.harness.overview()`.",
+	"",
+	"RLM-native call contract for refined entries: installed Python skills are called from IPython as `await <skill_import>(...)` with keyword arguments, or as `<skill_import> ...` from shell when a CLI exists. Harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Harness subagent entries are reusable delegation specs; invoke them by turning the spec into a concise task prompt and calling `await rlm('sub-task')`, or `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent non-native wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
+	"",
+	"Treat harness refinement as a small, evidence-backed update after observing a repeated failure or reusable tactic: diagnose the issue, update the smallest relevant harness component, validate on the next action, then record the outcome. Do not rewrite the whole harness when a focused memory, skill, prompt note, or subagent spec is enough.",
 ].join("\n");
 
 export function buildRlmPrompt(options: RlmPromptOptions): string {
@@ -54,6 +62,11 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		skillLines.push(
 			"Each Python skill may also be available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 		);
+		if (installedSkills.includes("edit")) {
+			skillLines.push(
+				"For targeted existing-file edits, prefer the pre-imported async `edit` skill from IPython: `old = '''...'''; new = '''...'''; await edit(path=\"pkg/file.py\", old_str=old, new_str=new)`. Use exact old/new strings; if the text contains triple double quotes, use triple single-quoted variables or build `old`/`new` from inspected file slices.",
+			);
+		}
 	}
 	if (skillLines.length > 0) {
 		parts.push("", ...skillLines);
