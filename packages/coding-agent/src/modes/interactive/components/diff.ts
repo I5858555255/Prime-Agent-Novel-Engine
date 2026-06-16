@@ -1,5 +1,6 @@
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
-import { theme } from "../theme/theme.js";
+import { highlightCode, theme } from "../theme/theme.js";
 
 /**
  * Parse diff line to extract prefix, line number, and content.
@@ -144,4 +145,137 @@ export function renderDiff(diffText: string, _options: RenderDiffOptions = {}): 
 	}
 
 	return result.join("\n");
+}
+
+type ThemeBg = Parameters<typeof theme.bg>[0];
+type ThemeColor = Parameters<typeof theme.fg>[0];
+
+// Background-aware syntax highlighting depends on inner color resets clearing
+// only the foreground. Highlighter output (and our own fallbacks) occasionally
+// emit a full reset (\x1b[0m) or a background reset (\x1b[49m); rewrite both to
+// a foreground-only reset so an enclosing background block survives the line.
+const BG_CLEARING_RESET = /\x1b\[(?:0|49)m/g;
+
+function keepBackground(highlighted: string): string {
+	return highlighted.replace(BG_CLEARING_RESET, "\x1b[39m");
+}
+
+function highlightContent(content: string, language: string | undefined): string {
+	if (!content) {
+		return "";
+	}
+	if (language) {
+		return keepBackground(highlightCode(content, language)[0] ?? content);
+	}
+	return theme.fg("mdCodeBlock", content);
+}
+
+interface DiffLineSpec {
+	/** Background block filling the row. */
+	bg: ThemeBg;
+	gutter: string;
+	gutterFg: ThemeColor;
+	content: string;
+	language: string | undefined;
+	width: number;
+	/**
+	 * When set, render content in this flat foreground color instead of syntax
+	 * highlighting. Used for added/removed lines in 256-color mode, where a
+	 * background block can't render as a subtle tint.
+	 */
+	contentFg?: ThemeColor;
+}
+
+/**
+ * Build one diff row that fills `width` exactly, on a single background block so
+ * the colored region spans the full content area (Claude Code-style). The
+ * caller frames each row with the panel side padding.
+ */
+function buildRichDiffLine(spec: DiffLineSpec): string {
+	const styledGutter = theme.fg(spec.gutterFg, spec.gutter);
+	const renderedContent = spec.contentFg
+		? theme.fg(spec.contentFg, spec.content)
+		: highlightContent(spec.content, spec.language);
+	let inner = `${styledGutter}${renderedContent}\x1b[39m`;
+	const vis = visibleWidth(inner);
+	if (vis > spec.width) {
+		inner = truncateToWidth(inner, spec.width, "");
+	} else if (vis < spec.width) {
+		inner += " ".repeat(spec.width - vis);
+	}
+	return theme.bg(spec.bg, inner);
+}
+
+export interface RichDiffOptions {
+	/** Language id for syntax highlighting the diff content (e.g. "typescript"). */
+	language?: string;
+}
+
+/**
+ * A dim vertical-ellipsis row used to separate non-adjacent hunks of one file's
+ * diff (matching the codex `⋮` style), filling `contentWidth` on the panel bg.
+ */
+export function renderDiffSeparator(contentWidth: number): string {
+	const width = Math.max(1, contentWidth);
+	const marker = theme.fg("toolDiffContext", " ⋮");
+	const pad = Math.max(0, width - visibleWidth(marker));
+	return theme.bg("toolPanelBg", marker + " ".repeat(pad));
+}
+
+/**
+ * Render a unified diff (from {@link generateDiffString}) as full-width rows:
+ * added lines on a green block, removed on red, context on the panel
+ * background, each syntax-highlighted and exactly `contentWidth` wide.
+ */
+export function renderRichDiff(diffText: string, contentWidth: number, options: RichDiffOptions = {}): string[] {
+	const width = Math.max(1, contentWidth);
+	const language = options.language;
+	// 256-color terminals can't render the subtle green/red tints — a dark block
+	// quantizes to black. There, drop the block and color the text instead.
+	const useBlocks = theme.colorMode === "truecolor";
+	const rows: string[] = [];
+
+	for (const rawLine of diffText.split("\n")) {
+		const parsed = parseDiffLine(rawLine);
+		if (!parsed) {
+			rows.push(
+				buildRichDiffLine({ bg: "toolPanelBg", gutterFg: "toolDiffContext", gutter: "", content: replaceTabs(rawLine), language, width }),
+			);
+			continue;
+		}
+		const { prefix, lineNum, content } = parsed;
+		const gutter = `${lineNum} ${prefix === " " ? " " : prefix} `;
+		const text = replaceTabs(content);
+		if (prefix === "+") {
+			rows.push(
+				buildRichDiffLine({
+					bg: useBlocks ? "toolDiffAddedBg" : "toolPanelBg",
+					gutterFg: "toolDiffAdded",
+					gutter,
+					content: text,
+					language,
+					width,
+					contentFg: useBlocks ? undefined : "toolDiffAdded",
+				}),
+			);
+		} else if (prefix === "-") {
+			rows.push(
+				buildRichDiffLine({
+					bg: useBlocks ? "toolDiffRemovedBg" : "toolPanelBg",
+					gutterFg: "toolDiffRemoved",
+					gutter,
+					content: text,
+					language,
+					width,
+					contentFg: useBlocks ? undefined : "toolDiffRemoved",
+				}),
+			);
+		} else {
+			rows.push(
+				buildRichDiffLine({ bg: "toolPanelBg", gutterFg: "toolDiffContext", gutter, content: text, language, width }),
+			);
+		}
+	}
+
+	return rows;
 }
