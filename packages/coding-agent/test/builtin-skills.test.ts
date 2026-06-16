@@ -172,6 +172,15 @@ describe("builtin skills", () => {
 			expect(goal?.kind === "python" && goal.python.importName).toBe("goal");
 		});
 
+		it("ships the agent-message skill as a python skill importable as `agent_message`", () => {
+			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
+
+			const agentMessage = skills.find((s) => s.name === "agent-message");
+			expect(agentMessage).toBeDefined();
+			expect(agentMessage?.kind).toBe("python");
+			expect(agentMessage?.kind === "python" && agentMessage.python.importName).toBe("agent_message");
+		});
+
 		it("ships the edit skill as a python skill importable as `edit`", () => {
 			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
 

@@ -6,6 +6,7 @@ const daemonClientMock = vi.hoisted(() => {
 	type Command = {
 		type: string;
 		name?: string;
+		activeSessionId?: string;
 		sessionPath?: string;
 		config?: { extensionFlagValues?: Record<string, boolean | string> };
 		targetActiveSessionId?: string;
@@ -249,6 +250,29 @@ describe("daemon command", () => {
 			deliveryMode: "follow_up",
 			message: "use this context",
 		});
+	});
+
+	it("routes daemon agent message safety controls", async () => {
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "agent-messages", "status"]),
+		).resolves.toBe(true);
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "agent-messages", "pause"]),
+		).resolves.toBe(true);
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "agent-messages", "resume"]),
+		).resolves.toBe(true);
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "agent-messages", "clear", "worker"]),
+		).resolves.toBe(true);
+
+		const requests = daemonClientMock.instances.flatMap((client) => client.requests);
+		expect(requests).toEqual([
+			{ type: "agent_messages_status" },
+			{ type: "agent_messages_pause" },
+			{ type: "agent_messages_resume" },
+			{ type: "agent_messages_clear", activeSessionId: "worker" },
+		]);
 	});
 });
 

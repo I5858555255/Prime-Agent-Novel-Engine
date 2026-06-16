@@ -33,6 +33,7 @@ const DAEMON_CLIENT_COMMANDS = new Set([
 	"rename",
 	"prompt",
 	"send",
+	"agent-messages",
 	"steer",
 	"follow-up",
 	"state",
@@ -189,6 +190,9 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 				return;
 			case "send":
 				await runSend(client, parsed.positionals, parsed.json);
+				return;
+			case "agent-messages":
+				await runAgentMessages(client, parsed.positionals, parsed.json);
 				return;
 			case "steer":
 				await runMessageCommand(client, "steer", parsed.positionals, parsed.json);
@@ -763,6 +767,31 @@ async function runPrompt(client: DaemonClient, args: string[]): Promise<void> {
 	} finally {
 		unsubscribeOutput();
 		finished.cancel();
+	}
+}
+
+async function runAgentMessages(client: DaemonClient, args: string[], json: boolean): Promise<void> {
+	const subcommand = args[0];
+	switch (subcommand) {
+		case "status":
+			await printResponseData(client, { type: "agent_messages_status" }, json);
+			return;
+		case "pause":
+			await printResponseData(client, { type: "agent_messages_pause" }, json);
+			return;
+		case "resume":
+			await printResponseData(client, { type: "agent_messages_resume" }, json);
+			return;
+		case "clear": {
+			const activeSessionId = args[1];
+			if (!activeSessionId) {
+				throw new Error("Usage: daemon agent-messages clear <session>");
+			}
+			await printResponseData(client, { type: "agent_messages_clear", activeSessionId }, json);
+			return;
+		}
+		default:
+			throw new Error("Usage: daemon agent-messages <status|pause|resume|clear>");
 	}
 }
 
@@ -1419,6 +1448,7 @@ ${chalk.bold("Commands:")}
   detach [session]              Detach this client from one session or all sessions
   prompt <session> <message>    Send a prompt, stream events, and exit when idle
   send [options] <target> <msg> Send an agent-to-agent message to another live session
+  agent-messages <cmd>          Safety controls: status, pause, resume, clear <session>
   steer <session> <message>     Queue a steering message
   follow-up <session> <message> Queue a follow-up message
   rename <session> <name>       Rename a live session
@@ -1436,6 +1466,7 @@ ${chalk.bold("Options:")}
   --foreground, --no-detach     Keep daemon attached to this terminal for debugging
   --json                        Print raw JSON for commands with formatted output; attach streams raw protocol JSON
   send options: --from <session>, --steer, --follow-up
+  agent-messages clear only clears one explicitly named session
   Agent options such as --model, --provider, --tools, and --thinking apply to created sessions.
 
 ${chalk.bold("Examples:")}

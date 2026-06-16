@@ -1,5 +1,10 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
+import type {
+	AgentSessionMessageDeliveryMode,
+	AgentSessionMessageReceipt,
+	AgentSessionMessageSafetyStatus,
+} from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
@@ -15,7 +20,6 @@ import type {
 	AgentConnectionSessionTreeNode,
 	AgentConnectionState,
 } from "../agent-connection/types.js";
-import type { AgentSessionMessageDeliveryMode, AgentSessionMessageReceipt } from "./agent-session-bus.js";
 import type { SessionSummary } from "./daemon-session-list.js";
 
 /**
@@ -181,6 +185,10 @@ export type DaemonCommand =
 			fromActiveSessionId?: string;
 			deliveryMode?: AgentSessionMessageDeliveryMode;
 	  }
+	| { id?: string; type: "agent_messages_status" }
+	| { id?: string; type: "agent_messages_pause" }
+	| { id?: string; type: "agent_messages_resume" }
+	| { id?: string; type: "agent_messages_clear"; activeSessionId: string }
 	| { id?: string; type: "abort"; activeSessionId: string }
 	| {
 			id?: string;
@@ -312,6 +320,7 @@ export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;
 export type DaemonResourceSnapshot = AgentConnectionResourceSnapshot;
 
 export type DaemonAgentSessionMessageReceipt = AgentSessionMessageReceipt;
+export type DaemonAgentSessionMessageSafetyStatus = AgentSessionMessageSafetyStatus;
 
 export type DaemonOutbound =
 	| DaemonResponse

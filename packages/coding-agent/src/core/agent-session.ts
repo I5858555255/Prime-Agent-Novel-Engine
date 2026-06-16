@@ -49,6 +49,16 @@ import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
+import {
+	AGENT_MESSAGE_SKILL_NAME,
+	type AgentSessionMessageController,
+	type AgentSessionMessageListResult,
+	type AgentSessionMessageReceipt,
+	assertDirectAgentMessageTarget,
+	createAgentMessageHostHandlers,
+	normalizeAgentSessionMessage,
+	normalizeAgentSessionMessageDeliveryMode,
+} from "./agent-messages.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
@@ -298,6 +308,8 @@ export interface AgentSessionConfig {
 	 * Default: true.
 	 */
 	includeGoals?: boolean;
+	/** Daemon-backed agent-to-agent messaging bridge. Omitted for local-only sessions. */
+	agentMessageController?: AgentSessionMessageController;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -684,6 +696,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _includeGoals: boolean;
+	private _agentMessageController?: AgentSessionMessageController;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -727,6 +740,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._includeGoals = config.includeGoals ?? true;
+		this._agentMessageController = config.agentMessageController;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._rlmDepth = config.rlmDepth ?? parseDepth(process.env.RLM_DEPTH, 0, "RLM_DEPTH");
@@ -1318,6 +1332,35 @@ export class AgentSession {
 				return goalHostResponse(this._completeGoalFromHost(), true);
 			default:
 				throw new Error(`unknown goal request type "${type}"`);
+		}
+	}
+
+	handleAgentMessageHostRequest(
+		type: string,
+		payload: Record<string, unknown> = {},
+	): AgentSessionMessageListResult | Promise<AgentSessionMessageReceipt> {
+		if (!this._agentMessageController) {
+			throw new Error("agent messaging is not available in this session");
+		}
+		switch (type) {
+			case "agent_message.list":
+				return this._agentMessageController.listAgents();
+			case "agent_message.send": {
+				if (typeof payload.target !== "string") {
+					throw new Error("agent_message.send target must be a string");
+				}
+				if (typeof payload.message !== "string") {
+					throw new Error("agent_message.send message must be a string");
+				}
+				const deliveryMode = normalizeAgentSessionMessageDeliveryMode(payload.mode);
+				return this._agentMessageController.sendAgentMessage({
+					target: assertDirectAgentMessageTarget(payload.target),
+					message: normalizeAgentSessionMessage(payload.message),
+					...(deliveryMode ? { deliveryMode } : {}),
+				});
+			}
+			default:
+				throw new Error(`unknown agent message request type "${type}"`);
 		}
 	}
 
@@ -3467,11 +3510,14 @@ export class AgentSession {
 	 * skill is withheld when goals are disabled for this session.
 	 */
 	private _modelVisibleSkills(): Skill[] {
-		const skills = this._resourceLoader.getSkills().skills;
-		if (this._includeGoals) {
-			return skills;
+		let skills = this._resourceLoader.getSkills().skills;
+		if (!this._includeGoals) {
+			skills = skills.filter((skill) => skill.name !== GOAL_SKILL_NAME);
 		}
-		return skills.filter((skill) => skill.name !== GOAL_SKILL_NAME);
+		if (!this._agentMessageController) {
+			skills = skills.filter((skill) => skill.name !== AGENT_MESSAGE_SKILL_NAME);
+		}
+		return skills;
 	}
 
 	/** Typed handlers for host requests arriving from the IPython kernel comm bridge. */
@@ -3485,6 +3531,21 @@ export class AgentSession {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
 				handlers[type] = async (payload) => this.handleGoalHostRequest(type, payload);
 			}
+		}
+		if (this._agentMessageController) {
+			Object.assign(
+				handlers,
+				createAgentMessageHostHandlers({
+					listAgents: () =>
+						this.handleAgentMessageHostRequest("agent_message.list") as AgentSessionMessageListResult,
+					sendAgentMessage: async (input) =>
+						(await this.handleAgentMessageHostRequest("agent_message.send", {
+							target: input.target,
+							message: input.message,
+							mode: input.deliveryMode,
+						})) as AgentSessionMessageReceipt,
+				}),
+			);
 		}
 		return handlers;
 	}
