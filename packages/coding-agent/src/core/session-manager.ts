@@ -1470,13 +1470,22 @@ export class SessionManager {
 	 * @param cwdOverride Optional cwd override instead of the session header cwd.
 	 */
 	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
-		// Extract cwd from session header if possible, otherwise use process.cwd()
-		const entries = loadEntriesFromFile(path);
-		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
-		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
+		// Only the header's cwd is needed to construct the manager; the constructor
+		// (setSessionFile) performs the full parse. Read just the first line here
+		// instead of parsing the entire file a second time — that double parse is a
+		// needless O(n) cost on open and is noticeable for long sessions.
+		let cwd = cwdOverride;
+		if (!cwd) {
+			try {
+				cwd = readSessionHeader(path)?.cwd;
+			} catch {
+				// Missing or malformed header: fall back to process.cwd(), matching the
+				// previous behavior when loadEntriesFromFile() yielded no session header.
+			}
+		}
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ?? resolve(path, "..");
-		return new SessionManager(cwd, dir, path, true);
+		return new SessionManager(cwd ?? process.cwd(), dir, path, true);
 	}
 
 	/**
