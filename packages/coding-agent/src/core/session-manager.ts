@@ -1480,13 +1480,22 @@ export class SessionManager {
 		// instead of parsing the entire file a second time — that double parse is a
 		// needless O(n) cost on open and is noticeable for long sessions.
 		let cwd = cwdOverride;
-		if (!cwd) {
+		if (cwd === undefined) {
+			let header: Partial<SessionHeader> | undefined;
 			try {
-				cwd = readSessionHeader(path)?.cwd;
+				header = readSessionHeader(path);
 			} catch {
-				// Missing or malformed header: fall back to process.cwd(), matching the
-				// previous behavior when loadEntriesFromFile() yielded no session header.
+				header = undefined;
 			}
+			// readSessionHeader only inspects the first physical line. If that isn't a
+			// valid session header (e.g. a leading blank/whitespace or malformed line),
+			// fall back to the full loader, which trims and skips such lines exactly
+			// like setSessionFile does — so this.cwd stays consistent with the header
+			// the session is actually loaded with. This slow path is rare.
+			if (header?.type !== "session" || typeof header.id !== "string") {
+				header = loadEntriesFromFile(path).find((e) => e.type === "session") as SessionHeader | undefined;
+			}
+			cwd = header?.cwd;
 		}
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ?? resolve(path, "..");
