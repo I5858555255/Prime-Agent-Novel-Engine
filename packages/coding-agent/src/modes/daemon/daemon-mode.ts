@@ -166,7 +166,7 @@ export async function runDaemonMode(options: DaemonModeOptions): Promise<never> 
 	return new Promise(() => {});
 }
 
-class AgentDaemon {
+export class AgentDaemon {
 	private server?: Server;
 	private shuttingDown = false;
 	private ownsSocketPath = false;
@@ -1020,7 +1020,8 @@ class AgentDaemon {
 			}
 
 			case "heartbeat_get": {
-				const heartbeat = this.cronStore.getHeartbeat(command.activeSessionId);
+				const state = this.getSessionState(command.activeSessionId);
+				const heartbeat = this.cronStore.getHeartbeat(state.activeSessionId);
 				return success(command.id, "heartbeat_get", { heartbeat: heartbeat ?? null });
 			}
 

@@ -2,11 +2,13 @@ import type { Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
+	AgentDaemon,
 	cancelPendingExtensionUiRequests,
 	detachClientFromActiveSession,
 	getChildActiveSessionStates,
 	shouldSendDaemonOutboundToClient,
 } from "../src/modes/daemon/daemon-mode.js";
+import type { DaemonCommand } from "../src/modes/daemon/daemon-protocol.js";
 
 describe("daemon mode helpers", () => {
 	it("finds only direct child active sessions", () => {
@@ -82,6 +84,31 @@ describe("daemon mode helpers", () => {
 				method: "notify",
 			}),
 		).toBe(true);
+	});
+
+	it("validates active sessions before reading a heartbeat", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: {
+				agentDir: "/tmp/prime-agent-test-agent",
+				cwd: "/tmp",
+			},
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const handleCommand = (
+			daemon as unknown as {
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			}
+		).handleCommand.bind(daemon);
+
+		await expect(
+			handleCommand(makeClient("client-1", "missing"), {
+				id: "command-1",
+				type: "heartbeat_get",
+				activeSessionId: "missing",
+			}),
+		).rejects.toThrow("Unknown active session: missing");
 	});
 });
 
