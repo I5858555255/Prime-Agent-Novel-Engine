@@ -1237,7 +1237,12 @@ export class SessionManager {
 	 * Uses tree traversal from current leaf.
 	 */
 	buildSessionContext(): SessionContext {
-		return buildSessionContext(this.getEntries(), this.leafId, this.byId);
+		// Pass fileEntries directly rather than getEntries(): the resolved context
+		// is computed from the leaf-to-root walk over byId (which already excludes
+		// the header), so the entries argument is only a fallback for an undefined
+		// leaf — never hit here since leafId is always set or null. Avoids an O(n)
+		// array copy on every call (attach, get_session_context, agent init, ...).
+		return buildSessionContext(this.fileEntries as SessionEntry[], this.leafId, this.byId);
 	}
 
 	/**
