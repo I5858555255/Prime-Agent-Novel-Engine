@@ -1092,6 +1092,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialActiveToolNames: runtimeSessionOptions?.initialActiveToolNames,
 			allowedToolNames: runtimeSessionOptions?.allowedToolNames,
 			includeGoals: runtimeSessionOptions?.includeGoals,
+			agentObserveController: runtimeSessionOptions?.agentObserveController,
 			rlmDepth: runtimeSessionOptions?.rlmDepth,
 			rlmMaxDepth: runtimeSessionOptions?.rlmMaxDepth,
 			rlmSessionDir: runtimeSessionOptions?.rlmSessionDir,
