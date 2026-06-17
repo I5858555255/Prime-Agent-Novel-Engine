@@ -1018,10 +1018,10 @@ export class TUI extends Container {
 				// Rows the previous frame occupied on screen.
 				const prevScreenRows = Math.min(height, this.previousLines.length);
 				// Move the hardware cursor up to the top of the visible screen.
-				const screenRow = Math.max(
-					0,
-					Math.min(prevScreenRows - 1, this.hardwareCursorRow - this.previousViewportTop),
-				);
+				// Use the local prevViewportTop (height-adjusted earlier in doRender)
+				// rather than the field, so the move stays consistent with the rest
+				// of the render when the terminal height changed this frame.
+				const screenRow = Math.max(0, Math.min(prevScreenRows - 1, this.hardwareCursorRow - prevViewportTop));
 				if (screenRow > 0) buffer += `\x1b[${screenRow}A`;
 				buffer += "\r";
 				for (let i = 0; i < visibleCount; i++) {
