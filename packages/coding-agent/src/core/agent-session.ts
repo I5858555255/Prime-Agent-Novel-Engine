@@ -115,6 +115,7 @@ import {
 	validateGoalObjective,
 } from "./goals.js";
 import type { HostRequestHandlers } from "./kernel/index.js";
+import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -700,6 +701,10 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 	private _disposed = false;
 	private _ipythonKernelProvisioner?: IpythonKernelProvisioner;
+	/** Artifact dir backing the current provisioner's kernel snapshot, if any. */
+	private _ipythonKernelSnapshotDir?: string;
+	/** True once the runtime has been built once; later builds are in-process rebuilds (/reload). */
+	private _ipythonRuntimeBuilt = false;
 	private readonly _prewarmIpythonKernel: boolean;
 	private _rlmDepth: number;
 	private _rlmMaxDepth: number;
@@ -1790,6 +1795,23 @@ export class AgentSession {
 	 * Remove all listeners and disconnect from agent.
 	 * Call this when completely done with the session.
 	 */
+	/**
+	 * Async teardown for graceful quit/switch: await the IPython kernel's dispose
+	 * (which flushes a final namespace snapshot) before the synchronous dispose, so
+	 * the latest state reaches disk instead of racing process exit.
+	 */
+	async disposeAsync(): Promise<void> {
+		if (this._disposed) {
+			return;
+		}
+		try {
+			await this._ipythonKernelProvisioner?.dispose();
+		} catch {
+			// a failed kernel startup already cleaned up after itself
+		}
+		this.dispose();
+	}
+
 	dispose(): void {
 		if (this._disposed) {
 			return;
@@ -2655,6 +2677,38 @@ export class AgentSession {
 		await this._ipythonKernelProvisioner?.restart();
 	}
 
+	/**
+	 * Tell the model when a resumed session revived its IPython kernel state, so it
+	 * knows which variables are actually available instead of assuming the kernel is
+	 * the one it left. Delivered as context before the next turn.
+	 */
+	private _onIpythonStateRestored(result: RestoreResult): void {
+		const lines = ["<ipython_state_restored>"];
+		if (result.restored.length > 0) {
+			lines.push(
+				`Your IPython kernel state was revived from your previous session. These names are available again: ${result.restored.join(", ")}.`,
+			);
+		} else {
+			lines.push(
+				"Your previous IPython kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.",
+			);
+		}
+		if (result.failed.length > 0) {
+			lines.push(
+				`These could not be restored and must be recreated if needed: ${result.failed.map((f) => f.name).join(", ")}.`,
+			);
+		}
+		lines.push("</ipython_state_restored>");
+		void this.sendCustomMessage(
+			{
+				customType: "ipython_state_restored",
+				content: lines.join("\n"),
+				display: false,
+			},
+			{ deliverAs: "nextTurn" },
+		).catch(() => {});
+	}
+
 	// =========================================================================
 	// Queue Mode Management
 	// =========================================================================
@@ -3500,13 +3554,23 @@ export class AgentSession {
 			);
 		} else {
 			// Rebuilding (e.g. /reload) replaces the provisioner; drop the previous
-			// kernel so the session never holds two live kernels.
-			void this._ipythonKernelProvisioner?.dispose();
+			// kernel so the session never holds two live kernels. Gate the new kernel's
+			// startup on the old one's dispose (which flushes a final snapshot), so a
+			// reload can't restore from a snapshot the old kernel is still writing.
+			const previousDispose = this._ipythonKernelProvisioner?.dispose();
+			this._ipythonKernelSnapshotDir = this.sessionManager.getSessionArtifactDir();
+			// Only surface the "revived from your previous session" notice on the first
+			// build (a genuine resume). A later rebuild (/reload) restores state silently
+			// for continuity — the conversation is unchanged, so there's nothing to flag.
+			const notifyRestore = !this._ipythonRuntimeBuilt;
 			this._ipythonKernelProvisioner = new IpythonKernelProvisioner(this._cwd, {
 				env: this._rlmKernelEnv(),
 				sessionId: this.sessionId,
 				hostHandlers: this._createKernelHostHandlers(),
 				pythonSkills,
+				snapshotDir: this._ipythonKernelSnapshotDir,
+				readyGate: previousDispose,
+				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: { provisioner: this._ipythonKernelProvisioner },
@@ -3549,9 +3613,18 @@ export class AgentSession {
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
 
-		if (this._prewarmIpythonKernel && this.getActiveToolNames().includes("ipython")) {
+		// Prewarm when configured, or whenever we're resuming a session that already
+		// has a kernel snapshot — so its state is revived and the model is told what
+		// came back before the first turn, rather than a turn later when the kernel
+		// would otherwise lazily start on first use.
+		const hasSnapshot =
+			!!this._ipythonKernelSnapshotDir && existsSync(snapshotPathIn(this._ipythonKernelSnapshotDir));
+		if ((this._prewarmIpythonKernel || hasSnapshot) && this.getActiveToolNames().includes("ipython")) {
 			this._ipythonKernelProvisioner?.prewarm();
 		}
+
+		// Subsequent builds are in-process rebuilds (/reload), not a fresh resume.
+		this._ipythonRuntimeBuilt = true;
 	}
 
 	/**
@@ -3615,15 +3688,22 @@ export class AgentSession {
 	}
 
 	private _rlmKernelEnv(): Record<string, string> {
-		return {
+		const env: Record<string, string> = {
 			RLM_DEPTH: String(this._rlmDepth),
 			RLM_MAX_DEPTH: String(this._rlmMaxDepth),
 			RLM_HARNESS_STATE_DIR: getGlobalHarnessStateDir(),
-			RLM_SESSION_DIR: this._ensureRlmSessionDir(),
 		};
+		const rlmSessionDir = this._ensureRlmSessionDir();
+		if (rlmSessionDir) {
+			env.RLM_SESSION_DIR = rlmSessionDir;
+		}
+		return env;
 	}
 
-	private _ensureRlmSessionDir(): string {
+	// Undefined when there's no persistent artifact dir (e.g. the viewer client):
+	// don't mkdtemp here, since this runs on every kernel build but a viewer never
+	// does RLM work. The temp dir is created lazily in _createChildRlmSessionDir.
+	private _ensureRlmSessionDir(): string | undefined {
 		if (this._rlmSessionDir) {
 			mkdirSync(this._rlmSessionDir, { recursive: true });
 			return this._rlmSessionDir;
@@ -3636,12 +3716,11 @@ export class AgentSession {
 			return sessionArtifactDir;
 		}
 
-		this._rlmSessionDir = mkdtempSync(join(tmpdir(), "prime-agent-rlm-"));
-		return this._rlmSessionDir;
+		return undefined;
 	}
 
 	private _createChildRlmSessionDir(): string {
-		const parentDir = this._ensureRlmSessionDir();
+		const parentDir = this._ensureRlmSessionDir() ?? this._createEphemeralRlmSessionDir();
 		for (let i = 0; i < 100; i++) {
 			const childDir = join(parentDir, `sub-${randomUUID().slice(0, 8)}`);
 			try {
@@ -3655,6 +3734,11 @@ export class AgentSession {
 			}
 		}
 		throw new Error("Unable to create unique RLM child session directory");
+	}
+
+	private _createEphemeralRlmSessionDir(): string {
+		this._rlmSessionDir = mkdtempSync(join(tmpdir(), "prime-agent-rlm-"));
+		return this._rlmSessionDir;
 	}
 
 	private _usageForCurrentMessages(): RlmUsage {

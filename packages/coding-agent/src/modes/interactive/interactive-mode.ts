@@ -40,6 +40,11 @@ import {
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
 import { APP_TITLE, getAgentDir, getDebugLogPath, getShareViewerUrl, VERSION } from "../../config.js";
+import {
+	type AgentTraceUploadResult,
+	getPrimeAgentTraceCredential,
+	uploadAgentTraceFile,
+} from "../../core/agent-traces.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
 import { type AgentCronJob, parseHeartbeatCommand } from "../../core/cron-jobs.js";
 import type {
@@ -57,7 +62,6 @@ import { emptyGoalState, formatGoalUsage, type GoalState } from "../../core/goal
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
-import { DefaultPackageManager } from "../../core/package-manager.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
@@ -95,6 +99,12 @@ import type {
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
+import {
+	checkForPackageUpdates,
+	checkTmuxKeyboardSetup,
+	formatPackageUpdateNotice,
+	formatUpdateAvailableNotice,
+} from "../shared/startup-notices.js";
 import { AGENT_ACTIVITY_LABELS, AgentActivityTracker, formatTokenCount } from "./agent-activity.js";
 import { type AuthenticationResult, getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "./auth-flows.js";
 import { ArminComponent } from "./components/armin.js";
@@ -425,6 +435,12 @@ export interface InteractiveModeOptions {
 	onShutdown?: () => void | Promise<void>;
 	/** Allow returning from a full session to the agents view without stopping the daemon-owned agent. */
 	returnToAgentsView?: boolean;
+	/**
+	 * The agents view already surfaced global startup notices (app/extension updates, tmux setup),
+	 * so this session must not repeat them in its chat stream. Distinct from `returnToAgentsView`,
+	 * which also covers direct daemon attaches where the agents view was never shown.
+	 */
+	agentsViewOwnsStartupNotices?: boolean;
 	/** Open the read-only detail view for this subagent node right after startup. */
 	initialSubagentNodeId?: string;
 }
@@ -519,6 +535,8 @@ export class InteractiveMode {
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private initialConnectionSnapshotConsumed = false;
+	// Whether the session already had messages when first rendered (i.e. a resumed session).
+	private sessionHadInitialMessages = false;
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
@@ -931,9 +949,21 @@ export class InteractiveMode {
 	async run(): Promise<InteractiveModeRunResult> {
 		await this.init();
 
-		const newVersionPromise = checkForNewPiVersion(this.version);
-		const packageUpdatesPromise = this.checkForPackageUpdates();
-		const tmuxKeyboardWarningPromise = this.checkTmuxKeyboardSetup();
+		// Global, environment-scoped notices (app update, extension updates, tmux setup)
+		// belong on the agents view, not in a conversation. When the agents view already
+		// showed them, skip the checks here entirely. (This is narrower than
+		// `returnToAgentsView`, which is also set for direct daemon attaches that never
+		// rendered the agents view and still want the in-session fallback.)
+		const ownsGlobalStartupNotices = !this.options.agentsViewOwnsStartupNotices;
+		const newVersionPromise = ownsGlobalStartupNotices ? checkForNewPiVersion(this.version) : undefined;
+		const packageUpdatesPromise = ownsGlobalStartupNotices
+			? checkForPackageUpdates({
+					cwd: this.getCurrentCwd(),
+					agentDir: getAgentDir(),
+					settingsManager: this.settingsManager,
+				})
+			: undefined;
+		const tmuxKeyboardWarningPromise = ownsGlobalStartupNotices ? checkTmuxKeyboardSetup() : undefined;
 
 		// Show startup warnings
 		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
@@ -983,8 +1013,15 @@ export class InteractiveMode {
 			}
 			deferredStartupNotificationsShown = true;
 
+			// The agents view owns these for daemon sessions. When there is no agents view,
+			// show them once at the top of a fresh session, but never append them under a
+			// restored conversation where they read as disconnected clutter.
+			if (!ownsGlobalStartupNotices || this.sessionHadInitialMessages) {
+				return;
+			}
+
 			void newVersionPromise
-				.then((newVersion) => {
+				?.then((newVersion) => {
 					if (newVersion) {
 						this.showNewVersionNotification(newVersion);
 					}
@@ -992,7 +1029,7 @@ export class InteractiveMode {
 				.catch(() => {});
 
 			void packageUpdatesPromise
-				.then((updates) => {
+				?.then((updates) => {
 					if (updates.length > 0) {
 						this.showPackageUpdateNotification(updates);
 					}
@@ -1000,7 +1037,7 @@ export class InteractiveMode {
 				.catch(() => {});
 
 			void tmuxKeyboardWarningPromise
-				.then((warning) => {
+				?.then((warning) => {
 					if (warning) {
 						this.showWarning(warning);
 					}
@@ -1175,71 +1212,6 @@ export class InteractiveMode {
 
 		this.showStatus("Model selection required. Use /model to continue.");
 		return false;
-	}
-
-	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE) {
-			return [];
-		}
-
-		try {
-			const packageManager = new DefaultPackageManager({
-				cwd: this.getCurrentCwd(),
-				agentDir: getAgentDir(),
-				settingsManager: this.settingsManager,
-			});
-			const updates = await packageManager.checkForAvailableUpdates();
-			return updates.map((update) => update.displayName);
-		} catch {
-			return [];
-		}
-	}
-
-	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
-		if (!process.env.TMUX) return undefined;
-
-		const runTmuxShow = (option: string): Promise<string | undefined> => {
-			return new Promise((resolve) => {
-				const proc = spawn("tmux", ["show", "-gv", option], {
-					stdio: ["ignore", "pipe", "ignore"],
-				});
-				let stdout = "";
-				const timer = setTimeout(() => {
-					proc.kill();
-					resolve(undefined);
-				}, 2000);
-
-				proc.stdout?.on("data", (data) => {
-					stdout += data.toString();
-				});
-				proc.on("error", () => {
-					clearTimeout(timer);
-					resolve(undefined);
-				});
-				proc.on("close", (code) => {
-					clearTimeout(timer);
-					resolve(code === 0 ? stdout.trim() : undefined);
-				});
-			});
-		};
-
-		const [extendedKeys, extendedKeysFormat] = await Promise.all([
-			runTmuxShow("extended-keys"),
-			runTmuxShow("extended-keys-format"),
-		]);
-
-		// If we couldn't query tmux (timeout, sandbox, etc.), don't warn
-		if (extendedKeys === undefined) return undefined;
-
-		if (extendedKeys !== "on" && extendedKeys !== "always") {
-			return "tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
-		}
-
-		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
-		}
-
-		return undefined;
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -3187,6 +3159,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (commandName === "traces") {
+				await this.handleTracesCommand(canonicalCommandText);
+				this.editor.setText("");
+				return;
+			}
 			if (commandName === "context" && !commandArgs) {
 				await this.handleContextCommand();
 				this.editor.setText("");
@@ -4571,6 +4548,7 @@ export class InteractiveMode {
 			const snapshot = await this.agentConnection.getInitialSnapshot();
 			this.initialConnectionSnapshotConsumed = true;
 			context = this.getSessionContextFromConnectionSnapshot(snapshot);
+			this.sessionHadInitialMessages = context.messages.length > 0;
 			state = snapshot.state;
 			this.seedChildAgentInspector(snapshot.children);
 		}
@@ -4927,7 +4905,10 @@ export class InteractiveMode {
 			}
 		}
 		this.childAgentDetail.setToolsExpanded(expanded);
-		this.ui.requestRender();
+		// Expanding/collapsing changes blocks above the viewport, which would
+		// otherwise force a full redraw that scrolls to the top and replays the
+		// whole transcript. Keep the user anchored at their current position.
+		this.ui.requestRenderPreservingViewport();
 	}
 
 	private toggleThinkingBlockVisibility(): void {
@@ -5027,28 +5008,12 @@ export class InteractiveMode {
 	}
 
 	showNewVersionNotification(newVersion: string): void {
-		this.chatContainer.addChild(
-			new Text(
-				`${theme.bold(theme.fg("accent", "Update available:"))} ` +
-					`${theme.fg("muted", `v${newVersion}. Run `)}${theme.fg("accent", "prime-agent update")}`,
-				1,
-				0,
-			),
-		);
+		this.chatContainer.addChild(new Text(formatUpdateAvailableNotice(newVersion), 1, 0));
 		this.ui.requestRender();
 	}
 
 	showPackageUpdateNotification(packages: string[]): void {
-		const packageList = packages.join(", ");
-
-		this.chatContainer.addChild(
-			new Text(
-				`${theme.bold(theme.fg("warning", "Package updates available:"))} ` +
-					`${theme.fg("muted", `${packageList}. Run `)}${theme.fg("accent", "prime-agent update --extensions")}`,
-				1,
-				0,
-			),
-		);
+		this.chatContainer.addChild(new Text(formatPackageUpdateNotice(packages), 1, 0));
 		this.ui.requestRender();
 	}
 
@@ -6465,6 +6430,122 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private formatTraceUploadResult(result: AgentTraceUploadResult): string {
+		switch (result.status) {
+			case "uploaded":
+				return `Trace uploaded (${result.bytesStored.toLocaleString()} bytes).`;
+			case "disabled":
+				return "Trace sharing is disabled.";
+			case "missing_credentials":
+				return "Trace sharing needs a Prime API key. Run /traces login.";
+			case "no_session_file":
+				return "Trace sharing enabled. Current session will upload after the first assistant response.";
+			case "empty_session":
+				return "Trace sharing enabled. Current session is empty.";
+			case "invalid_session":
+				return `Trace upload skipped: ${result.message}.`;
+			case "too_large":
+				return `Trace upload skipped: session file is ${result.size.toLocaleString()} bytes; limit is ${result.maxBytes.toLocaleString()} bytes.`;
+			case "failed":
+				if (result.statusCode === 404) {
+					return "Trace upload endpoint was not found. The platform API may not be deployed yet, or PRIME_AGENT_TRACES_BASE_URL points at the wrong API.";
+				}
+				return `Trace upload failed: ${result.statusCode ? `HTTP ${result.statusCode}: ` : ""}${result.message}`;
+		}
+	}
+
+	private async uploadCurrentTraceOnce(): Promise<AgentTraceUploadResult> {
+		const state = await this.agentConnection.getState();
+		return uploadAgentTraceFile({
+			sessionFile: state.sessionFile,
+			authStorage: this.modelRegistry.authStorage,
+			settingsManager: this.settingsManager,
+			reloadConfig: false,
+		});
+	}
+
+	private async handleTracesCommand(text: string): Promise<void> {
+		const command =
+			text
+				.replace(/^\/traces\b/, "")
+				.trim()
+				.toLowerCase() || "status";
+
+		if (command === "status") {
+			await this.settingsManager.reload().catch(() => undefined);
+			const credential = await getPrimeAgentTraceCredential(this.modelRegistry.authStorage);
+			const state = await this.agentConnection.getState();
+			const info = [
+				theme.bold("Trace Sharing"),
+				"",
+				`${theme.fg("dim", "Status:")} ${this.settingsManager.getAgentTracesEnabled() ? "Enabled" : "Disabled"}`,
+				`${theme.fg("dim", "Credential:")} ${credential?.label ?? "Not configured"}`,
+				`${theme.fg("dim", "Session file:")} ${state.sessionFile ?? "In-memory"}`,
+				"",
+				theme.fg("dim", "Commands: /traces on, /traces off, /traces upload, /traces login"),
+			].join("\n");
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info, 1, 0));
+			this.ui.requestRender();
+			return;
+		}
+
+		if (command === "off" || command === "disable") {
+			this.settingsManager.setAgentTracesEnabled(false);
+			await this.settingsManager.flush();
+			this.showStatus("Trace sharing disabled.");
+			return;
+		}
+
+		if (command === "login") {
+			await this.createAuthFlows().runPrimeAgentTracesLogin();
+			return;
+		}
+
+		if (command === "on" || command === "enable") {
+			let credential = await getPrimeAgentTraceCredential(this.modelRegistry.authStorage);
+			if (!credential) {
+				const authResult = await this.createAuthFlows().runPrimeAgentTracesLogin();
+				if (authResult.status !== "success") {
+					return;
+				}
+				credential = await getPrimeAgentTraceCredential(this.modelRegistry.authStorage);
+			}
+			if (!credential) {
+				this.showError("Trace sharing needs a Prime API key.");
+				return;
+			}
+
+			this.settingsManager.setAgentTracesEnabled(true);
+			await this.settingsManager.flush();
+			const uploadResult = await this.uploadCurrentTraceOnce();
+			const uploadMessage = this.formatTraceUploadResult(uploadResult);
+			this.showStatus(
+				uploadResult.status === "no_session_file" || uploadResult.status === "empty_session"
+					? uploadMessage
+					: `Trace sharing enabled. ${uploadMessage}`,
+			);
+			return;
+		}
+
+		if (command === "upload") {
+			if (!this.settingsManager.getAgentTracesEnabled()) {
+				this.showStatus("Trace sharing is disabled. Run /traces on first.");
+				return;
+			}
+			const uploadResult = await this.uploadCurrentTraceOnce();
+			const message = this.formatTraceUploadResult(uploadResult);
+			if (uploadResult.status === "failed") {
+				this.showError(message);
+			} else {
+				this.showStatus(message);
+			}
+			return;
+		}
+
+		this.showWarning("Usage: /traces [status|on|off|upload|login]");
 	}
 
 	private async handleContextCommand(): Promise<void> {
