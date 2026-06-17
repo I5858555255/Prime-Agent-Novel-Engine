@@ -1012,11 +1012,14 @@ export class TUI extends Container {
 			// (now-resized) transcript from the top. Only meaningful when there
 			// is a previous frame on screen to paint over.
 			if (preserveViewport && this.previousLines.length > 0) {
-				buffer += this.deleteKittyImages(this.previousKittyImageIds);
 				const windowStart = Math.max(0, newLines.length - height);
 				const visibleCount = newLines.length - windowStart;
 				// Rows the previous frame occupied on screen.
 				const prevScreenRows = Math.min(height, this.previousLines.length);
+				// Only delete Kitty images within the repainted viewport. Images that
+				// live in scrollback above the visible slice are never redrawn here, so
+				// deleting them would leave broken history when the user scrolls up.
+				buffer += this.deleteChangedKittyImages(prevViewportTop, prevViewportTop + prevScreenRows - 1);
 				// Move the hardware cursor up to the top of the visible screen.
 				// Use the local prevViewportTop (height-adjusted earlier in doRender)
 				// rather than the field, so the move stays consistent with the rest

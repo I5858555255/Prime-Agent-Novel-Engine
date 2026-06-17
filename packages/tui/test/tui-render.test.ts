@@ -688,4 +688,34 @@ describe("TUI viewport-preserving render", () => {
 
 		tui.stop();
 	});
+
+	it("only deletes Kitty images within the repainted viewport", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		const aboveImage = encodeKitty("AAAA", { columns: 2, rows: 1, imageId: 101, moveCursor: false });
+		const visibleImage = encodeKitty("BBBB", { columns: 2, rows: 1, imageId: 202, moveCursor: false });
+		const lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		lines[2] = aboveImage; // scrollback (above the 10-row viewport)
+		lines[25] = visibleImage; // within the visible slice
+		component.lines = lines;
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		// Expand near the top so the repaint takes the viewport-preserving path.
+		const expanded = [...component.lines];
+		expanded.splice(6, 0, "Expanded A", "Expanded B", "Expanded C");
+		component.lines = expanded;
+		tui.requestRenderPreservingViewport();
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(writes.includes(deleteKittyImage(202)), "Visible-slice image is deleted before being redrawn");
+		assert.ok(!writes.includes(deleteKittyImage(101)), "Image in scrollback above the viewport must not be deleted");
+
+		tui.stop();
+	});
 });
