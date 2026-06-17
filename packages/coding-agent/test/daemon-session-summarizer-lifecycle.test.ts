@@ -61,6 +61,23 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(state.summaryState).toBeUndefined();
 	});
 
+	test("discards a verdict when the session is forgotten (closed) mid-call", async () => {
+		vi.useFakeTimers();
+		const state = makeState({ working: false });
+		let summarizer!: DaemonSessionSummarizer;
+		const generate = vi.fn().mockImplementation(async () => {
+			summarizer.forget(state.activeSessionId); // session closes while the model runs
+			return { summary: "Result after close", taskState: "completed" };
+		});
+		summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
+
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(generate).toHaveBeenCalledOnce();
+		// Aborted → nothing written to the disposed session.
+		expect(state.summaryState).toBeUndefined();
+	});
+
 	test("discards a verdict when a new turn arrives during the model call", async () => {
 		vi.useFakeTimers();
 		const state = makeState({ working: false });

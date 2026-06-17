@@ -236,7 +236,9 @@ function isSessionWorking(state: ActiveSessionState): boolean {
 export class DaemonSessionSummarizer {
 	private interval: ReturnType<typeof setInterval> | undefined;
 	private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	private readonly inFlight = new Set<string>();
+	// Maps an in-flight session id to a controller so a closing session can abort
+	// its summary and we can drop the result instead of writing after dispose.
+	private readonly inFlight = new Map<string, AbortController>();
 
 	constructor(
 		private readonly listTopLevelSessions: () => readonly ActiveSessionState[],
@@ -270,6 +272,9 @@ export class DaemonSessionSummarizer {
 			clearTimeout(timer);
 		}
 		this.debounceTimers.clear();
+		for (const controller of this.inFlight.values()) {
+			controller.abort();
+		}
 	}
 
 	/** Drop any pending work for a session that is closing. */
@@ -279,6 +284,9 @@ export class DaemonSessionSummarizer {
 			clearTimeout(timer);
 			this.debounceTimers.delete(activeSessionId);
 		}
+		// Abort an in-flight summary so its result is discarded rather than written
+		// to a session that is being disposed.
+		this.inFlight.get(activeSessionId)?.abort();
 	}
 
 	/** Seed in-memory status from the persisted entry when a session is added. */
@@ -334,17 +342,27 @@ export class DaemonSessionSummarizer {
 			return;
 		}
 
-		this.inFlight.add(id);
+		const controller = new AbortController();
+		this.inFlight.set(id, controller);
 		try {
-			const result = await this.generate({ registry: session.modelRegistry, messages, isWorking });
+			const result = await this.generate({
+				registry: session.modelRegistry,
+				messages,
+				isWorking,
+				signal: controller.signal,
+			});
 			if (!result) {
 				return;
 			}
-			// The model call is async: the session may have started a new turn or
-			// begun streaming while it ran. Discard a result that no longer matches
-			// the live state so we never record (or persist) a verdict for a turn
-			// that has moved on, nor append while the agent might be writing.
-			if (isSessionWorking(state) !== isWorking || session.messages.length !== messageCount) {
+			// The model call is async: the session may have closed, started a new
+			// turn, or begun streaming while it ran. Discard a result that no longer
+			// matches the live state so we never record (or persist) a verdict for a
+			// turn that has moved on, nor append after the session is disposed.
+			if (
+				controller.signal.aborted ||
+				isSessionWorking(state) !== isWorking ||
+				session.messages.length !== messageCount
+			) {
 				return;
 			}
 			const status: AgentStatus = {

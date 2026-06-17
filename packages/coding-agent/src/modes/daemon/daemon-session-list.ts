@@ -152,8 +152,18 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 		modelFallbackMessage: activeSession.runtime.modelFallbackMessage,
 		diagnostics: [...activeSession.runtime.diagnostics],
 		summary: activeSession.summaryState?.summary,
-		taskState: activeSession.summaryState?.taskState,
+		// Only trust the verdict while it matches the current turn; once new
+		// messages arrive a not-yet-refreshed verdict is stale, so we drop it and
+		// the view falls back to completed until the summarizer catches up.
+		taskState: isVerdictCurrent(activeSession) ? activeSession.summaryState?.taskState : undefined,
 	};
+}
+
+function isVerdictCurrent(activeSession: ActiveSessionState): boolean {
+	const status = activeSession.summaryState;
+	return (
+		status?.taskState !== undefined && status.basedOnMessageCount === activeSession.runtime.session.messages.length
+	);
 }
 
 export function summaryForInactiveSession(session: SessionInfo): SessionSummary {
