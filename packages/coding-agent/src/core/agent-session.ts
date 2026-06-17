@@ -350,10 +350,17 @@ export interface PromptOptions {
 	images?: ImageContent[];
 	/** When streaming, how to queue the message: "steer" (interrupt) or "followUp" (wait). Required if streaming. */
 	streamingBehavior?: "steer" | "followUp";
+	/** Coalesce follow-up queueing so only one pending follow-up exists for this key. */
+	followUpQueueKey?: string;
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
+}
+
+interface QueuedFollowUpMessage {
+	text: string;
+	queueKey?: string;
 }
 
 /** Result from cycleModel() */
@@ -649,7 +656,7 @@ export class AgentSession {
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
-	private _followUpMessages: string[] = [];
+	private _followUpMessages: QueuedFollowUpMessage[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -884,7 +891,7 @@ export class AgentSession {
 		this._emit({
 			type: "queue_update",
 			steering: [...this._steeringMessages],
-			followUp: [...this._followUpMessages],
+			followUp: this._followUpMessages.map((message) => message.text),
 		});
 	}
 
@@ -1553,7 +1560,7 @@ export class AgentSession {
 					this._emitQueueUpdate();
 				} else {
 					// Check follow-up queue
-					const followUpIndex = this._followUpMessages.indexOf(messageText);
+					const followUpIndex = this._followUpMessages.findIndex((message) => message.text === messageText);
 					if (followUpIndex !== -1) {
 						this._followUpMessages.splice(followUpIndex, 1);
 						this._emitQueueUpdate();
@@ -2105,7 +2112,7 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages);
+					await this._queueFollowUp(expandedText, currentImages, { queueKey: options.followUpQueueKey });
 				} else {
 					await this._queueSteer(expandedText, currentImages);
 				}
@@ -2288,7 +2295,7 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+	async followUp(text: string, images?: ImageContent[], options: { queueKey?: string } = {}): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2298,7 +2305,7 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images);
+		await this._queueFollowUp(expandedText, images, { queueKey: options.queueKey });
 	}
 
 	/**
@@ -2321,8 +2328,15 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
-		this._followUpMessages.push(text);
+	private async _queueFollowUp(
+		text: string,
+		images?: ImageContent[],
+		options: { queueKey?: string } = {},
+	): Promise<boolean> {
+		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
+			return false;
+		}
+		this._followUpMessages.push({ text, queueKey: options.queueKey });
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
@@ -2333,6 +2347,7 @@ export class AgentSession {
 			content,
 			timestamp: Date.now(),
 		});
+		return true;
 	}
 
 	/**
@@ -2444,7 +2459,7 @@ export class AgentSession {
 	 */
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		const steering = [...this._steeringMessages];
-		const followUp = [...this._followUpMessages];
+		const followUp = this._followUpMessages.map((message) => message.text);
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
@@ -2464,7 +2479,11 @@ export class AgentSession {
 
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
-		return this._followUpMessages;
+		return this._followUpMessages.map((message) => message.text);
+	}
+
+	hasQueuedFollowUp(queueKey: string): boolean {
+		return this._followUpMessages.some((message) => message.queueKey === queueKey);
 	}
 
 	get resourceLoader(): ResourceLoader {

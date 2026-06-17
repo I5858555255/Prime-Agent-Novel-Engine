@@ -474,8 +474,14 @@ export class AgentDaemon {
 		if (!state) {
 			return;
 		}
+		const followUpQueueKey = isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined;
+		if (followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
+			await state.runtime.session.followUp(job.prompt, undefined, { queueKey: followUpQueueKey });
+			return;
+		}
 		await state.runtime.session.prompt(job.prompt, {
 			streamingBehavior: state.runtime.session.isStreaming ? "followUp" : undefined,
+			followUpQueueKey,
 			source: "rpc",
 		});
 	}
@@ -1622,6 +1628,10 @@ export class AgentDaemon {
 		this.cleanupSocketPath();
 		process.exit(exitCode);
 	}
+}
+
+function isHeartbeatCronJob(job: AgentCronJob): boolean {
+	return job.source === "heartbeat" || job.source === "rlm_heartbeat";
 }
 
 function serializeSavedSessionInfo(session: SessionInfo): DaemonSavedSessionInfo {

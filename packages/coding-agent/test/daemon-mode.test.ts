@@ -181,6 +181,98 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("queues busy heartbeat cron jobs with a per-job coalescing key", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: {
+				agentDir: "/tmp/prime-agent-test-agent",
+				cwd: "/tmp",
+			},
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const prompt = vi.fn(async () => {});
+		const followUp = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					pendingMessageCount: number;
+					prompt: typeof prompt;
+					followUp: typeof followUp;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: true,
+			pendingMessageCount: 0,
+			prompt,
+			followUp,
+		} as never;
+		(
+			daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+			}
+		).sessions.set(state.activeSessionId, state);
+		const runCronJob = (
+			daemon as unknown as {
+				runCronJob(job: AgentCronJob): Promise<void>;
+			}
+		).runCronJob.bind(daemon);
+
+		await runCronJob(makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }));
+
+		expect(followUp).toHaveBeenCalledWith("heartbeat prompt", undefined, { queueKey: "heartbeat:heartbeat-1" });
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
+	it("uses separate queue keys for separate RLM heartbeat cron jobs", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: {
+				agentDir: "/tmp/prime-agent-test-agent",
+				cwd: "/tmp",
+			},
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const prompt = vi.fn(async () => {});
+		const followUp = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					pendingMessageCount: number;
+					prompt: typeof prompt;
+					followUp: typeof followUp;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: true,
+			pendingMessageCount: 0,
+			prompt,
+			followUp,
+		} as never;
+		(
+			daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+			}
+		).sessions.set(state.activeSessionId, state);
+		const runCronJob = (
+			daemon as unknown as {
+				runCronJob(job: AgentCronJob): Promise<void>;
+			}
+		).runCronJob.bind(daemon);
+
+		await runCronJob(makeCronJob({ id: "rlm-1", source: "rlm_heartbeat", activeSessionId: state.activeSessionId }));
+		await runCronJob(makeCronJob({ id: "rlm-2", source: "rlm_heartbeat", activeSessionId: state.activeSessionId }));
+
+		expect(followUp).toHaveBeenNthCalledWith(1, "heartbeat prompt", undefined, { queueKey: "heartbeat:rlm-1" });
+		expect(followUp).toHaveBeenNthCalledWith(2, "heartbeat prompt", undefined, { queueKey: "heartbeat:rlm-2" });
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
 	it("validates active sessions before reading a heartbeat", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: {
@@ -206,6 +298,24 @@ describe("daemon mode helpers", () => {
 		).rejects.toThrow("Unknown active session: missing");
 	});
 });
+
+function makeCronJob(input: { id: string; source: AgentCronJob["source"]; activeSessionId: string }): AgentCronJob {
+	return {
+		id: input.id,
+		status: "active",
+		source: input.source,
+		activeSessionId: input.activeSessionId,
+		sessionId: "session-1",
+		sessionFile: "/tmp/session.jsonl",
+		cwd: "/tmp",
+		prompt: "heartbeat prompt",
+		schedule: { kind: "interval", expression: "every 5m", intervalMs: 300_000 },
+		createdAt: "2026-01-01T12:00:00.000Z",
+		updatedAt: "2026-01-01T12:00:00.000Z",
+		nextRunAt: "2026-01-01T12:05:00.000Z",
+		runCount: 0,
+	};
+}
 
 function makeRuntimeSession(
 	sessionManager: Parameters<CreateAgentSessionRuntimeFactory>[0]["sessionManager"],
