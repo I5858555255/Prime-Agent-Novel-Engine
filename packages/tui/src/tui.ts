@@ -1038,12 +1038,16 @@ export class TUI extends Container {
 					buffer += newLines[windowStart + i];
 				}
 				// Clear any rows the previous frame used below the new content.
+				// Row 0 is already occupied (by content, or by the visibleCount === 0
+				// clear above), so only clear the rows below it — clamping with
+				// max(visibleCount, 1) avoids emitting a newline past the last screen
+				// row, which would scroll the terminal.
 				if (visibleCount < prevScreenRows) {
-					const leftover = prevScreenRows - visibleCount;
+					const leftover = prevScreenRows - Math.max(visibleCount, 1);
 					for (let i = 0; i < leftover; i++) {
 						buffer += "\r\n\x1b[2K";
 					}
-					buffer += `\x1b[${leftover}A`; // Back up to the last content row
+					if (leftover > 0) buffer += `\x1b[${leftover}A`; // Back up to the last content row
 				}
 				buffer += "\x1b[?2026l"; // End synchronized output
 				this.terminal.write(buffer);
