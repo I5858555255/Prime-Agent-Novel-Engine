@@ -507,6 +507,21 @@ export function getCustomThemesDir(): string {
 	return join(getAgentDir(), "themes");
 }
 
+/** Directory where daemon and client diagnostic logs are written (e.g. ~/.prime/agent/logs/). */
+export function getLogsDir(): string {
+	return join(getAgentDir(), "logs");
+}
+
+/** Log file capturing client-side agent-open failures. */
+export function getClientErrorLogPath(): string {
+	return join(getLogsDir(), "client-errors.log");
+}
+
+/** Log file for a daemon, named after its socket so per-socket daemons don't collide. */
+export function getDaemonLogPath(socketPath: string): string {
+	return join(getLogsDir(), `${basename(socketPath)}.log`);
+}
+
 /** Get path to models.json */
 export function getModelsPath(): string {
 	return join(getAgentDir(), "models.json");

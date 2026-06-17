@@ -9,9 +9,8 @@
 
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { expandTildePath, VERSION } from "../config.js";
+import { dirname, resolve } from "node:path";
+import { expandTildePath, getDaemonLogPath, VERSION } from "../config.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
@@ -125,16 +124,8 @@ async function shutdownStaleDaemonIfIdle(socketPath: string): Promise<boolean> {
 // (e.g. a RangeError surfaced from a pathological session) are lost entirely.
 const MAX_DAEMON_LOG_BYTES = 5 * 1024 * 1024;
 
-function daemonLogPath(socketPath: string): string {
-	// Windows daemons use a named pipe, not a filesystem path, so anchor in tmp.
-	if (process.platform === "win32") {
-		return join(tmpdir(), "prime-agent-daemon.log");
-	}
-	return `${socketPath}.log`;
-}
-
 function openDaemonLogFd(socketPath: string): number | undefined {
-	const logPath = daemonLogPath(socketPath);
+	const logPath = getDaemonLogPath(socketPath);
 	try {
 		// The socket dir (e.g. /tmp/prime-agent-<uid>) is created by the daemon only
 		// after it spawns, so on the first spawn it doesn't exist yet; create the

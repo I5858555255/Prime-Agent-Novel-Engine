@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AutocompleteItem, OverlayHandle, SlashCommand } from "@earendil-works/pi-tui";
 import {
@@ -13,7 +13,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { APP_TITLE, getAgentDir, VERSION } from "../../config.js";
+import { APP_TITLE, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
@@ -1765,7 +1765,7 @@ const MAX_CLIENT_LOG_BYTES = 5 * 1024 * 1024;
 
 function logClientError(prefix: string, error: unknown): void {
 	try {
-		const logPath = join(getAgentDir(), "client-errors.log");
+		const logPath = getClientErrorLogPath();
 		mkdirSync(dirname(logPath), { recursive: true });
 		try {
 			if (existsSync(logPath) && statSync(logPath).size > MAX_CLIENT_LOG_BYTES) {

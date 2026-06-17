@@ -39,7 +39,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
-import { APP_TITLE, getAgentDir, getDebugLogPath, getShareViewerUrl, VERSION } from "../../config.js";
+import { APP_TITLE, getAgentDir, getDebugLogPath, getLogsDir, getShareViewerUrl, VERSION } from "../../config.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
 import type {
 	AutocompleteProviderFactory,
@@ -3188,6 +3188,11 @@ export class InteractiveMode {
 			}
 			if (commandName === "context" && !commandArgs) {
 				await this.handleContextCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (commandName === "logs" && !commandArgs) {
+				this.handleLogsCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -6455,6 +6460,39 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
 		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
 		info += theme.fg("dim", "Use /context for token, cost, and context usage.");
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleLogsCommand(): void {
+		const logsDir = getLogsDir();
+		let info = `${theme.bold("Logs")}\n\n`;
+		info += `${theme.fg("dim", "Directory:")} ${logsDir}\n\n`;
+
+		let files: string[] = [];
+		try {
+			if (fs.existsSync(logsDir)) {
+				files = fs.readdirSync(logsDir).filter((name) => !name.startsWith("."));
+			}
+		} catch {
+			// Fall through to the empty-state line below.
+		}
+		if (files.length === 0) {
+			info += `${theme.fg("dim", "No logs written yet.")}\n`;
+		} else {
+			for (const name of files.sort()) {
+				let size = "";
+				try {
+					size = ` ${theme.fg("dim", `(${(fs.statSync(path.join(logsDir, name)).size / 1024).toFixed(1)} KB)`)}`;
+				} catch {
+					// Skip the size if the file vanished between readdir and stat.
+				}
+				info += `${theme.fg("dim", "•")} ${name}${size}\n`;
+			}
+		}
+		info += `\n${theme.fg("dim", "Daemon crashes log to <socket>.log; agent-open failures log to client-errors.log.")}`;
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
