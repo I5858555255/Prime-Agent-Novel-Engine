@@ -1161,12 +1161,14 @@ export class SessionManager {
 
 	/** Get the latest agent status from the most recent agent_status entry, if any. */
 	getLatestAgentStatus(): AgentStatus | undefined {
-		const entries = this.getEntries();
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
-			if (entry.type === "agent_status") {
-				return { ...entry.status };
+		// Walk the current leaf to root so we only read status on the active branch,
+		// not a sibling branch's status that happens to sit later in the file.
+		let current = this.leafId ? this.byId.get(this.leafId) : undefined;
+		while (current) {
+			if (current.type === "agent_status") {
+				return { ...current.status };
 			}
+			current = current.parentId ? this.byId.get(current.parentId) : undefined;
 		}
 		return undefined;
 	}

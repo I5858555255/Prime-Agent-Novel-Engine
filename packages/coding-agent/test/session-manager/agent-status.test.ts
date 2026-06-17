@@ -35,6 +35,29 @@ describe("SessionManager agent status", () => {
 		}
 	});
 
+	it("reads the status on the active branch, not a sibling branch's later entry", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "agent-status-branch-"));
+		try {
+			const session = SessionManager.create(join(tempDir, "p"), join(tempDir, "s"));
+			const m1 = session.appendMessage(userMsg("first"));
+			const m2 = session.appendMessage(assistantMsg("reply"));
+
+			// Branch A off m1, leave a status on it.
+			session.branch(m1);
+			const branchAStatus = session.appendAgentStatus({ summary: "branch A", basedOnMessageCount: 1 });
+
+			// Branch B off m2 with a status appended later in the file.
+			session.branch(m2);
+			session.appendAgentStatus({ summary: "branch B", basedOnMessageCount: 1 });
+
+			// Re-activate branch A; its status must win despite B being later in the file.
+			session.branch(branchAStatus);
+			expect(session.getLatestAgentStatus()?.summary).toBe("branch A");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("is ignored by context building so it never reaches the model", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "agent-status-context-"));
 		try {
