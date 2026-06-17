@@ -3586,15 +3586,27 @@ export class AgentSession {
 	}
 
 	private _rlmKernelEnv(): Record<string, string> {
-		return {
+		const env: Record<string, string> = {
 			RLM_DEPTH: String(this._rlmDepth),
 			RLM_MAX_DEPTH: String(this._rlmMaxDepth),
 			RLM_HARNESS_STATE_DIR: getGlobalHarnessStateDir(),
-			RLM_SESSION_DIR: this._ensureRlmSessionDir(),
 		};
+		const rlmSessionDir = this._ensureRlmSessionDir();
+		if (rlmSessionDir) {
+			env.RLM_SESSION_DIR = rlmSessionDir;
+		}
+		return env;
 	}
 
-	private _ensureRlmSessionDir(): string {
+	/**
+	 * Returns the RLM session dir, or undefined when there's no persistent artifact
+	 * dir (e.g. the ephemeral viewer client). Don't create a /tmp dir here: this runs
+	 * on every kernel build, but a viewer never does RLM work, so eager mkdtemp just
+	 * leaks empty dirs. The temp dir is created lazily in _createChildRlmSessionDir,
+	 * the one place that genuinely needs a writable dir. Mirrors the kernel-snapshot
+	 * path, which also no-ops without a persistent dir.
+	 */
+	private _ensureRlmSessionDir(): string | undefined {
 		if (this._rlmSessionDir) {
 			mkdirSync(this._rlmSessionDir, { recursive: true });
 			return this._rlmSessionDir;
@@ -3607,12 +3619,13 @@ export class AgentSession {
 			return sessionArtifactDir;
 		}
 
-		this._rlmSessionDir = mkdtempSync(join(tmpdir(), "prime-agent-rlm-"));
-		return this._rlmSessionDir;
+		return undefined;
 	}
 
 	private _createChildRlmSessionDir(): string {
-		const parentDir = this._ensureRlmSessionDir();
+		// Spawning a child is genuine RLM work, so a writable dir is required. Fall
+		// back to a temp dir only here when there's no persistent artifact dir.
+		const parentDir = this._ensureRlmSessionDir() ?? this._createEphemeralRlmSessionDir();
 		for (let i = 0; i < 100; i++) {
 			const childDir = join(parentDir, `sub-${randomUUID().slice(0, 8)}`);
 			try {
@@ -3626,6 +3639,11 @@ export class AgentSession {
 			}
 		}
 		throw new Error("Unable to create unique RLM child session directory");
+	}
+
+	private _createEphemeralRlmSessionDir(): string {
+		this._rlmSessionDir = mkdtempSync(join(tmpdir(), "prime-agent-rlm-"));
+		return this._rlmSessionDir;
 	}
 
 	private _usageForCurrentMessages(): RlmUsage {
