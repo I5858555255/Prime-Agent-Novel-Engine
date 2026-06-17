@@ -329,7 +329,8 @@ function installSignalHandlersOnce(): void {
 	signalHandlersInstalled = true;
 
 	const asyncShutdown = async (): Promise<void> => {
-		await Promise.allSettled([...liveKernels].map((k) => k.shutdown()));
+		// These paths can await, so flush the namespace snapshot before tearing down.
+		await Promise.allSettled([...liveKernels].map((k) => k.shutdown({ snapshot: true })));
 	};
 
 	// `beforeExit` and signal handlers can await async cleanup. `exit`
@@ -933,11 +934,16 @@ export class KernelManager {
 		}
 	}
 
-	async shutdown(): Promise<void> {
+	async shutdown(opts: { snapshot?: boolean } = {}): Promise<void> {
 		if (this.state === "shutdown") {
 			liveKernels.delete(this);
 			this.cleanupResources();
 			return;
+		}
+		// Best-effort final flush (bounded) before teardown — used by signal handlers
+		// so a SIGINT/SIGTERM exit doesn't lose work the debounced snapshot hasn't saved.
+		if (opts.snapshot) {
+			await this.flushSnapshotForDispose();
 		}
 		this.state = "shutdown";
 		liveKernels.delete(this);
