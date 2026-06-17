@@ -42,6 +42,9 @@ export interface EditorComponent extends Component {
 	/** Prompt history entries available for up/down navigation (most recent first). */
 	getHistory?(): readonly string[];
 
+	/** Clear prompt history (e.g. when switching to a different session). */
+	clearHistory?(): void;
+
 	// =========================================================================
 	// Advanced text manipulation (optional)
 	// =========================================================================

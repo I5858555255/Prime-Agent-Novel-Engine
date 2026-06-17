@@ -405,6 +405,12 @@ export class Editor implements Component, Focusable {
 		return this.history;
 	}
 
+	/** Clear prompt history (e.g. when switching to a different session). */
+	clearHistory(): void {
+		this.history = [];
+		this.historyIndex = -1;
+	}
+
 	private isEditorEmpty(): boolean {
 		return this.state.lines.length === 1 && this.state.lines[0] === "";
 	}
