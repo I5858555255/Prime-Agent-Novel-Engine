@@ -19,22 +19,31 @@ export function imageMarkerIds(text: string): number[] {
 }
 
 /**
+ * `[id, image]` pairs from `pending` whose marker still appears in `text`, in
+ * paste order (the map's insertion order). Each id appears at most once even if
+ * its marker is duplicated in the text.
+ */
+export function collectMarkedImageEntries<T>(pending: ReadonlyMap<number, T>, text: string): Array<[number, T]> {
+	if (pending.size === 0) {
+		return [];
+	}
+	const present = new Set(imageMarkerIds(text));
+	const entries: Array<[number, T]> = [];
+	for (const [id, image] of pending) {
+		if (present.has(id)) {
+			entries.push([id, image]);
+		}
+	}
+	return entries;
+}
+
+/**
  * Images from `pending` whose marker still appears in `text`, in paste order
  * (the map's insertion order). Each image is returned at most once even if its
  * marker is duplicated in the text.
  */
 export function collectMarkedImages<T>(pending: ReadonlyMap<number, T>, text: string): T[] {
-	if (pending.size === 0) {
-		return [];
-	}
-	const present = new Set(imageMarkerIds(text));
-	const images: T[] = [];
-	for (const [id, image] of pending) {
-		if (present.has(id)) {
-			images.push(image);
-		}
-	}
-	return images;
+	return collectMarkedImageEntries(pending, text).map(([, image]) => image);
 }
 
 /** Delete entries from `pending` whose marker no longer appears in `text`. */

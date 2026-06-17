@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+	collectMarkedImageEntries,
 	collectMarkedImages,
 	formatImageMarker,
 	imageMarkerIds,
@@ -33,6 +34,20 @@ describe("image markers", () => {
 			[2, "b"],
 		]);
 		expect(collectMarkedImages(pending, "kept [image #1] only")).toEqual(["a"]);
+	});
+
+	test("collectMarkedImageEntries preserves marker ids for re-registration", () => {
+		const pending = new Map([
+			[3, "a"],
+			[7, "b"],
+		]);
+		// Order follows the map (paste order); ids are kept so a restored message
+		// can re-register images against the markers in its text.
+		expect(collectMarkedImageEntries(pending, "[image #7] x [image #3]")).toEqual([
+			[3, "a"],
+			[7, "b"],
+		]);
+		expect(collectMarkedImageEntries(pending, "only [image #7]")).toEqual([[7, "b"]]);
 	});
 
 	test("collectMarkedImages returns each image at most once for duplicate markers", () => {
