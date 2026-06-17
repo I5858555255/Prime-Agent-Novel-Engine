@@ -56,7 +56,12 @@ import {
 	isDaemonDialogExtensionUiRequest,
 	success,
 } from "./daemon-protocol.js";
-import { buildRlmChildSnapshots, buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
+import {
+	buildRlmChildSnapshots,
+	buildSessionList,
+	isSummaryCurrent,
+	summaryForActiveSession,
+} from "./daemon-session-list.js";
 import { DaemonSessionSummarizer } from "./daemon-session-summarizer.js";
 import {
 	cleanupDaemonSocketPath,
@@ -1067,8 +1072,9 @@ class AgentDaemon {
 				: undefined;
 		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
 		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
-		// Prefer the live in-memory recap over the persisted baseline.
-		if (state.summaryState?.summary) {
+		// Prefer the live in-memory recap over the persisted baseline, but only
+		// while it matches the current turn so we don't seed a stale recap.
+		if (state.summaryState?.summary && isSummaryCurrent(state)) {
 			connectionState.recap = state.summaryState.summary;
 		}
 		return {

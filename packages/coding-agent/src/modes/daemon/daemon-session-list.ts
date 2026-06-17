@@ -151,17 +151,17 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 		spawnCode: metadata.spawnCode ? metadata.spawnCode.slice(0, SPAWN_CODE_MAX_CHARS) : undefined,
 		modelFallbackMessage: activeSession.runtime.modelFallbackMessage,
 		diagnostics: [...activeSession.runtime.diagnostics],
-		summary: activeSession.summaryState?.summary,
-		// Drop a stale verdict once new messages arrive (falls back to completed).
-		taskState: isVerdictCurrent(activeSession) ? activeSession.summaryState?.taskState : undefined,
+		// Drop both summary and verdict once new messages arrive; a stale recap
+		// would describe a prior turn. The summarizer refreshes within seconds.
+		...(isSummaryCurrent(activeSession)
+			? { summary: activeSession.summaryState?.summary, taskState: activeSession.summaryState?.taskState }
+			: {}),
 	};
 }
 
-function isVerdictCurrent(activeSession: ActiveSessionState): boolean {
+export function isSummaryCurrent(activeSession: ActiveSessionState): boolean {
 	const status = activeSession.summaryState;
-	return (
-		status?.taskState !== undefined && status.basedOnMessageCount === activeSession.runtime.session.messages.length
-	);
+	return status !== undefined && status.basedOnMessageCount === activeSession.runtime.session.messages.length;
 }
 
 export function summaryForInactiveSession(session: SessionInfo): SessionSummary {
