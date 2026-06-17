@@ -133,7 +133,7 @@ import { ToolExecutionComponent, type ToolExecutionDefinition } from "./componen
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
-import { collectMarkedImages, formatImageMarker } from "./image-markers.js";
+import { collectMarkedImages, evictImagesToBudget, formatImageMarker, imageMarkerIds } from "./image-markers.js";
 import type {
 	InteractiveModeLocalSessionHost,
 	InteractiveModeLocalToolRendererDefinition,
@@ -3165,21 +3165,32 @@ export class InteractiveMode {
 	/**
 	 * Record a pasted image, evicting the oldest entries once the retained bytes
 	 * exceed {@link MAX_PASTED_IMAGE_BYTES} so a long session stays bounded. The
-	 * just-added image is always kept.
+	 * just-added image and any whose marker is still referenced (editor or queues)
+	 * are never evicted, so a live marker never loses its image.
 	 */
 	private rememberPastedImage(id: number, image: ImageContent): void {
 		this.pastedImages.set(id, image);
-		let total = 0;
-		for (const img of this.pastedImages.values()) {
-			total += img.data.length;
-		}
-		for (const key of this.pastedImages.keys()) {
-			if (total <= MAX_PASTED_IMAGE_BYTES || key === id) {
-				break;
+		const keep = this.liveImageMarkerIds();
+		keep.add(id);
+		evictImagesToBudget(this.pastedImages, (img) => img.data.length, MAX_PASTED_IMAGE_BYTES, keep);
+	}
+
+	/** Marker ids still referenced in the editor or any queue (never safe to evict). */
+	private liveImageMarkerIds(): Set<number> {
+		const ids = new Set<number>();
+		const add = (text: string) => {
+			for (const markerId of imageMarkerIds(text)) {
+				ids.add(markerId);
 			}
-			total -= this.pastedImages.get(key)?.data.length ?? 0;
-			this.pastedImages.delete(key);
+		};
+		add(this.editor.getText());
+		for (const msg of this.compactionQueuedMessages) {
+			add(msg.text);
 		}
+		for (const msg of [...this.connectionQueue.steering, ...this.connectionQueue.followUp]) {
+			add(msg);
+		}
+		return ids;
 	}
 
 	/**

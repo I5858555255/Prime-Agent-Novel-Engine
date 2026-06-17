@@ -37,3 +37,34 @@ export function collectMarkedImages<T>(pending: ReadonlyMap<number, T>, text: st
 	}
 	return images;
 }
+
+/**
+ * Evict oldest entries (insertion order) from `images` until the total of
+ * `sizeOf` is within `maxBytes`. Ids in `keep` are never evicted, so an image
+ * whose marker is still live retains its bytes even if that holds the total
+ * above the cap.
+ */
+export function evictImagesToBudget<T>(
+	images: Map<number, T>,
+	sizeOf: (value: T) => number,
+	maxBytes: number,
+	keep: ReadonlySet<number>,
+): void {
+	let total = 0;
+	for (const value of images.values()) {
+		total += sizeOf(value);
+	}
+	for (const key of [...images.keys()]) {
+		if (total <= maxBytes) {
+			break;
+		}
+		if (keep.has(key)) {
+			continue;
+		}
+		const value = images.get(key);
+		if (value !== undefined) {
+			total -= sizeOf(value);
+			images.delete(key);
+		}
+	}
+}
