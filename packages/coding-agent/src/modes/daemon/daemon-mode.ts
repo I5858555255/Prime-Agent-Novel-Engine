@@ -230,8 +230,11 @@ export class AgentDaemon {
 
 		this.registerSignalHandlers();
 		console.error(`Prime Agent daemon listening on ${this.socketPath}`);
-		void this.restoreActiveSessions();
-		this.cronScheduler.start();
+		void this.restoreActiveSessions().finally(() => {
+			if (!this.shuttingDown) {
+				this.cronScheduler.start();
+			}
+		});
 	}
 
 	/**
