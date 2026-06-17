@@ -173,6 +173,29 @@ describe("AgentSession queue characterization", () => {
 		await promptPromise;
 	});
 
+	it("removes coalesced follow-up messages by queue key", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await waitForToolStart;
+		await harness.session.prompt("heartbeat", {
+			streamingBehavior: "followUp",
+			followUpQueueKey: "heartbeat:one",
+		});
+
+		expect(harness.session.removeQueuedFollowUp("heartbeat:one")).toBe(true);
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+
+		releaseToolExecution();
+		await promptPromise;
+		expect(getUserTexts(harness)).toEqual(["start"]);
+	});
+
 	it("delivers follow-up messages only after the current run finishes", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;

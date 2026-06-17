@@ -2486,6 +2486,20 @@ export class AgentSession {
 		return this._followUpMessages.some((message) => message.queueKey === queueKey);
 	}
 
+	removeQueuedFollowUp(queueKey: string): boolean {
+		const removed = this._followUpMessages.filter((message) => message.queueKey === queueKey);
+		if (removed.length === 0) {
+			return false;
+		}
+		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
+		const removedTexts = new Set(removed.map((message) => message.text));
+		this.agent.removeQueuedMessages((message) => {
+			return message.role === "user" && removedTexts.has(this._getUserMessageText(message) ?? "");
+		});
+		this._emitQueueUpdate();
+		return true;
+	}
+
 	get resourceLoader(): ResourceLoader {
 		return this._resourceLoader;
 	}

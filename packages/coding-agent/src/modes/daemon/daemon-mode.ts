@@ -477,6 +477,9 @@ export class AgentDaemon {
 		const followUpQueueKey = isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined;
 		if (followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
 			const didQueue = await state.runtime.session.followUp(job.prompt, undefined, { queueKey: followUpQueueKey });
+			if (!didQueue) {
+				state.runtime.session.removeQueuedFollowUp(followUpQueueKey);
+			}
 			return didQueue ? undefined : "skipped";
 		}
 		if (!followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {

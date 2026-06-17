@@ -291,7 +291,14 @@ describe("daemon mode helpers", () => {
 			};
 		};
 		const followUp = vi.fn(async () => false);
-		state.runtime.session = { isStreaming: true, pendingMessageCount: 1, prompt: vi.fn(), followUp } as never;
+		const removeQueuedFollowUp = vi.fn(() => true);
+		state.runtime.session = {
+			isStreaming: true,
+			pendingMessageCount: 1,
+			prompt: vi.fn(),
+			followUp,
+			removeQueuedFollowUp,
+		} as never;
 		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
 		const result = await (
 			daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }
@@ -299,6 +306,7 @@ describe("daemon mode helpers", () => {
 
 		expect(result).toBe("skipped");
 		expect(followUp).toHaveBeenCalledWith("heartbeat prompt", undefined, { queueKey: "heartbeat:heartbeat-1" });
+		expect(removeQueuedFollowUp).toHaveBeenCalledWith("heartbeat:heartbeat-1");
 	});
 
 	it("queues generic cron jobs behind pending messages", async () => {
