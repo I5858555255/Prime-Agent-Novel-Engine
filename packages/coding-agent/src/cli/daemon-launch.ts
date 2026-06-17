@@ -8,7 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, renameSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandTildePath, VERSION } from "../config.js";
@@ -136,8 +136,16 @@ function daemonLogPath(socketPath: string): string {
 function openDaemonLogFd(socketPath: string): number | undefined {
 	const logPath = daemonLogPath(socketPath);
 	try {
-		if (existsSync(logPath) && statSync(logPath).size > MAX_DAEMON_LOG_BYTES) {
-			renameSync(logPath, `${logPath}.old`);
+		// Best-effort rotation. Drop any prior .old first: on Windows renameSync
+		// fails if the destination exists, and a rotation failure must never stop
+		// us from logging — so it stays inside its own guard and we still append.
+		try {
+			if (existsSync(logPath) && statSync(logPath).size > MAX_DAEMON_LOG_BYTES) {
+				rmSync(`${logPath}.old`, { force: true });
+				renameSync(logPath, `${logPath}.old`);
+			}
+		} catch {
+			// Keep appending to the current log rather than dropping logging.
 		}
 		return openSync(logPath, "a");
 	} catch {
