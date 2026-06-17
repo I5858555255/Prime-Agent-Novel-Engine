@@ -245,6 +245,68 @@ describe("AgentCronJobStore", () => {
 		expect(store.getHeartbeat("other-active")).toMatchObject({ prompt: "check on a different session" });
 	});
 
+	it("moves live session jobs to a replacement session file", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const cronJob = store.create({
+			activeSessionId: "active-1",
+			sessionId: "old-session",
+			sessionFile: "/tmp/old-session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "continue the audit",
+			now: start,
+		});
+		const userHeartbeat = store.createHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "old-session",
+			sessionFile: "/tmp/old-session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 5m",
+			prompt: "check on the user",
+			now: start,
+		});
+		const rlmHeartbeat = store.createRlmHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "old-session",
+			sessionFile: "/tmp/old-session.jsonl",
+			cwd: "/tmp/project",
+			label: "review",
+			scheduleText: "every 10m",
+			prompt: "review the latest output",
+			now: start,
+		});
+
+		const rebound = store.rebindSessionJobs({
+			activeSessionId: "active-1",
+			sessionId: "new-session",
+			sessionFile: "/tmp/new-session.jsonl",
+			cwd: "/tmp/project",
+		});
+
+		expect(rebound.map((job) => job.id)).toEqual(
+			expect.arrayContaining([cronJob.id, userHeartbeat.id, rlmHeartbeat.id]),
+		);
+		expect(store.list().filter((job) => job.activeSessionId === "active-1")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: cronJob.id,
+					sessionId: "new-session",
+					sessionFile: "/tmp/new-session.jsonl",
+				}),
+				expect.objectContaining({
+					id: userHeartbeat.id,
+					sessionId: "new-session",
+					sessionFile: "/tmp/new-session.jsonl",
+				}),
+				expect.objectContaining({
+					id: rlmHeartbeat.id,
+					sessionId: "new-session",
+					sessionFile: "/tmp/new-session.jsonl",
+				}),
+			]),
+		);
+	});
+
 	it("keeps multiple RLM heartbeats separate from the single user heartbeat", () => {
 		const store = new AgentCronJobStore(makeStorePath(tempDirs));
 		const userHeartbeat = store.createHeartbeat({
@@ -286,6 +348,56 @@ describe("AgentCronJobStore", () => {
 			]),
 		);
 		expect(store.getHeartbeat("active-1")).toMatchObject({ id: userHeartbeat.id, status: "active" });
+	});
+
+	it("cancels active RLM heartbeats for a released session", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const active = store.createRlmHeartbeat({
+			activeSessionId: "subagent-1",
+			sessionId: "session-rlm-1",
+			sessionFile: "/tmp/session-rlm.jsonl",
+			cwd: "/tmp/project",
+			runtimeKind: "subagent",
+			label: "active",
+			scheduleText: "every 30s",
+			prompt: "continue active work",
+			now: start,
+		});
+		const paused = store.createRlmHeartbeat({
+			activeSessionId: "subagent-1",
+			sessionId: "session-rlm-1",
+			sessionFile: "/tmp/session-rlm.jsonl",
+			cwd: "/tmp/project",
+			runtimeKind: "subagent",
+			label: "paused",
+			scheduleText: "every 10m",
+			prompt: "continue paused work",
+			now: start,
+		});
+		store.updateRlmHeartbeat("subagent-1", paused.id, { status: "pause", now: start });
+		store.createRlmHeartbeat({
+			activeSessionId: "top-level-1",
+			sessionId: "top-level-session",
+			sessionFile: "/tmp/top-level.jsonl",
+			cwd: "/tmp/project",
+			runtimeKind: "top-level",
+			label: "top-level",
+			scheduleText: "every 5m",
+			prompt: "continue top-level work",
+			now: start,
+		});
+
+		const cancelled = store.cancelRlmHeartbeatsForSession("subagent-1", new Date("2026-01-01T12:40:00.000Z"));
+
+		expect(cancelled.map((job) => job.id)).toEqual(expect.arrayContaining([active.id, paused.id]));
+		expect(store.listRlmHeartbeats("subagent-1")).toEqual([]);
+		expect(store.listRlmHeartbeats("subagent-1", { includeInactive: true })).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: active.id, status: "cancelled" }),
+				expect.objectContaining({ id: paused.id, status: "cancelled" }),
+			]),
+		);
+		expect(store.listRlmHeartbeats("top-level-1")[0]).toMatchObject({ status: "active" });
 	});
 
 	it("returns undefined when updating inactive RLM heartbeats", () => {

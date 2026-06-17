@@ -7,6 +7,7 @@ import type { ToolDefinition } from "./extensions/types.js";
 export type AgentCronJobStatus = "active" | "paused" | "completed" | "cancelled";
 export type AgentCronScheduleKind = "once" | "cron" | "interval";
 export type AgentCronJobSource = "cron" | "heartbeat" | "rlm_heartbeat";
+export type AgentCronJobRuntimeKind = "top-level" | "subagent";
 export type AgentHeartbeatUpdateAction = "pause" | "resume" | "clear";
 export type AgentRlmHeartbeatStatusUpdate = "pause" | "resume";
 
@@ -20,6 +21,7 @@ export interface AgentCronJob {
 	id: string;
 	status: AgentCronJobStatus;
 	source?: AgentCronJobSource;
+	runtimeKind?: AgentCronJobRuntimeKind;
 	activeSessionId: string;
 	sessionId: string;
 	sessionFile: string;
@@ -44,6 +46,7 @@ export interface CreateAgentCronJobInput {
 	prompt: string;
 	scheduleText: string;
 	source?: AgentCronJobSource;
+	runtimeKind?: AgentCronJobRuntimeKind;
 	now?: Date;
 }
 
@@ -105,6 +108,7 @@ export class AgentCronJobStore {
 			id: randomUUID(),
 			status: "active",
 			source: input.source ?? "cron",
+			runtimeKind: input.runtimeKind,
 			activeSessionId: input.activeSessionId,
 			sessionId: input.sessionId,
 			sessionFile: input.sessionFile,
@@ -123,8 +127,10 @@ export class AgentCronJobStore {
 
 	/**
 	 * Active session ids are daemon-local. When a persisted session is restored,
-	 * bind jobs stored for its stable session file to the new live session id so
-	 * heartbeat and cron control APIs continue to target existing schedules.
+	 * bind jobs stored for its stable session file to the new live session id.
+	 * When a live session switches to another persisted file, move jobs stored for
+	 * its stable active session id to the new file so future restores target the
+	 * current session instead of the previous one.
 	 */
 	rebindSessionJobs(input: {
 		activeSessionId: string;
@@ -135,12 +141,13 @@ export class AgentCronJobStore {
 		const targetSessionFile = resolve(input.sessionFile);
 		const reboundJobs: AgentCronJob[] = [];
 		const jobs = this.readJobs().map((job) => {
-			if (resolve(job.sessionFile) !== targetSessionFile) {
+			if (job.activeSessionId !== input.activeSessionId && resolve(job.sessionFile) !== targetSessionFile) {
 				return job;
 			}
 			if (
 				job.activeSessionId === input.activeSessionId &&
 				job.sessionId === input.sessionId &&
+				resolve(job.sessionFile) === targetSessionFile &&
 				job.cwd === input.cwd
 			) {
 				return job;
@@ -149,6 +156,7 @@ export class AgentCronJobStore {
 				...job,
 				activeSessionId: input.activeSessionId,
 				sessionId: input.sessionId,
+				sessionFile: input.sessionFile,
 				cwd: input.cwd,
 			};
 			reboundJobs.push(rebound);
@@ -197,6 +205,7 @@ export class AgentCronJobStore {
 			id: randomUUID(),
 			status: "active",
 			source: "heartbeat",
+			runtimeKind: input.runtimeKind,
 			activeSessionId: input.activeSessionId,
 			sessionId: input.sessionId,
 			sessionFile: input.sessionFile,
@@ -242,6 +251,7 @@ export class AgentCronJobStore {
 			id: randomUUID(),
 			status: "active",
 			source: "rlm_heartbeat",
+			runtimeKind: input.runtimeKind,
 			activeSessionId: input.activeSessionId,
 			sessionId: input.sessionId,
 			sessionFile: input.sessionFile,
@@ -332,6 +342,26 @@ export class AgentCronJobStore {
 			this.writeJobs(jobs);
 		}
 		return deleted;
+	}
+
+	cancelRlmHeartbeatsForSession(activeSessionId: string, now = new Date()): AgentCronJob[] {
+		const cancelled: AgentCronJob[] = [];
+		const jobs = this.readJobs().map((job) => {
+			if (
+				job.activeSessionId !== activeSessionId ||
+				job.source !== "rlm_heartbeat" ||
+				(job.status !== "active" && job.status !== "paused")
+			) {
+				return job;
+			}
+			const cancelledJob = withoutNextRunAt({ ...job, status: "cancelled", updatedAt: now.toISOString() });
+			cancelled.push(cancelledJob);
+			return cancelledJob;
+		});
+		if (cancelled.length > 0) {
+			this.writeJobs(jobs);
+		}
+		return cancelled;
 	}
 
 	pauseHeartbeat(activeSessionId: string, now = new Date()): AgentCronJob | undefined {
@@ -910,6 +940,9 @@ function isAgentCronJob(value: unknown): value is AgentCronJob {
 			candidate.source === "cron" ||
 			candidate.source === "heartbeat" ||
 			candidate.source === "rlm_heartbeat") &&
+		(candidate.runtimeKind === undefined ||
+			candidate.runtimeKind === "top-level" ||
+			candidate.runtimeKind === "subagent") &&
 		typeof candidate.activeSessionId === "string" &&
 		typeof candidate.sessionId === "string" &&
 		typeof candidate.sessionFile === "string" &&

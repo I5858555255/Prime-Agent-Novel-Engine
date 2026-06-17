@@ -401,6 +401,9 @@ export class AgentDaemon {
 
 	private async runCronJob(job: AgentCronJob): Promise<void> {
 		const state = await this.getOrCreateCronJobSession(job);
+		if (!state) {
+			return;
+		}
 		await state.runtime.session.prompt(job.prompt, {
 			streamingBehavior: state.runtime.session.isStreaming ? "followUp" : undefined,
 			source: "rpc",
@@ -418,6 +421,7 @@ export class AgentDaemon {
 			sessionId: session.sessionId,
 			sessionFile,
 			cwd: state.runtime.cwd,
+			runtimeKind: state.runtime.metadata.kind,
 			scheduleText: schedule,
 			prompt,
 		});
@@ -436,6 +440,7 @@ export class AgentDaemon {
 			sessionId: session.sessionId,
 			sessionFile,
 			cwd: state.runtime.cwd,
+			runtimeKind: state.runtime.metadata.kind,
 			scheduleText: normalizeHeartbeatSchedule(schedule),
 			prompt: instruction,
 		});
@@ -471,6 +476,7 @@ export class AgentDaemon {
 			sessionId: session.sessionId,
 			sessionFile,
 			cwd: state.runtime.cwd,
+			runtimeKind: state.runtime.metadata.kind,
 			label: input.label,
 			scheduleText: normalizeHeartbeatSchedule(input.interval ?? DEFAULT_HEARTBEAT_SCHEDULE),
 			prompt: input.instruction,
@@ -519,11 +525,26 @@ export class AgentDaemon {
 		}
 	}
 
-	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState> {
+	private cancelSubagentRlmHeartbeats(state: ActiveSessionState): void {
+		if (state.runtime.metadata.kind !== "subagent") {
+			return;
+		}
+		const cancelled = this.cronStore.cancelRlmHeartbeatsForSession(state.activeSessionId);
+		if (cancelled.length > 0) {
+			this.cronScheduler.wake();
+		}
+	}
+
+	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState | undefined> {
 		const current = this.sessions.get(job.activeSessionId) ?? this.findSessionBySessionFile(job.sessionFile);
 		if (current) {
 			this.rebindCronJobsToState(current);
 			return current;
+		}
+		if (job.source === "rlm_heartbeat" && job.runtimeKind === "subagent") {
+			this.cronStore.cancel(job.id);
+			this.cronScheduler.wake();
+			return undefined;
 		}
 		return this.createRuntime({ type: "create", sessionPath: job.sessionFile });
 	}
@@ -1391,6 +1412,7 @@ export class AgentDaemon {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
+		this.cancelSubagentRlmHeartbeats(state);
 		const cascadeError = await this.closeChildSessions(state, reason);
 		let persistError: unknown;
 		if (reason !== "shutdown") {
