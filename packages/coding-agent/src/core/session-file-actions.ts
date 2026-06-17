@@ -17,12 +17,8 @@ async function deleteSessionArtifacts(sessionPath: string): Promise<void> {
 	await rm(artifactDir, { recursive: true, force: true });
 }
 
-/**
- * Delete a session file, trying the `trash` CLI first, then falling back to unlink.
- * Also permanently removes the session's artifact directory, which is derived data.
- */
-export async function deleteSessionFile(sessionPath: string): Promise<DeleteSessionFileResult> {
-	await deleteSessionArtifacts(sessionPath);
+/** Remove the session `.jsonl`, trying the `trash` CLI first, then falling back to unlink. */
+async function removeSessionFile(sessionPath: string): Promise<DeleteSessionFileResult> {
 	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
 	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8" });
 
@@ -52,4 +48,18 @@ export async function deleteSessionFile(sessionPath: string): Promise<DeleteSess
 		const error = trashErrorHint ? `${unlinkError} (${trashErrorHint})` : unlinkError;
 		return { ok: false, error };
 	}
+}
+
+/**
+ * Delete a session file, trying the `trash` CLI first, then falling back to unlink.
+ * Also permanently removes the session's artifact directory (derived data), but only
+ * once the session file itself is gone — otherwise a failed delete would orphan a
+ * session whose kernel snapshot has already been destroyed.
+ */
+export async function deleteSessionFile(sessionPath: string): Promise<DeleteSessionFileResult> {
+	const result = await removeSessionFile(sessionPath);
+	if (result.ok) {
+		await deleteSessionArtifacts(sessionPath);
+	}
+	return result;
 }

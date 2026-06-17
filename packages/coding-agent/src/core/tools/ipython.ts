@@ -1,4 +1,5 @@
 // TODO: reconsider whether the persistent kernel is needed once RLM-1 weights land.
+import { rm } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.js";
@@ -196,6 +197,14 @@ export class IpythonKernelProvisioner {
 	/** Restart the kernel if one is running (e.g. after compaction). */
 	async restart(): Promise<void> {
 		await this.startedManager?.restart();
+		// Compaction deliberately wipes the namespace and tells the model so. Drop the
+		// stale on-disk snapshot too, so a resume right after compaction doesn't revive
+		// state the model was told is gone (a later cell re-creates a fresh snapshot).
+		this._lastRestore = undefined;
+		const dir = this.options?.snapshotDir;
+		if (dir) {
+			await Promise.allSettled([rm(snapshotPathIn(dir), { force: true }), rm(manifestPathIn(dir), { force: true })]);
+		}
 	}
 
 	/** Dispose the kernel owned by this provisioner, including one still starting up. */

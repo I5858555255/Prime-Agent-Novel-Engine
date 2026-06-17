@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
@@ -95,6 +95,21 @@ describe("IpythonKernelProvisioner", () => {
 		provisioner.prewarm();
 		await provisioner.dispose();
 		expect(provisioner.manager).toBeUndefined();
+	});
+
+	it("restart() drops the on-disk snapshot so a compaction wipe isn't revived on resume", async () => {
+		const snapshotDir = join(tempDir, "artifacts");
+		const provisioner = new IpythonKernelProvisioner(tempDir, { snapshotDir });
+		const dill = join(snapshotDir, "kernel-state.dill");
+		const manifest = join(snapshotDir, "kernel-state.json");
+		mkdirSync(snapshotDir, { recursive: true });
+		writeFileSync(dill, "payload");
+		writeFileSync(manifest, "{}");
+
+		await provisioner.restart();
+
+		expect(existsSync(dill)).toBe(false);
+		expect(existsSync(manifest)).toBe(false);
 	});
 });
 
