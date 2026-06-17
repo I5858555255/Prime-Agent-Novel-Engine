@@ -172,6 +172,7 @@ export class AgentDaemon {
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
+	private readonly openingSessions = new Map<string, Promise<ActiveSessionState>>();
 	private readonly closingSessions = new Map<string, Promise<void>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 	private readonly cronStore: AgentCronJobStore;
@@ -325,6 +326,7 @@ export class AgentDaemon {
 		}
 
 		const cwd = resolve(config.cwd);
+		const agentDir = config.agentDir;
 		const cwdOverride = command.config?.cwd ? resolve(command.config.cwd) : undefined;
 		const sessionPath = command.sessionPath
 			? await resolveDaemonSessionPath(command.sessionPath, cwd, config.sessionDir)
@@ -334,69 +336,95 @@ export class AgentDaemon {
 			: command.continueRecent
 				? SessionManager.continueRecent(cwd, config.sessionDir)
 				: SessionManager.create(cwd, config.sessionDir);
-		const existing = this.findSessionBySessionFile(sessionManager.getSessionFile());
-		if (existing) {
-			// A live runtime already owns this session file; reuse it instead of
-			// starting a second runtime that would interleave writes to one file.
-			if (command.name) {
-				existing.runtime.session.setSessionName(command.name);
+		const createState = async (): Promise<ActiveSessionState> => {
+			const existing = this.findSessionBySessionFile(sessionManager.getSessionFile());
+			if (existing) {
+				// A live runtime already owns this session file; reuse it instead of
+				// starting a second runtime that would interleave writes to one file.
+				if (command.name) {
+					existing.runtime.session.setSessionName(command.name);
+				}
+				this.rebindCronJobsToState(existing);
+				return existing;
 			}
-			this.rebindCronJobsToState(existing);
-			return existing;
-		}
-		if ((sessionPath || command.continueRecent) && sessionManager.getSessionState()?.status === "hidden") {
-			// Resuming a hidden session is the intentional opt-in that makes it
-			// visible in session lists again.
-			sessionManager.appendSessionState({ status: "sleep" });
-		}
-		let stateRef: ActiveSessionState | undefined;
-		const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
-			cwd: sessionManager.getCwd(),
-			agentDir: config.agentDir,
-			sessionManager,
-			sessionConfig: config,
-			sessionOptions: {
-				customTools: [
-					...createAgentHeartbeatToolDefinitions({
-						getHeartbeat: () => {
+			if ((sessionPath || command.continueRecent) && sessionManager.getSessionState()?.status === "hidden") {
+				// Resuming a hidden session is the intentional opt-in that makes it
+				// visible in session lists again.
+				sessionManager.appendSessionState({ status: "sleep" });
+			}
+			let stateRef: ActiveSessionState | undefined;
+			const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
+				cwd: sessionManager.getCwd(),
+				agentDir,
+				sessionManager,
+				sessionConfig: config,
+				sessionOptions: {
+					customTools: [
+						...createAgentHeartbeatToolDefinitions({
+							getHeartbeat: () => {
+								if (!stateRef) {
+									throw new Error("Heartbeat state is not ready for this session yet");
+								}
+								return this.cronStore.getHeartbeat(stateRef.activeSessionId);
+							},
+						}),
+					],
+					rlmHeartbeatController: {
+						listRlmHeartbeats: (listOptions) => {
 							if (!stateRef) {
-								throw new Error("Heartbeat state is not ready for this session yet");
+								throw new Error("RLM heartbeat state is not ready for this session yet");
 							}
-							return this.cronStore.getHeartbeat(stateRef.activeSessionId);
+							return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
 						},
-					}),
-				],
-				rlmHeartbeatController: {
-					listRlmHeartbeats: (listOptions) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
-					},
-					createRlmHeartbeat: (input) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.createRlmHeartbeatForState(stateRef, input);
-					},
-					updateRlmHeartbeat: (input) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.updateRlmHeartbeatForState(stateRef, input);
-					},
-					deleteRlmHeartbeat: (id) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.deleteRlmHeartbeatForState(stateRef, id);
+						createRlmHeartbeat: (input) => {
+							if (!stateRef) {
+								throw new Error("RLM heartbeat state is not ready for this session yet");
+							}
+							return this.createRlmHeartbeatForState(stateRef, input);
+						},
+						updateRlmHeartbeat: (input) => {
+							if (!stateRef) {
+								throw new Error("RLM heartbeat state is not ready for this session yet");
+							}
+							return this.updateRlmHeartbeatForState(stateRef, input);
+						},
+						deleteRlmHeartbeat: (id) => {
+							if (!stateRef) {
+								throw new Error("RLM heartbeat state is not ready for this session yet");
+							}
+							return this.deleteRlmHeartbeatForState(stateRef, id);
+						},
 					},
 				},
-			},
-		});
-		const state = await this.addRuntime(runtime, command.name);
-		stateRef = state;
-		return state;
+			});
+			const state = await this.addRuntime(runtime, command.name);
+			stateRef = state;
+			return state;
+		};
+
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) {
+			return createState();
+		}
+		const sessionKey = resolve(sessionFile);
+		const pending = this.openingSessions.get(sessionKey);
+		if (pending) {
+			const state = await pending;
+			if (command.name) {
+				state.runtime.session.setSessionName(command.name);
+			}
+			this.rebindCronJobsToState(state);
+			return state;
+		}
+		const opening = Promise.resolve().then(createState);
+		this.openingSessions.set(sessionKey, opening);
+		try {
+			return await opening;
+		} finally {
+			if (this.openingSessions.get(sessionKey) === opening) {
+				this.openingSessions.delete(sessionKey);
+			}
+		}
 	}
 
 	private async runCronJob(job: AgentCronJob): Promise<void> {

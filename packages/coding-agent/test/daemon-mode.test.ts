@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
 import type { Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
 	AgentDaemon,
@@ -86,6 +90,58 @@ describe("daemon mode helpers", () => {
 		).toBe(true);
 	});
 
+	it("deduplicates concurrent creates for the same session file", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-race-"));
+		try {
+			const sessionPath = join(tempDir, "session.jsonl");
+			let releaseCreate: () => void = () => {};
+			const createBarrier = new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => {
+				await createBarrier;
+				return {
+					session: makeRuntimeSession(options.sessionManager),
+					extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["extensionsResult"],
+					services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["services"],
+					diagnostics: [],
+				};
+			});
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: {
+					agentDir: tempDir,
+					cwd: tempDir,
+					sessionDir: tempDir,
+				},
+				createRuntime,
+			});
+			const create = (
+				daemon as unknown as {
+					createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				}
+			).createRuntime.bind(daemon);
+
+			const first = create({ type: "create", sessionPath });
+			const second = create({ type: "create", sessionPath });
+			for (let attempt = 0; attempt < 20 && createRuntime.mock.calls.length === 0; attempt++) {
+				await Promise.resolve();
+			}
+
+			expect(createRuntime).toHaveBeenCalledTimes(1);
+			releaseCreate();
+			const [firstState, secondState] = await Promise.all([first, second]);
+
+			expect(secondState).toBe(firstState);
+			expect(createRuntime).toHaveBeenCalledTimes(1);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("validates active sessions before reading a heartbeat", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: {
@@ -111,6 +167,22 @@ describe("daemon mode helpers", () => {
 		).rejects.toThrow("Unknown active session: missing");
 	});
 });
+
+function makeRuntimeSession(
+	sessionManager: Parameters<CreateAgentSessionRuntimeFactory>[0]["sessionManager"],
+): Awaited<ReturnType<CreateAgentSessionRuntimeFactory>>["session"] {
+	return {
+		sessionManager,
+		sessionFile: sessionManager.getSessionFile(),
+		sessionId: sessionManager.getSessionId(),
+		setSubagentRuntimeHost: vi.fn(),
+		subscribe: vi.fn(() => vi.fn()),
+		bindExtensions: vi.fn(async () => {}),
+		setSessionName: vi.fn(),
+		dispose: vi.fn(),
+		abort: vi.fn(async () => {}),
+	} as unknown as Awaited<ReturnType<CreateAgentSessionRuntimeFactory>>["session"];
+}
 
 function makeState(activeSessionId: string, parentActiveSessionId?: string): ActiveSessionState {
 	return {
