@@ -400,6 +400,11 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	/** Prompt history entries (most recent first). */
+	getHistory(): readonly string[] {
+		return this.history;
+	}
+
 	private isEditorEmpty(): boolean {
 		return this.state.lines.length === 1 && this.state.lines[0] === "";
 	}

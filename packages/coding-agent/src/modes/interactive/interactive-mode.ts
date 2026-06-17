@@ -3180,7 +3180,11 @@ export class InteractiveMode {
 		evictImagesToBudget(this.pastedImages, (img) => img.data.length, MAX_PASTED_IMAGE_BYTES, keep);
 	}
 
-	/** Marker ids still referenced in the editor or any queue (never safe to evict). */
+	/**
+	 * Marker ids still reachable — current editor text, prompt history (recallable
+	 * with the up arrow), the compaction queue, and the connection queue. These are
+	 * never evicted so a recall or resend never finds a marker with no image.
+	 */
 	private liveImageMarkerIds(): Set<number> {
 		const ids = new Set<number>();
 		const add = (text: string) => {
@@ -3189,6 +3193,9 @@ export class InteractiveMode {
 			}
 		};
 		add(this.editor.getText());
+		for (const entry of this.editor.getHistory?.() ?? []) {
+			add(entry);
+		}
 		for (const msg of this.compactionQueuedMessages) {
 			add(msg.text);
 		}
