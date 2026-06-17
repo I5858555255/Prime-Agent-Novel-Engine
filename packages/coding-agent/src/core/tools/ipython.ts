@@ -1,4 +1,5 @@
 // TODO: reconsider whether the persistent kernel is needed once RLM-1 weights land.
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
@@ -196,14 +197,20 @@ export class IpythonKernelProvisioner {
 
 	/** Restart the kernel if one is running (e.g. after compaction). */
 	async restart(): Promise<void> {
-		await this.startedManager?.restart();
-		// Compaction deliberately wipes the namespace and tells the model so. Drop the
-		// stale on-disk snapshot too, so a resume right after compaction doesn't revive
-		// state the model was told is gone (a later cell re-creates a fresh snapshot).
-		this._lastRestore = undefined;
-		const dir = this.options?.snapshotDir;
-		if (dir) {
-			await Promise.allSettled([rm(snapshotPathIn(dir), { force: true }), rm(manifestPathIn(dir), { force: true })]);
+		try {
+			await this.startedManager?.restart();
+		} finally {
+			// Compaction deliberately wipes the namespace and tells the model so. Drop the
+			// stale on-disk snapshot too — even if the restart threw — so a later resume
+			// doesn't revive state the model was told is gone (a fresh cell re-snapshots).
+			this._lastRestore = undefined;
+			const dir = this.options?.snapshotDir;
+			if (dir) {
+				await Promise.allSettled([
+					rm(snapshotPathIn(dir), { force: true }),
+					rm(manifestPathIn(dir), { force: true }),
+				]);
+			}
 		}
 	}
 
@@ -280,22 +287,32 @@ export class IpythonKernelProvisioner {
 		});
 		this.emitStartupProgress("Starting IPython kernel...");
 		await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
-		// Revive a prior session's namespace before the bootstrap, so the bootstrap
-		// then overwrites live handles (rlm, skills) on top of anything restored.
-		if (snapshotDir) {
-			this.emitStartupProgress("Restoring IPython state...");
-			const restore = await m.restoreState();
-			if (restore && (restore.restored.length > 0 || restore.failed.length > 0)) {
-				this._lastRestore = restore;
-				this.options?.onRestore?.(restore);
+		try {
+			// Revive a prior session's namespace before the bootstrap, so the bootstrap
+			// then overwrites live handles (rlm, skills) on top of anything restored.
+			if (snapshotDir) {
+				// Whether a snapshot existed decides if we notify: a pre-existing snapshot
+				// means we attempted a revive, so the model is always told the outcome —
+				// including a corrupt/empty restore — instead of silently assuming state.
+				const snapshotExisted = existsSync(snapshotPathIn(snapshotDir));
+				this.emitStartupProgress("Restoring IPython state...");
+				const restore = await m.restoreState();
+				if (snapshotExisted) {
+					const result = restore ?? { restored: [], failed: [], path: snapshotPathIn(snapshotDir) };
+					this._lastRestore = result;
+					this.options?.onRestore?.(result);
+				}
 			}
-		}
-		this.emitStartupProgress("Preparing IPython runtime...");
-		const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills));
-		if (bootstrap.status !== "ok") {
-			const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
+			this.emitStartupProgress("Preparing IPython runtime...");
+			const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills));
+			if (bootstrap.status !== "ok") {
+				const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
+				throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+			}
+		} catch (error) {
+			// Never leak the kernel's ZMQ sockets / temp dir if startup fails after spawn.
 			void m.dispose();
-			throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+			throw error;
 		}
 		if (this.options?.kernelManagerRef) {
 			this.options.kernelManagerRef.current = m;

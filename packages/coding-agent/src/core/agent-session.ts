@@ -2576,7 +2576,9 @@ export class AgentSession {
 				`Your IPython kernel state was revived from your previous session. These names are available again: ${result.restored.join(", ")}.`,
 			);
 		} else {
-			lines.push("Your IPython kernel was restarted and its previous state could not be revived.");
+			lines.push(
+				"Your previous IPython kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.",
+			);
 		}
 		if (result.failed.length > 0) {
 			lines.push(
