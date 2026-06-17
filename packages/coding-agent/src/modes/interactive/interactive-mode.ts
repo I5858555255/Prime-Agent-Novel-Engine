@@ -529,7 +529,7 @@ export class InteractiveMode {
 	private nextImageMarkerId = 1;
 	// Images for a normal (non-streaming) submission, handed to the main input
 	// loop which owns the prompt() call.
-	private submittedImages: ImageContent[] | undefined;
+	private submittedImages: Map<number, ImageContent> | undefined;
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
@@ -1058,13 +1058,21 @@ export class InteractiveMode {
 			}
 			if (!(await this.ensurePromptReady())) {
 				this.editor.setText(userInput);
+				// Re-register images so the restored markers resolve once the send is
+				// unblocked; setText prunes nothing, but pendingImages was cleared on submit.
+				if (this.submittedImages) {
+					for (const [id, image] of this.submittedImages) {
+						this.pendingImages.set(id, image);
+					}
+					this.submittedImages = undefined;
+				}
 				this.showStatus("Complete onboarding to send the restored prompt.");
 				continue;
 			}
 			showDeferredStartupNotifications();
 			showModelFallbackWarning();
 			await sendInitialPrompts();
-			const images = this.submittedImages;
+			const images = this.imageList(this.submittedImages);
 			this.submittedImages = undefined;
 			try {
 				await this.agentConnection.prompt(userInput, { images });
@@ -3399,7 +3407,7 @@ export class InteractiveMode {
 			this.flushPendingBashComponents();
 
 			// Hand images to the main input loop, which owns the prompt() call.
-			this.submittedImages = this.takeImagesFor(text);
+			this.submittedImages = this.takeImageMap(text);
 			if (this.onInputCallback) {
 				this.onInputCallback(text);
 			}
