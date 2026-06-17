@@ -1173,7 +1173,7 @@ export class TUI extends Container {
 				const extraLines = this.previousLines.length - newLines.length;
 				if (extraLines > height) {
 					logRedraw(`extraLines > height (${extraLines} > ${height})`);
-					fullRender(true);
+					fullRender(true, preserveViewport);
 					return;
 				}
 				if (extraLines > 0) {
