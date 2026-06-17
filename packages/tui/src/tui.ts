@@ -1217,10 +1217,20 @@ export class TUI extends Container {
 		}
 
 		// Differential rendering can only touch what was actually visible.
-		// If the first changed line is above the previous viewport, we need a full redraw.
+		// If the first changed line is above the previous viewport, the rows on
+		// screen no longer correspond to newLines, so we have to repaint.
+		//
+		// When the transcript is taller than the viewport — e.g. attaching to a
+		// long or still-streaming session, where off-screen tool results keep
+		// resolving — clearing scrollback and replaying the whole transcript on
+		// every such change is what makes the screen flicker and scroll from the
+		// top. Repaint only the visible window in place instead, leaving
+		// scrollback (and the user's history) untouched. Short transcripts that
+		// fit on screen keep the cheap full redraw.
 		if (firstChanged < prevViewportTop) {
 			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			fullRender(true, preserveViewport);
+			const preserveScrollback = newLines.length > height;
+			fullRender(true, preserveScrollback || preserveViewport);
 			return;
 		}
 
