@@ -237,7 +237,15 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 					? (result.subagent.rlmChildId ?? result.subagent.activeSessionId)
 					: undefined,
 			});
-			await interactiveMode.run();
+			try {
+				await interactiveMode.run();
+			} catch (error) {
+				// The session opened fine and then threw while running; label it as a
+				// runtime crash so it isn't mixed in with true open failures.
+				await opened.connection.dispose().catch(() => undefined);
+				logClientError("Agent session crashed", error);
+				persistentState.statusMessage = formatError("Agent session crashed", error);
+			}
 		} catch (error) {
 			await opened?.connection.dispose().catch(() => undefined);
 			logClientError("Failed to open agent", error);
