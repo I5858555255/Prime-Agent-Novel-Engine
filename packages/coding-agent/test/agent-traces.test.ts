@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -70,13 +70,19 @@ describe("agent trace upload", () => {
 	let tempDir: string;
 	let originalTraceApiKey: string | undefined;
 	let originalPrimeApiKey: string | undefined;
+	let originalTraceBaseUrl: string | undefined;
+	let originalPrimeBaseUrl: string | undefined;
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "agent-traces-test-"));
 		originalTraceApiKey = process.env.PRIME_AGENT_TRACES_API_KEY;
 		originalPrimeApiKey = process.env.PRIME_API_KEY;
+		originalTraceBaseUrl = process.env.PRIME_AGENT_TRACES_BASE_URL;
+		originalPrimeBaseUrl = process.env.PRIME_API_BASE_URL;
 		delete process.env.PRIME_AGENT_TRACES_API_KEY;
 		delete process.env.PRIME_API_KEY;
+		delete process.env.PRIME_AGENT_TRACES_BASE_URL;
+		delete process.env.PRIME_API_BASE_URL;
 	});
 
 	afterEach(() => {
@@ -90,6 +96,16 @@ describe("agent trace upload", () => {
 			delete process.env.PRIME_API_KEY;
 		} else {
 			process.env.PRIME_API_KEY = originalPrimeApiKey;
+		}
+		if (originalTraceBaseUrl === undefined) {
+			delete process.env.PRIME_AGENT_TRACES_BASE_URL;
+		} else {
+			process.env.PRIME_AGENT_TRACES_BASE_URL = originalTraceBaseUrl;
+		}
+		if (originalPrimeBaseUrl === undefined) {
+			delete process.env.PRIME_API_BASE_URL;
+		} else {
+			process.env.PRIME_API_BASE_URL = originalPrimeBaseUrl;
 		}
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -156,6 +172,49 @@ describe("agent trace upload", () => {
 		expect(headers.get("x-cwd")).toBe(cwd);
 		expect(headers.get("x-agent-version")).toBeTruthy();
 		expect(headers.get("content-length")).toBe(String(Buffer.byteLength(call.init.body as string, "utf8")));
+	});
+
+	it("uses the production trace API unless a trace-specific base URL is configured", async () => {
+		const sessionManager = writeSession(tempDir, join(tempDir, "sessions"), "prod-session");
+		const configPath = join(tempDir, "prime-config.json");
+		writeFileSync(configPath, JSON.stringify({ base_url: "https://dev-api.example/api/v1" }));
+		process.env.PRIME_API_BASE_URL = "https://wrong-api.example";
+
+		const calls: FetchCall[] = [];
+		const result = await uploadAgentTraceFile({
+			sessionFile: sessionManager.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			configPath,
+			fetchFn: createFetchRecorder(calls),
+			reloadConfig: false,
+		});
+
+		expect(result.status).toBe("uploaded");
+		expect(calls).toHaveLength(1);
+		expect(calls[0].url).toBe("https://api.primeintellect.ai/api/v1/agent-traces/sessions/prod-session");
+	});
+
+	it("uses PRIME_AGENT_TRACES_BASE_URL for trace API overrides", async () => {
+		const sessionManager = writeSession(tempDir, join(tempDir, "sessions"), "override-session");
+		process.env.PRIME_AGENT_TRACES_BASE_URL = "https://trace-api.example/api/v1";
+
+		const calls: FetchCall[] = [];
+		const result = await uploadAgentTraceFile({
+			sessionFile: sessionManager.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			fetchFn: createFetchRecorder(calls),
+			reloadConfig: false,
+		});
+
+		expect(result.status).toBe("uploaded");
+		expect(calls).toHaveLength(1);
+		expect(calls[0].url).toBe("https://trace-api.example/api/v1/agent-traces/sessions/override-session");
 	});
 
 	it("schedules upload only after the session file is persisted", async () => {

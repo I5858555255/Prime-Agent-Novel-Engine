@@ -206,13 +206,8 @@ async function fetchWithTimeout(
 	}
 }
 
-function resolvePrimeApiBaseUrl(options: { baseUrl?: string; configPath?: string }): string {
-	const configuredBaseUrl =
-		options.baseUrl ?? stringEnv("PRIME_AGENT_TRACES_BASE_URL") ?? stringEnv("PRIME_API_BASE_URL");
-	if (configuredBaseUrl) {
-		return normalizeBaseUrl(configuredBaseUrl);
-	}
-	return normalizeBaseUrl(loadPrimeCliConfig(options.configPath).baseUrl);
+function resolvePrimeApiBaseUrl(options: { baseUrl?: string }): string {
+	return normalizeBaseUrl(options.baseUrl ?? stringEnv("PRIME_AGENT_TRACES_BASE_URL"));
 }
 
 export async function getPrimeAgentTraceCredential(
@@ -320,7 +315,7 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 		headers["X-Parent-Session"] = traceContext.parentSessionId;
 	}
 
-	const baseUrl = resolvePrimeApiBaseUrl({ baseUrl: options.baseUrl, configPath: options.configPath });
+	const baseUrl = resolvePrimeApiBaseUrl({ baseUrl: options.baseUrl });
 	const url = `${baseUrl}/api/v1/agent-traces/sessions/${encodeURIComponent(header.id)}`;
 	const fetchFn = options.fetchFn ?? fetch;
 
