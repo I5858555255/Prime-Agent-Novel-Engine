@@ -146,6 +146,9 @@ export interface IpythonToolOptions {
 	pythonSkills?: readonly PythonSkillRuntimeInfo[];
 	/** Per-session artifact dir where the kernel namespace snapshot is stored. Omit to disable snapshots. */
 	snapshotDir?: string;
+	/** Resolves before this kernel starts — e.g. the previous provisioner's dispose, so a
+	 * /reload's old-kernel snapshot flush can't race the new kernel's restore. */
+	readyGate?: Promise<unknown>;
 	/** Filled after the first kernel start so the owning session can restart it after compaction. */
 	kernelManagerRef?: { current?: KernelManager };
 	/**
@@ -198,7 +201,10 @@ export class IpythonKernelProvisioner {
 	/** Restart the kernel if one is running (e.g. after compaction). */
 	async restart(): Promise<void> {
 		try {
-			await this.startedManager?.restart();
+			// Await any in-flight startup first, so we restart a fully-started kernel and
+			// delete the snapshot after (not during) a concurrent restore.
+			const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
+			await m?.restart();
 		} finally {
 			// Compaction deliberately wipes the namespace and tells the model so. Drop the
 			// stale on-disk snapshot too — even if the restart threw — so a later resume
@@ -272,6 +278,13 @@ export class IpythonKernelProvisioner {
 	}
 
 	private async startKernel(): Promise<KernelManager> {
+		// Wait for a previous provisioner (e.g. on /reload) to finish disposing — and
+		// flushing its final snapshot — before we read that snapshot back, so the two
+		// kernels can't race over the same on-disk file. Guarded so the common
+		// no-gate path stays synchronous (callers rely on prompt startup progress).
+		if (this.options?.readyGate) {
+			await this.options.readyGate.catch(() => {});
+		}
 		const snapshotDir = this.options?.snapshotDir;
 		const m = new KernelManager({
 			python: this.options?.python,
@@ -287,20 +300,17 @@ export class IpythonKernelProvisioner {
 		});
 		this.emitStartupProgress("Starting IPython kernel...");
 		await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
+		// Whether a snapshot existed decides if we notify the model on success.
+		let pendingRestore: RestoreResult | undefined;
 		try {
 			// Revive a prior session's namespace before the bootstrap, so the bootstrap
 			// then overwrites live handles (rlm, skills) on top of anything restored.
 			if (snapshotDir) {
-				// Whether a snapshot existed decides if we notify: a pre-existing snapshot
-				// means we attempted a revive, so the model is always told the outcome —
-				// including a corrupt/empty restore — instead of silently assuming state.
 				const snapshotExisted = existsSync(snapshotPathIn(snapshotDir));
 				this.emitStartupProgress("Restoring IPython state...");
 				const restore = await m.restoreState();
 				if (snapshotExisted) {
-					const result = restore ?? { restored: [], failed: [], path: snapshotPathIn(snapshotDir) };
-					this._lastRestore = result;
-					this.options?.onRestore?.(result);
+					pendingRestore = restore ?? { restored: [], failed: [], path: snapshotPathIn(snapshotDir) };
 				}
 			}
 			this.emitStartupProgress("Preparing IPython runtime...");
@@ -313,6 +323,12 @@ export class IpythonKernelProvisioner {
 			// Never leak the kernel's ZMQ sockets / temp dir if startup fails after spawn.
 			void m.dispose();
 			throw error;
+		}
+		// Only tell the model what was revived once the kernel is actually usable —
+		// a notice claiming restored state must never outlive a failed bootstrap.
+		if (pendingRestore) {
+			this._lastRestore = pendingRestore;
+			this.options?.onRestore?.(pendingRestore);
 		}
 		if (this.options?.kernelManagerRef) {
 			this.options.kernelManagerRef.current = m;

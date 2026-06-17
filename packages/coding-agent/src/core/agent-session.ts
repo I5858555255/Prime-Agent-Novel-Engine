@@ -3443,8 +3443,10 @@ export class AgentSession {
 			);
 		} else {
 			// Rebuilding (e.g. /reload) replaces the provisioner; drop the previous
-			// kernel so the session never holds two live kernels.
-			void this._ipythonKernelProvisioner?.dispose();
+			// kernel so the session never holds two live kernels. Gate the new kernel's
+			// startup on the old one's dispose (which flushes a final snapshot), so a
+			// reload can't restore from a snapshot the old kernel is still writing.
+			const previousDispose = this._ipythonKernelProvisioner?.dispose();
 			this._ipythonKernelSnapshotDir = this.sessionManager.getSessionArtifactDir();
 			this._ipythonKernelProvisioner = new IpythonKernelProvisioner(this._cwd, {
 				env: this._rlmKernelEnv(),
@@ -3452,6 +3454,7 @@ export class AgentSession {
 				hostHandlers: this._createKernelHostHandlers(),
 				pythonSkills,
 				snapshotDir: this._ipythonKernelSnapshotDir,
+				readyGate: previousDispose,
 				onRestore: (result) => this._onIpythonStateRestored(result),
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
