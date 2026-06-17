@@ -285,9 +285,10 @@ export type ReapAction =
 
 /**
  * Decide what to do with each discovered daemon (pure, no side effects). Reap
- * targets only clearly-safe daemons: orphaned socket files, and reachable idle
- * daemons on non-default sockets. The user's default daemon, and any reachable
- * daemon with live sessions, are never touched.
+ * targets only clearly-safe daemons: orphaned socket files (including a stale
+ * default daemon.sock with no live process), and reachable idle daemons on
+ * non-default sockets. A reachable default daemon, and any reachable daemon with
+ * live sessions, are never touched.
  *
  * Unreachable (hung) daemons can't report a session count, so they are only
  * ever killed with `force`, and even then never via a pid that backs more than
@@ -306,11 +307,14 @@ export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAc
 	}
 
 	return daemons.map((daemon): ReapAction => {
-		if (daemon.isDefault) {
-			return { kind: "skip", daemon, reason: "default daemon" };
-		}
+		// An orphan socket file has no owning process, so removing it is safe even
+		// on the default path (a stale daemon.sock left by a crash). Decide this
+		// before the default guard so a dead default socket still gets cleaned up.
 		if (daemon.status === "orphan-file") {
 			return { kind: "remove-file", daemon };
+		}
+		if (daemon.isDefault) {
+			return { kind: "skip", daemon, reason: "default daemon" };
 		}
 		if (daemon.status === "unreachable") {
 			if (!force || daemon.pid === undefined) {
@@ -343,13 +347,19 @@ export async function runReap(json: boolean, force: boolean): Promise<void> {
 			case "skip":
 				skipped.push({ socketPath, reason: action.reason });
 				break;
-			case "remove-file":
-				if (removeSocketFile(socketPath)) {
+			case "remove-file": {
+				// Re-probe before unlinking: a path marked orphan-file at discovery
+				// may have since become a live listener. Only remove it if it is
+				// still unreachable, so we never delete a socket a daemon is using.
+				if ((await probeDaemon(socketPath)).reachable) {
+					skipped.push({ socketPath, reason: "now reachable; not removing socket file" });
+				} else if (removeSocketFile(socketPath)) {
 					reaped.push({ socketPath, action: "removed stale socket file" });
 				} else {
 					skipped.push({ socketPath, reason: "could not remove socket file" });
 				}
 				break;
+			}
 			case "kill": {
 				// Re-probe right before killing: discovery and this kill happen at
 				// different moments, so a daemon classified "unreachable" may have
