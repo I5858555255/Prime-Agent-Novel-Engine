@@ -126,8 +126,12 @@ export function buildStatusContext(messages: readonly AgentMessage[], isWorking:
  * malformed or hedged reply.
  */
 export function parseAgentStatusResponse(text: string, isWorking: boolean): AgentStatusResult | undefined {
-	// Drop any <think>…</think> reasoning some open models emit inline.
-	const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, " ").replace(/<\/?think>/gi, " ");
+	// Drop inline reasoning some open models emit (<think>, <thinking>,
+	// <reasoning>, <redacted_thinking>), including any unclosed leftover tags.
+	const reasoningTag = /<\/?(?:think|thinking|reasoning|redacted_thinking)>/gi;
+	const cleaned = text
+		.replace(/<(think|thinking|reasoning|redacted_thinking)>[\s\S]*?<\/\1>/gi, " ")
+		.replace(reasoningTag, " ");
 	let summary: string | undefined;
 	let status: string | undefined;
 	for (const rawLine of cleaned.split("\n")) {
@@ -334,6 +338,13 @@ export class DaemonSessionSummarizer {
 		try {
 			const result = await this.generate({ registry: session.modelRegistry, messages, isWorking });
 			if (!result) {
+				return;
+			}
+			// The model call is async: the session may have started a new turn or
+			// begun streaming while it ran. Discard a result that no longer matches
+			// the live state so we never record (or persist) a verdict for a turn
+			// that has moved on, nor append while the agent might be writing.
+			if (isSessionWorking(state) !== isWorking || session.messages.length !== messageCount) {
 				return;
 			}
 			const status: AgentStatus = {

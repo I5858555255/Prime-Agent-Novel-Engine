@@ -1066,10 +1066,16 @@ class AgentDaemon {
 					}
 				: undefined;
 		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
+		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
+		// Prefer the live in-memory recap (including working-session lines that are
+		// never persisted) over the persisted baseline seeded above.
+		if (state.summaryState?.summary) {
+			connectionState.recap = state.summaryState.summary;
+		}
 		return {
 			activeSessionId: state.activeSessionId,
 			summary: summaryForActiveSession(state),
-			state: createAgentConnectionState(state.runtime, state.activeSessionId),
+			state: connectionState,
 			messages: state.runtime.session.messages,
 			sessionContext: sessionManager.buildSessionContext(),
 			// The session tree is omitted on purpose: it carries every entry's full

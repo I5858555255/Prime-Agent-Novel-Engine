@@ -60,4 +60,21 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		// No status recorded; taskState stays undefined so classification → completed.
 		expect(state.summaryState).toBeUndefined();
 	});
+
+	test("discards a verdict when a new turn arrives during the model call", async () => {
+		vi.useFakeTimers();
+		const state = makeState({ working: false });
+		// The model "responds" only after the session has moved on to a new turn.
+		const generate = vi.fn().mockImplementation(async () => {
+			(state.runtime.session.messages as unknown[]).push({ role: "user", content: "another task" });
+			return { summary: "Stale summary for the old turn", taskState: "completed" };
+		});
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
+
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(generate).toHaveBeenCalledOnce();
+		// Result is for an outdated turn → dropped, nothing persisted.
+		expect(state.summaryState).toBeUndefined();
+	});
 });

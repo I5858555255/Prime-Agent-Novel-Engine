@@ -65,6 +65,16 @@ describe("daemon session summarizer", () => {
 			expect(parseAgentStatusResponse(echoed, true)).toBeUndefined();
 		});
 
+		test("strips reasoning tag variants before parsing", () => {
+			for (const tag of ["think", "thinking", "reasoning", "redacted_thinking"]) {
+				const text = `<${tag}>deliberating about the answer</${tag}>\nSUMMARY: Wired the recap line\nSTATUS: COMPLETED`;
+				expect(parseAgentStatusResponse(text, false)).toEqual({
+					summary: "Wired the recap line",
+					taskState: "completed",
+				});
+			}
+		});
+
 		test("returns undefined when no summary is present", () => {
 			expect(parseAgentStatusResponse("", false)).toBeUndefined();
 			expect(parseAgentStatusResponse("STATUS: COMPLETED", false)).toBeUndefined();
