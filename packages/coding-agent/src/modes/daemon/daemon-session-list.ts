@@ -152,9 +152,7 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 		modelFallbackMessage: activeSession.runtime.modelFallbackMessage,
 		diagnostics: [...activeSession.runtime.diagnostics],
 		summary: activeSession.summaryState?.summary,
-		// Only trust the verdict while it matches the current turn; once new
-		// messages arrive a not-yet-refreshed verdict is stale, so we drop it and
-		// the view falls back to completed until the summarizer catches up.
+		// Drop a stale verdict once new messages arrive (falls back to completed).
 		taskState: isVerdictCurrent(activeSession) ? activeSession.summaryState?.taskState : undefined,
 	};
 }

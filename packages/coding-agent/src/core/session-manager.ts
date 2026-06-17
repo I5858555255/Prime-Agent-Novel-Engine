@@ -136,11 +136,7 @@ export interface SessionStateEntry extends SessionEntryBase {
 /** Whether an idle agent's turn left the task complete or awaiting more input. */
 export type AgentTaskState = "needs_input" | "completed";
 
-/**
- * Latest short status for an agent, shown in the agents view. The summary is a
- * one-line description of what the agent is doing or just did; taskState is the
- * completion judgment for an idle session (omitted while the agent is working).
- */
+/** Latest short status for an agent, shown in the agents view. */
 export interface AgentStatus {
 	summary: string;
 	taskState?: AgentTaskState;
@@ -148,11 +144,7 @@ export interface AgentStatus {
 	basedOnMessageCount: number;
 }
 
-/**
- * Session status entry written by the daemon's background summarizer. Append-only
- * metadata: ignored by buildSessionContext and every other reader, so older code
- * (and tools that parse these jsonl files) skip it as an unknown entry type.
- */
+/** Append-only status entry; ignored by buildSessionContext and other readers. */
 export interface AgentStatusEntry extends SessionEntryBase {
 	type: "agent_status";
 	status: AgentStatus;

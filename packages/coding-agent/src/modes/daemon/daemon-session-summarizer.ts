@@ -5,30 +5,19 @@ import type { ModelRegistry } from "../../core/model-registry.js";
 import type { AgentStatus, AgentTaskState } from "../../core/session-manager.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 
-// Periodic backstop that refreshes "what it's doing" lines for long-running
-// sessions; turn-end activity drives the timely idle verdict separately.
 const SWEEP_INTERVAL_MS = 25_000;
-// Wait for the agent to settle after a turn before judging completion, so a
-// tool-use loop's rapid turn_end bursts collapse into one summarization.
+// Collapse a tool-use loop's rapid turn_end bursts into one summarization.
 const SETTLE_DEBOUNCE_MS = 2_000;
 
-// Small open-weight model self-hosted on Prime Inference for background status
-// summaries — kept off the proxied frontier models. Resolved through the
-// session's own registry; when unavailable the daemon skips summarization and
-// the agents view falls back to its streaming-only heuristic.
+// Small self-hosted open-weight model, off the proxied frontier models.
 const SUMMARY_MODEL_PROVIDER = "prime-inference";
 const SUMMARY_MODEL_ID = "nvidia/nemotron-3-nano-30b-a3b";
 
-// Feed more than the latest message so the summary reflects the recent arc of
-// work, not a single line, while staying small for a cheap model.
 const SUMMARY_CONTEXT_MESSAGES = 8;
 const SUMMARY_MAX_CHARS_PER_MESSAGE = 600;
-// Generous so a chatty model that narrates before answering still reaches the
-// SUMMARY line; strict parsing discards everything before it.
+// Generous so a chatty model still reaches the SUMMARY line before truncation.
 const SUMMARY_MAX_TOKENS = 400;
 
-// Concise on purpose: the earlier (compaction) prompt is paragraphs long; a
-// status line only needs a short clause plus a completion verdict.
 export const AGENT_STATUS_SYSTEM_PROMPT = `You generate a status line for an AI coding agent dashboard. You are given the recent conversation between a user and the agent, plus whether the agent is currently working or idle.
 
 Output ONLY these two lines, nothing before or after. Do not think out loud, explain, or add any other text.
@@ -90,11 +79,7 @@ function clamp(text: string, max: number): string {
 	return normalized.length > max ? `${normalized.slice(0, max)}…` : normalized;
 }
 
-/**
- * Serialize the trailing slice of a conversation into a compact prompt body.
- * Tool calls are noted by name so the summary can mention concrete activity
- * without dragging in full tool arguments or output.
- */
+/** Serialize the trailing messages into a compact prompt body (tool calls by name only). */
 export function buildStatusContext(messages: readonly AgentMessage[], isWorking: boolean): string {
 	const recent = messages.slice(-SUMMARY_CONTEXT_MESSAGES);
 	const lines: string[] = [];
@@ -116,18 +101,12 @@ export function buildStatusContext(messages: readonly AgentMessage[], isWorking:
 }
 
 /**
- * Parse the two-line model reply into a summary and (for idle sessions) a
- * completion verdict. Strict on purpose: chatty/reasoning models narrate before
- * answering, so we require an explicit `SUMMARY:` line (taking the last one, in
- * case the answer follows reasoning) and never fall back to free text — that
- * would surface the model's chain-of-thought as the recap. Returns undefined
- * when no usable summary line was produced. WORKING-while-idle and unrecognized
- * verdicts fall back to needs_input so a session is never marked complete on a
- * malformed or hedged reply.
+ * Parse the two-line reply. Requires an explicit `SUMMARY:` line (last one wins,
+ * after any reasoning) and never falls back to free text, so a model's
+ * chain-of-thought can't leak into the recap. Idle verdicts default to
+ * needs_input on anything unrecognized.
  */
 export function parseAgentStatusResponse(text: string, isWorking: boolean): AgentStatusResult | undefined {
-	// Drop inline reasoning some open models emit (<think>, <thinking>,
-	// <reasoning>, <redacted_thinking>), including any unclosed leftover tags.
 	const reasoningTag = /<\/?(?:think|thinking|reasoning|redacted_thinking)>/gi;
 	const cleaned = text
 		.replace(/<(think|thinking|reasoning|redacted_thinking)>[\s\S]*?<\/\1>/gi, " ")
@@ -167,11 +146,7 @@ export interface GenerateAgentStatusParams {
 	signal?: AbortSignal;
 }
 
-/**
- * Run one cheap model call to produce a fresh status for a session. Returns
- * undefined when summarization is unavailable (no cheap model / auth), the
- * conversation is empty, or the call fails — callers then leave status as-is.
- */
+/** One cheap model call for a fresh status, or undefined if unavailable/empty/failed. */
 export async function generateAgentStatus(params: GenerateAgentStatusParams): Promise<AgentStatusResult | undefined> {
 	const { registry, messages, isWorking, signal } = params;
 	if (messages.length === 0) {
@@ -227,28 +202,22 @@ function isSessionWorking(state: ActiveSessionState): boolean {
 }
 
 /**
- * Owns background status summarization for daemon-hosted top-level sessions.
- * A periodic sweep refreshes working sessions; turn-end activity (debounced)
- * drives the idle completion verdict. Status is kept in memory on the session
- * state (the agents view picks it up on its next poll) and the settled idle
- * verdict is persisted append-only so it survives a daemon restart.
+ * Background status summarization for daemon-hosted top-level sessions. A
+ * periodic sweep refreshes working sessions; debounced turn-end activity drives
+ * the idle verdict. Status lives in memory; settled idle verdicts are persisted.
  */
 export class DaemonSessionSummarizer {
 	private interval: ReturnType<typeof setInterval> | undefined;
 	private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	// Maps an in-flight session id to a controller so a closing session can abort
-	// its summary and we can drop the result instead of writing after dispose.
+	// Controller per in-flight summary so a closing session can abort its write.
 	private readonly inFlight = new Map<string, AbortController>();
-	// Sessions whose summary was requested while one was already running; they get
-	// one more pass when the in-flight run finishes so a refresh is never dropped.
+	// Sessions requested while one was running; get one more pass on completion.
 	private readonly rerunRequested = new Set<string>();
 
 	constructor(
 		private readonly listTopLevelSessions: () => readonly ActiveSessionState[],
-		// Notified when a session's status text changes, so the daemon can push a
-		// live recap to that session's attached clients.
 		private readonly onStatusChanged?: (state: ActiveSessionState) => void,
-		// Injectable for tests; defaults to the real cheap-model call.
+		// Injectable for tests.
 		private readonly generate: (
 			params: GenerateAgentStatusParams,
 		) => Promise<AgentStatusResult | undefined> = generateAgentStatus,
@@ -288,8 +257,6 @@ export class DaemonSessionSummarizer {
 			clearTimeout(timer);
 			this.debounceTimers.delete(activeSessionId);
 		}
-		// Abort an in-flight summary so its result is discarded rather than written
-		// to a session that is being disposed, and drop any queued re-run.
 		this.inFlight.get(activeSessionId)?.abort();
 		this.rerunRequested.delete(activeSessionId);
 	}
@@ -329,8 +296,7 @@ export class DaemonSessionSummarizer {
 		}
 		const id = state.activeSessionId;
 		if (this.inFlight.has(id)) {
-			// Don't drop this request — run once more after the current pass finishes.
-			this.rerunRequested.add(id);
+			this.rerunRequested.add(id); // run once more after the current pass
 			return;
 		}
 		const session = state.runtime.session;
@@ -341,18 +307,14 @@ export class DaemonSessionSummarizer {
 		const messageCount = messages.length;
 		const isWorking = isSessionWorking(state);
 		const previous = state.summaryState;
-		// Skip an idle session that already has a current verdict. Working sessions
-		// are never skipped on unchanged count: their recap should keep up with the
-		// in-progress turn (the periodic sweep relies on this), and the streaming
-		// partial below gives the model fresh content to summarize.
+		// Idle sessions with a current verdict need no refresh; working sessions
+		// always refresh so the recap keeps up with the in-progress turn.
 		const contentUnchanged = previous?.basedOnMessageCount === messageCount;
 		const owesIdleVerdict = !isWorking && previous?.taskState === undefined;
 		if (contentUnchanged && !isWorking && !owesIdleVerdict) {
 			return;
 		}
-		// Include the in-progress assistant message so a long streaming turn gets a
-		// recap that reflects what the agent is doing right now, not just the last
-		// completed message.
+		// Include the in-progress message so a long streaming turn gets a live recap.
 		const streaming = isWorking ? session.state.streamingMessage : undefined;
 		const contextMessages = streaming ? [...messages, streaming] : messages;
 
@@ -368,11 +330,8 @@ export class DaemonSessionSummarizer {
 			if (!result) {
 				return;
 			}
-			// The model call is async: the session may have closed, been replaced
-			// (switchSession/fork/newSession), started a new turn, or begun streaming
-			// while it ran. Discard a result that no longer matches the captured
-			// session so we never record/persist a verdict for a turn that has moved
-			// on, nor append after the session is disposed or swapped.
+			// Discard if the session closed, was swapped, or moved to a new turn
+			// during the async call — never write a verdict for stale state.
 			if (
 				controller.signal.aborted ||
 				state.runtime.session !== session ||
@@ -381,9 +340,8 @@ export class DaemonSessionSummarizer {
 			) {
 				return;
 			}
-			// A working refresh carries no verdict; keep the prior one when the turn
-			// (message count) is unchanged so we don't drop a still-valid needs_input
-			// and flip the session to completed once it goes idle again.
+			// A working refresh carries no verdict; keep the prior one at the same
+			// message count so a still-valid needs_input isn't dropped.
 			const taskState =
 				result.taskState ?? (previous?.basedOnMessageCount === messageCount ? previous?.taskState : undefined);
 			const status: AgentStatus = {
@@ -393,13 +351,12 @@ export class DaemonSessionSummarizer {
 			};
 			const changed = previous?.summary !== status.summary || previous?.taskState !== status.taskState;
 			state.summaryState = status;
-			// Persist only settled idle verdicts: a stable status to restore on
-			// restart, and no writes interleaved with the agent's own streaming.
+			// Persist only settled idle verdicts, never mid-stream.
 			if (!isWorking) {
 				try {
 					session.sessionManager.appendAgentStatus(status);
 				} catch {
-					// Persistence is best-effort; the in-memory status still shows.
+					// best-effort; in-memory status still shows
 				}
 			}
 			if (changed) {
@@ -407,9 +364,7 @@ export class DaemonSessionSummarizer {
 			}
 		} finally {
 			this.inFlight.delete(id);
-			// Honor a request that arrived while this pass was running. Re-debounce
-			// rather than re-run immediately so a busy session can't chain back-to-back
-			// model calls; the refresh still lands seconds later, not next sweep.
+			// Re-debounce a request that arrived mid-pass instead of dropping it.
 			if (this.rerunRequested.delete(id)) {
 				this.notifyActivity(state);
 			}

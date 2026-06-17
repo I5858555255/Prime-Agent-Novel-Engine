@@ -47,9 +47,8 @@ export function createAgentConnectionState(
 		})),
 		activeToolNames: session.getActiveToolNames(),
 		contextUsage: session.getContextUsage(),
-		// Persisted status is the baseline recap; the daemon overlays the fresher
-		// in-memory summary on attach. Optional-call so a minimal session manager
-		// (e.g. in tests) without the accessor doesn't break snapshot building.
+		// Baseline recap; the daemon overlays the live summary on attach. Optional-call
+		// so a minimal session manager (tests) without the accessor still works.
 		recap: sessionManager.getLatestAgentStatus?.()?.summary,
 	};
 }

@@ -1067,8 +1067,7 @@ class AgentDaemon {
 				: undefined;
 		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
 		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
-		// Prefer the live in-memory recap (including working-session lines that are
-		// never persisted) over the persisted baseline seeded above.
+		// Prefer the live in-memory recap over the persisted baseline.
 		if (state.summaryState?.summary) {
 			connectionState.recap = state.summaryState.summary;
 		}
@@ -1133,9 +1132,8 @@ class AgentDaemon {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
-		// Abort in-flight status work first (synchronously), before any await or
-		// dispose, so a finishing summarize bails on its aborted guard instead of
-		// appending agent_status to a session being torn down.
+		// Abort in-flight status work before any await/dispose so it can't write
+		// agent_status to a session being torn down.
 		this.summarizer.forget(state.activeSessionId);
 		const cascadeError = await this.closeChildSessions(state, reason);
 		let persistError: unknown;
@@ -1182,8 +1180,7 @@ class AgentDaemon {
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
-		// A finished turn (or compaction) is the cue to refresh this session's
-		// status, so an idle completion verdict lands promptly.
+		// A finished turn/compaction is the cue to refresh status.
 		if (
 			message.type === "session_event" &&
 			(message.event.type === "turn_end" || message.event.type === "compaction_end")

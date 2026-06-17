@@ -35,9 +35,7 @@ export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSe
 	if (summary.status === "model" || summary.status === "tool") {
 		return "working";
 	}
-	// An idle session defaults to Completed and only moves to Needs Input on an
-	// explicit summarizer verdict. So a slow/failed/absent classification just
-	// leaves it under Completed rather than lingering in Working.
+	// Idle defaults to Completed; only an explicit verdict moves it to Needs Input.
 	if (summary.taskState === "needs_input") {
 		return "needs-input";
 	}

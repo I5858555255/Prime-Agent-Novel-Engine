@@ -2512,10 +2512,7 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/**
-	 * Render the agent's one-line recap directly above the editor. Shown only
-	 * when a recap exists, so sessions without one cost no vertical space.
-	 */
+	/** Render the recap line above the editor, only when one exists. */
 	private renderRecap(): void {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
