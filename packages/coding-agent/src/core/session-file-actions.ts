@@ -1,24 +1,28 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { unlink } from "node:fs/promises";
-import { basename } from "node:path";
-import { manifestPathFor, snapshotPathFor } from "./kernel/state-snapshot.js";
+import { rm, unlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 export type DeleteSessionFileResult = { ok: true; method: "trash" | "unlink" } | { ok: false; error: string };
 
-/** Best-effort removal of a session's kernel snapshot payload + manifest. */
-async function deleteKernelStateFor(sessionPath: string): Promise<void> {
+/**
+ * Permanently remove a session's artifact directory (kernel state snapshot, rlm
+ * scratch files, …), which lives at `<dirname(sessionDir)>/session-artifacts/<id>`.
+ * Only invoked on delete, never on deactivation.
+ */
+async function deleteSessionArtifacts(sessionPath: string): Promise<void> {
 	const sessionId = basename(sessionPath).replace(/\.jsonl$/, "");
 	if (!sessionId) return;
-	await Promise.allSettled([unlink(snapshotPathFor(sessionId)), unlink(manifestPathFor(sessionId))]);
+	const artifactDir = join(dirname(dirname(sessionPath)), "session-artifacts", sessionId);
+	await rm(artifactDir, { recursive: true, force: true });
 }
 
 /**
  * Delete a session file, trying the `trash` CLI first, then falling back to unlink.
- * Also removes the session's kernel state snapshot, which is derived data.
+ * Also permanently removes the session's artifact directory, which is derived data.
  */
 export async function deleteSessionFile(sessionPath: string): Promise<DeleteSessionFileResult> {
-	await deleteKernelStateFor(sessionPath);
+	await deleteSessionArtifacts(sessionPath);
 	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
 	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8" });
 

@@ -4,7 +4,7 @@ import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import { type HostRequestHandlers, KernelManager } from "../kernel/index.js";
-import { manifestPathFor, type RestoreResult, snapshotPathFor } from "../kernel/state-snapshot.js";
+import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
@@ -140,6 +140,8 @@ export interface IpythonToolOptions {
 	/** Typed host request handlers for the kernel↔host bridge (rlm.run, goal.*, …). */
 	hostHandlers?: HostRequestHandlers;
 	pythonSkills?: readonly PythonSkillRuntimeInfo[];
+	/** Per-session artifact dir where the kernel namespace snapshot is stored. Omit to disable snapshots. */
+	snapshotDir?: string;
 	/** Filled after the first kernel start so the owning session can restart it after compaction. */
 	kernelManagerRef?: { current?: KernelManager };
 	/**
@@ -252,24 +254,24 @@ export class IpythonKernelProvisioner {
 	}
 
 	private async startKernel(): Promise<KernelManager> {
-		const sessionId = this.options?.sessionId;
+		const snapshotDir = this.options?.snapshotDir;
 		const m = new KernelManager({
 			python: this.options?.python,
 			cwd: this.cwd,
 			env: this.options?.env,
-			sessionId,
+			sessionId: this.options?.sessionId,
 			hostHandlers: this.options?.hostHandlers,
 			pythonSkills: this.options?.pythonSkills,
-			// Only sessions with a stable id get a per-session snapshot to revive.
-			snapshot: sessionId
-				? { path: snapshotPathFor(sessionId), manifestPath: manifestPathFor(sessionId) }
+			// Only persistent sessions (which have an artifact dir) get a revivable snapshot.
+			snapshot: snapshotDir
+				? { path: snapshotPathIn(snapshotDir), manifestPath: manifestPathIn(snapshotDir) }
 				: undefined,
 		});
 		this.emitStartupProgress("Starting IPython kernel...");
 		await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
 		// Revive a prior session's namespace before the bootstrap, so the bootstrap
 		// then overwrites live handles (rlm, skills) on top of anything restored.
-		if (sessionId) {
+		if (snapshotDir) {
 			this.emitStartupProgress("Restoring IPython state...");
 			const restore = await m.restoreState();
 			if (restore && (restore.restored.length > 0 || restore.failed.length > 0)) {

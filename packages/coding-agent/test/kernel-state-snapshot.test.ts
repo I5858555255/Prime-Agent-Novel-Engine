@@ -1,25 +1,23 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { getSessionsDir } from "../src/config.js";
 import {
 	buildRestoreCode,
 	buildSnapshotCode,
 	DEFAULT_SNAPSHOT_MAX_BYTES,
-	kernelStateDir,
-	manifestPathFor,
+	manifestPathIn,
 	parseRestoreResult,
 	parseSnapshotResult,
-	snapshotPathFor,
+	snapshotPathIn,
 } from "../src/core/kernel/state-snapshot.js";
 
 // Kept in sync with the marker the Python helpers print.
 const MARKER = "__PRIME_AGENT_KERNEL_STATE__";
 
 describe("kernel state snapshot paths", () => {
-	it("places snapshot + manifest under <sessionsDir>/kernel-state", () => {
-		expect(kernelStateDir()).toBe(join(getSessionsDir(), "kernel-state"));
-		expect(snapshotPathFor("abc-123")).toBe(join(getSessionsDir(), "kernel-state", "abc-123.dill"));
-		expect(manifestPathFor("abc-123")).toBe(join(getSessionsDir(), "kernel-state", "abc-123.json"));
+	it("places snapshot + manifest inside the session artifact directory", () => {
+		const artifactDir = "/home/u/.prime/agent/session-artifacts/abc-123";
+		expect(snapshotPathIn(artifactDir)).toBe(join(artifactDir, "kernel-state.dill"));
+		expect(manifestPathIn(artifactDir)).toBe(join(artifactDir, "kernel-state.json"));
 	});
 });
 

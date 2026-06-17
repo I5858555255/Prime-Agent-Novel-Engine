@@ -6,10 +6,12 @@
 // with `dill` independently, so a single unpicklable object (open file, socket,
 // GPU tensor, …) is skipped and reported rather than aborting the whole snapshot.
 import { join } from "node:path";
-import { getSessionsDir } from "../../config.js";
 
 /** Default ceiling on a snapshot payload. Over-cap variables are skipped + reported. */
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
+
+/** Base filename for the kernel snapshot within a session's artifact directory. */
+const KERNEL_STATE_BASENAME = "kernel-state";
 
 /** Marker the Python helpers print so the host can recover the JSON result line. */
 const RESULT_MARKER = "__PRIME_AGENT_KERNEL_STATE__";
@@ -32,19 +34,14 @@ export interface RestoreResult {
 	path: string;
 }
 
-/** Directory holding per-session kernel snapshots, alongside the session JSONL files. */
-export function kernelStateDir(): string {
-	return join(getSessionsDir(), "kernel-state");
+/** Absolute path to the dill payload within a session's artifact directory. */
+export function snapshotPathIn(artifactDir: string): string {
+	return join(artifactDir, `${KERNEL_STATE_BASENAME}.dill`);
 }
 
-/** Absolute path to the dill payload for a session's kernel snapshot. */
-export function snapshotPathFor(sessionId: string): string {
-	return join(kernelStateDir(), `${sessionId}.dill`);
-}
-
-/** Absolute path to the JSON manifest describing a session's snapshot. */
-export function manifestPathFor(sessionId: string): string {
-	return join(kernelStateDir(), `${sessionId}.json`);
+/** Absolute path to the JSON manifest within a session's artifact directory. */
+export function manifestPathIn(artifactDir: string): string {
+	return join(artifactDir, `${KERNEL_STATE_BASENAME}.json`);
 }
 
 /** Render a JS string as a Python string literal (JSON's escaping is a valid subset). */

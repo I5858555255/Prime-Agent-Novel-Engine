@@ -3446,6 +3446,7 @@ export class AgentSession {
 				sessionId: this.sessionId,
 				hostHandlers: this._createKernelHostHandlers(),
 				pythonSkills,
+				snapshotDir: this.sessionManager.getSessionArtifactDir(),
 				onRestore: (result) => this._onIpythonStateRestored(result),
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
