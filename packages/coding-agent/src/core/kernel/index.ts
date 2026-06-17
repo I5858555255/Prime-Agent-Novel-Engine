@@ -9,6 +9,15 @@ import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
 import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
+import {
+	buildRestoreCode,
+	buildSnapshotCode,
+	DEFAULT_SNAPSHOT_MAX_BYTES,
+	parseRestoreResult,
+	parseSnapshotResult,
+	type RestoreResult,
+	type SnapshotResult,
+} from "./state-snapshot.js";
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
@@ -18,6 +27,12 @@ const READY_TIMEOUT_MS = 5000;
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
 const HOST_REQUEST_DISPOSE_TIMEOUT_MS = 5000;
+const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1500;
+// Snapshot/restore cells can be large to (de)serialize; give them room beyond the user cap.
+const SNAPSHOT_MAX_OUTPUT_CHARS = 1_000_000;
+// Cap how long a graceful dispose waits on the final snapshot; the debounced
+// on-disk copy is the fallback if this is exceeded.
+const SNAPSHOT_DISPOSE_TIMEOUT_MS = 5000;
 
 /** Comm target the kernel-side `rlm.host_request` shim opens for typed host requests. */
 export const HOST_COMM_TARGET = "host.request";
@@ -31,6 +46,18 @@ export type HostRequestHandler = (payload: Record<string, unknown>) => Promise<R
 /** Host request handlers keyed by request type (e.g. "rlm.run", "goal.complete"). */
 export type HostRequestHandlers = Record<string, HostRequestHandler>;
 
+/** Where and how to persist the kernel's user namespace so it survives resume. */
+export interface KernelSnapshotConfig {
+	/** Absolute path for the dill payload. */
+	path: string;
+	/** Absolute path for the JSON manifest written alongside the payload. */
+	manifestPath: string;
+	/** Skip variables (and abort the payload) above this many bytes. Default 256 MiB. */
+	maxBytes?: number;
+	/** Debounce window for the auto-snapshot after a successful execution. Default 1500 ms. */
+	debounceMs?: number;
+}
+
 export interface KernelManagerOptions {
 	/** Python interpreter that has `ipykernel` available. Defaults to the auto-bootstrapped kernel. */
 	python?: string;
@@ -39,6 +66,8 @@ export interface KernelManagerOptions {
 	sessionId?: string;
 	hostHandlers?: HostRequestHandlers;
 	pythonSkills?: readonly KernelPythonSkill[];
+	/** Persist/revive the user namespace across kernel restarts and session resume. */
+	snapshot?: KernelSnapshotConfig;
 	/** Default: "prime-agent". */
 	username?: string;
 }
@@ -55,14 +84,40 @@ export interface ExecuteOptions {
 	maxOutputChars?: number;
 }
 
+/** MIME tag the `edit` skill emits diff payloads under, via `display_data`. */
+export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
+
+/** One file edit, captured from a {@link DIFF_DISPLAY_MIME} display payload. */
+export interface KernelDiffDisplay {
+	path: string;
+	oldStr: string;
+	newStr: string;
+	/** 1-based line where `oldStr` begins in the file, for absolute line numbers. */
+	startLine?: number;
+}
+
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
 	/** Last `execute_result` payload (text/plain), if the cell produced one. */
 	result?: string;
+	/** Diffs emitted via display_data, in order. */
+	diffs?: KernelDiffDisplay[];
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
 	durationMs: number;
+}
+
+/** Parse a {@link DIFF_DISPLAY_MIME} payload, tolerating malformed input. */
+function parseDiffDisplay(payload: unknown): KernelDiffDisplay | undefined {
+	if (!isRecord(payload)) {
+		return undefined;
+	}
+	const { path, old_str: oldStr, new_str: newStr, start_line: startLine } = payload;
+	if (typeof path !== "string" || typeof oldStr !== "string" || typeof newStr !== "string") {
+		return undefined;
+	}
+	return { path, oldStr, newStr, startLine: typeof startLine === "number" ? startLine : undefined };
 }
 
 interface ConnectionInfo {
@@ -104,6 +159,7 @@ interface ActiveExecution {
 	stdoutTruncated: boolean;
 	stderrTruncated: boolean;
 	result?: string;
+	diffs: KernelDiffDisplay[];
 	error?: ExecuteResult["error"];
 	status: ExecuteResult["status"];
 	resolve: (result: ExecuteResult) => void;
@@ -273,7 +329,8 @@ function installSignalHandlersOnce(): void {
 	signalHandlersInstalled = true;
 
 	const asyncShutdown = async (): Promise<void> => {
-		await Promise.allSettled([...liveKernels].map((k) => k.shutdown()));
+		// These paths can await, so flush the namespace snapshot before tearing down.
+		await Promise.allSettled([...liveKernels].map((k) => k.shutdown({ snapshot: true })));
 	};
 
 	// `beforeExit` and signal handlers can await async cleanup. `exit`
@@ -298,7 +355,7 @@ function installSignalHandlersOnce(): void {
 export class KernelManager {
 	private readonly options: Pick<
 		KernelManagerOptions,
-		"python" | "cwd" | "env" | "sessionId" | "hostHandlers" | "pythonSkills"
+		"python" | "cwd" | "env" | "sessionId" | "hostHandlers" | "pythonSkills" | "snapshot"
 	> &
 		Required<Pick<KernelManagerOptions, "username">>;
 	private readonly session = uuid();
@@ -323,6 +380,8 @@ export class KernelManager {
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
 	/** Memoized so concurrent callers all await the same in-flight startup. */
 	private startPromise?: Promise<void>;
+	/** Pending debounced auto-snapshot, if one has been scheduled. */
+	private snapshotTimer?: ReturnType<typeof globalThis.setTimeout>;
 
 	constructor(options: KernelManagerOptions) {
 		this.options = {
@@ -332,6 +391,7 @@ export class KernelManager {
 			sessionId: options.sessionId,
 			hostHandlers: options.hostHandlers,
 			pythonSkills: options.pythonSkills,
+			snapshot: options.snapshot,
 			username: options.username ?? "prime-agent",
 		};
 	}
@@ -503,6 +563,17 @@ export class KernelManager {
 	}
 
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+		const result = await this.enqueueExecute(code, opts);
+		// Refresh the on-disk snapshot after real work so a later resume (or a
+		// crash before graceful shutdown) revives the most recent namespace.
+		if (result.status === "ok") {
+			this.scheduleSnapshot();
+		}
+		return result;
+	}
+
+	/** Queue and run a cell, serializing against all other executions. */
+	private async enqueueExecute(code: string, opts: ExecuteOptions): Promise<ExecuteResult> {
 		if (opts.signal?.aborted) {
 			return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
 		}
@@ -576,6 +647,7 @@ export class KernelManager {
 				stderr: "",
 				stdoutTruncated: false,
 				stderrTruncated: false,
+				diffs: [],
 				status: "ok",
 				resolve: result.resolve,
 				reject: result.reject,
@@ -665,6 +737,10 @@ export class KernelManager {
 		} else if (t === "execute_result") {
 			const c = incoming.content as { data: Record<string, string> };
 			if (c.data["text/plain"]) execution.result = c.data["text/plain"];
+		} else if (t === "display_data" || t === "update_display_data") {
+			const c = incoming.content as { data?: Record<string, unknown> };
+			const diff = parseDiffDisplay(c.data?.[DIFF_DISPLAY_MIME]);
+			if (diff) execution.diffs.push(diff);
 		} else if (t === "error") {
 			const c = incoming.content as { ename: string; evalue: string; traceback: string[] };
 			execution.error = c;
@@ -699,6 +775,7 @@ export class KernelManager {
 			stdout,
 			stderr,
 			result,
+			diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
 			error: execution.error,
 			status,
 			durationMs: Date.now() - execution.started,
@@ -814,6 +891,7 @@ export class KernelManager {
 	}
 
 	private cleanupResources(): void {
+		this.clearSnapshotTimer();
 		this.rejectActiveExecution(new Error("Kernel has been shut down"));
 		this.shell?.close();
 		this.iopub?.close();
@@ -856,11 +934,16 @@ export class KernelManager {
 		}
 	}
 
-	async shutdown(): Promise<void> {
+	async shutdown(opts: { snapshot?: boolean } = {}): Promise<void> {
 		if (this.state === "shutdown") {
 			liveKernels.delete(this);
 			this.cleanupResources();
 			return;
+		}
+		// Best-effort final flush (bounded) before teardown — used by signal handlers
+		// so a SIGINT/SIGTERM exit doesn't lose work the debounced snapshot hasn't saved.
+		if (opts.snapshot) {
+			await this.flushSnapshotForDispose();
 		}
 		this.state = "shutdown";
 		liveKernels.delete(this);
@@ -894,20 +977,97 @@ export class KernelManager {
 		}
 	}
 
+	/**
+	 * Serialize the user namespace to disk (best-effort, per-variable). No-op when
+	 * the kernel isn't running or no snapshot target was configured. Never throws.
+	 */
+	async snapshotState(): Promise<SnapshotResult | null> {
+		const cfg = this.options.snapshot;
+		if (!cfg || !this.isRunning) return null;
+		const code = buildSnapshotCode(cfg.path, cfg.manifestPath, cfg.maxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES);
+		try {
+			const r = await this.enqueueExecute(code, { maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS });
+			if (r.status !== "ok") {
+				this.appendKernelDiagnostic(`state snapshot failed: ${r.error?.evalue ?? r.stderr}`);
+				return null;
+			}
+			return parseSnapshotResult(r.stdout, cfg.path);
+		} catch (error) {
+			this.appendKernelDiagnostic(`state snapshot error: ${errorMessage(error)}`);
+			return null;
+		}
+	}
+
+	/**
+	 * Revive a previously snapshotted namespace into the kernel. Call right after
+	 * start() and before the runtime bootstrap, which then refreshes live handles
+	 * (rlm, skills) over anything restored. Never throws.
+	 */
+	async restoreState(): Promise<RestoreResult | null> {
+		const cfg = this.options.snapshot;
+		if (!cfg) return null;
+		const code = buildRestoreCode(cfg.path);
+		try {
+			const r = await this.enqueueExecute(code, { maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS });
+			if (r.status !== "ok") {
+				this.appendKernelDiagnostic(`state restore failed: ${r.error?.evalue ?? r.stderr}`);
+				return null;
+			}
+			return parseRestoreResult(r.stdout, cfg.path);
+		} catch (error) {
+			this.appendKernelDiagnostic(`state restore error: ${errorMessage(error)}`);
+			return null;
+		}
+	}
+
+	private scheduleSnapshot(): void {
+		const cfg = this.options.snapshot;
+		if (!cfg) return;
+		if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+		this.snapshotTimer = globalThis.setTimeout(() => {
+			this.snapshotTimer = undefined;
+			void this.snapshotState();
+		}, cfg.debounceMs ?? DEFAULT_SNAPSHOT_DEBOUNCE_MS);
+		if (this.snapshotTimer && typeof this.snapshotTimer === "object" && "unref" in this.snapshotTimer) {
+			this.snapshotTimer.unref();
+		}
+	}
+
+	private clearSnapshotTimer(): void {
+		if (this.snapshotTimer) {
+			clearTimeout(this.snapshotTimer);
+			this.snapshotTimer = undefined;
+		}
+	}
+
+	/** Best-effort final snapshot before a graceful dispose, bounded by a timeout. */
+	private async flushSnapshotForDispose(): Promise<void> {
+		if (!this.options.snapshot || !this.isRunning) return;
+		let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+		const guard = new Promise<void>((resolve) => {
+			timeout = globalThis.setTimeout(resolve, SNAPSHOT_DISPOSE_TIMEOUT_MS);
+			if (timeout && typeof timeout === "object" && "unref" in timeout) timeout.unref();
+		});
+		try {
+			await Promise.race([this.snapshotState().then(() => undefined), guard]);
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
+	}
+
 	/** Graceful cleanup. Waits briefly for in-flight host request handlers before closing sockets. */
 	dispose(): Promise<void> {
-		this.state = "shutdown";
-		liveKernels.delete(this);
-		const inFlightHostRequests = [...this.inFlightHostRequests];
-		if (inFlightHostRequests.length === 0) {
-			this.cleanupResources();
-			return Promise.resolve();
-		}
-
 		return (async () => {
+			// Final namespace flush while the kernel is still live (session end / reload).
+			await this.flushSnapshotForDispose();
+			this.state = "shutdown";
+			liveKernels.delete(this);
+			const inFlightHostRequests = [...this.inFlightHostRequests];
 			// TODO: plumb AbortSignal through AgentSession.prompt so disposal can cancel long-running child loops.
 			try {
-				await this.waitForHostRequestsToSettle(inFlightHostRequests, HOST_REQUEST_DISPOSE_TIMEOUT_MS);
+				if (inFlightHostRequests.length > 0) {
+					await this.waitForHostRequestsToSettle(inFlightHostRequests, HOST_REQUEST_DISPOSE_TIMEOUT_MS);
+				}
 			} finally {
 				this.cleanupResources();
 			}
