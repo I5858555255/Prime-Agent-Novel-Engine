@@ -12,7 +12,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { APP_TITLE, getAgentDir, VERSION } from "../../config.js";
+import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
@@ -69,6 +69,7 @@ const SESSION_NAME_MAX_LENGTH = 80;
 const DEFAULT_PROMPT_PLACEHOLDER = "Describe a task for a new session";
 const REPLY_PROMPT_FALLBACK_PLACEHOLDER = "Write a reply to this agent";
 const COMPLETED_ROW_ICON = "✓";
+const NEEDS_INPUT_ROW_ICON = "●";
 const WORKING_ICON_FRAMES = ["◇", "◈", "◆", "◈"] as const;
 const SELECTED_ROW_MARKER = "\0agents-view-selected-row\0";
 // Tags a spawn-code line so finalize can wrap the whole row in a panel
@@ -237,9 +238,22 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 					? (result.subagent.rlmChildId ?? result.subagent.activeSessionId)
 					: undefined,
 			});
-			await interactiveMode.run();
+			try {
+				await interactiveMode.run();
+			} catch (error) {
+				// The session opened fine and then threw while running; label it as a
+				// runtime crash so it isn't mixed in with true open failures.
+				logClientError("Agent session crashed", error);
+				persistentState.statusMessage = formatError("Agent session crashed", error);
+				// Tear down the session TUI exactly as a normal back-navigation would
+				// (drain input, stop renderer + theme watcher) so it doesn't fight the
+				// agents-view UI for the terminal, then drop the daemon connection.
+				await interactiveMode.teardownSessionUi();
+				await opened.connection.dispose().catch(() => undefined);
+			}
 		} catch (error) {
 			await opened?.connection.dispose().catch(() => undefined);
+			logClientError("Failed to open agent", error);
 			persistentState.statusMessage = formatError("Failed to open agent", error);
 		}
 	}
@@ -1456,7 +1470,12 @@ class AgentsViewMode implements Component, Focusable {
 
 	private getAgentCountsText(): string {
 		const counts = countRowsBySection(this.rows);
-		return `${counts.working} working, ${counts.completed} completed`;
+		const parts: string[] = [];
+		if (counts["needs-input"] > 0) {
+			parts.push(`${counts["needs-input"]} needs input`);
+		}
+		parts.push(`${counts.working} working`, `${counts.completed} completed`);
+		return parts.join(", ");
 	}
 
 	private renderSessionRows(width: number, maxRows: number): string[] {
@@ -1535,7 +1554,12 @@ class AgentsViewMode implements Component, Focusable {
 			: pendingKill
 				? `${keyText("app.agents.delete")} again to stop`
 				: row.title;
-		const titleCell = formatTableCell(title, titleWidth);
+		// Append the background summary as a dim suffix on the same line, e.g.
+		// "fix auth · Refactoring token validation". Hidden during delete/stop
+		// confirmations so the warning text stands alone.
+		const summaryText = !pendingDelete && !pendingKill ? row.summary.summary : undefined;
+		const titleContent = summaryText ? `${title} ${theme.fg("dim", `· ${summaryText}`)}` : title;
+		const titleCell = formatTableCell(titleContent, titleWidth);
 		const cells = [
 			icon,
 			pendingDelete || pendingKill ? theme.fg("error", titleCell) : titleCell,
@@ -1642,6 +1666,8 @@ class AgentsViewMode implements Component, Focusable {
 		switch (section) {
 			case "working":
 				return WORKING_ICON_FRAMES[this.workingIconFrame % WORKING_ICON_FRAMES.length] ?? WORKING_ICON_FRAMES[0];
+			case "needs-input":
+				return NEEDS_INPUT_ROW_ICON;
 			case "completed":
 				return COMPLETED_ROW_ICON;
 			default: {
@@ -1655,6 +1681,8 @@ class AgentsViewMode implements Component, Focusable {
 		switch (section) {
 			case "working":
 				return theme.bold(icon);
+			case "needs-input":
+				return theme.fg("warning", icon);
 			case "completed":
 				return theme.fg("success", icon);
 			default: {
@@ -1673,7 +1701,7 @@ type DisplayItem =
 
 function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
-	const sections: AgentsViewSection[] = ["working", "completed"];
+	const sections: AgentsViewSection[] = ["needs-input", "working", "completed"];
 	for (const [index, section] of sections.entries()) {
 		if (index > 0) {
 			items.push({ type: "spacer" });
@@ -1711,6 +1739,7 @@ function countRowsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSe
 	const agents = rows.filter((row) => row.kind === "agent");
 	return {
 		working: agents.filter((row) => row.section === "working").length,
+		"needs-input": agents.filter((row) => row.section === "needs-input").length,
 		completed: agents.filter((row) => row.section === "completed").length,
 	};
 }
@@ -1819,6 +1848,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function formatError(prefix: string, error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return formatAgentsViewStatusLine(`${prefix}: ${message}`);
+}
+
+// The agents view shows open failures as a one-line status only, so a client-side
+// crash (e.g. "Maximum call stack size exceeded") leaves no stack to debug from.
+// Persist the full stack to a file — the TUI owns stdout/stderr, so a log file is
+// the only safe sink.
+function logClientError(prefix: string, error: unknown): void {
+	const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+	appendRotatingLog(getClientErrorLogPath(), `[${new Date().toISOString()}] ${prefix}: ${detail}`);
 }
 
 function padLine(line: string, width: number): string {

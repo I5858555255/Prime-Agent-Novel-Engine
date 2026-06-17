@@ -8,7 +8,7 @@
 
 import { createServer, type Server, type Socket } from "node:net";
 import { resolve } from "node:path";
-import { getCronJobsPath, VERSION } from "../../config.js";
+import { appendRotatingLog, getCronJobsPath, getDaemonLogPath, VERSION } from "../../config.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
 	AgentSessionRuntime,
@@ -65,7 +65,13 @@ import {
 	isDaemonDialogExtensionUiRequest,
 	success,
 } from "./daemon-protocol.js";
-import { buildRlmChildSnapshots, buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
+import {
+	buildRlmChildSnapshots,
+	buildSessionList,
+	isSummaryCurrent,
+	summaryForActiveSession,
+} from "./daemon-session-list.js";
+import { DaemonSessionSummarizer } from "./daemon-session-summarizer.js";
 import {
 	cleanupDaemonSocketPath,
 	defaultDaemonSocketPath,
@@ -177,6 +183,15 @@ export class AgentDaemon {
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 	private readonly cronStore: AgentCronJobStore;
 	private readonly cronScheduler: AgentCronScheduler;
+	private readonly summarizer = new DaemonSessionSummarizer(
+		() => [...this.sessions.values()].filter((state) => state.runtime.metadata.kind !== "subagent"),
+		(state) =>
+			this.broadcastToSession(state, {
+				type: "session_status",
+				activeSessionId: state.activeSessionId,
+				recap: state.summaryState?.summary,
+			}),
+	);
 
 	constructor(
 		private readonly socketPath: string,
@@ -194,7 +209,30 @@ export class AgentDaemon {
 		});
 	}
 
+	// The daemon runs detached with no terminal, so route its diagnostics to a
+	// rotating log file (and stderr too, for when it's run in the foreground).
+	private log(message: string): void {
+		console.error(message);
+		appendRotatingLog(getDaemonLogPath(this.socketPath), `[${new Date().toISOString()}] ${message}`);
+	}
+
+	// A crash thrown outside a command handler would otherwise vanish with the
+	// detached stdio; capture its stack before the process goes down.
+	private installCrashHandlers(): void {
+		process.on("uncaughtException", (error) => {
+			this.log(`uncaught exception: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+			process.exit(1);
+		});
+		process.on("unhandledRejection", (reason) => {
+			this.log(
+				`unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+			);
+			process.exit(1);
+		});
+	}
+
 	async start(): Promise<void> {
+		this.installCrashHandlers();
 		await prepareDaemonSocketPath(this.socketPath);
 
 		this.server = createServer((socket) => this.handleConnection(socket));
@@ -229,7 +267,8 @@ export class AgentDaemon {
 		}
 
 		this.registerSignalHandlers();
-		console.error(`Prime Agent daemon listening on ${this.socketPath}`);
+		this.summarizer.start();
+		this.log(`Prime Agent daemon listening on ${this.socketPath}`);
 		void this.restoreActiveSessions().finally(() => {
 			if (!this.shuttingDown) {
 				this.cronScheduler.start();
@@ -248,9 +287,7 @@ export class AgentDaemon {
 		try {
 			saved = await SessionManager.listAll(undefined, this.options.defaultSessionConfig.sessionDir);
 		} catch (error) {
-			console.error(
-				`Failed to scan sessions for restore: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			this.log(`Failed to scan sessions for restore: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		for (const info of saved) {
@@ -265,7 +302,7 @@ export class AgentDaemon {
 			try {
 				await this.createRuntime({ type: "create", sessionPath: info.path });
 			} catch (error) {
-				console.error(
+				this.log(
 					`Failed to restore session ${info.path}: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
@@ -315,6 +352,8 @@ export class AgentDaemon {
 			} catch {
 				// Marking is best-effort; the session still works unrestored.
 			}
+			// Restore the last persisted status so it shows before the first sweep.
+			this.summarizer.seed(state);
 		}
 		return state;
 	}
@@ -767,6 +806,12 @@ export class AgentDaemon {
 				this.write(client, response);
 			}
 		} catch (error) {
+			// Only the error message reaches the client (serializeDaemonError drops
+			// the rest), so log the full stack here — this is the one place a handler
+			// crash like a RangeError from a pathological session is recoverable.
+			this.log(
+				`daemon command "${command.type}" failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+			);
 			this.write(client, failure(command.id, command.type, error, serializeDaemonError(error)));
 		}
 	}
@@ -1383,10 +1428,16 @@ export class AgentDaemon {
 					}
 				: undefined;
 		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
+		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
+		// Prefer the live in-memory recap over the persisted baseline, but only
+		// while it matches the current turn so we don't seed a stale recap.
+		if (state.summaryState?.summary && isSummaryCurrent(state)) {
+			connectionState.recap = state.summaryState.summary;
+		}
 		return {
 			activeSessionId: state.activeSessionId,
 			summary: summaryForActiveSession(state),
-			state: createAgentConnectionState(state.runtime, state.activeSessionId),
+			state: connectionState,
 			messages: state.runtime.session.messages,
 			sessionContext: sessionManager.buildSessionContext(),
 			// The session tree is omitted on purpose: it carries every entry's full
@@ -1445,6 +1496,9 @@ export class AgentDaemon {
 			return;
 		}
 		this.cancelSubagentRlmHeartbeats(state);
+		// Abort in-flight status work before any await/dispose so it can't write
+		// agent_status to a session being torn down.
+		this.summarizer.forget(state.activeSessionId);
 		const cascadeError = await this.closeChildSessions(state, reason);
 		let persistError: unknown;
 		if (reason !== "shutdown") {
@@ -1490,6 +1544,13 @@ export class AgentDaemon {
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
+		// A finished turn/compaction is the cue to refresh status.
+		if (
+			message.type === "session_event" &&
+			(message.event.type === "turn_end" || message.event.type === "compaction_end")
+		) {
+			this.summarizer.notifyActivity(state);
+		}
 		const sequencedMessage = this.addSessionEventMeta(state, message);
 		for (const client of state.clients) {
 			if (!shouldSendDaemonOutboundToClient(client, sequencedMessage)) {
@@ -1539,6 +1600,7 @@ export class AgentDaemon {
 		}
 		this.shuttingDown = true;
 
+		this.summarizer.stop();
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
 		}
@@ -1624,13 +1686,20 @@ function normalizeClientCapabilities(
 type SequencedDaemonOutbound = Extract<
 	DaemonOutbound,
 	{
-		type: "session_event" | "session_replaced" | "session_closed" | "extension_ui_request" | "extension_error";
+		type:
+			| "session_event"
+			| "session_status"
+			| "session_replaced"
+			| "session_closed"
+			| "extension_ui_request"
+			| "extension_error";
 	}
 >;
 
 function isSequencedSessionOutbound(message: DaemonOutbound): message is SequencedDaemonOutbound {
 	return (
 		message.type === "session_event" ||
+		message.type === "session_status" ||
 		message.type === "session_replaced" ||
 		message.type === "session_closed" ||
 		message.type === "extension_ui_request" ||

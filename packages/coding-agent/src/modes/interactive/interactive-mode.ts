@@ -39,7 +39,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
-import { APP_TITLE, getAgentDir, getDebugLogPath, getShareViewerUrl, VERSION } from "../../config.js";
+import { APP_TITLE, getAgentDir, getDebugLogPath, getLogsDir, getShareViewerUrl, VERSION } from "../../config.js";
 import {
 	type AgentTraceUploadResult,
 	getPrimeAgentTraceCredential,
@@ -569,6 +569,10 @@ export class InteractiveMode {
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
 
+	// One-line recap of the agent's recent work, rendered just above the editor.
+	private recapContainer!: Container;
+	private sessionRecap: string | undefined;
+
 	// Custom footer from extension (undefined = use built-in footer)
 	private customFooter: (Component & { dispose?(): void }) | undefined = undefined;
 
@@ -641,6 +645,7 @@ export class InteractiveMode {
 		this.childAgentDetail.onKill = (nodeId) => void this.killChildAgent(nodeId);
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
+		this.recapContainer = new Container();
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -884,6 +889,8 @@ export class InteractiveMode {
 		this.mainContainer.addChild(this.mainViewContainer);
 		this.renderWidgets(); // Initialize with default spacer
 		this.mainContainer.addChild(this.widgetContainerAbove);
+		this.renderRecap();
+		this.mainContainer.addChild(this.recapContainer);
 		this.mainContainer.addChild(this.editorContainer);
 		this.mainContainer.addChild(this.childAgentSummary);
 		this.mainContainer.addChild(this.widgetContainerBelow);
@@ -1918,6 +1925,8 @@ export class InteractiveMode {
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
 		this.connectionState = state;
 		this.footer.setAutoCompactEnabled(state.autoCompactionEnabled);
+		this.sessionRecap = state.recap;
+		this.renderRecap();
 	}
 
 	private patchConnectionState(patch: Partial<AgentConnectionState>): void {
@@ -2473,6 +2482,19 @@ export class InteractiveMode {
 		if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
 		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);
 		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
+		this.ui.requestRender();
+	}
+
+	/** Render the recap line above the editor, only when one exists. */
+	private renderRecap(): void {
+		if (!this.recapContainer) return;
+		this.recapContainer.clear();
+		const recap = this.sessionRecap?.trim();
+		if (recap) {
+			this.recapContainer.addChild(new Text(theme.fg("dim", `Recap: ${recap}`), 1, 0));
+			// Blank line between the recap and the prompt bar below it.
+			this.recapContainer.addChild(new Spacer(1));
+		}
 		this.ui.requestRender();
 	}
 
@@ -3169,6 +3191,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (commandName === "logs" && !commandArgs) {
+				this.handleLogsCommand();
+				this.editor.setText("");
+				return;
+			}
 			if (commandName === "goal" && (!commandArgs || commandArgs === "status")) {
 				this.handleGoalStatusCommand();
 				this.editor.setText("");
@@ -3346,6 +3373,10 @@ export class InteractiveMode {
 					await this.rebindCurrentSession();
 					await this.renderInitialMessages();
 					this.ui.requestRender();
+				} else if (event.type === "session_status") {
+					this.sessionRecap = event.recap;
+					this.patchConnectionState({ recap: event.recap });
+					this.renderRecap();
 				} else if (event.type === "extension_ui_request") {
 					await this.handleConnectionExtensionUiRequest(event.request);
 				} else if (event.type === "closed") {
@@ -3628,6 +3659,9 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
+					// A new turn makes the recap stale; clear it until the summarizer pushes a fresh one.
+					this.sessionRecap = undefined;
+					this.renderRecap();
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
@@ -4712,16 +4746,25 @@ export class InteractiveMode {
 		process.exit(0);
 	}
 
+	/**
+	 * Tear down the session's terminal UI before handing the terminal back to the
+	 * agents view. Drains in-flight Kitty/SSH key-release sequences so they don't
+	 * leak into the parent UI, then stops the renderer and theme watcher. Safe to
+	 * call from a crash path too; idempotent via stop().
+	 */
+	async teardownSessionUi(): Promise<void> {
+		await this.ui.terminal.drainInput(1000).catch(() => undefined);
+		this.stop();
+		stopThemeWatcher();
+	}
+
 	private async returnToAgentsView(): Promise<void> {
 		if (this.isShuttingDown || this.returnToAgentsViewRequested) return;
 		this.returnToAgentsViewRequested = true;
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
 
-		await this.ui.terminal.drainInput(1000);
-
-		this.stop();
-		stopThemeWatcher();
+		await this.teardownSessionUi();
 		try {
 			await this.agentConnection.dispose();
 		} finally {
@@ -6426,6 +6469,39 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
 		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
 		info += theme.fg("dim", "Use /context for token, cost, and context usage.");
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleLogsCommand(): void {
+		const logsDir = getLogsDir();
+		let info = `${theme.bold("Logs")}\n\n`;
+		info += `${theme.fg("dim", "Directory:")} ${logsDir}\n\n`;
+
+		let files: string[] = [];
+		try {
+			if (fs.existsSync(logsDir)) {
+				files = fs.readdirSync(logsDir).filter((name) => !name.startsWith("."));
+			}
+		} catch {
+			// Fall through to the empty-state line below.
+		}
+		if (files.length === 0) {
+			info += `${theme.fg("dim", "No logs written yet.")}\n`;
+		} else {
+			for (const name of files.sort()) {
+				let size = "";
+				try {
+					size = ` ${theme.fg("dim", `(${(fs.statSync(path.join(logsDir, name)).size / 1024).toFixed(1)} KB)`)}`;
+				} catch {
+					// Skip the size if the file vanished between readdir and stat.
+				}
+				info += `${theme.fg("dim", "•")} ${name}${size}\n`;
+			}
+		}
+		info += `\n${theme.fg("dim", "Daemon crashes log to <socket>.log; agent-open failures log to client-errors.log.")}`;
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
