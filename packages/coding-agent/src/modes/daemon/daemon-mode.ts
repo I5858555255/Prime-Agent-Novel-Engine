@@ -486,6 +486,14 @@ class AgentDaemon {
 				this.write(client, response);
 			}
 		} catch (error) {
+			// Only the error message reaches the client (serializeDaemonError drops
+			// the rest), so log the full stack here — this is the one place a
+			// handler crash like a RangeError from a pathological session is
+			// recoverable. Daemon stdio is wired to a log file in daemon-launch.
+			console.error(
+				`[${new Date().toISOString()}] daemon command "${command.type}" failed:`,
+				error instanceof Error ? (error.stack ?? error.message) : error,
+			);
 			this.write(client, failure(command.id, command.type, error, serializeDaemonError(error)));
 		}
 	}
