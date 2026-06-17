@@ -718,4 +718,34 @@ describe("TUI viewport-preserving render", () => {
 
 		tui.stop();
 	});
+
+	it("does not leave maxLinesRendered inflated after a preserving collapse", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		tui.setClearOnShrink(true);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Collapse (content shrinks) via the preserving path.
+		component.lines = Array.from({ length: 12 }, (_, i) => `Line ${i}`);
+		tui.requestRenderPreservingViewport();
+		await terminal.waitForRender();
+
+		const redrawsAfterCollapse = tui.fullRedraws;
+		terminal.clearWrites();
+
+		// A subsequent plain render with unchanged content must not re-trigger a
+		// clearOnShrink full redraw (which would clear scrollback and replay).
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.fullRedraws, redrawsAfterCollapse, "No extra full redraw after the collapse settled");
+		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Must not clear scrollback on the follow-up render");
+
+		tui.stop();
+	});
 });

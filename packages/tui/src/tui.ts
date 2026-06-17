@@ -1049,7 +1049,11 @@ export class TUI extends Container {
 				this.terminal.write(buffer);
 				this.cursorRow = Math.max(0, newLines.length - 1);
 				this.hardwareCursorRow = this.cursorRow;
-				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+				// Reset (not just grow) the high-water mark to the repainted content,
+				// mirroring the scrollback-clearing path. Otherwise a preserving
+				// collapse leaves maxLinesRendered inflated, and the next plain render
+				// would re-trigger clearOnShrink and do a destructive full redraw.
+				this.maxLinesRendered = newLines.length;
 				this.previousViewportTop = windowStart;
 				this.positionHardwareCursor(cursorPos, newLines.length);
 				this.previousLines = newLines;
