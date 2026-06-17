@@ -10,8 +10,9 @@ import {
 	TUI,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { APP_TITLE, VERSION } from "../../config.js";
+import { APP_TITLE, getAgentDir, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
@@ -35,6 +36,13 @@ import {
 	stopThemeWatcher,
 	theme,
 } from "../interactive/theme/theme.js";
+import {
+	formatPackageUpdateNotice,
+	formatTmuxWarningNotice,
+	formatUpdateAvailableNotice,
+	gatherStartupNotices,
+	type StartupNotices,
+} from "../shared/startup-notices.js";
 import {
 	AGENTS_VIEW_SLASH_COMMANDS,
 	type AgentsViewCommandName,
@@ -269,6 +277,8 @@ class AgentsViewMode implements Component, Focusable {
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private anthropicSubscriptionWarningShown = false;
+	// Global update/setup notices, resolved once on startup and shown above the list.
+	private startupNotices: StartupNotices | undefined;
 
 	constructor(
 		private readonly options: AgentsViewModeOptions,
@@ -339,6 +349,7 @@ class AgentsViewMode implements Component, Focusable {
 
 		await this.refreshSessions();
 		await this.sendInitialPrompts();
+		this.loadStartupNotices();
 		this.pollTimer = setInterval(() => {
 			void this.refreshSessions();
 		}, POLL_INTERVAL_MS);
@@ -411,10 +422,49 @@ class AgentsViewMode implements Component, Focusable {
 		}
 		const lines: string[] = [];
 		lines.push(...this.splash.render(width));
+		const noticeLines = this.renderStartupNotices(width);
+		if (noticeLines.length > 0) {
+			lines.push("", ...noticeLines);
+		}
 		lines.push("");
 		const listRows = Math.max(0, height - lines.length);
 		lines.push(...this.renderSessionRows(width, listRows));
 		return lines;
+	}
+
+	private loadStartupNotices(): void {
+		void gatherStartupNotices({
+			version: VERSION,
+			cwd: this.options.uiServices.getInitialCwd(),
+			agentDir: getAgentDir(),
+			settingsManager: this.options.uiServices.settingsManager,
+		})
+			.then((notices) => {
+				this.startupNotices = notices;
+				this.ui.requestRender();
+			})
+			.catch(() => {});
+	}
+
+	private renderStartupNotices(width: number): string[] {
+		const notices = this.startupNotices;
+		if (!notices) {
+			return [];
+		}
+		const formatted: string[] = [];
+		if (notices.newVersion) {
+			formatted.push(formatUpdateAvailableNotice(notices.newVersion));
+		}
+		if (notices.packageUpdates.length > 0) {
+			formatted.push(formatPackageUpdateNotice(notices.packageUpdates));
+		}
+		if (notices.tmuxWarning) {
+			formatted.push(formatTmuxWarningNotice(notices.tmuxWarning));
+		}
+		// Match the splash header's one-column gutter and wrap so long notices
+		// (e.g. the tmux fix instructions) stay readable instead of truncating.
+		const wrapWidth = Math.max(1, width - 1);
+		return formatted.flatMap((line) => wrapTextWithAnsi(line, wrapWidth).map((wrapped) => ` ${wrapped}`));
 	}
 
 	private handleListNavigation(data: string): boolean {

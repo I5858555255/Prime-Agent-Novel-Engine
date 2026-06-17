@@ -56,7 +56,6 @@ import { emptyGoalState, formatGoalUsage, type GoalState } from "../../core/goal
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
-import { DefaultPackageManager } from "../../core/package-manager.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
@@ -94,6 +93,12 @@ import type {
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
+import {
+	checkForPackageUpdates,
+	checkTmuxKeyboardSetup,
+	formatPackageUpdateNotice,
+	formatUpdateAvailableNotice,
+} from "../shared/startup-notices.js";
 import { AGENT_ACTIVITY_LABELS, AgentActivityTracker, formatTokenCount } from "./agent-activity.js";
 import { type AuthenticationResult, getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "./auth-flows.js";
 import { ArminComponent } from "./components/armin.js";
@@ -518,6 +523,8 @@ export class InteractiveMode {
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private initialConnectionSnapshotConsumed = false;
+	// Whether the session already had messages when first rendered (i.e. a resumed session).
+	private sessionHadInitialMessages = false;
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
@@ -930,9 +937,19 @@ export class InteractiveMode {
 	async run(): Promise<InteractiveModeRunResult> {
 		await this.init();
 
-		const newVersionPromise = checkForNewPiVersion(this.version);
-		const packageUpdatesPromise = this.checkForPackageUpdates();
-		const tmuxKeyboardWarningPromise = this.checkTmuxKeyboardSetup();
+		// Global, environment-scoped notices (app update, extension updates, tmux setup)
+		// belong on the agents view, not in a conversation. When launched from the agents
+		// view it owns them, so skip the checks here entirely.
+		const ownsGlobalStartupNotices = !this.options.returnToAgentsView;
+		const newVersionPromise = ownsGlobalStartupNotices ? checkForNewPiVersion(this.version) : undefined;
+		const packageUpdatesPromise = ownsGlobalStartupNotices
+			? checkForPackageUpdates({
+					cwd: this.getCurrentCwd(),
+					agentDir: getAgentDir(),
+					settingsManager: this.settingsManager,
+				})
+			: undefined;
+		const tmuxKeyboardWarningPromise = ownsGlobalStartupNotices ? checkTmuxKeyboardSetup() : undefined;
 
 		// Show startup warnings
 		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
@@ -982,8 +999,15 @@ export class InteractiveMode {
 			}
 			deferredStartupNotificationsShown = true;
 
+			// The agents view owns these for daemon sessions. When there is no agents view,
+			// show them once at the top of a fresh session, but never append them under a
+			// restored conversation where they read as disconnected clutter.
+			if (!ownsGlobalStartupNotices || this.sessionHadInitialMessages) {
+				return;
+			}
+
 			void newVersionPromise
-				.then((newVersion) => {
+				?.then((newVersion) => {
 					if (newVersion) {
 						this.showNewVersionNotification(newVersion);
 					}
@@ -991,7 +1015,7 @@ export class InteractiveMode {
 				.catch(() => {});
 
 			void packageUpdatesPromise
-				.then((updates) => {
+				?.then((updates) => {
 					if (updates.length > 0) {
 						this.showPackageUpdateNotification(updates);
 					}
@@ -999,7 +1023,7 @@ export class InteractiveMode {
 				.catch(() => {});
 
 			void tmuxKeyboardWarningPromise
-				.then((warning) => {
+				?.then((warning) => {
 					if (warning) {
 						this.showWarning(warning);
 					}
@@ -1174,71 +1198,6 @@ export class InteractiveMode {
 
 		this.showStatus("Model selection required. Use /model to continue.");
 		return false;
-	}
-
-	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE) {
-			return [];
-		}
-
-		try {
-			const packageManager = new DefaultPackageManager({
-				cwd: this.getCurrentCwd(),
-				agentDir: getAgentDir(),
-				settingsManager: this.settingsManager,
-			});
-			const updates = await packageManager.checkForAvailableUpdates();
-			return updates.map((update) => update.displayName);
-		} catch {
-			return [];
-		}
-	}
-
-	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
-		if (!process.env.TMUX) return undefined;
-
-		const runTmuxShow = (option: string): Promise<string | undefined> => {
-			return new Promise((resolve) => {
-				const proc = spawn("tmux", ["show", "-gv", option], {
-					stdio: ["ignore", "pipe", "ignore"],
-				});
-				let stdout = "";
-				const timer = setTimeout(() => {
-					proc.kill();
-					resolve(undefined);
-				}, 2000);
-
-				proc.stdout?.on("data", (data) => {
-					stdout += data.toString();
-				});
-				proc.on("error", () => {
-					clearTimeout(timer);
-					resolve(undefined);
-				});
-				proc.on("close", (code) => {
-					clearTimeout(timer);
-					resolve(code === 0 ? stdout.trim() : undefined);
-				});
-			});
-		};
-
-		const [extendedKeys, extendedKeysFormat] = await Promise.all([
-			runTmuxShow("extended-keys"),
-			runTmuxShow("extended-keys-format"),
-		]);
-
-		// If we couldn't query tmux (timeout, sandbox, etc.), don't warn
-		if (extendedKeys === undefined) return undefined;
-
-		if (extendedKeys !== "on" && extendedKeys !== "always") {
-			return "tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
-		}
-
-		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
-		}
-
-		return undefined;
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -4565,6 +4524,7 @@ export class InteractiveMode {
 			const snapshot = await this.agentConnection.getInitialSnapshot();
 			this.initialConnectionSnapshotConsumed = true;
 			context = this.getSessionContextFromConnectionSnapshot(snapshot);
+			this.sessionHadInitialMessages = context.messages.length > 0;
 			state = snapshot.state;
 			this.seedChildAgentInspector(snapshot.children);
 		}
@@ -5021,28 +4981,12 @@ export class InteractiveMode {
 	}
 
 	showNewVersionNotification(newVersion: string): void {
-		this.chatContainer.addChild(
-			new Text(
-				`${theme.bold(theme.fg("accent", "Update available:"))} ` +
-					`${theme.fg("muted", `v${newVersion}. Run `)}${theme.fg("accent", "prime-agent update")}`,
-				1,
-				0,
-			),
-		);
+		this.chatContainer.addChild(new Text(formatUpdateAvailableNotice(newVersion), 1, 0));
 		this.ui.requestRender();
 	}
 
 	showPackageUpdateNotification(packages: string[]): void {
-		const packageList = packages.join(", ");
-
-		this.chatContainer.addChild(
-			new Text(
-				`${theme.bold(theme.fg("warning", "Package updates available:"))} ` +
-					`${theme.fg("muted", `${packageList}. Run `)}${theme.fg("accent", "prime-agent update --extensions")}`,
-				1,
-				0,
-			),
-		);
+		this.chatContainer.addChild(new Text(formatPackageUpdateNotice(packages), 1, 0));
 		this.ui.requestRender();
 	}
 
