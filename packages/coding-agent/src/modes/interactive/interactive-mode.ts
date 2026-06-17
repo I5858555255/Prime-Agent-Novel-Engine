@@ -2105,11 +2105,17 @@ export class InteractiveMode {
 		this.compactionQueuedMessages = [];
 		// Pasted images belong to the session being torn down; drop them so markers
 		// in a newly loaded session can't resolve to the previous session's bytes.
-		// Clear prompt history alongside them so a recalled entry can't reference an
-		// image that was just dropped. nextImageMarkerId stays monotonic so a new
-		// paste never reuses an id that may still appear in restored text.
+		// Clear every editor's prompt history and draft text alongside them so no
+		// `[image #N]` marker survives without a backing image. nextImageMarkerId
+		// stays monotonic so a new paste never reuses an id that may still appear in
+		// restored text.
 		this.pastedImages.clear();
 		this.defaultEditor.clearHistory?.();
+		this.defaultEditor.setText("");
+		if (this.editor !== this.defaultEditor) {
+			this.editor.clearHistory?.();
+			this.editor.setText("");
+		}
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		// The discarded component's loader interval keeps firing otherwise; no
