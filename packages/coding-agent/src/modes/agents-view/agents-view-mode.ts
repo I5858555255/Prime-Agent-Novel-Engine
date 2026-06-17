@@ -441,6 +441,8 @@ class AgentsViewMode implements Component, Focusable {
 
 	private loadStartupNotices(): void {
 		if (this.persistentState.startupNotices) {
+			// May have resolved on a prior instance after this one's constructor ran.
+			this.startupNotices = this.persistentState.startupNotices;
 			return;
 		}
 		// Reuse an in-flight gather from an earlier agents-view instance so leaving and
