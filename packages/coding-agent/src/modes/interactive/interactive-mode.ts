@@ -4740,16 +4740,25 @@ export class InteractiveMode {
 		process.exit(0);
 	}
 
+	/**
+	 * Tear down the session's terminal UI before handing the terminal back to the
+	 * agents view. Drains in-flight Kitty/SSH key-release sequences so they don't
+	 * leak into the parent UI, then stops the renderer and theme watcher. Safe to
+	 * call from a crash path too; idempotent via stop().
+	 */
+	async teardownSessionUi(): Promise<void> {
+		await this.ui.terminal.drainInput(1000).catch(() => undefined);
+		this.stop();
+		stopThemeWatcher();
+	}
+
 	private async returnToAgentsView(): Promise<void> {
 		if (this.isShuttingDown || this.returnToAgentsViewRequested) return;
 		this.returnToAgentsViewRequested = true;
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
 
-		await this.ui.terminal.drainInput(1000);
-
-		this.stop();
-		stopThemeWatcher();
+		await this.teardownSessionUi();
 		try {
 			await this.agentConnection.dispose();
 		} finally {

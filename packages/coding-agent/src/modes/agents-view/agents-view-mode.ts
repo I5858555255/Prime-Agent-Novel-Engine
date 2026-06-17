@@ -245,10 +245,10 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				// runtime crash so it isn't mixed in with true open failures.
 				logClientError("Agent session crashed", error);
 				persistentState.statusMessage = formatError("Agent session crashed", error);
-				// Tear down the session TUI (as a normal back-navigation would) so it
-				// doesn't fight the agents-view UI for the terminal.
-				interactiveMode.stop();
-				stopThemeWatcher();
+				// Tear down the session TUI exactly as a normal back-navigation would
+				// (drain input, stop renderer + theme watcher) so it doesn't fight the
+				// agents-view UI for the terminal, then drop the daemon connection.
+				await interactiveMode.teardownSessionUi();
 				await opened.connection.dispose().catch(() => undefined);
 			}
 		} catch (error) {
