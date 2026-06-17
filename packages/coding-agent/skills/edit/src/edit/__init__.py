@@ -44,17 +44,12 @@ async def run(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
-# Custom MIME the kernel watches for to render a real diff in the TUI. Keep in
-# sync with DIFF_DISPLAY_MIME in packages/coding-agent/src/core/kernel/index.ts.
+# Keep in sync with DIFF_DISPLAY_MIME in src/core/kernel/index.ts.
 _DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json"
 
 
 def _emit_diff(path: str, old_str: str, new_str: str, start_line: int) -> None:
-    """Stream a structured diff to the host as a ``display_data`` side-effect.
-
-    Best-effort: outside an IPython kernel there is nothing to display, so any
-    failure here is swallowed — the edit itself has already been written.
-    """
+    """Stream a diff to the host via display_data; best-effort outside IPython."""
     try:
         from IPython.display import display
 

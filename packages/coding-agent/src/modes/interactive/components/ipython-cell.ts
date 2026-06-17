@@ -304,9 +304,7 @@ export class IPythonCellComponent implements Component {
 		const rawLines = code.split("\n");
 		const expanded = this.state.expanded ?? false;
 
-		// When the cell produced edit diffs, the rendered diff below is the
-		// meaningful view — collapse the (often large) raw edit source to a single
-		// expandable bar so the cell isn't dominated by the call arguments.
+		// With a diff to show below, collapse the (often large) edit source to one bar.
 		if (hasDiffs && !expanded) {
 			const label = `${rawLines.length} line${rawLines.length === 1 ? "" : "s"} of source`;
 			this.addWrapped(lines, theme.fg("dim", "› "), withExpandHint(label), width);
@@ -372,8 +370,7 @@ export class IPythonCellComponent implements Component {
 			}
 		};
 
-		// Coalesce multiple edits to the same file into one block (codex-style):
-		// one header per file, individual edits shown as hunks separated by `⋮`.
+		// Group edits by file: one block per file, edits shown as `⋮`-separated hunks.
 		const diffsByPath = new Map<string, DiffDisplay[]>();
 		for (const diff of diffs) {
 			const existing = diffsByPath.get(diff.path);
@@ -481,7 +478,6 @@ export class IPythonCellComponent implements Component {
 		const contentWidth = toolPanelContentWidth(width);
 		const language = getLanguageFromPath(path);
 
-		// Build all hunks for this file, separating non-adjacent edits with `⋮`.
 		const rows: string[] = [];
 		let added = 0;
 		let removed = 0;
@@ -503,8 +499,7 @@ export class IPythonCellComponent implements Component {
 		const expanded = this.state.expanded ?? false;
 		const showCollapsed = !expanded && rows.length > DIFF_PREVIEW_LINES;
 		const visibleRows = showCollapsed ? rows.slice(0, DIFF_PREVIEW_LINES) : rows;
-		// Rich rows already fill the content width with their own background, so
-		// frame them directly with the panel side padding instead of toolPanelLine.
+		// Rows already fill the content width; just add the panel side padding.
 		const sidePad = theme.bg("toolPanelBg", " ".repeat(TOOL_PANEL_PADDING_X));
 		for (const row of visibleRows) {
 			lines.push(sidePad + row + sidePad);

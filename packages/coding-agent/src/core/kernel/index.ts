@@ -55,11 +55,7 @@ export interface ExecuteOptions {
 	maxOutputChars?: number;
 }
 
-/**
- * Custom MIME type the `edit` skill uses to stream structured diff data out of
- * the kernel as a `display_data` side-effect, so the TUI can render a real diff
- * instead of the plain "Edited <path>" confirmation text.
- */
+/** MIME tag the `edit` skill emits diff payloads under, via `display_data`. */
 export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
 
 /** One file edit, captured from a {@link DIFF_DISPLAY_MIME} display payload. */
@@ -76,7 +72,7 @@ export interface ExecuteResult {
 	stderr: string;
 	/** Last `execute_result` payload (text/plain), if the cell produced one. */
 	result?: string;
-	/** Structured diffs emitted via {@link DIFF_DISPLAY_MIME}, in emission order. */
+	/** Diffs emitted via display_data, in order. */
 	diffs?: KernelDiffDisplay[];
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };

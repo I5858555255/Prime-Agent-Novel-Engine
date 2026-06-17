@@ -274,8 +274,7 @@ export function generateDiffString(
 
 	const oldLines = oldContent.split("\n");
 	const newLines = newContent.split("\n");
-	// Numbers are offset by startLine so a snippet diff can show absolute file
-	// line numbers; widen the gutter to fit the largest number we'll print.
+	// Offset by startLine so a snippet shows absolute file line numbers.
 	const maxLineNum = startLine - 1 + Math.max(oldLines.length, newLines.length);
 	const lineNumWidth = String(maxLineNum).length;
 

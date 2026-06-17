@@ -212,10 +212,8 @@ function detectColorMode(): ColorMode {
 	if (process.env.TERM_PROGRAM === "Apple_Terminal") {
 		return "256color";
 	}
-	// tmux reports TERM as "screen*"/"tmux*" but forwards 24-bit color to the
-	// outer terminal when it supports it (and downsamples otherwise), so treat a
-	// tmux session as truecolor-capable. Only genuine GNU screen (STY set, no
-	// TMUX) lacks truecolor and must fall back.
+	// tmux reports TERM=screen* but forwards 24-bit color, so treat it as
+	// truecolor-capable; only genuine GNU screen (no $TMUX) falls back.
 	const inTmux = process.env.TMUX !== undefined || term.startsWith("tmux");
 	if (!inTmux && (term === "screen" || term.startsWith("screen-") || term.startsWith("screen."))) {
 		return "256color";
@@ -403,7 +401,7 @@ export class Theme {
 		return `${ansi}${text}\x1b[49m`; // Reset only background color
 	}
 
-	/** Active color depth. 256-color terminals can't render subtle background tints. */
+	/** Active color depth (truecolor vs 256color). */
 	get colorMode(): ColorMode {
 		return this.mode;
 	}

@@ -124,7 +124,7 @@ export interface IpythonToolDetails {
 	stdout?: string;
 	stderr?: string;
 	result?: string;
-	/** Structured diffs streamed from file edits; rendered by the IPython cell. */
+	/** Diffs streamed from file edits, rendered by the IPython cell. */
 	diffs?: KernelDiffDisplay[];
 	error?: {
 		ename: string;

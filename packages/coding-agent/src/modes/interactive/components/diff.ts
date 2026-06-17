@@ -150,10 +150,8 @@ export function renderDiff(diffText: string, _options: RenderDiffOptions = {}): 
 type ThemeBg = Parameters<typeof theme.bg>[0];
 type ThemeColor = Parameters<typeof theme.fg>[0];
 
-// Background-aware syntax highlighting depends on inner color resets clearing
-// only the foreground. Highlighter output (and our own fallbacks) occasionally
-// emit a full reset (\x1b[0m) or a background reset (\x1b[49m); rewrite both to
-// a foreground-only reset so an enclosing background block survives the line.
+// Rewrite full/background resets to foreground-only so a row's background block
+// survives the syntax-highlighted content.
 const BG_CLEARING_RESET = /\x1b\[(?:0|49)m/g;
 
 function keepBackground(highlighted: string): string {
@@ -171,26 +169,17 @@ function highlightContent(content: string, language: string | undefined): string
 }
 
 interface DiffLineSpec {
-	/** Background block filling the row. */
 	bg: ThemeBg;
 	gutter: string;
 	gutterFg: ThemeColor;
 	content: string;
 	language: string | undefined;
 	width: number;
-	/**
-	 * When set, render content in this flat foreground color instead of syntax
-	 * highlighting. Used for added/removed lines in 256-color mode, where a
-	 * background block can't render as a subtle tint.
-	 */
+	/** Flat content color instead of syntax highlighting (256-color fallback). */
 	contentFg?: ThemeColor;
 }
 
-/**
- * Build one diff row that fills `width` exactly, on a single background block so
- * the colored region spans the full content area (Claude Code-style). The
- * caller frames each row with the panel side padding.
- */
+/** Build one diff row filling `width` on a single background block. */
 function buildRichDiffLine(spec: DiffLineSpec): string {
 	const styledGutter = theme.fg(spec.gutterFg, spec.gutter);
 	const renderedContent = spec.contentFg
@@ -211,10 +200,7 @@ export interface RichDiffOptions {
 	language?: string;
 }
 
-/**
- * A dim vertical-ellipsis row used to separate non-adjacent hunks of one file's
- * diff (matching the codex `⋮` style), filling `contentWidth` on the panel bg.
- */
+/** A dim `⋮` row separating non-adjacent hunks of one file's diff. */
 export function renderDiffSeparator(contentWidth: number): string {
 	const width = Math.max(1, contentWidth);
 	const marker = theme.fg("toolDiffContext", " ⋮");
@@ -222,16 +208,12 @@ export function renderDiffSeparator(contentWidth: number): string {
 	return theme.bg("toolPanelBg", marker + " ".repeat(pad));
 }
 
-/**
- * Render a unified diff (from {@link generateDiffString}) as full-width rows:
- * added lines on a green block, removed on red, context on the panel
- * background, each syntax-highlighted and exactly `contentWidth` wide.
- */
+/** Render a unified diff as full-width rows: green/red blocks, syntax-highlighted. */
 export function renderRichDiff(diffText: string, contentWidth: number, options: RichDiffOptions = {}): string[] {
 	const width = Math.max(1, contentWidth);
 	const language = options.language;
-	// 256-color terminals can't render the subtle green/red tints — a dark block
-	// quantizes to black. There, drop the block and color the text instead.
+	// 256-color can't render subtle tints (a dark block quantizes to black), so
+	// color the text instead of the background there.
 	const useBlocks = theme.colorMode === "truecolor";
 	const rows: string[] = [];
 
