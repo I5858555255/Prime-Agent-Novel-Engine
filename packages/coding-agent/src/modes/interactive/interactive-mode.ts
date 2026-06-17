@@ -3671,6 +3671,9 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
+					// A new turn makes the recap stale; clear it until the summarizer pushes a fresh one.
+					this.sessionRecap = undefined;
+					this.renderRecap();
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
