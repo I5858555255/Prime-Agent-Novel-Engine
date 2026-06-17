@@ -8,9 +8,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, renameSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { expandTildePath, VERSION } from "../config.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
@@ -136,6 +136,10 @@ function daemonLogPath(socketPath: string): string {
 function openDaemonLogFd(socketPath: string): number | undefined {
 	const logPath = daemonLogPath(socketPath);
 	try {
+		// The socket dir (e.g. /tmp/prime-agent-<uid>) is created by the daemon only
+		// after it spawns, so on the first spawn it doesn't exist yet; create the
+		// log's parent here so first-spawn crash stacks aren't silently dropped.
+		mkdirSync(dirname(logPath), { recursive: true });
 		// Best-effort rotation. Drop any prior .old first: on Windows renameSync
 		// fails if the destination exists, and a rotation failure must never stop
 		// us from logging — so it stays inside its own guard and we still append.
