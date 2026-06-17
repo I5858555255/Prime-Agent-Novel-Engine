@@ -260,6 +260,7 @@ export class TUI extends Container {
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
+	private preserveViewportOnNextRender = false; // One-shot: repaint visible viewport in place instead of replaying scrollback
 	private stopped = false;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -521,6 +522,20 @@ export class TUI extends Container {
 		if (this.renderRequested) return;
 		this.renderRequested = true;
 		process.nextTick(() => this.scheduleRender());
+	}
+
+	/**
+	 * Request a render that keeps the user anchored at their current scroll
+	 * position. Normally, when content above the visible viewport changes, the
+	 * renderer falls back to a full redraw that clears scrollback and replays
+	 * the entire transcript from the top. For deliberate toggles (e.g. expanding
+	 * all tool output) that is jarring — it scrolls to the top and reprints
+	 * everything. This instead repaints only the visible viewport in place,
+	 * leaving scrollback untouched.
+	 */
+	requestRenderPreservingViewport(): void {
+		this.preserveViewportOnNextRender = true;
+		this.requestRender();
 	}
 
 	private scheduleRender(): void {
@@ -956,6 +971,9 @@ export class TUI extends Container {
 
 	private doRender(): void {
 		if (this.stopped) return;
+		// One-shot: consume here so it never leaks into a later render.
+		const preserveViewport = this.preserveViewportOnNextRender;
+		this.preserveViewportOnNextRender = false;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
@@ -984,9 +1002,55 @@ export class TUI extends Container {
 		newLines = this.applyLineResets(newLines);
 
 		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean): void => {
+		const fullRender = (clear: boolean, preserveViewport = false): void => {
 			this.fullRedrawCount += 1;
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
+
+			// Viewport-preserving repaint: rewrite only the visible viewport in
+			// place, leaving terminal scrollback untouched. Keeps the user
+			// anchored at their current focus instead of replaying the whole
+			// (now-resized) transcript from the top. Only meaningful when there
+			// is a previous frame on screen to paint over.
+			if (preserveViewport && this.previousLines.length > 0) {
+				buffer += this.deleteKittyImages(this.previousKittyImageIds);
+				const windowStart = Math.max(0, newLines.length - height);
+				const visibleCount = newLines.length - windowStart;
+				// Rows the previous frame occupied on screen.
+				const prevScreenRows = Math.min(height, this.previousLines.length);
+				// Move the hardware cursor up to the top of the visible screen.
+				const screenRow = Math.max(
+					0,
+					Math.min(prevScreenRows - 1, this.hardwareCursorRow - this.previousViewportTop),
+				);
+				if (screenRow > 0) buffer += `\x1b[${screenRow}A`;
+				buffer += "\r";
+				for (let i = 0; i < visibleCount; i++) {
+					if (i > 0) buffer += "\r\n";
+					buffer += "\x1b[2K"; // Clear current line
+					buffer += newLines[windowStart + i];
+				}
+				// Clear any rows the previous frame used below the new content.
+				if (visibleCount < prevScreenRows) {
+					const leftover = prevScreenRows - visibleCount;
+					for (let i = 0; i < leftover; i++) {
+						buffer += "\r\n\x1b[2K";
+					}
+					buffer += `\x1b[${leftover}A`; // Back up to the last content row
+				}
+				buffer += "\x1b[?2026l"; // End synchronized output
+				this.terminal.write(buffer);
+				this.cursorRow = Math.max(0, newLines.length - 1);
+				this.hardwareCursorRow = this.cursorRow;
+				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+				this.previousViewportTop = windowStart;
+				this.positionHardwareCursor(cursorPos, newLines.length);
+				this.previousLines = newLines;
+				this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+				this.previousWidth = width;
+				this.previousHeight = height;
+				return;
+			}
+
 			if (clear) {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
 				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
@@ -1050,7 +1114,7 @@ export class TUI extends Container {
 		// Configurable via setClearOnShrink() or PI_CLEAR_ON_SHRINK=0 env var
 		if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
 			logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
-			fullRender(true);
+			fullRender(true, preserveViewport);
 			return;
 		}
 
@@ -1098,7 +1162,7 @@ export class TUI extends Container {
 				const targetRow = Math.max(0, newLines.length - 1);
 				if (targetRow < prevViewportTop) {
 					logRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`);
-					fullRender(true);
+					fullRender(true, preserveViewport);
 					return;
 				}
 				const lineDiff = computeLineDiff(targetRow);
@@ -1140,7 +1204,7 @@ export class TUI extends Container {
 		// If the first changed line is above the previous viewport, we need a full redraw.
 		if (firstChanged < prevViewportTop) {
 			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			fullRender(true);
+			fullRender(true, preserveViewport);
 			return;
 		}
 

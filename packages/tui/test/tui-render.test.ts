@@ -618,3 +618,74 @@ describe("TUI differential rendering", () => {
 		tui.stop();
 	});
 });
+
+describe("TUI viewport-preserving render", () => {
+	// Regression: pressing Ctrl+O to expand all tool output changed lines above
+	// the viewport, which forced a full redraw that cleared scrollback and
+	// replayed the whole transcript from the top. requestRenderPreservingViewport
+	// repaints only the visible viewport in place and leaves scrollback alone.
+	it("repaints in place without clearing scrollback when content above the viewport grows", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// More lines than the viewport, so the top scrolls into scrollback.
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		const initialRedraws = tui.fullRedraws;
+
+		// "Expand" a block near the top: insert lines after Line 2 so the first
+		// changed line is far above the viewport.
+		const expanded = [...component.lines];
+		expanded.splice(3, 0, "Expanded A", "Expanded B", "Expanded C");
+		component.lines = expanded;
+		tui.requestRenderPreservingViewport();
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(tui.fullRedraws > initialRedraws, "Should take the full-redraw branch");
+		assert.ok(!writes.includes("\x1b[3J"), "Must not clear scrollback");
+		assert.ok(!writes.includes("\x1b[2J"), "Must not clear the screen");
+
+		// The viewport stays anchored at the latest content (the bottom).
+		const viewport = terminal.getViewport();
+		assert.ok(viewport[viewport.length - 1]?.includes("Line 29"), "Latest line stays at the bottom");
+
+		// Scrollback above the viewport is untouched — it still holds the
+		// pre-toggle lines rather than being replayed.
+		const scrollback = terminal.getScrollBuffer();
+		assert.ok(
+			scrollback.some((l) => l.includes("Line 0")),
+			"Original scrollback content is preserved",
+		);
+
+		tui.stop();
+	});
+
+	it("falls back to a scrollback-clearing redraw for a normal render", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		const expanded = [...component.lines];
+		expanded.splice(3, 0, "Expanded A", "Expanded B", "Expanded C");
+		component.lines = expanded;
+		// Plain render (no preservation) still clears scrollback and replays.
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.ok(terminal.getWrites().includes("\x1b[3J"), "Normal render clears scrollback");
+
+		tui.stop();
+	});
+});
