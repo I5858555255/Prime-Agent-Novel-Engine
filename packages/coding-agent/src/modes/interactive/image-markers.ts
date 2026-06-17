@@ -45,16 +45,3 @@ export function collectMarkedImageEntries<T>(pending: ReadonlyMap<number, T>, te
 export function collectMarkedImages<T>(pending: ReadonlyMap<number, T>, text: string): T[] {
 	return collectMarkedImageEntries(pending, text).map(([, image]) => image);
 }
-
-/** Delete entries from `pending` whose marker no longer appears in `text`. */
-export function pruneMarkedImages<T>(pending: Map<number, T>, text: string): void {
-	if (pending.size === 0) {
-		return;
-	}
-	const present = new Set(imageMarkerIds(text));
-	for (const id of pending.keys()) {
-		if (!present.has(id)) {
-			pending.delete(id);
-		}
-	}
-}

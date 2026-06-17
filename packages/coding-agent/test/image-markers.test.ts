@@ -5,7 +5,6 @@ import {
 	collectMarkedImages,
 	formatImageMarker,
 	imageMarkerIds,
-	pruneMarkedImages,
 } from "../src/modes/interactive/image-markers.js";
 
 describe("image markers", () => {
@@ -60,19 +59,11 @@ describe("image markers", () => {
 		expect(collectMarkedImages(new Map([[1, "a"]]), "")).toEqual([]);
 	});
 
-	test("pruneMarkedImages drops entries whose marker is gone", () => {
-		const pending = new Map([
-			[1, "a"],
-			[2, "b"],
-			[3, "c"],
-		]);
-		pruneMarkedImages(pending, "still have [image #2] and [image #3]");
-		expect([...pending.keys()]).toEqual([2, 3]);
-	});
-
-	test("pruneMarkedImages clears everything when no markers remain", () => {
+	test("a restored marker still resolves its image (undo-safe)", () => {
 		const pending = new Map([[1, "a"]]);
-		pruneMarkedImages(pending, "user deleted the marker");
-		expect(pending.size).toBe(0);
+		// Marker deleted then brought back (e.g. via editor undo). Because images are
+		// never pruned mid-edit, the restored marker still resolves at submit time.
+		expect(collectMarkedImages(pending, "no marker")).toEqual([]);
+		expect(collectMarkedImages(pending, "back [image #1]")).toEqual(["a"]);
 	});
 });

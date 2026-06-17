@@ -133,7 +133,7 @@ import { ToolExecutionComponent, type ToolExecutionDefinition } from "./componen
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
-import { collectMarkedImageEntries, formatImageMarker, pruneMarkedImages } from "./image-markers.js";
+import { collectMarkedImageEntries, formatImageMarker } from "./image-markers.js";
 import type {
 	InteractiveModeLocalSessionHost,
 	InteractiveModeLocalToolRendererDefinition,
@@ -3112,10 +3112,6 @@ export class InteractiveMode {
 		this.defaultEditor.onChange = (text: string) => {
 			if (text.length > 0) {
 				this.clearCtrlCExitHint();
-				// Drop images whose marker the user edited away. Skip on empty text:
-				// the editor fires onChange("") right before onSubmit, and submit needs
-				// the pending images to still be present (takeImagesFor clears them).
-				this.prunePendingImages(text);
 			}
 		};
 
@@ -3164,9 +3160,12 @@ export class InteractiveMode {
 
 	/**
 	 * Collect the `markerId -> image` entries whose `[image #N]` markers are still
-	 * present in `text` (so deleting a marker drops its image), then clear all
-	 * pending images since the editor is cleared on submit. The id is preserved so
-	 * a queued message can be restored to the editor and re-resolve its markers.
+	 * present in `text`, then clear all pending images since the editor is cleared
+	 * on submit. Marker presence at submit time is the single source of truth: an
+	 * image whose marker was deleted is simply not collected, and one whose marker
+	 * is restored (e.g. via undo) still resolves because the bytes are never pruned
+	 * mid-edit. The id is preserved so a queued message can be restored to the
+	 * editor and re-resolve its markers.
 	 */
 	private takeImageMap(text: string): Map<number, ImageContent> {
 		const entries = collectMarkedImageEntries(this.pendingImages, text);
@@ -3185,11 +3184,6 @@ export class InteractiveMode {
 			return undefined;
 		}
 		return [...images.values()];
-	}
-
-	/** Drop pending images whose marker no longer appears in the editor text. */
-	private prunePendingImages(text: string): void {
-		pruneMarkedImages(this.pendingImages, text);
 	}
 
 	private setupEditorSubmitHandler(): void {
