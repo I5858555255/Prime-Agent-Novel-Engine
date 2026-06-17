@@ -286,11 +286,16 @@ export type ReapAction =
 /**
  * Decide what to do with each discovered daemon (pure, no side effects). Reap
  * targets only clearly-safe daemons: orphaned socket files, and reachable idle
- * daemons on non-default sockets. The user's default daemon and any daemon with
- * live sessions are never touched. Unreachable (hung) daemons are killed only
- * with `force`, and never via a pid that backs more than one discovered daemon
- * (e.g. macOS lsof reports every unix socket a process holds, so killing a
- * shared pid could take down a reachable daemon with live sessions).
+ * daemons on non-default sockets. The user's default daemon, and any reachable
+ * daemon with live sessions, are never touched.
+ *
+ * Unreachable (hung) daemons can't report a session count, so they are only
+ * ever killed with `force`, and even then never via a pid that backs more than
+ * one discovered daemon (e.g. macOS lsof reports every unix socket a process
+ * holds, so killing a shared pid could take down a reachable daemon with live
+ * sessions). runReap additionally re-probes a kill candidate immediately before
+ * the SIGTERM and backs off to the session-aware paths if it has since become
+ * reachable, so a daemon that recovered with live sessions is never killed.
  */
 export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAction[] {
 	const pidCounts = new Map<number, number>();
@@ -345,11 +350,28 @@ export async function runReap(json: boolean, force: boolean): Promise<void> {
 					skipped.push({ socketPath, reason: "could not remove socket file" });
 				}
 				break;
-			case "kill":
-				killDaemon(pid!);
-				removeSocketFile(socketPath);
-				reaped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
+			case "kill": {
+				// Re-probe right before killing: discovery and this kill happen at
+				// different moments, so a daemon classified "unreachable" may have
+				// since started answering. Never SIGTERM one that now responds with
+				// live sessions; defer to the session-aware paths instead.
+				const recheck = await probeDaemon(socketPath);
+				if (!recheck.reachable) {
+					killDaemon(pid!);
+					removeSocketFile(socketPath);
+					reaped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
+				} else if (recheck.sessionCount !== 0) {
+					skipped.push({
+						socketPath,
+						reason: `now reachable with ${recheck.sessionCount ?? "unknown"} session(s)`,
+					});
+				} else if (await shutdownDaemon(socketPath)) {
+					reaped.push({ socketPath, action: `stopped idle daemon (pid ${pid})` });
+				} else {
+					skipped.push({ socketPath, reason: "shutdown request failed" });
+				}
 				break;
+			}
 			case "shutdown":
 				if (await shutdownDaemon(socketPath)) {
 					reaped.push({ socketPath, action: `stopped idle daemon${pid ? ` (pid ${pid})` : ""}` });
