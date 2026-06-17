@@ -3618,7 +3618,6 @@ export class AgentSession {
 	}
 
 	private _createChildRlmSessionDir(): string {
-		// A child needs a writable dir; fall back to a temp dir only when there's none.
 		const parentDir = this._ensureRlmSessionDir() ?? this._createEphemeralRlmSessionDir();
 		for (let i = 0; i < 100; i++) {
 			const childDir = join(parentDir, `sub-${randomUUID().slice(0, 8)}`);
