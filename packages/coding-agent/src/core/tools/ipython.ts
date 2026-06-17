@@ -4,6 +4,7 @@ import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import { type HostRequestHandlers, KernelManager } from "../kernel/index.js";
+import { manifestPathFor, type RestoreResult, snapshotPathFor } from "../kernel/state-snapshot.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
@@ -141,6 +142,11 @@ export interface IpythonToolOptions {
 	pythonSkills?: readonly PythonSkillRuntimeInfo[];
 	/** Filled after the first kernel start so the owning session can restart it after compaction. */
 	kernelManagerRef?: { current?: KernelManager };
+	/**
+	 * Fires once per kernel start when a previous session's namespace was revived
+	 * (some names restored or some failed), so the session can tell the model.
+	 */
+	onRestore?: (result: RestoreResult) => void;
 	/** Shared provisioner owning the kernel lifecycle. When provided, the remaining options are ignored. */
 	provisioner?: IpythonKernelProvisioner;
 }
@@ -157,6 +163,7 @@ export class IpythonKernelProvisioner {
 	private startedManager?: KernelManager;
 	private readonly startupListeners = new Set<KernelBootstrapProgressHandler>();
 	private lastStartupMessage?: string;
+	private _lastRestore?: RestoreResult;
 
 	constructor(
 		private readonly cwd: string,
@@ -170,6 +177,11 @@ export class IpythonKernelProvisioner {
 	/** The kernel manager, once a startup has completed successfully. */
 	get manager(): KernelManager | undefined {
 		return this.startedManager;
+	}
+
+	/** Result of reviving a prior session's namespace on the last kernel start, if any. */
+	get lastRestore(): RestoreResult | undefined {
+		return this._lastRestore;
 	}
 
 	/** Start the kernel in the background. Failures are swallowed here and surface on the next ensure(). */
@@ -240,16 +252,31 @@ export class IpythonKernelProvisioner {
 	}
 
 	private async startKernel(): Promise<KernelManager> {
+		const sessionId = this.options?.sessionId;
 		const m = new KernelManager({
 			python: this.options?.python,
 			cwd: this.cwd,
 			env: this.options?.env,
-			sessionId: this.options?.sessionId,
+			sessionId,
 			hostHandlers: this.options?.hostHandlers,
 			pythonSkills: this.options?.pythonSkills,
+			// Only sessions with a stable id get a per-session snapshot to revive.
+			snapshot: sessionId
+				? { path: snapshotPathFor(sessionId), manifestPath: manifestPathFor(sessionId) }
+				: undefined,
 		});
 		this.emitStartupProgress("Starting IPython kernel...");
 		await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
+		// Revive a prior session's namespace before the bootstrap, so the bootstrap
+		// then overwrites live handles (rlm, skills) on top of anything restored.
+		if (sessionId) {
+			this.emitStartupProgress("Restoring IPython state...");
+			const restore = await m.restoreState();
+			if (restore && (restore.restored.length > 0 || restore.failed.length > 0)) {
+				this._lastRestore = restore;
+				this.options?.onRestore?.(restore);
+			}
+		}
 		this.emitStartupProgress("Preparing IPython runtime...");
 		const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills));
 		if (bootstrap.status !== "ok") {
@@ -274,7 +301,7 @@ export function createIpythonToolDefinition(
 		name: "ipython",
 		label: "ipython",
 		description:
-			"Execute Python scratchpad code and `%%bash` shell cells in a persistent IPython kernel. Variables, imports, and loaded data persist across calls. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
+			"Execute Python scratchpad code and `%%bash` shell cells in a persistent IPython kernel. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
 		promptSnippet: "ipython - persistent agent notebook for Python scratchpad code and %%bash orchestration",
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
 		executionMode: "sequential",

@@ -114,6 +114,7 @@ import {
 	validateGoalObjective,
 } from "./goals.js";
 import type { HostRequestHandlers } from "./kernel/index.js";
+import type { RestoreResult } from "./kernel/state-snapshot.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -2563,6 +2564,36 @@ export class AgentSession {
 		await this._ipythonKernelProvisioner?.restart();
 	}
 
+	/**
+	 * Tell the model when a resumed session revived its IPython kernel state, so it
+	 * knows which variables are actually available instead of assuming the kernel is
+	 * the one it left. Delivered as context before the next turn.
+	 */
+	private _onIpythonStateRestored(result: RestoreResult): void {
+		const lines = ["<ipython_state_restored>"];
+		if (result.restored.length > 0) {
+			lines.push(
+				`Your IPython kernel state was revived from your previous session. These names are available again: ${result.restored.join(", ")}.`,
+			);
+		} else {
+			lines.push("Your IPython kernel was restarted and its previous state could not be revived.");
+		}
+		if (result.failed.length > 0) {
+			lines.push(
+				`These could not be restored and must be recreated if needed: ${result.failed.map((f) => f.name).join(", ")}.`,
+			);
+		}
+		lines.push("</ipython_state_restored>");
+		void this.sendCustomMessage(
+			{
+				customType: "ipython_state_restored",
+				content: lines.join("\n"),
+				display: false,
+			},
+			{ deliverAs: "nextTurn" },
+		).catch(() => {});
+	}
+
 	// =========================================================================
 	// Queue Mode Management
 	// =========================================================================
@@ -3415,6 +3446,7 @@ export class AgentSession {
 				sessionId: this.sessionId,
 				hostHandlers: this._createKernelHostHandlers(),
 				pythonSkills,
+				onRestore: (result) => this._onIpythonStateRestored(result),
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: { provisioner: this._ipythonKernelProvisioner },
