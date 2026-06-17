@@ -47,6 +47,7 @@ export function createAgentConnectionState(
 		})),
 		activeToolNames: session.getActiveToolNames(),
 		contextUsage: session.getContextUsage(),
+		recap: sessionManager.getLatestAgentStatus()?.summary,
 	};
 }
 

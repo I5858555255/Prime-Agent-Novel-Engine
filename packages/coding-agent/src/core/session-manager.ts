@@ -133,6 +133,31 @@ export interface SessionStateEntry extends SessionEntryBase {
 	state: SessionState;
 }
 
+/** Whether an idle agent's turn left the task complete or awaiting more input. */
+export type AgentTaskState = "needs_input" | "completed";
+
+/**
+ * Latest short status for an agent, shown in the agents view. The summary is a
+ * one-line description of what the agent is doing or just did; taskState is the
+ * completion judgment for an idle session (omitted while the agent is working).
+ */
+export interface AgentStatus {
+	summary: string;
+	taskState?: AgentTaskState;
+	/** Message count this status was derived from, used to skip redundant work. */
+	basedOnMessageCount: number;
+}
+
+/**
+ * Session status entry written by the daemon's background summarizer. Append-only
+ * metadata: ignored by buildSessionContext and every other reader, so older code
+ * (and tools that parse these jsonl files) skip it as an unknown entry type.
+ */
+export interface AgentStatusEntry extends SessionEntryBase {
+	type: "agent_status";
+	status: AgentStatus;
+}
+
 /**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
@@ -165,7 +190,8 @@ export type SessionEntry =
 	| CustomMessageEntry
 	| LabelEntry
 	| SessionInfoEntry
-	| SessionStateEntry;
+	| SessionStateEntry
+	| AgentStatusEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -1119,6 +1145,35 @@ export class SessionManager {
 			const entry = entries[i];
 			if (entry.type === "session_state") {
 				return { status: entry.state.status };
+			}
+		}
+		return undefined;
+	}
+
+	/** Append the latest agent status (summary + completion judgment). Returns entry id. */
+	appendAgentStatus(status: AgentStatus): string {
+		const entry: AgentStatusEntry = {
+			type: "agent_status",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			status: {
+				summary: status.summary,
+				taskState: status.taskState,
+				basedOnMessageCount: status.basedOnMessageCount,
+			},
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Get the latest agent status from the most recent agent_status entry, if any. */
+	getLatestAgentStatus(): AgentStatus | undefined {
+		const entries = this.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "agent_status") {
+				return { ...entry.status };
 			}
 		}
 		return undefined;

@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { SessionSummary } from "../daemon/daemon-session-list.js";
 
-export type AgentsViewSection = "working" | "completed";
+export type AgentsViewSection = "working" | "needs-input" | "completed";
 
 export type AgentsViewRowKind = "agent" | "subagent-summary" | "subagent" | "subagent-code";
 
@@ -35,6 +35,12 @@ export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSe
 	if (summary.status === "model" || summary.status === "tool") {
 		return "working";
 	}
+	// An idle session defaults to Completed and only moves to Needs Input on an
+	// explicit summarizer verdict. So a slow/failed/absent classification just
+	// leaves it under Completed rather than lingering in Working.
+	if (summary.taskState === "needs_input") {
+		return "needs-input";
+	}
 	return "completed";
 }
 
@@ -51,6 +57,8 @@ export function sectionTitle(section: AgentsViewSection): string {
 	switch (section) {
 		case "working":
 			return "Working";
+		case "needs-input":
+			return "Needs Input";
 		case "completed":
 			return "Completed";
 		default: {
@@ -298,10 +306,12 @@ function isSubagentSummary(summary: SessionSummary): boolean {
 
 function sectionRank(section: AgentsViewSection): number {
 	switch (section) {
-		case "working":
+		case "needs-input":
 			return 0;
-		case "completed":
+		case "working":
 			return 1;
+		case "completed":
+			return 2;
 		default: {
 			const _exhaustive: never = section;
 			return _exhaustive;

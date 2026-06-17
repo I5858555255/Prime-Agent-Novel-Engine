@@ -57,6 +57,7 @@ import {
 	success,
 } from "./daemon-protocol.js";
 import { buildRlmChildSnapshots, buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
+import { DaemonSessionSummarizer } from "./daemon-session-summarizer.js";
 import {
 	cleanupDaemonSocketPath,
 	defaultDaemonSocketPath,
@@ -159,6 +160,15 @@ class AgentDaemon {
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly closingSessions = new Map<string, Promise<void>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
+	private readonly summarizer = new DaemonSessionSummarizer(
+		() => [...this.sessions.values()].filter((state) => state.runtime.metadata.kind !== "subagent"),
+		(state) =>
+			this.broadcastToSession(state, {
+				type: "session_status",
+				activeSessionId: state.activeSessionId,
+				recap: state.summaryState?.summary,
+			}),
+	);
 
 	constructor(
 		private readonly socketPath: string,
@@ -200,6 +210,7 @@ class AgentDaemon {
 		}
 
 		this.registerSignalHandlers();
+		this.summarizer.start();
 		console.error(`Prime Agent daemon listening on ${this.socketPath}`);
 		void this.restoreActiveSessions();
 	}
@@ -281,6 +292,8 @@ class AgentDaemon {
 			} catch {
 				// Marking is best-effort; the session still works unrestored.
 			}
+			// Restore the last persisted status so it shows before the first sweep.
+			this.summarizer.seed(state);
 		}
 		return state;
 	}
@@ -1134,6 +1147,7 @@ class AgentDaemon {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
 		}
 		state.clients.clear();
+		this.summarizer.forget(state.activeSessionId);
 		this.sessions.delete(state.activeSessionId);
 		if (persistError && reason !== "shutdown" && reason !== "completed") {
 			throw persistError;
@@ -1159,6 +1173,14 @@ class AgentDaemon {
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
+		// A finished turn (or compaction) is the cue to refresh this session's
+		// status, so an idle completion verdict lands promptly.
+		if (
+			message.type === "session_event" &&
+			(message.event.type === "turn_end" || message.event.type === "compaction_end")
+		) {
+			this.summarizer.notifyActivity(state);
+		}
 		const sequencedMessage = this.addSessionEventMeta(state, message);
 		for (const client of state.clients) {
 			if (!shouldSendDaemonOutboundToClient(client, sequencedMessage)) {
@@ -1208,6 +1230,7 @@ class AgentDaemon {
 		}
 		this.shuttingDown = true;
 
+		this.summarizer.stop();
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
 		}
@@ -1292,13 +1315,20 @@ function normalizeClientCapabilities(
 type SequencedDaemonOutbound = Extract<
 	DaemonOutbound,
 	{
-		type: "session_event" | "session_replaced" | "session_closed" | "extension_ui_request" | "extension_error";
+		type:
+			| "session_event"
+			| "session_status"
+			| "session_replaced"
+			| "session_closed"
+			| "extension_ui_request"
+			| "extension_error";
 	}
 >;
 
 function isSequencedSessionOutbound(message: DaemonOutbound): message is SequencedDaemonOutbound {
 	return (
 		message.type === "session_event" ||
+		message.type === "session_status" ||
 		message.type === "session_replaced" ||
 		message.type === "session_closed" ||
 		message.type === "extension_ui_request" ||
