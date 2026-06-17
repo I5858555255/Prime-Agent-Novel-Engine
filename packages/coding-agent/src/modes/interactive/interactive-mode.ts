@@ -429,6 +429,12 @@ export interface InteractiveModeOptions {
 	onShutdown?: () => void | Promise<void>;
 	/** Allow returning from a full session to the agents view without stopping the daemon-owned agent. */
 	returnToAgentsView?: boolean;
+	/**
+	 * The agents view already surfaced global startup notices (app/extension updates, tmux setup),
+	 * so this session must not repeat them in its chat stream. Distinct from `returnToAgentsView`,
+	 * which also covers direct daemon attaches where the agents view was never shown.
+	 */
+	agentsViewOwnsStartupNotices?: boolean;
 	/** Open the read-only detail view for this subagent node right after startup. */
 	initialSubagentNodeId?: string;
 }
@@ -938,9 +944,11 @@ export class InteractiveMode {
 		await this.init();
 
 		// Global, environment-scoped notices (app update, extension updates, tmux setup)
-		// belong on the agents view, not in a conversation. When launched from the agents
-		// view it owns them, so skip the checks here entirely.
-		const ownsGlobalStartupNotices = !this.options.returnToAgentsView;
+		// belong on the agents view, not in a conversation. When the agents view already
+		// showed them, skip the checks here entirely. (This is narrower than
+		// `returnToAgentsView`, which is also set for direct daemon attaches that never
+		// rendered the agents view and still want the in-session fallback.)
+		const ownsGlobalStartupNotices = !this.options.agentsViewOwnsStartupNotices;
 		const newVersionPromise = ownsGlobalStartupNotices ? checkForNewPiVersion(this.version) : undefined;
 		const packageUpdatesPromise = ownsGlobalStartupNotices
 			? checkForPackageUpdates({

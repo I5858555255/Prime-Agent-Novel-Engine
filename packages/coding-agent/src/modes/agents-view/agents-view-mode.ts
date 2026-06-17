@@ -225,6 +225,8 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				modelFallbackMessage: resolveAttachModelFallbackMessage(opened.summary, options.modelFallbackMessage),
 				verbose: options.verbose,
 				returnToAgentsView: true,
+				// The agents view renders the global notices itself, so suppress them in-session.
+				agentsViewOwnsStartupNotices: true,
 				// Matches the node id scheme used by snapshot child seeding
 				// (rlmChildId, falling back to the child's active session id).
 				initialSubagentNodeId: result.subagent
