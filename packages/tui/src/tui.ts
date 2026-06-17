@@ -1024,6 +1024,11 @@ export class TUI extends Container {
 				const screenRow = Math.max(0, Math.min(prevScreenRows - 1, this.hardwareCursorRow - prevViewportTop));
 				if (screenRow > 0) buffer += `\x1b[${screenRow}A`;
 				buffer += "\r";
+				// Clear the top row up front: the loop below clears it on its first
+				// iteration, but when there is no content (visibleCount === 0) the
+				// loop never runs and the leftover-clear moves down before clearing,
+				// which would leave row 0 stale.
+				if (visibleCount === 0) buffer += "\x1b[2K";
 				for (let i = 0; i < visibleCount; i++) {
 					if (i > 0) buffer += "\r\n";
 					buffer += "\x1b[2K"; // Clear current line
