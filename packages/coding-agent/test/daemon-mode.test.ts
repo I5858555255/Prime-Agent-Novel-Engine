@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
+import type { AgentCronJob, AgentCronJobStore } from "../src/core/cron-jobs.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
 	AgentDaemon,
@@ -137,6 +138,44 @@ describe("daemon mode helpers", () => {
 
 			expect(secondState).toBe(firstState);
 			expect(createRuntime).toHaveBeenCalledTimes(1);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("includes paused jobs in the default cron list", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-cron-list-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: {
+					agentDir: tempDir,
+					cwd: tempDir,
+				},
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const heartbeat = internals.cronStore.createHeartbeat({
+				activeSessionId: "active-1",
+				sessionId: "session-1",
+				sessionFile: join(tempDir, "session.jsonl"),
+				cwd: tempDir,
+				scheduleText: "every 5m",
+				prompt: "check on the session",
+				now: new Date("2026-01-01T12:00:00.000Z"),
+			});
+			internals.cronStore.pauseHeartbeat("active-1", new Date("2026-01-01T12:01:00.000Z"));
+
+			const response = (await internals.handleCommand(makeClient("client-1", "active-1"), {
+				id: "command-1",
+				type: "cron_list",
+			})) as { data: { jobs: AgentCronJob[] } };
+
+			expect(response.data.jobs).toEqual([expect.objectContaining({ id: heartbeat.id, status: "paused" })]);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

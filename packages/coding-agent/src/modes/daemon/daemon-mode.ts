@@ -1064,7 +1064,7 @@ export class AgentDaemon {
 
 			case "cron_list": {
 				const jobs = this.cronStore.list().filter((job) => {
-					if (!command.includeInactive && job.status !== "active") {
+					if (!command.includeInactive && job.status !== "active" && job.status !== "paused") {
 						return false;
 					}
 					if (command.activeSessionId && job.activeSessionId !== command.activeSessionId) {
