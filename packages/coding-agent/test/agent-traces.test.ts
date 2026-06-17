@@ -290,6 +290,55 @@ describe("agent trace upload", () => {
 		expect(calls[0].url).toBe("https://api.example.test/api/v1/agent-traces/sessions/listener-session");
 	});
 
+	it("serializes concurrent flushes for the same pending upload", async () => {
+		const cwd = join(tempDir, "project");
+		const sessionDir = join(tempDir, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		const sessionManager = SessionManager.create(cwd, sessionDir);
+		sessionManager.newSession({ id: "concurrent-flush-session" });
+
+		let markFetchStarted: () => void = () => {};
+		const fetchStarted = new Promise<void>((resolve) => {
+			markFetchStarted = resolve;
+		});
+		let releaseFetch: () => void = () => {};
+		const fetchReleased = new Promise<void>((resolve) => {
+			releaseFetch = resolve;
+		});
+		const calls: FetchCall[] = [];
+		const fetchFn: typeof fetch = async (input, init) => {
+			calls.push({ url: String(input), init: init ?? {} });
+			markFetchStarted();
+			await fetchReleased;
+			return new Response(JSON.stringify({ bytes_stored: 123 }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		};
+
+		installAgentTraceUpload(sessionManager, {
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn,
+		});
+
+		sessionManager.appendMessage(createUserMessage("hello"));
+		sessionManager.appendMessage(createAssistantMessage("hi"));
+		const firstFlush = flushAgentTraceUpload(sessionManager);
+		const secondFlush = flushAgentTraceUpload(sessionManager);
+
+		await fetchStarted;
+		expect(calls).toHaveLength(1);
+		releaseFetch();
+		const results = await Promise.all([firstFlush, secondFlush]);
+
+		expect(results.map((result) => result?.status)).toEqual(["uploaded", "uploaded"]);
+		expect(calls).toHaveLength(1);
+	});
+
 	it("schedules automatic uploads at most once per minute and only after new entries persist", async () => {
 		vi.useFakeTimers();
 		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");

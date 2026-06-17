@@ -369,6 +369,7 @@ class AgentTraceUploadController {
 	private timeout: NodeJS.Timeout | undefined;
 	private pending = false;
 	private inFlight: Promise<AgentTraceUploadResult> | undefined;
+	private flushPromise: Promise<AgentTraceUploadResult | undefined> | undefined;
 	private lastUploadStartedAt: number | undefined;
 	private lastUploadedSignature: string | undefined;
 
@@ -412,6 +413,23 @@ class AgentTraceUploadController {
 	}
 
 	async flush(): Promise<AgentTraceUploadResult | undefined> {
+		if (this.flushPromise) {
+			const result = await this.flushPromise;
+			if (!this.pending) {
+				return result;
+			}
+			return (await this.flush()) ?? result;
+		}
+
+		this.flushPromise = this.runFlush();
+		try {
+			return await this.flushPromise;
+		} finally {
+			this.flushPromise = undefined;
+		}
+	}
+
+	private async runFlush(): Promise<AgentTraceUploadResult | undefined> {
 		if (this.timeout) {
 			clearTimeout(this.timeout);
 			this.timeout = undefined;
