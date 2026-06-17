@@ -77,6 +77,18 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(generate.mock.calls[0]?.[0]).toMatchObject({ isWorking: true });
 	});
 
+	test("a working refresh preserves a still-valid verdict at the same message count", async () => {
+		vi.useFakeTimers();
+		const generate = vi.fn().mockResolvedValue({ summary: "Editing the router" }); // working → no verdict
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
+		const state = makeState({ working: true });
+		state.summaryState = { summary: "Asked which db", taskState: "needs_input", basedOnMessageCount: 2 };
+
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(state.summaryState).toMatchObject({ summary: "Editing the router", taskState: "needs_input" });
+	});
+
 	test("discards a verdict when the session is forgotten (closed) mid-call", async () => {
 		vi.useFakeTimers();
 		const state = makeState({ working: false });

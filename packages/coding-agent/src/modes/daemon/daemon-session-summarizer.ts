@@ -239,6 +239,9 @@ export class DaemonSessionSummarizer {
 	// Maps an in-flight session id to a controller so a closing session can abort
 	// its summary and we can drop the result instead of writing after dispose.
 	private readonly inFlight = new Map<string, AbortController>();
+	// Sessions whose summary was requested while one was already running; they get
+	// one more pass when the in-flight run finishes so a refresh is never dropped.
+	private readonly rerunRequested = new Set<string>();
 
 	constructor(
 		private readonly listTopLevelSessions: () => readonly ActiveSessionState[],
@@ -275,6 +278,7 @@ export class DaemonSessionSummarizer {
 		for (const controller of this.inFlight.values()) {
 			controller.abort();
 		}
+		this.rerunRequested.clear();
 	}
 
 	/** Drop any pending work for a session that is closing. */
@@ -285,8 +289,9 @@ export class DaemonSessionSummarizer {
 			this.debounceTimers.delete(activeSessionId);
 		}
 		// Abort an in-flight summary so its result is discarded rather than written
-		// to a session that is being disposed.
+		// to a session that is being disposed, and drop any queued re-run.
 		this.inFlight.get(activeSessionId)?.abort();
+		this.rerunRequested.delete(activeSessionId);
 	}
 
 	/** Seed in-memory status from the persisted entry when a session is added. */
@@ -324,6 +329,8 @@ export class DaemonSessionSummarizer {
 		}
 		const id = state.activeSessionId;
 		if (this.inFlight.has(id)) {
+			// Don't drop this request — run once more after the current pass finishes.
+			this.rerunRequested.add(id);
 			return;
 		}
 		const session = state.runtime.session;
@@ -374,12 +381,17 @@ export class DaemonSessionSummarizer {
 			) {
 				return;
 			}
+			// A working refresh carries no verdict; keep the prior one when the turn
+			// (message count) is unchanged so we don't drop a still-valid needs_input
+			// and flip the session to completed once it goes idle again.
+			const taskState =
+				result.taskState ?? (previous?.basedOnMessageCount === messageCount ? previous?.taskState : undefined);
 			const status: AgentStatus = {
 				summary: result.summary,
-				taskState: result.taskState,
+				taskState,
 				basedOnMessageCount: messageCount,
 			};
-			const changed = agentStatusChanged(previous, result);
+			const changed = previous?.summary !== status.summary || previous?.taskState !== status.taskState;
 			state.summaryState = status;
 			// Persist only settled idle verdicts: a stable status to restore on
 			// restart, and no writes interleaved with the agent's own streaming.
@@ -395,6 +407,12 @@ export class DaemonSessionSummarizer {
 			}
 		} finally {
 			this.inFlight.delete(id);
+			// Honor a request that arrived while this pass was running. Re-debounce
+			// rather than re-run immediately so a busy session can't chain back-to-back
+			// model calls; the refresh still lands seconds later, not next sweep.
+			if (this.rerunRequested.delete(id)) {
+				this.notifyActivity(state);
+			}
 		}
 	}
 }
