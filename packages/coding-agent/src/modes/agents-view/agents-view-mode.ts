@@ -283,15 +283,12 @@ class AgentsViewMode implements Component, Focusable {
 	private statusMessageTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private anthropicSubscriptionWarningShown = false;
-	// Global update/setup notices, resolved once on startup and shown above the list.
-	private startupNotices: StartupNotices | undefined;
 
 	constructor(
 		private readonly options: AgentsViewModeOptions,
 		private readonly persistentState: AgentsViewPersistentState = {},
 	) {
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
-		this.startupNotices = persistentState.startupNotices;
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		setRegisteredThemes(options.uiServices.getThemes());
@@ -440,13 +437,14 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private loadStartupNotices(): void {
+		// Notices live on persistentState (read directly in renderStartupNotices), so they
+		// survive leaving and re-entering the agents view regardless of which instance's
+		// gather resolved. Already have them? Nothing to do.
 		if (this.persistentState.startupNotices) {
-			// May have resolved on a prior instance after this one's constructor ran.
-			this.startupNotices = this.persistentState.startupNotices;
 			return;
 		}
-		// Reuse an in-flight gather from an earlier agents-view instance so leaving and
-		// re-entering does not re-run the checks or lose a result that resolved meanwhile.
+		// Reuse an in-flight gather from an earlier agents-view instance so re-entry does
+		// not re-run the checks or lose a result that resolved meanwhile.
 		const promise =
 			this.persistentState.startupNoticesPromise ??
 			gatherStartupNotices({
@@ -459,14 +457,15 @@ class AgentsViewMode implements Component, Focusable {
 		void promise
 			.then((notices) => {
 				this.persistentState.startupNotices = notices;
-				this.startupNotices = notices;
+				// Best-effort immediate paint; a re-entered instance also picks this up on
+				// its next poll tick since render reads persistentState directly.
 				this.ui.requestRender();
 			})
 			.catch(() => {});
 	}
 
 	private renderStartupNotices(width: number): string[] {
-		const notices = this.startupNotices;
+		const notices = this.persistentState.startupNotices;
 		if (!notices) {
 			return [];
 		}
