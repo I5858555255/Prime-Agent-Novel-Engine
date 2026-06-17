@@ -371,6 +371,7 @@ describe("InteractiveMode pending bash components", () => {
 			pendingMessagesContainer: new Container(),
 			compactionQueuedMessages: [],
 			pastedImages: new Map(),
+			defaultEditor: { clearHistory: vi.fn() },
 			streamingComponent: undefined,
 			streamingMessage: undefined,
 			activeBashComponent: component,
