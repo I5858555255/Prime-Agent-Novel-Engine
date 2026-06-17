@@ -414,7 +414,7 @@ export class AgentDaemon {
 		const session = state.runtime.session;
 		const sessionFile = session.sessionFile;
 		if (!sessionFile) {
-			throw new Error("Heartbeats require a persisted session file");
+			throw new Error("Cron jobs require a persisted session file");
 		}
 		const job = this.cronStore.create({
 			activeSessionId: state.activeSessionId,
