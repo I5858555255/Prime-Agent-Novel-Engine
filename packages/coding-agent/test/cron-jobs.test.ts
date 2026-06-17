@@ -621,6 +621,49 @@ describe("AgentCronScheduler", () => {
 			runCount: 0,
 		});
 	});
+
+	it("skips jobs cancelled while earlier due jobs are running", async () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const first = store.create({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1m",
+			prompt: "first",
+			now: start,
+		});
+		const second = store.create({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1m",
+			prompt: "second",
+			now: start,
+		});
+		const prompts: string[] = [];
+		const scheduler = new AgentCronScheduler(store, {
+			now: () => new Date("2026-01-01T12:35:00.000Z"),
+			runJob: async (dueJob) => {
+				prompts.push(dueJob.prompt);
+				if (dueJob.id === first.id) {
+					store.cancel(second.id, new Date("2026-01-01T12:35:00.000Z"));
+				}
+			},
+		});
+
+		const handled = await scheduler.runDue(new Date("2026-01-01T12:35:00.000Z"));
+
+		expect(handled).toBe(1);
+		expect(prompts).toEqual(["first"]);
+		expect(store.list()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: first.id, status: "completed", runCount: 1 }),
+				expect.objectContaining({ id: second.id, status: "cancelled", runCount: 0 }),
+			]),
+		);
+	});
 });
 
 describe("createAgentHeartbeatToolDefinitions", () => {

@@ -470,9 +470,11 @@ export class AgentCronJobStore {
 	}
 
 	due(now = new Date()): AgentCronJob[] {
-		return this.readJobs().filter((job) => {
-			return job.status === "active" && job.nextRunAt !== undefined && Date.parse(job.nextRunAt) <= now.getTime();
-		});
+		return this.readJobs().filter((job) => isDueJob(job, now));
+	}
+
+	getDueJob(id: string, now = new Date()): AgentCronJob | undefined {
+		return this.readJobs().find((job) => job.id === id && isDueJob(job, now));
 	}
 
 	nextActiveRunAt(): Date | undefined {
@@ -540,7 +542,11 @@ export class AgentCronScheduler {
 		this.running = true;
 		let handled = 0;
 		try {
-			for (const job of this.store.due(now)) {
+			for (const dueJob of this.store.due(now)) {
+				const job = this.store.getDueJob(dueJob.id, now);
+				if (!job) {
+					continue;
+				}
 				handled++;
 				let error: unknown;
 				try {
@@ -896,6 +902,10 @@ function stripMatchingQuotes(value: string): string {
 		return value.slice(1, -1);
 	}
 	return value;
+}
+
+function isDueJob(job: AgentCronJob, now: Date): boolean {
+	return job.status === "active" && job.nextRunAt !== undefined && Date.parse(job.nextRunAt) <= now.getTime();
 }
 
 function compareOptionalIso(left: string | undefined, right: string | undefined): number {
