@@ -93,6 +93,32 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", () => {
 		}
 	}, 60_000);
 
+	it("snapshots and revives user variables that shadow builtins", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "prime-agent-state-shadow-"));
+		const path = join(dir, "shadow.dill");
+		const cfg = { path, manifestPath: join(dir, "shadow.json") };
+		const writer = new KernelManager({ python: python as string, cwd: dir, snapshot: cfg });
+		try {
+			// Shadow builtins the snapshot helper itself relies on (list/print) plus a
+			// plain builtin-named var (id); the helper must still run and capture them.
+			await writer.execute("list = [10, 20]\nprint = 'shadowed'\nid = 99");
+			const snap = await writer.snapshotState();
+			expect(snap).not.toBeNull();
+			expect(snap?.saved).toEqual(expect.arrayContaining(["list", "print", "id"]));
+		} finally {
+			await writer.dispose();
+		}
+
+		const reader = new KernelManager({ python: python as string, cwd: dir, snapshot: cfg });
+		try {
+			const restore = await reader.restoreState();
+			expect(restore?.restored).toEqual(expect.arrayContaining(["list", "print", "id"]));
+		} finally {
+			await reader.dispose();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	it("treats a corrupt (non-dict) snapshot as no restore without throwing", async () => {
 		const badDir = mkdtempSync(join(tmpdir(), "prime-agent-state-corrupt-"));
 		const badPath = join(badDir, "corrupt.dill");

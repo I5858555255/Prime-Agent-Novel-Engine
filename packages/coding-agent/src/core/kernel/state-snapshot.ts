@@ -54,23 +54,25 @@ function pyStr(value: string): string {
  * sibling `.json` manifest, then prints a single marker line with the result.
  */
 export function buildSnapshotCode(outPath: string, manifestPath: string, maxBytes: number): string {
+	// All builtins are sourced via the locally-imported _b alias so the helper keeps
+	// working even when the user namespace shadows names like list/open/print/len.
 	return `
 def _prime_agent_snapshot_state():
-    import builtins, json, os, sys, datetime
+    import builtins as _b, json, os, sys, datetime
     try:
         import dill
-    except Exception as _err:
-        print(${pyStr(RESULT_MARKER)} + json.dumps({"error": "dill unavailable: " + str(_err)}))
+    except _b.Exception as _err:
+        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"error": "dill unavailable: " + _b.str(_err)}))
         return
     dill.settings["recurse"] = True
 
     ip = None
     try:
         ip = get_ipython()  # noqa: F821 (injected by IPython)
-    except Exception:
+    except _b.Exception:
         ip = None
-    ns = ip.user_ns if ip is not None else globals()
-    hidden = set(getattr(ip, "user_ns_hidden", {}) or {}) if ip is not None else set()
+    ns = ip.user_ns if ip is not None else _b.globals()
+    hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {}) or {}) if ip is not None else _b.set()
     # rlm and the wrapped skill modules are live, connection-bound handles that
     # the bootstrap re-creates on restore; never snapshot them.
     always_skip = {"rlm", "In", "Out", "get_ipython", "exit", "quit", "open"}
@@ -78,40 +80,41 @@ def _prime_agent_snapshot_state():
     payload = {}
     skipped = []
     total = 0
-    for name in list(ns.keys()):
+    for name in _b.list(ns.keys()):
+        # Skip internals (dunder/underscore), IPython-injected names, and live
+        # handles. A name matching a builtin (e.g. "list") is a user shadow worth
+        # keeping — builtins themselves are not enumerated as user_ns keys.
         if name.startswith("_") or name in hidden or name in always_skip:
-            continue
-        if name in vars(builtins):
             continue
         value = ns[name]
         # Modules are pickled by reference and re-imported on restore.
         try:
             blob = dill.dumps(value)
-        except Exception as _err:
-            skipped.append({"name": name, "reason": type(_err).__name__ + ": " + str(_err)[:200]})
+        except _b.Exception as _err:
+            skipped.append({"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]})
             continue
-        if len(blob) > ${maxBytes} or total + len(blob) > ${maxBytes}:
+        if _b.len(blob) > ${maxBytes} or total + _b.len(blob) > ${maxBytes}:
             skipped.append({"name": name, "reason": "exceeds snapshot size cap"})
             continue
         payload[name] = blob
-        total += len(blob)
+        total += _b.len(blob)
 
     os.makedirs(os.path.dirname(${pyStr(outPath)}), exist_ok=True)
     tmp = ${pyStr(outPath)} + ".tmp"
     try:
-        with open(tmp, "wb") as fh:
+        with _b.open(tmp, "wb") as fh:
             dill.dump(payload, fh)
         os.replace(tmp, ${pyStr(outPath)})
-    except Exception as _err:
+    except _b.Exception as _err:
         try:
             os.remove(tmp)
-        except Exception:
+        except _b.Exception:
             pass
-        print(${pyStr(RESULT_MARKER)} + json.dumps({"error": "write failed: " + str(_err)}))
+        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"error": "write failed: " + _b.str(_err)}))
         return
 
     bytes_written = os.path.getsize(${pyStr(outPath)})
-    saved = sorted(payload.keys())
+    saved = _b.sorted(payload.keys())
     manifest = {
         "version": 1,
         "savedNames": saved,
@@ -121,11 +124,11 @@ def _prime_agent_snapshot_state():
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     try:
-        with open(${pyStr(manifestPath)}, "w") as fh:
+        with _b.open(${pyStr(manifestPath)}, "w") as fh:
             json.dump(manifest, fh)
-    except Exception:
+    except _b.Exception:
         pass
-    print(${pyStr(RESULT_MARKER)} + json.dumps({"saved": saved, "skipped": skipped, "bytes": bytes_written}))
+    _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"saved": saved, "skipped": skipped, "bytes": bytes_written}))
 
 
 try:
@@ -141,34 +144,36 @@ finally:
  * Tolerant of a missing or corrupt file: reports an empty restore, never raises.
  */
 export function buildRestoreCode(inPath: string): string {
+	// Builtins via the local _b alias so a shadowed name in the user namespace
+	// (list/open/print/…) can't break the restore path.
 	return `
 def _prime_agent_restore_state():
-    import json, os, sys
+    import builtins as _b, json, os, sys
     if not os.path.exists(${pyStr(inPath)}):
-        print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": []}))
+        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": []}))
         return
     try:
         import dill
-    except Exception as _err:
-        print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "dill unavailable: " + str(_err)}))
+    except _b.Exception as _err:
+        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "dill unavailable: " + _b.str(_err)}))
         return
 
     try:
-        with open(${pyStr(inPath)}, "rb") as fh:
+        with _b.open(${pyStr(inPath)}, "rb") as fh:
             payload = dill.load(fh)
-    except Exception as _err:
-        print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "load failed: " + str(_err)}))
+    except _b.Exception as _err:
+        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "load failed: " + _b.str(_err)}))
         return
-    if not isinstance(payload, dict):
-        print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "corrupt snapshot: not a dict"}))
+    if not _b.isinstance(payload, _b.dict):
+        _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "corrupt snapshot: not a dict"}))
         return
 
     ip = None
     try:
         ip = get_ipython()  # noqa: F821
-    except Exception:
+    except _b.Exception:
         ip = None
-    ns = ip.user_ns if ip is not None else globals()
+    ns = ip.user_ns if ip is not None else _b.globals()
 
     restored = []
     failed = []
@@ -176,9 +181,9 @@ def _prime_agent_restore_state():
         try:
             ns[name] = dill.loads(blob)
             restored.append(name)
-        except Exception as _err:
-            failed.append({"name": name, "reason": type(_err).__name__ + ": " + str(_err)[:200]})
-    print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": sorted(restored), "failed": failed}))
+        except _b.Exception as _err:
+            failed.append({"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]})
+    _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": _b.sorted(restored), "failed": failed}))
 
 
 try:

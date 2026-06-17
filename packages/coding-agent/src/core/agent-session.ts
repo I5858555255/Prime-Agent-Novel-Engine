@@ -114,7 +114,7 @@ import {
 	validateGoalObjective,
 } from "./goals.js";
 import type { HostRequestHandlers } from "./kernel/index.js";
-import type { RestoreResult } from "./kernel/state-snapshot.js";
+import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -694,6 +694,8 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 	private _disposed = false;
 	private _ipythonKernelProvisioner?: IpythonKernelProvisioner;
+	/** Artifact dir backing the current provisioner's kernel snapshot, if any. */
+	private _ipythonKernelSnapshotDir?: string;
 	private readonly _prewarmIpythonKernel: boolean;
 	private _rlmDepth: number;
 	private _rlmMaxDepth: number;
@@ -3443,12 +3445,13 @@ export class AgentSession {
 			// Rebuilding (e.g. /reload) replaces the provisioner; drop the previous
 			// kernel so the session never holds two live kernels.
 			void this._ipythonKernelProvisioner?.dispose();
+			this._ipythonKernelSnapshotDir = this.sessionManager.getSessionArtifactDir();
 			this._ipythonKernelProvisioner = new IpythonKernelProvisioner(this._cwd, {
 				env: this._rlmKernelEnv(),
 				sessionId: this.sessionId,
 				hostHandlers: this._createKernelHostHandlers(),
 				pythonSkills,
-				snapshotDir: this.sessionManager.getSessionArtifactDir(),
+				snapshotDir: this._ipythonKernelSnapshotDir,
 				onRestore: (result) => this._onIpythonStateRestored(result),
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
@@ -3492,7 +3495,13 @@ export class AgentSession {
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
 
-		if (this._prewarmIpythonKernel && this.getActiveToolNames().includes("ipython")) {
+		// Prewarm when configured, or whenever we're resuming a session that already
+		// has a kernel snapshot — so its state is revived and the model is told what
+		// came back before the first turn, rather than a turn later when the kernel
+		// would otherwise lazily start on first use.
+		const hasSnapshot =
+			!!this._ipythonKernelSnapshotDir && existsSync(snapshotPathIn(this._ipythonKernelSnapshotDir));
+		if ((this._prewarmIpythonKernel || hasSnapshot) && this.getActiveToolNames().includes("ipython")) {
 			this._ipythonKernelProvisioner?.prewarm();
 		}
 	}
