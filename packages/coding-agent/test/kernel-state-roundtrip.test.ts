@@ -93,6 +93,28 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", () => {
 		}
 	}, 60_000);
 
+	it("treats a corrupt (non-dict) snapshot as no restore without throwing", async () => {
+		const badDir = mkdtempSync(join(tmpdir(), "prime-agent-state-corrupt-"));
+		const badPath = join(badDir, "corrupt.dill");
+		const manager = new KernelManager({
+			python: python as string,
+			cwd: badDir,
+			snapshot: { path: badPath, manifestPath: join(badDir, "corrupt.json") },
+		});
+		try {
+			// A valid dill file that deserializes to a list, not the expected name->bytes dict.
+			await manager.execute(`import dill\nopen(${JSON.stringify(badPath)}, "wb").write(dill.dumps([1, 2, 3]))`);
+			const restore = await manager.restoreState();
+			expect(restore).toBeNull();
+			// The kernel must still be usable after a failed restore.
+			const echo = await manager.execute("print('alive')");
+			expect(echo.stdout.trim()).toBe("alive");
+		} finally {
+			await manager.dispose();
+			rmSync(badDir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	it("auto-snapshots after a successful execution (debounced)", async () => {
 		const autoDir = mkdtempSync(join(tmpdir(), "prime-agent-state-auto-"));
 		const autoPath = join(autoDir, "auto.dill");

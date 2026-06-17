@@ -159,6 +159,9 @@ def _prime_agent_restore_state():
     except Exception as _err:
         print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "load failed: " + str(_err)}))
         return
+    if not isinstance(payload, dict):
+        print(${pyStr(RESULT_MARKER)} + json.dumps({"restored": [], "failed": [], "error": "corrupt snapshot: not a dict"}))
+        return
 
     ip = None
     try:
