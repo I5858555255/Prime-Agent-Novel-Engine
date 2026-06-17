@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	type AgentCronJob,
 	AgentCronJobStore,
 	AgentCronScheduler,
 	createAgentHeartbeatToolDefinitions,
@@ -120,6 +121,60 @@ describe("AgentCronJobStore", () => {
 		});
 
 		expect(store.nextActiveRunAt()?.toISOString()).toBe("2026-01-01T12:35:00.000Z");
+	});
+
+	it("preserves concurrent cron store writes when a stale snapshot is written", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const first = store.create({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "first",
+			now: start,
+		});
+		const staleSnapshot = [first];
+		const second = store.create({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 2h",
+			prompt: "second",
+			now: new Date("2026-01-01T12:35:00.000Z"),
+		});
+
+		writeJobsForTest(store, staleSnapshot);
+
+		expect(store.list()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: first.id, prompt: "first" }),
+				expect.objectContaining({ id: second.id, prompt: "second" }),
+			]),
+		);
+	});
+
+	it("keeps newer cron store state when a stale snapshot is written", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const heartbeat = store.createHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 5m",
+			prompt: "check on me",
+			now: start,
+		});
+		store.pauseHeartbeat("active-1", new Date("2026-01-01T12:35:00.000Z"));
+
+		writeJobsForTest(store, [heartbeat]);
+
+		expect(store.getHeartbeat("active-1")).toMatchObject({
+			id: heartbeat.id,
+			status: "paused",
+			updatedAt: "2026-01-01T12:35:00.000Z",
+		});
 	});
 
 	it("keeps one persistent heartbeat per active session", () => {
@@ -704,6 +759,14 @@ describe("createAgentHeartbeatToolDefinitions", () => {
 		expect(tools.find((candidate) => candidate.name === "update_heartbeat")).toBeUndefined();
 	});
 });
+
+function writeJobsForTest(store: AgentCronJobStore, jobs: readonly AgentCronJob[]): void {
+	(
+		store as unknown as {
+			writeJobs(jobs: readonly AgentCronJob[]): void;
+		}
+	).writeJobs(jobs);
+}
 
 function makeStorePath(tempDirs: string[]): string {
 	const dir = mkdtempSync(join(tmpdir(), "prime-agent-cron-"));

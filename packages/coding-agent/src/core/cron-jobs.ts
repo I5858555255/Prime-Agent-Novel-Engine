@@ -499,8 +499,9 @@ export class AgentCronJobStore {
 
 	private writeJobs(jobs: readonly AgentCronJob[]): void {
 		mkdirSync(dirname(this.filePath), { recursive: true });
+		const mergedJobs = mergeFreshJobs(this.readJobs(), jobs);
 		const tempPath = `${this.filePath}.tmp`;
-		writeFileSync(tempPath, `${JSON.stringify({ jobs }, null, 2)}\n`, "utf-8");
+		writeFileSync(tempPath, `${JSON.stringify({ jobs: mergedJobs }, null, 2)}\n`, "utf-8");
 		renameSync(tempPath, this.filePath);
 	}
 }
@@ -906,6 +907,32 @@ function stripMatchingQuotes(value: string): string {
 
 function isDueJob(job: AgentCronJob, now: Date): boolean {
 	return job.status === "active" && job.nextRunAt !== undefined && Date.parse(job.nextRunAt) <= now.getTime();
+}
+
+function mergeFreshJobs(currentJobs: readonly AgentCronJob[], nextJobs: readonly AgentCronJob[]): AgentCronJob[] {
+	const merged = new Map<string, AgentCronJob>();
+	for (const job of currentJobs) {
+		merged.set(job.id, job);
+	}
+	for (const job of nextJobs) {
+		const current = merged.get(job.id);
+		if (!current || isAtLeastAsFresh(job, current)) {
+			merged.set(job.id, job);
+		}
+	}
+	return [...merged.values()];
+}
+
+function isAtLeastAsFresh(candidate: AgentCronJob, current: AgentCronJob): boolean {
+	const candidateTime = Date.parse(candidate.updatedAt);
+	const currentTime = Date.parse(current.updatedAt);
+	if (!Number.isFinite(currentTime)) {
+		return true;
+	}
+	if (!Number.isFinite(candidateTime)) {
+		return false;
+	}
+	return candidateTime >= currentTime;
 }
 
 function compareOptionalIso(left: string | undefined, right: string | undefined): number {
