@@ -3598,14 +3598,9 @@ export class AgentSession {
 		return env;
 	}
 
-	/**
-	 * Returns the RLM session dir, or undefined when there's no persistent artifact
-	 * dir (e.g. the ephemeral viewer client). Don't create a /tmp dir here: this runs
-	 * on every kernel build, but a viewer never does RLM work, so eager mkdtemp just
-	 * leaks empty dirs. The temp dir is created lazily in _createChildRlmSessionDir,
-	 * the one place that genuinely needs a writable dir. Mirrors the kernel-snapshot
-	 * path, which also no-ops without a persistent dir.
-	 */
+	// Undefined when there's no persistent artifact dir (e.g. the viewer client):
+	// don't mkdtemp here, since this runs on every kernel build but a viewer never
+	// does RLM work. The temp dir is created lazily in _createChildRlmSessionDir.
 	private _ensureRlmSessionDir(): string | undefined {
 		if (this._rlmSessionDir) {
 			mkdirSync(this._rlmSessionDir, { recursive: true });
@@ -3623,8 +3618,7 @@ export class AgentSession {
 	}
 
 	private _createChildRlmSessionDir(): string {
-		// Spawning a child is genuine RLM work, so a writable dir is required. Fall
-		// back to a temp dir only here when there's no persistent artifact dir.
+		// A child needs a writable dir; fall back to a temp dir only when there's none.
 		const parentDir = this._ensureRlmSessionDir() ?? this._createEphemeralRlmSessionDir();
 		for (let i = 0; i < 100; i++) {
 			const childDir = join(parentDir, `sub-${randomUUID().slice(0, 8)}`);
