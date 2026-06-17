@@ -50,8 +50,10 @@ export interface CreateAgentCronJobInput {
 	now?: Date;
 }
 
+export type AgentCronJobRunResult = "ran" | "skipped";
+
 export interface AgentCronSchedulerHooks {
-	runJob: (job: AgentCronJob) => Promise<void>;
+	runJob: (job: AgentCronJob) => Promise<AgentCronJobRunResult | undefined>;
 	now?: () => Date;
 	onError?: (job: AgentCronJob, error: unknown) => void;
 }
@@ -469,6 +471,27 @@ export class AgentCronJobStore {
 		return updated;
 	}
 
+	recordSkipResult(id: string, result: { now?: Date }): AgentCronJob | undefined {
+		const now = result.now ?? new Date();
+		let updated: AgentCronJob | undefined;
+		const jobs = this.readJobs().map((job) => {
+			if (job.id !== id) {
+				return job;
+			}
+			if (job.status !== "active") {
+				updated = job;
+				return job;
+			}
+			const nextRunAt = nextRunAtForSchedule(job.schedule, now);
+			updated = { ...job, nextRunAt: nextRunAt?.toISOString(), updatedAt: now.toISOString() };
+			return updated;
+		});
+		if (updated) {
+			this.writeJobs(jobs);
+		}
+		return updated;
+	}
+
 	due(now = new Date()): AgentCronJob[] {
 		return this.readJobs().filter((job) => isDueJob(job, now));
 	}
@@ -548,14 +571,19 @@ export class AgentCronScheduler {
 				if (!job) {
 					continue;
 				}
-				handled++;
+				let runResult: AgentCronJobRunResult | undefined;
 				let error: unknown;
 				try {
-					await this.hooks.runJob(job);
+					runResult = await this.hooks.runJob(job);
 				} catch (runError) {
 					error = runError;
 					this.hooks.onError?.(job, runError);
 				}
+				if (runResult === "skipped" && error === undefined) {
+					this.store.recordSkipResult(job.id, { now: this.now() });
+					continue;
+				}
+				handled++;
 				this.store.recordRunResult(job.id, { now: this.now(), error });
 			}
 		} finally {

@@ -2295,7 +2295,7 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[], options: { queueKey?: string } = {}): Promise<void> {
+	async followUp(text: string, images?: ImageContent[], options: { queueKey?: string } = {}): Promise<boolean> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2305,7 +2305,7 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images, { queueKey: options.queueKey });
+		return this._queueFollowUp(expandedText, images, { queueKey: options.queueKey });
 	}
 
 	/**

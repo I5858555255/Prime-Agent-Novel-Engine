@@ -577,6 +577,7 @@ describe("AgentCronScheduler", () => {
 			now: () => new Date("2026-01-01T12:35:00.000Z"),
 			runJob: async (dueJob) => {
 				prompts.push(dueJob.prompt);
+				return undefined;
 			},
 		});
 
@@ -605,7 +606,7 @@ describe("AgentCronScheduler", () => {
 		});
 		const scheduler = new AgentCronScheduler(store, {
 			now: () => new Date("2026-01-01T12:35:00.000Z"),
-			runJob: async () => {},
+			runJob: async () => undefined,
 		});
 
 		await scheduler.runDue(new Date("2026-01-01T12:35:00.000Z"));
@@ -631,7 +632,7 @@ describe("AgentCronScheduler", () => {
 		});
 		const scheduler = new AgentCronScheduler(store, {
 			now: () => new Date("2026-01-01T12:34:30.000Z"),
-			runJob: async () => {},
+			runJob: async () => undefined,
 		});
 
 		await scheduler.runDue(new Date("2026-01-01T12:34:30.000Z"));
@@ -662,6 +663,7 @@ describe("AgentCronScheduler", () => {
 			now: () => new Date("2026-01-01T12:34:31.000Z"),
 			runJob: async (dueJob) => {
 				prompts.push(dueJob.prompt);
+				return undefined;
 			},
 		});
 
@@ -675,6 +677,34 @@ describe("AgentCronScheduler", () => {
 			status: "cancelled",
 			runCount: 0,
 		});
+	});
+
+	it("reschedules skipped jobs without recording a run", async () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const job = store.createHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 5m",
+			prompt: "check on me",
+			now: start,
+		});
+		const scheduler = new AgentCronScheduler(store, {
+			now: () => new Date("2026-01-01T12:40:00.000Z"),
+			runJob: async () => "skipped",
+		});
+
+		const handled = await scheduler.runDue(new Date("2026-01-01T12:39:00.000Z"));
+
+		expect(handled).toBe(0);
+		expect(store.getHeartbeat("active-1")).toMatchObject({
+			id: job.id,
+			status: "active",
+			nextRunAt: "2026-01-01T12:45:00.000Z",
+			runCount: 0,
+		});
+		expect(store.getHeartbeat("active-1")).not.toHaveProperty("lastRunAt");
 	});
 
 	it("skips jobs cancelled while earlier due jobs are running", async () => {
@@ -705,6 +735,7 @@ describe("AgentCronScheduler", () => {
 				if (dueJob.id === first.id) {
 					store.cancel(second.id, new Date("2026-01-01T12:35:00.000Z"));
 				}
+				return undefined;
 			},
 		});
 

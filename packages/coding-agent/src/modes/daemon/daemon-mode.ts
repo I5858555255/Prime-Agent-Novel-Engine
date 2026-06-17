@@ -469,14 +469,18 @@ export class AgentDaemon {
 		}
 	}
 
-	private async runCronJob(job: AgentCronJob): Promise<void> {
+	private async runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> {
 		const state = await this.getOrCreateCronJobSession(job);
 		if (!state) {
 			return;
 		}
 		const followUpQueueKey = isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined;
 		if (followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
-			await state.runtime.session.followUp(job.prompt, undefined, { queueKey: followUpQueueKey });
+			const didQueue = await state.runtime.session.followUp(job.prompt, undefined, { queueKey: followUpQueueKey });
+			return didQueue ? undefined : "skipped";
+		}
+		if (!followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
+			await state.runtime.session.followUp(job.prompt);
 			return;
 		}
 		await state.runtime.session.prompt(job.prompt, {
