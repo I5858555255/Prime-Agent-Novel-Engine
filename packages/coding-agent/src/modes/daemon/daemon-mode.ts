@@ -298,6 +298,7 @@ export class AgentDaemon {
 			throw error;
 		}
 		this.sessions.set(state.activeSessionId, state);
+		this.rebindCronJobsToState(state);
 		if (name) {
 			state.runtime.session.setSessionName(name);
 		}
@@ -340,6 +341,7 @@ export class AgentDaemon {
 			if (command.name) {
 				existing.runtime.session.setSessionName(command.name);
 			}
+			this.rebindCronJobsToState(existing);
 			return existing;
 		}
 		if ((sessionPath || command.continueRecent) && sessionManager.getSessionState()?.status === "hidden") {
@@ -501,9 +503,26 @@ export class AgentDaemon {
 		return job;
 	}
 
+	private rebindCronJobsToState(state: ActiveSessionState): void {
+		const sessionFile = state.runtime.session.sessionFile;
+		if (!sessionFile) {
+			return;
+		}
+		const reboundJobs = this.cronStore.rebindSessionJobs({
+			activeSessionId: state.activeSessionId,
+			sessionId: state.runtime.session.sessionId,
+			sessionFile,
+			cwd: state.runtime.cwd,
+		});
+		if (reboundJobs.some((job) => job.status === "active")) {
+			this.cronScheduler.wake();
+		}
+	}
+
 	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState> {
 		const current = this.sessions.get(job.activeSessionId) ?? this.findSessionBySessionFile(job.sessionFile);
 		if (current) {
+			this.rebindCronJobsToState(current);
 			return current;
 		}
 		return this.createRuntime({ type: "create", sessionPath: job.sessionFile });
@@ -1143,6 +1162,7 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 				const result = await state.runtime.newSession(options);
+				this.rebindCronJobsToState(state);
 				return success(command.id, "new_session", result);
 			}
 
@@ -1151,6 +1171,7 @@ export class AgentDaemon {
 				const result = await state.runtime.switchSession(command.sessionPath, {
 					cwdOverride: command.cwdOverride,
 				});
+				this.rebindCronJobsToState(state);
 				return success(command.id, "switch_session", result);
 			}
 
@@ -1159,6 +1180,7 @@ export class AgentDaemon {
 				const result = await state.runtime.fork(command.entryId, {
 					position: command.position,
 				});
+				this.rebindCronJobsToState(state);
 				return success(command.id, "fork", result);
 			}
 

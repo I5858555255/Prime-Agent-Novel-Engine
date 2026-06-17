@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Type } from "typebox";
 import type { ToolDefinition } from "./extensions/types.js";
 
@@ -121,6 +121,45 @@ export class AgentCronJobStore {
 		return job;
 	}
 
+	/**
+	 * Active session ids are daemon-local. When a persisted session is restored,
+	 * bind jobs stored for its stable session file to the new live session id so
+	 * heartbeat and cron control APIs continue to target existing schedules.
+	 */
+	rebindSessionJobs(input: {
+		activeSessionId: string;
+		sessionId: string;
+		sessionFile: string;
+		cwd: string;
+	}): AgentCronJob[] {
+		const targetSessionFile = resolve(input.sessionFile);
+		const reboundJobs: AgentCronJob[] = [];
+		const jobs = this.readJobs().map((job) => {
+			if (resolve(job.sessionFile) !== targetSessionFile) {
+				return job;
+			}
+			if (
+				job.activeSessionId === input.activeSessionId &&
+				job.sessionId === input.sessionId &&
+				job.cwd === input.cwd
+			) {
+				return job;
+			}
+			const rebound = {
+				...job,
+				activeSessionId: input.activeSessionId,
+				sessionId: input.sessionId,
+				cwd: input.cwd,
+			};
+			reboundJobs.push(rebound);
+			return rebound;
+		});
+		if (reboundJobs.length > 0) {
+			this.writeJobs(jobs);
+		}
+		return reboundJobs;
+	}
+
 	getHeartbeat(activeSessionId: string): AgentCronJob | undefined {
 		return this.readJobs()
 			.filter((job) => {
@@ -239,7 +278,6 @@ export class AgentCronJobStore {
 			}
 			matchedRlmHeartbeat = true;
 			if (job.status === "cancelled" || job.status === "completed") {
-				updated = job;
 				return job;
 			}
 			let nextJob: AgentCronJob = { ...job };

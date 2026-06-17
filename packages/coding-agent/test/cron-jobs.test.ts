@@ -192,6 +192,59 @@ describe("AgentCronJobStore", () => {
 		).toThrow("Heartbeat schedule must be recurring");
 	});
 
+	it("rebinds persisted session jobs to a new daemon active session id", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const userHeartbeat = store.createHeartbeat({
+			activeSessionId: "old-active",
+			sessionId: "old-session",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 5m",
+			prompt: "check on the user",
+			now: start,
+		});
+		const rlmHeartbeat = store.createRlmHeartbeat({
+			activeSessionId: "old-active",
+			sessionId: "old-session",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			label: "review",
+			scheduleText: "every 10m",
+			prompt: "review the latest output",
+			now: start,
+		});
+		store.createHeartbeat({
+			activeSessionId: "other-active",
+			sessionId: "other-session",
+			sessionFile: "/tmp/other-session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 5m",
+			prompt: "check on a different session",
+			now: start,
+		});
+
+		const rebound = store.rebindSessionJobs({
+			activeSessionId: "new-active",
+			sessionId: "new-session",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project-restored",
+		});
+
+		expect(rebound.map((job) => job.id)).toEqual(expect.arrayContaining([userHeartbeat.id, rlmHeartbeat.id]));
+		expect(store.getHeartbeat("old-active")).toBeUndefined();
+		expect(store.getHeartbeat("new-active")).toMatchObject({
+			id: userHeartbeat.id,
+			sessionId: "new-session",
+			cwd: "/tmp/project-restored",
+		});
+		expect(store.listRlmHeartbeats("new-active")[0]).toMatchObject({
+			id: rlmHeartbeat.id,
+			sessionId: "new-session",
+			cwd: "/tmp/project-restored",
+		});
+		expect(store.getHeartbeat("other-active")).toMatchObject({ prompt: "check on a different session" });
+	});
+
 	it("keeps multiple RLM heartbeats separate from the single user heartbeat", () => {
 		const store = new AgentCronJobStore(makeStorePath(tempDirs));
 		const userHeartbeat = store.createHeartbeat({
@@ -233,6 +286,33 @@ describe("AgentCronJobStore", () => {
 			]),
 		);
 		expect(store.getHeartbeat("active-1")).toMatchObject({ id: userHeartbeat.id, status: "active" });
+	});
+
+	it("returns undefined when updating inactive RLM heartbeats", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const rlmHeartbeat = store.createRlmHeartbeat({
+			activeSessionId: "rlm-1",
+			sessionId: "session-rlm-1",
+			sessionFile: "/tmp/session-rlm.jsonl",
+			cwd: "/tmp/project",
+			label: "tests",
+			scheduleText: "every 30s",
+			prompt: "rerun focused tests",
+			now: start,
+		});
+		store.deleteRlmHeartbeat("rlm-1", rlmHeartbeat.id, new Date("2026-01-01T12:35:00.000Z"));
+
+		expect(
+			store.updateRlmHeartbeat("rlm-1", rlmHeartbeat.id, {
+				prompt: "try to update cancelled heartbeat",
+				now: new Date("2026-01-01T12:36:00.000Z"),
+			}),
+		).toBeUndefined();
+		expect(store.listRlmHeartbeats("rlm-1", { includeInactive: true })[0]).toMatchObject({
+			id: rlmHeartbeat.id,
+			status: "cancelled",
+			prompt: "rerun focused tests",
+		});
 	});
 
 	it("updates and deletes only RLM heartbeats in the matching RLM session", () => {
