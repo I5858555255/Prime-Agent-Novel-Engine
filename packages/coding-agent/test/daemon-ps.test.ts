@@ -4,6 +4,7 @@ import {
 	parseLsofListeners,
 	parsePsEtimes,
 	parseSsListeners,
+	planReap,
 	sortDaemons,
 } from "../src/cli/daemon-ps.js";
 
@@ -71,6 +72,49 @@ describe("sortDaemons", () => {
 			"/tmp/c.sock",
 			"/tmp/z.sock",
 		]);
+	});
+});
+
+describe("planReap", () => {
+	it("never touches the default daemon or daemons with live sessions", () => {
+		const plan = planReap(
+			[
+				makeDaemon({ socketPath: "/tmp/default.sock", status: "stale", isDefault: true, sessionCount: 0, pid: 1 }),
+				makeDaemon({ socketPath: "/tmp/busy.sock", status: "current", sessionCount: 3, pid: 2 }),
+			],
+			true,
+		);
+		expect(plan.map((action) => action.kind)).toEqual(["skip", "skip"]);
+	});
+
+	it("removes orphan files and stops reachable idle non-default daemons", () => {
+		const plan = planReap(
+			[
+				makeDaemon({ socketPath: "/tmp/idle.sock", status: "current", sessionCount: 0, pid: 5 }),
+				makeDaemon({ socketPath: "/tmp/orphan.sock", status: "orphan-file" }),
+			],
+			false,
+		);
+		expect(plan.map((action) => action.kind)).toEqual(["shutdown", "remove-file"]);
+	});
+
+	it("only kills unreachable daemons with --force", () => {
+		const daemon = makeDaemon({ socketPath: "/tmp/hung.sock", status: "unreachable", pid: 7 });
+		expect(planReap([daemon], false)[0]!.kind).toBe("skip");
+		expect(planReap([daemon], true)[0]!.kind).toBe("kill");
+	});
+
+	it("refuses to kill a pid that backs more than one discovered daemon", () => {
+		const plan = planReap(
+			[
+				makeDaemon({ socketPath: "/tmp/listening.sock", status: "current", sessionCount: 4, pid: 99 }),
+				makeDaemon({ socketPath: "/tmp/phantom.sock", status: "unreachable", pid: 99 }),
+			],
+			true,
+		);
+		const phantom = plan.find((action) => action.daemon.socketPath === "/tmp/phantom.sock");
+		expect(phantom?.kind).toBe("skip");
+		expect(phantom && phantom.kind === "skip" ? phantom.reason : "").toContain("also backs another daemon");
 	});
 });
 

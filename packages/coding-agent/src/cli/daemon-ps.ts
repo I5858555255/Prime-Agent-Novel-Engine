@@ -277,52 +277,86 @@ export async function runPs(json: boolean): Promise<void> {
 	console.log(formatDaemonListTable(daemons));
 }
 
+export type ReapAction =
+	| { kind: "remove-file"; daemon: DaemonInfo }
+	| { kind: "kill"; daemon: DaemonInfo }
+	| { kind: "shutdown"; daemon: DaemonInfo }
+	| { kind: "skip"; daemon: DaemonInfo; reason: string };
+
 /**
- * Reap clearly-safe daemons: orphaned socket files, and reachable idle daemons
- * on non-default sockets. The user's default daemon and any daemon with live
- * sessions are never touched. Unreachable (hung) daemons are killed only with
- * `force`.
+ * Decide what to do with each discovered daemon (pure, no side effects). Reap
+ * targets only clearly-safe daemons: orphaned socket files, and reachable idle
+ * daemons on non-default sockets. The user's default daemon and any daemon with
+ * live sessions are never touched. Unreachable (hung) daemons are killed only
+ * with `force`, and never via a pid that backs more than one discovered daemon
+ * (e.g. macOS lsof reports every unix socket a process holds, so killing a
+ * shared pid could take down a reachable daemon with live sessions).
  */
+export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAction[] {
+	const pidCounts = new Map<number, number>();
+	for (const daemon of daemons) {
+		if (daemon.pid !== undefined) {
+			pidCounts.set(daemon.pid, (pidCounts.get(daemon.pid) ?? 0) + 1);
+		}
+	}
+
+	return daemons.map((daemon): ReapAction => {
+		if (daemon.isDefault) {
+			return { kind: "skip", daemon, reason: "default daemon" };
+		}
+		if (daemon.status === "orphan-file") {
+			return { kind: "remove-file", daemon };
+		}
+		if (daemon.status === "unreachable") {
+			if (!force || daemon.pid === undefined) {
+				return { kind: "skip", daemon, reason: "unreachable; pass --force to kill" };
+			}
+			if ((pidCounts.get(daemon.pid) ?? 0) > 1) {
+				return {
+					kind: "skip",
+					daemon,
+					reason: `unreachable; pid ${daemon.pid} also backs another daemon, not killing`,
+				};
+			}
+			return { kind: "kill", daemon };
+		}
+		if (daemon.sessionCount !== 0) {
+			return { kind: "skip", daemon, reason: `has ${daemon.sessionCount ?? "unknown"} session(s)` };
+		}
+		return { kind: "shutdown", daemon };
+	});
+}
+
 export async function runReap(json: boolean, force: boolean): Promise<void> {
 	const daemons = await discoverDaemons();
 	const reaped: Array<{ socketPath: string; action: string }> = [];
 	const skipped: Array<{ socketPath: string; reason: string }> = [];
 
-	for (const daemon of daemons) {
-		if (daemon.isDefault) {
-			skipped.push({ socketPath: daemon.socketPath, reason: "default daemon" });
-			continue;
-		}
-		if (daemon.status === "orphan-file") {
-			if (removeSocketFile(daemon.socketPath)) {
-				reaped.push({ socketPath: daemon.socketPath, action: "removed stale socket file" });
-			} else {
-				skipped.push({ socketPath: daemon.socketPath, reason: "could not remove socket file" });
-			}
-			continue;
-		}
-		if (daemon.status === "unreachable") {
-			if (force && daemon.pid !== undefined) {
-				killDaemon(daemon.pid);
-				removeSocketFile(daemon.socketPath);
-				reaped.push({ socketPath: daemon.socketPath, action: `killed unreachable daemon (pid ${daemon.pid})` });
-			} else {
-				skipped.push({ socketPath: daemon.socketPath, reason: "unreachable; pass --force to kill" });
-			}
-			continue;
-		}
-		if (daemon.sessionCount !== 0) {
-			skipped.push({ socketPath: daemon.socketPath, reason: `has ${daemon.sessionCount ?? "unknown"} session(s)` });
-			continue;
-		}
-		const stopped = await shutdownDaemon(daemon.socketPath);
-		if (stopped) {
-			reaped.push({
-				socketPath: daemon.socketPath,
-				action: `stopped idle daemon${daemon.pid ? ` (pid ${daemon.pid})` : ""}`,
-			});
-		} else {
-			skipped.push({ socketPath: daemon.socketPath, reason: "shutdown request failed" });
+	for (const action of planReap(daemons, force)) {
+		const { socketPath, pid } = action.daemon;
+		switch (action.kind) {
+			case "skip":
+				skipped.push({ socketPath, reason: action.reason });
+				break;
+			case "remove-file":
+				if (removeSocketFile(socketPath)) {
+					reaped.push({ socketPath, action: "removed stale socket file" });
+				} else {
+					skipped.push({ socketPath, reason: "could not remove socket file" });
+				}
+				break;
+			case "kill":
+				killDaemon(pid!);
+				removeSocketFile(socketPath);
+				reaped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
+				break;
+			case "shutdown":
+				if (await shutdownDaemon(socketPath)) {
+					reaped.push({ socketPath, action: `stopped idle daemon${pid ? ` (pid ${pid})` : ""}` });
+				} else {
+					skipped.push({ socketPath, reason: "shutdown request failed" });
+				}
+				break;
 		}
 	}
 
@@ -361,15 +395,49 @@ function killDaemon(pid: number): void {
 	}
 }
 
-async function shutdownDaemon(socketPath: string): Promise<boolean> {
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function canConnectToSocket(socketPath: string, timeoutMs: number): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
 	try {
-		await client.connect(1000);
-		await client.request({ type: "shutdown" }).catch(() => undefined);
+		await client.connect(timeoutMs);
 		return true;
 	} catch {
 		return false;
 	} finally {
 		client.close();
 	}
+}
+
+/**
+ * Ask a daemon to shut down and confirm it actually stopped listening. The
+ * shutdown ack alone is not proof, so success is reported only once the socket
+ * stops accepting connections.
+ */
+async function shutdownDaemon(socketPath: string): Promise<boolean> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(1000);
+	} catch {
+		client.close();
+		return false;
+	}
+	try {
+		await client.request({ type: "shutdown" });
+	} catch {
+		// The daemon may still stop; the connectivity check below is the source of truth.
+	} finally {
+		client.close();
+	}
+
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		if (!(await canConnectToSocket(socketPath, 250))) {
+			return true;
+		}
+		await delay(50);
+	}
+	return false;
 }
