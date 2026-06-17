@@ -94,6 +94,10 @@ type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
 	statusMessage?: string;
 	initialPromptsSent?: boolean;
+	// Gathered once and reused across agents-view instances so the notices survive
+	// re-entry and render the moment they resolve, even if the first view was left early.
+	startupNotices?: StartupNotices;
+	startupNoticesPromise?: Promise<StartupNotices>;
 };
 
 type PromptCommand = Extract<DaemonCommand, { type: "prompt" }>;
@@ -287,6 +291,7 @@ class AgentsViewMode implements Component, Focusable {
 		private readonly persistentState: AgentsViewPersistentState = {},
 	) {
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
+		this.startupNotices = persistentState.startupNotices;
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		setRegisteredThemes(options.uiServices.getThemes());
@@ -435,13 +440,23 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private loadStartupNotices(): void {
-		void gatherStartupNotices({
-			version: VERSION,
-			cwd: this.options.uiServices.getInitialCwd(),
-			agentDir: getAgentDir(),
-			settingsManager: this.options.uiServices.settingsManager,
-		})
+		if (this.persistentState.startupNotices) {
+			return;
+		}
+		// Reuse an in-flight gather from an earlier agents-view instance so leaving and
+		// re-entering does not re-run the checks or lose a result that resolved meanwhile.
+		const promise =
+			this.persistentState.startupNoticesPromise ??
+			gatherStartupNotices({
+				version: VERSION,
+				cwd: this.options.uiServices.getInitialCwd(),
+				agentDir: getAgentDir(),
+				settingsManager: this.options.uiServices.settingsManager,
+			});
+		this.persistentState.startupNoticesPromise = promise;
+		void promise
 			.then((notices) => {
+				this.persistentState.startupNotices = notices;
 				this.startupNotices = notices;
 				this.ui.requestRender();
 			})
