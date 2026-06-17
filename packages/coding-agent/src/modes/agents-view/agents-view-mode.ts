@@ -1,5 +1,3 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
-import { dirname } from "node:path";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AutocompleteItem, OverlayHandle, SlashCommand } from "@earendil-works/pi-tui";
 import {
@@ -13,7 +11,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { APP_TITLE, getClientErrorLogPath, VERSION } from "../../config.js";
+import { APP_TITLE, appendRotatingLog, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
@@ -1759,27 +1757,10 @@ function formatError(prefix: string, error: unknown): string {
 // The agents view shows open failures as a one-line status only, so a client-side
 // crash (e.g. "Maximum call stack size exceeded") leaves no stack to debug from.
 // Persist the full stack to a file — the TUI owns stdout/stderr, so a log file is
-// the only safe sink. Mirrors the daemon log: timestamp + stack, bounded by a
-// single-generation rotation. Best-effort; never throws into the UI path.
-const MAX_CLIENT_LOG_BYTES = 5 * 1024 * 1024;
-
+// the only safe sink.
 function logClientError(prefix: string, error: unknown): void {
-	try {
-		const logPath = getClientErrorLogPath();
-		mkdirSync(dirname(logPath), { recursive: true });
-		try {
-			if (existsSync(logPath) && statSync(logPath).size > MAX_CLIENT_LOG_BYTES) {
-				rmSync(`${logPath}.old`, { force: true });
-				renameSync(logPath, `${logPath}.old`);
-			}
-		} catch {
-			// Keep appending rather than dropping the log on a rotation failure.
-		}
-		const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-		appendFileSync(logPath, `[${new Date().toISOString()}] ${prefix}: ${detail}\n`);
-	} catch {
-		// Diagnostics must never break opening agents.
-	}
+	const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+	appendRotatingLog(getClientErrorLogPath(), `[${new Date().toISOString()}] ${prefix}: ${detail}`);
 }
 
 function padLine(line: string, width: number): string {

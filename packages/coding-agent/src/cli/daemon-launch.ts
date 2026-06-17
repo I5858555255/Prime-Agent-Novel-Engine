@@ -8,9 +8,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { expandTildePath, getDaemonLogPath, VERSION } from "../config.js";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { expandTildePath, VERSION } from "../config.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
@@ -119,36 +119,6 @@ async function shutdownStaleDaemonIfIdle(socketPath: string): Promise<boolean> {
 	return false;
 }
 
-// Keep the log bounded with a single-generation rotation (~2x cap). The daemon
-// is auto-spawned with its stdio detached, so without a file its crash stacks
-// (e.g. a RangeError surfaced from a pathological session) are lost entirely.
-const MAX_DAEMON_LOG_BYTES = 5 * 1024 * 1024;
-
-function openDaemonLogFd(socketPath: string): number | undefined {
-	const logPath = getDaemonLogPath(socketPath);
-	try {
-		// The socket dir (e.g. /tmp/prime-agent-<uid>) is created by the daemon only
-		// after it spawns, so on the first spawn it doesn't exist yet; create the
-		// log's parent here so first-spawn crash stacks aren't silently dropped.
-		mkdirSync(dirname(logPath), { recursive: true });
-		// Best-effort rotation. Drop any prior .old first: on Windows renameSync
-		// fails if the destination exists, and a rotation failure must never stop
-		// us from logging — so it stays inside its own guard and we still append.
-		try {
-			if (existsSync(logPath) && statSync(logPath).size > MAX_DAEMON_LOG_BYTES) {
-				rmSync(`${logPath}.old`, { force: true });
-				renameSync(logPath, `${logPath}.old`);
-			}
-		} catch {
-			// Keep appending to the current log rather than dropping logging.
-		}
-		return openSync(logPath, "a");
-	} catch {
-		// A read-only or missing log dir must never block the daemon from starting.
-		return undefined;
-	}
-}
-
 async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promise<void> {
 	const probe = await probeDaemonVersion(socketPath);
 	if (probe === "current") {
@@ -169,7 +139,6 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 		throw new Error("Cannot determine current CLI entrypoint for daemon launch");
 	}
 
-	const logFd = openDaemonLogFd(socketPath);
 	const child = spawn(
 		process.execPath,
 		[...process.execArgv, entrypoint, "--mode", "daemon", "--daemon-socket", socketPath],
@@ -177,21 +146,12 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 			cwd: spawnCwd ?? process.cwd(),
 			detached: true,
 			env: process.env,
-			// Route the detached daemon's stdout/stderr to a log file so its
-			// console.error output (startup, restore failures, command crashes) is
-			// inspectable after the fact; fall back to discarding if it can't open.
-			stdio: logFd === undefined ? "ignore" : ["ignore", logFd, logFd],
+			// The daemon writes its own rotating log (see daemon-mode); nothing here
+			// needs its stdout/stderr, so leave them detached.
+			stdio: "ignore",
 		},
 	);
 	child.unref();
-	if (logFd !== undefined) {
-		// The child inherited its own dup of the fd; release the parent's copy.
-		try {
-			closeSync(logFd);
-		} catch {
-			// Best effort; the parent is about to move on regardless.
-		}
-	}
 
 	const deadline = Date.now() + 10000;
 	while (Date.now() < deadline) {
