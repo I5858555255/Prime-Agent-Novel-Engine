@@ -370,6 +370,7 @@ describe("InteractiveMode pending bash components", () => {
 			chatContainer: new Container(),
 			pendingMessagesContainer: new Container(),
 			compactionQueuedMessages: [],
+			pastedImages: new Map(),
 			streamingComponent: undefined,
 			streamingMessage: undefined,
 			activeBashComponent: component,
