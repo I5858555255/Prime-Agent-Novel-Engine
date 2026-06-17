@@ -696,6 +696,8 @@ export class AgentSession {
 	private _ipythonKernelProvisioner?: IpythonKernelProvisioner;
 	/** Artifact dir backing the current provisioner's kernel snapshot, if any. */
 	private _ipythonKernelSnapshotDir?: string;
+	/** True once the runtime has been built once; later builds are in-process rebuilds (/reload). */
+	private _ipythonRuntimeBuilt = false;
 	private readonly _prewarmIpythonKernel: boolean;
 	private _rlmDepth: number;
 	private _rlmMaxDepth: number;
@@ -1701,6 +1703,23 @@ export class AgentSession {
 	 * Remove all listeners and disconnect from agent.
 	 * Call this when completely done with the session.
 	 */
+	/**
+	 * Async teardown for graceful quit/switch: await the IPython kernel's dispose
+	 * (which flushes a final namespace snapshot) before the synchronous dispose, so
+	 * the latest state reaches disk instead of racing process exit.
+	 */
+	async disposeAsync(): Promise<void> {
+		if (this._disposed) {
+			return;
+		}
+		try {
+			await this._ipythonKernelProvisioner?.dispose();
+		} catch {
+			// a failed kernel startup already cleaned up after itself
+		}
+		this.dispose();
+	}
+
 	dispose(): void {
 		if (this._disposed) {
 			return;
@@ -3448,6 +3467,10 @@ export class AgentSession {
 			// reload can't restore from a snapshot the old kernel is still writing.
 			const previousDispose = this._ipythonKernelProvisioner?.dispose();
 			this._ipythonKernelSnapshotDir = this.sessionManager.getSessionArtifactDir();
+			// Only surface the "revived from your previous session" notice on the first
+			// build (a genuine resume). A later rebuild (/reload) restores state silently
+			// for continuity — the conversation is unchanged, so there's nothing to flag.
+			const notifyRestore = !this._ipythonRuntimeBuilt;
 			this._ipythonKernelProvisioner = new IpythonKernelProvisioner(this._cwd, {
 				env: this._rlmKernelEnv(),
 				sessionId: this.sessionId,
@@ -3455,7 +3478,7 @@ export class AgentSession {
 				pythonSkills,
 				snapshotDir: this._ipythonKernelSnapshotDir,
 				readyGate: previousDispose,
-				onRestore: (result) => this._onIpythonStateRestored(result),
+				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: { provisioner: this._ipythonKernelProvisioner },
@@ -3507,6 +3530,9 @@ export class AgentSession {
 		if ((this._prewarmIpythonKernel || hasSnapshot) && this.getActiveToolNames().includes("ipython")) {
 			this._ipythonKernelProvisioner?.prewarm();
 		}
+
+		// Subsequent builds are in-process rebuilds (/reload), not a fresh resume.
+		this._ipythonRuntimeBuilt = true;
 	}
 
 	/**
