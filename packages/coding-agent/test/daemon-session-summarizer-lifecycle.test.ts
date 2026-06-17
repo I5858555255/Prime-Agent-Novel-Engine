@@ -18,6 +18,7 @@ function makeState(opts: { working?: boolean; messages?: number } = {}): ActiveS
 				isCompacting: false,
 				pendingMessageCount: 0,
 				messages: Array.from({ length: opts.messages ?? 2 }, () => ({ role: "user", content: "hi" })),
+				state: { streamingMessage: undefined },
 				modelRegistry: {},
 				sessionManager: { appendAgentStatus: (s: unknown) => appended.push(s) },
 			},
@@ -59,6 +60,21 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(generate).toHaveBeenCalledOnce();
 		// No status recorded; taskState stays undefined so classification → completed.
 		expect(state.summaryState).toBeUndefined();
+	});
+
+	test("refreshes a working session even when the message count is unchanged", async () => {
+		vi.useFakeTimers();
+		const generate = vi.fn().mockResolvedValue({ summary: "Editing the router" });
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
+		const state = makeState({ working: true });
+		// A status already exists for the current message count, so an idle session
+		// would be skipped — but a working one must still refresh its recap.
+		state.summaryState = { summary: "Editing the router", taskState: undefined, basedOnMessageCount: 2 };
+
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(generate).toHaveBeenCalledOnce();
+		expect(generate.mock.calls[0]?.[0]).toMatchObject({ isWorking: true });
 	});
 
 	test("discards a verdict when the session is forgotten (closed) mid-call", async () => {

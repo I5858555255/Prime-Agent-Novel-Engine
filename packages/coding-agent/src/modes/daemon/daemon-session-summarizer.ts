@@ -334,32 +334,41 @@ export class DaemonSessionSummarizer {
 		const messageCount = messages.length;
 		const isWorking = isSessionWorking(state);
 		const previous = state.summaryState;
-		// Skip when nothing changed, unless an idle session still owes a completion
-		// verdict for its current (settled) content.
+		// Skip an idle session that already has a current verdict. Working sessions
+		// are never skipped on unchanged count: their recap should keep up with the
+		// in-progress turn (the periodic sweep relies on this), and the streaming
+		// partial below gives the model fresh content to summarize.
 		const contentUnchanged = previous?.basedOnMessageCount === messageCount;
 		const owesIdleVerdict = !isWorking && previous?.taskState === undefined;
-		if (contentUnchanged && !owesIdleVerdict) {
+		if (contentUnchanged && !isWorking && !owesIdleVerdict) {
 			return;
 		}
+		// Include the in-progress assistant message so a long streaming turn gets a
+		// recap that reflects what the agent is doing right now, not just the last
+		// completed message.
+		const streaming = isWorking ? session.state.streamingMessage : undefined;
+		const contextMessages = streaming ? [...messages, streaming] : messages;
 
 		const controller = new AbortController();
 		this.inFlight.set(id, controller);
 		try {
 			const result = await this.generate({
 				registry: session.modelRegistry,
-				messages,
+				messages: contextMessages,
 				isWorking,
 				signal: controller.signal,
 			});
 			if (!result) {
 				return;
 			}
-			// The model call is async: the session may have closed, started a new
-			// turn, or begun streaming while it ran. Discard a result that no longer
-			// matches the live state so we never record (or persist) a verdict for a
-			// turn that has moved on, nor append after the session is disposed.
+			// The model call is async: the session may have closed, been replaced
+			// (switchSession/fork/newSession), started a new turn, or begun streaming
+			// while it ran. Discard a result that no longer matches the captured
+			// session so we never record/persist a verdict for a turn that has moved
+			// on, nor append after the session is disposed or swapped.
 			if (
 				controller.signal.aborted ||
+				state.runtime.session !== session ||
 				isSessionWorking(state) !== isWorking ||
 				session.messages.length !== messageCount
 			) {
