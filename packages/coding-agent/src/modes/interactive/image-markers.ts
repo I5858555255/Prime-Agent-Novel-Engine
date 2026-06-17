@@ -1,8 +1,9 @@
 /**
  * Pasted images are represented in the editor as `[image #N]` markers while the
- * image bytes are held aside in a pending map keyed by N. On submit the markers
- * still present in the text decide which images are attached to the prompt, so
- * deleting a marker drops its image.
+ * image bytes are held aside in a registry keyed by N. The markers present in
+ * the submitted text decide which images are attached to the prompt, so deleting
+ * a marker drops its image and restoring it (undo, history, retry) brings it back
+ * as long as the bytes are still in the registry.
  */
 
 /** Matches `[image #N]` markers inserted when an image is pasted into the editor. */
@@ -19,29 +20,20 @@ export function imageMarkerIds(text: string): number[] {
 }
 
 /**
- * `[id, image]` pairs from `pending` whose marker still appears in `text`, in
- * paste order (the map's insertion order). Each id appears at most once even if
- * its marker is duplicated in the text.
- */
-export function collectMarkedImageEntries<T>(pending: ReadonlyMap<number, T>, text: string): Array<[number, T]> {
-	if (pending.size === 0) {
-		return [];
-	}
-	const present = new Set(imageMarkerIds(text));
-	const entries: Array<[number, T]> = [];
-	for (const [id, image] of pending) {
-		if (present.has(id)) {
-			entries.push([id, image]);
-		}
-	}
-	return entries;
-}
-
-/**
  * Images from `pending` whose marker still appears in `text`, in paste order
  * (the map's insertion order). Each image is returned at most once even if its
  * marker is duplicated in the text.
  */
 export function collectMarkedImages<T>(pending: ReadonlyMap<number, T>, text: string): T[] {
-	return collectMarkedImageEntries(pending, text).map(([, image]) => image);
+	if (pending.size === 0) {
+		return [];
+	}
+	const present = new Set(imageMarkerIds(text));
+	const images: T[] = [];
+	for (const [id, image] of pending) {
+		if (present.has(id)) {
+			images.push(image);
+		}
+	}
+	return images;
 }

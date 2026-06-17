@@ -133,7 +133,7 @@ import { ToolExecutionComponent, type ToolExecutionDefinition } from "./componen
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
-import { collectMarkedImageEntries, formatImageMarker } from "./image-markers.js";
+import { collectMarkedImages, formatImageMarker } from "./image-markers.js";
 import type {
 	InteractiveModeLocalSessionHost,
 	InteractiveModeLocalToolRendererDefinition,
@@ -313,9 +313,6 @@ export class BrandSplashHeader implements Component {
 type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
-	// markerId -> image, so the markers in `text` can be re-resolved if the
-	// message is later restored to the editor (dequeue).
-	images?: Map<number, ImageContent>;
 };
 
 type GoalAnnouncementSnapshot = {
@@ -335,6 +332,11 @@ const MODEL_SELECTOR_ACTIONS: readonly ModelSelectorAction[] = [
 ];
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
+
+// Cap on retained pasted-image bytes (base64). Images are resized below the
+// inline limit before storing, so this holds many recent pastes; the oldest are
+// evicted past the cap to keep a long session bounded.
+const MAX_PASTED_IMAGE_BYTES = 64 * 1024 * 1024;
 
 function isDeadTerminalError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) {
@@ -523,13 +525,13 @@ export class InteractiveMode {
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private initialConnectionSnapshotConsumed = false;
 
-	// Images pasted into the editor, keyed by the `[image #N]` marker shown to the
-	// user. Collected on submit and attached to the prompt as multimodal content.
-	private pendingImages = new Map<number, ImageContent>();
+	// Registry of images pasted this session, keyed by the `[image #N]` marker
+	// shown to the user. Insertion-ordered; the bytes persist (bounded by
+	// MAX_PASTED_IMAGE_BYTES) so a marker resolves to its image whenever the text
+	// reappears — on submit, undo, history recall, retry, or dequeue. A submission
+	// attaches only the images whose markers are present in the sent text.
+	private pastedImages = new Map<number, ImageContent>();
 	private nextImageMarkerId = 1;
-	// Images for a normal (non-streaming) submission, handed to the main input
-	// loop which owns the prompt() call.
-	private submittedImages: Map<number, ImageContent> | undefined;
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
@@ -1058,22 +1060,16 @@ export class InteractiveMode {
 			}
 			if (!(await this.ensurePromptReady())) {
 				this.editor.setText(userInput);
-				// Re-register images so the restored markers resolve once the send is
-				// unblocked; setText prunes nothing, but pendingImages was cleared on submit.
-				if (this.submittedImages) {
-					for (const [id, image] of this.submittedImages) {
-						this.pendingImages.set(id, image);
-					}
-					this.submittedImages = undefined;
-				}
 				this.showStatus("Complete onboarding to send the restored prompt.");
 				continue;
 			}
 			showDeferredStartupNotifications();
 			showModelFallbackWarning();
 			await sendInitialPrompts();
-			const images = this.imageList(this.submittedImages);
-			this.submittedImages = undefined;
+			// Collect images from the markers in the submitted text. The registry
+			// still holds them (it is not cleared on submit), so this works even after
+			// the text was restored to the editor by onboarding, history, or a retry.
+			const images = this.collectImagesFor(userInput);
 			try {
 				await this.agentConnection.prompt(userInput, { images });
 			} catch (error: unknown) {
@@ -3149,11 +3145,11 @@ export class InteractiveMode {
 				? { type: "image", data: resized.data, mimeType: resized.mimeType }
 				: raw;
 
-			// Register the image as a pending attachment and insert a visible marker.
-			// The image is attached to the next prompt as multimodal content rather
-			// than written to disk, so a vision model receives it directly.
+			// Register the image and insert a visible marker. The image is attached to
+			// the prompt as multimodal content rather than written to disk, so a vision
+			// model receives it directly.
 			const markerId = this.nextImageMarkerId++;
-			this.pendingImages.set(markerId, attachment);
+			this.rememberPastedImage(markerId, attachment);
 			this.editor.insertTextAtCursor?.(formatImageMarker(markerId));
 			this.ui.requestRender();
 
@@ -3167,31 +3163,35 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Collect the `markerId -> image` entries whose `[image #N]` markers are still
-	 * present in `text`, then clear all pending images since the editor is cleared
-	 * on submit. Marker presence at submit time is the single source of truth: an
-	 * image whose marker was deleted is simply not collected, and one whose marker
-	 * is restored (e.g. via undo) still resolves because the bytes are never pruned
-	 * mid-edit. The id is preserved so a queued message can be restored to the
-	 * editor and re-resolve its markers.
+	 * Record a pasted image, evicting the oldest entries once the retained bytes
+	 * exceed {@link MAX_PASTED_IMAGE_BYTES} so a long session stays bounded. The
+	 * just-added image is always kept.
 	 */
-	private takeImageMap(text: string): Map<number, ImageContent> {
-		const entries = collectMarkedImageEntries(this.pendingImages, text);
-		this.pendingImages.clear();
-		return new Map(entries);
-	}
-
-	/** Like {@link takeImageMap} but as a plain list for direct submission. */
-	private takeImagesFor(text: string): ImageContent[] | undefined {
-		return this.imageList(this.takeImageMap(text));
-	}
-
-	/** A `markerId -> image` map as a plain list for submission, or undefined if empty. */
-	private imageList(images: Map<number, ImageContent> | undefined): ImageContent[] | undefined {
-		if (!images || images.size === 0) {
-			return undefined;
+	private rememberPastedImage(id: number, image: ImageContent): void {
+		this.pastedImages.set(id, image);
+		let total = 0;
+		for (const img of this.pastedImages.values()) {
+			total += img.data.length;
 		}
-		return [...images.values()];
+		for (const key of this.pastedImages.keys()) {
+			if (total <= MAX_PASTED_IMAGE_BYTES || key === id) {
+				break;
+			}
+			total -= this.pastedImages.get(key)?.data.length ?? 0;
+			this.pastedImages.delete(key);
+		}
+	}
+
+	/**
+	 * The images whose `[image #N]` markers are present in `text`, or undefined if
+	 * none. Read-only: the registry is never cleared here, so deleting a marker
+	 * simply drops its image while restoring the marker (undo, history, retry,
+	 * dequeue) brings it back. Marker presence in the sent text is the single
+	 * source of truth.
+	 */
+	private collectImagesFor(text: string): ImageContent[] | undefined {
+		const images = collectMarkedImages(this.pastedImages, text);
+		return images.length > 0 ? images : undefined;
 	}
 
 	private setupEditorSubmitHandler(): void {
@@ -3379,13 +3379,12 @@ export class InteractiveMode {
 
 			// Queue input during compaction (extension commands execute immediately)
 			if (this.isAgentCompacting()) {
-				const images = this.takeImageMap(text);
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
-					await this.agentConnection.prompt(text, { images: this.imageList(images) });
+					await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
 				} else {
-					this.queueCompactionMessage(text, "steer", images.size > 0 ? images : undefined);
+					this.queueCompactionMessage(text, "steer");
 				}
 				return;
 			}
@@ -3393,7 +3392,7 @@ export class InteractiveMode {
 			// If streaming, use prompt() with steer behavior
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
 			if (this.isAgentStreaming()) {
-				const images = this.takeImagesFor(text);
+				const images = this.collectImagesFor(text);
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
 				await this.agentConnection.prompt(text, { streamingBehavior: "steer", images });
@@ -3406,8 +3405,6 @@ export class InteractiveMode {
 			// First, move any pending bash components to chat
 			this.flushPendingBashComponents();
 
-			// Hand images to the main input loop, which owns the prompt() call.
-			this.submittedImages = this.takeImageMap(text);
 			if (this.onInputCallback) {
 				this.onInputCallback(text);
 			}
@@ -4914,13 +4911,12 @@ export class InteractiveMode {
 
 		// Queue input during compaction (extension commands execute immediately)
 		if (this.isAgentCompacting()) {
-			const images = this.takeImageMap(text);
 			if (this.isExtensionCommand(text)) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.agentConnection.prompt(text, { images: this.imageList(images) });
+				await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
 			} else {
-				this.queueCompactionMessage(text, "followUp", images.size > 0 ? images : undefined);
+				this.queueCompactionMessage(text, "followUp");
 			}
 			return;
 		}
@@ -4928,7 +4924,7 @@ export class InteractiveMode {
 		// Alt+Enter queues a follow-up message (waits until agent finishes)
 		// This handles extension commands (execute immediately), prompt template expansion, and queueing
 		if (this.isAgentStreaming()) {
-			const images = this.takeImagesFor(text);
+			const images = this.collectImagesFor(text);
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
 			await this.agentConnection.prompt(text, { streamingBehavior: "followUp", images });
@@ -5138,11 +5134,7 @@ export class InteractiveMode {
 	 * Clear all queued messages and return their contents.
 	 * Clears both session queue and compaction queue.
 	 */
-	private async clearAllQueues(): Promise<{
-		steering: string[];
-		followUp: string[];
-		images: Map<number, ImageContent>;
-	}> {
+	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
 		const { steering, followUp } = await this.agentConnection.clearQueue();
 		this.connectionQueue = { steering: [], followUp: [] };
 		const compactionSteering = this.compactionQueuedMessages
@@ -5151,22 +5143,10 @@ export class InteractiveMode {
 		const compactionFollowUp = this.compactionQueuedMessages
 			.filter((msg) => msg.mode === "followUp")
 			.map((msg) => msg.text);
-		// Carry the compaction queue's images out so a dequeue can re-register them
-		// against the markers restored to the editor. (Server-queued messages return
-		// text only, so their images can't be recovered here.)
-		const images = new Map<number, ImageContent>();
-		for (const msg of this.compactionQueuedMessages) {
-			if (msg.images) {
-				for (const [id, image] of msg.images) {
-					images.set(id, image);
-				}
-			}
-		}
 		this.compactionQueuedMessages = [];
 		return {
 			steering: [...steering, ...compactionSteering],
 			followUp: [...followUp, ...compactionFollowUp],
-			images,
 		};
 	}
 
@@ -5204,7 +5184,7 @@ export class InteractiveMode {
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
-		const { steering, followUp, images } = await this.clearAllQueues();
+		const { steering, followUp } = await this.clearAllQueues();
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
 			this.updatePendingMessagesDisplay();
@@ -5216,12 +5196,9 @@ export class InteractiveMode {
 		const queuedText = allQueued.join("\n\n");
 		const currentText = options?.currentText ?? this.editor.getText();
 		const combinedText = [queuedText, currentText].filter((t) => t.trim()).join("\n\n");
+		// The image registry persists, so the restored `[image #N]` markers resolve
+		// on resubmit without any re-registration here.
 		this.editor.setText(combinedText);
-		// Re-register images after setText (which prunes via onChange) so their
-		// `[image #N]` markers in the restored text resolve again on resubmit.
-		for (const [id, image] of images) {
-			this.pendingImages.set(id, image);
-		}
 		this.updatePendingMessagesDisplay();
 		if (options?.abort) {
 			await this.agentConnection.abort();
@@ -5229,8 +5206,8 @@ export class InteractiveMode {
 		return allQueued.length;
 	}
 
-	private queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: Map<number, ImageContent>): void {
-		this.compactionQueuedMessages.push({ text, mode, images });
+	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
+		this.compactionQueuedMessages.push({ text, mode });
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
 		this.updatePendingMessagesDisplay();
@@ -5271,11 +5248,11 @@ export class InteractiveMode {
 				// When retry is pending, queue messages for the retry turn
 				for (const message of queuedMessages) {
 					if (this.isExtensionCommand(message.text)) {
-						await this.agentConnection.prompt(message.text, { images: this.imageList(message.images) });
+						await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
 					} else if (message.mode === "followUp") {
-						await this.agentConnection.followUp(message.text, this.imageList(message.images));
+						await this.agentConnection.followUp(message.text, this.collectImagesFor(message.text));
 					} else {
-						await this.agentConnection.steer(message.text, this.imageList(message.images));
+						await this.agentConnection.steer(message.text, this.collectImagesFor(message.text));
 					}
 				}
 				this.updatePendingMessagesDisplay();
@@ -5287,7 +5264,7 @@ export class InteractiveMode {
 			if (firstPromptIndex === -1) {
 				// All extension commands - execute them all
 				for (const message of queuedMessages) {
-					await this.agentConnection.prompt(message.text, { images: this.imageList(message.images) });
+					await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
 				}
 				return;
 			}
@@ -5298,12 +5275,12 @@ export class InteractiveMode {
 			const rest = queuedMessages.slice(firstPromptIndex + 1);
 
 			for (const message of preCommands) {
-				await this.agentConnection.prompt(message.text, { images: this.imageList(message.images) });
+				await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
 			}
 
 			// Send first prompt (starts streaming)
 			const promptPromise = this.agentConnection
-				.prompt(firstPrompt.text, { images: this.imageList(firstPrompt.images) })
+				.prompt(firstPrompt.text, { images: this.collectImagesFor(firstPrompt.text) })
 				.catch((error) => {
 					void restoreQueue(error);
 				});
@@ -5311,11 +5288,11 @@ export class InteractiveMode {
 			// Queue remaining messages
 			for (const message of rest) {
 				if (this.isExtensionCommand(message.text)) {
-					await this.agentConnection.prompt(message.text, { images: this.imageList(message.images) });
+					await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
 				} else if (message.mode === "followUp") {
-					await this.agentConnection.followUp(message.text, this.imageList(message.images));
+					await this.agentConnection.followUp(message.text, this.collectImagesFor(message.text));
 				} else {
-					await this.agentConnection.steer(message.text, this.imageList(message.images));
+					await this.agentConnection.steer(message.text, this.collectImagesFor(message.text));
 				}
 			}
 			this.updatePendingMessagesDisplay();
