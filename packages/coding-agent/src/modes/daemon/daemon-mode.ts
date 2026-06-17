@@ -1133,6 +1133,10 @@ class AgentDaemon {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
+		// Abort in-flight status work first (synchronously), before any await or
+		// dispose, so a finishing summarize bails on its aborted guard instead of
+		// appending agent_status to a session being torn down.
+		this.summarizer.forget(state.activeSessionId);
 		const cascadeError = await this.closeChildSessions(state, reason);
 		let persistError: unknown;
 		if (reason !== "shutdown") {
@@ -1153,7 +1157,6 @@ class AgentDaemon {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
 		}
 		state.clients.clear();
-		this.summarizer.forget(state.activeSessionId);
 		this.sessions.delete(state.activeSessionId);
 		if (persistError && reason !== "shutdown" && reason !== "completed") {
 			throw persistError;
