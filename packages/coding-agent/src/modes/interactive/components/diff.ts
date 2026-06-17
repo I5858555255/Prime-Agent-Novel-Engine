@@ -186,11 +186,14 @@ function buildRichDiffLine(spec: DiffLineSpec): string {
 		? theme.fg(spec.contentFg, spec.content)
 		: highlightContent(spec.content, spec.language);
 	let inner = `${styledGutter}${renderedContent}\x1b[39m`;
-	const vis = visibleWidth(inner);
-	if (vis > spec.width) {
+	if (visibleWidth(inner) > spec.width) {
 		inner = truncateToWidth(inner, spec.width, "");
-	} else if (vis < spec.width) {
-		inner += " ".repeat(spec.width - vis);
+	}
+	// Pad after truncating too: a 2-cell character straddling the cutoff leaves
+	// the result a cell short.
+	const pad = spec.width - visibleWidth(inner);
+	if (pad > 0) {
+		inner += " ".repeat(pad);
 	}
 	return theme.bg(spec.bg, inner);
 }

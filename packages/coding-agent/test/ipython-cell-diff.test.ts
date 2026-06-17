@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { IPythonCellComponent } from "../src/modes/interactive/components/ipython-cell.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -52,6 +53,23 @@ describe("IPythonCellComponent diff rendering", () => {
 		}).render(72);
 		// Every rendered line is exactly the panel width (no ragged backgrounds).
 		expect(out.every((line) => stripAnsi(line).length === 72)).toBe(true);
+	});
+
+	it("keeps full width when a wide character straddles the truncation boundary", () => {
+		// CJK chars are 2 cells wide; a narrow render forces truncation mid-character.
+		const wide = "値".repeat(60);
+		const out = new IPythonCellComponent({
+			code: "await edit(...)",
+			details: {
+				status: "ok",
+				diffs: [{ path: "a.py", oldStr: "x = 1", newStr: `x = "${wide}"`, startLine: 1 }],
+			},
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+		}).render(40);
+		// Measure display cells, not code units (CJK chars are 2 cells wide).
+		expect(out.every((line) => visibleWidth(line) === 40)).toBe(true);
 	});
 
 	it("collapses a long diff and shows an expand hint", () => {
