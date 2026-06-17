@@ -353,31 +353,20 @@ export async function runReap(json: boolean, force: boolean): Promise<void> {
 			case "kill": {
 				// Re-probe right before killing: discovery and this kill happen at
 				// different moments, so a daemon classified "unreachable" may have
-				// since started answering. Never SIGTERM one that now responds with
-				// live sessions; defer to the session-aware paths instead.
+				// since started answering. Never SIGTERM one that now responds;
+				// defer to the session-aware shutdown path instead.
 				const recheck = await probeDaemon(socketPath);
 				if (!recheck.reachable) {
 					killDaemon(pid!);
 					removeSocketFile(socketPath);
 					reaped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
-				} else if (recheck.sessionCount !== 0) {
-					skipped.push({
-						socketPath,
-						reason: `now reachable with ${recheck.sessionCount ?? "unknown"} session(s)`,
-					});
-				} else if (await shutdownDaemon(socketPath)) {
-					reaped.push({ socketPath, action: `stopped idle daemon (pid ${pid})` });
 				} else {
-					skipped.push({ socketPath, reason: "shutdown request failed" });
+					apply(await reapReachableDaemon(socketPath, pid), socketPath, reaped, skipped);
 				}
 				break;
 			}
 			case "shutdown":
-				if (await shutdownDaemon(socketPath)) {
-					reaped.push({ socketPath, action: `stopped idle daemon${pid ? ` (pid ${pid})` : ""}` });
-				} else {
-					skipped.push({ socketPath, reason: "shutdown request failed" });
-				}
+				apply(await reapReachableDaemon(socketPath, pid), socketPath, reaped, skipped);
 				break;
 		}
 	}
@@ -396,6 +385,39 @@ export async function runReap(json: boolean, force: boolean): Promise<void> {
 	for (const entry of skipped) {
 		console.log(chalk.dim(`kept   ${entry.socketPath}: ${entry.reason}`));
 	}
+}
+
+type ReapOutcome = { reaped: string } | { skipped: string };
+
+function apply(
+	outcome: ReapOutcome,
+	socketPath: string,
+	reaped: Array<{ socketPath: string; action: string }>,
+	skipped: Array<{ socketPath: string; reason: string }>,
+): void {
+	if ("reaped" in outcome) {
+		reaped.push({ socketPath, action: outcome.reaped });
+	} else {
+		skipped.push({ socketPath, reason: outcome.skipped });
+	}
+}
+
+/**
+ * Gracefully stop a daemon, but only after a fresh probe confirms it is idle.
+ * Discovery and reap happen at different moments, so the session count is
+ * re-checked here to avoid stopping a daemon that gained a session in between.
+ */
+async function reapReachableDaemon(socketPath: string, pid: number | undefined): Promise<ReapOutcome> {
+	const probe = await probeDaemon(socketPath);
+	if (!probe.reachable) {
+		return { skipped: "no longer reachable" };
+	}
+	if (probe.sessionCount !== 0) {
+		return { skipped: `now has ${probe.sessionCount ?? "unknown"} session(s)` };
+	}
+	return (await shutdownDaemon(socketPath))
+		? { reaped: `stopped idle daemon${pid ? ` (pid ${pid})` : ""}` }
+		: { skipped: "shutdown request failed" };
 }
 
 function removeSocketFile(socketPath: string): boolean {
