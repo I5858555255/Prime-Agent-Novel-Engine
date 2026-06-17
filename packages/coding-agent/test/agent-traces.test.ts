@@ -130,6 +130,52 @@ describe("agent trace upload", () => {
 		expect(calls).toHaveLength(0);
 	});
 
+	it("stops before reading the session body when trace sharing is disabled after upload starts", async () => {
+		const sessionManager = writeSession(tempDir, join(tempDir, "sessions"), "disabled-before-read-session");
+		const settingsManager = SettingsManager.inMemory({ agentTraces: { enabled: true } });
+		const enabledSpy = vi.spyOn(settingsManager, "getAgentTracesEnabled");
+		enabledSpy.mockReturnValueOnce(true).mockReturnValue(false);
+
+		const calls: FetchCall[] = [];
+		const result = await uploadAgentTraceFile({
+			sessionFile: sessionManager.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager,
+			baseUrl: "https://api.example.test",
+			fetchFn: createFetchRecorder(calls),
+			reloadConfig: false,
+		});
+
+		expect(result).toEqual({ status: "disabled" });
+		expect(calls).toHaveLength(0);
+		expect(enabledSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("rechecks trace sharing before sending the upload request", async () => {
+		const sessionManager = writeSession(tempDir, join(tempDir, "sessions"), "disabled-before-fetch-session");
+		const settingsManager = SettingsManager.inMemory({ agentTraces: { enabled: true } });
+		const enabledSpy = vi.spyOn(settingsManager, "getAgentTracesEnabled");
+		enabledSpy.mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false);
+
+		const calls: FetchCall[] = [];
+		const result = await uploadAgentTraceFile({
+			sessionFile: sessionManager.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager,
+			baseUrl: "https://api.example.test",
+			fetchFn: createFetchRecorder(calls),
+			reloadConfig: false,
+		});
+
+		expect(result).toEqual({ status: "disabled" });
+		expect(calls).toHaveLength(0);
+		expect(enabledSpy).toHaveBeenCalledTimes(3);
+	});
+
 	it("uploads raw session JSONL with trace headers", async () => {
 		const cwd = join(tempDir, "project");
 		const sessionDir = join(tempDir, "sessions");

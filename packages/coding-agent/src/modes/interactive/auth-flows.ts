@@ -24,6 +24,7 @@ import {
 	PRIME_INFERENCE_PROVIDER_ID,
 	PRIME_INFERENCE_PROVIDER_NAME,
 	type PrimeTeam,
+	resolvePrimeAgentTracesBaseUrl,
 } from "../../core/prime-inference-auth.js";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.js";
 import { showFullPaneOverlay } from "./components/centered-overlay.js";
@@ -649,8 +650,9 @@ export class ProviderAuthFlows {
 			if (result.source === "manual") {
 				browserAbort.abort();
 				dialog.showProgress("Checking Prime Agent trace access...");
-				const config = loadPrimeCliConfig();
-				const access = await checkPrimeAgentTracesAccess(result.apiKey, config.baseUrl, { signal: dialog.signal });
+				const access = await checkPrimeAgentTracesAccess(result.apiKey, resolvePrimeAgentTracesBaseUrl(), {
+					signal: dialog.signal,
+				});
 				if (dialog.signal.aborted) {
 					closeDialog();
 					return { status: "cancelled" };

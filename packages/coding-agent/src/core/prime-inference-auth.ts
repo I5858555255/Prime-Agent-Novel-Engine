@@ -81,10 +81,7 @@ function defaultPrimeCliConfigPath(): string {
 }
 
 function normalizeBaseUrl(value: string | undefined): string {
-	return (value || DEFAULT_PRIME_API_BASE_URL)
-		.trim()
-		.replace(/\/+$/, "")
-		.replace(/\/api\/v1$/, "");
+	return (value?.trim() || DEFAULT_PRIME_API_BASE_URL).replace(/\/+$/, "").replace(/\/api\/v1$/, "");
 }
 
 function normalizeUrl(value: string | undefined, fallback: string): string {
@@ -155,6 +152,17 @@ export function loadPrimeCliConfig(configPath: string = defaultPrimeCliConfigPat
 		}
 	}
 	return config;
+}
+
+export function resolvePrimeAgentTracesBaseUrl(baseUrl?: string): string {
+	return normalizeBaseUrl(baseUrl ?? stringEnv("PRIME_AGENT_TRACES_BASE_URL"));
+}
+
+function resolvePrimeAgentTracesChallengeConfig(config: PrimeCliConfig): PrimeChallengeConfig {
+	return {
+		baseUrl: resolvePrimeAgentTracesBaseUrl(),
+		frontendUrl: stringEnv("PRIME_AGENT_TRACES_BASE_URL") ? config.frontendUrl : DEFAULT_PRIME_FRONTEND_URL,
+	};
 }
 
 function throwIfCancelled(signal?: AbortSignal): void {
@@ -598,13 +606,14 @@ export async function loginPrimeAgentTraces(
 	options: PrimeInferenceLoginOptions = {},
 ): Promise<PrimeInferenceLoginResult> {
 	const config = loadPrimeCliConfig(options.configPath);
+	const traceConfig = resolvePrimeAgentTracesChallengeConfig(config);
 	const fetchFn = options.fetchFn ?? fetch;
 	const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 	const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
 	if (config.apiKey) {
 		callbacks.onProgress?.("Checking existing Prime CLI credentials...");
-		const access = await checkPrimeAgentTracesAccess(config.apiKey, config.baseUrl, {
+		const access = await checkPrimeAgentTracesAccess(config.apiKey, traceConfig.baseUrl, {
 			fetchFn,
 			requestTimeoutMs,
 			signal: callbacks.signal,
@@ -621,7 +630,7 @@ export async function loginPrimeAgentTraces(
 	}
 
 	const apiKey = await runPrimeBrowserLogin(
-		config,
+		traceConfig,
 		callbacks,
 		fetchFn,
 		requestTimeoutMs,
@@ -630,7 +639,7 @@ export async function loginPrimeAgentTraces(
 	);
 	throwIfCancelled(callbacks.signal);
 	callbacks.onProgress?.("Checking Prime Agent trace access...");
-	const access = await checkPrimeAgentTracesAccess(apiKey, config.baseUrl, {
+	const access = await checkPrimeAgentTracesAccess(apiKey, traceConfig.baseUrl, {
 		fetchFn,
 		requestTimeoutMs,
 		signal: callbacks.signal,

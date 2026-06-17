@@ -8,11 +8,11 @@ import {
 	loadPrimeCliConfig,
 	PRIME_AGENT_TRACES_PROVIDER_ID,
 	PRIME_INFERENCE_PROVIDER_ID,
+	resolvePrimeAgentTracesBaseUrl,
 } from "./prime-inference-auth.js";
 import type { SessionHeader, SessionManager } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 
-const DEFAULT_PRIME_API_BASE_URL = "https://api.primeintellect.ai";
 const MAX_TRACE_BYTES = 20 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const TRACE_UPLOAD_DEBOUNCE_MS = 1_000;
@@ -70,13 +70,6 @@ export interface AgentTraceUploadInstallOptions {
 function stringEnv(name: string): string | undefined {
 	const value = process.env[name];
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function normalizeBaseUrl(value: string | undefined): string {
-	return (value || DEFAULT_PRIME_API_BASE_URL)
-		.trim()
-		.replace(/\/+$/, "")
-		.replace(/\/api\/v1$/, "");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -206,10 +199,6 @@ async function fetchWithTimeout(
 	}
 }
 
-function resolvePrimeApiBaseUrl(options: { baseUrl?: string }): string {
-	return normalizeBaseUrl(options.baseUrl ?? stringEnv("PRIME_AGENT_TRACES_BASE_URL"));
-}
-
 export async function getPrimeAgentTraceCredential(
 	authStorage: AuthStorage,
 	options: { reloadAuth?: boolean; configPath?: string } = {},
@@ -249,11 +238,17 @@ export async function getPrimeAgentTraceCredential(
 	return undefined;
 }
 
-export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Promise<AgentTraceUploadResult> {
+async function getAgentTracesEnabled(
+	options: Pick<AgentTraceUploadOptions, "reloadConfig" | "settingsManager">,
+): Promise<boolean> {
 	if (options.reloadConfig !== false) {
 		await options.settingsManager.reload().catch(() => undefined);
 	}
-	if (!options.settingsManager.getAgentTracesEnabled()) {
+	return options.settingsManager.getAgentTracesEnabled();
+}
+
+export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Promise<AgentTraceUploadResult> {
+	if (!(await getAgentTracesEnabled(options))) {
 		return { status: "disabled" };
 	}
 	if (!options.sessionFile) {
@@ -290,6 +285,10 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 		return { status: "missing_credentials" };
 	}
 
+	if (!(await getAgentTracesEnabled(options))) {
+		return { status: "disabled" };
+	}
+
 	let body: string;
 	try {
 		body = await readFile(options.sessionFile, "utf8");
@@ -315,7 +314,11 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 		headers["X-Parent-Session"] = traceContext.parentSessionId;
 	}
 
-	const baseUrl = resolvePrimeApiBaseUrl({ baseUrl: options.baseUrl });
+	if (!(await getAgentTracesEnabled(options))) {
+		return { status: "disabled" };
+	}
+
+	const baseUrl = resolvePrimeAgentTracesBaseUrl(options.baseUrl);
 	const url = `${baseUrl}/api/v1/agent-traces/sessions/${encodeURIComponent(header.id)}`;
 	const fetchFn = options.fetchFn ?? fetch;
 

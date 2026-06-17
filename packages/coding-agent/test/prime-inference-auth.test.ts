@@ -65,14 +65,22 @@ function encryptChallengeResult(publicKey: string, value: string): string {
 describe("Prime Inference auth", () => {
 	let tempDir: string;
 	let configPath: string;
+	let originalTraceBaseUrl: string | undefined;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `pi-prime-auth-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		configPath = join(tempDir, "config.json");
+		originalTraceBaseUrl = process.env.PRIME_AGENT_TRACES_BASE_URL;
+		delete process.env.PRIME_AGENT_TRACES_BASE_URL;
 	});
 
 	afterEach(() => {
+		if (originalTraceBaseUrl === undefined) {
+			delete process.env.PRIME_AGENT_TRACES_BASE_URL;
+		} else {
+			process.env.PRIME_AGENT_TRACES_BASE_URL = originalTraceBaseUrl;
+		}
 		if (existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true });
 		}
@@ -203,6 +211,57 @@ describe("Prime Inference auth", () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
+	it("validates imported Prime CLI trace credentials against the production trace API by default", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				api_key: "prime-cli-key",
+				base_url: "https://dev-api.example/api/v1",
+			}),
+		);
+		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			expect(getUrl(input)).toBe("https://api.primeintellect.ai/api/v1/user/whoami");
+			expect(getAuthorization(init)).toBe("Bearer prime-cli-key");
+			return jsonResponse({ data: { scope: { agent_traces: { write: true } } } });
+		});
+		const onAuth = vi.fn();
+
+		const result = await loginPrimeAgentTraces(
+			{ onAuth },
+			{ configPath, fetchFn: fetchMock, requestTimeoutMs: 1000 },
+		);
+
+		expect(result).toEqual({ apiKey: "prime-cli-key", source: "prime-cli" });
+		expect(onAuth).not.toHaveBeenCalled();
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("validates imported Prime CLI trace credentials against PRIME_AGENT_TRACES_BASE_URL", async () => {
+		process.env.PRIME_AGENT_TRACES_BASE_URL = "https://trace-api.example/api/v1";
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				api_key: "prime-cli-key",
+				base_url: "https://dev-api.example/api/v1",
+			}),
+		);
+		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			expect(getUrl(input)).toBe("https://trace-api.example/api/v1/user/whoami");
+			expect(getAuthorization(init)).toBe("Bearer prime-cli-key");
+			return jsonResponse({ data: { scope: { agent_traces: { write: true } } } });
+		});
+		const onAuth = vi.fn();
+
+		const result = await loginPrimeAgentTraces(
+			{ onAuth },
+			{ configPath, fetchFn: fetchMock, requestTimeoutMs: 1000 },
+		);
+
+		expect(result).toEqual({ apiKey: "prime-cli-key", source: "prime-cli" });
+		expect(onAuth).not.toHaveBeenCalled();
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
 	it("throws contextual errors for invalid Prime whoami JSON", async () => {
 		const fetchMock = vi.fn(async (): Promise<Response> => {
 			return new Response("not json", {
@@ -307,6 +366,7 @@ describe("Prime Inference auth", () => {
 	});
 
 	it("requests agent trace scope during Prime Agent trace browser login", async () => {
+		process.env.PRIME_AGENT_TRACES_BASE_URL = "https://prime-api.example/api/v1";
 		writeFileSync(
 			configPath,
 			JSON.stringify({
