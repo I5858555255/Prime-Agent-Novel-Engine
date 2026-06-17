@@ -477,9 +477,6 @@ export class AgentDaemon {
 		const followUpQueueKey = isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined;
 		if (followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
 			const didQueue = await state.runtime.session.followUp(job.prompt, undefined, { queueKey: followUpQueueKey });
-			if (!didQueue) {
-				state.runtime.session.removeQueuedFollowUp(followUpQueueKey);
-			}
 			return didQueue ? undefined : "skipped";
 		}
 		if (!followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
@@ -518,6 +515,7 @@ export class AgentDaemon {
 		if (!sessionFile) {
 			throw new Error("Heartbeats require a persisted session file");
 		}
+		const previousHeartbeat = this.cronStore.getHeartbeat(state.activeSessionId);
 		const job = this.cronStore.createHeartbeat({
 			activeSessionId: state.activeSessionId,
 			sessionId: session.sessionId,
@@ -527,6 +525,9 @@ export class AgentDaemon {
 			scheduleText: normalizeHeartbeatSchedule(schedule),
 			prompt: instruction,
 		});
+		if (previousHeartbeat) {
+			this.removeQueuedHeartbeatFollowUp(state, previousHeartbeat);
+		}
 		this.cronScheduler.wake();
 		return job;
 	}
@@ -541,6 +542,9 @@ export class AgentDaemon {
 				: action === "resume"
 					? this.cronStore.resumeHeartbeat(state.activeSessionId)
 					: this.cronStore.clearHeartbeat(state.activeSessionId);
+		if (job && action !== "resume") {
+			this.removeQueuedHeartbeatFollowUp(state, job);
+		}
 		this.cronScheduler.wake();
 		return job;
 	}
@@ -579,6 +583,9 @@ export class AgentDaemon {
 			status: input.status,
 		});
 		if (job) {
+			if (input.instruction !== undefined || input.interval !== undefined || input.status === "pause") {
+				this.removeQueuedHeartbeatFollowUp(state, job);
+			}
 			this.cronScheduler.wake();
 		}
 		return job;
@@ -587,6 +594,7 @@ export class AgentDaemon {
 	private deleteRlmHeartbeatForState(state: ActiveSessionState, id: string): AgentCronJob | undefined {
 		const job = this.cronStore.deleteRlmHeartbeat(state.activeSessionId, id);
 		if (job) {
+			this.removeQueuedHeartbeatFollowUp(state, job);
 			this.cronScheduler.wake();
 		}
 		return job;
@@ -613,9 +621,19 @@ export class AgentDaemon {
 			return;
 		}
 		const cancelled = this.cronStore.cancelRlmHeartbeatsForSession(state.activeSessionId);
+		for (const job of cancelled) {
+			this.removeQueuedHeartbeatFollowUp(state, job);
+		}
 		if (cancelled.length > 0) {
 			this.cronScheduler.wake();
 		}
+	}
+
+	private removeQueuedHeartbeatFollowUp(state: ActiveSessionState, job: AgentCronJob): void {
+		if (!isHeartbeatCronJob(job)) {
+			return;
+		}
+		state.runtime.session.removeQueuedFollowUp(`heartbeat:${job.id}`);
 	}
 
 	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState | undefined> {
@@ -1143,6 +1161,10 @@ export class AgentDaemon {
 				const job = this.cronStore.cancel(command.jobId);
 				if (!job) {
 					throw new Error(`No cron job found: ${command.jobId}`);
+				}
+				const state = this.sessions.get(job.activeSessionId);
+				if (state) {
+					this.removeQueuedHeartbeatFollowUp(state, job);
 				}
 				this.cronScheduler.wake();
 				return success(command.id, "cron_cancel", { job });

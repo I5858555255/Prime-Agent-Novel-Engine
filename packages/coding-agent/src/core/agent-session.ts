@@ -361,6 +361,7 @@ export interface PromptOptions {
 interface QueuedFollowUpMessage {
 	text: string;
 	queueKey?: string;
+	message: AgentMessage;
 }
 
 /** Result from cycleModel() */
@@ -2336,17 +2337,18 @@ export class AgentSession {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
 			return false;
 		}
-		this._followUpMessages.push({ text, queueKey: options.queueKey });
-		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		this._followUpMessages.push({ text, queueKey: options.queueKey, message });
+		this._emitQueueUpdate();
+		this.agent.followUp(message);
 		return true;
 	}
 
@@ -2492,10 +2494,8 @@ export class AgentSession {
 			return false;
 		}
 		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
-		const removedTexts = new Set(removed.map((message) => message.text));
-		this.agent.removeQueuedMessages((message) => {
-			return message.role === "user" && removedTexts.has(this._getUserMessageText(message) ?? "");
-		});
+		const removedMessages = new Set(removed.map((message) => message.message));
+		this.agent.removeQueuedMessages((message) => removedMessages.has(message));
 		this._emitQueueUpdate();
 		return true;
 	}

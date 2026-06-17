@@ -306,7 +306,7 @@ describe("daemon mode helpers", () => {
 
 		expect(result).toBe("skipped");
 		expect(followUp).toHaveBeenCalledWith("heartbeat prompt", undefined, { queueKey: "heartbeat:heartbeat-1" });
-		expect(removeQueuedFollowUp).toHaveBeenCalledWith("heartbeat:heartbeat-1");
+		expect(removeQueuedFollowUp).not.toHaveBeenCalled();
 	});
 
 	it("queues generic cron jobs behind pending messages", async () => {
@@ -337,6 +337,53 @@ describe("daemon mode helpers", () => {
 
 		expect(followUp).toHaveBeenCalledWith("heartbeat prompt");
 		expect(prompt).not.toHaveBeenCalled();
+	});
+
+	it("removes queued heartbeat follow-ups when a heartbeat is cleared", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-clear-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const removeQueuedFollowUp = vi.fn(() => true);
+			const state = makeState("active-1") as ActiveSessionState & {
+				runtime: ActiveSessionState["runtime"] & {
+					session: ActiveSessionState["runtime"]["session"] & {
+						removeQueuedFollowUp: typeof removeQueuedFollowUp;
+					};
+				};
+			};
+			state.runtime.session = { removeQueuedFollowUp } as never;
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				sessions: Map<string, ActiveSessionState>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+			const heartbeat = internals.cronStore.createHeartbeat({
+				activeSessionId: state.activeSessionId,
+				sessionId: "session-1",
+				sessionFile: join(tempDir, "session.jsonl"),
+				cwd: tempDir,
+				scheduleText: "every 5m",
+				prompt: "check on the session",
+				now: new Date("2026-01-01T12:00:00.000Z"),
+			});
+
+			await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+				id: "command-1",
+				type: "heartbeat_update",
+				activeSessionId: state.activeSessionId,
+				action: "clear",
+			});
+
+			expect(removeQueuedFollowUp).toHaveBeenCalledWith(`heartbeat:${heartbeat.id}`);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("validates active sessions before reading a heartbeat", async () => {
