@@ -3204,8 +3204,16 @@ export class InteractiveMode {
 	 * simply drops its image while restoring the marker (undo, history, retry,
 	 * dequeue) brings it back. Marker presence in the sent text is the single
 	 * source of truth.
+	 *
+	 * Resolved against the current model: if it has no image input, attachments
+	 * are dropped here (matching the paste-time hint) rather than sent and
+	 * downgraded downstream.
 	 */
 	private collectImagesFor(text: string): ImageContent[] | undefined {
+		const model = this.getCurrentModel();
+		if (model && !model.input.includes("image")) {
+			return undefined;
+		}
 		const images = collectMarkedImages(this.pastedImages, text);
 		return images.length > 0 ? images : undefined;
 	}
