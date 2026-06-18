@@ -163,8 +163,7 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 		return;
 	}
 
-	// `shutdown --all` discovers and stops every daemon, so it must not depend on
-	// one socket being reachable; handle it before connecting a single client.
+	// shutdown --all must not depend on one socket being reachable.
 	if (parsed.command === "shutdown" && parsed.positionals.some((arg) => arg === "--all" || arg === "-a")) {
 		await runShutdownAll(parsed.json);
 		return;

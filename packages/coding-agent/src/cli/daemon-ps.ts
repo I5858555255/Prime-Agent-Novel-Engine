@@ -336,32 +336,21 @@ export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAc
 	});
 }
 
-/**
- * Decide what to do with each discovered daemon for `shutdown --all` (pure, no
- * side effects). Unlike reap, this is the recovery hammer: every daemon is a
- * target, including the default daemon and daemons with live sessions. Reachable
- * daemons get a graceful `shutdown` (runShutdownAll escalates to a force-kill if
- * the daemon does not actually stop); unreachable daemons are killed by pid; and
- * orphaned socket files are removed. No daemon is ever skipped.
- */
+/** Plan `shutdown --all`: every daemon is a target, none skipped. */
 export function planShutdownAll(daemons: readonly DaemonInfo[]): ReapAction[] {
 	return daemons.map((daemon): ReapAction => {
 		if (daemon.status === "orphan-file") {
 			return { kind: "remove-file", daemon };
 		}
 		if (daemon.status === "unreachable") {
-			// status is "unreachable" only when a live process was found, so pid is
-			// set; fall back to socket-file cleanup in the impossible case it is not.
 			return daemon.pid === undefined ? { kind: "remove-file", daemon } : { kind: "kill", daemon };
 		}
 		return { kind: "shutdown", daemon };
 	});
 }
 
-// Graceful shutdowns run before any kill: a single process can surface under
-// several socket paths (e.g. macOS lsof reports every unix socket a process
-// holds), so stopping it gracefully first lets its sessions persist before a
-// kill on another of its paths could terminate it.
+// One process can appear under several socket paths, so shut down gracefully
+// before any kill on another of its paths could terminate it first.
 const SHUTDOWN_ALL_ACTION_ORDER: Record<ReapAction["kind"], number> = {
 	shutdown: 0,
 	"remove-file": 1,
@@ -373,8 +362,7 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 	const daemons = await discoverDaemons();
 	const stopped: Array<{ socketPath: string; action: string }> = [];
 	const failed: Array<{ socketPath: string; reason: string }> = [];
-	// Pids already stopped this run. A later entry for the same process must not
-	// signal the pid again: it is already down, and the pid may have been reused.
+	// Pids already stopped this run; never signal one twice (it may be reused).
 	const handledPids = new Set<number>();
 
 	const actions = [...planShutdownAll(daemons)].sort(
@@ -390,8 +378,6 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 		}
 		switch (action.kind) {
 			case "remove-file": {
-				// A path marked orphan-file at discovery may have become a live
-				// listener since; shut it down properly if so, else drop the file.
 				if ((await probeDaemon(socketPath)).reachable) {
 					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
 				} else if (removeSocketFile(socketPath)) {
@@ -402,22 +388,16 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 				break;
 			}
 			case "kill": {
-				// Re-probe right before killing: a daemon classified "unreachable" at
-				// discovery may have started answering since. Prefer the graceful path
-				// (which persists sessions) when it now responds.
 				if ((await probeDaemon(socketPath)).reachable) {
 					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
 				} else if (await canConnectToSocket(socketPath, 250)) {
-					// Probe failed but the socket still accepts connections: a wedged
-					// daemon. Killing its pid is safe because something is still there.
+					// Socket still listens: a wedged daemon, safe to kill by pid.
 					await forceKillDaemon(pid!);
 					handledPids.add(pid!);
 					removeSocketFile(socketPath);
 					stopped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
 				} else {
-					// The socket no longer accepts connections: the daemon already
-					// exited. Never signal the pid (it may have been recycled); just
-					// clean up the leftover socket file.
+					// Socket dead: the daemon exited; don't signal a possibly-reused pid.
 					removeSocketFile(socketPath);
 					stopped.push({ socketPath, action: "daemon already stopped" });
 				}
@@ -449,11 +429,9 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 }
 
 /**
- * Stop a reachable daemon, escalating to a force-kill only if it will not stop on
- * its own. The graceful request is tried first so sessions are persisted. If it
- * does not confirm the socket stopped, the socket is re-checked: a daemon that
- * already exited (connect now fails) is left alone — signalling its pid could hit
- * a recycled process — while one still listening is wedged and is killed by pid.
+ * Graceful shutdown first (persists sessions); if the socket has not stopped,
+ * only kill when it still listens, so a daemon that already exited never has its
+ * (possibly reused) pid signalled.
  */
 async function stopDaemonForcefully(
 	socketPath: string,
@@ -592,11 +570,7 @@ function killDaemon(pid: number): void {
 	}
 }
 
-/**
- * Force a daemon to exit. SIGTERM is tried first for a clean teardown, but a
- * wedged event loop never runs its handler, so SIGKILL follows if the process is
- * still alive shortly after. SIGKILL cannot be caught, so it always wins.
- */
+/** SIGTERM, then SIGKILL if still alive — a wedged event loop never runs its SIGTERM handler. */
 async function forceKillDaemon(pid: number): Promise<void> {
 	killDaemon(pid);
 	const deadline = Date.now() + 1000;
