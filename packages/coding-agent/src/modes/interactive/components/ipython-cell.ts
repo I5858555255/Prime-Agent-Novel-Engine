@@ -1,4 +1,10 @@
-import { type Component, VersionedRenderCache, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	truncateToWidth,
+	VersionedRenderCache,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
 import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
 import { normalizeErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
@@ -63,6 +69,51 @@ const CELL_MAGIC_PATTERN = /^\s*%%bash\b/;
 const OUTPUT_PREVIEW_LINES = 5;
 const INPUT_PREVIEW_LINES = 3;
 const DIFF_PREVIEW_LINES = 12;
+
+// Cap the descriptor so the trailing duration / result hint stay visible; the
+// panel line truncates anything that still overflows on narrow terminals.
+const DESCRIPTOR_MAX_WIDTH = 64;
+
+const COMMENT_LINE_PATTERN = /^\s*#/;
+// Strip a leading `cd … &&` (or `;`) so we surface the real command after it.
+const CD_PREFIX_PATTERN = /^\s*cd\s+[^&;|]+(?:&&|;)\s*/;
+
+function collapseWhitespace(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
+function truncateDescriptor(text: string): string {
+	if (text.length <= DESCRIPTOR_MAX_WIDTH) {
+		return text;
+	}
+	return `${text.slice(0, DESCRIPTOR_MAX_WIDTH - 1).trimEnd()}…`;
+}
+
+/**
+ * Best-effort, deterministic one-line descriptor for a cell — the leading
+ * meaningful command for shell cells, or the first real statement for python.
+ * No model involved: it surfaces the cell's own first line of intent so the
+ * collapsed view is more useful than `%%bash`. Returns "" when there's nothing
+ * meaningful yet (e.g. code still streaming).
+ */
+function summarizeCell(code: string): string {
+	const lines = code.split("\n");
+	const isBashCell = CELL_MAGIC_PATTERN.test(lines[0] ?? "");
+	const body = isBashCell ? lines.slice(1) : lines;
+	for (const rawLine of body) {
+		const trimmed = rawLine.trim();
+		if (!trimmed || COMMENT_LINE_PATTERN.test(trimmed)) {
+			continue;
+		}
+		// `!cmd` shell escapes in python read as the command they run.
+		const command = trimmed.replace(MAGIC_LINE_PATTERN, "").trim();
+		if (!command) {
+			continue;
+		}
+		return truncateDescriptor(collapseWhitespace(command.replace(CD_PREFIX_PATTERN, "")));
+	}
+	return "";
+}
 
 export function getIpythonCodeFromArgs(args: unknown): string {
 	if (!args || typeof args !== "object" || !("code" in args)) {
@@ -239,6 +290,16 @@ export class IPythonCellComponent implements Component {
 		}
 
 		const details = readDetails(this.state.details);
+
+		// Default view: one condensed line per tool call. The leading space matches
+		// the one-column indent of message text; code/output/diffs stay hidden until
+		// the block is expanded with ctrl+o. Cached by state version so the line only
+		// re-renders when its own content changes — never on every global repaint.
+		if (!this.state.expanded) {
+			const line = truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "");
+			return this.renderCache.set(safeWidth, this.stateVersion, [line]);
+		}
+
 		const lines: string[] = [];
 		let expandHintShown = false;
 		const withExpandHint: ExpandHintFormatter = (label) => {
@@ -256,6 +317,90 @@ export class IPythonCellComponent implements Component {
 		return this.renderCache.set(safeWidth, this.stateVersion, lines);
 	}
 
+	/**
+	 * The condensed single line shown by default: a status marker, the cell
+	 * language, the leading command (bash only — python first-lines are usually
+	 * imports/setup), live in/out line counts, and — once finished — the duration
+	 * and any error name.
+	 */
+	private collapsedLine(details: IpythonDetails): string {
+		const code = this.state.code.trimEnd();
+		const isBashCell = CELL_MAGIC_PATTERN.test(code.split("\n")[0] ?? "");
+		const parts = [`${this.marker(details)} ${theme.fg("muted", isBashCell ? "bash" : "python")}`];
+
+		if (isBashCell) {
+			const command = summarizeCell(code);
+			if (command) {
+				parts.push(this.highlightInputLine(command, true));
+			} else if (!this.state.executionStarted) {
+				parts.push(theme.fg("muted", "waiting for code"));
+			}
+		}
+
+		const counts = this.lineCounts(details);
+		if (counts) {
+			parts.push(theme.fg("muted", counts));
+		}
+
+		const duration = formatDuration(details.durationMs);
+		if (duration) {
+			parts.push(theme.fg("muted", duration));
+		}
+
+		const errorName = !this.state.isPartial ? (details.error?.ename ?? details.errorEname) : undefined;
+		if (errorName) {
+			parts.push(theme.fg("error", errorName));
+		}
+
+		parts.push(keyHint("app.tools.expand", "to expand"));
+		return parts.join(theme.fg("dim", " · "));
+	}
+
+	/** Status marker — color carries running/done/error; ✓/✗ once finished. */
+	private marker(details: IpythonDetails): string {
+		switch (this.statusKind(details)) {
+			case "error":
+				return theme.fg("error", "✗");
+			case "aborted":
+				return theme.fg("warning", "✗");
+			case "done":
+				return theme.fg("success", "✓");
+			case "running":
+				return theme.fg("bashMode", "▸");
+			default: // queued
+				return theme.fg("muted", "▸");
+		}
+	}
+
+	/**
+	 * Condensed input/output line counts (`↑in ↓out lines`), updated live as the
+	 * cell's code and output stream in. The `lines` unit disambiguates from the
+	 * activity line's token counts. Output is omitted for edits — the diff renders
+	 * on expand and its stdout is just the "Edited" confirmation.
+	 */
+	private lineCounts(details: IpythonDetails): string | undefined {
+		const codeLines = this.state.code.split("\n");
+		const isBashCell = CELL_MAGIC_PATTERN.test(codeLines[0] ?? "");
+		const body = isBashCell ? codeLines.slice(1) : codeLines;
+		const input = body.filter((line) => line.trim().length > 0).length;
+
+		const hasDiffs = (details.diffs?.length ?? 0) > 0;
+		const structured = [details.stdout, details.stderr, details.result]
+			.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+			.join("\n");
+		const outputText = (structured || textFromBlocks(this.state.content)).trim();
+		const output = hasDiffs || !outputText ? 0 : outputText.split("\n").length;
+
+		const segments: string[] = [];
+		if (input > 0) {
+			segments.push(`↑ ${input}`);
+		}
+		if (output > 0) {
+			segments.push(`↓ ${output}`);
+		}
+		return segments.length > 0 ? `${segments.join(" ")} lines` : undefined;
+	}
+
 	private header(details: IpythonDetails): string {
 		// Name the cell so the status reads as part of this tool call instead of
 		// a floating label between the surrounding blocks.
@@ -269,21 +414,51 @@ export class IPythonCellComponent implements Component {
 		return parts.join(theme.fg("dim", " · "));
 	}
 
-	private status(details: IpythonDetails): { label: string } {
+	private statusKind(details: IpythonDetails): "error" | "aborted" | "running" | "queued" | "done" {
 		const status = details.status;
 		if (this.state.isError || status === "error") {
-			return { label: theme.fg("error", "error") };
+			return "error";
 		}
 		if (status === "aborted") {
-			return { label: theme.fg("warning", "aborted") };
+			return "aborted";
 		}
-		if (this.state.isPartial || (this.state.executionStarted && !status)) {
-			return { label: theme.fg("bashMode", "running") };
+		// A finalized result (not partial) with any completion signal is "done" —
+		// keyed off the result, not off having observed the live start, so tool
+		// calls rehydrated from a past session render as done rather than running.
+		if (!this.state.isPartial && (status !== undefined || this.state.executionStarted || this.hasResult(details))) {
+			return "done";
 		}
-		if (!this.state.executionStarted) {
-			return { label: theme.fg("muted", "queued") };
+		if (this.state.isPartial || this.state.executionStarted) {
+			return "running";
 		}
-		return { label: theme.fg("success", "done") };
+		return "queued";
+	}
+
+	/** Whether a result payload has been captured (output, diffs, or an error). */
+	private hasResult(details: IpythonDetails): boolean {
+		return (
+			details.stdout !== undefined ||
+			details.stderr !== undefined ||
+			details.result !== undefined ||
+			details.error !== undefined ||
+			(details.diffs?.length ?? 0) > 0 ||
+			(this.state.content?.length ?? 0) > 0
+		);
+	}
+
+	private status(details: IpythonDetails): { label: string } {
+		switch (this.statusKind(details)) {
+			case "error":
+				return { label: theme.fg("error", "error") };
+			case "aborted":
+				return { label: theme.fg("warning", "aborted") };
+			case "running":
+				return { label: theme.fg("bashMode", "running") };
+			case "queued":
+				return { label: theme.fg("muted", "queued") };
+			default:
+				return { label: theme.fg("success", "done") };
+		}
 	}
 
 	private renderCode(lines: string[], width: number, withExpandHint: ExpandHintFormatter, hasDiffs: boolean): boolean {
