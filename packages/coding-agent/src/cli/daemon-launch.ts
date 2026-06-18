@@ -97,23 +97,9 @@ export class StaleBusyDaemonError extends Error {
 	}
 }
 
-/**
- * Ask the daemon on socketPath to shut down and wait until it stops accepting
- * connections. Returns true once it is gone (including when nothing was running).
- */
-export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean> {
-	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(1000);
-		await client.request({ type: "shutdown" }).catch(() => undefined);
-	} catch {
-		// Connection failures mean the daemon is already gone.
-		return true;
-	} finally {
-		client.close();
-	}
-
-	const deadline = Date.now() + 5000;
+/** Poll until the daemon stops accepting connections. Returns false on timeout. */
+async function waitForDaemonGone(socketPath: string, timeoutMs = 5000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (!(await canConnectToDaemon(socketPath, 250))) {
 			return true;
@@ -121,6 +107,24 @@ export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean
 		await delay(25);
 	}
 	return false;
+}
+
+/**
+ * Ask the daemon on socketPath to shut down and wait until it stops accepting
+ * connections. A connect failure is not assumed to mean "gone" — only the poll
+ * confirms that, so a transient hiccup can't report a still-live daemon stopped.
+ */
+export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(1000);
+		await client.request({ type: "shutdown" }).catch(() => undefined);
+	} catch {
+		// Couldn't send shutdown; the poll below decides whether it actually stopped.
+	} finally {
+		client.close();
+	}
+	return waitForDaemonGone(socketPath);
 }
 
 /**
@@ -160,9 +164,11 @@ export async function probeRunningDaemonSessions(socketPath: string): Promise<Ru
  */
 async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
+	let connected = false;
 	let hasBusySessions = false;
 	try {
 		await client.connect(1000);
+		connected = true;
 		try {
 			const summaries = await listActiveDaemonSessionSummaries(client);
 			hasBusySessions = summaries.some(isSessionBusy);
@@ -171,11 +177,14 @@ async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean
 			hasBusySessions = true;
 		}
 	} catch {
-		return true;
+		// Couldn't reach it to inspect; don't send a blind shutdown, just verify below.
 	} finally {
 		client.close();
 	}
 
+	if (!connected) {
+		return waitForDaemonGone(socketPath);
+	}
 	if (hasBusySessions) {
 		return false;
 	}
