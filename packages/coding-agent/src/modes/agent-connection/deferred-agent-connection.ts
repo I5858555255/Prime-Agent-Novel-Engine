@@ -8,6 +8,7 @@ import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
+import { emptyUsage } from "../../core/usage.js";
 import type {
 	AgentConnection,
 	AgentConnectionBeforeSessionInvalidateListener,
@@ -52,14 +53,16 @@ export interface DeferredAgentConnectionSeed {
 	autoCompactionEnabled: boolean;
 }
 
-const EMPTY_RESOURCE_SNAPSHOT: AgentConnectionResourceSnapshot = {
-	contextFiles: [],
-	skills: [],
-	prompts: [],
-	extensions: [],
-	themes: [],
-	diagnostics: { skills: [], prompts: [], extensions: [], themes: [] },
-};
+function emptyResourceSnapshot(): AgentConnectionResourceSnapshot {
+	return {
+		contextFiles: [],
+		skills: [],
+		prompts: [],
+		extensions: [],
+		themes: [],
+		diagnostics: { skills: [], prompts: [], extensions: [], themes: [] },
+	};
+}
 
 /**
  * Opens the chat instantly by serving local catalog data, and only creates the
@@ -71,6 +74,7 @@ const EMPTY_RESOURCE_SNAPSHOT: AgentConnectionResourceSnapshot = {
 export class DeferredAgentConnection implements AgentConnection {
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 	private readonly beforeInvalidateListeners = new Set<AgentConnectionBeforeSessionInvalidateListener>();
+	private readonly beforeInvalidateRealUnsubs = new Map<AgentConnectionBeforeSessionInvalidateListener, () => void>();
 	private real: AgentConnection | undefined;
 	private realUnsub: (() => void) | undefined;
 	private promotion: Promise<AgentConnection> | undefined;
@@ -98,8 +102,12 @@ export class DeferredAgentConnection implements AgentConnection {
 			return this.real.onBeforeSessionInvalidate(listener);
 		}
 		this.beforeInvalidateListeners.add(listener);
+		// Unsubscribe must work whether called before or after promotion forwards
+		// the listener to the real connection.
 		return () => {
 			this.beforeInvalidateListeners.delete(listener);
+			this.beforeInvalidateRealUnsubs.get(listener)?.();
+			this.beforeInvalidateRealUnsubs.delete(listener);
 		};
 	}
 
@@ -114,7 +122,12 @@ export class DeferredAgentConnection implements AgentConnection {
 			return Promise.resolve(this.real);
 		}
 		if (!this.promotion) {
-			this.promotion = this.promote();
+			// Drop a failed attempt so a later action can retry instead of replaying
+			// the same rejection forever.
+			this.promotion = this.promote().catch((error) => {
+				this.promotion = undefined;
+				throw error;
+			});
 		}
 		return this.promotion;
 	}
@@ -128,7 +141,7 @@ export class DeferredAgentConnection implements AgentConnection {
 			return real;
 		}
 		for (const listener of this.beforeInvalidateListeners) {
-			real.onBeforeSessionInvalidate(listener);
+			this.beforeInvalidateRealUnsubs.set(listener, real.onBeforeSessionInvalidate(listener));
 		}
 		this.beforeInvalidateListeners.clear();
 		this.realUnsub = real.subscribe((event) => this.emit(event));
@@ -186,7 +199,7 @@ export class DeferredAgentConnection implements AgentConnection {
 	}
 
 	async getResourceSnapshot(): Promise<AgentConnectionResourceSnapshot> {
-		return this.real ? this.real.getResourceSnapshot() : EMPTY_RESOURCE_SNAPSHOT;
+		return this.real ? this.real.getResourceSnapshot() : emptyResourceSnapshot();
 	}
 
 	async getAvailableModels(): Promise<AgentConnectionModel[]> {
@@ -211,7 +224,17 @@ export class DeferredAgentConnection implements AgentConnection {
 	}
 
 	async getContextTree(): Promise<ContextTreeNode> {
-		return (await this.ensure()).getContextTree();
+		if (this.real) {
+			return this.real.getContextTree();
+		}
+		return {
+			id: "root",
+			label: "",
+			status: "active",
+			ownUsage: emptyUsage(),
+			totalUsage: emptyUsage(),
+			children: [],
+		};
 	}
 
 	async getSessionContext(): Promise<AgentConnectionSessionContext> {

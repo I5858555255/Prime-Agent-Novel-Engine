@@ -191,6 +191,48 @@ describe("DeferredAgentConnection", () => {
 		fake.emit({ type: "session_status", recap: "late" });
 		expect(events).toEqual([]);
 	});
+
+	test("getContextTree does not create a session", async () => {
+		const { factory } = makeFactory();
+		const conn = new DeferredAgentConnection(factory, SEED);
+
+		const tree = await conn.getContextTree();
+		expect(tree.children).toEqual([]);
+		expect(factory).not.toHaveBeenCalled();
+		expect(conn.created).toBe(false);
+	});
+
+	test("retries promotion after a failed first attempt", async () => {
+		const fake = new FakeRealConnection();
+		let attempt = 0;
+		const factory = vi.fn(async () => {
+			attempt += 1;
+			if (attempt === 1) {
+				throw new Error("daemon unavailable");
+			}
+			return fake as unknown as AgentConnection;
+		});
+		const conn = new DeferredAgentConnection(factory, SEED);
+
+		await expect(conn.prompt("first")).rejects.toThrow("daemon unavailable");
+		await conn.prompt("second");
+
+		expect(factory).toHaveBeenCalledTimes(2);
+		expect(fake.promptCalls).toEqual(["second"]);
+	});
+
+	test("unsubscribing a before-invalidate listener after promotion detaches it from the real connection", async () => {
+		const { fake, factory } = makeFactory();
+		const conn = new DeferredAgentConnection(factory, SEED);
+		const listener = vi.fn();
+		const unsubscribe = conn.onBeforeSessionInvalidate(listener);
+
+		await conn.prompt("go");
+		expect(fake.beforeInvalidate.has(listener)).toBe(true);
+
+		unsubscribe();
+		expect(fake.beforeInvalidate.has(listener)).toBe(false);
+	});
 });
 
 describe("DeferredAgentConnection with a real-style saved-session lister", () => {
