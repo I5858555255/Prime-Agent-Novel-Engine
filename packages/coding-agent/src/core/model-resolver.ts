@@ -535,11 +535,8 @@ export async function findInitialModel(options: {
 
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
-		// Exact registry hit wins. Otherwise, if the saved provider is still authed,
-		// reconstruct the model from the provider template (same as resolveCliModel)
-		// so a saved id that's missing from this build's model snapshot — common for
-		// proxy providers like prime-inference whose catalog churns between releases —
-		// persists across updates instead of silently reverting to a provider default.
+		// Rebuild from the provider template when the saved id is missing from this
+		// build's snapshot (e.g. prime-inference catalog churn), so it survives updates.
 		const found =
 			modelRegistry.find(defaultProvider, defaultModelId) ??
 			buildFallbackModel(defaultProvider, defaultModelId, modelRegistry.getAll());

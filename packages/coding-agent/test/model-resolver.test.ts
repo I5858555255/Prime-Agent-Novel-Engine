@@ -498,9 +498,6 @@ describe("default model selection", () => {
 	});
 
 	test("findInitialModel rebuilds a saved default missing from the model snapshot when the provider is authed", async () => {
-		// Mirrors prime-inference: the saved id isn't in this build's snapshot, but
-		// the provider still has other models + auth. The choice should persist
-		// instead of reverting to the provider default.
 		const primeSnapshotModel: Model<"anthropic-messages"> = {
 			id: "openai/gpt-5.5",
 			name: "GPT 5.5 (Prime Inference)",
@@ -533,9 +530,6 @@ describe("default model selection", () => {
 	});
 
 	test("findInitialModel does not rebuild a saved default for an unauthed provider", async () => {
-		// Guard: the rebuild path is auth-gated, so a saved provider without auth
-		// still falls through to an available model rather than resurrecting a
-		// model the user cannot use.
 		const primeSnapshotModel: Model<"anthropic-messages"> = {
 			id: "openai/gpt-5.5",
 			name: "GPT 5.5 (Prime Inference)",
