@@ -1227,9 +1227,15 @@ export class TUI extends Container {
 		// top. Repaint only the visible window in place instead, leaving
 		// scrollback (and the user's history) untouched. Short transcripts that
 		// fit on screen keep the cheap full redraw.
+		//
+		// Only do this while the transcript is growing (the streaming case). A
+		// shrink — a rebuild or compaction that replaces the transcript with
+		// fewer lines — leaves the now-removed lines stale in scrollback above the
+		// visible window, so it still needs the scrollback-clearing redraw. That
+		// is a one-time event, so it costs no recurring flicker.
 		if (firstChanged < prevViewportTop) {
 			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			const preserveScrollback = newLines.length > height;
+			const preserveScrollback = newLines.length > height && newLines.length >= this.previousLines.length;
 			fullRender(true, preserveScrollback || preserveViewport);
 			return;
 		}

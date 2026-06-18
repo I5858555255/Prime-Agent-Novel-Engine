@@ -793,4 +793,31 @@ describe("TUI above-viewport changes on a tall transcript", () => {
 
 		tui.stop();
 	});
+
+	it("clears scrollback when a still-tall transcript shrinks (rebuild/compaction)", async () => {
+		// A rebuild or compaction can replace the transcript with fewer lines that
+		// still exceed the viewport. Preserving scrollback there would leave the
+		// removed lines stale above the visible window, so the shrink must take the
+		// scrollback-clearing redraw even though the result is still taller than
+		// the viewport.
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		// Replace with a shorter transcript that is still taller than the 10-row
+		// viewport (15 lines), as a compaction would.
+		component.lines = Array.from({ length: 15 }, (_, i) => `Rebuilt ${i}`);
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.ok(terminal.getWrites().includes("\x1b[3J"), "A still-tall shrink clears stale scrollback");
+
+		tui.stop();
+	});
 });
