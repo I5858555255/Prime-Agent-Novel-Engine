@@ -753,8 +753,6 @@ class AgentsViewMode implements Component, Focusable {
 		}
 		const created = await this.createAgentForPrompt(text);
 		if (created) {
-			// Opening a message should drop straight into its chat rather than
-			// leaving the user staring at the new row in the agents view.
 			this.finish({ type: "open", summary: created.summary });
 		}
 	}
