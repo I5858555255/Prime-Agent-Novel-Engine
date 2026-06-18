@@ -137,7 +137,6 @@ function scanListeningDaemons(): DiscoveredDaemonProcess[] {
 	return [];
 }
 
-/** Whether the OS still reports `pid` listening on `socketPath` (a live daemon). */
 function isDaemonProcessListening(pid: number, socketPath: string): boolean {
 	const target = normalizeSocketPath(socketPath);
 	return scanListeningDaemons().some((daemon) => daemon.pid === pid && daemon.socketPath === target);
@@ -208,9 +207,6 @@ async function probeDaemon(socketPath: string): Promise<ProbeResult> {
 		}
 		let sessionCount: number | undefined;
 		try {
-			// A daemon that greeted us is responsive, so allow the full time to answer
-			// (reap needs an accurate session count). One that never greeted is wedged
-			// or foreign, so cap the wait to keep discovery from stalling 30s on it.
 			const response = await client.request({ type: "list" }, greeted ? 30000 : 1500);
 			if (response.success) {
 				const sessions = (response.data as { sessions?: unknown })?.sessions;
@@ -347,7 +343,6 @@ export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAc
 	});
 }
 
-/** Plan `shutdown --all`: every daemon is a target, none skipped. */
 export function planShutdownAll(daemons: readonly DaemonInfo[]): ReapAction[] {
 	return daemons.map((daemon): ReapAction => {
 		if (daemon.status === "orphan-file") {
@@ -360,8 +355,6 @@ export function planShutdownAll(daemons: readonly DaemonInfo[]): ReapAction[] {
 	});
 }
 
-// One process can appear under several socket paths, so shut down gracefully
-// before any kill on another of its paths could terminate it first.
 const SHUTDOWN_ALL_ACTION_ORDER: Record<ReapAction["kind"], number> = {
 	shutdown: 0,
 	"remove-file": 1,
@@ -373,7 +366,6 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 	const daemons = await discoverDaemons();
 	const stopped: Array<{ socketPath: string; action: string }> = [];
 	const failed: Array<{ socketPath: string; reason: string }> = [];
-	// Pids already stopped this run; never signal one twice (it may be reused).
 	const handledPids = new Set<number>();
 
 	const actions = [...planShutdownAll(daemons)].sort(
@@ -402,9 +394,6 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 				if ((await probeDaemon(socketPath)).reachable) {
 					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
 				} else if (isDaemonProcessListening(pid!, socketPath)) {
-					// A wedged daemon: connect fails but the OS still lists this pid
-					// listening on the socket. Re-confirming via the scan (rather than a
-					// connect) avoids signalling a pid that has since exited and reused.
 					await forceKillDaemon(pid!);
 					handledPids.add(pid!);
 					removeSocketFile(socketPath);
@@ -419,7 +408,6 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 				apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
 				break;
 			case "skip":
-				// planShutdownAll never skips.
 				break;
 		}
 	}
@@ -440,11 +428,6 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 	}
 }
 
-/**
- * Graceful shutdown first (persists sessions); if the socket has not stopped,
- * only kill when it still listens, so a daemon that already exited never has its
- * (possibly reused) pid signalled.
- */
 async function stopDaemonForcefully(
 	socketPath: string,
 	pid: number | undefined,
@@ -582,7 +565,6 @@ function killDaemon(pid: number): void {
 	}
 }
 
-/** SIGTERM, then SIGKILL if still alive — a wedged event loop never runs its SIGTERM handler. */
 async function forceKillDaemon(pid: number): Promise<void> {
 	killDaemon(pid);
 	const deadline = Date.now() + 1000;
@@ -594,9 +576,7 @@ async function forceKillDaemon(pid: number): Promise<void> {
 	}
 	try {
 		process.kill(pid, "SIGKILL");
-	} catch {
-		// Process already gone or not permitted; the socket file cleanup still runs.
-	}
+	} catch {}
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -638,8 +618,6 @@ async function shutdownDaemon(socketPath: string): Promise<boolean> {
 		return false;
 	}
 	try {
-		// Short timeout: a wedged daemon never acks, and the connectivity check
-		// below is the source of truth anyway.
 		await client.request({ type: "shutdown" }, 1500);
 	} catch {
 		// The daemon may still stop; the connectivity check below is the source of truth.
