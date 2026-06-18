@@ -93,6 +93,12 @@ def _prime_agent_wrap_skill_module(module):
     if doc:
         wrapped.__doc__ = doc
     _prime_agent_sys.modules[module.__name__] = wrapped
+    # Add .send for background skill execution
+    try:
+        from rlm.async_runtime import attach_background as _prime_agent_attach_bg
+        _prime_agent_attach_bg(wrapped, wrapped.run)
+    except Exception:
+        pass
     return wrapped
 
 _PRIME_AGENT_SKILL_IMPORT_ERRORS = {}

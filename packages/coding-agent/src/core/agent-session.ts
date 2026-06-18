@@ -135,6 +135,9 @@ import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.j
 import {
 	type CreateRlmSubagentRuntimeOptions,
 	createRlmRunHostHandler,
+	createRlmSendAdvanceHostHandler,
+	createRlmSendCloseHostHandler,
+	createRlmSendCreateHostHandler,
 	type RlmInternalRunResult,
 	type RlmRunResult,
 	type RlmSubagentRuntime,
@@ -720,6 +723,8 @@ export class AgentSession {
 	private _rlmParentNodeId?: string;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
+	/** Named persistent sub-agents created via rlm.send (kept alive across host requests). */
+	private _persistentRlmChildren = new Map<string, { runtime: RlmSubagentRuntime; sessionDir: string }>();
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -1811,6 +1816,11 @@ export class AgentSession {
 	async disposeAsync(): Promise<void> {
 		if (this._disposed) {
 			return;
+		}
+		try {
+			await this._closeAllPersistentRlmChildren();
+		} catch {
+			// best effort during teardown
 		}
 		try {
 			await this._ipythonKernelProvisioner?.dispose();
@@ -3678,6 +3688,13 @@ export class AgentSession {
 			"rlm.run": createRlmRunHostHandler(({ prompt, kwargs, cellSourceCode }) =>
 				this.runRlmChild(prompt, kwargs, cellSourceCode),
 			),
+			"rlm.send.create": createRlmSendCreateHostHandler((request) =>
+				this._createPersistentRlmChild(request.name, request.max_tokens),
+			),
+			"rlm.send.advance": createRlmSendAdvanceHostHandler((request) =>
+				this._advancePersistentRlmChild(request.name, request.prompt),
+			),
+			"rlm.send.close": createRlmSendCloseHostHandler((request) => this._closePersistentRlmChild(request.name)),
 		};
 		if (this._includeGoals) {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
@@ -3752,8 +3769,19 @@ export class AgentSession {
 		return undefined;
 	}
 
-	private _createChildRlmSessionDir(): string {
+	private _createChildRlmSessionDir(name?: string): string {
 		const parentDir = this._ensureRlmSessionDir() ?? this._createEphemeralRlmSessionDir();
+		if (name) {
+			// Named persistent agent: stable, human-readable directory
+			const safeName =
+				name
+					.replace(/[^A-Za-z0-9._-]/g, "-")
+					.replace(/^-+|-+$/g, "")
+					.slice(0, 64) || "agent";
+			const childDir = join(parentDir, `sub-${safeName}`);
+			mkdirSync(childDir, { recursive: true });
+			return childDir;
+		}
 		for (let i = 0; i < 100; i++) {
 			const childDir = join(parentDir, `sub-${randomUUID().slice(0, 8)}`);
 			try {
@@ -4272,6 +4300,114 @@ export class AgentSession {
 			turns: result.turns,
 			session_dir: result.session_dir,
 		};
+	}
+
+	// =========================================================================
+	// Persistent / Background Sub-Agents (rlm.send)
+	// =========================================================================
+
+	/**
+	 * Create a persistent sub-agent session that survives across host requests.
+	 * Called by the rlm.send.create host handler.
+	 */
+	private async _createPersistentRlmChild(name: string, maxTokens?: number): Promise<{ session_dir: string | null }> {
+		// If already exists, just return its session dir
+		const existing = this._persistentRlmChildren.get(name);
+		if (existing) {
+			return { session_dir: existing.sessionDir };
+		}
+
+		if (this._rlmDepth >= this._rlmMaxDepth) {
+			throw new Error(
+				`RLM recursion depth limit reached (RLM_DEPTH=${this._rlmDepth}, RLM_MAX_DEPTH=${this._rlmMaxDepth})`,
+			);
+		}
+
+		const model = this.model;
+		if (!model) {
+			throw new Error("No model selected");
+		}
+
+		const childSessionDir = this._createChildRlmSessionDir(name);
+		const childNodeId = `persistent-${name}`;
+
+		const subagentOptions = this._createRlmSubagentRuntimeOptions({
+			id: childNodeId,
+			prompt: `[persistent agent: ${name}]`,
+			sessionDir: childSessionDir,
+			model,
+		});
+
+		const childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
+		this._persistentRlmChildren.set(name, {
+			runtime: childRuntime,
+			sessionDir: childSessionDir,
+		});
+
+		return { session_dir: childSessionDir };
+	}
+
+	/**
+	 * Send a prompt to an existing persistent sub-agent and await its response.
+	 * Called by the rlm.send.advance host handler.
+	 */
+	private async _advancePersistentRlmChild(name: string, prompt: string): Promise<RlmRunResult> {
+		const child = this._persistentRlmChildren.get(name);
+		if (!child) {
+			throw new Error(`No persistent sub-agent named '${name}'; create it with rlm.send.create first`);
+		}
+
+		const session = child.runtime.session;
+		const parentAssistant = this._findLastAssistantMessage();
+
+		await session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
+		await session.agent.waitForIdle();
+
+		const answer = session.getLastAssistantText() ?? "";
+		const usage = session._usageForCurrentMessages();
+		const assistantUsage = session._assistantUsageForCurrentMessages();
+		this._attributeRlmChildUsageToParent(assistantUsage, parentAssistant);
+
+		return {
+			answer,
+			usage,
+			turns: session._assistantTurnCount(),
+			session_dir: child.sessionDir,
+		};
+	}
+
+	/**
+	 * Close and dispose a persistent sub-agent.
+	 * Called by the rlm.send.close host handler.
+	 */
+	private async _closePersistentRlmChild(name: string): Promise<void> {
+		const child = this._persistentRlmChildren.get(name);
+		if (!child) {
+			return; // Already closed or never existed; idempotent
+		}
+		this._persistentRlmChildren.delete(name);
+		const childNodeId = `persistent-${name}`;
+		const subagentOptions = this._createRlmSubagentRuntimeOptions({
+			id: childNodeId,
+			prompt: `[persistent agent: ${name}]`,
+			sessionDir: child.sessionDir,
+			model: this.model!,
+		});
+		await this._releaseRlmSubagentRuntime(child.runtime, subagentOptions);
+	}
+
+	/**
+	 * Close all persistent sub-agents (called during session teardown).
+	 */
+	private async _closeAllPersistentRlmChildren(): Promise<void> {
+		const names = [...this._persistentRlmChildren.keys()];
+		for (const name of names) {
+			try {
+				await this._closePersistentRlmChild(name);
+			} catch {
+				// Best effort during teardown
+			}
+		}
 	}
 
 	// =========================================================================

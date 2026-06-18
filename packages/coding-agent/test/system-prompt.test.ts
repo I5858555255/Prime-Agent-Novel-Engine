@@ -58,6 +58,7 @@ describe("buildRlmPrompt", () => {
 				"When available, each Python skill is an async callable by the same import name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
 				"If a Python skill is unavailable, calling it raises a RuntimeError with the import error.",
 				"Each Python skill may also be available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
+				"To offload a slow skill call, run it in the background: `handle = <skill>.send(...)`, then check `handle.poll()` later (same handle API as sub-agents).",
 				"",
 				"IPython is the agent's long-lived notebook: a persistent control environment for reasoning, context management, state, tool orchestration, and recursive subcalls. Use it to keep intermediate variables, inspect and transform outputs, write small helper functions, and preserve useful state across turns or compaction.",
 				"",
@@ -321,14 +322,12 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("Conversation log: /repo/.pi/sessions/session.jsonl");
 		expect(prompt).toContain("await rlm('sub-task')");
 		expect(prompt).toContain("asyncio.gather");
-		expect(prompt).toContain("asyncio.create_task");
-		expect(prompt).toContain("sub-agent work that can run in the background");
-		expect(prompt).toContain("do not block the main execution path");
-		expect(prompt).toContain("keep the task handle");
-		expect(prompt).toContain("normal task callbacks");
-		expect(prompt).toContain("task.done()");
-		expect(prompt).toContain("await task");
-		expect(prompt).toContain("RLMResult.answer");
+		expect(prompt).toContain("rlm.send");
+		expect(prompt).toContain("handle.poll()");
+		expect(prompt).toContain("handle.wait()");
+		expect(prompt).toContain("Persistent (background)");
+		expect(prompt).toContain("One-off (blocking)");
+		expect(prompt).toContain("RLMResult");
 		expect(prompt).not.toContain("simple named task dictionary");
 		expect(prompt).not.toContain("rlm_tasks");
 		expect(prompt).not.toContain("globals().setdefault");

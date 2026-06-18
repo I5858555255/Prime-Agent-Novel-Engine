@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .async_runtime import (
+    BackgroundWorker,
+    FnProcessor,
+    Handle,
+    Registry,
+    ToolState,
+    attach_background,
+    close_all_registries,
+)
 from .harness import HarnessEntry, HarnessState, RefinementEvent, get_harness_state
 
 try:
@@ -164,12 +174,99 @@ async def run(prompt: str, **kwargs: Any) -> RLMResult:
     return _result_from_payload(payload)
 
 
+def sanitize_name(name: str) -> str:
+    """Make ``name`` filesystem-safe for a session dir; non-empty and bounded."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "-", name).strip("-")
+    return (safe or "agent")[:64]
+
+
+# ---------------------------------------------------------------------------
+# Background / persistent sub-agents via host bridge
+# ---------------------------------------------------------------------------
+
+# Per-kernel registry for named sub-agents. Imported fresh per kernel, so
+# naturally per-kernel (hierarchical).
+REGISTRY = Registry()
+
+
+class _HostRlmProcessor:
+    """Stateful processor: each item is a prompt sent to the TS host.
+
+    The host manages the actual AgentSession lifecycle. This processor
+    sends ``rlm.send.advance`` requests for each queued prompt and
+    returns the ``RLMResult``.
+    """
+
+    def __init__(self, agent_name: str, session_dir: str | None = None):
+        self._agent_name = agent_name
+        self._session_dir = session_dir
+
+    async def process(self, prompt: str) -> RLMResult:
+        payload = await host_request("rlm.send.advance", {
+            "name": self._agent_name,
+            "prompt": prompt,
+        })
+        return _result_from_payload(payload)
+
+    async def teardown(self) -> None:
+        try:
+            await host_request("rlm.send.close", {
+                "name": self._agent_name,
+            })
+        except Exception:
+            pass
+
+
+async def send(
+    prompt: str,
+    name: str | None = None,
+    max_tokens: int | None = None,
+    **kwargs: Any,
+) -> Handle:
+    """Start or continue a named, persistent background sub-agent.
+
+    Returns a handle immediately; keep it in a variable and ``handle.poll()`` it
+    from a later cell. Re-sending the same ``name`` appends a turn to the same
+    agent (multi-turn). ``name=None`` draws a random auto-name.
+    ``max_tokens`` caps the sub-agent's completion-token budget.
+    """
+    _ensure_recursion_allowed()
+
+    if name is not None:
+        name = sanitize_name(name)
+
+    # Non-positive request means "no explicit budget"
+    if max_tokens is not None and max_tokens <= 0:
+        max_tokens = None
+
+    def worker_factory(agent_name: str) -> BackgroundWorker:
+        # Ask the host to create the persistent subagent session
+        loop = asyncio.get_event_loop()
+        creation_result = loop.run_until_complete(
+            host_request("rlm.send.create", {
+                "name": agent_name,
+                "max_tokens": max_tokens,
+                **kwargs,
+            })
+        )
+        session_dir = creation_result.get("session_dir")
+        processor = _HostRlmProcessor(agent_name, session_dir)
+        return BackgroundWorker(agent_name, processor, session_dir=session_dir)
+
+    return REGISTRY.send(prompt, name=name, worker_factory=worker_factory)
+
+
+async def drain_agents() -> None:
+    """Close every background agent in this kernel (all registries).
+
+    Invoked by the engine's teardown cascade as a cell executed in the kernel.
+    """
+    await close_all_registries()
+
+
 try:
     _harness_state = get_harness_state()
 except Exception:  # pragma: no cover - harness state must never break `import rlm`
-    # Importing rlm runs inside the kernel; a failure here would take down the whole
-    # kernel. Fall back to a true in-memory store (no path resolution, no disk) so the
-    # failure cannot recur and refinement is merely degraded, not fatal.
     _harness_state = HarnessState(in_memory=True)
 
 
@@ -182,6 +279,21 @@ class _RLMCallable:
 
     async def __call__(self, prompt: str, **kwargs: Any) -> RLMResult:
         return await run(prompt, **kwargs)
+
+    @staticmethod
+    async def send(
+        prompt: str,
+        name: str | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> Handle:
+        """Start or continue a named, persistent background sub-agent.
+
+        Returns a handle immediately; keep it in a variable and ``handle.poll()`` it
+        from a later cell. Re-sending the same ``name`` appends a turn to the same
+        agent (multi-turn). ``name=None`` draws a random auto-name.
+        """
+        return await send(prompt, name=name, max_tokens=max_tokens, **kwargs)
 
 
 rlm = _RLMCallable()
@@ -196,14 +308,25 @@ class _CallableModule(types.ModuleType):
 sys.modules[__name__].__class__ = _CallableModule
 
 __all__ = [
+    "BackgroundWorker",
+    "FnProcessor",
+    "Handle",
     "HarnessEntry",
     "HarnessState",
     "RLMResult",
+    "REGISTRY",
+    "Registry",
     "RefinementEvent",
     "TokenUsage",
+    "ToolState",
+    "attach_background",
+    "close_all_registries",
+    "drain_agents",
     "get_harness_state",
     "harness",
     "host_request",
     "rlm",
     "run",
+    "sanitize_name",
+    "send",
 ]
