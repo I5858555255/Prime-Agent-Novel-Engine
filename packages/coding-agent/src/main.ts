@@ -138,6 +138,15 @@ function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "daemon"> {
 	return appMode === "json" ? "json" : "text";
 }
 
+// `prime-agent agents` / `prime-agent manage` open the agents view directly; the
+// leading verb is stripped so the remaining args parse as usual.
+export function parseAgentsViewCommand(args: string[]): { explicitAgentsView: boolean; args: string[] } {
+	if (args[0] === "agents" || args[0] === "manage") {
+		return { explicitAgentsView: true, args: args.slice(1) };
+	}
+	return { explicitAgentsView: false, args };
+}
+
 export interface InteractiveDaemonStartupDecision {
 	appMode: AppMode;
 	startupBenchmark: boolean;
@@ -159,6 +168,7 @@ export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDeci
 export interface AgentsViewStartupDecision {
 	useDaemonInteractive: boolean;
 	needsOnboarding: boolean;
+	explicitAgentsView?: boolean;
 	session?: string;
 	resume?: boolean;
 	continue?: boolean;
@@ -168,6 +178,9 @@ export interface AgentsViewStartupDecision {
 export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStartupDecision): boolean {
 	return (
 		options.useDaemonInteractive &&
+		// `prime-agent` opens a new chat by default; the agents view is reached via
+		// left-arrow from a session or requested explicitly (`agents`/`manage`).
+		!!options.explicitAgentsView &&
 		// Onboarding lives in InteractiveMode, so a first run must take the
 		// direct session path; the agents view would otherwise require creating
 		// an agent before the onboarding splash ever renders.
@@ -803,6 +816,33 @@ async function findActiveDaemonSessionSummary(
 	}
 }
 
+// Remove a freshly-created default chat session from the daemon when the user
+// left it without sending anything, so abandoned new-chats don't pile up in the
+// agents view. Best-effort: a failure here must not block the agents view.
+async function discardEmptyDaemonSession(socketPath: string, activeSessionId: string): Promise<void> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(250);
+	} catch {
+		return;
+	}
+	try {
+		const state = await client.request({ type: "get_state", activeSessionId }, 3000);
+		if (!state.success || !isDaemonSessionSummary(state.data)) {
+			return;
+		}
+		const summary = state.data;
+		if (summary.messageCount > 0 || summary.pendingMessageCount > 0 || summary.isStreaming) {
+			return;
+		}
+		await client.request({ type: "kill", activeSessionId }, 3000);
+	} catch {
+		// Cleanup is best-effort; leave the session in place on any error.
+	} finally {
+		client.close();
+	}
+}
+
 async function normalizeDaemonRichTuiAttachArgs(args: string[]): Promise<string[] | undefined> {
 	const shortcut = parseDaemonRichTuiAttachShortcut(args);
 	if (!shortcut) {
@@ -949,6 +989,11 @@ export async function main(args: string[], options?: MainOptions) {
 	if (await handleDaemonCommand(args)) {
 		return;
 	}
+
+	// `prime-agent agents` / `prime-agent manage` open the agents view directly.
+	const agentsViewCommand = parseAgentsViewCommand(args);
+	const explicitAgentsView = agentsViewCommand.explicitAgentsView;
+	args = agentsViewCommand.args;
 
 	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
@@ -1221,6 +1266,7 @@ export async function main(args: string[], options?: MainOptions) {
 		if (
 			shouldOpenAgentsViewForDaemonInteractive({
 				useDaemonInteractive,
+				explicitAgentsView,
 				needsOnboarding: shouldRunOnboarding({
 					settingsManager,
 					modelRegistry: services.modelRegistry,
@@ -1240,6 +1286,10 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 
 		await daemonReady;
+		// A no-args `prime-agent` lands here on the default new-chat path: no
+		// attach, no session selector, so the connection creates a fresh session.
+		const isFreshDefaultSession =
+			!activeDaemonSessionSummary && !getInteractiveDaemonSessionPath(parsed, sessionManager);
 		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
 			socketPath: daemonSocketPath,
 			config: defaultSessionConfig,
@@ -1269,6 +1319,9 @@ export async function main(args: string[], options?: MainOptions) {
 		await preloadCodeHighlighter();
 		printTimings();
 		await interactiveMode.run();
+		if (isFreshDefaultSession && summary.activeSessionId) {
+			await discardEmptyDaemonSession(daemonSocketPath, summary.activeSessionId);
+		}
 		await launchAgentsView(false);
 		return;
 	}
