@@ -197,19 +197,21 @@ async function probeDaemon(socketPath: string): Promise<ProbeResult> {
 	try {
 		let version: string | undefined;
 		let protocolVersion: number | undefined;
+		let greeted = false;
 		try {
 			const hello = await client.waitForHello(1500);
 			version = hello.appVersion;
 			protocolVersion = hello.protocol.version;
+			greeted = true;
 		} catch {
 			// Connected but no recognizable greeting: an old/foreign daemon.
 		}
 		let sessionCount: number | undefined;
 		try {
-			// Short timeout: a wedged daemon accepts the connection but never answers,
-			// and the default 30s would stall discovery on exactly the daemons we most
-			// need to reap.
-			const response = await client.request({ type: "list" }, 1500);
+			// A daemon that greeted us is responsive, so allow the full time to answer
+			// (reap needs an accurate session count). One that never greeted is wedged
+			// or foreign, so cap the wait to keep discovery from stalling 30s on it.
+			const response = await client.request({ type: "list" }, greeted ? 30000 : 1500);
 			if (response.success) {
 				const sessions = (response.data as { sessions?: unknown })?.sessions;
 				if (Array.isArray(sessions)) {
