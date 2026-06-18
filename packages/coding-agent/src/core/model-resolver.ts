@@ -17,7 +17,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	openai: "gpt-5.4",
 	"azure-openai-responses": "gpt-5.4",
 	"openai-codex": "gpt-5.5",
-	"prime-inference": "openai/gpt-5.5",
+	"prime-inference": "anthropic/claude-opus-4.8",
 	deepseek: "deepseek-v4-pro",
 	google: "gemini-3.1-pro-preview",
 	"google-vertex": "gemini-3.1-pro-preview",
@@ -535,7 +535,14 @@ export async function findInitialModel(options: {
 
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
-		const found = modelRegistry.find(defaultProvider, defaultModelId);
+		// Exact registry hit wins. Otherwise, if the saved provider is still authed,
+		// reconstruct the model from the provider template (same as resolveCliModel)
+		// so a saved id that's missing from this build's model snapshot — common for
+		// proxy providers like prime-inference whose catalog churns between releases —
+		// persists across updates instead of silently reverting to a provider default.
+		const found =
+			modelRegistry.find(defaultProvider, defaultModelId) ??
+			buildFallbackModel(defaultProvider, defaultModelId, modelRegistry.getAll());
 		if (found && modelRegistry.hasConfiguredAuth(found)) {
 			model = found;
 			if (defaultThinkingLevel) {
