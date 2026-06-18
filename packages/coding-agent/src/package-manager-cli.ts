@@ -587,9 +587,8 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 					if (!(await confirmDaemonSessionLossBeforeUpdate(daemonProbe, options.force))) {
 						if (process.stdin.isTTY) {
 							console.log(chalk.dim("Update cancelled."));
-						} else {
-							process.exitCode = 1;
 						}
+						process.exitCode = 1;
 						return true;
 					}
 					try {
