@@ -16,6 +16,7 @@ import {
 	ensureInteractiveDaemonRunning,
 	isDaemonSessionSummary,
 	listActiveDaemonSessionSummaries,
+	StaleBusyDaemonError,
 } from "./cli/daemon-launch.js";
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
@@ -345,6 +346,25 @@ async function promptConfirm(message: string): Promise<boolean> {
 			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
 		});
 	});
+}
+
+/**
+ * Await daemon readiness, but turn a stale-busy daemon into a clean message and
+ * exit instead of letting a new-version client attach to an incompatible daemon.
+ */
+async function awaitDaemonReady(daemonReady: Promise<void> | undefined): Promise<void> {
+	if (!daemonReady) {
+		return;
+	}
+	try {
+		await daemonReady;
+	} catch (error) {
+		if (error instanceof StaleBusyDaemonError) {
+			console.error(chalk.red(error.message));
+			process.exit(1);
+		}
+		throw error;
+	}
 }
 
 function validateForkFlags(parsed: Args): void {
@@ -1045,7 +1065,7 @@ export async function main(args: string[], options?: MainOptions) {
 		session: parsed.session,
 	});
 	if (shouldLookupDaemonActiveSession && daemonReady) {
-		await daemonReady;
+		await awaitDaemonReady(daemonReady);
 	}
 	const activeDaemonSessionSummary =
 		shouldLookupDaemonActiveSession && parsed.session
@@ -1232,14 +1252,14 @@ export async function main(args: string[], options?: MainOptions) {
 				fork: parsed.fork,
 			})
 		) {
-			await daemonReady;
+			await awaitDaemonReady(daemonReady);
 			await preloadCodeHighlighter();
 			printTimings();
 			await launchAgentsView(true);
 			return;
 		}
 
-		await daemonReady;
+		await awaitDaemonReady(daemonReady);
 		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
 			socketPath: daemonSocketPath,
 			config: defaultSessionConfig,
