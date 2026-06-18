@@ -348,10 +348,6 @@ async function promptConfirm(message: string): Promise<boolean> {
 	});
 }
 
-/**
- * Await daemon readiness, but turn an unreplaceable stale daemon into a clean
- * message and exit instead of attaching a new client to an incompatible daemon.
- */
 async function awaitDaemonReady(daemonReady: Promise<void> | undefined): Promise<void> {
 	if (!daemonReady) {
 		return;

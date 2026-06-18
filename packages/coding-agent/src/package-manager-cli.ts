@@ -365,17 +365,14 @@ function promptUpdateConfirm(message: string): Promise<boolean> {
 	});
 }
 
-/**
- * Before a self-update, confirm with the user when stopping the daemon would
- * terminate live sessions. Returns false when the update should be aborted.
- */
+// Returns false when the update should be aborted to avoid terminating live sessions.
 async function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, force: boolean): Promise<boolean> {
 	if (!probe.reachable || force) {
 		return true;
 	}
 	let detail: string;
 	if (probe.activeSessions === undefined) {
-		// Reachable but its sessions couldn't be listed: assume work may be lost.
+		// Reachable but couldn't list sessions: assume work may be lost.
 		detail =
 			"A running daemon's sessions could not be listed. Updating will stop the daemon and may terminate active sessions.";
 	} else if (probe.activeSessions.length === 0) {
@@ -393,10 +390,6 @@ async function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, f
 	return promptUpdateConfirm(`${detail} Continue?`);
 }
 
-/**
- * After a successful self-update, retire the now-stale daemon and start the new
- * version immediately so the next session attaches to a current daemon.
- */
 async function restartDaemonAfterSelfUpdate(socketPath: string, daemonWasRunning: boolean): Promise<void> {
 	if (!daemonWasRunning) {
 		return;

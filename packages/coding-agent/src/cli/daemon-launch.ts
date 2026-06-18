@@ -82,11 +82,7 @@ export async function listActiveDaemonSessionSummaries(client: DaemonClient): Pr
 	return sessions;
 }
 
-/**
- * Thrown when a stale-version daemon can't be replaced (it may be mid-turn, or it
- * didn't stop in time). The message is user-facing: callers print it and exit
- * rather than silently attaching a new client to an incompatible daemon.
- */
+/** Thrown when a stale-version daemon can't be replaced. The message is user-facing. */
 export class StaleDaemonError extends Error {
 	constructor(socketPath: string) {
 		super(
@@ -97,7 +93,6 @@ export class StaleDaemonError extends Error {
 	}
 }
 
-/** Poll until the daemon stops accepting connections. Returns false on timeout. */
 async function waitForDaemonGone(socketPath: string, timeoutMs = 5000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
@@ -109,32 +104,23 @@ async function waitForDaemonGone(socketPath: string, timeoutMs = 5000): Promise<
 	return false;
 }
 
-/**
- * Ask the daemon on socketPath to shut down and wait until it stops accepting
- * connections. A connect failure is not assumed to mean "gone" — only the poll
- * confirms that, so a transient hiccup can't report a still-live daemon stopped.
- */
 export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
 	try {
 		await client.connect(1000);
 		await client.request({ type: "shutdown" }).catch(() => undefined);
 	} catch {
-		// Couldn't send shutdown; the poll below decides whether it actually stopped.
+		// A connect failure isn't treated as "gone"; waitForDaemonGone is the source of truth.
 	} finally {
 		client.close();
 	}
 	return waitForDaemonGone(socketPath);
 }
 
-/**
- * Result of probing a daemon for `update`. `activeSessions` is undefined when the
- * daemon is reachable but its sessions could not be listed, so callers must treat
- * that as "possibly busy" rather than idle.
- */
+// activeSessions is undefined when the daemon is reachable but its sessions couldn't
+// be listed — callers must treat that as "possibly busy", not idle.
 export type RunningDaemonProbe = { reachable: false } | { reachable: true; activeSessions?: SessionSummary[] };
 
-/** A session whose work would be lost if the daemon were stopped now. */
 function isSessionBusy(summary: SessionSummary): boolean {
 	return summary.isStreaming || summary.isCompacting;
 }
@@ -157,11 +143,8 @@ export async function probeRunningDaemonSessions(socketPath: string): Promise<Ru
 	}
 }
 
-/**
- * Stop a stale daemon so a current-version one can replace it, but only when no
- * session is busy. Idle-but-loaded sessions persist to disk and reload on the
- * fresh daemon. Returns true once the daemon is no longer accepting connections.
- */
+// Idle-but-loaded sessions reload from disk on the fresh daemon, so only a busy
+// session blocks replacing a stale daemon.
 async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
 	let connected = false;
