@@ -816,9 +816,8 @@ async function findActiveDaemonSessionSummary(
 	}
 }
 
-// Remove a freshly-created default chat session from the daemon when the user
-// left it without sending anything, so abandoned new-chats don't pile up in the
-// agents view. Best-effort: a failure here must not block the agents view.
+// Best-effort: drop an abandoned new-chat (no message sent) so it doesn't linger
+// in the agents view. Any failure leaves the session in place.
 async function discardEmptyDaemonSession(socketPath: string, activeSessionId: string): Promise<void> {
 	const client = new DaemonClient(socketPath);
 	try {
@@ -1286,8 +1285,7 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 
 		await daemonReady;
-		// A no-args `prime-agent` lands here on the default new-chat path: no
-		// attach, no session selector, so the connection creates a fresh session.
+		// No attach and no session selector means the connection creates a fresh session.
 		const isFreshDefaultSession =
 			!activeDaemonSessionSummary && !getInteractiveDaemonSessionPath(parsed, sessionManager);
 		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
@@ -1299,6 +1297,9 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionPath: activeDaemonSessionSummary ? undefined : getInteractiveDaemonSessionPath(parsed, sessionManager),
 		});
 
+		// onShutdown fires on both the quit and return-to-agents-view paths, so a
+		// straight Ctrl+C quit (which process.exits before run() returns) still cleans up.
+		const freshDefaultActiveSessionId = isFreshDefaultSession ? summary.activeSessionId : undefined;
 		const interactiveMode = new InteractiveMode({
 			agentConnection,
 			uiServices: daemonUiServices,
@@ -1314,14 +1315,14 @@ export async function main(args: string[], options?: MainOptions) {
 			// view was not rendered here, so we intentionally leave
 			// agentsViewOwnsStartupNotices unset and let the in-session fallback run.
 			returnToAgentsView: true,
+			onShutdown: freshDefaultActiveSessionId
+				? () => discardEmptyDaemonSession(daemonSocketPath, freshDefaultActiveSessionId)
+				: undefined,
 		});
 
 		await preloadCodeHighlighter();
 		printTimings();
 		await interactiveMode.run();
-		if (isFreshDefaultSession && summary.activeSessionId) {
-			await discardEmptyDaemonSession(daemonSocketPath, summary.activeSessionId);
-		}
 		await launchAgentsView(false);
 		return;
 	}
