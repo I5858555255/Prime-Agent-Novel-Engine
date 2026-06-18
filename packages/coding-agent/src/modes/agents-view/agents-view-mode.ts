@@ -751,7 +751,12 @@ class AgentsViewMode implements Component, Focusable {
 			await this.sendReply(this.replyActiveSessionId, text);
 			return;
 		}
-		await this.createAgentForPrompt(text);
+		const created = await this.createAgentForPrompt(text);
+		if (created) {
+			// Opening a message should drop straight into its chat rather than
+			// leaving the user staring at the new row in the agents view.
+			this.finish({ type: "open", summary: created.summary });
+		}
 	}
 
 	private async runSlashCommand(command: ParsedSlashCommand): Promise<void> {
@@ -1276,7 +1281,10 @@ class AgentsViewMode implements Component, Focusable {
 		}
 	}
 
-	private async createAgentForPrompt(text: string, images?: ImageContent[]): Promise<string | undefined> {
+	private async createAgentForPrompt(
+		text: string,
+		images?: ImageContent[],
+	): Promise<{ summary: SessionSummary; activeSessionId: string } | undefined> {
 		const client = this.requireClient();
 		this.setStatusMessage("Creating agent...");
 		try {
@@ -1294,7 +1302,7 @@ class AgentsViewMode implements Component, Focusable {
 			this.selectedActiveSessionId = activeSessionId;
 			this.persistentState.selectedRowIdentity = this.selectedRowIdentity;
 			this.restoreSelection();
-			return activeSessionId;
+			return { summary, activeSessionId };
 		} catch (error) {
 			this.setStatusMessage(formatError("Failed to create agent", error));
 			return undefined;
@@ -1333,10 +1341,11 @@ class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 		const remainingMessages = this.options.initialMessage ? initialMessages : initialMessages.slice(1);
-		const activeSessionId = await this.createAgentForPrompt(firstMessage, this.options.initialImages);
-		if (!activeSessionId) {
+		const created = await this.createAgentForPrompt(firstMessage, this.options.initialImages);
+		if (!created) {
 			return;
 		}
+		const { activeSessionId } = created;
 		for (const message of remainingMessages) {
 			try {
 				await this.sendPrompt(activeSessionId, message, undefined, "followUp");
