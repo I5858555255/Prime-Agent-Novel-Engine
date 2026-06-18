@@ -358,19 +358,42 @@ export function planShutdownAll(daemons: readonly DaemonInfo[]): ReapAction[] {
 	});
 }
 
+// Graceful shutdowns run before any kill: a single process can surface under
+// several socket paths (e.g. macOS lsof reports every unix socket a process
+// holds), so stopping it gracefully first lets its sessions persist before a
+// kill on another of its paths could terminate it.
+const SHUTDOWN_ALL_ACTION_ORDER: Record<ReapAction["kind"], number> = {
+	shutdown: 0,
+	"remove-file": 1,
+	kill: 2,
+	skip: 3,
+};
+
 export async function runShutdownAll(json: boolean): Promise<void> {
 	const daemons = await discoverDaemons();
 	const stopped: Array<{ socketPath: string; action: string }> = [];
 	const failed: Array<{ socketPath: string; reason: string }> = [];
+	// Pids already stopped this run. A later entry for the same process must not
+	// signal the pid again: it is already down, and the pid may have been reused.
+	const handledPids = new Set<number>();
 
-	for (const action of planShutdownAll(daemons)) {
+	const actions = [...planShutdownAll(daemons)].sort(
+		(left, right) => SHUTDOWN_ALL_ACTION_ORDER[left.kind] - SHUTDOWN_ALL_ACTION_ORDER[right.kind],
+	);
+
+	for (const action of actions) {
 		const { socketPath, pid } = action.daemon;
+		if (pid !== undefined && handledPids.has(pid)) {
+			removeSocketFile(socketPath);
+			stopped.push({ socketPath, action: `already stopped (pid ${pid})` });
+			continue;
+		}
 		switch (action.kind) {
 			case "remove-file": {
 				// A path marked orphan-file at discovery may have become a live
 				// listener since; shut it down properly if so, else drop the file.
 				if ((await probeDaemon(socketPath)).reachable) {
-					apply(await stopDaemonForcefully(socketPath, pid), socketPath, stopped, failed);
+					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
 				} else if (removeSocketFile(socketPath)) {
 					stopped.push({ socketPath, action: "removed stale socket file" });
 				} else {
@@ -383,16 +406,25 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 				// discovery may have started answering since. Prefer the graceful path
 				// (which persists sessions) when it now responds.
 				if ((await probeDaemon(socketPath)).reachable) {
-					apply(await stopDaemonForcefully(socketPath, pid), socketPath, stopped, failed);
-				} else {
+					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
+				} else if (await canConnectToSocket(socketPath, 250)) {
+					// Probe failed but the socket still accepts connections: a wedged
+					// daemon. Killing its pid is safe because something is still there.
 					await forceKillDaemon(pid!);
+					handledPids.add(pid!);
 					removeSocketFile(socketPath);
 					stopped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
+				} else {
+					// The socket no longer accepts connections: the daemon already
+					// exited. Never signal the pid (it may have been recycled); just
+					// clean up the leftover socket file.
+					removeSocketFile(socketPath);
+					stopped.push({ socketPath, action: "daemon already stopped" });
 				}
 				break;
 			}
 			case "shutdown":
-				apply(await stopDaemonForcefully(socketPath, pid), socketPath, stopped, failed);
+				apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
 				break;
 			case "skip":
 				// planShutdownAll never skips.
@@ -417,19 +449,32 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 }
 
 /**
- * Stop a reachable daemon, escalating to a force-kill if it will not stop on its
- * own. The graceful request is tried first so sessions are persisted, but a hung
- * daemon cannot process the shutdown command, so a daemon still listening after
- * the request is killed by pid (and its socket file cleaned up).
+ * Stop a reachable daemon, escalating to a force-kill only if it will not stop on
+ * its own. The graceful request is tried first so sessions are persisted. If it
+ * does not confirm the socket stopped, the socket is re-checked: a daemon that
+ * already exited (connect now fails) is left alone — signalling its pid could hit
+ * a recycled process — while one still listening is wedged and is killed by pid.
  */
-async function stopDaemonForcefully(socketPath: string, pid: number | undefined): Promise<ReapOutcome> {
+async function stopDaemonForcefully(
+	socketPath: string,
+	pid: number | undefined,
+	handledPids: Set<number>,
+): Promise<ReapOutcome> {
 	if (await shutdownDaemon(socketPath)) {
+		if (pid !== undefined) {
+			handledPids.add(pid);
+		}
 		return { reaped: `stopped daemon${pid ? ` (pid ${pid})` : ""}` };
 	}
+	if (!(await canConnectToSocket(socketPath, 250))) {
+		removeSocketFile(socketPath);
+		return { reaped: "daemon already stopped" };
+	}
 	if (pid === undefined) {
-		return { skipped: "shutdown request failed and no pid to kill" };
+		return { skipped: "still listening but no pid to kill" };
 	}
 	await forceKillDaemon(pid);
+	handledPids.add(pid);
 	removeSocketFile(socketPath);
 	return { reaped: `force-killed unresponsive daemon (pid ${pid})` };
 }
