@@ -124,23 +124,30 @@ export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean
 }
 
 /**
- * Connect to the daemon on socketPath and return its active session summaries,
- * or null when no daemon is reachable. Used by `update` to decide whether
- * stopping the daemon would terminate live work.
+ * Result of probing a daemon for `update`. `activeSessions` is undefined when the
+ * daemon is reachable but its sessions could not be listed, so callers must treat
+ * that as "possibly busy" rather than idle.
  */
-export async function getRunningDaemonActiveSessions(socketPath: string): Promise<SessionSummary[] | null> {
+export type RunningDaemonProbe = { reachable: false } | { reachable: true; activeSessions?: SessionSummary[] };
+
+/** A session whose work would be lost if the daemon were stopped now. */
+function isSessionBusy(summary: SessionSummary): boolean {
+	return summary.isStreaming || summary.isCompacting;
+}
+
+export async function probeRunningDaemonSessions(socketPath: string): Promise<RunningDaemonProbe> {
 	const client = new DaemonClient(socketPath);
 	try {
 		await client.connect(1000);
 	} catch {
 		client.close();
-		return null;
+		return { reachable: false };
 	}
 	try {
 		const summaries = await listActiveDaemonSessionSummaries(client);
-		return summaries.filter((summary) => summary.activeSessionId !== undefined);
+		return { reachable: true, activeSessions: summaries.filter((summary) => summary.activeSessionId !== undefined) };
 	} catch {
-		return [];
+		return { reachable: true };
 	} finally {
 		client.close();
 	}
@@ -148,31 +155,28 @@ export async function getRunningDaemonActiveSessions(socketPath: string): Promis
 
 /**
  * Stop a stale daemon so a current-version one can replace it, but only when no
- * session is mid-turn. Idle-but-loaded sessions persist to disk and reload on the
- * fresh daemon, so only an actively streaming turn blocks the upgrade. Returns
- * true once the daemon is no longer accepting connections.
+ * session is busy. Idle-but-loaded sessions persist to disk and reload on the
+ * fresh daemon. Returns true once the daemon is no longer accepting connections.
  */
-async function shutdownStaleDaemonIfNotStreaming(socketPath: string): Promise<boolean> {
+async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
-	let hasStreamingSessions = false;
+	let hasBusySessions = false;
 	try {
 		await client.connect(1000);
 		try {
 			const summaries = await listActiveDaemonSessionSummaries(client);
-			hasStreamingSessions = summaries.some((summary) => summary.isStreaming);
+			hasBusySessions = summaries.some(isSessionBusy);
 		} catch {
-			// If we cannot confirm the daemon is idle, treat it as busy rather than
-			// risking interrupting a live turn on a transient list failure.
-			hasStreamingSessions = true;
+			// Couldn't confirm idleness: treat as busy rather than risk interrupting work.
+			hasBusySessions = true;
 		}
 	} catch {
-		// Connection failures mean the daemon is already gone.
 		return true;
 	} finally {
 		client.close();
 	}
 
-	if (hasStreamingSessions) {
+	if (hasBusySessions) {
 		return false;
 	}
 	return shutdownDaemonAndWait(socketPath);
@@ -184,7 +188,7 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 		return;
 	}
 	if (probe === "stale") {
-		const stopped = await shutdownStaleDaemonIfNotStreaming(socketPath);
+		const stopped = await shutdownStaleDaemonIfNotBusy(socketPath);
 		if (!stopped) {
 			throw new StaleBusyDaemonError(socketPath);
 		}

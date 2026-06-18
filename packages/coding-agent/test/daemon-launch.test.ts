@@ -3,11 +3,13 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getRunningDaemonActiveSessions, shutdownDaemonAndWait } from "../src/cli/daemon-launch.js";
+import { probeRunningDaemonSessions, shutdownDaemonAndWait } from "../src/cli/daemon-launch.js";
 
 interface FakeDaemonOptions {
 	/** Sessions returned for a `list` command. */
 	sessions?: Array<Record<string, unknown>>;
+	/** When true, the `list` command responds with a failure. */
+	failList?: boolean;
 	/** When false, the server ignores `shutdown` and stays up. */
 	respondToShutdown?: boolean;
 }
@@ -43,8 +45,9 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 						type: "response",
 						command: "list",
 						id: command.id,
-						success: true,
-						data: { sessions: options.sessions ?? [] },
+						...(options.failList
+							? { success: false, error: "list failed" }
+							: { success: true, data: { sessions: options.sessions ?? [] } }),
 					});
 				} else if (command.type === "shutdown") {
 					if (options.respondToShutdown === false) {
@@ -68,15 +71,15 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 	};
 }
 
-describe("getRunningDaemonActiveSessions", () => {
+describe("probeRunningDaemonSessions", () => {
 	const cleanups: Array<() => Promise<void>> = [];
 	afterEach(async () => {
 		await Promise.all(cleanups.splice(0).map((fn) => fn()));
 	});
 
-	it("returns null when no daemon is reachable", async () => {
-		const result = await getRunningDaemonActiveSessions(join(tmpdir(), "pa-launch-missing.sock"));
-		expect(result).toBeNull();
+	it("reports unreachable when no daemon is running", async () => {
+		const result = await probeRunningDaemonSessions(join(tmpdir(), "pa-launch-missing.sock"));
+		expect(result).toEqual({ reachable: false });
 	});
 
 	it("returns only sessions that have an activeSessionId", async () => {
@@ -88,14 +91,24 @@ describe("getRunningDaemonActiveSessions", () => {
 			],
 		});
 		cleanups.push(daemon.close);
-		const result = await getRunningDaemonActiveSessions(daemon.socketPath);
-		expect(result?.map((session) => session.activeSessionId)).toEqual(["a", "c"]);
+		const result = await probeRunningDaemonSessions(daemon.socketPath);
+		expect(result.reachable).toBe(true);
+		expect(result.reachable ? result.activeSessions?.map((session) => session.activeSessionId) : undefined).toEqual([
+			"a",
+			"c",
+		]);
 	});
 
-	it("returns an empty array when the daemon is reachable but idle", async () => {
+	it("returns an empty list when the daemon is reachable but idle", async () => {
 		const daemon = await startFakeDaemon({ sessions: [] });
 		cleanups.push(daemon.close);
-		expect(await getRunningDaemonActiveSessions(daemon.socketPath)).toEqual([]);
+		expect(await probeRunningDaemonSessions(daemon.socketPath)).toEqual({ reachable: true, activeSessions: [] });
+	});
+
+	it("leaves activeSessions undefined when reachable but the list fails", async () => {
+		const daemon = await startFakeDaemon({ failList: true });
+		cleanups.push(daemon.close);
+		expect(await probeRunningDaemonSessions(daemon.socketPath)).toEqual({ reachable: true });
 	});
 });
 

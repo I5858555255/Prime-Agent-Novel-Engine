@@ -4,7 +4,8 @@ import { spawn } from "child_process";
 import { selectConfig } from "./cli/config-selector.js";
 import {
 	ensureInteractiveDaemonRunning,
-	getRunningDaemonActiveSessions,
+	probeRunningDaemonSessions,
+	type RunningDaemonProbe,
 	shutdownDaemonAndWait,
 } from "./cli/daemon-launch.js";
 import {
@@ -368,37 +369,33 @@ function promptUpdateConfirm(message: string): Promise<boolean> {
  * Before a self-update, confirm with the user when stopping the daemon would
  * terminate live sessions. Returns false when the update should be aborted.
  */
-async function confirmDaemonSessionLossBeforeUpdate(
-	activeSessions: Awaited<ReturnType<typeof getRunningDaemonActiveSessions>>,
-	force: boolean,
-): Promise<boolean> {
-	const count = activeSessions?.length ?? 0;
-	if (count === 0) {
+async function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, force: boolean): Promise<boolean> {
+	if (!probe.reachable || force) {
 		return true;
 	}
-	const noun = count === 1 ? "session" : "sessions";
-	const pronoun = count === 1 ? "it" : "them";
-	if (force) {
+	let detail: string;
+	if (probe.activeSessions === undefined) {
+		// Reachable but its sessions couldn't be listed: assume work may be lost.
+		detail =
+			"A running daemon's sessions could not be listed. Updating will stop the daemon and may terminate active sessions.";
+	} else if (probe.activeSessions.length === 0) {
 		return true;
+	} else {
+		const count = probe.activeSessions.length;
+		const noun = count === 1 ? "session" : "sessions";
+		const pronoun = count === 1 ? "it" : "them";
+		detail = `The running daemon has ${count} active ${noun}. Updating will stop the daemon and terminate ${pronoun}.`;
 	}
 	if (!process.stdin.isTTY) {
-		console.error(
-			chalk.red(
-				`The running daemon has ${count} active ${noun}. Updating will stop the daemon and terminate ${pronoun}. ` +
-					`Re-run with --force to proceed.`,
-			),
-		);
+		console.error(chalk.red(`${detail} Re-run with --force to proceed.`));
 		return false;
 	}
-	return promptUpdateConfirm(
-		`The running daemon has ${count} active ${noun}. Updating will stop the daemon and terminate ${pronoun}. Continue?`,
-	);
+	return promptUpdateConfirm(`${detail} Continue?`);
 }
 
 /**
  * After a successful self-update, retire the now-stale daemon and start the new
- * version immediately so the next session attaches to a current daemon. No-op
- * when no daemon was running.
+ * version immediately so the next session attaches to a current daemon.
  */
 async function restartDaemonAfterSelfUpdate(socketPath: string, daemonWasRunning: boolean): Promise<void> {
 	if (!daemonWasRunning) {
@@ -591,11 +588,10 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						process.exitCode = 1;
 						return true;
 					}
-					// Inspect the running daemon before changing anything on disk: stopping
-					// it to upgrade will terminate any active sessions, so confirm first.
+					// Confirm before the install, since upgrading the daemon afterward stops it.
 					const daemonSocketPath = defaultDaemonSocketPath();
-					const activeSessions = await getRunningDaemonActiveSessions(daemonSocketPath);
-					if (!(await confirmDaemonSessionLossBeforeUpdate(activeSessions, options.force))) {
+					const daemonProbe = await probeRunningDaemonSessions(daemonSocketPath);
+					if (!(await confirmDaemonSessionLossBeforeUpdate(daemonProbe, options.force))) {
 						if (process.stdin.isTTY) {
 							console.log(chalk.dim("Update cancelled."));
 						} else {
@@ -613,7 +609,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME}`));
-					await restartDaemonAfterSelfUpdate(daemonSocketPath, activeSessions !== null);
+					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable);
 				}
 				return true;
 			}
