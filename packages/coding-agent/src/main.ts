@@ -50,10 +50,12 @@ import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import {
+	type AgentConnection,
 	createInteractiveModeLocalSessionHost,
 	createInteractiveModeUiServicesFromServices,
 	DaemonAgentConnection,
 	DaemonClient,
+	DeferredAgentConnection,
 	defaultDaemonSocketPath,
 	InProcessAgentConnection,
 	InteractiveMode,
@@ -816,32 +818,6 @@ async function findActiveDaemonSessionSummary(
 	}
 }
 
-// Best-effort: drop an abandoned new-chat (no message sent) so it doesn't linger
-// in the agents view. Any failure leaves the session in place.
-async function discardEmptyDaemonSession(socketPath: string, activeSessionId: string): Promise<void> {
-	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(250);
-	} catch {
-		return;
-	}
-	try {
-		const state = await client.request({ type: "get_state", activeSessionId }, 3000);
-		if (!state.success || !isDaemonSessionSummary(state.data)) {
-			return;
-		}
-		const summary = state.data;
-		if (summary.messageCount > 0 || summary.pendingMessageCount > 0 || summary.isStreaming) {
-			return;
-		}
-		await client.request({ type: "kill", activeSessionId }, 3000);
-	} catch {
-		// Cleanup is best-effort; leave the session in place on any error.
-	} finally {
-		client.close();
-	}
-}
-
 async function normalizeDaemonRichTuiAttachArgs(args: string[]): Promise<string[] | undefined> {
 	const shortcut = parseDaemonRichTuiAttachShortcut(args);
 	if (!shortcut) {
@@ -1285,27 +1261,50 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 
 		await daemonReady;
-		// No attach and no session selector means the connection creates a fresh session.
+		// No attach and no session selector means a fresh default chat. Defer the
+		// daemon session until the first action so startup is instant and leaving
+		// straight to the agents view (or quitting) creates nothing to clean up.
 		const isFreshDefaultSession =
 			!activeDaemonSessionSummary && !getInteractiveDaemonSessionPath(parsed, sessionManager);
-		const { connection: agentConnection, summary } = await createDaemonInteractiveConnection({
-			socketPath: daemonSocketPath,
-			config: defaultSessionConfig,
-			activeSessionId: activeDaemonSessionSummary
-				? getDaemonSummaryActiveSessionId(activeDaemonSessionSummary)
-				: undefined,
-			sessionPath: activeDaemonSessionSummary ? undefined : getInteractiveDaemonSessionPath(parsed, sessionManager),
-		});
+		let agentConnection: AgentConnection;
+		let attachModelFallbackMessage: string | undefined;
+		if (isFreshDefaultSession) {
+			agentConnection = new DeferredAgentConnection(
+				async () =>
+					(await createDaemonInteractiveConnection({ socketPath: daemonSocketPath, config: defaultSessionConfig }))
+						.connection,
+				{
+					cwd: sessionManager.getCwd(),
+					sessionDir,
+					model: startupModel.model,
+					thinkingLevel: prepared.sessionOptions.thinkingLevel ?? defaultSessionConfig.thinking ?? "off",
+					scopedModels: prepared.sessionOptions.scopedModels ?? [],
+					availableModels: services.modelRegistry.getAvailable(),
+					steeringMode: settingsManager.getSteeringMode(),
+					followUpMode: settingsManager.getFollowUpMode(),
+					autoCompactionEnabled: settingsManager.getCompactionEnabled(),
+				},
+			);
+			attachModelFallbackMessage = startupModel.modelFallbackMessage;
+		} else {
+			const { connection, summary } = await createDaemonInteractiveConnection({
+				socketPath: daemonSocketPath,
+				config: defaultSessionConfig,
+				activeSessionId: activeDaemonSessionSummary
+					? getDaemonSummaryActiveSessionId(activeDaemonSessionSummary)
+					: undefined,
+				sessionPath: getInteractiveDaemonSessionPath(parsed, sessionManager),
+			});
+			agentConnection = connection;
+			attachModelFallbackMessage = resolveAttachModelFallbackMessage(summary, startupModel.modelFallbackMessage);
+		}
 
-		// onShutdown fires on both the quit and return-to-agents-view paths, so a
-		// straight Ctrl+C quit (which process.exits before run() returns) still cleans up.
-		const freshDefaultActiveSessionId = isFreshDefaultSession ? getDaemonSummaryActiveSessionId(summary) : undefined;
 		const interactiveMode = new InteractiveMode({
 			agentConnection,
 			uiServices: daemonUiServices,
 			bindLocalSessionExtensions: false,
 			migratedProviders,
-			modelFallbackMessage: resolveAttachModelFallbackMessage(summary, startupModel.modelFallbackMessage),
+			modelFallbackMessage: attachModelFallbackMessage,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,
@@ -1315,9 +1314,6 @@ export async function main(args: string[], options?: MainOptions) {
 			// view was not rendered here, so we intentionally leave
 			// agentsViewOwnsStartupNotices unset and let the in-session fallback run.
 			returnToAgentsView: true,
-			onShutdown: freshDefaultActiveSessionId
-				? () => discardEmptyDaemonSession(daemonSocketPath, freshDefaultActiveSessionId)
-				: undefined,
 		});
 
 		await preloadCodeHighlighter();
