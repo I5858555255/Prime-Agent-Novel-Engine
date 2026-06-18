@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { getPackageDir } from "../../config.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 
-const BOOTSTRAP_SCHEMA = 7;
+const BOOTSTRAP_SCHEMA = 8;
 const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
