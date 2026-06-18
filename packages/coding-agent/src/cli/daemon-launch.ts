@@ -121,7 +121,7 @@ export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean
 // be listed — callers must treat that as "possibly busy", not idle.
 export type RunningDaemonProbe = { reachable: false } | { reachable: true; activeSessions?: SessionSummary[] };
 
-function isSessionBusy(summary: SessionSummary): boolean {
+export function isSessionBusy(summary: SessionSummary): boolean {
 	// pendingMessageCount covers queued steering/follow-ups, which live only in
 	// memory and would be lost if the daemon were stopped.
 	return summary.isStreaming || summary.isCompacting || summary.pendingMessageCount > 0;

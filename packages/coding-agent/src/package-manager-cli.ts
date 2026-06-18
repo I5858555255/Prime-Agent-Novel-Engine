@@ -4,6 +4,7 @@ import { spawn } from "child_process";
 import { selectConfig } from "./cli/config-selector.js";
 import {
 	ensureInteractiveDaemonRunning,
+	isSessionBusy,
 	probeRunningDaemonSessions,
 	type RunningDaemonProbe,
 	shutdownDaemonAndWait,
@@ -366,6 +367,8 @@ function promptUpdateConfirm(message: string): Promise<boolean> {
 }
 
 // Returns false when the update should be aborted to avoid terminating live sessions.
+// Only busy sessions (streaming, compacting, or pending messages) would lose work;
+// idle loaded sessions reload from disk on the fresh daemon.
 async function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, force: boolean): Promise<boolean> {
 	if (!probe.reachable || force) {
 		return true;
@@ -375,13 +378,15 @@ async function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, f
 		// Reachable but couldn't list sessions: assume work may be lost.
 		detail =
 			"A running daemon's sessions could not be listed. Updating will stop the daemon and may terminate active sessions.";
-	} else if (probe.activeSessions.length === 0) {
-		return true;
 	} else {
-		const count = probe.activeSessions.length;
+		const busySessions = probe.activeSessions.filter(isSessionBusy);
+		if (busySessions.length === 0) {
+			return true;
+		}
+		const count = busySessions.length;
 		const noun = count === 1 ? "session" : "sessions";
 		const pronoun = count === 1 ? "it" : "them";
-		detail = `The running daemon has ${count} active ${noun}. Updating will stop the daemon and terminate ${pronoun}.`;
+		detail = `The running daemon has ${count} busy ${noun}. Updating will stop the daemon and terminate ${pronoun}.`;
 	}
 	if (!process.stdin.isTTY) {
 		console.error(chalk.red(`${detail} Re-run with --force to proceed.`));
