@@ -137,6 +137,12 @@ function scanListeningDaemons(): DiscoveredDaemonProcess[] {
 	return [];
 }
 
+/** Whether the OS still reports `pid` listening on `socketPath` (a live daemon). */
+function isDaemonProcessListening(pid: number, socketPath: string): boolean {
+	const target = normalizeSocketPath(socketPath);
+	return scanListeningDaemons().some((daemon) => daemon.pid === pid && daemon.socketPath === target);
+}
+
 function enrichUptimes(daemons: DiscoveredDaemonProcess[]): DiscoveredDaemonProcess[] {
 	const pids = daemons.map((daemon) => daemon.pid);
 	if (pids.length === 0) {
@@ -200,7 +206,10 @@ async function probeDaemon(socketPath: string): Promise<ProbeResult> {
 		}
 		let sessionCount: number | undefined;
 		try {
-			const response = await client.request({ type: "list" });
+			// Short timeout: a wedged daemon accepts the connection but never answers,
+			// and the default 30s would stall discovery on exactly the daemons we most
+			// need to reap.
+			const response = await client.request({ type: "list" }, 1500);
 			if (response.success) {
 				const sessions = (response.data as { sessions?: unknown })?.sessions;
 				if (Array.isArray(sessions)) {
@@ -390,14 +399,15 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 			case "kill": {
 				if ((await probeDaemon(socketPath)).reachable) {
 					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
-				} else if (await canConnectToSocket(socketPath, 250)) {
-					// Socket still listens: a wedged daemon, safe to kill by pid.
+				} else if (isDaemonProcessListening(pid!, socketPath)) {
+					// A wedged daemon: connect fails but the OS still lists this pid
+					// listening on the socket. Re-confirming via the scan (rather than a
+					// connect) avoids signalling a pid that has since exited and reused.
 					await forceKillDaemon(pid!);
 					handledPids.add(pid!);
 					removeSocketFile(socketPath);
 					stopped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
 				} else {
-					// Socket dead: the daemon exited; don't signal a possibly-reused pid.
 					removeSocketFile(socketPath);
 					stopped.push({ socketPath, action: "daemon already stopped" });
 				}
@@ -626,7 +636,9 @@ async function shutdownDaemon(socketPath: string): Promise<boolean> {
 		return false;
 	}
 	try {
-		await client.request({ type: "shutdown" });
+		// Short timeout: a wedged daemon never acks, and the connectivity check
+		// below is the source of truth anyway.
+		await client.request({ type: "shutdown" }, 1500);
 	} catch {
 		// The daemon may still stop; the connectivity check below is the source of truth.
 	} finally {
