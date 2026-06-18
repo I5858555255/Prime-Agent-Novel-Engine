@@ -70,12 +70,11 @@ const OUTPUT_PREVIEW_LINES = 5;
 const INPUT_PREVIEW_LINES = 3;
 const DIFF_PREVIEW_LINES = 12;
 
-// Cap the descriptor so the trailing duration / result hint stay visible; the
-// panel line truncates anything that still overflows on narrow terminals.
+// Cap so the trailing duration/counts stay visible on narrow widths.
 const DESCRIPTOR_MAX_WIDTH = 64;
 
 const COMMENT_LINE_PATTERN = /^\s*#/;
-// Strip a leading `cd … &&` (or `;`) so we surface the real command after it.
+// Strip a leading `cd … &&` to surface the real command.
 const CD_PREFIX_PATTERN = /^\s*cd\s+[^&;|]+(?:&&|;)\s*/;
 
 function collapseWhitespace(text: string): string {
@@ -89,13 +88,7 @@ function truncateDescriptor(text: string): string {
 	return `${text.slice(0, DESCRIPTOR_MAX_WIDTH - 1).trimEnd()}…`;
 }
 
-/**
- * Best-effort, deterministic one-line descriptor for a cell — the leading
- * meaningful command for shell cells, or the first real statement for python.
- * No model involved: it surfaces the cell's own first line of intent so the
- * collapsed view is more useful than `%%bash`. Returns "" when there's nothing
- * meaningful yet (e.g. code still streaming).
- */
+/** Leading meaningful command of a cell; "" while code is still streaming. */
 function summarizeCell(code: string): string {
 	const lines = code.split("\n");
 	const isBashCell = CELL_MAGIC_PATTERN.test(lines[0] ?? "");
@@ -105,7 +98,6 @@ function summarizeCell(code: string): string {
 		if (!trimmed || COMMENT_LINE_PATTERN.test(trimmed)) {
 			continue;
 		}
-		// `!cmd` shell escapes in python read as the command they run.
 		const command = trimmed.replace(MAGIC_LINE_PATTERN, "").trim();
 		if (!command) {
 			continue;
@@ -291,10 +283,8 @@ export class IPythonCellComponent implements Component {
 
 		const details = readDetails(this.state.details);
 
-		// Default view: one condensed line per tool call. The leading space matches
-		// the one-column indent of message text; code/output/diffs stay hidden until
-		// the block is expanded with ctrl+o. Cached by state version so the line only
-		// re-renders when its own content changes — never on every global repaint.
+		// Collapsed default: one line, indented to match message text. Cached by
+		// state version so it never re-renders on unrelated repaints (would flicker).
 		if (!this.state.expanded) {
 			const line = truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "");
 			return this.renderCache.set(safeWidth, this.stateVersion, [line]);
@@ -317,12 +307,7 @@ export class IPythonCellComponent implements Component {
 		return this.renderCache.set(safeWidth, this.stateVersion, lines);
 	}
 
-	/**
-	 * The condensed single line shown by default: a status marker, the cell
-	 * language, the leading command (bash only — python first-lines are usually
-	 * imports/setup), live in/out line counts, and — once finished — the duration
-	 * and any error name.
-	 */
+	// Command is bash-only: python first-lines are usually imports/setup, not intent.
 	private collapsedLine(details: IpythonDetails): string {
 		const code = this.state.code.trimEnd();
 		const isBashCell = CELL_MAGIC_PATTERN.test(code.split("\n")[0] ?? "");
@@ -372,12 +357,8 @@ export class IPythonCellComponent implements Component {
 		}
 	}
 
-	/**
-	 * Condensed input/output line counts (`↑in ↓out lines`), updated live as the
-	 * cell's code and output stream in. The `lines` unit disambiguates from the
-	 * activity line's token counts. Output is omitted for edits — the diff renders
-	 * on expand and its stdout is just the "Edited" confirmation.
-	 */
+	// `↑in ↓out lines` — the "lines" unit disambiguates from the token counts on
+	// the activity line. Output is omitted for edits (the diff shows on expand).
 	private lineCounts(details: IpythonDetails): string | undefined {
 		const codeLines = this.state.code.split("\n");
 		const isBashCell = CELL_MAGIC_PATTERN.test(codeLines[0] ?? "");
@@ -422,9 +403,8 @@ export class IPythonCellComponent implements Component {
 		if (status === "aborted") {
 			return "aborted";
 		}
-		// A finalized result (not partial) with any completion signal is "done" —
-		// keyed off the result, not off having observed the live start, so tool
-		// calls rehydrated from a past session render as done rather than running.
+		// Keyed off the result, not executionStarted, so calls rehydrated from a
+		// past session (which never saw the live start) render done, not running.
 		if (!this.state.isPartial && (status !== undefined || this.state.executionStarted || this.hasResult(details))) {
 			return "done";
 		}
@@ -434,7 +414,6 @@ export class IPythonCellComponent implements Component {
 		return "queued";
 	}
 
-	/** Whether a result payload has been captured (output, diffs, or an error). */
 	private hasResult(details: IpythonDetails): boolean {
 		return (
 			details.stdout !== undefined ||
