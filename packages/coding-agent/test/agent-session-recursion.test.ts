@@ -112,6 +112,22 @@ interface InspectableRlmSession {
 	_activeRlmChildRuns: Map<string, InspectableRlmRun>;
 }
 
+interface PersistentRlmSession {
+	sessionManager: { getSessionArtifactDir(): string | undefined };
+	_createPersistentRlmChild(name: string, maxTokens?: number): Promise<{ session_dir: string | null }>;
+	_advancePersistentRlmChild(
+		name: string,
+		prompt: string,
+	): Promise<{
+		answer: string;
+		usage: { prompt_tokens: number; completion_tokens: number };
+		turns: number;
+		session_dir: string | null;
+	}>;
+	_closePersistentRlmChild(name: string): Promise<void>;
+	_persistentRlmChildren: Map<string, { sessionDir: string }>;
+}
+
 interface KernelPumpTestApi {
 	iopub: AsyncIterable<Buffer[]> & { close(): void };
 	startIopubPump(): void;
@@ -834,6 +850,56 @@ print(_result.answer)
 			await manager.dispose();
 			stderrSpy.mockRestore();
 		}
+	});
+
+	// Persistent / background sub-agents (rlm.send): a named child that survives
+	// across host requests and continues across turns, vs. the one-off rlm.run above.
+	it("keeps a named persistent sub-agent across turns and reuses its session", async () => {
+		const root = createSession() as unknown as PersistentRlmSession;
+
+		const created = await root._createPersistentRlmChild("helper");
+		expect(created.session_dir).not.toBeNull();
+		expect(basename(created.session_dir!)).toBe("sub-helper");
+		expect(dirname(created.session_dir!)).toBe(root.sessionManager.getSessionArtifactDir());
+		expect(root._persistentRlmChildren.size).toBe(1);
+
+		const first = await root._advancePersistentRlmChild("helper", "first question");
+		expect(first.answer).toBe("child answer: first question");
+		expect(first.turns).toBe(1);
+		expect(first.session_dir).toBe(created.session_dir);
+
+		// Re-sending the same name continues the SAME agent: a second assistant turn
+		// accrues on one session instead of spinning up a fresh child.
+		const second = await root._advancePersistentRlmChild("helper", "second question");
+		expect(second.answer).toBe("child answer: second question");
+		expect(second.turns).toBe(2);
+		expect(second.session_dir).toBe(created.session_dir);
+		expect(root._persistentRlmChildren.size).toBe(1);
+
+		await root._closePersistentRlmChild("helper");
+		expect(root._persistentRlmChildren.size).toBe(0);
+		// Closing is idempotent.
+		await expect(root._closePersistentRlmChild("helper")).resolves.toBeUndefined();
+	});
+
+	it("reuses the existing session when a persistent name is created twice", async () => {
+		const root = createSession() as unknown as PersistentRlmSession;
+		const created = await root._createPersistentRlmChild("helper");
+		const again = await root._createPersistentRlmChild("helper");
+		expect(again.session_dir).toBe(created.session_dir);
+		expect(root._persistentRlmChildren.size).toBe(1);
+	});
+
+	it("rejects advancing a persistent sub-agent that was never created", async () => {
+		const root = createSession() as unknown as PersistentRlmSession;
+		await expect(root._advancePersistentRlmChild("ghost", "hello")).rejects.toThrow(
+			"No persistent sub-agent named 'ghost'",
+		);
+	});
+
+	it("rejects creating a persistent sub-agent at the recursion depth cap", async () => {
+		const root = createSession({ depth: 1, maxDepth: 1 }) as unknown as PersistentRlmSession;
+		await expect(root._createPersistentRlmChild("helper")).rejects.toThrow("RLM recursion depth limit reached");
 	});
 });
 
