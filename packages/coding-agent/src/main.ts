@@ -16,7 +16,7 @@ import {
 	ensureInteractiveDaemonRunning,
 	isDaemonSessionSummary,
 	listActiveDaemonSessionSummaries,
-	StaleBusyDaemonError,
+	StaleDaemonError,
 } from "./cli/daemon-launch.js";
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
@@ -349,8 +349,8 @@ async function promptConfirm(message: string): Promise<boolean> {
 }
 
 /**
- * Await daemon readiness, but turn a stale-busy daemon into a clean message and
- * exit instead of letting a new-version client attach to an incompatible daemon.
+ * Await daemon readiness, but turn an unreplaceable stale daemon into a clean
+ * message and exit instead of attaching a new client to an incompatible daemon.
  */
 async function awaitDaemonReady(daemonReady: Promise<void> | undefined): Promise<void> {
 	if (!daemonReady) {
@@ -359,7 +359,7 @@ async function awaitDaemonReady(daemonReady: Promise<void> | undefined): Promise
 	try {
 		await daemonReady;
 	} catch (error) {
-		if (error instanceof StaleBusyDaemonError) {
+		if (error instanceof StaleDaemonError) {
 			console.error(chalk.red(error.message));
 			process.exit(1);
 		}

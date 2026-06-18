@@ -83,17 +83,17 @@ export async function listActiveDaemonSessionSummaries(client: DaemonClient): Pr
 }
 
 /**
- * Thrown when a stale-version daemon is mid-turn and cannot be replaced without
- * interrupting it. The message is user-facing: callers print it and exit rather
- * than silently attaching a new client to an incompatible daemon.
+ * Thrown when a stale-version daemon can't be replaced (it may be mid-turn, or it
+ * didn't stop in time). The message is user-facing: callers print it and exit
+ * rather than silently attaching a new client to an incompatible daemon.
  */
-export class StaleBusyDaemonError extends Error {
+export class StaleDaemonError extends Error {
 	constructor(socketPath: string) {
 		super(
-			`A previous prime-agent version's background daemon is still running an active turn on ${socketPath}, ` +
-				`and this version can't drive it. Wait for that turn to finish, or run "prime-agent daemon shutdown" to stop it and upgrade.`,
+			`A previous prime-agent version's background daemon on ${socketPath} couldn't be replaced — it may be mid-turn ` +
+				`or still shutting down, and this version can't drive it. Wait a moment and retry, or run "prime-agent daemon shutdown" to stop it and upgrade.`,
 		);
-		this.name = "StaleBusyDaemonError";
+		this.name = "StaleDaemonError";
 	}
 }
 
@@ -199,7 +199,7 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 	if (probe === "stale") {
 		const stopped = await shutdownStaleDaemonIfNotBusy(socketPath);
 		if (!stopped) {
-			throw new StaleBusyDaemonError(socketPath);
+			throw new StaleDaemonError(socketPath);
 		}
 	}
 
