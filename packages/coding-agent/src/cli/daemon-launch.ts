@@ -122,7 +122,9 @@ export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean
 export type RunningDaemonProbe = { reachable: false } | { reachable: true; activeSessions?: SessionSummary[] };
 
 function isSessionBusy(summary: SessionSummary): boolean {
-	return summary.isStreaming || summary.isCompacting;
+	// pendingMessageCount covers queued steering/follow-ups, which live only in
+	// memory and would be lost if the daemon were stopped.
+	return summary.isStreaming || summary.isCompacting || summary.pendingMessageCount > 0;
 }
 
 export async function probeRunningDaemonSessions(socketPath: string): Promise<RunningDaemonProbe> {
