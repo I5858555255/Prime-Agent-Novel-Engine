@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import hostedGitInfo from "hosted-git-info";
 
 /**
@@ -189,4 +191,154 @@ export function parseGitUrl(source: string): GitSource | null {
 	}
 
 	return parseGenericGitUrl(url);
+}
+
+export type GitPaths = {
+	repoDir: string;
+	commonGitDir: string;
+	headPath: string;
+};
+
+/**
+ * Find git metadata paths by walking up from cwd.
+ * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
+ */
+export function findGitPaths(cwd: string): GitPaths | null {
+	let dir = cwd;
+	while (true) {
+		const gitPath = join(dir, ".git");
+		if (existsSync(gitPath)) {
+			try {
+				const stat = statSync(gitPath);
+				if (stat.isFile()) {
+					const content = readFileSync(gitPath, "utf8").trim();
+					if (content.startsWith("gitdir: ")) {
+						const gitDir = resolve(dir, content.slice(8).trim());
+						const headPath = join(gitDir, "HEAD");
+						if (!existsSync(headPath)) return null;
+						const commonDirPath = join(gitDir, "commondir");
+						const commonGitDir = existsSync(commonDirPath)
+							? resolve(gitDir, readFileSync(commonDirPath, "utf8").trim())
+							: gitDir;
+						return { repoDir: dir, commonGitDir, headPath };
+					}
+				} else if (stat.isDirectory()) {
+					const headPath = join(gitPath, "HEAD");
+					if (!existsSync(headPath)) return null;
+					return { repoDir: dir, commonGitDir: gitPath, headPath };
+				}
+			} catch {
+				return null;
+			}
+		}
+		const parent = dirname(dir);
+		if (parent === dir) return null;
+		dir = parent;
+	}
+}
+
+/**
+ * Snapshot of the repo state behind a session/turn, for correlating trajectories with code.
+ * Fields are independently optional so partial reads still produce useful data.
+ */
+export interface GitContext {
+	/** Normalized clone URL of the `origin` remote, if any. */
+	repoUrl?: string;
+	/** Full SHA of HEAD. */
+	commit?: string;
+	/** Current branch, or undefined on detached HEAD. */
+	branch?: string;
+}
+
+export function gitContextsEqual(a: GitContext, b: GitContext): boolean {
+	return a.repoUrl === b.repoUrl && a.commit === b.commit && a.branch === b.branch;
+}
+
+function readGitHead(headPath: string): { branch?: string; ref?: string; commit?: string } | null {
+	let content: string;
+	try {
+		content = readFileSync(headPath, "utf8").trim();
+	} catch {
+		return null;
+	}
+	if (content.startsWith("ref:")) {
+		const ref = content.slice(4).trim();
+		const branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : undefined;
+		return { ref, branch };
+	}
+	if (/^[0-9a-f]{40,64}$/.test(content)) {
+		return { commit: content };
+	}
+	return null;
+}
+
+function resolveRef(commonGitDir: string, ref: string, depth = 0): string | undefined {
+	if (depth > 8) return undefined;
+	try {
+		const content = readFileSync(join(commonGitDir, ref), "utf8").trim();
+		if (content.startsWith("ref:")) return resolveRef(commonGitDir, content.slice(4).trim(), depth + 1);
+		if (content) return content;
+	} catch {
+		// Loose ref absent; fall back to packed-refs.
+	}
+	try {
+		const packed = readFileSync(join(commonGitDir, "packed-refs"), "utf8");
+		for (const line of packed.split("\n")) {
+			if (!line || line.startsWith("#") || line.startsWith("^")) continue;
+			const sep = line.indexOf(" ");
+			if (sep < 0) continue;
+			if (line.slice(sep + 1).trim() === ref) return line.slice(0, sep).trim();
+		}
+	} catch {
+		// No packed-refs.
+	}
+	return undefined;
+}
+
+function readOriginUrl(commonGitDir: string): string | undefined {
+	let content: string;
+	try {
+		content = readFileSync(join(commonGitDir, "config"), "utf8");
+	} catch {
+		return undefined;
+	}
+	let inOrigin = false;
+	for (const raw of content.split("\n")) {
+		const line = raw.trim();
+		if (line.startsWith("[")) {
+			inOrigin = /^\[remote\s+"origin"\]$/.test(line);
+			continue;
+		}
+		if (inOrigin) {
+			const match = line.match(/^url\s*=\s*(.+)$/);
+			if (match?.[1]) {
+				const url = match[1].trim();
+				return parseGitUrl(url)?.repo ?? url;
+			}
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Read the repo's git state from .git without spawning git.
+ * Returns null when cwd is not inside a git repo or nothing useful could be read.
+ */
+export function captureGitContext(cwd: string): GitContext | null {
+	const paths = findGitPaths(cwd);
+	if (!paths) return null;
+
+	const head = readGitHead(paths.headPath);
+	if (!head) return null;
+
+	const commit = head.commit ?? (head.ref ? resolveRef(paths.commonGitDir, head.ref) : undefined);
+	const repoUrl = readOriginUrl(paths.commonGitDir);
+
+	const context: GitContext = {};
+	if (repoUrl) context.repoUrl = repoUrl;
+	if (commit) context.commit = commit;
+	if (head.branch) context.branch = head.branch;
+
+	if (!context.repoUrl && !context.commit && !context.branch) return null;
+	return context;
 }

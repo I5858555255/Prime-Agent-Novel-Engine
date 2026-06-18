@@ -313,6 +313,12 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 	if (traceContext.parentSessionId) {
 		headers["X-Parent-Session"] = traceContext.parentSessionId;
 	}
+	if (header.git?.repoUrl) {
+		headers["X-Git-Repo"] = header.git.repoUrl;
+	}
+	if (header.git?.commit) {
+		headers["X-Git-Commit"] = header.git.commit;
+	}
 
 	if (!(await getAgentTracesEnabled(options))) {
 		return { status: "disabled" };
