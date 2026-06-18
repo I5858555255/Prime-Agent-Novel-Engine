@@ -117,6 +117,10 @@ export class DeferredAgentConnection implements AgentConnection {
 		}
 	}
 
+	private async emitAndWait(event: AgentConnectionEvent): Promise<void> {
+		await Promise.allSettled([...this.listeners].map((listener) => listener(event)));
+	}
+
 	private ensure(): Promise<AgentConnection> {
 		if (this.real) {
 			return Promise.resolve(this.real);
@@ -146,7 +150,10 @@ export class DeferredAgentConnection implements AgentConnection {
 		this.beforeInvalidateListeners.clear();
 		this.realUnsub = real.subscribe((event) => this.emit(event));
 		const [state, messages] = await Promise.all([real.getState(), real.getMessages()]);
-		this.emit({ type: "session_replaced", state, messages });
+		// Wait for the UI to rebind to the (empty) real session before the caller's
+		// action runs, so the action's own events aren't double-rendered against a
+		// concurrent full re-render.
+		await this.emitAndWait({ type: "session_replaced", state, messages });
 		return real;
 	}
 

@@ -192,6 +192,30 @@ describe("DeferredAgentConnection", () => {
 		expect(events).toEqual([]);
 	});
 
+	test("finishes the session_replaced handler before sending the triggering action", async () => {
+		const order: string[] = [];
+		const fake = new FakeRealConnection();
+		const originalPrompt = fake.prompt.bind(fake);
+		fake.prompt = async (message: string) => {
+			order.push("prompt");
+			return originalPrompt(message);
+		};
+		const conn = new DeferredAgentConnection(async () => fake as unknown as AgentConnection, SEED);
+		conn.subscribe(async (event) => {
+			if (event.type === "session_replaced") {
+				// Simulate the UI's async rebind work.
+				await Promise.resolve();
+				order.push("replaced");
+			}
+		});
+
+		await conn.prompt("hi");
+
+		// The action must not be sent until the UI has rebound, or its events
+		// would double-render against the rebind.
+		expect(order).toEqual(["replaced", "prompt"]);
+	});
+
 	test("getContextTree does not create a session", async () => {
 		const { factory } = makeFactory();
 		const conn = new DeferredAgentConnection(factory, SEED);
