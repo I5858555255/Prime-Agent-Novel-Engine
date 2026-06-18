@@ -193,15 +193,34 @@ class _HostRlmProcessor:
     """Stateful processor: each item is a prompt sent to the TS host.
 
     The host manages the actual AgentSession lifecycle. This processor
-    sends ``rlm.send.advance`` requests for each queued prompt and
-    returns the ``RLMResult``.
+    creates the session lazily on first use, then sends ``rlm.send.advance``
+    requests for each queued prompt and returns the ``RLMResult``.
     """
 
-    def __init__(self, agent_name: str, session_dir: str | None = None):
+    def __init__(self, agent_name: str, max_tokens: int | None = None, **kwargs: Any):
         self._agent_name = agent_name
-        self._session_dir = session_dir
+        self._max_tokens = max_tokens
+        self._kwargs = kwargs
+        self._created = False
+        self.session_dir: str | None = None
+
+    async def _ensure_created(self) -> None:
+        if self._created:
+            return
+        creation_result = await host_request("rlm.send.create", {
+            "name": self._agent_name,
+            "max_tokens": self._max_tokens,
+            **self._kwargs,
+        })
+        self.session_dir = creation_result.get("session_dir")
+        # Update the worker's session_dir so Handle.session_dir works
+        if hasattr(self, "_worker") and self._worker is not None and self.session_dir:
+            from pathlib import Path
+            self._worker.session_dir = Path(self.session_dir)
+        self._created = True
 
     async def process(self, prompt: str) -> RLMResult:
+        await self._ensure_created()
         payload = await host_request("rlm.send.advance", {
             "name": self._agent_name,
             "prompt": prompt,
@@ -209,6 +228,8 @@ class _HostRlmProcessor:
         return _result_from_payload(payload)
 
     async def teardown(self) -> None:
+        if not self._created:
+            return
         try:
             await host_request("rlm.send.close", {
                 "name": self._agent_name,
@@ -217,7 +238,7 @@ class _HostRlmProcessor:
             pass
 
 
-async def send(
+def send(
     prompt: str,
     name: str | None = None,
     max_tokens: int | None = None,
@@ -240,18 +261,10 @@ async def send(
         max_tokens = None
 
     def worker_factory(agent_name: str) -> BackgroundWorker:
-        # Ask the host to create the persistent subagent session
-        loop = asyncio.get_event_loop()
-        creation_result = loop.run_until_complete(
-            host_request("rlm.send.create", {
-                "name": agent_name,
-                "max_tokens": max_tokens,
-                **kwargs,
-            })
-        )
-        session_dir = creation_result.get("session_dir")
-        processor = _HostRlmProcessor(agent_name, session_dir)
-        return BackgroundWorker(agent_name, processor, session_dir=session_dir)
+        processor = _HostRlmProcessor(agent_name, max_tokens=max_tokens, **kwargs)
+        worker = BackgroundWorker(agent_name, processor)
+        processor._worker = worker  # so processor can update session_dir after creation
+        return worker
 
     return REGISTRY.send(prompt, name=name, worker_factory=worker_factory)
 
@@ -281,7 +294,7 @@ class _RLMCallable:
         return await run(prompt, **kwargs)
 
     @staticmethod
-    async def send(
+    def send(
         prompt: str,
         name: str | None = None,
         max_tokens: int | None = None,
@@ -293,7 +306,7 @@ class _RLMCallable:
         from a later cell. Re-sending the same ``name`` appends a turn to the same
         agent (multi-turn). ``name=None`` draws a random auto-name.
         """
-        return await send(prompt, name=name, max_tokens=max_tokens, **kwargs)
+        return send(prompt, name=name, max_tokens=max_tokens, **kwargs)
 
 
 rlm = _RLMCallable()
