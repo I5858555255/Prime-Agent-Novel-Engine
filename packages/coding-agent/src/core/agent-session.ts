@@ -4310,7 +4310,7 @@ export class AgentSession {
 	 * Create a persistent sub-agent session that survives across host requests.
 	 * Called by the rlm.send.create host handler.
 	 */
-	private async _createPersistentRlmChild(name: string, maxTokens?: number): Promise<{ session_dir: string | null }> {
+	private async _createPersistentRlmChild(name: string, _maxTokens?: number): Promise<{ session_dir: string | null }> {
 		// If already exists, just return its session dir
 		const existing = this._persistentRlmChildren.get(name);
 		if (existing) {
