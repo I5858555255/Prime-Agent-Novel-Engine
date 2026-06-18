@@ -1299,7 +1299,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 		// onShutdown fires on both the quit and return-to-agents-view paths, so a
 		// straight Ctrl+C quit (which process.exits before run() returns) still cleans up.
-		const freshDefaultActiveSessionId = isFreshDefaultSession ? summary.activeSessionId : undefined;
+		const freshDefaultActiveSessionId = isFreshDefaultSession ? getDaemonSummaryActiveSessionId(summary) : undefined;
 		const interactiveMode = new InteractiveMode({
 			agentConnection,
 			uiServices: daemonUiServices,
