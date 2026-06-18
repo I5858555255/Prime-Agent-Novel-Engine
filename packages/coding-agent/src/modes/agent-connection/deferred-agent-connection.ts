@@ -6,6 +6,7 @@ import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-j
 import { emptyGoalState } from "../../core/goals.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
+import { SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import type {
 	AgentConnection,
@@ -73,6 +74,7 @@ export class DeferredAgentConnection implements AgentConnection {
 	private real: AgentConnection | undefined;
 	private realUnsub: (() => void) | undefined;
 	private promotion: Promise<AgentConnection> | undefined;
+	private disposed = false;
 
 	constructor(
 		private readonly factory: () => Promise<AgentConnection>,
@@ -120,6 +122,11 @@ export class DeferredAgentConnection implements AgentConnection {
 	private async promote(): Promise<AgentConnection> {
 		const real = await this.factory();
 		this.real = real;
+		// dispose() may have run while factory() was in flight; let it tear the
+		// real connection down instead of wiring up a session no one is watching.
+		if (this.disposed) {
+			return real;
+		}
 		for (const listener of this.beforeInvalidateListeners) {
 			real.onBeforeSessionInvalidate(listener);
 		}
@@ -171,6 +178,9 @@ export class DeferredAgentConnection implements AgentConnection {
 		return this.real ? this.real.getMessages() : [];
 	}
 
+	// Extension/skill commands and resources are session-scoped, so they stay
+	// empty until promotion; builtin slash commands work meanwhile, and the
+	// session_replaced on first action repopulates the catalog.
 	async getCommands(): Promise<AgentConnectionSlashCommand[]> {
 		return this.real ? this.real.getCommands() : [];
 	}
@@ -223,7 +233,13 @@ export class DeferredAgentConnection implements AgentConnection {
 		scope: AgentConnectionSavedSessionScope,
 		onProgress?: AgentConnectionSessionListProgress,
 	): Promise<AgentConnectionSavedSessionInfo[]> {
-		return this.real ? this.real.listSavedSessions(scope, onProgress) : [];
+		if (this.real) {
+			return this.real.listSavedSessions(scope, onProgress);
+		}
+		// Saved sessions live on disk, so the resume picker works without a session.
+		return scope === "current"
+			? SessionManager.list(this.seed.cwd, this.seed.sessionDir, onProgress)
+			: SessionManager.listAll(onProgress, this.seed.sessionDir);
 	}
 
 	async getQueue(): Promise<AgentConnectionQueueState> {
@@ -434,10 +450,17 @@ export class DeferredAgentConnection implements AgentConnection {
 	}
 
 	async dispose(): Promise<void> {
+		this.disposed = true;
+		// Wait out an in-flight promotion so a session created during teardown is
+		// not left attached with no client.
+		if (this.promotion) {
+			await this.promotion.catch(() => undefined);
+		}
 		this.realUnsub?.();
 		this.realUnsub = undefined;
 		if (this.real) {
 			await this.real.dispose();
+			this.real = undefined;
 		}
 	}
 }

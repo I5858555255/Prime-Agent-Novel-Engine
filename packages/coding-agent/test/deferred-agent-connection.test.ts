@@ -164,4 +164,44 @@ describe("DeferredAgentConnection", () => {
 		expect(factory).not.toHaveBeenCalled();
 		expect(conn.created).toBe(false);
 	});
+
+	test("disposes a session created while teardown was in flight", async () => {
+		const fake = new FakeRealConnection();
+		let resolveFactory: (connection: AgentConnection) => void = () => {};
+		const factory = vi.fn(
+			() =>
+				new Promise<AgentConnection>((resolve) => {
+					resolveFactory = resolve;
+				}),
+		);
+		const conn = new DeferredAgentConnection(factory, SEED);
+
+		// Start promotion, then dispose before the factory resolves.
+		const prompting = conn.prompt("go").catch(() => undefined);
+		const disposing = conn.dispose();
+		resolveFactory(fake as unknown as AgentConnection);
+		await Promise.all([prompting, disposing]);
+
+		expect(fake.disposed).toBe(true);
+		// The aborted promotion never wires events through.
+		const events: AgentConnectionEvent[] = [];
+		conn.subscribe((event) => {
+			events.push(event);
+		});
+		fake.emit({ type: "session_status", recap: "late" });
+		expect(events).toEqual([]);
+	});
+});
+
+describe("DeferredAgentConnection with a real-style saved-session lister", () => {
+	test("delegates saved-session listing once promoted", async () => {
+		const saved = [{ id: "s1" }] as unknown as Awaited<ReturnType<AgentConnection["listSavedSessions"]>>;
+		const fake = Object.assign(new FakeRealConnection(), {
+			listSavedSessions: async () => saved,
+		});
+		const conn = new DeferredAgentConnection(async () => fake as unknown as AgentConnection, SEED);
+
+		await conn.prompt("go");
+		expect(await conn.listSavedSessions("current")).toBe(saved);
+	});
 });
