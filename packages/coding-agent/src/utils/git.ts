@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import hostedGitInfo from "hosted-git-info";
@@ -254,91 +255,29 @@ export function gitContextsEqual(a: GitContext, b: GitContext): boolean {
 	return a.repoUrl === b.repoUrl && a.commit === b.commit && a.branch === b.branch;
 }
 
-function readGitHead(headPath: string): { branch?: string; ref?: string; commit?: string } | null {
-	let content: string;
-	try {
-		content = readFileSync(headPath, "utf8").trim();
-	} catch {
-		return null;
-	}
-	if (content.startsWith("ref:")) {
-		const ref = content.slice(4).trim();
-		const branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : undefined;
-		return { ref, branch };
-	}
-	if (/^[0-9a-f]{40,64}$/.test(content)) {
-		return { commit: content };
-	}
-	return null;
-}
-
-function resolveRef(commonGitDir: string, ref: string, depth = 0): string | undefined {
-	if (depth > 8) return undefined;
-	try {
-		const content = readFileSync(join(commonGitDir, ref), "utf8").trim();
-		if (content.startsWith("ref:")) return resolveRef(commonGitDir, content.slice(4).trim(), depth + 1);
-		if (content) return content;
-	} catch {
-		// Loose ref absent; fall back to packed-refs.
-	}
-	try {
-		const packed = readFileSync(join(commonGitDir, "packed-refs"), "utf8");
-		for (const line of packed.split("\n")) {
-			if (!line || line.startsWith("#") || line.startsWith("^")) continue;
-			const sep = line.indexOf(" ");
-			if (sep < 0) continue;
-			if (line.slice(sep + 1).trim() === ref) return line.slice(0, sep).trim();
-		}
-	} catch {
-		// No packed-refs.
-	}
-	return undefined;
-}
-
-function readOriginUrl(commonGitDir: string): string | undefined {
-	let content: string;
-	try {
-		content = readFileSync(join(commonGitDir, "config"), "utf8");
-	} catch {
-		return undefined;
-	}
-	let inOrigin = false;
-	for (const raw of content.split("\n")) {
-		const line = raw.trim();
-		if (line.startsWith("[")) {
-			inOrigin = /^\[remote\s+"origin"\]$/.test(line);
-			continue;
-		}
-		if (inOrigin) {
-			const match = line.match(/^url\s*=\s*(.+)$/);
-			if (match?.[1]) {
-				const url = match[1].trim();
-				return parseGitUrl(url)?.repo ?? url;
-			}
-		}
-	}
-	return undefined;
+function runGit(cwd: string, args: string[]): string | null {
+	const result = spawnSync("git", ["--no-optional-locks", ...args], {
+		cwd,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+	});
+	if (result.status !== 0 || typeof result.stdout !== "string") return null;
+	return result.stdout.trim() || null;
 }
 
 /**
- * Read the repo's git state from .git without spawning git.
- * Returns null when cwd is not inside a git repo or nothing useful could be read.
+ * Capture the repo's git state by asking git directly.
+ * Returns null when cwd is not inside a git repo.
  */
 export function captureGitContext(cwd: string): GitContext | null {
-	const paths = findGitPaths(cwd);
-	if (!paths) return null;
-
-	const head = readGitHead(paths.headPath);
-	if (!head) return null;
-
-	const commit = head.commit ?? (head.ref ? resolveRef(paths.commonGitDir, head.ref) : undefined);
-	const repoUrl = readOriginUrl(paths.commonGitDir);
+	const commit = runGit(cwd, ["rev-parse", "HEAD"]);
+	const branch = runGit(cwd, ["branch", "--show-current"]);
+	const remote = runGit(cwd, ["remote", "get-url", "origin"]);
+	if (!commit && !branch && !remote) return null;
 
 	const context: GitContext = {};
-	if (repoUrl) context.repoUrl = repoUrl;
+	if (remote) context.repoUrl = parseGitUrl(remote)?.repo ?? remote;
 	if (commit) context.commit = commit;
-	if (head.branch) context.branch = head.branch;
-
-	if (!context.repoUrl && !context.commit && !context.branch) return null;
+	if (branch) context.branch = branch;
 	return context;
 }

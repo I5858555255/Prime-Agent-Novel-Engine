@@ -1,29 +1,34 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager } from "../src/core/session-manager.js";
 
-const SHA = "0123456789abcdef0123456789abcdef01234567";
-const SHA2 = "89abcdef0123456789abcdef0123456789abcdef";
+function git(cwd: string, ...args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
 
-function setHead(gitDir: string, sha: string): void {
-	writeFileSync(join(gitDir, "refs", "heads", "main"), `${sha}\n`);
+function commit(dir: string, message: string): string {
+	writeFileSync(join(dir, "file.txt"), `${message}\n`);
+	git(dir, "add", "-A");
+	git(dir, "commit", "-q", "-m", message);
+	return git(dir, "rev-parse", "HEAD");
 }
 
 describe("SessionManager git state", () => {
 	let repoDir: string;
-	let gitDir: string;
 	let sessionDir: string;
+	let firstSha: string;
 
 	beforeEach(() => {
 		repoDir = mkdtempSync(join(tmpdir(), "sm-git-repo-"));
 		sessionDir = mkdtempSync(join(tmpdir(), "sm-git-sessions-"));
-		gitDir = join(repoDir, ".git");
-		mkdirSync(join(gitDir, "refs", "heads"), { recursive: true });
-		writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
-		writeFileSync(join(gitDir, "config"), '[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n');
-		setHead(gitDir, SHA);
+		git(repoDir, "init", "-q", "-b", "main");
+		git(repoDir, "config", "user.email", "t@t.co");
+		git(repoDir, "config", "user.name", "t");
+		git(repoDir, "remote", "add", "origin", "https://github.com/acme/widgets.git");
+		firstSha = commit(repoDir, "init");
 	});
 
 	afterEach(() => {
@@ -35,7 +40,7 @@ describe("SessionManager git state", () => {
 		const sm = SessionManager.create(repoDir, sessionDir);
 		expect(sm.getHeader()?.git).toEqual({
 			branch: "main",
-			commit: SHA,
+			commit: firstSha,
 			repoUrl: "https://github.com/acme/widgets.git",
 		});
 	});
@@ -48,13 +53,13 @@ describe("SessionManager git state", () => {
 
 	it("records a git_state entry when the commit changes", () => {
 		const sm = SessionManager.create(repoDir, sessionDir);
-		setHead(gitDir, SHA2);
+		const secondSha = commit(repoDir, "second");
 
 		const id = sm.recordGitStateIfChanged();
 		expect(id).toBeDefined();
 
 		const entry = sm.getEntries().find((e) => e.type === "git_state");
-		expect(entry).toMatchObject({ type: "git_state", git: { commit: SHA2 } });
+		expect(entry).toMatchObject({ type: "git_state", git: { commit: secondSha } });
 
 		// A second call with no further change is a no-op.
 		expect(sm.recordGitStateIfChanged()).toBeUndefined();
@@ -62,7 +67,7 @@ describe("SessionManager git state", () => {
 
 	it("keeps git_state entries out of the LLM context", () => {
 		const sm = SessionManager.create(repoDir, sessionDir);
-		setHead(gitDir, SHA2);
+		commit(repoDir, "second");
 		sm.recordGitStateIfChanged();
 		expect(sm.buildSessionContext().messages).toHaveLength(0);
 	});
