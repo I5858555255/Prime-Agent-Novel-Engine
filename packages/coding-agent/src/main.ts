@@ -818,6 +818,32 @@ async function findActiveDaemonSessionSummary(
 	}
 }
 
+// Best-effort: kill a promoted session that never received a message so abandoned
+// new-chats don't linger in the agents view. Any failure leaves it in place.
+async function discardEmptyDaemonSession(socketPath: string, activeSessionId: string): Promise<void> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(250);
+	} catch {
+		return;
+	}
+	try {
+		const state = await client.request({ type: "get_state", activeSessionId }, 3000);
+		if (!state.success || !isDaemonSessionSummary(state.data)) {
+			return;
+		}
+		const summary = state.data;
+		if (summary.messageCount > 0 || summary.pendingMessageCount > 0 || summary.isStreaming) {
+			return;
+		}
+		await client.request({ type: "kill", activeSessionId }, 3000);
+	} catch {
+		// Best-effort cleanup; leave the session in place on any error.
+	} finally {
+		client.close();
+	}
+}
+
 async function normalizeDaemonRichTuiAttachArgs(args: string[]): Promise<string[] | undefined> {
 	const shortcut = parseDaemonRichTuiAttachShortcut(args);
 	if (!shortcut) {
@@ -1284,6 +1310,7 @@ export async function main(args: string[], options?: MainOptions) {
 					followUpMode: settingsManager.getFollowUpMode(),
 					autoCompactionEnabled: settingsManager.getCompactionEnabled(),
 				},
+				(activeSessionId) => discardEmptyDaemonSession(daemonSocketPath, activeSessionId),
 			);
 			attachModelFallbackMessage = startupModel.modelFallbackMessage;
 		} else {

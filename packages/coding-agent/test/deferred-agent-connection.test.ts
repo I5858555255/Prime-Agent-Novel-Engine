@@ -43,7 +43,7 @@ class FakeRealConnection {
 		}
 	}
 	async getState() {
-		return { sessionId: "real-session", cwd: "/tmp/project" };
+		return { sessionId: "real-session", activeSessionId: "real-session", cwd: "/tmp/project" };
 	}
 	async getMessages() {
 		return [{ role: "user", content: "hi" }];
@@ -214,6 +214,35 @@ describe("DeferredAgentConnection", () => {
 		// The action must not be sent until the UI has rebound, or its events
 		// would double-render against the rebind.
 		expect(order).toEqual(["replaced", "prompt"]);
+	});
+
+	test("discards an abandoned promoted session on dispose", async () => {
+		const discarded: string[] = [];
+		const conn = new DeferredAgentConnection(
+			async () => new FakeRealConnection() as unknown as AgentConnection,
+			SEED,
+			async (id) => {
+				discarded.push(id);
+			},
+		);
+
+		await conn.prompt("go"); // promotes the session
+		await conn.dispose();
+
+		expect(discarded).toEqual(["real-session"]);
+	});
+
+	test("does not attempt discard when never promoted", async () => {
+		const discarded: string[] = [];
+		const { factory } = makeFactory();
+		const conn = new DeferredAgentConnection(factory, SEED, async (id) => {
+			discarded.push(id);
+		});
+
+		await conn.dispose();
+
+		expect(factory).not.toHaveBeenCalled();
+		expect(discarded).toEqual([]);
 	});
 
 	test("getContextTree does not create a session", async () => {

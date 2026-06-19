@@ -78,11 +78,15 @@ export class DeferredAgentConnection implements AgentConnection {
 	private real: AgentConnection | undefined;
 	private realUnsub: (() => void) | undefined;
 	private promotion: Promise<AgentConnection> | undefined;
+	private promotedActiveSessionId: string | undefined;
 	private disposed = false;
 
 	constructor(
 		private readonly factory: () => Promise<AgentConnection>,
 		private readonly seed: DeferredAgentConnectionSeed,
+		// Called on teardown with the promoted session id so the caller can drop it
+		// if it was created but never used (e.g. cycled the model, then left).
+		private readonly discardEmptySession?: (activeSessionId: string) => Promise<void>,
 	) {}
 
 	/** True once the real session has been created. */
@@ -138,18 +142,20 @@ export class DeferredAgentConnection implements AgentConnection {
 
 	private async promote(): Promise<AgentConnection> {
 		const real = await this.factory();
-		this.real = real;
-		// dispose() may have run while factory() was in flight; let it tear the
-		// real connection down instead of wiring up a session no one is watching.
+		// dispose() may have run while factory() was in flight. Tear the real
+		// connection down and reject so callers don't act on a dead session.
 		if (this.disposed) {
-			return real;
+			await real.dispose().catch(() => undefined);
+			throw new Error("Deferred connection disposed before promotion completed");
 		}
+		this.real = real;
 		for (const listener of this.beforeInvalidateListeners) {
 			this.beforeInvalidateRealUnsubs.set(listener, real.onBeforeSessionInvalidate(listener));
 		}
 		this.beforeInvalidateListeners.clear();
 		this.realUnsub = real.subscribe((event) => this.emit(event));
 		const [state, messages] = await Promise.all([real.getState(), real.getMessages()]);
+		this.promotedActiveSessionId = state.activeSessionId;
 		// Wait for the UI to rebind to the (empty) real session before the caller's
 		// action runs, so the action's own events aren't double-rendered against a
 		// concurrent full re-render.
@@ -491,6 +497,11 @@ export class DeferredAgentConnection implements AgentConnection {
 		if (this.real) {
 			await this.real.dispose();
 			this.real = undefined;
+			// A promoted-but-never-messaged session (e.g. only a model cycle) would
+			// otherwise linger in the daemon; let the caller drop it if abandoned.
+			if (this.promotedActiveSessionId && this.discardEmptySession) {
+				await this.discardEmptySession(this.promotedActiveSessionId).catch(() => undefined);
+			}
 		}
 	}
 }
