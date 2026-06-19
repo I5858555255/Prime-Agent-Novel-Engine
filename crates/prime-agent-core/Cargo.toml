@@ -1,0 +1,13 @@
+[package]
+name = "prime-agent-core"
+description = "Rust agent core primitives for Prime Agent"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+prime-agent-ai = { path = "../prime-agent-ai" }
+serde.workspace = true
+serde_json.workspace = true
