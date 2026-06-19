@@ -145,6 +145,21 @@ fn model_resolver_scope_resolution_matches_globs_adds_thinking_and_deduplicates(
 }
 
 #[test]
+fn model_resolver_glob_wildcards_consume_whole_unicode_scalars() {
+    let models = vec![test_model("openai", "möller", "Möller")];
+
+    let question_mark = resolve_model_scope_from_models(&["openai/m?ller"], &models);
+    assert_eq!(question_mark.warnings, Vec::<String>::new());
+    assert_eq!(question_mark.scoped_models.len(), 1);
+    assert_eq!(question_mark.scoped_models[0].model.id, "möller");
+
+    let character_class = resolve_model_scope_from_models(&["openai/m[ö]ller"], &models);
+    assert_eq!(character_class.warnings, Vec::<String>::new());
+    assert_eq!(character_class.scoped_models.len(), 1);
+    assert_eq!(character_class.scoped_models[0].model.id, "möller");
+}
+
+#[test]
 fn model_resolver_scope_resolution_reports_missing_patterns_as_data() {
     let models = all_models();
     let result = resolve_model_scope_from_models(&["missing-model"], &models);

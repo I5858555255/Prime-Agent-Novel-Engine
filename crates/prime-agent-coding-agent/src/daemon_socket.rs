@@ -47,7 +47,7 @@ where
 
     #[cfg(unix)]
     {
-        if !socket_path.exists() {
+        if fs::symlink_metadata(socket_path).is_err() {
             return Ok(());
         }
 

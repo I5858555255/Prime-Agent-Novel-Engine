@@ -319,16 +319,16 @@ fn contains_glob(pattern: &str) -> bool {
 }
 
 fn glob_match_nocase(pattern: &str, text: &str) -> bool {
-    let pattern = pattern.to_lowercase();
-    let text = text.to_lowercase();
+    let pattern = pattern.to_lowercase().chars().collect::<Vec<_>>();
+    let text = text.to_lowercase().chars().collect::<Vec<_>>();
     let mut memo = HashMap::new();
-    glob_match_at(pattern.as_bytes(), 0, text.as_bytes(), 0, &mut memo)
+    glob_match_at(&pattern, 0, &text, 0, &mut memo)
 }
 
 fn glob_match_at(
-    pattern: &[u8],
+    pattern: &[char],
     pattern_index: usize,
-    text: &[u8],
+    text: &[char],
     text_index: usize,
     memo: &mut HashMap<(usize, usize), bool>,
 ) -> bool {
@@ -340,7 +340,7 @@ fn glob_match_at(
         text_index == text.len()
     } else {
         match pattern[pattern_index] {
-            b'*' => {
+            '*' => {
                 let next_pattern_index = consume_stars(pattern, pattern_index);
                 let is_globstar = next_pattern_index - pattern_index > 1;
 
@@ -350,7 +350,7 @@ fn glob_match_at(
                     let mut next_text_index = text_index;
                     let mut matched = false;
                     while next_text_index < text.len()
-                        && (is_globstar || text[next_text_index] != b'/')
+                        && (is_globstar || text[next_text_index] != '/')
                     {
                         next_text_index += 1;
                         if glob_match_at(pattern, next_pattern_index, text, next_text_index, memo) {
@@ -361,13 +361,13 @@ fn glob_match_at(
                     matched
                 }
             }
-            b'?' => {
+            '?' => {
                 text_index < text.len()
-                    && text[text_index] != b'/'
+                    && text[text_index] != '/'
                     && glob_match_at(pattern, pattern_index + 1, text, text_index + 1, memo)
             }
-            b'[' => {
-                if text_index >= text.len() || text[text_index] == b'/' {
+            '[' => {
+                if text_index >= text.len() || text[text_index] == '/' {
                     false
                 } else if let Some((class_matched, next_pattern_index)) =
                     match_character_class(pattern, pattern_index, text[text_index])
@@ -375,7 +375,7 @@ fn glob_match_at(
                     class_matched
                         && glob_match_at(pattern, next_pattern_index, text, text_index + 1, memo)
                 } else {
-                    text.get(text_index) == Some(&b'[')
+                    text.get(text_index) == Some(&'[')
                         && glob_match_at(pattern, pattern_index + 1, text, text_index + 1, memo)
                 }
             }
@@ -390,24 +390,24 @@ fn glob_match_at(
     matched
 }
 
-fn consume_stars(pattern: &[u8], start: usize) -> usize {
+fn consume_stars(pattern: &[char], start: usize) -> usize {
     let mut index = start;
-    while index < pattern.len() && pattern[index] == b'*' {
+    while index < pattern.len() && pattern[index] == '*' {
         index += 1;
     }
     index
 }
 
-fn match_character_class(pattern: &[u8], start: usize, character: u8) -> Option<(bool, usize)> {
+fn match_character_class(pattern: &[char], start: usize, character: char) -> Option<(bool, usize)> {
     let mut index = start + 1;
-    let negated = matches!(pattern.get(index), Some(b'!' | b'^'));
+    let negated = matches!(pattern.get(index), Some('!' | '^'));
     if negated {
         index += 1;
     }
 
     let mut matched = false;
-    while index < pattern.len() && pattern[index] != b']' {
-        if index + 2 < pattern.len() && pattern[index + 1] == b'-' && pattern[index + 2] != b']' {
+    while index < pattern.len() && pattern[index] != ']' {
+        if index + 2 < pattern.len() && pattern[index + 1] == '-' && pattern[index + 2] != ']' {
             matched |= pattern[index] <= character && character <= pattern[index + 2];
             index += 3;
         } else {

@@ -164,6 +164,32 @@ fn daemon_socket_prepare_rejects_existing_non_socket_path() {
 
 #[cfg(unix)]
 #[test]
+fn daemon_socket_prepare_rejects_dangling_symlink_path() {
+    let test_dir = TestDir::new("dangling-symlink");
+    let socket_path = test_dir.path().join("daemon.sock");
+    let missing_target = test_dir.path().join("missing.sock");
+    std::os::unix::fs::symlink(&missing_target, &socket_path)
+        .expect("test symlink should be created");
+
+    assert!(!socket_path.exists());
+    let error = prepare_daemon_socket_path(&socket_path)
+        .expect_err("dangling symlink should be treated as an existing unsafe path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("Daemon socket path exists and is not a socket")
+    );
+    assert!(
+        fs::symlink_metadata(&socket_path)
+            .expect("symlink should remain for caller inspection")
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn daemon_socket_prepare_removes_stale_socket_file() {
     let test_dir = TestDir::new("stale-socket");
     let socket_path = test_dir.path().join("daemon.sock");
