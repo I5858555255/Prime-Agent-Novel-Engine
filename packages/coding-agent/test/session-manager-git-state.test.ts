@@ -91,12 +91,19 @@ describe("SessionManager git state", () => {
 		});
 	});
 
-	it("captures git context when forking a session file", () => {
+	it("captures target git context when forking and drops the source's git_state", () => {
 		const sourcePath = join(sessionDir, "source.jsonl");
 		writeFileSync(
 			sourcePath,
 			`${[
-				JSON.stringify({ type: "session", version: 3, id: "src", timestamp: "t", cwd: "/old" }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "src",
+					timestamp: "t",
+					cwd: "/old",
+					git: { repoUrl: "https://github.com/acme/source.git", commit: "sourcesha", branch: "main" },
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "m1",
@@ -104,15 +111,35 @@ describe("SessionManager git state", () => {
 					timestamp: "t",
 					message: { role: "user", content: "hi", timestamp: 1 },
 				}),
+				JSON.stringify({
+					type: "git_state",
+					id: "g1",
+					parentId: "m1",
+					timestamp: "t",
+					git: { repoUrl: "https://github.com/acme/source.git", commit: "sourcesha", branch: "main" },
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "m2",
+					parentId: "g1",
+					timestamp: "t",
+					message: { role: "user", content: "more", timestamp: 2 },
+				}),
 			].join("\n")}\n`,
 		);
 
 		const forked = SessionManager.forkFrom(sourcePath, repoDir, sessionDir);
+
+		// Header carries the target repo git, not the source's.
 		expect(forked.getHeader()?.git).toEqual({
 			branch: "main",
 			commit: firstSha,
 			repoUrl: "https://github.com/acme/widgets.git",
 		});
+		// Source git_state is dropped and its child re-linked to keep the tree intact.
+		const entries = forked.getEntries();
+		expect(entries.some((e) => e.type === "git_state")).toBe(false);
+		expect(entries.find((e) => e.id === "m2")?.parentId).toBe("m1");
 	});
 
 	it("keeps git_state entries out of the LLM context", () => {

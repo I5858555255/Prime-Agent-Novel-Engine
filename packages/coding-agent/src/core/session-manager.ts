@@ -1684,11 +1684,24 @@ export class SessionManager {
 		};
 		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
 
-		// Copy all non-header entries from source
+		// git_state entries record commits made during the source session; the fork begins a new
+		// timeline whose start state is its header, so drop them (re-linking children) and let the
+		// fork record fresh ones as it runs. Otherwise trace uploads resolve git by walking the
+		// active path and would report the source repo instead of the fork's target context.
+		const droppedParent = new Map<string, string | null>();
 		for (const entry of sourceEntries) {
-			if (entry.type !== "session") {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
-			}
+			if (entry.type === "git_state") droppedParent.set(entry.id, entry.parentId);
+		}
+		const liveParent = (parentId: string | null): string | null => {
+			let pid = parentId;
+			while (pid !== null && droppedParent.has(pid)) pid = droppedParent.get(pid) ?? null;
+			return pid;
+		};
+		for (const entry of sourceEntries) {
+			if (entry.type === "session" || entry.type === "git_state") continue;
+			const parentId = liveParent(entry.parentId);
+			const out = parentId === entry.parentId ? entry : { ...entry, parentId };
+			appendFileSync(newSessionFile, `${JSON.stringify(out)}\n`);
 		}
 
 		return new SessionManager(targetCwd, dir, newSessionFile, true);
