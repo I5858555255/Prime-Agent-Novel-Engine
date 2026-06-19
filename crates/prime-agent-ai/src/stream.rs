@@ -313,6 +313,13 @@ fn built_in_api_provider_entries() -> Vec<RegisteredApiProvider> {
 }
 
 fn built_in_api_provider(metadata: BuiltInApiProviderMetadata) -> ApiProvider {
+    if metadata.api == "openai-completions" {
+        return crate::openai_completions::openai_completions_api_provider();
+    }
+    if metadata.api == "openai-responses" {
+        return crate::openai_responses::openai_responses_api_provider();
+    }
+
     ApiProvider::new(
         metadata.api,
         move |model, _context, _options| {

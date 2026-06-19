@@ -1,13 +1,18 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use prime_agent_ai::{
-    Model, ModelInput, ModelPricing, ModelRegistry, get_env_api_key, get_supported_thinking_levels,
+    ContentBlock, Context, Message, Model, ModelInput, ModelPricing, ModelRegistry,
+    SimpleStreamOptions, StreamOptions, UserContent, UserMessage, complete_simple,
+    get_supported_thinking_levels,
 };
 use prime_agent_coding_agent::{
-    Args, DiagnosticType, ListModels, Mode, format_no_api_key_found_message_with_docs_path,
+    Args, AuthStorage, DiagnosticType, ListModels, Mode,
+    format_no_api_key_found_message_with_docs_path,
     format_no_model_selected_message_with_docs_path, parse_args, resolve_model_scope_from_models,
     serialize_json_line,
 };
@@ -125,7 +130,7 @@ where
     W: Write,
 {
     let models = bundled_models();
-    let mut selected_model = find_model_or_default(FAUX_MODEL_ID, &models)
+    let mut selected_model = default_interactive_model(&models)
         .expect("bundled faux model should always be available")
         .clone();
     let mut transcript = vec![TranscriptLine::system(format!(
@@ -210,7 +215,7 @@ where
     W: Write,
 {
     let models = bundled_models();
-    let mut selected_model = find_model_or_default(FAUX_MODEL_ID, &models)
+    let mut selected_model = default_interactive_model(&models)
         .expect("bundled faux model should always be available")
         .clone();
 
@@ -697,6 +702,25 @@ fn find_model_or_default<'a>(pattern: &str, models: &'a [Model]) -> Option<&'a M
         .map(|scoped| scoped.model)
 }
 
+fn default_interactive_model(models: &[Model]) -> Option<&Model> {
+    let mut auth_storage = AuthStorage::create(None, None);
+    models
+        .iter()
+        .find(|model| {
+            model.provider != FAUX_PROVIDER
+                && is_native_stream_model(model)
+                && auth_storage.get_api_key(&model.provider).is_some()
+        })
+        .or_else(|| find_model_or_default(FAUX_MODEL_ID, models))
+}
+
+fn is_native_stream_model(model: &Model) -> bool {
+    matches!(
+        model.api.as_str(),
+        "openai-completions" | "openai-responses"
+    )
+}
+
 fn read_prompt(args: &Args) -> Result<String, String> {
     let mut parts = args.messages.clone();
     for file_arg in &args.file_args {
@@ -730,19 +754,87 @@ fn run_native_turn(
         ));
     }
 
-    let has_api_key = api_key.is_some_and(|key| !key.trim().is_empty())
-        || (allow_env && get_env_api_key(&model.provider).is_some());
-    if !has_api_key {
-        return Err(format_no_api_key_found_message_with_docs_path(
-            &model.provider,
-            DEFAULT_DOCS_PATH,
-        ));
+    let auth = resolve_auth(model, api_key, allow_env).ok_or_else(|| {
+        format_no_api_key_found_message_with_docs_path(&model.provider, DEFAULT_DOCS_PATH)
+    })?;
+    let context = Context {
+        system_prompt: None,
+        messages: vec![Message::User(UserMessage {
+            content: UserContent::Text(prompt.to_string()),
+            timestamp: current_timestamp_millis(),
+        })],
+        tools: None,
+    };
+    let options = SimpleStreamOptions {
+        stream: StreamOptions {
+            api_key: Some(auth.api_key),
+            headers: auth.headers,
+            ..StreamOptions::default()
+        },
+        reasoning: None,
+        thinking_budgets: None,
+    };
+    let message = complete_simple(model, &context, Some(&options))
+        .map_err(|error| format!("Native Rust provider error for {}: {error}", model.provider))?;
+    if let Some(error_message) = message.error_message {
+        return Err(error_message);
+    }
+    let text = assistant_text(&message.content);
+    if text.trim().is_empty() {
+        Err(format!(
+            "Native Rust provider returned no text for {}.",
+            model.provider
+        ))
+    } else {
+        Ok(text)
+    }
+}
+
+struct NativeAuth {
+    api_key: String,
+    headers: Option<HashMap<String, String>>,
+}
+
+fn resolve_auth(
+    model: &Model,
+    explicit: Option<&str>,
+    allow_auth_sources: bool,
+) -> Option<NativeAuth> {
+    if let Some(api_key) = explicit.filter(|api_key| !api_key.trim().is_empty()) {
+        return Some(NativeAuth {
+            api_key: api_key.to_string(),
+            headers: None,
+        });
     }
 
-    Err(format!(
-        "Native Rust provider streaming is not implemented yet for {}. This binary did not fall back to TypeScript.",
-        model.provider
-    ))
+    if !allow_auth_sources {
+        return None;
+    }
+
+    let mut auth_storage = AuthStorage::create(None, None);
+    let api_key = auth_storage.get_api_key(&model.provider)?;
+    let headers = auth_storage
+        .get_provider_headers(&model.provider)
+        .map(|headers| headers.into_iter().collect::<HashMap<_, _>>());
+    Some(NativeAuth { api_key, headers })
+}
+
+fn assistant_text(content: &[ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn current_timestamp_millis() -> i64 {
+    let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
 fn handle_interactive_command<W>(
@@ -913,7 +1005,7 @@ fn bundled_models() -> Vec<Model> {
             "prime-inference",
             "z-ai/glm-5.1",
             "GLM 5.1",
-            "openai-compatible",
+            "openai-completions",
             true,
             128_000,
             16_384,
@@ -988,7 +1080,7 @@ fn model(
         name: name.to_string(),
         api: api.to_string(),
         provider: provider.to_string(),
-        base_url: String::new(),
+        base_url: default_base_url(provider, api).to_string(),
         reasoning,
         thinking_level_map: None,
         input: vec![ModelInput::Text],
@@ -1000,9 +1092,17 @@ fn model(
     }
 }
 
+fn default_base_url(provider: &str, api: &str) -> &'static str {
+    match (provider, api) {
+        ("prime-inference", "openai-completions") => "https://api.pinference.ai/api/v1",
+        ("openai", "openai-completions" | "openai-responses") => "https://api.openai.com/v1",
+        _ => "",
+    }
+}
+
 fn help_text() -> String {
     format!(
-        "prime-agent-rust {VERSION}\n\nUSAGE:\n  prime-agent-rust                         Start native interactive mode\n  prime-agent-rust [OPTIONS] [-p <PROMPT>] [@file ...]\n  prime-agent-rust daemon --help\n\nOPTIONS:\n  -h, --help                 Show this help\n  -v, --version              Show version\n  -p, --print <PROMPT>       Run one native print-mode turn\n      --mode <text|json|rpc> Output mode for print turns\n      --provider <NAME>      Select provider\n      --model <MODEL>        Select model id or provider/model\n      --models <PATTERNS>    Select model scope; first match is used in print mode\n      --thinking <LEVEL>     off|minimal|low|medium|high|xhigh\n      --list-models [QUERY]  List bundled native model metadata\n      --offline              Disallow remote providers\n      --no-env               Do not read provider API keys from the environment\n      --no-session           Accepted for CLI parity\n      --no-tools             Accepted for CLI parity\n\nNATIVE SMOKE TEST:\n  prime-agent-rust --provider {FAUX_PROVIDER} --model {FAUX_MODEL_ID} --no-session --no-tools -p \"hello\"\n"
+        "prime-agent-rust {VERSION}\n\nUSAGE:\n  prime-agent-rust                         Start native interactive mode\n  prime-agent-rust [OPTIONS] [-p <PROMPT>] [@file ...]\n  prime-agent-rust daemon --help\n\nOPTIONS:\n  -h, --help                 Show this help\n  -v, --version              Show version\n  -p, --print <PROMPT>       Run one native print-mode turn\n      --mode <text|json|rpc> Output mode for print turns\n      --provider <NAME>      Select provider\n      --model <MODEL>        Select model id or provider/model\n      --models <PATTERNS>    Select model scope; first match is used in print mode\n      --thinking <LEVEL>     off|minimal|low|medium|high|xhigh\n      --list-models [QUERY]  List bundled native model metadata\n      --offline              Disallow remote providers\n      --no-env               Do not read stored or ambient provider API keys\n      --no-session           Accepted for CLI parity\n      --no-tools             Accepted for CLI parity\n\nNATIVE SMOKE TEST:\n  prime-agent-rust --provider {FAUX_PROVIDER} --model {FAUX_MODEL_ID} --no-session --no-tools -p \"hello\"\n"
     )
 }
 
@@ -1063,7 +1163,11 @@ mod tests {
     fn interactive_mode_handles_prompt_model_listing_and_exit() {
         let mut output = Vec::new();
 
-        run_interactive("hello\n/models faux\n/exit\n".as_bytes(), &mut output).unwrap();
+        run_interactive(
+            "/model faux-rust/faux-rust-model\nhello\n/models faux\n/exit\n".as_bytes(),
+            &mut output,
+        )
+        .unwrap();
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("prime-agent-rust 0.1.7"));
@@ -1077,21 +1181,18 @@ mod tests {
     fn interactive_model_command_reports_remote_provider_limit_without_typescript_fallback() {
         let mut output = Vec::new();
 
-        run_interactive(
-            "/model openai/gpt-4o\nhello\n/exit\n".as_bytes(),
-            &mut output,
-        )
-        .unwrap();
+        run_interactive("/model openai/gpt-4o\n/exit\n".as_bytes(), &mut output).unwrap();
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("model: openai/gpt-4o"));
-        assert!(output.contains("No API key found for openai."));
         assert!(output.contains("bye"));
     }
 
     #[test]
     fn tui_loop_renders_prompt_response_models_and_exit() {
-        let mut input = std::io::Cursor::new(b"hello\r/models faux\r/exit\r".to_vec());
+        let mut input = std::io::Cursor::new(
+            b"/model faux-rust/faux-rust-model\rhello\r/models faux\r/exit\r".to_vec(),
+        );
         let mut output = Vec::new();
 
         run_tui_loop(&mut input, &mut output, || TerminalDimensions {
@@ -1124,7 +1225,8 @@ mod tests {
 
     #[test]
     fn tui_loop_ctrl_d_with_text_does_not_exit() {
-        let mut input = std::io::Cursor::new(b"abc\x04\r/exit\r".to_vec());
+        let mut input =
+            std::io::Cursor::new(b"/model faux-rust/faux-rust-model\rabc\x04\r/exit\r".to_vec());
         let mut output = Vec::new();
 
         run_tui_loop(&mut input, &mut output, || TerminalDimensions {
