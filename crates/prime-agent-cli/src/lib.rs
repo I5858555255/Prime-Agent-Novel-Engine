@@ -72,7 +72,7 @@ where
         .collect::<Vec<_>>();
 
     if !errors.is_empty() {
-        return CliOutput::err(errors.join("\n"));
+        return CliOutput::err(join_warning_and_error(&warnings, &errors.join("\n")));
     }
 
     if args.help == Some(true) {
@@ -524,6 +524,15 @@ mod tests {
 
         assert_eq!(output.exit_code, 1);
         assert!(output.stderr.contains("No API key found for openai."));
+    }
+
+    #[test]
+    fn parse_errors_preserve_parse_warnings() {
+        let output = run(["--thinking", "extreme", "-z"]);
+
+        assert_eq!(output.exit_code, 1);
+        assert!(output.stderr.contains("Invalid thinking level \"extreme\""));
+        assert!(output.stderr.contains("Unknown option: -z"));
     }
 
     #[test]
