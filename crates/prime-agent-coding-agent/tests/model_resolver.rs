@@ -160,6 +160,24 @@ fn model_resolver_glob_wildcards_consume_whole_unicode_scalars() {
 }
 
 #[test]
+fn model_resolver_glob_character_classes_allow_closing_bracket_as_first_member() {
+    let models = vec![
+        test_model("openai", "bracket]", "Bracket Close"),
+        test_model("openai", "bracketx", "Bracket X"),
+    ];
+
+    let literal = resolve_model_scope_from_models(&["openai/bracket[]]"], &models);
+    assert_eq!(literal.warnings, Vec::<String>::new());
+    assert_eq!(literal.scoped_models.len(), 1);
+    assert_eq!(literal.scoped_models[0].model.id, "bracket]");
+
+    let negated = resolve_model_scope_from_models(&["openai/bracket[!]]"], &models);
+    assert_eq!(negated.warnings, Vec::<String>::new());
+    assert_eq!(negated.scoped_models.len(), 1);
+    assert_eq!(negated.scoped_models[0].model.id, "bracketx");
+}
+
+#[test]
 fn model_resolver_scope_resolution_reports_missing_patterns_as_data() {
     let models = all_models();
     let result = resolve_model_scope_from_models(&["missing-model"], &models);

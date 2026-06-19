@@ -47,11 +47,11 @@ where
 
     #[cfg(unix)]
     {
-        if fs::symlink_metadata(socket_path).is_err() {
-            return Ok(());
-        }
-
-        let metadata = fs::symlink_metadata(socket_path)?;
+        let metadata = match fs::symlink_metadata(socket_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
         if !metadata.file_type().is_socket() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,

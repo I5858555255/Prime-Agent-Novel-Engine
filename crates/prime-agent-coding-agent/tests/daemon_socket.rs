@@ -164,6 +164,17 @@ fn daemon_socket_prepare_rejects_existing_non_socket_path() {
 
 #[cfg(unix)]
 #[test]
+fn daemon_socket_prepare_ignores_missing_socket_path() {
+    let test_dir = TestDir::new("missing-socket");
+    let socket_path = test_dir.path().join("daemon.sock");
+
+    prepare_daemon_socket_path(&socket_path).expect("missing socket path should be accepted");
+
+    assert!(!socket_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn daemon_socket_prepare_rejects_dangling_symlink_path() {
     let test_dir = TestDir::new("dangling-symlink");
     let socket_path = test_dir.path().join("daemon.sock");

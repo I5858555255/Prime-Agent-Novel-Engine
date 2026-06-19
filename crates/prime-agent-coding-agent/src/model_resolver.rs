@@ -406,7 +406,8 @@ fn match_character_class(pattern: &[char], start: usize, character: char) -> Opt
     }
 
     let mut matched = false;
-    while index < pattern.len() && pattern[index] != ']' {
+    let first_index = index;
+    while index < pattern.len() && (index == first_index || pattern[index] != ']') {
         if index + 2 < pattern.len() && pattern[index + 1] == '-' && pattern[index + 2] != ']' {
             matched |= pattern[index] <= character && character <= pattern[index + 2];
             index += 3;
