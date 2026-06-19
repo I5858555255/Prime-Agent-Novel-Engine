@@ -667,7 +667,7 @@ fn select_model<'a>(args: &Args, models: &'a [Model]) -> Result<Option<&'a Model
                 .and_then(|patterns| patterns.iter().find(|pattern| !pattern.trim().is_empty()))
                 .map(String::as_str)
         })
-        .or(Some(FAUX_MODEL_ID))
+        .or_else(|| args.provider.is_none().then_some(FAUX_MODEL_ID))
     else {
         return Ok(None);
     };
@@ -1210,6 +1210,15 @@ mod tests {
 
         assert_eq!(output.exit_code, 1);
         assert!(output.stderr.contains("No API key found for openai."));
+    }
+
+    #[test]
+    fn provider_without_model_reports_no_model_selected() {
+        let output = run(["--provider", "openai", "-p", "hello"]);
+
+        assert_eq!(output.exit_code, 1);
+        assert!(output.stderr.contains("No model selected."));
+        assert!(!output.stderr.contains("openai/faux-rust-model"));
     }
 
     #[test]
