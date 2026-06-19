@@ -149,6 +149,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prime-agent-cli"
+version = "0.1.7"
+dependencies = [
+ "prime-agent-ai",
+ "prime-agent-coding-agent",
+ "serde_json",
+]
+
+[[package]]
 name = "prime-agent-coding-agent"
 version = "0.1.7"
 dependencies = [

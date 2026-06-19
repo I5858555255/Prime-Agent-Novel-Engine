@@ -1,0 +1,17 @@
+[package]
+name = "prime-agent-cli"
+description = "Native Rust CLI for Prime Agent"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "prime-agent-rust"
+path = "src/main.rs"
+
+[dependencies]
+prime-agent-ai = { path = "../prime-agent-ai" }
+prime-agent-coding-agent = { path = "../prime-agent-coding-agent" }
+serde_json.workspace = true

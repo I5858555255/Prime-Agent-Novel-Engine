@@ -3,6 +3,7 @@ members = [
 	"crates/prime-agent-core",
 	"crates/prime-agent-ai",
 	"crates/prime-agent-coding-agent",
+	"crates/prime-agent-cli",
 	"crates/prime-agent-tui",
 ]
 resolver = "2"

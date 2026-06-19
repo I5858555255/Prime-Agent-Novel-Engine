@@ -199,6 +199,8 @@ pub struct Args {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_context_files: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_env: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub list_models: Option<ListModels>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offline: Option<bool>,
@@ -252,6 +254,7 @@ where
             "--no-prompt-templates" | "-np" => result.no_prompt_templates = Some(true),
             "--no-themes" => result.no_themes = Some(true),
             "--no-context-files" | "-nc" => result.no_context_files = Some(true),
+            "--no-env" => result.no_env = Some(true),
             "--verbose" => result.verbose = Some(true),
             "--offline" => result.offline = Some(true),
             "--mode" if has_value(&args, index) => {
@@ -518,6 +521,7 @@ mod tests {
             "-np",
             "--no-themes",
             "-nc",
+            "--no-env",
             "--verbose",
             "--offline",
         ]);
@@ -534,6 +538,7 @@ mod tests {
         assert_eq!(result.no_prompt_templates, Some(true));
         assert_eq!(result.no_themes, Some(true));
         assert_eq!(result.no_context_files, Some(true));
+        assert_eq!(result.no_env, Some(true));
         assert_eq!(result.verbose, Some(true));
         assert_eq!(result.offline, Some(true));
     }
