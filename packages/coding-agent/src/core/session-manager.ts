@@ -1208,7 +1208,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** Appends a git_state entry only when the repo moved since the last state on the active branch. */
 	recordGitStateIfChanged(): string | undefined {
 		if (!this.persist) return undefined;
 		const git = captureGitContext(this.cwd);
@@ -1218,8 +1217,7 @@ export class SessionManager {
 		return this.appendGitState(git);
 	}
 
-	/** Nearest git_state walking leaf to root, else the header snapshot. Walks the active
-	 * branch so dedup ignores a sibling branch's state sitting later in the file. */
+	/** Active-branch git: nearest git_state from leaf to root, else the header snapshot. */
 	private getActiveGitContext(): GitContext | undefined {
 		let current = this.leafId ? this.byId.get(this.leafId) : undefined;
 		while (current) {
@@ -1684,10 +1682,8 @@ export class SessionManager {
 		};
 		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
 
-		// git_state entries record commits made during the source session; the fork begins a new
-		// timeline whose start state is its header, so drop them (re-linking children) and let the
-		// fork record fresh ones as it runs. Otherwise trace uploads resolve git by walking the
-		// active path and would report the source repo instead of the fork's target context.
+		// Drop the source's git_state entries (re-linking children): they describe the source repo,
+		// so the fork would otherwise report the source's git instead of its own target context.
 		const droppedParent = new Map<string, string | null>();
 		for (const entry of sourceEntries) {
 			if (entry.type === "git_state") droppedParent.set(entry.id, entry.parentId);

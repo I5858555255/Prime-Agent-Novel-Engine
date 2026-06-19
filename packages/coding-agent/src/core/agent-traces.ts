@@ -110,11 +110,8 @@ function readSessionHeader(sessionFile: string): SessionHeader | undefined {
 	}
 }
 
-/**
- * Git context for the active trajectory, for the indexing headers. Sessions are a branched
- * tree, so this walks the active leaf to root (mirroring SessionManager) rather than taking
- * the last git_state in file order, which could belong to a sibling branch.
- */
+/** Active-branch git for the indexing headers: walk leaf to root, not the last git_state in
+ * file order (which may belong to a sibling branch). */
 export function activeGitContext(
 	body: string,
 	header: SessionHeader,

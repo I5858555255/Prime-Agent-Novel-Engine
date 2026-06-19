@@ -241,7 +241,6 @@ export function findGitPaths(cwd: string): GitPaths | null {
 export interface GitContext {
 	repoUrl?: string;
 	commit?: string;
-	/** undefined on detached HEAD */
 	branch?: string;
 }
 
@@ -259,7 +258,6 @@ function runGit(cwd: string, args: string[]): string | null {
 	return result.stdout.trim() || null;
 }
 
-/** Returns null when cwd is not inside a git repo. */
 export function captureGitContext(cwd: string): GitContext | null {
 	const commit = runGit(cwd, ["rev-parse", "HEAD"]);
 	const branch = runGit(cwd, ["branch", "--show-current"]);
