@@ -110,6 +110,28 @@ function readSessionHeader(sessionFile: string): SessionHeader | undefined {
 	}
 }
 
+/**
+ * Most recent git context in the trace: the last git_state entry, falling back to the
+ * session-start header. Keeps the indexing headers consistent with the session body across
+ * re-uploads after the repo moves to a new commit.
+ */
+function latestGitContext(body: string, header: SessionHeader): { repoUrl?: string; commit?: string } | undefined {
+	const lines = body.split("\n");
+	for (let i = lines.length - 1; i >= 0; i -= 1) {
+		const line = lines[i];
+		if (!line || !line.includes('"type":"git_state"')) continue;
+		try {
+			const parsed = JSON.parse(line) as unknown;
+			if (isRecord(parsed) && parsed.type === "git_state" && isRecord(parsed.git)) {
+				return parsed.git as { repoUrl?: string; commit?: string };
+			}
+		} catch {
+			// Skip malformed lines.
+		}
+	}
+	return header.git;
+}
+
 function resolveParentSessionPath(sessionFile: string, parentSession: string): string {
 	return isAbsolute(parentSession) ? parentSession : resolve(dirname(sessionFile), parentSession);
 }
@@ -313,11 +335,12 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 	if (traceContext.parentSessionId) {
 		headers["X-Parent-Session"] = traceContext.parentSessionId;
 	}
-	if (header.git?.repoUrl) {
-		headers["X-Git-Repo"] = header.git.repoUrl;
+	const git = latestGitContext(body, header);
+	if (git?.repoUrl) {
+		headers["X-Git-Repo"] = git.repoUrl;
 	}
-	if (header.git?.commit) {
-		headers["X-Git-Commit"] = header.git.commit;
+	if (git?.commit) {
+		headers["X-Git-Commit"] = git.commit;
 	}
 
 	if (!(await getAgentTracesEnabled(options))) {

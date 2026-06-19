@@ -65,6 +65,21 @@ describe("SessionManager git state", () => {
 		expect(sm.recordGitStateIfChanged()).toBeUndefined();
 	});
 
+	it("re-records git state on a branch that lacks it on its active path", () => {
+		const sm = SessionManager.create(repoDir, sessionDir);
+		const msgId = sm.appendMessage({ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 });
+		commit(repoDir, "second");
+
+		// On the main path this appends git_state(secondSha).
+		expect(sm.recordGitStateIfChanged()).toBeDefined();
+
+		// Navigate to before that entry: this branch's nearest git context is the header (firstSha),
+		// so even though the file already holds a git_state for the live commit, a new one must be
+		// appended on this path rather than deduped away.
+		sm.branch(msgId);
+		expect(sm.recordGitStateIfChanged()).toBeDefined();
+	});
+
 	it("keeps git_state entries out of the LLM context", () => {
 		const sm = SessionManager.create(repoDir, sessionDir);
 		commit(repoDir, "second");

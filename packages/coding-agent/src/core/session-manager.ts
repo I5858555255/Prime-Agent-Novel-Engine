@@ -834,7 +834,6 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 	private persistListeners = new Set<SessionPersistListener>();
-	private lastGitContext: GitContext | null = null;
 
 	private constructor(cwd: string, sessionDir: string, sessionFile: string | undefined, persist: boolean) {
 		this.cwd = cwd;
@@ -912,7 +911,6 @@ export class SessionManager {
 			parentSession: options?.parentSession,
 			git,
 		};
-		this.lastGitContext = git ?? null;
 		this.fileEntries = [header];
 		this.byId.clear();
 		this.labelsById.clear();
@@ -931,17 +929,10 @@ export class SessionManager {
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
 		this.leafId = null;
-		this.lastGitContext = null;
 		for (const entry of this.fileEntries) {
-			if (entry.type === "session") {
-				this.lastGitContext = entry.git ?? null;
-				continue;
-			}
+			if (entry.type === "session") continue;
 			this.byId.set(entry.id, entry);
 			this.leafId = entry.id;
-			if (entry.type === "git_state") {
-				this.lastGitContext = entry.git;
-			}
 			if (entry.type === "label") {
 				if (entry.label) {
 					this.labelsById.set(entry.targetId, entry.label);
@@ -1223,16 +1214,32 @@ export class SessionManager {
 
 	/**
 	 * Capture the repo state and append a git_state entry if it changed since the last
-	 * recorded state (including the session-start snapshot in the header). No-op when not
-	 * persisting or outside a git repo. Returns the new entry id, or undefined if unchanged.
+	 * recorded state on the active branch (or the session-start snapshot in the header).
+	 * No-op when not persisting or outside a git repo. Returns the new entry id, or
+	 * undefined if unchanged.
 	 */
 	recordGitStateIfChanged(): string | undefined {
 		if (!this.persist) return undefined;
 		const git = captureGitContext(this.cwd);
 		if (!git) return undefined;
-		if (this.lastGitContext && gitContextsEqual(this.lastGitContext, git)) return undefined;
-		this.lastGitContext = git;
+		const last = this.getActiveGitContext();
+		if (last && gitContextsEqual(last, git)) return undefined;
 		return this.appendGitState(git);
+	}
+
+	/**
+	 * Most recent git context on the active branch: the nearest git_state walking leaf to
+	 * root, falling back to the session-start snapshot. Branch-aware so dedup doesn't read a
+	 * sibling branch's state that happens to sit later in the file.
+	 */
+	private getActiveGitContext(): GitContext | undefined {
+		let current = this.leafId ? this.byId.get(this.leafId) : undefined;
+		while (current) {
+			if (current.type === "git_state") return current.git;
+			current = current.parentId ? this.byId.get(current.parentId) : undefined;
+		}
+		const header = this.fileEntries[0];
+		return header?.type === "session" ? header.git : undefined;
 	}
 
 	/** Get the latest agent status from the most recent agent_status entry, if any. */
