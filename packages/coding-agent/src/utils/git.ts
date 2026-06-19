@@ -238,16 +238,10 @@ export function findGitPaths(cwd: string): GitPaths | null {
 	}
 }
 
-/**
- * Snapshot of the repo state behind a session/turn, for correlating trajectories with code.
- * Fields are independently optional so partial reads still produce useful data.
- */
 export interface GitContext {
-	/** Normalized clone URL of the `origin` remote, if any. */
 	repoUrl?: string;
-	/** Full SHA of HEAD. */
 	commit?: string;
-	/** Current branch, or undefined on detached HEAD. */
+	/** undefined on detached HEAD */
 	branch?: string;
 }
 
@@ -265,10 +259,7 @@ function runGit(cwd: string, args: string[]): string | null {
 	return result.stdout.trim() || null;
 }
 
-/**
- * Capture the repo's git state by asking git directly.
- * Returns null when cwd is not inside a git repo.
- */
+/** Returns null when cwd is not inside a git repo. */
 export function captureGitContext(cwd: string): GitContext | null {
 	const commit = runGit(cwd, ["rev-parse", "HEAD"]);
 	const branch = runGit(cwd, ["branch", "--show-current"]);

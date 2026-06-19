@@ -26,7 +26,6 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
-	/** Repo state at session start, for correlating the trajectory with code. */
 	git?: GitContext;
 }
 
@@ -155,10 +154,7 @@ export interface AgentStatusEntry extends SessionEntryBase {
 	status: AgentStatus;
 }
 
-/**
- * Records the repo state at a point in the session, appended when it changes.
- * Append-only; ignored by buildSessionContext (not sent to the LLM).
- */
+/** Append-only repo-state entry; ignored by buildSessionContext and other readers. */
 export interface GitStateEntry extends SessionEntryBase {
 	type: "git_state";
 	git: GitContext;
@@ -1212,12 +1208,7 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Capture the repo state and append a git_state entry if it changed since the last
-	 * recorded state on the active branch (or the session-start snapshot in the header).
-	 * No-op when not persisting or outside a git repo. Returns the new entry id, or
-	 * undefined if unchanged.
-	 */
+	/** Appends a git_state entry only when the repo moved since the last state on the active branch. */
 	recordGitStateIfChanged(): string | undefined {
 		if (!this.persist) return undefined;
 		const git = captureGitContext(this.cwd);
@@ -1227,11 +1218,8 @@ export class SessionManager {
 		return this.appendGitState(git);
 	}
 
-	/**
-	 * Most recent git context on the active branch: the nearest git_state walking leaf to
-	 * root, falling back to the session-start snapshot. Branch-aware so dedup doesn't read a
-	 * sibling branch's state that happens to sit later in the file.
-	 */
+	/** Nearest git_state walking leaf to root, else the header snapshot. Walks the active
+	 * branch so dedup ignores a sibling branch's state sitting later in the file. */
 	private getActiveGitContext(): GitContext | undefined {
 		let current = this.leafId ? this.byId.get(this.leafId) : undefined;
 		while (current) {

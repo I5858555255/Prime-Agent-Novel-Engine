@@ -111,11 +111,9 @@ function readSessionHeader(sessionFile: string): SessionHeader | undefined {
 }
 
 /**
- * Git context for the active trajectory: the nearest git_state walking the active leaf to
- * root, falling back to the session-start header. The session is a branched tree, so this
- * mirrors SessionManager's branch-aware dedup rather than taking the last git_state in file
- * order (which could belong to a sibling branch). Keeps the indexing headers consistent with
- * the session body across re-uploads after the repo moves to a new commit.
+ * Git context for the active trajectory, for the indexing headers. Sessions are a branched
+ * tree, so this walks the active leaf to root (mirroring SessionManager) rather than taking
+ * the last git_state in file order, which could belong to a sibling branch.
  */
 export function activeGitContext(
 	body: string,
