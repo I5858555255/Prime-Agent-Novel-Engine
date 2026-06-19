@@ -152,8 +152,10 @@ dependencies = [
 name = "prime-agent-cli"
 version = "0.1.7"
 dependencies = [
+ "libc",
  "prime-agent-ai",
  "prime-agent-coding-agent",
+ "prime-agent-tui",
  "serde_json",
 ]
 

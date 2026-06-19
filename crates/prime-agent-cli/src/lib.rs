@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 
 use prime_agent_ai::{
@@ -11,7 +11,16 @@ use prime_agent_coding_agent::{
     format_no_model_selected_message_with_docs_path, parse_args, resolve_model_scope_from_models,
     serialize_json_line,
 };
+use prime_agent_tui::{
+    DISABLE_BRACKETED_PASTE_SEQUENCE, ENABLE_BRACKETED_PASTE_SEQUENCE, INPUT_CURSOR_MARKER, Input,
+    InputEvent, StdinBuffer, StdinEvent, TerminalDimensions, TerminalSizeInputs,
+    clear_screen_sequence, hide_cursor_sequence, resolve_terminal_dimensions, set_title_sequence,
+    show_cursor_sequence, truncate_to_width, visible_width,
+};
 use serde_json::json;
+
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_DOCS_PATH: &str = "docs";
@@ -47,6 +56,22 @@ pub fn run_from_env() -> CliOutput {
     run(env::args().skip(1))
 }
 
+pub fn run_tui_from_stdio() -> i32 {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    if stdin.is_terminal() && stdout.is_terminal() {
+        return match run_tui(stdin, stdout) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("prime-agent-rust TUI error: {error}");
+                1
+            }
+        };
+    }
+
+    run_interactive_from_stdio()
+}
+
 pub fn run_interactive_from_stdio() -> i32 {
     match run_interactive(io::stdin().lock(), io::stdout().lock()) {
         Ok(()) => 0,
@@ -54,6 +79,128 @@ pub fn run_interactive_from_stdio() -> i32 {
             eprintln!("prime-agent-rust interactive error: {error}");
             1
         }
+    }
+}
+
+pub fn run_tui(mut stdin: io::Stdin, mut stdout: io::Stdout) -> io::Result<()> {
+    #[cfg(unix)]
+    let stdout_fd = Some(stdout.as_raw_fd());
+    #[cfg(not(unix))]
+    let stdout_fd = None;
+
+    let raw_mode = RawModeGuard::enable(&stdin)?;
+    write!(
+        stdout,
+        "{}{}{}{}",
+        set_title_sequence("prime-agent-rust"),
+        ENABLE_BRACKETED_PASTE_SEQUENCE,
+        hide_cursor_sequence(),
+        clear_screen_sequence()
+    )?;
+    stdout.flush()?;
+
+    let result = run_tui_loop(&mut stdin, &mut stdout, || terminal_dimensions(stdout_fd));
+
+    write!(
+        stdout,
+        "{}{}{}{}",
+        DISABLE_BRACKETED_PASTE_SEQUENCE,
+        show_cursor_sequence(),
+        clear_screen_sequence(),
+        set_title_sequence("prime-agent-rust")
+    )?;
+    stdout.flush()?;
+    drop(raw_mode);
+
+    result
+}
+
+fn run_tui_loop<R, W>(
+    input_reader: &mut R,
+    output: &mut W,
+    mut dimensions: impl FnMut() -> TerminalDimensions,
+) -> io::Result<()>
+where
+    R: Read,
+    W: Write,
+{
+    let models = bundled_models();
+    let mut selected_model = find_model_or_default(FAUX_MODEL_ID, &models)
+        .expect("bundled faux model should always be available")
+        .clone();
+    let mut transcript = vec![TranscriptLine::system(format!(
+        "Native Rust TUI ready. Model {}/{}.",
+        selected_model.provider, selected_model.id
+    ))];
+    let mut input = Input::with_placeholder("send a prompt or type /help");
+    input.set_prompt("> ");
+    input.set_focused(true);
+    let mut stdin_buffer = StdinBuffer::new();
+    render_tui_frame(output, dimensions(), &selected_model, &transcript, &input)?;
+
+    let mut buffer = [0_u8; 256];
+    loop {
+        let count = input_reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+
+        let events = stdin_buffer.process_bytes(&buffer[..count]);
+        for event in events {
+            let data = match event {
+                StdinEvent::Data(data) => data,
+                StdinEvent::Paste(paste) => {
+                    format!("\x1b[200~{paste}\x1b[201~")
+                }
+            };
+
+            if data == "\u{3}" || (data == "\u{4}" && input.value().is_empty()) {
+                transcript.push(TranscriptLine::system("Exiting."));
+                render_tui_frame(output, dimensions(), &selected_model, &transcript, &input)?;
+                return Ok(());
+            }
+
+            for input_event in input.handle_input(&data) {
+                match input_event {
+                    InputEvent::Changed(_) => {}
+                    InputEvent::Cancelled => {
+                        transcript.push(TranscriptLine::system("Exiting."));
+                        render_tui_frame(
+                            output,
+                            dimensions(),
+                            &selected_model,
+                            &transcript,
+                            &input,
+                        )?;
+                        return Ok(());
+                    }
+                    InputEvent::Submitted(text) => {
+                        let text = text.trim().to_string();
+                        input.set_value("");
+                        if text.is_empty() {
+                            continue;
+                        }
+                        if handle_tui_submission(
+                            &text,
+                            &models,
+                            &mut selected_model,
+                            &mut transcript,
+                        ) {
+                            render_tui_frame(
+                                output,
+                                dimensions(),
+                                &selected_model,
+                                &transcript,
+                                &input,
+                            )?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        render_tui_frame(output, dimensions(), &selected_model, &transcript, &input)?;
     }
 }
 
@@ -103,6 +250,294 @@ where
         match run_native_turn(&selected_model, line, false, None, true) {
             Ok(response) => writeln!(output, "assistant> {response}")?,
             Err(message) => writeln!(output, "{message}")?,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TranscriptLine {
+    role: &'static str,
+    text: String,
+}
+
+impl TranscriptLine {
+    fn system(text: impl Into<String>) -> Self {
+        Self {
+            role: "system",
+            text: text.into(),
+        }
+    }
+
+    fn user(text: impl Into<String>) -> Self {
+        Self {
+            role: "user",
+            text: text.into(),
+        }
+    }
+
+    fn assistant(text: impl Into<String>) -> Self {
+        Self {
+            role: "assistant",
+            text: text.into(),
+        }
+    }
+}
+
+fn handle_tui_submission(
+    text: &str,
+    models: &[Model],
+    selected_model: &mut Model,
+    transcript: &mut Vec<TranscriptLine>,
+) -> bool {
+    if let Some(command) = text.strip_prefix('/') {
+        return handle_tui_command(command, models, selected_model, transcript);
+    }
+
+    transcript.push(TranscriptLine::user(text));
+    match run_native_turn(selected_model, text, false, None, true) {
+        Ok(response) => transcript.push(TranscriptLine::assistant(response)),
+        Err(message) => transcript.push(TranscriptLine::system(message)),
+    }
+    false
+}
+
+fn handle_tui_command(
+    command: &str,
+    models: &[Model],
+    selected_model: &mut Model,
+    transcript: &mut Vec<TranscriptLine>,
+) -> bool {
+    let mut parts = command.splitn(2, char::is_whitespace);
+    let name = parts.next().unwrap_or_default();
+    let argument = parts.next().unwrap_or_default().trim();
+
+    match name {
+        "exit" | "quit" | "q" => {
+            transcript.push(TranscriptLine::system("Exiting."));
+            true
+        }
+        "help" | "h" => {
+            transcript.push(TranscriptLine::system(
+                "Commands: /help, /models [query], /model [pattern], /clear, /exit",
+            ));
+            false
+        }
+        "models" => {
+            let list = if argument.is_empty() {
+                ListModels::All(true)
+            } else {
+                ListModels::Search(argument.to_string())
+            };
+            for line in list_models_text(&list, models).lines() {
+                transcript.push(TranscriptLine::system(line));
+            }
+            false
+        }
+        "model" => {
+            if argument.is_empty() {
+                transcript.push(TranscriptLine::system(format!(
+                    "model: {}/{}",
+                    selected_model.provider, selected_model.id
+                )));
+                return false;
+            }
+
+            match resolve_model_scope_from_models(&[argument], models)
+                .scoped_models
+                .first()
+                .map(|scoped| scoped.model)
+            {
+                Some(model) => {
+                    *selected_model = model.clone();
+                    transcript.push(TranscriptLine::system(format!(
+                        "model: {}/{}",
+                        selected_model.provider, selected_model.id
+                    )));
+                }
+                None => {
+                    transcript.push(TranscriptLine::system(format!(
+                        "No models match pattern \"{argument}\""
+                    )));
+                }
+            }
+            false
+        }
+        "clear" => {
+            transcript.clear();
+            transcript.push(TranscriptLine::system("Cleared."));
+            false
+        }
+        _ => {
+            transcript.push(TranscriptLine::system(format!("Unknown command: /{name}")));
+            false
+        }
+    }
+}
+
+fn render_tui_frame<W>(
+    output: &mut W,
+    dimensions: TerminalDimensions,
+    selected_model: &Model,
+    transcript: &[TranscriptLine],
+    input: &Input,
+) -> io::Result<()>
+where
+    W: Write,
+{
+    let width = usize::from(dimensions.columns.max(20));
+    let rows = usize::from(dimensions.rows.max(8));
+    let input_lines = input
+        .render(width)
+        .into_iter()
+        .map(|line| line.replace(INPUT_CURSOR_MARKER, ""))
+        .collect::<Vec<_>>();
+    let header = format!(
+        " prime-agent-rust {VERSION}  {}/{} ",
+        selected_model.provider, selected_model.id
+    );
+    let help = " /help /models /model /clear /exit ";
+    let reserved_rows = 4 + input_lines.len();
+    let transcript_rows = rows.saturating_sub(reserved_rows).max(1);
+
+    let mut transcript_render_lines = Vec::new();
+    for line in transcript {
+        let prefix = match line.role {
+            "user" => "you",
+            "assistant" => "assistant",
+            _ => "system",
+        };
+        for wrapped in wrap_plain(&format!("{prefix}> {}", line.text), width) {
+            transcript_render_lines.push(wrapped);
+        }
+    }
+    let start = transcript_render_lines
+        .len()
+        .saturating_sub(transcript_rows);
+
+    write!(output, "{}", clear_screen_sequence())?;
+    writeln!(output, "\x1b[7m{}\x1b[27m", pad_or_truncate(&header, width))?;
+    writeln!(output, "{}", pad_or_truncate(help, width))?;
+    writeln!(output, "{}", "-".repeat(width))?;
+
+    let visible = &transcript_render_lines[start..];
+    for line in visible {
+        writeln!(output, "{}", pad_or_truncate(line, width))?;
+    }
+    for _ in visible.len()..transcript_rows {
+        writeln!(output)?;
+    }
+
+    writeln!(output, "{}", "-".repeat(width))?;
+    for line in input_lines {
+        writeln!(output, "{}", pad_or_truncate(&line, width))?;
+    }
+    output.flush()
+}
+
+fn wrap_plain(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let word_width = visible_width(word);
+        let current_width = visible_width(&current);
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current_width + 1 + word_width <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(current);
+            current = word.to_string();
+        }
+    }
+
+    if current.is_empty() {
+        lines.push(String::new());
+    } else {
+        lines.push(current);
+    }
+    lines
+}
+
+fn pad_or_truncate(text: &str, width: usize) -> String {
+    let truncated = truncate_to_width(text, width, "", false);
+    let padding = width.saturating_sub(visible_width(&truncated));
+    format!("{truncated}{}", " ".repeat(padding))
+}
+
+fn terminal_dimensions(stdout_fd: Option<i32>) -> TerminalDimensions {
+    let stdout_size = stdout_fd.and_then(terminal_size_from_fd);
+    resolve_terminal_dimensions(TerminalSizeInputs {
+        stdout_columns: stdout_size.map(|size| size.columns),
+        stdout_rows: stdout_size.map(|size| size.rows),
+        env_columns: env::var("COLUMNS").ok().as_deref(),
+        env_lines: env::var("LINES").ok().as_deref(),
+    })
+}
+
+#[cfg(unix)]
+fn terminal_size_from_fd(fd: i32) -> Option<TerminalDimensions> {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) };
+    (result == 0 && size.ws_col > 0 && size.ws_row > 0).then_some(TerminalDimensions {
+        columns: size.ws_col,
+        rows: size.ws_row,
+    })
+}
+
+#[cfg(not(unix))]
+fn terminal_size_from_fd(_: i32) -> Option<TerminalDimensions> {
+    None
+}
+
+struct RawModeGuard {
+    #[cfg(unix)]
+    fd: i32,
+    #[cfg(unix)]
+    original: libc::termios,
+}
+
+impl RawModeGuard {
+    fn enable(stdin: &io::Stdin) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let fd = stdin.as_raw_fd();
+            let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
+            if unsafe { libc::tcgetattr(fd, &mut original) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut raw = original;
+            unsafe {
+                libc::cfmakeraw(&mut raw);
+            }
+            if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self { fd, original })
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = stdin;
+            Ok(Self {})
+        }
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            let _ = libc::tcsetattr(self.fd, libc::TCSANOW, &self.original);
         }
     }
 }
@@ -652,6 +1087,55 @@ mod tests {
         assert!(output.contains("model: openai/gpt-4o"));
         assert!(output.contains("No API key found for openai."));
         assert!(output.contains("bye"));
+    }
+
+    #[test]
+    fn tui_loop_renders_prompt_response_models_and_exit() {
+        let mut input = std::io::Cursor::new(b"hello\r/models faux\r/exit\r".to_vec());
+        let mut output = Vec::new();
+
+        run_tui_loop(&mut input, &mut output, || TerminalDimensions {
+            columns: 80,
+            rows: 20,
+        })
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("prime-agent-rust 0.1.7"));
+        assert!(output.contains("assistant> faux-rust-ok: hello"));
+        assert!(output.contains("faux-rust/faux-rust-model"));
+        assert!(output.contains("system> Exiting."));
+    }
+
+    #[test]
+    fn tui_loop_exits_on_ctrl_c() {
+        let mut input = std::io::Cursor::new(vec![3]);
+        let mut output = Vec::new();
+
+        run_tui_loop(&mut input, &mut output, || TerminalDimensions {
+            columns: 80,
+            rows: 12,
+        })
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("system> Exiting."));
+    }
+
+    #[test]
+    fn tui_loop_ctrl_d_with_text_does_not_exit() {
+        let mut input = std::io::Cursor::new(b"abc\x04\r/exit\r".to_vec());
+        let mut output = Vec::new();
+
+        run_tui_loop(&mut input, &mut output, || TerminalDimensions {
+            columns: 80,
+            rows: 12,
+        })
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("assistant> faux-rust-ok: abc"));
+        assert!(output.contains("system> Exiting."));
     }
 
     #[test]

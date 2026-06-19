@@ -12,6 +12,8 @@ name = "prime-agent-rust"
 path = "src/main.rs"
 
 [dependencies]
+libc.workspace = true
 prime-agent-ai = { path = "../prime-agent-ai" }
 prime-agent-coding-agent = { path = "../prime-agent-coding-agent" }
+prime-agent-tui = { path = "../prime-agent-tui" }
 serde_json.workspace = true
