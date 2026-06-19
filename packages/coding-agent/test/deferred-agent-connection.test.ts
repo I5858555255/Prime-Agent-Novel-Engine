@@ -311,6 +311,33 @@ describe("DeferredAgentConnection", () => {
 		expect(fake.promptCalls).toEqual(["second"]);
 	});
 
+	test("rolls back a partial commit so a later action retries", async () => {
+		const fakes: FakeRealConnection[] = [];
+		let attempt = 0;
+		const factory = vi.fn(async () => {
+			const fake = new FakeRealConnection();
+			attempt += 1;
+			if (attempt === 1) {
+				// Throw after this.real is already assigned in promote().
+				fake.subscribe = () => {
+					throw new Error("subscribe failed");
+				};
+			}
+			fakes.push(fake);
+			return { connection: fake as unknown as AgentConnection, activeSessionId: "real-session" };
+		});
+		const conn = new DeferredAgentConnection(factory, SEED);
+
+		await expect(conn.prompt("first")).rejects.toThrow("subscribe failed");
+		expect(conn.created).toBe(false);
+		expect(fakes[0].disposed).toBe(true);
+
+		await conn.prompt("second");
+		expect(factory).toHaveBeenCalledTimes(2);
+		expect(conn.created).toBe(true);
+		expect(fakes[1].promptCalls).toEqual(["second"]);
+	});
+
 	test("unsubscribing a before-invalidate listener after promotion detaches it from the real connection", async () => {
 		const { fake, factory } = makeFactory();
 		const conn = new DeferredAgentConnection(factory, SEED);

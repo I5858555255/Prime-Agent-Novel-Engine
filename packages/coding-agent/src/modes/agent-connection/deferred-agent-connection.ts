@@ -158,11 +158,13 @@ export class DeferredAgentConnection implements AgentConnection {
 			}
 			this.real = real;
 			this.promotedActiveSessionId = activeSessionId;
+			this.realUnsub = real.subscribe((event) => this.emit(event));
+			// Clear the buffer only after wiring succeeds, so a throw here keeps the
+			// listeners for a retry.
 			for (const listener of this.beforeInvalidateListeners) {
 				this.beforeInvalidateRealUnsubs.set(listener, real.onBeforeSessionInvalidate(listener));
 			}
 			this.beforeInvalidateListeners.clear();
-			this.realUnsub = real.subscribe((event) => this.emit(event));
 			// Wait for the UI to rebind to the (empty) real session before the caller's
 			// action runs, so the action's own events aren't double-rendered against a
 			// concurrent full re-render.
@@ -171,6 +173,13 @@ export class DeferredAgentConnection implements AgentConnection {
 		} catch (error) {
 			await real.dispose().catch(() => undefined);
 			await this.discardEmptySession?.(activeSessionId).catch(() => undefined);
+			// Roll back a partial commit so ensure() retries instead of short-circuiting
+			// to this disposed connection.
+			if (this.real === real) {
+				this.realUnsub = undefined;
+				this.real = undefined;
+				this.promotedActiveSessionId = undefined;
+			}
 			throw error;
 		}
 	}
