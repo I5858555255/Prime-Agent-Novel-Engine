@@ -1312,6 +1312,10 @@ export async function main(args: string[], options?: MainOptions) {
 				},
 				(activeSessionId) => discardEmptyDaemonSession(daemonSocketPath, activeSessionId),
 			);
+			// The deferred path only ever fresh-creates with this same config, so the
+			// startup resolution is authoritative — there is no attached session whose
+			// summary could carry a different fallback (resolveAttachModelFallbackMessage
+			// only matters when attaching to an existing session).
 			attachModelFallbackMessage = startupModel.modelFallbackMessage;
 		} else {
 			const { connection, summary } = await createDaemonInteractiveConnection({
