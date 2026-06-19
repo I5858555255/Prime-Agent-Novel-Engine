@@ -16,6 +16,7 @@ pub mod select_list;
 pub mod settings_list;
 pub mod spacer;
 pub mod stdin_buffer;
+pub mod terminal;
 pub mod terminal_colors;
 pub mod terminal_image;
 pub mod text;
@@ -74,6 +75,18 @@ pub use settings_list::{
 };
 pub use spacer::Spacer;
 pub use stdin_buffer::{StdinBuffer, StdinEvent};
+pub use terminal::{
+    DEFAULT_COLUMNS, DEFAULT_ROWS, DISABLE_BRACKETED_PASTE_SEQUENCE,
+    DISABLE_KITTY_KEYBOARD_PROTOCOL_SEQUENCE, DISABLE_MODIFY_OTHER_KEYS_SEQUENCE,
+    ENABLE_BRACKETED_PASTE_SEQUENCE, ENABLE_KITTY_KEYBOARD_PROTOCOL_SEQUENCE,
+    ENABLE_MODIFY_OTHER_KEYS_SEQUENCE, ProcessTerminalState,
+    QUERY_KITTY_KEYBOARD_PROTOCOL_SEQUENCE, TERMINAL_PROGRESS_ACTIVE_SEQUENCE,
+    TERMINAL_PROGRESS_CLEAR_SEQUENCE, TERMINAL_PROGRESS_KEEPALIVE_MS, Terminal, TerminalDimensions,
+    TerminalSizeInputs, clear_from_cursor_sequence, clear_line_sequence, clear_screen_sequence,
+    hide_cursor_sequence, kitty_protocol_response_flags, move_by_sequence,
+    resolve_terminal_columns, resolve_terminal_dimensions, resolve_terminal_rows,
+    set_title_sequence, show_cursor_sequence,
+};
 pub use terminal_colors::{
     AnsiColor, DefaultTerminalColorListener, DefaultTerminalColors, OscColorKind, OscColorResponse,
     QUERY_DEFAULT_BACKGROUND, QUERY_DEFAULT_FOREGROUND, Rgb, TerminalBackgroundKind,

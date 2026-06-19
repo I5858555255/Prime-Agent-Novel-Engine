@@ -1,3 +1,4 @@
+pub mod azure_openai_responses;
 pub mod cloudflare;
 pub mod copilot_headers;
 pub mod diagnostics;
@@ -26,6 +27,7 @@ pub mod typebox_helpers;
 pub mod types;
 pub mod validation;
 
+pub use azure_openai_responses::*;
 pub use cloudflare::*;
 pub use copilot_headers::*;
 pub use diagnostics::*;
