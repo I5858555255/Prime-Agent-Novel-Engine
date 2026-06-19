@@ -9,7 +9,7 @@ use crate::stream::{
 };
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Context, Message, Model, StopReason,
-    Usage,
+    Tool, Usage,
 };
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -101,6 +101,9 @@ fn openai_completions_request_body(
     body.insert("model".to_string(), Value::String(model.id.clone()));
     body.insert("messages".to_string(), Value::Array(chat_messages(context)));
     body.insert("stream".to_string(), Value::Bool(false));
+    if let Some(tools) = context.tools.as_ref().filter(|tools| !tools.is_empty()) {
+        body.insert("tools".to_string(), Value::Array(chat_tools(tools)));
+    }
 
     if let Some(options) = options {
         if let Some(max_tokens) = options.max_tokens {
@@ -136,21 +139,91 @@ fn chat_messages(context: &Context) -> Vec<Value> {
                 }));
             }
             Message::Assistant(assistant) => {
-                let text = assistant_text(&assistant.content);
-                if !text.is_empty() {
-                    messages.push(json!({ "role": "assistant", "content": text }));
+                if let Some(message) = assistant_chat_message(assistant) {
+                    messages.push(message);
                 }
             }
             Message::ToolResult(tool_result) => {
                 let text = assistant_text(&tool_result.content);
-                if !text.is_empty() {
-                    messages.push(json!({ "role": "tool", "content": text }));
-                }
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": chat_tool_call_id(&tool_result.tool_call_id),
+                    "content": text,
+                }));
             }
         }
     }
 
     messages
+}
+
+fn assistant_chat_message(assistant: &AssistantMessage) -> Option<Value> {
+    let text = assistant_text(&assistant.content);
+    let tool_calls = chat_tool_calls(&assistant.content);
+    if text.is_empty() && tool_calls.is_empty() {
+        return None;
+    }
+
+    let mut message = Map::new();
+    message.insert("role".to_string(), Value::String("assistant".to_string()));
+    message.insert(
+        "content".to_string(),
+        if text.is_empty() {
+            Value::Null
+        } else {
+            Value::String(text)
+        },
+    );
+    if !tool_calls.is_empty() {
+        message.insert("tool_calls".to_string(), Value::Array(tool_calls));
+    }
+    Some(Value::Object(message))
+}
+
+fn chat_tool_calls(content: &[ContentBlock]) -> Vec<Value> {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => Some(json!({
+                "id": chat_tool_call_id(id),
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": serde_json::to_string(arguments)
+                        .expect("tool call arguments only contain serializable JSON values"),
+                },
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
+fn chat_tool_call_id(id: &str) -> &str {
+    id.split_once('|')
+        .map(|(call_id, _)| call_id)
+        .filter(|call_id| !call_id.is_empty())
+        .unwrap_or(id)
+}
+
+fn chat_tools(tools: &[Tool]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            })
+        })
+        .collect()
 }
 
 fn parse_openai_completions_message(model: &Model, response: &Value) -> AssistantMessage {
@@ -168,6 +241,14 @@ fn parse_openai_completions_message(model: &Model, response: &Value) -> Assistan
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let mut content = if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![ContentBlock::text(text)]
+    };
+    if let Some(message) = choice.and_then(|choice| choice.get("message")) {
+        content.extend(parse_chat_tool_calls(message));
+    }
     let stop_reason = match choice
         .and_then(|choice| choice.get("finish_reason"))
         .and_then(Value::as_str)
@@ -179,11 +260,7 @@ fn parse_openai_completions_message(model: &Model, response: &Value) -> Assistan
     };
 
     AssistantMessage {
-        content: if text.is_empty() {
-            Vec::new()
-        } else {
-            vec![ContentBlock::text(text)]
-        },
+        content,
         api: model.api.clone(),
         provider: model.provider.clone(),
         model: model.id.clone(),
@@ -201,6 +278,36 @@ fn parse_openai_completions_message(model: &Model, response: &Value) -> Assistan
         error_message: None,
         timestamp: current_timestamp_millis(),
     }
+}
+
+fn parse_chat_tool_calls(message: &Value) -> Vec<ContentBlock> {
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool_call| {
+            let id = tool_call.get("id").and_then(Value::as_str)?;
+            let function = tool_call.get("function")?;
+            let name = function.get("name").and_then(Value::as_str)?;
+            let arguments = parse_chat_function_arguments_object(
+                function.get("arguments").and_then(Value::as_str),
+            );
+            Some(ContentBlock::ToolCall {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments,
+                thought_signature: None,
+            })
+        })
+        .collect()
+}
+
+fn parse_chat_function_arguments_object(arguments: Option<&str>) -> Map<String, Value> {
+    arguments
+        .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
 }
 
 fn event_stream_from_message(message: AssistantMessage) -> AssistantMessageEventStream {
@@ -372,6 +479,71 @@ mod tests {
     }
 
     #[test]
+    fn builds_chat_messages_with_tool_calls_and_results() {
+        let arguments = Map::from_iter([("path".to_string(), json!("README.md"))]);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![
+                Message::Assistant(AssistantMessage {
+                    content: vec![
+                        ContentBlock::text("checking"),
+                        ContentBlock::ToolCall {
+                            id: "call_1|fc_1".to_string(),
+                            name: "read".to_string(),
+                            arguments,
+                            thought_signature: None,
+                        },
+                    ],
+                    api: OPENAI_COMPLETIONS_API.to_string(),
+                    provider: "prime-inference".to_string(),
+                    model: "z-ai/glm-5.1".to_string(),
+                    response_model: None,
+                    response_id: None,
+                    diagnostics: None,
+                    usage: Usage::default(),
+                    stop_reason: StopReason::ToolUse,
+                    error_message: None,
+                    timestamp: 1,
+                }),
+                Message::ToolResult(crate::types::ToolResultMessage {
+                    tool_call_id: "call_1|fc_1".to_string(),
+                    tool_name: "read".to_string(),
+                    content: vec![ContentBlock::text("file contents")],
+                    details: None,
+                    is_error: false,
+                    timestamp: 2,
+                }),
+            ],
+            tools: Some(vec![Tool {
+                name: "read".to_string(),
+                description: "Read a file".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    },
+                    "required": ["path"]
+                }),
+            }]),
+        };
+
+        let body = openai_completions_request_body(&model(), &context, None);
+
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "read");
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"], "checking");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"README.md\"}"
+        );
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
+        assert_eq!(body["messages"][1]["content"], "file contents");
+    }
+
+    #[test]
     fn parses_chat_completion_response() {
         let response = json!({
             "id": "chatcmpl_123",
@@ -394,5 +566,41 @@ mod tests {
         assert_eq!(message.usage.input, 10);
         assert_eq!(message.usage.output, 4);
         assert_eq!(assistant_text(&message.content), "hello back");
+    }
+
+    #[test]
+    fn parses_chat_completion_tool_calls() {
+        let response = json!({
+            "id": "chatcmpl_456",
+            "model": "z-ai/glm-5.1",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": "{\"path\":\"README.md\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let message = parse_openai_completions_message(&model(), &response);
+
+        assert_eq!(message.stop_reason, StopReason::ToolUse);
+        assert_eq!(
+            message.content,
+            vec![ContentBlock::ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                arguments: Map::from_iter([("path".to_string(), json!("README.md"))]),
+                thought_signature: None,
+            }]
+        );
     }
 }
