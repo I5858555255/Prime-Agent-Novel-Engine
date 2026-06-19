@@ -833,7 +833,15 @@ async function discardEmptyDaemonSession(socketPath: string, activeSessionId: st
 			return;
 		}
 		const summary = state.data;
-		if (summary.messageCount > 0 || summary.pendingMessageCount > 0 || summary.isStreaming) {
+		// Keep the session if it holds any work: messages, a queued/streaming turn,
+		// an in-progress compaction, or a running user bash command.
+		if (
+			summary.messageCount > 0 ||
+			summary.pendingMessageCount > 0 ||
+			summary.isStreaming ||
+			summary.isCompacting ||
+			summary.isBashRunning
+		) {
 			return;
 		}
 		await client.request({ type: "kill", activeSessionId }, 3000);
