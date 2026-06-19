@@ -1518,6 +1518,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: this.persist ? previousSessionFile : undefined,
+			git: this.persist ? (captureGitContext(this.cwd) ?? undefined) : undefined,
 		};
 
 		// Collect labels for entries in the path

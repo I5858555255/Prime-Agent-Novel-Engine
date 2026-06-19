@@ -80,6 +80,17 @@ describe("SessionManager git state", () => {
 		expect(sm.recordGitStateIfChanged()).toBeDefined();
 	});
 
+	it("captures git context in a forked session header", () => {
+		const sm = SessionManager.create(repoDir, sessionDir);
+		const msgId = sm.appendMessage({ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 });
+		sm.createBranchedSession(msgId);
+		expect(sm.getHeader()?.git).toEqual({
+			branch: "main",
+			commit: firstSha,
+			repoUrl: "https://github.com/acme/widgets.git",
+		});
+	});
+
 	it("keeps git_state entries out of the LLM context", () => {
 		const sm = SessionManager.create(repoDir, sessionDir);
 		commit(repoDir, "second");
