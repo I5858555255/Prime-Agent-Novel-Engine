@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use prime_agent_ai::{
@@ -44,6 +45,66 @@ impl CliOutput {
 
 pub fn run_from_env() -> CliOutput {
     run(env::args().skip(1))
+}
+
+pub fn run_interactive_from_stdio() -> i32 {
+    match run_interactive(io::stdin().lock(), io::stdout().lock()) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("prime-agent-rust interactive error: {error}");
+            1
+        }
+    }
+}
+
+pub fn run_interactive<R, W>(mut input: R, mut output: W) -> io::Result<()>
+where
+    R: BufRead,
+    W: Write,
+{
+    let models = bundled_models();
+    let mut selected_model = find_model_or_default(FAUX_MODEL_ID, &models)
+        .expect("bundled faux model should always be available")
+        .clone();
+
+    writeln!(output, "prime-agent-rust {VERSION}")?;
+    writeln!(
+        output,
+        "model: {}/{}",
+        selected_model.provider, selected_model.id
+    )?;
+    writeln!(
+        output,
+        "Type /help for commands, /models to list models, or /exit to quit."
+    )?;
+
+    loop {
+        write!(output, "prime-agent-rust> ")?;
+        output.flush()?;
+
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            writeln!(output)?;
+            return Ok(());
+        }
+
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(command) = line.strip_prefix('/') {
+            if handle_interactive_command(command, &models, &mut selected_model, &mut output)? {
+                return Ok(());
+            }
+            continue;
+        }
+
+        match run_native_turn(&selected_model, line, false, None, true) {
+            Ok(response) => writeln!(output, "assistant> {response}")?,
+            Err(message) => writeln!(output, "{message}")?,
+        }
+    }
 }
 
 pub fn run<I, S>(argv: I) -> CliOutput
@@ -99,7 +160,7 @@ where
         };
     }
 
-    if args.print == Some(true) {
+    if args.print == Some(true) || !args.messages.is_empty() || !args.file_args.is_empty() {
         return match run_print(&args) {
             Ok(stdout) => CliOutput {
                 exit_code: 0,
@@ -117,10 +178,7 @@ where
     CliOutput {
         exit_code: 1,
         stdout: String::new(),
-        stderr: ensure_trailing_newline(join_warning_and_error(
-            &warnings,
-            "Interactive TUI mode is not implemented in the native Rust CLI yet. Use -p/--print for the ported native execution path.",
-        )),
+        stderr: ensure_trailing_newline(join_warning_and_error(&warnings, &help_text())),
     }
 }
 
@@ -150,33 +208,13 @@ fn run_print(args: &Args) -> Result<String, String> {
         );
     }
 
-    if model.provider != FAUX_PROVIDER {
-        if args.offline == Some(true) {
-            return Err(format!(
-                "Provider {} is unavailable in --offline mode. Use --provider {FAUX_PROVIDER} --model {FAUX_MODEL_ID} for a native offline smoke test.",
-                model.provider
-            ));
-        }
-
-        let has_api_key = args
-            .api_key
-            .as_deref()
-            .is_some_and(|key| !key.trim().is_empty())
-            || (args.no_env != Some(true) && get_env_api_key(&model.provider).is_some());
-        if !has_api_key {
-            return Err(format_no_api_key_found_message_with_docs_path(
-                &model.provider,
-                DEFAULT_DOCS_PATH,
-            ));
-        }
-
-        return Err(format!(
-            "Native Rust provider streaming is not implemented yet for {}. This binary did not fall back to TypeScript.",
-            model.provider
-        ));
-    }
-
-    let response = faux_response(&prompt);
+    let response = run_native_turn(
+        model,
+        &prompt,
+        args.offline == Some(true),
+        args.api_key.as_deref(),
+        args.no_env != Some(true),
+    )?;
     match args.mode.unwrap_or(Mode::Text) {
         Mode::Text | Mode::Daemon => Ok(format!("{response}\n")),
         Mode::Json | Mode::Rpc => jsonl_response(args, model, &prompt, &response),
@@ -194,6 +232,7 @@ fn select_model<'a>(args: &Args, models: &'a [Model]) -> Result<Option<&'a Model
                 .and_then(|patterns| patterns.iter().find(|pattern| !pattern.trim().is_empty()))
                 .map(String::as_str)
         })
+        .or(Some(FAUX_MODEL_ID))
     else {
         return Ok(None);
     };
@@ -216,6 +255,13 @@ fn select_model<'a>(args: &Args, models: &'a [Model]) -> Result<Option<&'a Model
     Ok(resolved.scoped_models.first().map(|scoped| scoped.model))
 }
 
+fn find_model_or_default<'a>(pattern: &str, models: &'a [Model]) -> Option<&'a Model> {
+    resolve_model_scope_from_models(&[pattern], models)
+        .scoped_models
+        .first()
+        .map(|scoped| scoped.model)
+}
+
 fn read_prompt(args: &Args) -> Result<String, String> {
     let mut parts = args.messages.clone();
     for file_arg in &args.file_args {
@@ -229,6 +275,110 @@ fn read_prompt(args: &Args) -> Result<String, String> {
 
 fn faux_response(prompt: &str) -> String {
     format!("faux-rust-ok: {}", prompt.trim())
+}
+
+fn run_native_turn(
+    model: &Model,
+    prompt: &str,
+    offline: bool,
+    api_key: Option<&str>,
+    allow_env: bool,
+) -> Result<String, String> {
+    if model.provider == FAUX_PROVIDER {
+        return Ok(faux_response(prompt));
+    }
+
+    if offline {
+        return Err(format!(
+            "Provider {} is unavailable in --offline mode. Use /model {FAUX_PROVIDER}/{FAUX_MODEL_ID} for a native offline smoke test.",
+            model.provider
+        ));
+    }
+
+    let has_api_key = api_key.is_some_and(|key| !key.trim().is_empty())
+        || (allow_env && get_env_api_key(&model.provider).is_some());
+    if !has_api_key {
+        return Err(format_no_api_key_found_message_with_docs_path(
+            &model.provider,
+            DEFAULT_DOCS_PATH,
+        ));
+    }
+
+    Err(format!(
+        "Native Rust provider streaming is not implemented yet for {}. This binary did not fall back to TypeScript.",
+        model.provider
+    ))
+}
+
+fn handle_interactive_command<W>(
+    command: &str,
+    models: &[Model],
+    selected_model: &mut Model,
+    output: &mut W,
+) -> io::Result<bool>
+where
+    W: Write,
+{
+    let mut parts = command.splitn(2, char::is_whitespace);
+    let name = parts.next().unwrap_or_default();
+    let argument = parts.next().unwrap_or_default().trim();
+
+    match name {
+        "exit" | "quit" | "q" => {
+            writeln!(output, "bye")?;
+            Ok(true)
+        }
+        "help" | "h" => {
+            write!(output, "{}", interactive_help_text())?;
+            Ok(false)
+        }
+        "models" => {
+            let list = if argument.is_empty() {
+                ListModels::All(true)
+            } else {
+                ListModels::Search(argument.to_string())
+            };
+            write!(output, "{}", list_models_text(&list, models))?;
+            Ok(false)
+        }
+        "model" => {
+            if argument.is_empty() {
+                writeln!(
+                    output,
+                    "model: {}/{}",
+                    selected_model.provider, selected_model.id
+                )?;
+                return Ok(false);
+            }
+
+            match resolve_model_scope_from_models(&[argument], models)
+                .scoped_models
+                .first()
+                .map(|scoped| scoped.model)
+            {
+                Some(model) => {
+                    *selected_model = model.clone();
+                    writeln!(
+                        output,
+                        "model: {}/{}",
+                        selected_model.provider, selected_model.id
+                    )?;
+                }
+                None => {
+                    writeln!(output, "No models match pattern \"{argument}\"")?;
+                }
+            }
+            Ok(false)
+        }
+        "clear" => {
+            writeln!(output, "cleared")?;
+            Ok(false)
+        }
+        _ => {
+            writeln!(output, "Unknown command: /{name}")?;
+            Ok(false)
+        }
+    }
 }
 
 fn jsonl_response(
@@ -417,8 +567,12 @@ fn model(
 
 fn help_text() -> String {
     format!(
-        "prime-agent-rust {VERSION}\n\nUSAGE:\n  prime-agent-rust [OPTIONS] [-p <PROMPT>] [@file ...]\n  prime-agent-rust daemon --help\n\nOPTIONS:\n  -h, --help                 Show this help\n  -v, --version              Show version\n  -p, --print <PROMPT>       Run one native print-mode turn\n      --mode <text|json|rpc> Output mode for print turns\n      --provider <NAME>      Select provider\n      --model <MODEL>        Select model id or provider/model\n      --models <PATTERNS>    Accepted for CLI parity; print mode uses --model\n      --thinking <LEVEL>     off|minimal|low|medium|high|xhigh\n      --list-models [QUERY]  List bundled native model metadata\n      --offline              Disallow remote providers\n      --no-env               Do not read provider API keys from the environment\n      --no-session           Accepted for CLI parity\n      --no-tools             Accepted for CLI parity\n\nNATIVE SMOKE TEST:\n  prime-agent-rust --provider {FAUX_PROVIDER} --model {FAUX_MODEL_ID} --no-session --no-tools -p \"hello\"\n"
+        "prime-agent-rust {VERSION}\n\nUSAGE:\n  prime-agent-rust                         Start native interactive mode\n  prime-agent-rust [OPTIONS] [-p <PROMPT>] [@file ...]\n  prime-agent-rust daemon --help\n\nOPTIONS:\n  -h, --help                 Show this help\n  -v, --version              Show version\n  -p, --print <PROMPT>       Run one native print-mode turn\n      --mode <text|json|rpc> Output mode for print turns\n      --provider <NAME>      Select provider\n      --model <MODEL>        Select model id or provider/model\n      --models <PATTERNS>    Select model scope; first match is used in print mode\n      --thinking <LEVEL>     off|minimal|low|medium|high|xhigh\n      --list-models [QUERY]  List bundled native model metadata\n      --offline              Disallow remote providers\n      --no-env               Do not read provider API keys from the environment\n      --no-session           Accepted for CLI parity\n      --no-tools             Accepted for CLI parity\n\nNATIVE SMOKE TEST:\n  prime-agent-rust --provider {FAUX_PROVIDER} --model {FAUX_MODEL_ID} --no-session --no-tools -p \"hello\"\n"
     )
+}
+
+fn interactive_help_text() -> String {
+    "commands:\n  /help              Show this help\n  /models [query]    List native bundled models\n  /model [pattern]   Show or select model\n  /clear             Clear native conversation state\n  /exit              Quit\n".to_string()
 }
 
 fn daemon_help_text() -> String {
@@ -468,6 +622,54 @@ mod tests {
         assert_eq!(output.exit_code, 0);
         assert!(output.stdout.contains("faux-rust/faux-rust-model"));
         assert!(!output.stdout.contains("openai/gpt-4o"));
+    }
+
+    #[test]
+    fn interactive_mode_handles_prompt_model_listing_and_exit() {
+        let mut output = Vec::new();
+
+        run_interactive("hello\n/models faux\n/exit\n".as_bytes(), &mut output).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("prime-agent-rust 0.1.7"));
+        assert!(output.contains("model: faux-rust/faux-rust-model"));
+        assert!(output.contains("assistant> faux-rust-ok: hello"));
+        assert!(output.contains("faux-rust/faux-rust-model"));
+        assert!(output.contains("bye"));
+    }
+
+    #[test]
+    fn interactive_model_command_reports_remote_provider_limit_without_typescript_fallback() {
+        let mut output = Vec::new();
+
+        run_interactive(
+            "/model openai/gpt-4o\nhello\n/exit\n".as_bytes(),
+            &mut output,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("model: openai/gpt-4o"));
+        assert!(output.contains("No API key found for openai."));
+        assert!(output.contains("bye"));
+    }
+
+    #[test]
+    fn print_defaults_to_native_faux_provider() {
+        let output = run(["-p", "hello"]);
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout, "faux-rust-ok: hello\n");
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn positional_prompt_runs_one_native_turn() {
+        let output = run(["hello"]);
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout, "faux-rust-ok: hello\n");
+        assert!(output.stderr.is_empty());
     }
 
     #[test]
