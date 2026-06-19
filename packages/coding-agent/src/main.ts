@@ -16,6 +16,7 @@ import {
 	ensureInteractiveDaemonRunning,
 	isDaemonSessionSummary,
 	listActiveDaemonSessionSummaries,
+	StaleDaemonError,
 } from "./cli/daemon-launch.js";
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
@@ -360,6 +361,21 @@ async function promptConfirm(message: string): Promise<boolean> {
 			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
 		});
 	});
+}
+
+async function awaitDaemonReady(daemonReady: Promise<void> | undefined): Promise<void> {
+	if (!daemonReady) {
+		return;
+	}
+	try {
+		await daemonReady;
+	} catch (error) {
+		if (error instanceof StaleDaemonError) {
+			console.error(chalk.red(error.message));
+			process.exit(1);
+		}
+		throw error;
+	}
 }
 
 function validateForkFlags(parsed: Args): void {
@@ -1099,7 +1115,7 @@ export async function main(args: string[], options?: MainOptions) {
 		session: parsed.session,
 	});
 	if (shouldLookupDaemonActiveSession && daemonReady) {
-		await daemonReady;
+		await awaitDaemonReady(daemonReady);
 	}
 	const activeDaemonSessionSummary =
 		shouldLookupDaemonActiveSession && parsed.session
@@ -1287,14 +1303,14 @@ export async function main(args: string[], options?: MainOptions) {
 				fork: parsed.fork,
 			})
 		) {
-			await daemonReady;
+			await awaitDaemonReady(daemonReady);
 			await preloadCodeHighlighter();
 			printTimings();
 			await launchAgentsView(true);
 			return;
 		}
 
-		await daemonReady;
+		await awaitDaemonReady(daemonReady);
 		// No attach and no session selector means a fresh default chat. Defer the
 		// daemon session until the first action so startup is instant and leaving
 		// straight to the agents view (or quitting) creates nothing to clean up.
