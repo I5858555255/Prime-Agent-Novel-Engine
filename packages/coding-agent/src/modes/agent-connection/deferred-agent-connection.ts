@@ -82,10 +82,12 @@ export class DeferredAgentConnection implements AgentConnection {
 	private disposed = false;
 
 	constructor(
-		private readonly factory: () => Promise<AgentConnection>,
+		// Creates the real session and returns its connection plus the daemon
+		// activeSessionId, so the id is known even if a later setup step fails.
+		private readonly factory: () => Promise<{ connection: AgentConnection; activeSessionId: string }>,
 		private readonly seed: DeferredAgentConnectionSeed,
-		// Called on teardown with the promoted session id so the caller can drop it
-		// if it was created but never used (e.g. cycled the model, then left).
+		// Called with a promoted session id so the caller can drop it if it was
+		// created but never used (e.g. cycled the model then left, or setup failed).
 		private readonly discardEmptySession?: (activeSessionId: string) => Promise<void>,
 	) {}
 
@@ -141,10 +143,11 @@ export class DeferredAgentConnection implements AgentConnection {
 	}
 
 	private async promote(): Promise<AgentConnection> {
-		const real = await this.factory();
-		// dispose() may have run, or the initial fetch may throw. In either case tear
-		// the real connection down and reject so we never commit a half-promoted
-		// connection (this.real set without session_replaced or a tracked id).
+		const { connection: real, activeSessionId } = await this.factory();
+		// dispose() may have run, or a setup step may throw. In any of those cases
+		// tear down the client AND drop the daemon session the factory just created,
+		// so a failed/cancelled promotion never commits half-state or orphans an
+		// empty agent (and retries can't pile more up).
 		try {
 			if (this.disposed) {
 				throw new Error("Deferred connection disposed before promotion completed");
@@ -154,7 +157,7 @@ export class DeferredAgentConnection implements AgentConnection {
 				throw new Error("Deferred connection disposed before promotion completed");
 			}
 			this.real = real;
-			this.promotedActiveSessionId = state.activeSessionId;
+			this.promotedActiveSessionId = activeSessionId;
 			for (const listener of this.beforeInvalidateListeners) {
 				this.beforeInvalidateRealUnsubs.set(listener, real.onBeforeSessionInvalidate(listener));
 			}
@@ -167,6 +170,7 @@ export class DeferredAgentConnection implements AgentConnection {
 			return real;
 		} catch (error) {
 			await real.dispose().catch(() => undefined);
+			await this.discardEmptySession?.(activeSessionId).catch(() => undefined);
 			throw error;
 		}
 	}

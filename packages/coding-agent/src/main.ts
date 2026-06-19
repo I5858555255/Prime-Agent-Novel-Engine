@@ -1296,9 +1296,16 @@ export async function main(args: string[], options?: MainOptions) {
 		let attachModelFallbackMessage: string | undefined;
 		if (isFreshDefaultSession) {
 			agentConnection = new DeferredAgentConnection(
-				async () =>
-					(await createDaemonInteractiveConnection({ socketPath: daemonSocketPath, config: defaultSessionConfig }))
-						.connection,
+				async () => {
+					const created = await createDaemonInteractiveConnection({
+						socketPath: daemonSocketPath,
+						config: defaultSessionConfig,
+					});
+					return {
+						connection: created.connection,
+						activeSessionId: getDaemonSummaryActiveSessionId(created.summary),
+					};
+				},
 				{
 					cwd: sessionManager.getCwd(),
 					sessionDir,

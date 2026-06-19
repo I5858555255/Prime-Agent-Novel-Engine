@@ -57,7 +57,10 @@ class FakeRealConnection {
 }
 
 function makeFactory(fake = new FakeRealConnection()) {
-	const factory = vi.fn(async () => fake as unknown as AgentConnection);
+	const factory = vi.fn(async () => ({
+		connection: fake as unknown as AgentConnection,
+		activeSessionId: "real-session",
+	}));
 	return { factory, fake };
 }
 
@@ -167,22 +170,28 @@ describe("DeferredAgentConnection", () => {
 
 	test("disposes a session created while teardown was in flight", async () => {
 		const fake = new FakeRealConnection();
-		let resolveFactory: (connection: AgentConnection) => void = () => {};
+		const discarded: string[] = [];
+		type FactoryResult = { connection: AgentConnection; activeSessionId: string };
+		let resolveFactory: (result: FactoryResult) => void = () => {};
 		const factory = vi.fn(
 			() =>
-				new Promise<AgentConnection>((resolve) => {
+				new Promise<FactoryResult>((resolve) => {
 					resolveFactory = resolve;
 				}),
 		);
-		const conn = new DeferredAgentConnection(factory, SEED);
+		const conn = new DeferredAgentConnection(factory, SEED, async (id) => {
+			discarded.push(id);
+		});
 
 		// Start promotion, then dispose before the factory resolves.
 		const prompting = conn.prompt("go").catch(() => undefined);
 		const disposing = conn.dispose();
-		resolveFactory(fake as unknown as AgentConnection);
+		resolveFactory({ connection: fake as unknown as AgentConnection, activeSessionId: "real-session" });
 		await Promise.all([prompting, disposing]);
 
 		expect(fake.disposed).toBe(true);
+		// The session the factory created during teardown is dropped, not orphaned.
+		expect(discarded).toEqual(["real-session"]);
 		// The aborted promotion never wires events through.
 		const events: AgentConnectionEvent[] = [];
 		conn.subscribe((event) => {
@@ -200,7 +209,10 @@ describe("DeferredAgentConnection", () => {
 			order.push("prompt");
 			return originalPrompt(message);
 		};
-		const conn = new DeferredAgentConnection(async () => fake as unknown as AgentConnection, SEED);
+		const conn = new DeferredAgentConnection(
+			async () => ({ connection: fake as unknown as AgentConnection, activeSessionId: "real-session" }),
+			SEED,
+		);
 		conn.subscribe(async (event) => {
 			if (event.type === "session_replaced") {
 				// Simulate the UI's async rebind work.
@@ -219,7 +231,10 @@ describe("DeferredAgentConnection", () => {
 	test("discards an abandoned promoted session on dispose", async () => {
 		const discarded: string[] = [];
 		const conn = new DeferredAgentConnection(
-			async () => new FakeRealConnection() as unknown as AgentConnection,
+			async () => ({
+				connection: new FakeRealConnection() as unknown as AgentConnection,
+				activeSessionId: "real-session",
+			}),
 			SEED,
 			async (id) => {
 				discarded.push(id);
@@ -252,7 +267,7 @@ describe("DeferredAgentConnection", () => {
 		};
 		const discarded: string[] = [];
 		const conn = new DeferredAgentConnection(
-			async () => fake as unknown as AgentConnection,
+			async () => ({ connection: fake as unknown as AgentConnection, activeSessionId: "real-session" }),
 			SEED,
 			async (id) => {
 				discarded.push(id);
@@ -260,12 +275,11 @@ describe("DeferredAgentConnection", () => {
 		);
 
 		await expect(conn.prompt("go")).rejects.toThrow("state fetch failed");
-		// The uncommitted connection was torn down and nothing was left half-wired.
+		// The uncommitted connection was torn down and its orphaned daemon session
+		// discarded, leaving nothing half-wired.
 		expect(fake.disposed).toBe(true);
 		expect(conn.created).toBe(false);
-
-		await conn.dispose();
-		expect(discarded).toEqual([]);
+		expect(discarded).toEqual(["real-session"]);
 	});
 
 	test("getContextTree does not create a session", async () => {
@@ -286,7 +300,7 @@ describe("DeferredAgentConnection", () => {
 			if (attempt === 1) {
 				throw new Error("daemon unavailable");
 			}
-			return fake as unknown as AgentConnection;
+			return { connection: fake as unknown as AgentConnection, activeSessionId: "real-session" };
 		});
 		const conn = new DeferredAgentConnection(factory, SEED);
 
@@ -317,7 +331,10 @@ describe("DeferredAgentConnection with a real-style saved-session lister", () =>
 		const fake = Object.assign(new FakeRealConnection(), {
 			listSavedSessions: async () => saved,
 		});
-		const conn = new DeferredAgentConnection(async () => fake as unknown as AgentConnection, SEED);
+		const conn = new DeferredAgentConnection(
+			async () => ({ connection: fake as unknown as AgentConnection, activeSessionId: "real-session" }),
+			SEED,
+		);
 
 		await conn.prompt("go");
 		expect(await conn.listSavedSessions("current")).toBe(saved);
