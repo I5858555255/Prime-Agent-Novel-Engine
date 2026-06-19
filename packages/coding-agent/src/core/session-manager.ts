@@ -1680,6 +1680,7 @@ export class SessionManager {
 			timestamp,
 			cwd: targetCwd,
 			parentSession: sourcePath,
+			git: captureGitContext(targetCwd) ?? undefined,
 		};
 		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
 

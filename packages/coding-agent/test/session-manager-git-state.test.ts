@@ -91,6 +91,30 @@ describe("SessionManager git state", () => {
 		});
 	});
 
+	it("captures git context when forking a session file", () => {
+		const sourcePath = join(sessionDir, "source.jsonl");
+		writeFileSync(
+			sourcePath,
+			`${[
+				JSON.stringify({ type: "session", version: 3, id: "src", timestamp: "t", cwd: "/old" }),
+				JSON.stringify({
+					type: "message",
+					id: "m1",
+					parentId: null,
+					timestamp: "t",
+					message: { role: "user", content: "hi", timestamp: 1 },
+				}),
+			].join("\n")}\n`,
+		);
+
+		const forked = SessionManager.forkFrom(sourcePath, repoDir, sessionDir);
+		expect(forked.getHeader()?.git).toEqual({
+			branch: "main",
+			commit: firstSha,
+			repoUrl: "https://github.com/acme/widgets.git",
+		});
+	});
+
 	it("keeps git_state entries out of the LLM context", () => {
 		const sm = SessionManager.create(repoDir, sessionDir);
 		commit(repoDir, "second");
