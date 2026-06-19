@@ -111,23 +111,41 @@ function readSessionHeader(sessionFile: string): SessionHeader | undefined {
 }
 
 /**
- * Most recent git context in the trace: the last git_state entry, falling back to the
- * session-start header. Keeps the indexing headers consistent with the session body across
- * re-uploads after the repo moves to a new commit.
+ * Git context for the active trajectory: the nearest git_state walking the active leaf to
+ * root, falling back to the session-start header. The session is a branched tree, so this
+ * mirrors SessionManager's branch-aware dedup rather than taking the last git_state in file
+ * order (which could belong to a sibling branch). Keeps the indexing headers consistent with
+ * the session body across re-uploads after the repo moves to a new commit.
  */
-function latestGitContext(body: string, header: SessionHeader): { repoUrl?: string; commit?: string } | undefined {
-	const lines = body.split("\n");
-	for (let i = lines.length - 1; i >= 0; i -= 1) {
-		const line = lines[i];
-		if (!line || !line.includes('"type":"git_state"')) continue;
+export function activeGitContext(
+	body: string,
+	header: SessionHeader,
+): { repoUrl?: string; commit?: string } | undefined {
+	const byId = new Map<string, { parentId: string | null; type: string; git?: unknown }>();
+	let leafId: string | null = null;
+	for (const line of body.split("\n")) {
+		if (!line.trim()) continue;
+		let parsed: unknown;
 		try {
-			const parsed = JSON.parse(line) as unknown;
-			if (isRecord(parsed) && parsed.type === "git_state" && isRecord(parsed.git)) {
-				return parsed.git as { repoUrl?: string; commit?: string };
-			}
+			parsed = JSON.parse(line);
 		} catch {
-			// Skip malformed lines.
+			continue;
 		}
+		if (!isRecord(parsed) || parsed.type === "session" || typeof parsed.id !== "string") continue;
+		byId.set(parsed.id, {
+			parentId: typeof parsed.parentId === "string" ? parsed.parentId : null,
+			type: typeof parsed.type === "string" ? parsed.type : "",
+			git: parsed.git,
+		});
+		leafId = parsed.id;
+	}
+
+	let current = leafId ? byId.get(leafId) : undefined;
+	for (let depth = 0; current && depth < byId.size + 1; depth += 1) {
+		if (current.type === "git_state" && isRecord(current.git)) {
+			return current.git as { repoUrl?: string; commit?: string };
+		}
+		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
 	return header.git;
 }
@@ -335,7 +353,7 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 	if (traceContext.parentSessionId) {
 		headers["X-Parent-Session"] = traceContext.parentSessionId;
 	}
-	const git = latestGitContext(body, header);
+	const git = activeGitContext(body, header);
 	if (git?.repoUrl) {
 		headers["X-Git-Repo"] = git.repoUrl;
 	}
