@@ -245,6 +245,29 @@ describe("DeferredAgentConnection", () => {
 		expect(discarded).toEqual([]);
 	});
 
+	test("does not half-promote when the initial state fetch fails", async () => {
+		const fake = new FakeRealConnection();
+		fake.getState = async () => {
+			throw new Error("state fetch failed");
+		};
+		const discarded: string[] = [];
+		const conn = new DeferredAgentConnection(
+			async () => fake as unknown as AgentConnection,
+			SEED,
+			async (id) => {
+				discarded.push(id);
+			},
+		);
+
+		await expect(conn.prompt("go")).rejects.toThrow("state fetch failed");
+		// The uncommitted connection was torn down and nothing was left half-wired.
+		expect(fake.disposed).toBe(true);
+		expect(conn.created).toBe(false);
+
+		await conn.dispose();
+		expect(discarded).toEqual([]);
+	});
+
 	test("getContextTree does not create a session", async () => {
 		const { factory } = makeFactory();
 		const conn = new DeferredAgentConnection(factory, SEED);

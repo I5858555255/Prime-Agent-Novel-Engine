@@ -122,7 +122,7 @@ export class DeferredAgentConnection implements AgentConnection {
 	}
 
 	private async emitAndWait(event: AgentConnectionEvent): Promise<void> {
-		await Promise.allSettled([...this.listeners].map((listener) => listener(event)));
+		await Promise.allSettled([...this.listeners].map((listener) => Promise.resolve().then(() => listener(event))));
 	}
 
 	private ensure(): Promise<AgentConnection> {
@@ -142,25 +142,33 @@ export class DeferredAgentConnection implements AgentConnection {
 
 	private async promote(): Promise<AgentConnection> {
 		const real = await this.factory();
-		// dispose() may have run while factory() was in flight. Tear the real
-		// connection down and reject so callers don't act on a dead session.
-		if (this.disposed) {
+		// dispose() may have run, or the initial fetch may throw. In either case tear
+		// the real connection down and reject so we never commit a half-promoted
+		// connection (this.real set without session_replaced or a tracked id).
+		try {
+			if (this.disposed) {
+				throw new Error("Deferred connection disposed before promotion completed");
+			}
+			const [state, messages] = await Promise.all([real.getState(), real.getMessages()]);
+			if (this.disposed) {
+				throw new Error("Deferred connection disposed before promotion completed");
+			}
+			this.real = real;
+			this.promotedActiveSessionId = state.activeSessionId;
+			for (const listener of this.beforeInvalidateListeners) {
+				this.beforeInvalidateRealUnsubs.set(listener, real.onBeforeSessionInvalidate(listener));
+			}
+			this.beforeInvalidateListeners.clear();
+			this.realUnsub = real.subscribe((event) => this.emit(event));
+			// Wait for the UI to rebind to the (empty) real session before the caller's
+			// action runs, so the action's own events aren't double-rendered against a
+			// concurrent full re-render.
+			await this.emitAndWait({ type: "session_replaced", state, messages });
+			return real;
+		} catch (error) {
 			await real.dispose().catch(() => undefined);
-			throw new Error("Deferred connection disposed before promotion completed");
+			throw error;
 		}
-		this.real = real;
-		for (const listener of this.beforeInvalidateListeners) {
-			this.beforeInvalidateRealUnsubs.set(listener, real.onBeforeSessionInvalidate(listener));
-		}
-		this.beforeInvalidateListeners.clear();
-		this.realUnsub = real.subscribe((event) => this.emit(event));
-		const [state, messages] = await Promise.all([real.getState(), real.getMessages()]);
-		this.promotedActiveSessionId = state.activeSessionId;
-		// Wait for the UI to rebind to the (empty) real session before the caller's
-		// action runs, so the action's own events aren't double-rendered against a
-		// concurrent full re-render.
-		await this.emitAndWait({ type: "session_replaced", state, messages });
-		return real;
 	}
 
 	private defaultState(): AgentConnectionState {
