@@ -100,6 +100,52 @@ describe("SessionManager flat storage", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
+
+	it("ignores oversized non-conversation rows when computing modified time", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-large-tool-list-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			mkdirSync(sessionDir, { recursive: true });
+			const sessionFile = join(sessionDir, "large-tool.jsonl");
+			const largeText = "z".repeat(2 * 1024 * 1024);
+			writeFileSync(
+				sessionFile,
+				`${JSON.stringify({
+					type: "session",
+					id: "large-tool",
+					timestamp: "2026-01-01T00:00:00.000Z",
+					cwd: join(tempDir, "project"),
+				})}\n${JSON.stringify({
+					type: "message",
+					id: "message-1",
+					parentId: null,
+					timestamp: "2026-01-02T00:00:00.000Z",
+					message: {
+						role: "user",
+						content: "small prompt",
+					},
+				})}\n${JSON.stringify({
+					type: "message",
+					id: "message-2",
+					parentId: "message-1",
+					timestamp: "2026-01-03T00:00:00.000Z",
+					message: {
+						role: "toolResult",
+						content: largeText,
+					},
+				})}\n`,
+			);
+
+			const sessions = await SessionManager.listAll(undefined, sessionDir);
+			expect(sessions).toHaveLength(1);
+			expect(sessions[0].messageCount).toBe(2);
+			expect(sessions[0].firstMessage).toBe("small prompt");
+			expect(sessions[0].allMessagesText).toBe("small prompt");
+			expect(sessions[0].modified.toISOString()).toBe("2026-01-02T00:00:00.000Z");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
 });
 
 function createPersistedSession(cwd: string, sessionDir: string, text: string): SessionManager {

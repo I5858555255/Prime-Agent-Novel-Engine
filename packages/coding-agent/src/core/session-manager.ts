@@ -809,7 +809,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 				if (looksLikeMessageEntry(line)) {
 					messageCount++;
 					const summary = extractOversizedMessageSummary(line);
-					if (typeof summary.timestamp === "number") {
+					if (typeof summary.timestamp === "number" && (summary.role === "user" || summary.role === "assistant")) {
 						lastActivityTime = Math.max(lastActivityTime ?? 0, summary.timestamp);
 					}
 					if (summary.role === "user" && !firstMessage) {
