@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -58,6 +58,44 @@ describe("SessionManager flat storage", () => {
 			expect(sessions[0].messageCount).toBe(2);
 			expect(sessions[0].firstMessage).toBe("small prompt");
 			expect(sessions[0].allMessagesText).toBe("small prompt");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves list metadata from oversized user message rows", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-large-user-list-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			mkdirSync(sessionDir, { recursive: true });
+			const sessionFile = join(sessionDir, "large-user.jsonl");
+			const largeText = "y".repeat(2 * 1024 * 1024);
+			writeFileSync(
+				sessionFile,
+				`${JSON.stringify({
+					type: "session",
+					id: "large-user",
+					timestamp: "2026-01-01T00:00:00.000Z",
+					cwd: join(tempDir, "project"),
+				})}\n${JSON.stringify({
+					type: "message",
+					id: "message-1",
+					parentId: null,
+					timestamp: "2026-01-02T00:00:00.000Z",
+					message: {
+						role: "user",
+						content: largeText,
+						timestamp: 1,
+					},
+				})}\n`,
+			);
+
+			const sessions = await SessionManager.listAll(undefined, sessionDir);
+			expect(sessions).toHaveLength(1);
+			expect(sessions[0].messageCount).toBe(1);
+			expect(sessions[0].firstMessage).toBe("y".repeat(256));
+			expect(sessions[0].allMessagesText).toBe("");
+			expect(sessions[0].modified.toISOString()).toBe("2026-01-02T00:00:00.000Z");
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
