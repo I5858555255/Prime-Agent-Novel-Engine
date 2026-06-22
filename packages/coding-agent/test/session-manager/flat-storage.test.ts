@@ -38,6 +38,30 @@ describe("SessionManager flat storage", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
+
+	it("lists sessions without loading large message bodies into search text", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-large-list-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const cwd = join(tempDir, "project");
+			const session = SessionManager.create(cwd, sessionDir);
+			session.appendSessionInfo("large history");
+			session.appendSessionState({ status: "active" });
+			session.appendMessage(userMsg("small prompt"));
+			session.appendMessage(assistantMsg("x".repeat(2 * 1024 * 1024)));
+
+			const sessions = await SessionManager.listAll(undefined, sessionDir);
+			expect(sessions).toHaveLength(1);
+			expect(sessions[0].id).toBe(session.getSessionId());
+			expect(sessions[0].name).toBe("large history");
+			expect(sessions[0].state).toEqual({ status: "active" });
+			expect(sessions[0].messageCount).toBe(2);
+			expect(sessions[0].firstMessage).toBe("small prompt");
+			expect(sessions[0].allMessagesText).toBe("small prompt");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
 });
 
 function createPersistedSession(cwd: string, sessionDir: string, text: string): SessionManager {
