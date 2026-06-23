@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 import { highlightCode, theme } from "../theme/theme.js";
 
@@ -179,23 +179,36 @@ interface DiffLineSpec {
 	contentFg?: ThemeColor;
 }
 
-/** Build one diff row filling `width` on a single background block. */
-function buildRichDiffLine(spec: DiffLineSpec): string {
-	const styledGutter = theme.fg(spec.gutterFg, spec.gutter);
-	const renderedContent = spec.contentFg
-		? theme.fg(spec.contentFg, spec.content)
-		: highlightContent(spec.content, spec.language);
-	let inner = `${styledGutter}${renderedContent}\x1b[39m`;
-	if (visibleWidth(inner) > spec.width) {
-		inner = truncateToWidth(inner, spec.width, "");
+function padToWidth(inner: string, width: number): string {
+	if (visibleWidth(inner) > width) {
+		inner = truncateToWidth(inner, width, "");
 	}
 	// Pad after truncating too: a 2-cell character straddling the cutoff leaves
 	// the result a cell short.
-	const pad = spec.width - visibleWidth(inner);
-	if (pad > 0) {
-		inner += " ".repeat(pad);
+	const pad = width - visibleWidth(inner);
+	return pad > 0 ? inner + " ".repeat(pad) : inner;
+}
+
+// One diff line as one-or-more full-width background rows. Content wider than the
+// row wraps onto continuation rows with a blank gutter, so nothing is truncated.
+function buildRichDiffLine(spec: DiffLineSpec): string[] {
+	const renderedContent = spec.contentFg
+		? theme.fg(spec.contentFg, spec.content)
+		: highlightContent(spec.content, spec.language);
+
+	const gutterWidth = visibleWidth(spec.gutter);
+	const contentWidth = Math.max(1, spec.width - gutterWidth);
+	const contentRows = wrapTextWithAnsi(renderedContent, contentWidth);
+	if (contentRows.length === 0) {
+		contentRows.push("");
 	}
-	return theme.bg(spec.bg, inner);
+
+	const styledGutter = theme.fg(spec.gutterFg, spec.gutter);
+	const blankGutter = theme.fg(spec.gutterFg, " ".repeat(gutterWidth));
+	return contentRows.map((row, index) => {
+		const gutter = index === 0 ? styledGutter : blankGutter;
+		return theme.bg(spec.bg, padToWidth(`${gutter}${row}\x1b[39m`, spec.width));
+	});
 }
 
 export interface RichDiffOptions {
@@ -224,7 +237,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 		const parsed = parseDiffLine(rawLine);
 		if (!parsed) {
 			rows.push(
-				buildRichDiffLine({
+				...buildRichDiffLine({
 					bg: "toolPanelBg",
 					gutterFg: "toolDiffContext",
 					gutter: "",
@@ -240,7 +253,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 		const text = replaceTabs(content);
 		if (prefix === "+") {
 			rows.push(
-				buildRichDiffLine({
+				...buildRichDiffLine({
 					bg: useBlocks ? "toolDiffAddedBg" : "toolPanelBg",
 					gutterFg: "toolDiffAdded",
 					gutter,
@@ -252,7 +265,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 			);
 		} else if (prefix === "-") {
 			rows.push(
-				buildRichDiffLine({
+				...buildRichDiffLine({
 					bg: useBlocks ? "toolDiffRemovedBg" : "toolPanelBg",
 					gutterFg: "toolDiffRemoved",
 					gutter,
@@ -264,7 +277,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 			);
 		} else {
 			rows.push(
-				buildRichDiffLine({
+				...buildRichDiffLine({
 					bg: "toolPanelBg",
 					gutterFg: "toolDiffContext",
 					gutter,

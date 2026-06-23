@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { IPythonCellComponent } from "../src/modes/interactive/components/ipython-cell.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -39,14 +40,15 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(out).not.toMatch(/edit sample\.py/);
 		expect(out).toMatch(/\+1\s+-1/);
 		// Removed line keeps the old line number; added line the new one.
-		expect(out).toMatch(/-11 .*gamma/);
-		expect(out).toMatch(/\+11 .*GAMMA/);
+		expect(out).toMatch(/11 - .*gamma/);
+		expect(out).toMatch(/11 \+ .*GAMMA/);
 		expect(out).toMatch(/10 .*alpha/);
 		// The redundant "Edited sample.py" confirmation must not render as its own line.
 		expect(out.split("\n").some((line) => /^\s*'?Edited sample\.py'?\s*$/.test(line.trim()))).toBe(false);
 	});
 
-	it("renders diffs as foreground text with no background block", () => {
+	it("renders diff rows as full-width colored blocks", () => {
+		const width = 72;
 		const lines = new IPythonCellComponent({
 			code: "await edit(...)",
 			details: {
@@ -56,10 +58,12 @@ describe("IPythonCellComponent diff rendering", () => {
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
-		}).render(72);
+		}).render(width);
 		const diffRows = lines.filter((line) => /alpha|gamma|GAMMA/.test(stripAnsi(line)));
 		expect(diffRows.length).toBeGreaterThan(0);
-		expect(diffRows.some(hasBackground)).toBe(false);
+		// Each changed row is a background block spanning the full width.
+		expect(diffRows.every((line) => visibleWidth(line) === width)).toBe(true);
+		expect(diffRows.some(hasBackground)).toBe(true);
 	});
 
 	it("prefixes the header with the cell's status marker and aligns it with the summary line", () => {
@@ -109,23 +113,25 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(outside).toContain("/etc/hosts");
 	});
 
-	it("wraps a long diff line onto gutter-aligned continuation rows instead of truncating", () => {
-		const longLine = `const x = ${Array.from({ length: 20 }, (_, i) => `arg${i}`).join(", ")};`;
-		const out = renderCell({
+	it("wraps a long diff line across rows without truncating or overflowing the width", () => {
+		const width = 92;
+		const longLine = `const x = ${Array.from({ length: 30 }, (_, i) => `arg${i}`).join(", ")};`;
+		const lines = new IPythonCellComponent({
 			code: "await edit(...)",
 			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "const x = 1;", newStr: longLine, startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
 			expanded: false,
-		}).split("\n");
+		}).render(width);
 
+		// No rendered row may exceed the terminal width (the TUI throws if one does).
+		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		// The full content survives across the wrapped rows (nothing truncated away).
-		const joined = out.join("");
+		const joined = lines.map(stripAnsi).join("");
 		expect(joined).toContain("arg0");
-		expect(joined).toContain("arg19");
+		expect(joined).toContain("arg29");
 		// The added line spilled onto at least one continuation row.
-		const addedRows = out.filter((line) => /arg\d/.test(line));
-		expect(addedRows.length).toBeGreaterThan(1);
+		expect(lines.filter((line) => /arg\d/.test(stripAnsi(line))).length).toBeGreaterThan(1);
 	});
 
 	it("separates the diff from the summary line with a blank line", () => {

@@ -6,12 +6,11 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import stripAnsi from "strip-ansi";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
 import { shortenPath } from "../../../core/tools/render-utils.js";
-import { highlightCode, theme } from "../theme/theme.js";
+import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
 import { normalizeErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
-import { renderDiff } from "./diff.js";
+import { renderDiffSeparator, renderRichDiff } from "./diff.js";
 import { keyHint } from "./keybinding-hints.js";
 import { toolPanelContentWidth, toolPanelLine } from "./tool-panel.js";
 
@@ -651,30 +650,28 @@ export class IPythonCellComponent implements Component {
 		edits: readonly DiffDisplay[],
 		marker: string,
 	): void {
+		const language = getLanguageFromPath(path);
 		let added = 0;
 		let removed = 0;
-		const diffTexts: string[] = [];
-		edits.forEach((edit) => {
+		const rows: string[] = [];
+		edits.forEach((edit, index) => {
 			const { diff: diffText } = generateDiffString(edit.oldStr, edit.newStr, 4, edit.startLine ?? 1);
 			for (const row of diffText.split("\n")) {
 				if (row.startsWith("+")) added++;
 				else if (row.startsWith("-")) removed++;
 			}
-			diffTexts.push(diffText);
+			if (index > 0) {
+				rows.push(renderDiffSeparator(width));
+			}
+			rows.push(...renderRichDiff(diffText, width, { language }));
 		});
 
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
 		const displayPath = displayEditPath(path, this.state.cwd);
-		this.addPlainWrapped(lines, `${marker} ${theme.fg("accent", displayPath)}  ${counts}`, width);
+		this.addPlain(lines, `${marker} ${theme.fg("accent", displayPath)}  ${counts}`);
 
-		diffTexts.forEach((diffText, index) => {
-			if (index > 0) {
-				this.addPlain(lines, theme.fg("toolDiffContext", "⋮"));
-			}
-			for (const row of renderDiff(diffText).split("\n")) {
-				this.addPlainWrapped(lines, row, width);
-			}
-		});
+		// Colored rows already fill the full width; emit them flush, no panel inset.
+		lines.push(...rows);
 	}
 
 	private renderOutputText(
@@ -722,17 +719,5 @@ export class IPythonCellComponent implements Component {
 	// No-background line, indented one space to align with the summary line above.
 	private addPlain(lines: string[], text: string): void {
 		lines.push(` ${text}`);
-	}
-
-	private addPlainWrapped(lines: string[], text: string, width: number): void {
-		const indent = 1;
-		// Align wrapped rows under the `±N ` diff gutter so code stays under its line.
-		const gutter = stripAnsi(text).match(/^[+\- ]\s*\d+\s/)?.[0]?.length ?? 0;
-		const available = Math.max(1, width - indent);
-		const wrapped = wrapTextWithAnsi(text, available);
-		for (const [index, line] of (wrapped.length > 0 ? wrapped : [""]).entries()) {
-			const pad = index === 0 ? indent : indent + gutter;
-			lines.push(`${" ".repeat(pad)}${line}`);
-		}
 	}
 }
