@@ -3334,6 +3334,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (commandName === "system-prompt" && !commandArgs) {
+				await this.handleSystemPromptCommand();
+				this.editor.setText("");
+				return;
+			}
 			if (commandName === "traces") {
 				await this.handleTracesCommand(canonicalCommandText);
 				this.editor.setText("");
@@ -6712,6 +6717,20 @@ export class InteractiveMode {
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private async handleSystemPromptCommand(): Promise<void> {
+		// The exact string sent to the model as the system prompt for this session,
+		// including any per-turn extension modifications. Rendered verbatim — the only
+		// transformation is the terminal's soft word-wrap to the viewport width.
+		const prompt = await this.agentConnection.getSystemPrompt();
+		const header = `${theme.bold("System Prompt")} ${theme.fg("dim", `(${prompt.length} chars, exact)`)}`;
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(header, 1, 0));
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(prompt, 1, 0));
 		this.ui.requestRender();
 	}
 

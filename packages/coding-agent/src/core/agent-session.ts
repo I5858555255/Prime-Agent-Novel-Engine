@@ -1870,6 +1870,15 @@ export class AgentSession {
 		return this.agent.state.systemPrompt;
 	}
 
+	/**
+	 * The system prompt that would be sent to the model right now. Once a turn has run
+	 * this is the exact on-the-wire value (with extension modifications); before the first
+	 * turn `state.systemPrompt` is still empty, so build the current prompt deterministically.
+	 */
+	getEffectiveSystemPrompt(): string {
+		return this.agent.state.systemPrompt || this._rebuildSystemPrompt(this.getActiveToolNames());
+	}
+
 	/** Current retry attempt (0 if not retrying) */
 	get retryAttempt(): number {
 		return this._retryAttempt;
