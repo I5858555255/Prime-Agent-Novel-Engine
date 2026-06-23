@@ -95,7 +95,6 @@ function describeError(error: unknown): string {
 	return error.message;
 }
 
-// A socket-level fetch failure (cause.code set), as opposed to a timeout/user abort.
 function isRetriableNetworkError(error: unknown): boolean {
 	if (!(error instanceof Error) || error.name === "AbortError") {
 		return false;
@@ -350,8 +349,6 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 	return result;
 }
 
-// Logs so failures aren't lost in fire-and-forget callers (session teardown).
-// Idle states (disabled, no/empty session) are skipped to keep the log signal-heavy.
 function logAgentTraceOutcome(sessionFile: string | undefined, result: AgentTraceUploadResult): void {
 	let line: string | undefined;
 	switch (result.status) {
