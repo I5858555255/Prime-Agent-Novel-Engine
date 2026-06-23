@@ -137,6 +137,17 @@ describe("daemon session summarizer", () => {
 			const text = "SUMMARY: <recap>Editing the parser\nSTATUS: WORKING";
 			expect(parseAgentStatusResponse(text, true)).toEqual({ summary: "Editing the parser" });
 		});
+
+		test("keeps recaps that start with words also used in reasoning", () => {
+			for (const recap of ["Waiting for CI to finish", "Let me know once tests pass", "Under review by the team"]) {
+				expect(parseAgentStatusResponse(`SUMMARY: ${recap}\nSTATUS: WORKING`, true)).toEqual({ summary: recap });
+			}
+		});
+
+		test("takes the last SUMMARY line when a draft is corrected", () => {
+			const text = "SUMMARY: Draft recap\nSUMMARY: Final corrected recap\nSTATUS: WORKING";
+			expect(parseAgentStatusResponse(text, true)).toEqual({ summary: "Final corrected recap" });
+		});
 	});
 
 	describe("buildStatusContext", () => {

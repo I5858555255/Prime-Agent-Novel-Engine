@@ -100,34 +100,36 @@ export function buildStatusContext(messages: readonly AgentMessage[], isWorking:
 	return `<agent-state>${state}</agent-state>\n<conversation>\n${lines.join("\n")}\n</conversation>`;
 }
 
-// Cuts inline chain-of-thought the model appends on the recap line, e.g.
-// `Sending X. That's 5 words? Count: X(1)... = 6 words. Under`.
-const REASONING_TRAILER =
-	/\s*(?:["”]\s*)?(?:\bthat['’]?s\b|\bcount\s*:|\(\d+\)|=\s*\d+\s*words?\b|\b(?:under|over|wait|actually|hmm|let me)\b).*/i;
+// Cuts the word-counting chain-of-thought the model appends on the recap line,
+// e.g. `Sending X. That's 5 words? Count: X(1)... = 6 words.`. Restricted to
+// structural counting markers so plain words ("Waiting for CI") survive.
+const REASONING_TRAILER = /\s*(?:["”]\s*)?(?:\bthat['’]?s\s+\d+\s*words?\b|\bcount\s*:|\(\d+\)|=\s*\d+\s*words?\b).*/i;
 const COUNTING_ARTIFACT = /\(\d+\)|=\s*\d+\s*words?\b/i;
 const MAX_RECAP_WORDS = 16;
 
-function tidyRecap(raw: string): string {
-	let value = raw.trim().replace(REASONING_TRAILER, "").trim();
-	value = value.replace(/^["“']+|["”']+$/g, "").trim();
-	return value.replace(/[.\s]+$/, "");
-}
-
-function isCleanRecap(candidate: string): boolean {
-	if (!candidate || candidate.startsWith("<") || /present-tense|12 words/i.test(candidate)) {
-		return false;
+/** Strip reasoning trailer and quotes, then reject anything still polluted. */
+function cleanRecap(raw: string): string | undefined {
+	const value = raw
+		.trim()
+		.replace(REASONING_TRAILER, "")
+		.replace(/^["“']+|["”']+$/g, "")
+		.replace(/[.\s]+$/, "")
+		.trim();
+	if (!value || value.startsWith("<") || /present-tense|12 words/i.test(value)) {
+		return undefined;
 	}
-	if (COUNTING_ARTIFACT.test(candidate)) {
-		return false;
+	if (COUNTING_ARTIFACT.test(value) || value.split(/\s+/).length > MAX_RECAP_WORDS) {
+		return undefined;
 	}
-	return candidate.split(/\s+/).length <= MAX_RECAP_WORDS;
+	return value;
 }
 
 /**
  * Parse the two-line reply. The recap is delimited by `<recap></recap>` so
  * trailing chain-of-thought falls outside it; without the close tag we fall back
- * to the `SUMMARY:`/`RECAP:` line and cut inline reasoning. A still-polluted
- * candidate is rejected. Idle verdicts default to needs_input.
+ * to the `SUMMARY:`/`RECAP:` line and cut inline word-counting. The last clean
+ * recap wins. A still-polluted candidate is rejected; idle verdicts default to
+ * needs_input.
  */
 export function parseAgentStatusResponse(text: string, isWorking: boolean): AgentStatusResult | undefined {
 	const reasoningTag = /<\/?(?:think|thinking|reasoning|redacted_thinking)>/gi;
@@ -135,28 +137,20 @@ export function parseAgentStatusResponse(text: string, isWorking: boolean): Agen
 		.replace(/<(think|thinking|reasoning|redacted_thinking)>[\s\S]*?<\/\1>/gi, " ")
 		.replace(reasoningTag, " ");
 
-	let summary: string | undefined;
-	// Last match wins so reasoning before the tag is ignored.
+	// Last match wins so a draft superseded by a corrected one resolves correctly.
 	const tagMatch = [...cleaned.matchAll(/<recap>([\s\S]*?)<\/recap>/gi)].at(-1);
-	if (tagMatch) {
-		const candidate = tidyRecap(tagMatch[1]!);
-		if (isCleanRecap(candidate)) {
-			summary = candidate;
-		}
-	}
+	let summary = tagMatch ? cleanRecap(tagMatch[1]!) : undefined;
 
 	let status: string | undefined;
 	for (const rawLine of cleaned.split("\n")) {
 		const line = rawLine.trim();
-		if (!summary) {
-			const summaryMatch = /^(?:summary|recap)\s*:\s*(.+)$/i.exec(line);
-			if (summaryMatch) {
-				const candidate = tidyRecap(summaryMatch[1]!.replace(/<\/?recap>/gi, ""));
-				if (isCleanRecap(candidate)) {
-					summary = candidate;
-				}
-				continue;
+		const summaryMatch = /^(?:summary|recap)\s*:\s*(.+)$/i.exec(line);
+		if (summaryMatch) {
+			// Tag wins over the bare line; otherwise the last clean line wins.
+			if (!tagMatch) {
+				summary = cleanRecap(summaryMatch[1]!.replace(/<\/?recap>/gi, "")) ?? summary;
 			}
+			continue;
 		}
 		const statusMatch = /^status\s*:\s*([a-z_]+)/i.exec(line);
 		if (statusMatch) {
