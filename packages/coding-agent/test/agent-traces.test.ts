@@ -443,6 +443,38 @@ describe("agent trace upload", () => {
 		expect(calls).toHaveLength(1);
 	});
 
+	it("surfaces the cancellation reason when aborted during the retry backoff", async () => {
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "aborted-retry-session");
+		const controller = new AbortController();
+		const abortReason = new Error("upload cancelled");
+		let attempts = 0;
+		const flakyFetch: typeof fetch = async () => {
+			attempts += 1;
+			controller.abort(abortReason);
+			const error = new TypeError("fetch failed");
+			(error as { cause?: unknown }).cause = { code: "ECONNRESET" };
+			throw error;
+		};
+
+		const result = await uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn: flakyFetch,
+			signal: controller.signal,
+			reloadConfig: false,
+		});
+
+		expect(attempts).toBe(1);
+		expect(result.status).toBe("failed");
+		if (result.status === "failed") {
+			expect(result.message).toBe("upload cancelled");
+		}
+	});
+
 	it("does not retry on an HTTP error response", async () => {
 		const session = writeSession(tempDir, join(tempDir, "sessions"), "http-error-session");
 		let attempts = 0;

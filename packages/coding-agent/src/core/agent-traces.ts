@@ -282,12 +282,15 @@ async function fetchWithRetry(
 	try {
 		return await fetchWithTimeout(fetchFn, url, init, timeoutMs, signal);
 	} catch (error) {
-		if (signal?.aborted || !isRetriableNetworkError(error)) {
+		if (signal?.aborted) {
+			throw signal.reason ?? error;
+		}
+		if (!isRetriableNetworkError(error)) {
 			throw error;
 		}
 		await delay(TRACE_UPLOAD_RETRY_DELAY_MS, signal);
 		if (signal?.aborted) {
-			throw error;
+			throw signal.reason ?? error;
 		}
 		return await fetchWithTimeout(fetchFn, url, init, timeoutMs, signal);
 	}
