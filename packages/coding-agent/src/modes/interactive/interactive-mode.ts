@@ -365,7 +365,8 @@ const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	low: "Light reasoning",
 	medium: "Moderate reasoning",
 	high: "Deep reasoning",
-	xhigh: "Maximum reasoning",
+	xhigh: "Very deep reasoning",
+	max: "Maximum reasoning",
 };
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
