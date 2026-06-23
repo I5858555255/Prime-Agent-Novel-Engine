@@ -434,9 +434,10 @@ class AgentsViewMode implements Component, Focusable {
 		}
 		// Mirror the confirm shortcut: open the selected agent only when the prompt
 		// is empty and we are not composing a reply (empty confirm is a no-op then).
+		// Match the confirm path's trim() so a whitespace-only prompt still opens.
 		if (
 			this.keybindings.matches(data, "app.agents.open") &&
-			this.editor.getText().length === 0 &&
+			this.editor.getText().trim().length === 0 &&
 			!this.replyActiveSessionId
 		) {
 			this.openSelected();
