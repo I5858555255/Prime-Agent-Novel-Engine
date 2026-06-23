@@ -151,6 +151,21 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(header).toMatch(/\+1 -1\s*$/);
 	});
 
+	it("renders a large diff without spreading the row array (no RangeError)", () => {
+		const n = 5000;
+		const oldStr = Array.from({ length: n }, (_, i) => `line ${i}`).join("\n");
+		const newStr = Array.from({ length: n }, (_, i) => `LINE ${i}`).join("\n");
+		expect(() =>
+			new IPythonCellComponent({
+				code: "await edit(...)",
+				details: { status: "ok", diffs: [{ path: "big.txt", oldStr, newStr, startLine: 1 }] },
+				executionStarted: true,
+				argsComplete: true,
+				expanded: false,
+			}).render(80),
+		).not.toThrow();
+	});
+
 	it("repeats the +/- sign on wrapped continuation rows", () => {
 		const longLine = `const x = ${Array.from({ length: 20 }, (_, i) => `arg${i}`).join(", ")};`;
 		const out = renderCell({

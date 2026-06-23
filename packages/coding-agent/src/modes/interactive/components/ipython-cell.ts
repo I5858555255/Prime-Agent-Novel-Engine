@@ -663,20 +663,22 @@ export class IPythonCellComponent implements Component {
 			if (index > 0) {
 				rows.push(renderDiffSeparator(width));
 			}
-			rows.push(...renderRichDiff(diffText, width, { language }));
+			// Append, not spread: a huge edit's diff can exceed the JS arg-count limit.
+			for (const row of renderRichDiff(diffText, width, { language })) {
+				rows.push(row);
+			}
 		});
 
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
 		const displayPath = displayEditPath(path, this.state.cwd);
-		// Truncate the path (not the counts) so a long path can't push the header
-		// past the render width and trip the TUI's overflow guard.
+		// Truncate the path (not the counts) so it can't push the header past width.
 		const fixed = visibleWidth(marker) + 1 + 2 + visibleWidth(counts);
-		const pathBudget = Math.max(1, width - 1 - fixed);
-		const shownPath = truncateToWidth(displayPath, pathBudget, "…");
+		const shownPath = truncateToWidth(displayPath, Math.max(1, width - 1 - fixed), "…");
 		this.addPlain(lines, `${marker} ${shownPath}  ${counts}`);
 
-		// Colored rows already fill the full width; emit them flush, no panel inset.
-		lines.push(...rows);
+		for (const row of rows) {
+			lines.push(row);
+		}
 	}
 
 	private renderOutputText(
