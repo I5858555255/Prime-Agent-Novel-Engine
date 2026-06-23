@@ -114,7 +114,7 @@ describe("IpythonKernelProvisioner", () => {
 		expect(countRuns()).toBe(1);
 	});
 
-	it("restart() drops the on-disk snapshot so a compaction wipe isn't revived on resume", async () => {
+	it("restart() drops the on-disk snapshot so a deliberate kernel reset isn't revived on resume", async () => {
 		const snapshotDir = join(tempDir, "artifacts");
 		const provisioner = new IpythonKernelProvisioner(tempDir, { snapshotDir });
 		const dill = join(snapshotDir, "kernel-state.dill");

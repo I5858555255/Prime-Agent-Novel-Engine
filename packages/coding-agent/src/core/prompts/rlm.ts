@@ -10,8 +10,8 @@ export interface RlmPromptOptions {
 }
 
 const IPYTHON_CONTROL_PROMPT = [
-	"IPython is the agent's long-lived notebook during normal turns: a persistent control environment for reasoning, context management, state, tool orchestration, and recursive subcalls. Use it to keep intermediate variables, inspect and transform outputs, and write small helper functions.",
-	"Do not rely on Python variables surviving context compaction. Compaction may restart the IPython kernel and clear the live namespace, so persist durable facts, procedures, and artifacts in files, continual harness state via `/refine` (prompt addendums/notes, memories, skills, and subagents), or normal messages when they must survive compaction.",
+	"IPython is the agent's long-lived notebook: a persistent control environment for reasoning, context management, state, tool orchestration, and recursive subcalls. Use it to keep intermediate variables, inspect and transform outputs, write small helper functions, and preserve useful state across turns or normal context compaction.",
+	"Compaction trims the model-visible conversation history; it does not intentionally clear the live IPython namespace. Still persist durable facts, procedures, and artifacts in files, continual harness state via `/refine` (prompt addendums/notes, memories, skills, and subagents), or normal messages when they must survive an explicit kernel restart, session restart, or reuse across sessions.",
 	"",
 	"Do not assume IPython is the native runtime of the external thing being investigated. A repository, package, service, dataset, paper, website, benchmark, or API may have its own environment and normal interface. Evaluate external systems through their own interface, then use IPython to coordinate the process and analyze what comes back.",
 	"",

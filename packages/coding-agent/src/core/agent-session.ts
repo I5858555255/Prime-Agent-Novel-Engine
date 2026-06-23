@@ -2709,10 +2709,6 @@ export class AgentSession {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
-	private async _restartIpythonKernelAfterCompaction(): Promise<void> {
-		await this._ipythonKernelProvisioner?.restart();
-	}
-
 	/**
 	 * Tell the model when a resumed session revived its IPython kernel state, so it
 	 * knows which variables are actually available instead of assuming the kernel is
@@ -2880,8 +2876,6 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
-			await this._restartIpythonKernelAfterCompaction();
-
 			const compactionResult = {
 				summary,
 				firstKeptEntryId,
@@ -3218,8 +3212,6 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
-			await this._restartIpythonKernelAfterCompaction();
-
 			const result: CompactionResult = {
 				summary,
 				firstKeptEntryId,

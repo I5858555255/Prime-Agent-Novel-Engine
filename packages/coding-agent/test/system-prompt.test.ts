@@ -61,8 +61,8 @@ describe("buildRlmPrompt", () => {
 				"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
 				"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 				"",
-				"IPython is the agent's long-lived notebook during normal turns: a persistent control environment for reasoning, context management, state, tool orchestration, and recursive subcalls. Use it to keep intermediate variables, inspect and transform outputs, and write small helper functions.",
-				"Do not rely on Python variables surviving context compaction. Compaction may restart the IPython kernel and clear the live namespace, so persist durable facts, procedures, and artifacts in files, continual harness state via `/refine` (prompt addendums/notes, memories, skills, and subagents), or normal messages when they must survive compaction.",
+				"IPython is the agent's long-lived notebook: a persistent control environment for reasoning, context management, state, tool orchestration, and recursive subcalls. Use it to keep intermediate variables, inspect and transform outputs, write small helper functions, and preserve useful state across turns or normal context compaction.",
+				"Compaction trims the model-visible conversation history; it does not intentionally clear the live IPython namespace. Still persist durable facts, procedures, and artifacts in files, continual harness state via `/refine` (prompt addendums/notes, memories, skills, and subagents), or normal messages when they must survive an explicit kernel restart, session restart, or reuse across sessions.",
 				"",
 				"Do not assume IPython is the native runtime of the external thing being investigated. A repository, package, service, dataset, paper, website, benchmark, or API may have its own environment and normal interface. Evaluate external systems through their own interface, then use IPython to coordinate the process and analyze what comes back.",
 				"",
@@ -335,10 +335,13 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("notify='wake'");
 		expect(prompt).not.toContain("notify='silent'");
 		expect(prompt).toContain("IPython is the agent's long-lived notebook");
-		expect(prompt).toContain("Do not rely on Python variables surviving context compaction");
+		expect(prompt).toContain("preserve useful state across turns or normal context compaction");
+		expect(prompt).toContain("Compaction trims the model-visible conversation history");
+		expect(prompt).toContain("does not intentionally clear the live IPython namespace");
 		expect(prompt).toContain("continual harness state via `/refine`");
 		expect(prompt).toContain("prompt addendums/notes, memories, skills, and subagents");
-		expect(prompt).not.toContain("preserve useful state across turns or compaction");
+		expect(prompt).not.toContain("Do not rely on Python variables surviving context compaction");
+		expect(prompt).not.toContain("Compaction may restart the IPython kernel");
 		expect(prompt).toContain("yaml (PyYAML)");
 		expect(prompt).toContain("dotenv (python-dotenv)");
 		expect(prompt).toContain("bs4 (Beautiful Soup)");

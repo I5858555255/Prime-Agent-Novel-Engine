@@ -149,7 +149,7 @@ export interface IpythonToolOptions {
 	/** Resolves before this kernel starts — e.g. the previous provisioner's dispose, so a
 	 * /reload's old-kernel snapshot flush can't race the new kernel's restore. */
 	readyGate?: Promise<unknown>;
-	/** Filled after the first kernel start so the owning session can restart it after compaction. */
+	/** Filled after the first kernel start so the owning session can inspect or manage it. */
 	kernelManagerRef?: { current?: KernelManager };
 	/**
 	 * Fires once per kernel start when a previous session's namespace was revived
@@ -198,7 +198,7 @@ export class IpythonKernelProvisioner {
 		void this.ensure().catch(() => {});
 	}
 
-	/** Restart the kernel if one is running (e.g. after compaction). */
+	/** Restart the kernel if one is running. Used for explicit kernel/session lifecycle resets. */
 	async restart(): Promise<void> {
 		try {
 			// Await any in-flight startup first, so we restart a fully-started kernel and
@@ -206,9 +206,9 @@ export class IpythonKernelProvisioner {
 			const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
 			await m?.restart();
 		} finally {
-			// Compaction deliberately wipes the namespace and tells the model so. Drop the
-			// stale on-disk snapshot too — even if the restart threw — so a later resume
-			// doesn't revive state the model was told is gone (a fresh cell re-snapshots).
+			// A deliberate restart invalidates the live namespace. Drop the stale on-disk
+			// snapshot too, even if the restart threw, so a later resume doesn't revive
+			// state from before the reset (a fresh cell re-snapshots).
 			this._lastRestore = undefined;
 			const dir = this.options?.snapshotDir;
 			if (dir) {

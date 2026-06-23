@@ -7,6 +7,7 @@ type SessionWithCompactionInternals = {
 	_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<void>;
 	_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
 	_shouldStopAfterTurn: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
+	_ipythonKernelProvisioner?: { restart: () => Promise<void> };
 };
 
 function createUsage(totalTokens: number) {
@@ -81,6 +82,35 @@ describe("AgentSession compaction characterization", () => {
 		expect(result.summary).toBe("summary from extension");
 		expect(compactionEntries).toHaveLength(1);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+	});
+
+	it("does not restart the IPython kernel during manual compaction", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "summary from extension",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const restart = vi.fn().mockResolvedValue(undefined);
+		(harness.session as unknown as SessionWithCompactionInternals)._ipythonKernelProvisioner = { restart };
+
+		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+
+		await harness.session.compact();
+
+		expect(restart).not.toHaveBeenCalled();
 	});
 
 	it("throws when compacting without a model", async () => {
@@ -160,6 +190,36 @@ describe("AgentSession compaction characterization", () => {
 		await vi.advanceTimersByTimeAsync(100);
 
 		expect(continueSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not restart the IPython kernel during auto-compaction", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "auto compacted",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const restart = vi.fn().mockResolvedValue(undefined);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		sessionInternals._ipythonKernelProvisioner = { restart };
+
+		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		await harness.session.prompt("first");
+		await harness.session.prompt("second");
+
+		await sessionInternals._runAutoCompaction("threshold", false);
+
+		expect(restart).not.toHaveBeenCalled();
 	});
 
 	it("emits a warning when auto-compaction has nothing to summarize", async () => {
