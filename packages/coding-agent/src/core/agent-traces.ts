@@ -77,12 +77,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Build a human-readable error string that includes the underlying cause.
- * Node's `fetch` rejects with a terse `TypeError: fetch failed` and hides the
- * real reason (DNS, connection refused, reset socket, TLS, ...) on `error.cause`.
- * Surfacing it turns an opaque "fetch failed" into e.g. "fetch failed (ENOTFOUND)".
- */
+// Node's `fetch` hides the real reason on `error.cause`; surface it so a bare
+// "fetch failed" becomes e.g. "fetch failed (ENOTFOUND)".
 function describeError(error: unknown): string {
 	if (!(error instanceof Error)) {
 		return String(error);
@@ -99,11 +95,7 @@ function describeError(error: unknown): string {
 	return error.message;
 }
 
-/**
- * A connection-level failure worth one retry: `fetch` rejected before any HTTP
- * response (DNS, refused, reset, TLS), as opposed to a timeout/user abort. We key
- * off `error.cause.code` since that's where undici puts the socket-level reason.
- */
+// A socket-level fetch failure (cause.code set), as opposed to a timeout/user abort.
 function isRetriableNetworkError(error: unknown): boolean {
 	if (!(error instanceof Error) || error.name === "AbortError") {
 		return false;
@@ -283,11 +275,6 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
-/**
- * `fetchWithTimeout` plus a single retry on transient connection-level failures
- * (DNS/refused/reset/TLS). HTTP error responses, timeouts, and user aborts are not
- * retried — those are returned/thrown as-is on the first attempt.
- */
 async function fetchWithRetry(
 	fetchFn: typeof fetch,
 	url: string,
@@ -363,11 +350,8 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 	return result;
 }
 
-/**
- * Record meaningful upload outcomes to a rotating log so failures are not lost in
- * fire-and-forget callers (session teardown). Expected idle states (disabled, no/empty
- * session) are intentionally skipped to keep the file signal-heavy.
- */
+// Logs so failures aren't lost in fire-and-forget callers (session teardown).
+// Idle states (disabled, no/empty session) are skipped to keep the log signal-heavy.
 function logAgentTraceOutcome(sessionFile: string | undefined, result: AgentTraceUploadResult): void {
 	let line: string | undefined;
 	switch (result.status) {
