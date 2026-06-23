@@ -171,6 +171,8 @@ function highlightContent(content: string, language: string | undefined): string
 interface DiffLineSpec {
 	bg: ThemeBg;
 	gutter: string;
+	/** Gutter for wrapped continuation rows; defaults to blanks. */
+	contGutter?: string;
 	gutterFg: ThemeColor;
 	content: string;
 	language: string | undefined;
@@ -204,9 +206,10 @@ function buildRichDiffLine(spec: DiffLineSpec): string[] {
 	}
 
 	const styledGutter = theme.fg(spec.gutterFg, spec.gutter);
-	const blankGutter = theme.fg(spec.gutterFg, " ".repeat(gutterWidth));
+	const cont = spec.contGutter ?? " ".repeat(gutterWidth);
+	const styledCont = theme.fg(spec.gutterFg, cont);
 	return contentRows.map((row, index) => {
-		const gutter = index === 0 ? styledGutter : blankGutter;
+		const gutter = index === 0 ? styledGutter : styledCont;
 		return theme.bg(spec.bg, padToWidth(`${gutter}${row}\x1b[39m`, spec.width));
 	});
 }
@@ -251,6 +254,8 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 		}
 		const { prefix, lineNum, content } = parsed;
 		const gutter = ` ${lineNum} ${prefix === " " ? " " : prefix} `;
+		// Wrapped rows keep the +/- sign but drop the line number.
+		const contGutter = ` ${" ".repeat(lineNum.length)} ${prefix === " " ? " " : prefix} `;
 		const text = replaceTabs(content);
 		if (prefix === "+") {
 			rows.push(
@@ -258,10 +263,11 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 					bg: useBlocks ? "toolDiffAddedBg" : "toolPanelBg",
 					gutterFg: "toolDiffAdded",
 					gutter,
+					contGutter,
 					content: text,
 					language,
 					width,
-					contentFg: useBlocks ? undefined : "toolDiffAdded",
+					contentFg: useBlocks ? "toolDiffText" : "toolDiffAdded",
 				}),
 			);
 		} else if (prefix === "-") {
@@ -270,10 +276,11 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 					bg: useBlocks ? "toolDiffRemovedBg" : "toolPanelBg",
 					gutterFg: "toolDiffRemoved",
 					gutter,
+					contGutter,
 					content: text,
 					language,
 					width,
-					contentFg: useBlocks ? undefined : "toolDiffRemoved",
+					contentFg: useBlocks ? "toolDiffText" : "toolDiffRemoved",
 				}),
 			);
 		} else {

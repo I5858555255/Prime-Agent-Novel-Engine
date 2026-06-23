@@ -151,6 +151,21 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(header).toMatch(/\+1 -1\s*$/);
 	});
 
+	it("repeats the +/- sign on wrapped continuation rows", () => {
+		const longLine = `const x = ${Array.from({ length: 20 }, (_, i) => `arg${i}`).join(", ")};`;
+		const out = renderCell({
+			code: "await edit(...)",
+			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "const x = 1;", newStr: longLine, startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		}).split("\n");
+		// The added line wraps; every row carrying its content shows a "+" gutter.
+		const addedRows = out.filter((line) => /arg\d/.test(line));
+		expect(addedRows.length).toBeGreaterThan(1);
+		expect(addedRows.every((line) => /^\s*\+ /.test(line) || /\d+ \+ /.test(line))).toBe(true);
+	});
+
 	it("separates the diff from the summary line with a blank line", () => {
 		const out = renderCell({
 			code: "await edit(...)",
