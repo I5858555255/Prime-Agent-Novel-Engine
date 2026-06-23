@@ -225,6 +225,8 @@ export interface EditorTheme {
 	borderColor: (str: string) => string;
 	backgroundColor?: (str: string) => string;
 	selectList: SelectListTheme;
+	/** Color applied to a recognized slash-command token in the input. */
+	commandColor?: (str: string) => string;
 }
 
 export interface EditorOptions {
@@ -264,6 +266,7 @@ export class Editor implements Component, Focusable {
 	// Border color (can be changed dynamically)
 	public borderColor: (str: string) => string;
 	public backgroundColor: ((str: string) => string) | undefined;
+	public commandColor: ((str: string) => string) | undefined;
 
 	// Autocomplete support
 	private autocompleteProvider?: AutocompleteProvider;
@@ -318,6 +321,7 @@ export class Editor implements Component, Focusable {
 		this.theme = theme;
 		this.borderColor = theme.borderColor;
 		this.backgroundColor = theme.backgroundColor;
+		this.commandColor = theme.commandColor;
 		const paddingX = options.paddingX ?? 0;
 		this.paddingX = Number.isFinite(paddingX) ? Math.max(0, Math.floor(paddingX)) : 0;
 		this.promptPrefix = options.promptPrefix ?? "";
@@ -369,6 +373,27 @@ export class Editor implements Component, Focusable {
 
 	protected getHiddenTextPrefixLength(_lineIndex: number, _line: string): number {
 		return 0;
+	}
+
+	/**
+	 * Hook to style the display text of a rendered line (e.g. color a slash-command
+	 * token so it stays visually "selected" while the user types its argument).
+	 *
+	 * Called per visible line after the cursor has been composited into `displayText`.
+	 * `lineText` is the unstyled text of this layout line (before the cursor span was
+	 * added); `cursorCol` is the cursor's column within that text, or undefined when
+	 * the cursor is on another line. Implementations must preserve the visible width
+	 * of `displayText` and the embedded cursor span.
+	 *
+	 * Default: no styling.
+	 */
+	protected styleDisplayText(
+		displayText: string,
+		_layoutLineIndex: number,
+		_lineText: string,
+		_cursorCol: number | undefined,
+	): string {
+		return displayText;
 	}
 
 	private getLineHiddenTextPrefixLength(lineIndex: number, line: string): number {
@@ -594,6 +619,14 @@ export class Editor implements Component, Focusable {
 				}
 			}
 
+			// Allow subclasses to style the display text (e.g. color a slash-command token).
+			displayText = this.styleDisplayText(
+				displayText,
+				absoluteLineIndex,
+				layoutLine.text,
+				layoutLine.hasCursor ? layoutLine.cursorPos : undefined,
+			);
+
 			// Calculate padding based on actual visible width
 			const padding = " ".repeat(Math.max(0, inputWidth - lineVisibleWidth));
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
@@ -745,6 +778,13 @@ export class Editor implements Component, Focusable {
 
 					if (this.autocompletePrefix.startsWith("/")) {
 						this.cancelAutocomplete();
+						// A command that takes a free-form argument stays "selected": the
+						// completion inserted a trailing space, so keep editing instead of
+						// submitting the bare command (matches pressing space).
+						if (selected.takesArgument) {
+							if (this.onChange) this.onChange(this.getText());
+							return;
+						}
 						// Fall through to submit
 					} else {
 						this.cancelAutocomplete();

@@ -11,6 +11,8 @@ import type { AppKeybinding, KeybindingsManager } from "../../../core/keybinding
 export interface CustomEditorOptions extends EditorOptions {
 	placeholder?: string;
 	placeholderColor?: (text: string) => string;
+	/** Whether a slash command (by name) takes a free-form argument and should stay styled. */
+	isArgumentCommand?: (name: string) => boolean;
 }
 
 /**
@@ -22,6 +24,7 @@ export class CustomEditor extends Editor {
 	private readonly configuredPaddingX: number;
 	private placeholder: string | undefined;
 	private readonly placeholderColor: (text: string) => string;
+	private readonly isArgumentCommand: (name: string) => boolean;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
 	// Special handlers that can be dynamically replaced
@@ -43,6 +46,7 @@ export class CustomEditor extends Editor {
 		this.configuredPaddingX = options?.paddingX ?? 0;
 		this.placeholder = options?.placeholder;
 		this.placeholderColor = options?.placeholderColor ?? ((text) => text);
+		this.isArgumentCommand = options?.isArgumentCommand ?? (() => false);
 	}
 
 	protected override getPromptPrefix(): string {
@@ -58,6 +62,45 @@ export class CustomEditor extends Editor {
 			return 0;
 		}
 		return this.getBashPromptInfo(line)?.hiddenTextPrefixLength ?? 0;
+	}
+
+	protected override styleDisplayText(
+		displayText: string,
+		layoutLineIndex: number,
+		lineText: string,
+		cursorCol: number | undefined,
+	): string {
+		const commandColor = this.commandColor;
+		if (!commandColor || layoutLineIndex !== 0) {
+			return displayText;
+		}
+
+		// Match a leading slash-command token: optional whitespace, then "/name".
+		const match = /^(\s*)\/(\S+)/.exec(lineText);
+		if (!match) {
+			return displayText;
+		}
+		const [token, leadingWhitespace, name] = match as unknown as [string, string, string];
+		if (!this.isArgumentCommand(name)) {
+			return displayText;
+		}
+
+		const tokenStart = leadingWhitespace.length;
+		const tokenEnd = token.length;
+
+		// The cursor span has been spliced into displayText at cursorCol, which shifts
+		// raw indices. Coloring by raw index is only safe when that splice lands at or
+		// after the token's end. While the cursor is within the token the user is still
+		// typing the command name and the autocomplete dropdown already provides the
+		// highlight, so skipping styling there is also the desired behavior.
+		if (cursorCol !== undefined && cursorCol < tokenEnd) {
+			return displayText;
+		}
+
+		const before = displayText.slice(0, tokenStart);
+		const tokenText = displayText.slice(tokenStart, tokenEnd);
+		const after = displayText.slice(tokenEnd);
+		return `${before}${commandColor(tokenText)}${after}`;
 	}
 
 	private getBashPromptInfo(line: string): { promptPrefix: string; hiddenTextPrefixLength: number } | undefined {

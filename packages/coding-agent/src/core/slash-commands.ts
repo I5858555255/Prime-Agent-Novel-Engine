@@ -17,6 +17,12 @@ export interface BuiltinSlashCommand {
 	argumentHint?: string;
 	/** Hidden names that resolve to this command without being shown as commands. */
 	aliases?: readonly string[];
+	/**
+	 * The command takes a free-form argument. Confirming it keeps the command
+	 * "selected" (inserts a trailing space, stays in the editor) instead of
+	 * submitting the bare command.
+	 */
+	takesArgument?: boolean;
 }
 
 export interface ParsedSlashCommand {
@@ -66,7 +72,12 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		argumentHint: "[instructions]",
 	},
 	{ name: "refine", description: "Refine editable harness prompt notes, skills, subagents, and memory" },
-	{ name: "goal", description: "Set or view a persistent goal; supports pause, resume, and clear" },
+	{
+		name: "goal",
+		description: "Set or view a persistent goal; supports pause, resume, and clear",
+		argumentHint: "[objective]",
+		takesArgument: true,
+	},
 	{
 		name: "heartbeat",
 		description: "Set or view a persistent heartbeat; supports pause, resume, and clear",
@@ -130,6 +141,11 @@ export function resolveBuiltinSlashCommandName(name: string): string {
 
 export function isBuiltinSlashCommandName(name: string): boolean {
 	return BUILTIN_SLASH_COMMAND_BY_NAME.has(name) || BUILTIN_SLASH_COMMAND_ALIAS_TO_NAME.has(name);
+}
+
+/** Whether the built-in command (by name or alias) takes a free-form argument. */
+export function builtinSlashCommandTakesArgument(name: string): boolean {
+	return BUILTIN_SLASH_COMMAND_BY_NAME.get(resolveBuiltinSlashCommandName(name))?.takesArgument === true;
 }
 
 export function resolveSlashCommand(command: ParsedSlashCommand): ResolvedSlashCommand {
