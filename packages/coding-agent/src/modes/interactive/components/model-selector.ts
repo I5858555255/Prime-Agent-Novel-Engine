@@ -182,8 +182,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Load available models (built-in models still work even if models.json failed)
 		let availableModels: ReadonlyArray<Model<any>>;
 		try {
-			// An empty passed-in snapshot must not beat a live query: a caller may
-			// have captured it before auth was configured (e.g. during onboarding).
+			// An empty snapshot may predate login; prefer a live query.
 			availableModels = this.availableModels?.length
 				? this.availableModels
 				: await this.modelRegistry.getAvailable();

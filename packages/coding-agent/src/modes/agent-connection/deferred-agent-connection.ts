@@ -47,8 +47,6 @@ export interface DeferredAgentConnectionSeed {
 	model?: AgentConnectionModel;
 	thinkingLevel: ThinkingLevel;
 	scopedModels: AgentConnectionScopedModel[];
-	// A thunk, not a frozen array: the available set changes pre-session when the
-	// user logs in during onboarding, so it must reflect the current registry.
 	availableModels: () => AgentConnectionModel[];
 	steeringMode: AgentConnectionQueueMode;
 	followUpMode: AgentConnectionQueueMode;
