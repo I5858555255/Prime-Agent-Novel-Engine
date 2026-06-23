@@ -668,7 +668,7 @@ export class IPythonCellComponent implements Component {
 
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
 		const displayPath = displayEditPath(path, this.state.cwd);
-		this.addPlain(lines, `${marker} ${theme.fg("accent", displayPath)}  ${counts}`);
+		this.addPlain(lines, `${marker} ${displayPath}  ${counts}`);
 
 		// Colored rows already fill the full width; emit them flush, no panel inset.
 		lines.push(...rows);
