@@ -12,12 +12,14 @@ type EffortCommandContext = {
 	};
 	agentConnection: { setThinkingLevel: (level: ThinkingLevel) => Promise<void> };
 	footer: { invalidate: () => void };
-	ui: { requestRender: () => void };
+	ui: {
+		requestRender: () => void;
+		showOverlay: (component: Component, options?: unknown) => OverlayHandle;
+	};
 	showStatus: (message: string) => void;
 	showError: (message: string) => void;
 	patchConnectionState: (patch: Record<string, unknown>) => void;
 	updateEditorBorderColor: () => void;
-	showFullPaneOverlay: (component: Component, maxContentWidth?: number) => OverlayHandle;
 };
 
 type InteractiveModePrototype = {
@@ -35,12 +37,14 @@ function makeContext(overrides: Partial<EffortCommandContext> = {}): EffortComma
 		},
 		agentConnection: { setThinkingLevel: vi.fn(async () => {}) },
 		footer: { invalidate: vi.fn() },
-		ui: { requestRender: vi.fn() },
+		ui: {
+			requestRender: vi.fn(),
+			showOverlay: vi.fn(() => ({ hide: vi.fn() }) as unknown as OverlayHandle),
+		},
 		showStatus: vi.fn(),
 		showError: vi.fn(),
 		patchConnectionState: vi.fn(),
 		updateEditorBorderColor: vi.fn(),
-		showFullPaneOverlay: vi.fn(() => ({ hide: vi.fn() }) as unknown as OverlayHandle),
 		...overrides,
 	};
 }
@@ -55,9 +59,13 @@ describe("InteractiveMode /effort", () => {
 
 		interactiveModePrototype.showThinkingSelector.call(context);
 
-		expect(context.showFullPaneOverlay).toHaveBeenCalledTimes(1);
-		const [component] = (context.showFullPaneOverlay as ReturnType<typeof vi.fn>).mock.calls[0];
+		expect(context.ui.showOverlay).toHaveBeenCalledTimes(1);
+		const [component, options] = (context.ui.showOverlay as ReturnType<typeof vi.fn>).mock.calls[0];
 		expect(component).toBeInstanceOf(ThinkingSelectorComponent);
+		// Compact popup anchored to the editor, not a full-pane overlay that
+		// blanks the terminal.
+		expect(options).toMatchObject({ anchor: "bottom-left" });
+		expect(options?.maxHeight).toBeUndefined();
 		expect(context.showStatus).not.toHaveBeenCalled();
 	});
 
@@ -68,7 +76,7 @@ describe("InteractiveMode /effort", () => {
 
 		interactiveModePrototype.showThinkingSelector.call(context);
 
-		expect(context.showFullPaneOverlay).not.toHaveBeenCalled();
+		expect(context.ui.showOverlay).not.toHaveBeenCalled();
 		expect(context.showStatus).toHaveBeenCalledWith("Current model does not support thinking");
 	});
 

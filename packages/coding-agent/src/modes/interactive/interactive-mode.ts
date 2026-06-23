@@ -5674,7 +5674,14 @@ export class InteractiveMode {
 				close();
 			},
 		);
-		handle = this.showFullPaneOverlay(selector, 48);
+		// Anchor a compact popup just above the editor instead of a full-pane
+		// overlay; the picker is only a few rows and blanking the whole terminal
+		// for it is jarring.
+		handle = this.ui.showOverlay(selector, {
+			width: 48,
+			anchor: "bottom-left",
+			margin: { bottom: 1, left: 2 },
+		});
 	}
 
 	private applyThinkingLevel(level: ThinkingLevel): void {
