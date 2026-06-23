@@ -1454,9 +1454,7 @@ export class AgentDaemon {
 				: undefined;
 		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
 		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
-		// Prefer the live in-memory recap over the persisted baseline. Seeded even
-		// when a turn moved on, so attach shows the last recap instead of a blank
-		// one while the summarizer regenerates.
+		// Prefer the live in-memory recap over the persisted baseline.
 		if (state.summaryState?.summary) {
 			connectionState.recap = state.summaryState.summary;
 		}

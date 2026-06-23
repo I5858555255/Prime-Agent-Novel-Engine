@@ -16,7 +16,6 @@ import type {
 function persistedRecap(sessionManager: {
 	getLatestAgentStatus?: () => { summary: string } | undefined;
 }): string | undefined {
-	// Optional-call so a minimal session manager (tests) still works.
 	return sessionManager.getLatestAgentStatus?.()?.summary;
 }
 
@@ -54,9 +53,7 @@ export function createAgentConnectionState(
 		})),
 		activeToolNames: session.getActiveToolNames(),
 		contextUsage: session.getContextUsage(),
-		// Baseline recap; the daemon overlays the live summary on attach. Seeded
-		// even when a turn moved on, so attach shows the last recap instead of a
-		// blank one while the summarizer regenerates.
+		// Baseline recap; the daemon overlays the live summary on attach.
 		recap: persistedRecap(sessionManager),
 	};
 }

@@ -100,23 +100,19 @@ export function buildStatusContext(messages: readonly AgentMessage[], isWorking:
 	return `<agent-state>${state}</agent-state>\n<conversation>\n${lines.join("\n")}\n</conversation>`;
 }
 
-// Inline chain-of-thought the model sometimes appends to the recap on the same
-// line (e.g. `Sending X. That's 5 words? Count: X(1)... = 6 words. Under`).
-// Cut the candidate at the first such marker so reasoning never reaches the UI.
+// Cuts inline chain-of-thought the model appends on the recap line, e.g.
+// `Sending X. That's 5 words? Count: X(1)... = 6 words. Under`.
 const REASONING_TRAILER =
 	/\s*(?:["”]\s*)?(?:\bthat['’]?s\b|\bcount\s*:|\(\d+\)|=\s*\d+\s*words?\b|\b(?:under|over|wait|actually|hmm|let me)\b).*/i;
-// Counting artifacts that mark a candidate as polluted beyond salvage.
 const COUNTING_ARTIFACT = /\(\d+\)|=\s*\d+\s*words?\b/i;
 const MAX_RECAP_WORDS = 16;
 
-/** Strip a single layer of wrapping quotes and any trailing punctuation/space. */
 function tidyRecap(raw: string): string {
 	let value = raw.trim().replace(REASONING_TRAILER, "").trim();
 	value = value.replace(/^["“']+|["”']+$/g, "").trim();
 	return value.replace(/[.\s]+$/, "");
 }
 
-/** A candidate that still carries counting artifacts or rambles is discarded. */
 function isCleanRecap(candidate: string): boolean {
 	if (!candidate || candidate.startsWith("<") || /present-tense|12 words/i.test(candidate)) {
 		return false;
@@ -128,12 +124,10 @@ function isCleanRecap(candidate: string): boolean {
 }
 
 /**
- * Parse the two-line reply. The recap is delimited by `<recap></recap>` tags so
- * trailing chain-of-thought falls structurally outside it; when the model omits
- * the close tag we fall back to capturing the `SUMMARY:`/`RECAP:` line and
- * cutting off any inline reasoning. A candidate that still looks polluted is
- * rejected (returns undefined) rather than surfaced. Idle verdicts default to
- * needs_input on anything unrecognized.
+ * Parse the two-line reply. The recap is delimited by `<recap></recap>` so
+ * trailing chain-of-thought falls outside it; without the close tag we fall back
+ * to the `SUMMARY:`/`RECAP:` line and cut inline reasoning. A still-polluted
+ * candidate is rejected. Idle verdicts default to needs_input.
  */
 export function parseAgentStatusResponse(text: string, isWorking: boolean): AgentStatusResult | undefined {
 	const reasoningTag = /<\/?(?:think|thinking|reasoning|redacted_thinking)>/gi;
@@ -142,7 +136,7 @@ export function parseAgentStatusResponse(text: string, isWorking: boolean): Agen
 		.replace(reasoningTag, " ");
 
 	let summary: string | undefined;
-	// Prefer the explicit tag; last match wins so reasoning before it is ignored.
+	// Last match wins so reasoning before the tag is ignored.
 	const tagMatch = [...cleaned.matchAll(/<recap>([\s\S]*?)<\/recap>/gi)].at(-1);
 	if (tagMatch) {
 		const candidate = tidyRecap(tagMatch[1]!);
@@ -157,7 +151,6 @@ export function parseAgentStatusResponse(text: string, isWorking: boolean): Agen
 		if (!summary) {
 			const summaryMatch = /^(?:summary|recap)\s*:\s*(.+)$/i.exec(line);
 			if (summaryMatch) {
-				// Strip an unclosed `<recap>` tag the model may have left open.
 				const candidate = tidyRecap(summaryMatch[1]!.replace(/<\/?recap>/gi, ""));
 				if (isCleanRecap(candidate)) {
 					summary = candidate;

@@ -153,10 +153,9 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 		spawnCode: metadata.spawnCode ? metadata.spawnCode.slice(0, SPAWN_CODE_MAX_CHARS) : undefined,
 		modelFallbackMessage: activeSession.runtime.modelFallbackMessage,
 		diagnostics: [...activeSession.runtime.diagnostics],
-		// Keep showing the last recap while a new turn regenerates one, so the
-		// agents view never flickers to a blank recap. The completion verdict is
-		// gated on currency, though: a stale "completed" must not show on a turn
-		// that is active again. The summarizer swaps both in within seconds.
+		// Keep the last recap visible across turns so the view never blanks, but
+		// gate the verdict on currency: a stale "completed" must not show on a turn
+		// that is active again.
 		summary: activeSession.summaryState?.summary,
 		...(isSummaryCurrent(activeSession) ? { taskState: activeSession.summaryState?.taskState } : {}),
 	};
