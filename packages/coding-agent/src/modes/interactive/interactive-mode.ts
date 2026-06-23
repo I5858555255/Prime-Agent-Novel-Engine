@@ -2926,6 +2926,8 @@ export class InteractiveMode {
 		this.editorComponentFactory = factory;
 		if (this.childAgentPanelMode) {
 			this.restoreMainAgentView();
+			// Re-render queued previews cleared on panel entry; the queue may still hold messages.
+			this.updatePendingMessagesDisplay();
 			this.childAgentDetailNodeId = undefined;
 			this.childAgentDetail.setNode(undefined);
 		}
@@ -4408,6 +4410,7 @@ export class InteractiveMode {
 		this.childAgentSummary.setHidden(true);
 		this.childAgentInspector.setNodes(this.childAgentNodes);
 		this.editorContainer.clear();
+		this.queuedMessagesContainer.clear();
 		this.mainViewContainer.clear();
 		this.mainViewContainer.addChild(this.childAgentInspector);
 		this.ui.setFocus(this.childAgentInspector);
@@ -4424,6 +4427,7 @@ export class InteractiveMode {
 		this.childAgentDetail.setNode(node);
 		this.childAgentSummary.setHidden(true);
 		this.editorContainer.clear();
+		this.queuedMessagesContainer.clear();
 		this.mainViewContainer.clear();
 		this.mainViewContainer.addChild(this.childAgentDetail);
 		this.ui.setFocus(this.childAgentDetail);
@@ -4444,6 +4448,8 @@ export class InteractiveMode {
 		this.childAgentDetail.setNode(undefined);
 		this.childAgentSummary.setHidden(false);
 		this.restoreMainAgentView();
+		// Re-render queued previews cleared on panel entry; the queue may still hold messages.
+		this.updatePendingMessagesDisplay();
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
