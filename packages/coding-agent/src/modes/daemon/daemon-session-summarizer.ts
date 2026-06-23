@@ -22,17 +22,16 @@ export const AGENT_STATUS_SYSTEM_PROMPT = `You generate a status line for an AI 
 
 Output ONLY these two tags, nothing before, between, or after. Do not think out loud, explain, or count words.
 <recap>a present-tense clause, at most 12 words, saying what the agent is doing or just did, no trailing period</recap>
-<status>one of WORKING, NEEDS_INPUT, COMPLETED</status>
+<status>one of NEEDS_INPUT, COMPLETED</status>
 
 STATUS meaning:
-- WORKING: the agent is mid-task and still acting.
 - COMPLETED: the agent finished its turn AND the user's request is fully done with nothing left.
 - NEEDS_INPUT: the agent finished its turn but the task is not fully done — it asked a question, hit a blocker, or needs more prompting.
-When the agent is idle and you are unsure between COMPLETED and NEEDS_INPUT, choose NEEDS_INPUT.
+When you are unsure between COMPLETED and NEEDS_INPUT, choose NEEDS_INPUT.
 
 Example:
 <recap>Refactoring the auth middleware and updating its tests</recap>
-<status>WORKING</status>`;
+<status>NEEDS_INPUT</status>`;
 
 export interface AgentStatusResult {
 	summary: string;
