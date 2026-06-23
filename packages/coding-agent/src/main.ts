@@ -640,6 +640,7 @@ function runtimeConfigFromArgs(
 	agentDir: string,
 	sessionDir: string | undefined,
 ): AgentSessionRuntimeConfig {
+	const hasAutonomousGates = (parsed.autonomousGates?.length ?? 0) > 0;
 	return {
 		cwd,
 		agentDir,
@@ -663,7 +664,19 @@ function runtimeConfigFromArgs(
 		themes: resolveCliPaths(cwd, parsed.themes),
 		noThemes: parsed.noThemes,
 		noContextFiles: parsed.noContextFiles,
-		autonomous: parsed.autonomous ? { enabled: true } : undefined,
+		autonomous:
+			parsed.autonomous || hasAutonomousGates
+				? {
+						enabled: true,
+						gates: hasAutonomousGates
+							? {
+									commands: parsed.autonomousGates,
+									maxRetries: parsed.autonomousGateRetries,
+									timeoutMs: parsed.autonomousGateTimeoutMs,
+								}
+							: undefined,
+					}
+				: undefined,
 		extensionFlagValues: parsed.unknownFlags.size > 0 ? Object.fromEntries(parsed.unknownFlags.entries()) : undefined,
 	};
 }

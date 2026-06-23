@@ -135,6 +135,46 @@ describe("AgentSession autonomous mode", () => {
 		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(0);
 	});
 
+	it("accepts passing quality gates as finish evidence", async () => {
+		const harness = await createHarness({
+			autonomous: {
+				enabled: true,
+				maxContinuations: 2,
+				gates: { commands: [`${process.execPath} -e "process.exit(0)"`] },
+			},
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("Done.")]);
+
+		await harness.session.prompt("make the change");
+
+		expect(getUserTexts(harness)).toEqual(["make the change"]);
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(0);
+	});
+
+	it("feeds failing quality gate output back into autonomous mode", async () => {
+		const harness = await createHarness({
+			autonomous: {
+				enabled: true,
+				maxContinuations: 2,
+				gates: {
+					commands: [`${process.execPath} -e "console.error('gate failed'); process.exit(1)"`],
+					maxRetries: 1,
+				},
+			},
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("Done."), fauxAssistantMessage("I wrote BLOCKER.md with evidence.")]);
+
+		await harness.session.prompt("make the change");
+
+		const users = getUserTexts(harness);
+		expect(users[0]).toBe("make the change");
+		expect(users[1]).toContain("Autonomous quality gate failed");
+		expect(users[1]).toContain("gate failed");
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(1);
+	});
+
 	it("classifies soft blockers separately from real external blockers", () => {
 		const state = createAutonomousRuntimeState({ enabled: true });
 

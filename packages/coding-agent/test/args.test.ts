@@ -286,6 +286,27 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("autonomous gate flags", () => {
+		test("parses repeatable --autonomous-gate flags", () => {
+			const result = parseArgs(["--autonomous-gate", "npm test", "--autonomous-gate", "npm run lint"]);
+			expect(result.autonomousGates).toEqual(["npm test", "npm run lint"]);
+		});
+
+		test("parses autonomous gate retry and timeout limits", () => {
+			const result = parseArgs(["--autonomous-gate-retries", "4", "--autonomous-gate-timeout-ms", "1234"]);
+			expect(result.autonomousGateRetries).toBe(4);
+			expect(result.autonomousGateTimeoutMs).toBe(1234);
+		});
+
+		test("reports invalid autonomous gate limits", () => {
+			const result = parseArgs(["--autonomous-gate-retries", "nope"]);
+			expect(result.diagnostics).toContainEqual({
+				type: "error",
+				message: "--autonomous-gate-retries requires a positive integer",
+			});
+		});
+	});
+
 	describe("tool flags", () => {
 		test("parses --no-tools flag", () => {
 			const result = parseArgs(["--no-tools"]);

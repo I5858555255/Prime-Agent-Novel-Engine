@@ -6,6 +6,13 @@ export interface AgentAutonomousFinishContractConfig {
 	continuationPrompt?: string;
 }
 
+export interface AgentAutonomousGateConfig {
+	commands?: string[];
+	onFail?: "feed_output_back";
+	maxRetries?: number;
+	timeoutMs?: number;
+}
+
 export interface AgentAutonomousConfig {
 	enabled?: boolean;
 	maxContinuations?: number;
@@ -14,6 +21,7 @@ export interface AgentAutonomousConfig {
 	timeoutMs?: number;
 	continuationPrompt?: string;
 	finishContract?: AgentAutonomousFinishContractConfig;
+	gates?: AgentAutonomousGateConfig;
 }
 
 export interface AgentAutonomousStatus {
@@ -22,7 +30,7 @@ export interface AgentAutonomousStatus {
 	turnsUsed: number;
 	tokensUsed: number;
 	startedAt?: number;
-	limits: Required<Omit<AgentAutonomousConfig, "enabled" | "continuationPrompt" | "finishContract">>;
+	limits: Required<Omit<AgentAutonomousConfig, "enabled" | "continuationPrompt" | "finishContract" | "gates">>;
 }
 
 export const DEFAULT_AUTONOMOUS_CONTINUATION_PROMPT =
@@ -32,7 +40,7 @@ export const DEFAULT_AUTONOMOUS_FINISH_PROMPT =
 	"Autonomous finish contract is not satisfied. Do not stop with 'I think it works'. Continue until one of these is true: a clean git patch exists, configured tests passed, an explicit blocker artifact is written, or a no-op is justified with evidence. Inspect the repo and run the relevant checks now.";
 
 export const DEFAULT_AUTONOMOUS_LIMITS: Required<
-	Omit<AgentAutonomousConfig, "enabled" | "continuationPrompt" | "finishContract">
+	Omit<AgentAutonomousConfig, "enabled" | "continuationPrompt" | "finishContract" | "gates">
 > = {
 	maxContinuations: 3,
 	maxTurns: 12,
@@ -46,9 +54,11 @@ export interface AutonomousRuntimeState {
 	turnsUsed: number;
 	tokensUsed: number;
 	startedAt?: number;
-	limits: Required<Omit<AgentAutonomousConfig, "enabled" | "continuationPrompt" | "finishContract">>;
+	limits: Required<Omit<AgentAutonomousConfig, "enabled" | "continuationPrompt" | "finishContract" | "gates">>;
 	continuationPrompt: string;
 	finishContract: Required<AgentAutonomousFinishContractConfig>;
+	gates: Required<AgentAutonomousGateConfig>;
+	gateAttempts: Record<string, number>;
 }
 
 export interface AutonomousDecision {
@@ -75,6 +85,13 @@ export function createAutonomousRuntimeState(config?: AgentAutonomousConfig): Au
 			enabled: config?.finishContract?.enabled ?? true,
 			continuationPrompt: config?.finishContract?.continuationPrompt?.trim() || DEFAULT_AUTONOMOUS_FINISH_PROMPT,
 		},
+		gates: {
+			commands: [...(config?.gates?.commands ?? [])],
+			onFail: config?.gates?.onFail ?? "feed_output_back",
+			maxRetries: normalizeLimit(config?.gates?.maxRetries, 3),
+			timeoutMs: normalizeLimit(config?.gates?.timeoutMs, 5 * 60 * 1000),
+		},
+		gateAttempts: {},
 	};
 }
 
@@ -109,18 +126,27 @@ export function addAutonomousUsage(state: AutonomousRuntimeState, usage: Usage |
 	state.tokensUsed += usage?.totalTokens ?? 0;
 }
 
-export function nextAutonomousContinuation(
+export async function nextAutonomousContinuation(
 	state: AutonomousRuntimeState,
 	message: AssistantMessage,
 	options: { cwd?: string } = {},
 	now = Date.now(),
-): UserMessage | undefined {
+): Promise<UserMessage | undefined> {
 	if (!state.enabled) {
 		return undefined;
 	}
 	const decision = shouldAutonomouslyContinue(state, message, options, now);
 	if (!decision.shouldContinue) {
 		return undefined;
+	}
+	if (decision.reason === "finish_contract" && options.cwd) {
+		const gateContinuation = runAutonomousQualityGates(state, options.cwd, now);
+		if (gateContinuation || state.gates.commands.length > 0) {
+			if (gateContinuation) {
+				state.continuationsUsed++;
+			}
+			return gateContinuation;
+		}
 	}
 	state.continuationsUsed++;
 	return {
@@ -247,6 +273,57 @@ export function hasAutonomousFinishEvidence(text: string, cwd?: string): boolean
 		/\b(blocker artifact|wrote .{0,40}blocker|saved .{0,40}blocker|blocker\.md)\b/.test(normalized) ||
 		/\b(no-op|no op|no changes? needed)\b.{0,120}\b(evidence|because|verified|confirmed)\b/.test(normalized)
 	);
+}
+
+function runAutonomousQualityGates(
+	state: AutonomousRuntimeState,
+	cwd: string,
+	timestamp: number,
+): UserMessage | undefined {
+	for (const command of state.gates.commands) {
+		const result = spawnSync(command, {
+			cwd,
+			encoding: "utf8",
+			shell: true,
+			timeout: state.gates.timeoutMs,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		if (result.status === 0 && !result.error) {
+			state.gateAttempts[command] = 0;
+			continue;
+		}
+
+		const attempt = (state.gateAttempts[command] ?? 0) + 1;
+		state.gateAttempts[command] = attempt;
+		if (attempt > state.gates.maxRetries) {
+			return undefined;
+		}
+		const exitText =
+			result.error?.message ??
+			(result.signal ? `terminated by ${result.signal}` : `exited ${result.status ?? "unknown"}`);
+		const output = truncateGateOutput([result.stdout, result.stderr].filter(Boolean).join("\n").trim());
+		return {
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text:
+						`Autonomous quality gate failed (attempt ${attempt}/${state.gates.maxRetries}): \`${command}\` ${exitText}.\n` +
+						(output ? `\nOutput:\n${output}\n` : "\n") +
+						"\nFix the failure and continue. Do not finish until quality gates pass or you have a concrete external blocker with evidence.",
+				},
+			],
+			timestamp,
+		};
+	}
+	return undefined;
+}
+
+function truncateGateOutput(output: string, maxChars = 6000): string {
+	if (output.length <= maxChars) {
+		return output;
+	}
+	return `${output.slice(0, maxChars)}\n... [truncated ${output.length - maxChars} chars]`;
 }
 
 function hasGitWorktreeChanges(cwd: string): boolean {
