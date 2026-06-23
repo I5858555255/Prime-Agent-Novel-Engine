@@ -1379,7 +1379,9 @@ export class SessionManager {
 			const entry = entries[i];
 			if (entry.type === "session_state") {
 				const status = normalizeSessionStateStatus(entry.state.status);
-				return status ? { status } : undefined;
+				if (status) {
+					return { status };
+				}
 			}
 		}
 		return undefined;

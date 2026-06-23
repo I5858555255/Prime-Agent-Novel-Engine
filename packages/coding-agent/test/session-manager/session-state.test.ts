@@ -92,6 +92,28 @@ describe("SessionManager session state", () => {
 		}
 	});
 
+	it("falls back to the last valid status when the newest entry is unrecognized", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-state-bad-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			const session = SessionManager.create(cwd, sessionDir);
+
+			session.appendMessage(userMsg("hi"));
+			session.appendSessionState({ status: "active" });
+			const sessionFile = session.getSessionFile();
+			expect(sessionFile).toBeDefined();
+			appendFileSync(sessionFile!, `${JSON.stringify({ type: "session_state", state: { status: "bogus" } })}\n`);
+
+			expect(SessionManager.open(sessionFile!, sessionDir).getSessionState()).toEqual({ status: "active" });
+
+			const sessions = await SessionManager.list(cwd, sessionDir);
+			expect(sessions[0]).toMatchObject({ id: session.getSessionId(), state: { status: "active" } });
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not duplicate entries when lifecycle state is followed by a normal turn", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "session-state-turn-"));
 		try {
