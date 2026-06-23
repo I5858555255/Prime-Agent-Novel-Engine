@@ -140,7 +140,6 @@ import { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
-import { ThinkingSelectorComponent } from "./components/thinking-selector.js";
 import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
@@ -342,6 +341,15 @@ type ModelFallbackWarningAction = "show" | "suppress" | "wait";
 const MODEL_SELECTOR_ACTIONS: readonly ModelSelectorAction[] = [
 	{ id: "add_provider", label: "Add provider...", description: "subscription or API key" },
 ];
+
+const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
+	off: "No reasoning",
+	minimal: "Very brief reasoning (~1k tokens)",
+	low: "Light reasoning (~2k tokens)",
+	medium: "Moderate reasoning (~8k tokens)",
+	high: "Deep reasoning (~16k tokens)",
+	xhigh: "Maximum reasoning (~32k tokens)",
+};
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 
@@ -788,6 +796,12 @@ export class InteractiveMode {
 					description: item.provider,
 				}));
 			};
+		}
+
+		const effortCommand = slashCommands.find((command) => command.name === "effort");
+		if (effortCommand) {
+			effortCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
+				this.getThinkingLevelCompletions(prefix);
 		}
 
 		const connectionCommands = this.connectionCommands;
@@ -3257,9 +3271,9 @@ export class InteractiveMode {
 				await this.handleModelCommand(searchTerm);
 				return;
 			}
-			if (commandName === "effort" && !commandArgs) {
+			if (commandName === "effort") {
 				this.editor.setText("");
-				this.showThinkingSelector();
+				this.handleEffortCommand(commandArgs);
 				return;
 			}
 			if (commandName === "export") {
@@ -5647,41 +5661,43 @@ export class InteractiveMode {
 		this.showWarning(warning);
 	}
 
-	private showThinkingSelector(): void {
-		const availableLevels = this.connectionState?.availableThinkingLevels ?? [];
-		const supportsThinking =
-			availableLevels.length > 0 && !(availableLevels.length === 1 && availableLevels[0] === "off");
-		if (!supportsThinking) {
+	private getAvailableThinkingLevels(): ThinkingLevel[] {
+		const levels = this.connectionState?.availableThinkingLevels ?? [];
+		const supportsThinking = levels.length > 0 && !(levels.length === 1 && levels[0] === "off");
+		return supportsThinking ? levels : [];
+	}
+
+	private getThinkingLevelCompletions(prefix: string): AutocompleteItem[] | null {
+		const levels = this.getAvailableThinkingLevels();
+		if (levels.length === 0) return null;
+		const current = this.connectionState?.thinkingLevel;
+		const term = prefix.trim().toLowerCase();
+		const matches = term ? levels.filter((level) => level.startsWith(term)) : levels;
+		if (matches.length === 0) return null;
+		return matches.map((level) => ({
+			value: level,
+			label: level,
+			description:
+				level === current ? `${THINKING_LEVEL_DESCRIPTIONS[level]} (current)` : THINKING_LEVEL_DESCRIPTIONS[level],
+		}));
+	}
+
+	private handleEffortCommand(arg: string): void {
+		const levels = this.getAvailableThinkingLevels();
+		if (levels.length === 0) {
 			this.showStatus("Current model does not support thinking");
 			return;
 		}
-
-		const currentLevel = this.connectionState?.thinkingLevel ?? availableLevels[0];
-		let handle: OverlayHandle | undefined;
-		const close = () => {
-			handle?.hide();
-			this.ui.requestRender();
-		};
-
-		const selector = new ThinkingSelectorComponent(
-			currentLevel,
-			availableLevels,
-			(level) => {
-				close();
-				this.applyThinkingLevel(level);
-			},
-			() => {
-				close();
-			},
-		);
-		// Anchor a compact popup just above the editor instead of a full-pane
-		// overlay; the picker is only a few rows and blanking the whole terminal
-		// for it is jarring.
-		handle = this.ui.showOverlay(selector, {
-			width: 48,
-			anchor: "bottom-left",
-			margin: { bottom: 1, left: 2 },
-		});
+		const requested = arg.trim().toLowerCase();
+		if (!requested) {
+			this.showStatus(`Thinking level: ${this.connectionState?.thinkingLevel} (type a level: ${levels.join(", ")})`);
+			return;
+		}
+		if (!levels.includes(requested as ThinkingLevel)) {
+			this.showError(`Unknown thinking level '${requested}'. Available: ${levels.join(", ")}`);
+			return;
+		}
+		this.applyThinkingLevel(requested as ThinkingLevel);
 	}
 
 	private applyThinkingLevel(level: ThinkingLevel): void {

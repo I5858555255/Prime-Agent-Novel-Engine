@@ -17,7 +17,8 @@ describe("built-in slash commands", () => {
 
 	test("exposes /effort for selecting the thinking level", () => {
 		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "effort")).toMatchObject({
-			description: "Select reasoning/thinking level (opens selector UI)",
+			description: "Set reasoning/thinking level",
+			argumentHint: "[level]",
 			aliases: ["thinking"],
 		});
 	});

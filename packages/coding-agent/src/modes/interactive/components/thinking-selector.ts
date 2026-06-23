@@ -68,12 +68,6 @@ export class ThinkingSelectorComponent extends Container {
 		this.addChild(new DynamicBorder());
 	}
 
-	// Container does not forward input to children; route keys to the list so the
-	// selector works when shown as a focused overlay.
-	handleInput(keyData: string): void {
-		this.selectList.handleInput(keyData);
-	}
-
 	getSelectList(): SelectList {
 		return this.selectList;
 	}
