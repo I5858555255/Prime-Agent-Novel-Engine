@@ -10,7 +10,7 @@ import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
 import { normalizeErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
 import { renderDiffSeparator, renderRichDiff } from "./diff.js";
 import { keyHint } from "./keybinding-hints.js";
-import { TOOL_PANEL_PADDING_X, toolPanelContentWidth, toolPanelLine } from "./tool-panel.js";
+import { toolPanelContentWidth, toolPanelLine } from "./tool-panel.js";
 
 export interface IPythonCellContentBlock {
 	type: string;
@@ -526,7 +526,9 @@ export class IPythonCellComponent implements Component {
 		};
 
 		if (diffs.length > 0) {
-			startOutput();
+			// renderDiffs adds its own leading blank, so skip startOutput's to avoid
+			// a double gap; mark output started for the trailing text below.
+			outputStarted = true;
 			this.renderDiffs(lines, width, diffs);
 			renderedTextOutput = true;
 		}
@@ -621,18 +623,18 @@ export class IPythonCellComponent implements Component {
 			if (existing) existing.push(diff);
 			else diffsByPath.set(diff.path, [diff]);
 		}
-		let fileIndex = 0;
 		for (const [path, edits] of diffsByPath) {
-			if (fileIndex > 0) {
-				this.addBlank(lines, width);
-			}
-			fileIndex++;
+			// Blank line before every file block, including the first, so the diff
+			// stands clear of the summary line above it.
+			this.addBlank(lines, width);
 			this.renderFileDiff(lines, width, path, edits);
 		}
 	}
 
 	private renderFileDiff(lines: string[], width: number, path: string, edits: readonly DiffDisplay[]): void {
-		const contentWidth = toolPanelContentWidth(width);
+		// Diff rows span the full cli width — no panel side padding — so they read
+		// as one continuous block like the prompt bar.
+		const contentWidth = Math.max(1, width);
 		const language = getLanguageFromPath(path);
 
 		const rows: string[] = [];
@@ -653,11 +655,7 @@ export class IPythonCellComponent implements Component {
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
 		this.addWrapped(lines, "", `${theme.fg("muted", "edit")} ${path}  ${counts}`, width);
 
-		// Rows already fill the content width; just add the panel side padding.
-		const sidePad = theme.bg("toolPanelBg", " ".repeat(TOOL_PANEL_PADDING_X));
-		for (const row of rows) {
-			lines.push(sidePad + row + sidePad);
-		}
+		lines.push(...rows);
 	}
 
 	private renderOutputText(

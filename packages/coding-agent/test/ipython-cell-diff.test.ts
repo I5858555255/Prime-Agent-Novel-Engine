@@ -74,6 +74,56 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(out.every((line) => visibleWidth(line) === 40)).toBe(true);
 	});
 
+	it("wraps a long diff line onto gutter-aligned continuation rows instead of truncating", () => {
+		const longLine = `const x = ${Array.from({ length: 20 }, (_, i) => `arg${i}`).join(", ")};`;
+		const out = renderCell({
+			code: "await edit(...)",
+			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "const x = 1;", newStr: longLine, startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		}).split("\n");
+
+		// The full content survives across the wrapped rows (nothing truncated away).
+		const joined = out.join("");
+		expect(joined).toContain("arg0");
+		expect(joined).toContain("arg19");
+		// The added line spilled onto at least one continuation row.
+		const addedRows = out.filter((line) => /arg\d/.test(line));
+		expect(addedRows.length).toBeGreaterThan(1);
+	});
+
+	it("renders diff rows at the full cli width with no side padding", () => {
+		const width = 50;
+		const out = new IPythonCellComponent({
+			code: "await edit(...)",
+			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "alpha", newStr: "ALPHA", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		}).render(width);
+		// The colored diff rows fill the whole width — no 2-col panel inset.
+		const diffRows = out.filter((line) => /alpha|ALPHA/i.test(stripAnsi(line)));
+		expect(diffRows.length).toBeGreaterThan(0);
+		expect(diffRows.every((line) => visibleWidth(line) === width)).toBe(true);
+		// The row starts at column 0, not behind two spaces of panel padding.
+		expect(diffRows.every((line) => !stripAnsi(line).startsWith("  "))).toBe(true);
+	});
+
+	it("separates the diff from the summary line with a blank line", () => {
+		const out = renderCell({
+			code: "await edit(...)",
+			details: { status: "ok", durationMs: 4, diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		}).split("\n");
+		// Line 0 is the summary; line 1 is blank; the edit header follows.
+		expect(out[0]).toContain("to expand");
+		expect(out[1].trim()).toBe("");
+		expect(out[2]).toContain("edit a.ts");
+	});
+
 	it("shows the full diff in the collapsed view so file changes never hide behind expand", () => {
 		const oldStr = Array.from({ length: 30 }, (_, i) => `row ${i}`).join("\n");
 		const newStr = oldStr
