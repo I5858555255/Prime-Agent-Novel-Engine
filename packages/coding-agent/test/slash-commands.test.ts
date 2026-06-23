@@ -24,11 +24,16 @@ describe("built-in slash commands", () => {
 		});
 	});
 
-	test("marks /goal as taking a free-form argument", () => {
+	test("marks argument commands as taking a free-form argument", () => {
 		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "goal")).toMatchObject({
 			takesArgument: true,
 		});
+		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "effort")).toMatchObject({
+			takesArgument: true,
+		});
 		expect(builtinSlashCommandTakesArgument("goal")).toBe(true);
+		expect(builtinSlashCommandTakesArgument("effort")).toBe(true);
+		expect(builtinSlashCommandTakesArgument("thinking")).toBe(true); // alias of /effort
 		// Commands that submit immediately do not take a free-form argument.
 		expect(builtinSlashCommandTakesArgument("new")).toBe(false);
 		expect(builtinSlashCommandTakesArgument("clear")).toBe(false); // alias of /new
