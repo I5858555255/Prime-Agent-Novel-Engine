@@ -47,7 +47,9 @@ export interface DeferredAgentConnectionSeed {
 	model?: AgentConnectionModel;
 	thinkingLevel: ThinkingLevel;
 	scopedModels: AgentConnectionScopedModel[];
-	availableModels: AgentConnectionModel[];
+	// A thunk, not a frozen array: the available set changes pre-session when the
+	// user logs in during onboarding, so it must reflect the current registry.
+	availableModels: () => AgentConnectionModel[];
 	steeringMode: AgentConnectionQueueMode;
 	followUpMode: AgentConnectionQueueMode;
 	autoCompactionEnabled: boolean;
@@ -237,7 +239,7 @@ export class DeferredAgentConnection implements AgentConnection {
 	}
 
 	async getAvailableModels(): Promise<AgentConnectionModel[]> {
-		return this.real ? this.real.getAvailableModels() : this.seed.availableModels;
+		return this.real ? this.real.getAvailableModels() : this.seed.availableModels();
 	}
 
 	async getSessionStats(): Promise<SessionStats> {
