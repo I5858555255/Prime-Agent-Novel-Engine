@@ -74,6 +74,27 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(out.every((line) => visibleWidth(line) === 40)).toBe(true);
 	});
 
+	it("prefixes the edit header with the cell's status marker", () => {
+		const done = renderCell({
+			code: "await edit(...)",
+			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		});
+		expect(done).toMatch(/✓ edit a\.ts/);
+
+		const failed = renderCell({
+			code: "await edit(...)",
+			details: { status: "error", diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+			isError: true,
+		});
+		expect(failed).toMatch(/✗ edit a\.ts/);
+	});
+
 	it("wraps a long diff line onto gutter-aligned continuation rows instead of truncating", () => {
 		const longLine = `const x = ${Array.from({ length: 20 }, (_, i) => `arg${i}`).join(", ")};`;
 		const out = renderCell({

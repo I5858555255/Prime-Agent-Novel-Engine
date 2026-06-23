@@ -292,7 +292,7 @@ export class IPythonCellComponent implements Component {
 				return this.renderCache.set(safeWidth, this.stateVersion, [summary]);
 			}
 			const lines = [summary];
-			this.renderDiffs(lines, safeWidth, details.diffs ?? []);
+			this.renderDiffs(lines, safeWidth, details.diffs ?? [], this.marker(details));
 			return this.renderCache.set(safeWidth, this.stateVersion, lines);
 		}
 
@@ -529,7 +529,7 @@ export class IPythonCellComponent implements Component {
 			// renderDiffs adds its own leading blank, so skip startOutput's to avoid
 			// a double gap; mark output started for the trailing text below.
 			outputStarted = true;
-			this.renderDiffs(lines, width, diffs);
+			this.renderDiffs(lines, width, diffs, this.marker(details));
 			renderedTextOutput = true;
 		}
 
@@ -616,7 +616,7 @@ export class IPythonCellComponent implements Component {
 	// Edit diffs render in full regardless of expand state — file changes must be
 	// visible without expanding. Grouped by file: one block per file, edits shown
 	// as `⋮`-separated hunks.
-	private renderDiffs(lines: string[], width: number, diffs: readonly DiffDisplay[]): void {
+	private renderDiffs(lines: string[], width: number, diffs: readonly DiffDisplay[], marker: string): void {
 		const diffsByPath = new Map<string, DiffDisplay[]>();
 		for (const diff of diffs) {
 			const existing = diffsByPath.get(diff.path);
@@ -627,11 +627,17 @@ export class IPythonCellComponent implements Component {
 			// Blank line before every file block, including the first, so the diff
 			// stands clear of the summary line above it.
 			this.addBlank(lines, width);
-			this.renderFileDiff(lines, width, path, edits);
+			this.renderFileDiff(lines, width, path, edits, marker);
 		}
 	}
 
-	private renderFileDiff(lines: string[], width: number, path: string, edits: readonly DiffDisplay[]): void {
+	private renderFileDiff(
+		lines: string[],
+		width: number,
+		path: string,
+		edits: readonly DiffDisplay[],
+		marker: string,
+	): void {
 		// Diff rows span the full cli width — no panel side padding — so they read
 		// as one continuous block like the prompt bar.
 		const contentWidth = Math.max(1, width);
@@ -653,7 +659,7 @@ export class IPythonCellComponent implements Component {
 		});
 
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
-		this.addWrapped(lines, "", `${theme.fg("muted", "edit")} ${path}  ${counts}`, width);
+		this.addWrapped(lines, "", `${marker} ${theme.fg("muted", "edit")} ${path}  ${counts}`, width);
 
 		lines.push(...rows);
 	}
