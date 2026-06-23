@@ -148,6 +148,12 @@ describe("daemon session summarizer", () => {
 			const text = "SUMMARY: Draft recap\nSUMMARY: Final corrected recap\nSTATUS: WORKING";
 			expect(parseAgentStatusResponse(text, true)).toEqual({ summary: "Final corrected recap" });
 		});
+
+		test("falls back to a SUMMARY line when the tagged body is rejected", () => {
+			// The tag body is pure counting (rejected); a later valid line must win.
+			const text = "<recap>(1) two(2) = 2 words</recap>\nSUMMARY: Editing the parser\nSTATUS: WORKING";
+			expect(parseAgentStatusResponse(text, true)).toEqual({ summary: "Editing the parser" });
+		});
 	});
 
 	describe("buildStatusContext", () => {

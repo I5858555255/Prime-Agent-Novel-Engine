@@ -137,17 +137,19 @@ export function parseAgentStatusResponse(text: string, isWorking: boolean): Agen
 		.replace(/<(think|thinking|reasoning|redacted_thinking)>[\s\S]*?<\/\1>/gi, " ")
 		.replace(reasoningTag, " ");
 
-	// Last match wins so a draft superseded by a corrected one resolves correctly.
+	// Prefer the tag (last match wins so a corrected draft resolves). Fall back to
+	// the SUMMARY/RECAP lines only when the tag is missing or its body is rejected;
+	// among lines the last clean one wins.
 	const tagMatch = [...cleaned.matchAll(/<recap>([\s\S]*?)<\/recap>/gi)].at(-1);
-	let summary = tagMatch ? cleanRecap(tagMatch[1]!) : undefined;
+	const tagSummary = tagMatch ? cleanRecap(tagMatch[1]!) : undefined;
+	let summary = tagSummary;
 
 	let status: string | undefined;
 	for (const rawLine of cleaned.split("\n")) {
 		const line = rawLine.trim();
 		const summaryMatch = /^(?:summary|recap)\s*:\s*(.+)$/i.exec(line);
 		if (summaryMatch) {
-			// Tag wins over the bare line; otherwise the last clean line wins.
-			if (!tagMatch) {
+			if (!tagSummary) {
 				summary = cleanRecap(summaryMatch[1]!.replace(/<\/?recap>/gi, "")) ?? summary;
 			}
 			continue;
