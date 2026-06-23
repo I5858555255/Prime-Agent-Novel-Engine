@@ -442,11 +442,12 @@ async function performAgentTraceUpload(options: AgentTraceUploadOptions): Promis
 
 	const traceContext = resolveTraceContext(options.sessionFile, header);
 	const bodyBytes = Buffer.byteLength(body, "utf8");
+	// No manual Content-Length: fetch derives it from the body, and undici >=7.28
+	// rejects the explicit header on a string body with UND_ERR_INVALID_ARG.
 	const headers: Record<string, string> = {
 		Authorization: `Bearer ${credential.apiKey}`,
 		"Content-Type": "application/x-ndjson",
 		Accept: "application/json",
-		"Content-Length": String(bodyBytes),
 		"X-Trace-Id": traceContext.traceId,
 		"X-Cwd": header.cwd,
 		"X-Agent-Version": VERSION,
