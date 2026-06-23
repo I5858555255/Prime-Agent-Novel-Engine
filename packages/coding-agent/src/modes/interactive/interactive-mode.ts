@@ -7,7 +7,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, ImageContent, Message, Model, ToolCall } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	type AssistantMessage,
+	getSupportedThinkingLevels,
+	type ImageContent,
+	type Message,
+	type Model,
+	type ToolCall,
+} from "@earendil-works/pi-ai";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -5592,7 +5600,10 @@ export class InteractiveMode {
 	private async applySelectedModel(model: AgentConnectionModel): Promise<void> {
 		await this.agentConnection.setModel(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
-		this.patchConnectionState({ model });
+		this.patchConnectionState({
+			model,
+			availableThinkingLevels: getSupportedThinkingLevels(model) as ThinkingLevel[],
+		});
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}

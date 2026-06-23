@@ -140,4 +140,37 @@ describe("InteractiveMode /effort", () => {
 			expect(context.patchConnectionState).not.toHaveBeenCalled();
 		});
 	});
+
+	describe("model switch refresh", () => {
+		it("refreshes availableThinkingLevels from the newly selected model", async () => {
+			type ModelContext = {
+				agentConnection: { setModel: (provider: string, id: string) => Promise<void> };
+				settingsManager: { setDefaultModelAndProvider: (provider: string, id: string) => void };
+				patchConnectionState: (patch: Record<string, unknown>) => void;
+				footer: { invalidate: () => void };
+				updateEditorBorderColor: () => void;
+			};
+			const applySelectedModel = (
+				InteractiveMode.prototype as unknown as {
+					applySelectedModel(this: ModelContext, model: unknown): Promise<void>;
+				}
+			).applySelectedModel;
+			const patchConnectionState = vi.fn();
+			const context: ModelContext = {
+				agentConnection: { setModel: vi.fn(async () => {}) },
+				settingsManager: { setDefaultModelAndProvider: vi.fn() },
+				patchConnectionState,
+				footer: { invalidate: vi.fn() },
+				updateEditorBorderColor: vi.fn(),
+			};
+			const model = { provider: "anthropic", id: "claude-opus", reasoning: true };
+
+			await applySelectedModel.call(context, model);
+
+			const patch = patchConnectionState.mock.calls[0][0];
+			expect(patch.model).toBe(model);
+			expect(patch.availableThinkingLevels).toContain("high");
+			expect(patch.availableThinkingLevels.length).toBeGreaterThan(1);
+		});
+	});
 });
