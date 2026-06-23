@@ -475,6 +475,34 @@ describe("agent trace upload", () => {
 		}
 	});
 
+	it("does not retry a permanent DNS failure", async () => {
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "dns-failure-session");
+		let attempts = 0;
+		const dnsFailFetch: typeof fetch = async () => {
+			attempts += 1;
+			const error = new TypeError("fetch failed");
+			(error as { cause?: unknown }).cause = { code: "ENOTFOUND", message: "getaddrinfo ENOTFOUND host" };
+			throw error;
+		};
+
+		const result = await uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn: dnsFailFetch,
+			reloadConfig: false,
+		});
+
+		expect(attempts).toBe(1);
+		expect(result.status).toBe("failed");
+		if (result.status === "failed") {
+			expect(result.message).toBe("fetch failed (ENOTFOUND)");
+		}
+	});
+
 	it("does not retry on an HTTP error response", async () => {
 		const session = writeSession(tempDir, join(tempDir, "sessions"), "http-error-session");
 		let attempts = 0;

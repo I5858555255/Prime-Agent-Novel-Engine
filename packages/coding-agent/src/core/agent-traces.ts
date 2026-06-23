@@ -93,12 +93,25 @@ function describeError(error: unknown): string {
 	return error.message;
 }
 
+const RETRIABLE_NETWORK_CODES = new Set([
+	"ECONNRESET",
+	"ECONNREFUSED",
+	"ECONNABORTED",
+	"EPIPE",
+	"ETIMEDOUT",
+	"ENETUNREACH",
+	"ENETDOWN",
+	"EAI_AGAIN",
+	"UND_ERR_SOCKET",
+	"UND_ERR_CONNECT_TIMEOUT",
+]);
+
 function isRetriableNetworkError(error: unknown): boolean {
 	if (!(error instanceof Error) || error.name === "AbortError") {
 		return false;
 	}
 	const cause = (error as { cause?: unknown }).cause;
-	return isRecord(cause) && typeof cause.code === "string";
+	return isRecord(cause) && typeof cause.code === "string" && RETRIABLE_NETWORK_CODES.has(cause.code);
 }
 
 function stringField(data: Record<string, unknown>, key: string): string | undefined {
