@@ -225,8 +225,6 @@ describe("agent trace upload", () => {
 		expect(headers.get("x-parent-session")).toBe("parent-session");
 		expect(headers.get("x-cwd")).toBe(cwd);
 		expect(headers.get("x-agent-version")).toBeTruthy();
-		// Content-Length is left for fetch to derive; setting it explicitly trips
-		// UND_ERR_INVALID_ARG on undici >=7.28 with a string body.
 		expect(headers.get("content-length")).toBeNull();
 	});
 
