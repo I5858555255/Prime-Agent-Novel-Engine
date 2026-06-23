@@ -733,6 +733,9 @@ export class AgentSession {
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	// Exact prompt last sent to the model. Distinct from state.systemPrompt, which is rebuilt
+	// early by tool/resource/refine changes before any request.
+	private _lastSentSystemPrompt: string | undefined;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -1871,12 +1874,14 @@ export class AgentSession {
 	}
 
 	/**
-	 * The system prompt that would be sent to the model right now. Once a turn has run
-	 * this is the exact on-the-wire value (with extension modifications); before the first
-	 * turn `state.systemPrompt` is still empty, so build the current prompt deterministically.
+	 * Returns the exact prompt last sent to the model. Before the first turn, falls back to a
+	 * freshly built base prompt (what would be sent next, before any per-turn extension changes).
 	 */
-	getEffectiveSystemPrompt(): string {
-		return this.agent.state.systemPrompt || this._rebuildSystemPrompt(this.getActiveToolNames());
+	getSystemPromptForDisplay(): { prompt: string; sent: boolean } {
+		if (this._lastSentSystemPrompt !== undefined) {
+			return { prompt: this._lastSentSystemPrompt, sent: true };
+		}
+		return { prompt: this._rebuildSystemPrompt(this.getActiveToolNames()), sent: false };
 	}
 
 	/** Current retry attempt (0 if not retrying) */
@@ -2206,6 +2211,7 @@ export class AgentSession {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 			}
+			this._lastSentSystemPrompt = this.agent.state.systemPrompt;
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;

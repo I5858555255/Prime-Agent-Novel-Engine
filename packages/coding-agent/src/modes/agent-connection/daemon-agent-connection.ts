@@ -366,12 +366,12 @@ export class DaemonAgentConnection implements AgentConnection {
 		return data.text ?? undefined;
 	}
 
-	async getSystemPrompt(): Promise<string> {
-		const data = await this.requestData<{ systemPrompt: string }>({
+	async getSystemPrompt(): Promise<{ prompt: string; sent: boolean }> {
+		const data = await this.requestData<{ prompt: string; sent: boolean }>({
 			type: "get_system_prompt",
 			activeSessionId: this.activeSessionId,
 		});
-		return data.systemPrompt;
+		return { prompt: data.prompt, sent: data.sent };
 	}
 
 	async getToolDefinition(name: string): Promise<AgentConnectionToolDefinition | undefined> {

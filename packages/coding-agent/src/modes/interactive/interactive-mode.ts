@@ -6721,11 +6721,9 @@ export class InteractiveMode {
 	}
 
 	private async handleSystemPromptCommand(): Promise<void> {
-		// The exact string sent to the model as the system prompt for this session,
-		// including any per-turn extension modifications. Rendered verbatim — the only
-		// transformation is the terminal's soft word-wrap to the viewport width.
-		const prompt = await this.agentConnection.getSystemPrompt();
-		const header = `${theme.bold("System Prompt")} ${theme.fg("dim", `(${prompt.length} chars, exact)`)}`;
+		const { prompt, sent } = await this.agentConnection.getSystemPrompt();
+		const status = sent ? "exact, last sent" : "next turn, not yet sent";
+		const header = `${theme.bold("System Prompt")} ${theme.fg("dim", `(${prompt.length} chars, ${status})`)}`;
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(header, 1, 0));

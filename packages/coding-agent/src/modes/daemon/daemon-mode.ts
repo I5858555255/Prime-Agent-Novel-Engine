@@ -1382,9 +1382,7 @@ export class AgentDaemon {
 
 			case "get_system_prompt": {
 				const state = this.getSessionState(command.activeSessionId);
-				return success(command.id, "get_system_prompt", {
-					systemPrompt: state.runtime.session.getEffectiveSystemPrompt(),
-				});
+				return success(command.id, "get_system_prompt", state.runtime.session.getSystemPromptForDisplay());
 			}
 
 			case "get_tool_definition": {
