@@ -6348,7 +6348,13 @@ export class InteractiveMode {
 		const outputPath = this.getPathCommandArgument(text, "/export");
 
 		try {
-			if (outputPath?.endsWith(".jsonl")) {
+			if (outputPath === "patch" || outputPath?.startsWith("patch ")) {
+				const outputDir =
+					outputPath === "patch" ? undefined : outputPath.slice("patch ".length).trim() || undefined;
+				const result = await this.agentConnection.exportPatchArtifact(outputDir);
+				const statusSuffix = result.status === "ready" ? "" : ` (${result.status})`;
+				this.showStatus(`Patch artifact exported to: ${result.directory}${statusSuffix}`);
+			} else if (outputPath?.endsWith(".jsonl")) {
 				const filePath = await this.agentConnection.exportToJsonl(outputPath);
 				this.showStatus(`Session exported to: ${filePath}`);
 			} else {

@@ -118,6 +118,7 @@ import type { HostRequestHandlers } from "./kernel/index.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
+import { createPatchArtifact, type PatchArtifactResult } from "./patch-artifact.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
 	appendGlobalRefinement,
@@ -5072,6 +5073,20 @@ export class AgentSession {
 
 		writeFileSync(filePath, `${lines.join("\n")}\n`);
 		return filePath;
+	}
+
+	/**
+	 * Export a benchmark-friendly patch artifact with metadata and trajectory.
+	 * @param outputDir Target directory. If omitted, writes beside the session file.
+	 * @returns Paths and status for the generated artifact.
+	 */
+	exportPatchArtifact(outputDir?: string): PatchArtifactResult {
+		return createPatchArtifact({
+			cwd: this.sessionManager.getCwd(),
+			outputDir,
+			sessionFile: this.sessionFile,
+			sessionStats: this.getSessionStats(),
+		});
 	}
 
 	// =========================================================================

@@ -2,6 +2,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type { PatchArtifactResult } from "../../core/patch-artifact.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type {
@@ -231,6 +232,7 @@ export type DaemonCommand =
 	| { id?: string; type: "import_jsonl"; activeSessionId: string; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "export_html"; activeSessionId: string; outputPath?: string }
 	| { id?: string; type: "export_jsonl"; activeSessionId: string; outputPath?: string }
+	| { id?: string; type: "export_patch_artifact"; activeSessionId: string; outputDir?: string }
 	| { id?: string; type: "set_session_name"; activeSessionId: string; name: string }
 	| { id?: string; type: "rename_saved_session"; activeSessionId: string; sessionPath: string; name: string }
 	| { id?: string; type: "delete_saved_session"; activeSessionId?: string; sessionPath: string }
@@ -261,6 +263,8 @@ export type DaemonResponse =
 			error: string;
 			errorInfo?: DaemonErrorInfo;
 	  };
+
+export type DaemonPatchArtifactResponse = PatchArtifactResult;
 
 export type DaemonErrorInfo =
 	| { code: "missing_session_cwd"; issue: SessionCwdIssue }

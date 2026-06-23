@@ -339,6 +339,10 @@ export class InProcessAgentConnection implements AgentConnection {
 		return this.session.exportToJsonl(outputPath);
 	}
 
+	async exportPatchArtifact(outputDir?: string) {
+		return this.session.exportPatchArtifact(outputDir);
+	}
+
 	async setSessionName(name: string): Promise<void> {
 		const trimmedName = name.trim();
 		if (!trimmedName) {

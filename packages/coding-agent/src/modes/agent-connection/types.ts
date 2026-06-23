@@ -13,6 +13,7 @@ import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
 import type { GoalState } from "../../core/goals.js";
+import type { PatchArtifactResult } from "../../core/patch-artifact.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
@@ -600,6 +601,7 @@ export interface AgentConnection {
 	importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
 	exportToHtml(outputPath?: string): Promise<string>;
 	exportToJsonl(outputPath?: string): Promise<string>;
+	exportPatchArtifact(outputDir?: string): Promise<PatchArtifactResult>;
 	setSessionName(name: string): Promise<void>;
 	renameSavedSession(sessionPath: string, name: string): Promise<void>;
 	deleteSavedSession(sessionPath: string): Promise<DeleteSessionFileResult>;

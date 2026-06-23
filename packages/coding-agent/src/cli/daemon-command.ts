@@ -40,6 +40,7 @@ const DAEMON_CLIENT_COMMANDS = new Set([
 	"state",
 	"messages",
 	"stats",
+	"patch-artifact",
 	"commands",
 	"cron",
 	"shutdown",
@@ -232,6 +233,9 @@ async function runDaemonClientCommand(parsed: ParsedDaemonClientCommand): Promis
 					{ type: "get_session_stats", activeSessionId: requireActiveSessionId(parsed.positionals) },
 					true,
 				);
+				return;
+			case "patch-artifact":
+				await runPatchArtifact(client, parsed.positionals, parsed.json);
 				return;
 			case "commands":
 				await printResponseData(
@@ -892,6 +896,28 @@ async function runCron(client: DaemonClient, args: string[], json: boolean): Pro
 	throw new Error(`Unknown cron command: ${subcommand}`);
 }
 
+async function runPatchArtifact(client: DaemonClient, args: string[], json: boolean): Promise<void> {
+	const activeSessionId = requireActiveSessionId(args);
+	const outputDir = args.slice(1).join(" ").trim() || undefined;
+	const response = await client.request({ type: "export_patch_artifact", activeSessionId, outputDir }, 120000);
+	const data = requireSuccess(response);
+	if (json) {
+		printJson(data);
+		return;
+	}
+	if (isPatchArtifactData(data)) {
+		console.log(`Patch artifact exported to: ${data.directory}`);
+		if (data.status !== "ready") {
+			console.log(`Status: ${data.status}`);
+		}
+		if (data.rejectedFiles.length > 0) {
+			console.log(`Rejected files: ${data.rejectedFiles.join(", ")}`);
+		}
+		return;
+	}
+	printJson(data);
+}
+
 async function printResponseData(
 	client: DaemonClient,
 	command: Parameters<DaemonClient["request"]>[0],
@@ -919,6 +945,22 @@ function requireSuccess(response: DaemonResponse): unknown {
 		throw new Error(response.error);
 	}
 	return "data" in response ? response.data : undefined;
+}
+
+function isPatchArtifactData(value: unknown): value is {
+	directory: string;
+	status: string;
+	rejectedFiles: string[];
+} {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const candidate = value as { directory?: unknown; status?: unknown; rejectedFiles?: unknown };
+	return (
+		typeof candidate.directory === "string" &&
+		typeof candidate.status === "string" &&
+		Array.isArray(candidate.rejectedFiles)
+	);
 }
 
 async function requireSuccessAsync(responsePromise: Promise<DaemonResponse>): Promise<unknown> {
@@ -1472,6 +1514,7 @@ ${chalk.bold("Commands:")}
   state <session>               Print session state as JSON
   messages <session>            Print messages as JSON
   stats <session>               Print session stats as JSON
+  patch-artifact <session> [dir] Export git patch, metadata, and trajectory
   commands <session>            Print available commands as JSON
   cron list [-a|--all] [session] List scheduled cron jobs
   cron add <session> <schedule> -- <message>
@@ -1502,6 +1545,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock create scratch
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock cron add <session> "*/30 * * * *" -- "Check progress"
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock cron list
+  ${APP_NAME} daemon --socket /tmp/prime-agent.sock patch-artifact <session>
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock prompt <session> "Say hello"
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock attach <session>
   ${APP_NAME} daemon --socket /tmp/prime-agent.sock shutdown

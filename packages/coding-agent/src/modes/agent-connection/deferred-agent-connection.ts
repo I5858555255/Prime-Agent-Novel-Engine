@@ -478,6 +478,10 @@ export class DeferredAgentConnection implements AgentConnection {
 		return (await this.ensure()).exportToJsonl(outputPath);
 	}
 
+	async exportPatchArtifact(outputDir?: string) {
+		return (await this.ensure()).exportPatchArtifact(outputDir);
+	}
+
 	async setSessionName(name: string): Promise<void> {
 		return (await this.ensure()).setSessionName(name);
 	}

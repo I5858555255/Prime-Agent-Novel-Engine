@@ -4,6 +4,7 @@ import type { ImageContent, Transport } from "@earendil-works/pi-ai";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type { PatchArtifactResult } from "../../core/patch-artifact.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
@@ -624,6 +625,14 @@ export class DaemonAgentConnection implements AgentConnection {
 			outputPath,
 		});
 		return data.path;
+	}
+
+	async exportPatchArtifact(outputDir?: string): Promise<PatchArtifactResult> {
+		return this.requestData<PatchArtifactResult>({
+			type: "export_patch_artifact",
+			activeSessionId: this.activeSessionId,
+			outputDir,
+		});
 	}
 
 	async setSessionName(name: string): Promise<void> {

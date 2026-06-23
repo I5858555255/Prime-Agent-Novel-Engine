@@ -143,6 +143,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"import_jsonl",
 	"export_html",
 	"export_jsonl",
+	"export_patch_artifact",
 	"set_session_name",
 	"rename_saved_session",
 	"delete_saved_session",
@@ -1343,6 +1344,12 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const path = state.runtime.session.exportToJsonl(command.outputPath);
 				return success(command.id, "export_jsonl", { path });
+			}
+
+			case "export_patch_artifact": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = state.runtime.session.exportPatchArtifact(command.outputDir);
+				return success(command.id, "export_patch_artifact", result);
 			}
 
 			case "set_session_name": {
