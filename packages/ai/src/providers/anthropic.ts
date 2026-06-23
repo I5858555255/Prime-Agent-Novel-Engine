@@ -7,7 +7,7 @@ import type {
 	RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages.js";
 import { getEnvApiKey } from "../env-api-keys.js";
-import { calculateCost } from "../models.js";
+import { calculateCost, clampThinkingLevel } from "../models.js";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -704,10 +704,14 @@ function mapThinkingLevelToEffort(
 	model: Model<"anthropic-messages">,
 	level: SimpleStreamOptions["reasoning"],
 ): AnthropicEffort {
-	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
+	// Clamp to what the model actually supports so callers that bypass
+	// clampThinkingLevel (e.g. passing reasoning: "xhigh" directly) can't send an
+	// effort the model lacks — xhigh on a max-only model resolves to max, not xhigh.
+	const effective = level ? clampThinkingLevel(model, level) : undefined;
+	const mapped = effective ? model.thinkingLevelMap?.[effective] : undefined;
 	if (typeof mapped === "string") return mapped as AnthropicEffort;
 
-	switch (level) {
+	switch (effective) {
 		case "minimal":
 		case "low":
 			return "low";

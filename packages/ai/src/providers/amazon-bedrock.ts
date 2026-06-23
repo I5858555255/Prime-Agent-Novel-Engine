@@ -21,7 +21,7 @@ import {
 	ToolResultStatus,
 } from "@aws-sdk/client-bedrock-runtime";
 import type { DocumentType } from "@smithy/types";
-import { calculateCost } from "../models.js";
+import { calculateCost, clampThinkingLevel } from "../models.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -503,23 +503,18 @@ function supportsAdaptiveThinking(modelId: string, modelName?: string): boolean 
 	);
 }
 
-function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
-	const candidates = getModelMatchCandidates(model.id, model.name);
-	return candidates.some(
-		(s) => s.includes("opus-4-7") || s.includes("opus-4-8") || s.includes("fable-5") || s.includes("mythos-5"),
-	);
-}
-
 function mapThinkingLevelToEffort(
 	model: Model<"bedrock-converse-stream">,
 	level: SimpleStreamOptions["reasoning"],
 ): "low" | "medium" | "high" | "xhigh" | "max" {
-	if (level === "xhigh" && supportsNativeXhighEffort(model)) return "xhigh";
-
-	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
+	// Clamp to what the model actually supports so callers that bypass
+	// clampThinkingLevel (e.g. passing reasoning: "xhigh" directly) can't send an
+	// effort the model lacks — xhigh on a max-only model resolves to max, not xhigh.
+	const effective = level ? clampThinkingLevel(model, level) : undefined;
+	const mapped = effective ? model.thinkingLevelMap?.[effective] : undefined;
 	if (typeof mapped === "string") return mapped as "low" | "medium" | "high" | "xhigh" | "max";
 
-	switch (level) {
+	switch (effective) {
 		case "minimal":
 		case "low":
 			return "low";
