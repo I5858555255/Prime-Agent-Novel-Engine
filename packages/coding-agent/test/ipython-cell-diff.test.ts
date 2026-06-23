@@ -134,6 +134,23 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(lines.filter((line) => /arg\d/.test(stripAnsi(line))).length).toBeGreaterThan(1);
 	});
 
+	it("truncates a long header path so it never overflows the width, keeping the counts", () => {
+		const width = 40;
+		const longPath = `src/${"very-long-directory-name/".repeat(8)}file.ts`;
+		const lines = new IPythonCellComponent({
+			code: "await edit(...)",
+			details: { status: "ok", diffs: [{ path: longPath, oldStr: "x", newStr: "X", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		}).render(width);
+		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+		const header = lines.map(stripAnsi).find((line) => line.includes("…"));
+		expect(header).toBeDefined();
+		// The +/- counts survive truncation; only the path is shortened.
+		expect(header).toMatch(/\+1 -1\s*$/);
+	});
+
 	it("separates the diff from the summary line with a blank line", () => {
 		const out = renderCell({
 			code: "await edit(...)",

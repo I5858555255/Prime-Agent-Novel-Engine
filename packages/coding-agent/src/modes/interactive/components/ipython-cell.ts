@@ -668,7 +668,12 @@ export class IPythonCellComponent implements Component {
 
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
 		const displayPath = displayEditPath(path, this.state.cwd);
-		this.addPlain(lines, `${marker} ${displayPath}  ${counts}`);
+		// Truncate the path (not the counts) so a long path can't push the header
+		// past the render width and trip the TUI's overflow guard.
+		const fixed = visibleWidth(marker) + 1 + 2 + visibleWidth(counts);
+		const pathBudget = Math.max(1, width - 1 - fixed);
+		const shownPath = truncateToWidth(displayPath, pathBudget, "…");
+		this.addPlain(lines, `${marker} ${shownPath}  ${counts}`);
 
 		// Colored rows already fill the full width; emit them flush, no panel inset.
 		lines.push(...rows);
