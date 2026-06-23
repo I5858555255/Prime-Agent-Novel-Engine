@@ -20,6 +20,7 @@ import type {
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { shouldTreatAsBack } from "./modal-back.js";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.js";
 
 type SessionScope = "current" | "all";
@@ -626,8 +627,8 @@ class SessionList implements Component, Focusable {
 				this.onSelect(selected.session.path);
 			}
 		}
-		// Escape - cancel
-		else if (kb.matches(keyData, "tui.select.cancel")) {
+		// Escape, or left arrow when the search field is at its start - cancel
+		else if (kb.matches(keyData, "tui.select.cancel") || shouldTreatAsBack(keyData, this.searchInput)) {
 			if (this.onCancel) {
 				this.onCancel();
 			}

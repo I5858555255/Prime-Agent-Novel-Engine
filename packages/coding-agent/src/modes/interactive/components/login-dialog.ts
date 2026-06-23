@@ -16,6 +16,7 @@ import { PRIME_BUTTERFLY_LOGO } from "../../../themes/prime-logo.js";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
 import { MenuPanel, MenuSearchInput } from "./menu-panel.js";
+import { shouldTreatAsBack } from "./modal-back.js";
 
 const PRIME_INFERENCE_PROVIDER_ID = "prime-inference";
 const PRIME_LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
@@ -307,7 +308,11 @@ export class LoginDialogComponent extends Container implements Focusable {
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 
-		if (kb.matches(data, "tui.select.cancel")) {
+		// Left arrow acts as "back" like Esc. While an editable field is awaiting
+		// input, only treat it as back at the start of the text so left still moves
+		// the cursor mid-edit; on info/continue screens there is no field to guard.
+		const backGuardInput = this.inputResolver ? this.input : undefined;
+		if (kb.matches(data, "tui.select.cancel") || shouldTreatAsBack(data, backGuardInput)) {
 			this.cancel();
 			return;
 		}

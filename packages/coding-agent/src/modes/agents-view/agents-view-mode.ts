@@ -432,6 +432,10 @@ class AgentsViewMode implements Component, Focusable {
 			this.cycleProgramForSelected();
 			return;
 		}
+		if (this.keybindings.matches(data, "app.agents.open") && this.editor.getText().length === 0) {
+			this.openSelected();
+			return;
+		}
 		if (this.editor.getText().length === 0 && this.handleListNavigation(data)) {
 			return;
 		}
@@ -1733,6 +1737,7 @@ class AgentsViewMode implements Component, Focusable {
 		const hints = [
 			`${keyText("tui.select.up")}/${keyText("tui.select.down")} move`,
 			`${keyText("tui.select.confirm")} open/send`,
+			`${keyText("app.agents.open")} open`,
 			"/ commands",
 			selectedAgent ? `${keyText("app.agents.reply")} reply` : undefined,
 			selectedAgent ? `${keyText("app.agents.rename")} rename` : undefined,
