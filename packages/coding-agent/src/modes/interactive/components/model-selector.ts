@@ -206,7 +206,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const scopedModelId = `${scoped.model.provider}/${scoped.model.id}`;
 			const refreshed =
 				availableModelsById.get(scopedModelId) ??
-				(this.availableModels ? undefined : this.modelRegistry.find(scoped.model.provider, scoped.model.id));
+				(this.availableModels?.length
+					? undefined
+					: this.modelRegistry.find(scoped.model.provider, scoped.model.id));
 			return refreshed ? { ...scoped, model: refreshed } : scoped;
 		});
 		this.scopedModelItems = this.scopedModels.map((scoped) => ({
