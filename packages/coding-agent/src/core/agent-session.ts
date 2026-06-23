@@ -1569,7 +1569,7 @@ export class AgentSession {
 		if (goalMessages.length > 0 || signal?.aborted) {
 			return goalMessages;
 		}
-		const autonomousMessage = nextAutonomousContinuation(this._autonomousState, context.message);
+		const autonomousMessage = nextAutonomousContinuation(this._autonomousState, context.message, { cwd: this._cwd });
 		return autonomousMessage ? [autonomousMessage] : [];
 	}
 

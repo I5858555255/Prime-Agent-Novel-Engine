@@ -1,8 +1,13 @@
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	createAutonomousRuntimeState,
 	DEFAULT_AUTONOMOUS_CONTINUATION_PROMPT,
+	DEFAULT_AUTONOMOUS_FINISH_PROMPT,
+	hasAutonomousFinishEvidence,
 	shouldAutonomouslyContinue,
 } from "../../src/core/autonomous.js";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "./harness.js";
@@ -18,7 +23,7 @@ describe("AgentSession autonomous mode", () => {
 
 	it("injects a host-side continuation when the assistant asks the user for help", async () => {
 		const harness = await createHarness({
-			autonomous: { enabled: true, maxContinuations: 2 },
+			autonomous: { enabled: true, maxContinuations: 2, finishContract: { enabled: false } },
 		});
 		harnesses.push(harness);
 		harness.setResponses([
@@ -59,7 +64,7 @@ describe("AgentSession autonomous mode", () => {
 
 	it("stops after the configured autonomous continuation limit", async () => {
 		const harness = await createHarness({
-			autonomous: { enabled: true, maxContinuations: 1 },
+			autonomous: { enabled: true, maxContinuations: 1, finishContract: { enabled: false } },
 		});
 		harnesses.push(harness);
 		harness.setResponses([
@@ -92,6 +97,44 @@ describe("AgentSession autonomous mode", () => {
 		expect(statusMessages).toHaveLength(2);
 	});
 
+	it("continues when the assistant tries to finish without contract evidence", async () => {
+		const harness = await createHarness({
+			autonomous: { enabled: true, maxContinuations: 2 },
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("I think it works."),
+			fauxAssistantMessage("I ran npm test and all tests passed."),
+		]);
+
+		await harness.session.prompt("make the change");
+
+		expect(getUserTexts(harness)).toEqual(["make the change", DEFAULT_AUTONOMOUS_FINISH_PROMPT]);
+		expect(getAssistantTexts(harness)).toEqual(["I think it works.", "I ran npm test and all tests passed."]);
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(1);
+	});
+
+	it("accepts an existing git patch as finish evidence", async () => {
+		const harness = await createHarness({
+			autonomous: { enabled: true, maxContinuations: 2 },
+		});
+		harnesses.push(harness);
+		execFileSync("git", ["init"], { cwd: harness.tempDir, stdio: "ignore" });
+		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: harness.tempDir });
+		execFileSync("git", ["config", "user.name", "Test User"], { cwd: harness.tempDir });
+		const path = join(harness.tempDir, "file.txt");
+		writeFileSync(path, "before\n");
+		execFileSync("git", ["add", "file.txt"], { cwd: harness.tempDir });
+		execFileSync("git", ["commit", "-m", "initial"], { cwd: harness.tempDir, stdio: "ignore" });
+		writeFileSync(path, "after\n");
+		harness.setResponses([fauxAssistantMessage("Done.")]);
+
+		await harness.session.prompt("make the change");
+
+		expect(getUserTexts(harness)).toEqual(["make the change"]);
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(0);
+	});
+
 	it("classifies soft blockers separately from real external blockers", () => {
 		const state = createAutonomousRuntimeState({ enabled: true });
 
@@ -107,5 +150,13 @@ describe("AgentSession autonomous mode", () => {
 			shouldContinue: false,
 			reason: "real_blocker",
 		});
+	});
+
+	it("accepts no-op and test evidence in finish classification", () => {
+		expect(
+			hasAutonomousFinishEvidence("No-op: no changes needed because the requested behavior already exists."),
+		).toBe(true);
+		expect(hasAutonomousFinishEvidence("I ran npm test and tests passed.")).toBe(true);
+		expect(hasAutonomousFinishEvidence("I think it works.")).toBe(false);
 	});
 });
