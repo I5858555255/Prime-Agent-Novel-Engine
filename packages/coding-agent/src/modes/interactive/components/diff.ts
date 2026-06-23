@@ -240,7 +240,8 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 				...buildRichDiffLine({
 					bg: "toolPanelBg",
 					gutterFg: "toolDiffContext",
-					gutter: "",
+					// Leading space keeps the text off the edge while the bg still reaches it.
+					gutter: " ",
 					content: replaceTabs(rawLine),
 					language,
 					width,
@@ -249,7 +250,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 			continue;
 		}
 		const { prefix, lineNum, content } = parsed;
-		const gutter = `${lineNum} ${prefix === " " ? " " : prefix} `;
+		const gutter = ` ${lineNum} ${prefix === " " ? " " : prefix} `;
 		const text = replaceTabs(content);
 		if (prefix === "+") {
 			rows.push(
