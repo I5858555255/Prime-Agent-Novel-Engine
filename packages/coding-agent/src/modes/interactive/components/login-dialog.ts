@@ -65,6 +65,10 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private abortController = new AbortController();
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
+	// True only while the editable paste field is actually shown in the panel.
+	// Tracks visibility directly rather than inferring it from inputResolver,
+	// which can outlive the field when a new screen clears the content.
+	private inputVisible = false;
 	private continueResolver?: () => void;
 	private continueRejecter?: (error: Error) => void;
 
@@ -165,6 +169,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.addSectionTitle("Manual fallback");
 		this.addMutedText(prompt);
 		this.contentContainer.addChild(this.input);
+		this.inputVisible = true;
 		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
 		this.tui.requestRender();
 
@@ -192,6 +197,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.contentContainer.addChild(new Text(theme.fg("muted", `e.g., ${placeholder}`), 0, 0));
 		}
 		this.contentContainer.addChild(this.input);
+		this.inputVisible = true;
 		this.contentContainer.addChild(
 			new Text(
 				theme.fg("muted", `${keyHint("tui.select.confirm", "submit")}  ${keyHint("tui.select.cancel", "cancel")}`),
@@ -266,6 +272,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 	private startContent(): void {
 		this.contentContainer.clear();
+		// The cleared panel no longer shows the paste field.
+		this.inputVisible = false;
 		if (this.isPrimeInference) {
 			this.contentContainer.addChild(new PrimeLoginHeader());
 			this.contentContainer.addChild(new Spacer(1));
@@ -308,10 +316,10 @@ export class LoginDialogComponent extends Container implements Focusable {
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 
-		// Left arrow acts as "back" like Esc. While an editable field is awaiting
-		// input, only treat it as back at the start of the text so left still moves
+		// Left arrow acts as "back" like Esc. While the editable field is actually
+		// shown, only treat it as back at the start of the text so left still moves
 		// the cursor mid-edit; on info/continue screens there is no field to guard.
-		const backGuardInput = this.inputResolver ? this.input : undefined;
+		const backGuardInput = this.inputVisible ? this.input : undefined;
 		if (kb.matches(data, "tui.select.cancel") || shouldTreatAsBack(data, backGuardInput)) {
 			this.cancel();
 			return;
