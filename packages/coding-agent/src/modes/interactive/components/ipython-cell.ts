@@ -68,7 +68,6 @@ const CELL_MAGIC_PATTERN = /^\s*%%bash\b/;
 
 const OUTPUT_PREVIEW_LINES = 5;
 const INPUT_PREVIEW_LINES = 3;
-const DIFF_PREVIEW_LINES = 12;
 
 // Cap so the trailing duration/counts stay visible on narrow widths.
 const DESCRIPTOR_MAX_WIDTH = 64;
@@ -285,9 +284,16 @@ export class IPythonCellComponent implements Component {
 
 		// Collapsed default: one line, indented to match message text. Cached by
 		// state version so it never re-renders on unrelated repaints (would flicker).
+		// Edits are the exception: the diff always shows in full under the summary
+		// line so file changes are visible without expanding.
 		if (!this.state.expanded) {
-			const line = truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "");
-			return this.renderCache.set(safeWidth, this.stateVersion, [line]);
+			const summary = truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "");
+			if ((details.diffs?.length ?? 0) === 0) {
+				return this.renderCache.set(safeWidth, this.stateVersion, [summary]);
+			}
+			const lines = [summary];
+			this.renderDiffs(lines, safeWidth, details.diffs ?? []);
+			return this.renderCache.set(safeWidth, this.stateVersion, lines);
 		}
 
 		const lines: string[] = [];
@@ -519,21 +525,9 @@ export class IPythonCellComponent implements Component {
 			}
 		};
 
-		// Group edits by file: one block per file, edits shown as `⋮`-separated hunks.
-		const diffsByPath = new Map<string, DiffDisplay[]>();
-		for (const diff of diffs) {
-			const existing = diffsByPath.get(diff.path);
-			if (existing) existing.push(diff);
-			else diffsByPath.set(diff.path, [diff]);
-		}
-		let fileIndex = 0;
-		for (const [path, edits] of diffsByPath) {
+		if (diffs.length > 0) {
 			startOutput();
-			if (fileIndex > 0) {
-				this.addBlank(lines, width);
-			}
-			fileIndex++;
-			this.renderFileDiff(lines, width, path, edits, withExpandHint);
+			this.renderDiffs(lines, width, diffs);
 			renderedTextOutput = true;
 		}
 
@@ -617,13 +611,27 @@ export class IPythonCellComponent implements Component {
 		}
 	}
 
-	private renderFileDiff(
-		lines: string[],
-		width: number,
-		path: string,
-		edits: readonly DiffDisplay[],
-		withExpandHint: ExpandHintFormatter,
-	): void {
+	// Edit diffs render in full regardless of expand state — file changes must be
+	// visible without expanding. Grouped by file: one block per file, edits shown
+	// as `⋮`-separated hunks.
+	private renderDiffs(lines: string[], width: number, diffs: readonly DiffDisplay[]): void {
+		const diffsByPath = new Map<string, DiffDisplay[]>();
+		for (const diff of diffs) {
+			const existing = diffsByPath.get(diff.path);
+			if (existing) existing.push(diff);
+			else diffsByPath.set(diff.path, [diff]);
+		}
+		let fileIndex = 0;
+		for (const [path, edits] of diffsByPath) {
+			if (fileIndex > 0) {
+				this.addBlank(lines, width);
+			}
+			fileIndex++;
+			this.renderFileDiff(lines, width, path, edits);
+		}
+	}
+
+	private renderFileDiff(lines: string[], width: number, path: string, edits: readonly DiffDisplay[]): void {
 		const contentWidth = toolPanelContentWidth(width);
 		const language = getLanguageFromPath(path);
 
@@ -645,17 +653,10 @@ export class IPythonCellComponent implements Component {
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
 		this.addWrapped(lines, "", `${theme.fg("muted", "edit")} ${path}  ${counts}`, width);
 
-		const expanded = this.state.expanded ?? false;
-		const showCollapsed = !expanded && rows.length > DIFF_PREVIEW_LINES;
-		const visibleRows = showCollapsed ? rows.slice(0, DIFF_PREVIEW_LINES) : rows;
 		// Rows already fill the content width; just add the panel side padding.
 		const sidePad = theme.bg("toolPanelBg", " ".repeat(TOOL_PANEL_PADDING_X));
-		for (const row of visibleRows) {
+		for (const row of rows) {
 			lines.push(sidePad + row + sidePad);
-		}
-		if (showCollapsed) {
-			const hidden = rows.length - DIFF_PREVIEW_LINES;
-			this.addWrapped(lines, "", withExpandHint(hiddenLinesLabel(hidden)), width);
 		}
 	}
 

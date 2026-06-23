@@ -74,7 +74,7 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(out.every((line) => visibleWidth(line) === 40)).toBe(true);
 	});
 
-	it("collapses a long diff and shows an expand hint", () => {
+	it("shows the full diff in the collapsed view so file changes never hide behind expand", () => {
 		const oldStr = Array.from({ length: 30 }, (_, i) => `row ${i}`).join("\n");
 		const newStr = oldStr
 			.split("\n")
@@ -88,18 +88,46 @@ describe("IPythonCellComponent diff rendering", () => {
 			argsComplete: true,
 			expanded: false,
 		});
-		// Collapsed is a single line: the diff itself is hidden behind the expand hint.
+		// Collapsed keeps the one-line summary but renders the diff under it, in full.
 		expect(collapsed).toContain("to expand");
-		expect(collapsed).not.toContain("ROW");
+		expect(collapsed).toContain("edit big.py");
+		expect(collapsed).toContain("ROW");
+		// Every changed row is present — the diff is never truncated when collapsed.
+		expect((collapsed.match(/\+.*ROW \d+/g) ?? []).length).toBe(15);
+	});
 
-		const expanded = renderCell({
-			code: "await edit(...)",
-			details: { status: "ok", durationMs: 9, diffs: [{ path: "big.py", oldStr, newStr, startLine: 1 }] },
+	it("renders multiple files' diffs in the collapsed view", () => {
+		const collapsed = renderCell({
+			code: "await edit(...); await edit(...)",
+			details: {
+				status: "ok",
+				diffs: [
+					{ path: "a.py", oldStr: "one", newStr: "ONE", startLine: 1 },
+					{ path: "b.py", oldStr: "two", newStr: "TWO", startLine: 2 },
+				],
+			},
 			executionStarted: true,
 			argsComplete: true,
-			expanded: true,
+			expanded: false,
 		});
-		expect(expanded).toContain("ROW");
+		expect(collapsed).toContain("edit a.py");
+		expect(collapsed).toContain("edit b.py");
+		expect(collapsed).toContain("ONE");
+		expect(collapsed).toContain("TWO");
+	});
+
+	it("keeps non-edit cells collapsed to a single summary line", () => {
+		const collapsed = renderCell({
+			code: "print('hello')",
+			details: { status: "ok", durationMs: 3, stdout: "hello\nworld\nmore\noutput\nlines" },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		});
+		// No diffs → the collapsed view stays a single line; output hides behind expand.
+		expect(collapsed.split("\n")).toHaveLength(1);
+		expect(collapsed).toContain("to expand");
+		expect(collapsed).not.toContain("world");
 	});
 
 	it("renders multiple diffs from a single cell", () => {
