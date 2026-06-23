@@ -389,11 +389,6 @@ export class AgentDaemon {
 				this.rebindCronJobsToState(existing);
 				return existing;
 			}
-			if ((sessionPath || command.continueRecent) && sessionManager.getSessionState()?.status === "hidden") {
-				// Resuming a hidden session is the intentional opt-in that makes it
-				// visible in session lists again.
-				sessionManager.appendSessionState({ status: "sleep" });
-			}
 			let stateRef: ActiveSessionState | undefined;
 			const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
 				cwd: sessionManager.getCwd(),
