@@ -220,11 +220,6 @@ export interface AutocompleteItem {
 	value: string;
 	label: string;
 	description?: string;
-	/**
-	 * For slash-command suggestions: the command takes a free-form argument.
-	 * Confirming it should insert a trailing space and keep editing rather than
-	 * submitting the bare command.
-	 */
 	takesArgument?: boolean;
 }
 
@@ -235,11 +230,6 @@ export interface SlashCommand {
 	aliases?: readonly string[];
 	description?: string;
 	argumentHint?: string;
-	/**
-	 * The command takes a free-form argument. Confirming it (Enter/space) keeps the
-	 * command "selected" — inserts a trailing space and stays in the editor — instead
-	 * of submitting the bare command.
-	 */
 	takesArgument?: boolean;
 	// Function to get argument completions for this command
 	// Returns null if no argument completion is available

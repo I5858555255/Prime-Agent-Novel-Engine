@@ -225,7 +225,6 @@ export interface EditorTheme {
 	borderColor: (str: string) => string;
 	backgroundColor?: (str: string) => string;
 	selectList: SelectListTheme;
-	/** Color applied to a recognized slash-command token in the input. */
 	commandColor?: (str: string) => string;
 }
 
@@ -375,18 +374,6 @@ export class Editor implements Component, Focusable {
 		return 0;
 	}
 
-	/**
-	 * Hook to style the display text of a rendered line (e.g. color a slash-command
-	 * token so it stays visually "selected" while the user types its argument).
-	 *
-	 * Called per visible line after the cursor has been composited into `displayText`.
-	 * `lineText` is the unstyled text of this layout line (before the cursor span was
-	 * added); `cursorCol` is the cursor's column within that text, or undefined when
-	 * the cursor is on another line. Implementations must preserve the visible width
-	 * of `displayText` and the embedded cursor span.
-	 *
-	 * Default: no styling.
-	 */
 	protected styleDisplayText(
 		displayText: string,
 		_layoutLineIndex: number,
@@ -619,7 +606,6 @@ export class Editor implements Component, Focusable {
 				}
 			}
 
-			// Allow subclasses to style the display text (e.g. color a slash-command token).
 			displayText = this.styleDisplayText(
 				displayText,
 				absoluteLineIndex,
@@ -778,9 +764,6 @@ export class Editor implements Component, Focusable {
 
 					if (this.autocompletePrefix.startsWith("/")) {
 						this.cancelAutocomplete();
-						// A command that takes a free-form argument stays "selected": the
-						// completion inserted a trailing space, so keep editing instead of
-						// submitting the bare command (matches pressing space).
 						if (selected.takesArgument) {
 							if (this.onChange) this.onChange(this.getText());
 							return;

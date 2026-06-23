@@ -33,10 +33,9 @@ describe("built-in slash commands", () => {
 		});
 		expect(builtinSlashCommandTakesArgument("goal")).toBe(true);
 		expect(builtinSlashCommandTakesArgument("effort")).toBe(true);
-		expect(builtinSlashCommandTakesArgument("thinking")).toBe(true); // alias of /effort
-		// Commands that submit immediately do not take a free-form argument.
+		expect(builtinSlashCommandTakesArgument("thinking")).toBe(true);
 		expect(builtinSlashCommandTakesArgument("new")).toBe(false);
-		expect(builtinSlashCommandTakesArgument("clear")).toBe(false); // alias of /new
+		expect(builtinSlashCommandTakesArgument("clear")).toBe(false);
 	});
 });
 

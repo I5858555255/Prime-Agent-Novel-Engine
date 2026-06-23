@@ -17,11 +17,6 @@ export interface BuiltinSlashCommand {
 	argumentHint?: string;
 	/** Hidden names that resolve to this command without being shown as commands. */
 	aliases?: readonly string[];
-	/**
-	 * The command takes a free-form argument. Confirming it keeps the command
-	 * "selected" (inserts a trailing space, stays in the editor) instead of
-	 * submitting the bare command.
-	 */
 	takesArgument?: boolean;
 }
 
@@ -143,7 +138,6 @@ export function isBuiltinSlashCommandName(name: string): boolean {
 	return BUILTIN_SLASH_COMMAND_BY_NAME.has(name) || BUILTIN_SLASH_COMMAND_ALIAS_TO_NAME.has(name);
 }
 
-/** Whether the built-in command (by name or alias) takes a free-form argument. */
 export function builtinSlashCommandTakesArgument(name: string): boolean {
 	return BUILTIN_SLASH_COMMAND_BY_NAME.get(resolveBuiltinSlashCommandName(name))?.takesArgument === true;
 }

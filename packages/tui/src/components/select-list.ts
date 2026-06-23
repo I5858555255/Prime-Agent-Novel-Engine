@@ -13,7 +13,6 @@ export interface SelectItem {
 	value: string;
 	label: string;
 	description?: string;
-	/** Slash-command items: the command takes a free-form argument (see AutocompleteItem). */
 	takesArgument?: boolean;
 }
 

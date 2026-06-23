@@ -11,7 +11,6 @@ import type { AppKeybinding, KeybindingsManager } from "../../../core/keybinding
 export interface CustomEditorOptions extends EditorOptions {
 	placeholder?: string;
 	placeholderColor?: (text: string) => string;
-	/** Whether a slash command (by name) takes a free-form argument and should stay styled. */
 	isArgumentCommand?: (name: string) => boolean;
 }
 
@@ -75,7 +74,6 @@ export class CustomEditor extends Editor {
 			return displayText;
 		}
 
-		// Match a leading slash-command token: optional whitespace, then "/name".
 		const match = /^(\s*)\/(\S+)/.exec(lineText);
 		if (!match) {
 			return displayText;
@@ -88,11 +86,6 @@ export class CustomEditor extends Editor {
 		const tokenStart = leadingWhitespace.length;
 		const tokenEnd = token.length;
 
-		// The cursor span has been spliced into displayText at cursorCol, which shifts
-		// raw indices. Coloring by raw index is only safe when that splice lands at or
-		// after the token's end. While the cursor is within the token the user is still
-		// typing the command name and the autocomplete dropdown already provides the
-		// highlight, so skipping styling there is also the desired behavior.
 		if (cursorCol !== undefined && cursorCol < tokenEnd) {
 			return displayText;
 		}
