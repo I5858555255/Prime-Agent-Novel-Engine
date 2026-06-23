@@ -15,7 +15,7 @@ const SUMMARY_MODEL_ID = "nvidia/nemotron-3-nano-30b-a3b";
 
 const SUMMARY_CONTEXT_MESSAGES = 8;
 const SUMMARY_MAX_CHARS_PER_MESSAGE = 600;
-// Generous so a chatty model still reaches the SUMMARY line before truncation.
+// Generous so a chatty model still closes the tags before truncation.
 const SUMMARY_MAX_TOKENS = 400;
 
 export const AGENT_STATUS_SYSTEM_PROMPT = `You generate a status line for an AI coding agent dashboard. You are given the recent conversation between a user and the agent, plus whether the agent is currently working or idle.
@@ -99,14 +99,13 @@ export function buildStatusContext(messages: readonly AgentMessage[], isWorking:
 	return `<agent-state>${state}</agent-state>\n<conversation>\n${lines.join("\n")}\n</conversation>`;
 }
 
-// Cuts the word-counting chain-of-thought the model appends on the recap line,
-// e.g. `Sending X. That's 5 words? Count: X(1)... = 6 words.`. Restricted to
-// structural counting markers so plain words ("Waiting for CI") survive.
+// Cuts a word-counting trailer the model sometimes appends, e.g.
+// `Sending X. That's 5 words? Count: X(1)... = 6 words.`. Kept to structural
+// counting markers so plain words ("Waiting for CI") survive.
 const REASONING_TRAILER = /\s*(?:["”]\s*)?(?:\bthat['’]?s\s+\d+\s*words?\b|\bcount\s*:|\(\d+\)|=\s*\d+\s*words?\b).*/i;
 const COUNTING_ARTIFACT = /\(\d+\)|=\s*\d+\s*words?\b/i;
 const MAX_RECAP_WORDS = 16;
 
-/** Trim quotes and trailing punctuation from the tag body, then reject anything still polluted. */
 function cleanRecap(raw: string): string | undefined {
 	const value = raw
 		.trim()
@@ -123,15 +122,9 @@ function cleanRecap(raw: string): string | undefined {
 	return value;
 }
 
-/**
- * Parse the tagged reply: take the content of `<recap></recap>` and
- * `<status></status>` and ignore everything else (narration, reasoning, stray
- * prose). The last well-formed tag wins so a corrected draft resolves. A recap
- * body that is still polluted is rejected; idle verdicts default to needs_input.
- */
+/** Take the content of the last `<recap>` and `<status>` tags; idle verdicts default to needs_input. */
 export function parseAgentStatusResponse(text: string, isWorking: boolean): AgentStatusResult | undefined {
-	// Normalize unicode angle-bracket lookalikes (e.g. ‹ › ＜ ＞) the model sometimes
-	// emits instead of < > so a malformed <recap›…</recap> still parses as a tag.
+	// Normalize unicode angle-bracket lookalikes (‹ › ＜ ＞) so a tag written with them still parses.
 	const cleaned = text.replace(/[‹＜]/g, "<").replace(/[›＞]/g, ">");
 
 	const recapMatch = [...cleaned.matchAll(/<recap>([\s\S]*?)<\/recap>/gi)].at(-1);
