@@ -544,8 +544,9 @@ class SessionList implements Component, Focusable {
 
 		// Any key other than another delete press cancels an armed confirmation
 		// and is then handled normally, like the agents view.
+		const hadDeleteConfirmation = this.confirmingDeletePath !== null;
 		if (
-			this.confirmingDeletePath !== null &&
+			hadDeleteConfirmation &&
 			!kb.matches(keyData, "app.agents.delete") &&
 			!kb.matches(keyData, "app.session.deleteNoninvasive")
 		) {
@@ -627,8 +628,13 @@ class SessionList implements Component, Focusable {
 				this.onSelect(selected.session.path);
 			}
 		}
-		// Escape, or left arrow when the search field is at its start - cancel
-		else if (kb.matches(keyData, "tui.select.cancel") || shouldTreatAsBack(keyData, this.searchInput)) {
+		// Escape, or left arrow when the search field is at its start - cancel.
+		// If this same keypress just disarmed a delete confirmation, left only
+		// disarms (like other nav keys); Esc still cancels, matching its role.
+		else if (
+			kb.matches(keyData, "tui.select.cancel") ||
+			(!hadDeleteConfirmation && shouldTreatAsBack(keyData, this.searchInput))
+		) {
 			if (this.onCancel) {
 				this.onCancel();
 			}
