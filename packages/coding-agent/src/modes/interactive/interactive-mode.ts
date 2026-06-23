@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, ImageContent, Message, Model, ToolCall } from "@earendil-works/pi-ai";
 import type {
 	AutocompleteItem,
@@ -140,6 +140,7 @@ import { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
+import { ThinkingSelectorComponent } from "./components/thinking-selector.js";
 import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
@@ -874,7 +875,7 @@ export class InteractiveMode {
 						hint("app.exit", "to exit (empty)"),
 						hint("app.suspend", "to suspend"),
 						keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
-						hint("app.thinking.cycle", "to cycle thinking level"),
+						rawKeyHint("/effort", "to set thinking level"),
 						hint("app.model.select", "to select model"),
 						hint("app.tools.expand", "to expand tools"),
 						hint("app.thinking.toggle", "to expand thinking"),
@@ -3089,7 +3090,6 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.interrupt", () => this.handleInterruptKey());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
-		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
 
 		// Global debug handler on TUI (works regardless of focus)
 		this.ui.onDebug = () => {
@@ -3255,6 +3255,11 @@ export class InteractiveMode {
 				const searchTerm = commandArgs || undefined;
 				this.editor.setText("");
 				await this.handleModelCommand(searchTerm);
+				return;
+			}
+			if (commandName === "effort" && !commandArgs) {
+				this.editor.setText("");
+				this.showThinkingSelector();
 				return;
 			}
 			if (commandName === "export") {
@@ -5022,24 +5027,6 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private cycleThinkingLevel(): void {
-		void this.agentConnection
-			.cycleThinkingLevel()
-			.then((newLevel) => {
-				if (newLevel === undefined) {
-					this.showStatus("Current model does not support thinking");
-				} else {
-					this.patchConnectionState({ thinkingLevel: newLevel });
-					this.footer.invalidate();
-					this.updateEditorBorderColor();
-					this.showStatus(`Thinking level: ${newLevel}`);
-				}
-			})
-			.catch((error) => {
-				this.showError(error instanceof Error ? error.message : String(error));
-			});
-	}
-
 	private toggleToolOutputExpansion(): void {
 		this.setToolsExpanded(!this.toolOutputExpanded);
 	}
@@ -5658,6 +5645,50 @@ export class InteractiveMode {
 		}
 		this.anthropicSubscriptionWarningShown = true;
 		this.showWarning(warning);
+	}
+
+	private showThinkingSelector(): void {
+		const availableLevels = this.connectionState?.availableThinkingLevels ?? [];
+		const supportsThinking =
+			availableLevels.length > 0 && !(availableLevels.length === 1 && availableLevels[0] === "off");
+		if (!supportsThinking) {
+			this.showStatus("Current model does not support thinking");
+			return;
+		}
+
+		const currentLevel = this.connectionState?.thinkingLevel ?? availableLevels[0];
+		let handle: OverlayHandle | undefined;
+		const close = () => {
+			handle?.hide();
+			this.ui.requestRender();
+		};
+
+		const selector = new ThinkingSelectorComponent(
+			currentLevel,
+			availableLevels,
+			(level) => {
+				close();
+				this.applyThinkingLevel(level);
+			},
+			() => {
+				close();
+			},
+		);
+		handle = this.showFullPaneOverlay(selector, 48);
+	}
+
+	private applyThinkingLevel(level: ThinkingLevel): void {
+		void this.agentConnection
+			.setThinkingLevel(level)
+			.then(() => {
+				this.patchConnectionState({ thinkingLevel: level });
+				this.footer.invalidate();
+				this.updateEditorBorderColor();
+				this.showStatus(`Thinking level: ${level}`);
+			})
+			.catch((error) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
 	}
 
 	private showModelSelector(initialSearchInput?: string): void {
@@ -6942,7 +6973,6 @@ export class InteractiveMode {
 		const interrupt = this.getAppKeyDisplay("app.interrupt");
 		const exit = this.getAppKeyDisplay("app.exit");
 		const suspend = this.getAppKeyDisplay("app.suspend");
-		const cycleThinkingLevel = this.getAppKeyDisplay("app.thinking.cycle");
 		const selectModel = this.getAppKeyDisplay("app.model.select");
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
@@ -6985,7 +7015,6 @@ export class InteractiveMode {
 | \`${clear}\` | Interrupt current operation (first) / exit (second) |
 ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
-| \`${cycleThinkingLevel}\` | Cycle thinking level |
 | \`${selectModel}\` | Open model selector |
 | \`${expandTools}\` | Toggle tool output expansion |
 | \`${toggleThinking}\` | Toggle thinking block visibility |
