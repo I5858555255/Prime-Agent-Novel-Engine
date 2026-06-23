@@ -34,9 +34,13 @@ describe("daemon session summarizer", () => {
 		});
 
 		test("falls back to needs_input on an unrecognized or hedged idle verdict", () => {
-			expect(parseAgentStatusResponse("SUMMARY: Something\nSTATUS: WORKING", false)?.taskState).toBe("needs_input");
-			expect(parseAgentStatusResponse("SUMMARY: Something\nSTATUS: MAYBE", false)?.taskState).toBe("needs_input");
-			expect(parseAgentStatusResponse("SUMMARY: Something", false)?.taskState).toBe("needs_input");
+			expect(parseAgentStatusResponse("SUMMARY: Doing something\nSTATUS: WORKING", false)?.taskState).toBe(
+				"needs_input",
+			);
+			expect(parseAgentStatusResponse("SUMMARY: Doing something\nSTATUS: MAYBE", false)?.taskState).toBe(
+				"needs_input",
+			);
+			expect(parseAgentStatusResponse("SUMMARY: Doing something", false)?.taskState).toBe("needs_input");
 		});
 
 		test("requires the SUMMARY marker and never surfaces free-form text", () => {
@@ -153,6 +157,37 @@ describe("daemon session summarizer", () => {
 			// The tag body is pure counting (rejected); a later valid line must win.
 			const text = "<recap>(1) two(2) = 2 words</recap>\nSUMMARY: Editing the parser\nSTATUS: WORKING";
 			expect(parseAgentStatusResponse(text, true)).toEqual({ summary: "Editing the parser" });
+		});
+
+		test("parses recap and status from their tags", () => {
+			const text = "<recap>Updating the login handler</recap>\n<status>COMPLETED</status>";
+			expect(parseAgentStatusResponse(text, false)).toEqual({
+				summary: "Updating the login handler",
+				taskState: "completed",
+			});
+		});
+
+		test("maps NEEDS_INPUT from the status tag", () => {
+			const text = "<recap>Asked which database to target</recap>\n<status>NEEDS_INPUT</status>";
+			expect(parseAgentStatusResponse(text, false)?.taskState).toBe("needs_input");
+		});
+
+		test("takes the last status tag when a draft is corrected", () => {
+			const text = "<recap>Editing the parser</recap>\n<status>WORKING</status>\n<status>COMPLETED</status>";
+			expect(parseAgentStatusResponse(text, false)?.taskState).toBe("completed");
+		});
+
+		test("recovers a recap written with unicode angle-bracket lookalikes", () => {
+			// Real failure: the model narrated, then emitted `<recap›…` with a ›
+			// lookalike and no close tag, leaking "So" as the recap.
+			const text = "Recap: . So:\nSUMMARY: <recap›Curating a niche list of Muon optimizer papers";
+			expect(parseAgentStatusResponse(text, true)).toEqual({
+				summary: "Curating a niche list of Muon optimizer papers",
+			});
+		});
+
+		test("rejects a lone-word narration fragment", () => {
+			expect(parseAgentStatusResponse("Recap: . So:\nSTATUS: WORKING", true)).toBeUndefined();
 		});
 	});
 

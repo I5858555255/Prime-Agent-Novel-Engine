@@ -20,9 +20,9 @@ const SUMMARY_MAX_TOKENS = 400;
 
 export const AGENT_STATUS_SYSTEM_PROMPT = `You generate a status line for an AI coding agent dashboard. You are given the recent conversation between a user and the agent, plus whether the agent is currently working or idle.
 
-Output ONLY these two lines, nothing before or after. Do not think out loud, explain, or count words. Put the summary inside <recap></recap> tags and write nothing after the closing tag.
-SUMMARY: <recap>a present-tense clause, at most 12 words, saying what the agent is doing or just did, no trailing period</recap>
-STATUS: one of WORKING, NEEDS_INPUT, COMPLETED
+Output ONLY these two tags, nothing before, between, or after. Do not think out loud, explain, or count words.
+<recap>a present-tense clause, at most 12 words, saying what the agent is doing or just did, no trailing period</recap>
+<status>one of WORKING, NEEDS_INPUT, COMPLETED</status>
 
 STATUS meaning:
 - WORKING: the agent is mid-task and still acting.
@@ -31,8 +31,8 @@ STATUS meaning:
 When the agent is idle and you are unsure between COMPLETED and NEEDS_INPUT, choose NEEDS_INPUT.
 
 Example:
-SUMMARY: <recap>Refactoring the auth middleware and updating its tests</recap>
-STATUS: WORKING`;
+<recap>Refactoring the auth middleware and updating its tests</recap>
+<status>WORKING</status>`;
 
 export interface AgentStatusResult {
 	summary: string;
@@ -112,7 +112,13 @@ function cleanRecap(raw: string): string | undefined {
 	const value = raw
 		.trim()
 		.replace(REASONING_TRAILER, "")
+		// Drop a leaked label/connector prefix the model narrates before the recap,
+		// e.g. `Recap: . So: Curating…` or `SUMMARY: <recap>Curating…`.
+		.replace(/^(?:summary|recap|status)\s*:\s*/i, "")
+		.replace(/^<\/?recap>\s*/i, "")
+		.replace(/^[.\s]*(?:so|then|thus|therefore)\s*:?\s*/i, "")
 		.replace(/^["“']+|["”']+$/g, "")
+		.replace(/^[.\s]+/, "")
 		.replace(/[.\s]+$/, "")
 		.trim();
 	if (!value || value.startsWith("<") || /present-tense|12 words/i.test(value)) {
@@ -121,42 +127,54 @@ function cleanRecap(raw: string): string | undefined {
 	if (COUNTING_ARTIFACT.test(value) || value.split(/\s+/).length > MAX_RECAP_WORDS) {
 		return undefined;
 	}
+	// A lone word is narration debris, not a recap clause.
+	if (value.split(/\s+/).length < 2) {
+		return undefined;
+	}
 	return value;
 }
 
 /**
- * Parse the two-line reply. The recap is delimited by `<recap></recap>` so
- * trailing chain-of-thought falls outside it; without the close tag we fall back
- * to the `SUMMARY:`/`RECAP:` line and cut inline word-counting. The last clean
- * recap wins. A still-polluted candidate is rejected; idle verdicts default to
- * needs_input.
+ * Parse the tagged reply. Recap and status are delimited by `<recap></recap>`
+ * and `<status></status>` so trailing chain-of-thought falls outside them. The
+ * last well-formed tag wins so a corrected draft resolves. When a tag is missing
+ * or its body is rejected we fall back to the legacy `SUMMARY:`/`RECAP:`/`STATUS:`
+ * lines and cut inline word-counting. A still-polluted candidate is rejected;
+ * idle verdicts default to needs_input.
  */
 export function parseAgentStatusResponse(text: string, isWorking: boolean): AgentStatusResult | undefined {
+	// Normalize unicode angle-bracket lookalikes (e.g. ‹ › ＜ ＞) the model sometimes
+	// emits instead of < > so a malformed <recap›…</recap> still parses as a tag.
 	const reasoningTag = /<\/?(?:think|thinking|reasoning|redacted_thinking)>/gi;
 	const cleaned = text
+		.replace(/[‹＜]/g, "<")
+		.replace(/[›＞]/g, ">")
 		.replace(/<(think|thinking|reasoning|redacted_thinking)>[\s\S]*?<\/\1>/gi, " ")
 		.replace(reasoningTag, " ");
 
-	// Prefer the tag (last match wins so a corrected draft resolves). Fall back to
-	// the SUMMARY/RECAP lines only when the tag is missing or its body is rejected;
+	// Prefer the tags (last match wins so a corrected draft resolves). Fall back to
+	// the legacy SUMMARY/RECAP/STATUS lines only when a tag is missing or rejected;
 	// among lines the last clean one wins.
-	const tagMatch = [...cleaned.matchAll(/<recap>([\s\S]*?)<\/recap>/gi)].at(-1);
-	const tagSummary = tagMatch ? cleanRecap(tagMatch[1]!) : undefined;
+	const recapMatch = [...cleaned.matchAll(/<recap>([\s\S]*?)<\/recap>/gi)].at(-1);
+	const tagSummary = recapMatch ? cleanRecap(recapMatch[1]!) : undefined;
 	let summary = tagSummary;
 
-	let status: string | undefined;
+	const statusMatch = [...cleaned.matchAll(/<status>\s*([a-z_]+)\s*<\/status>/gi)].at(-1);
+	let status: string | undefined = statusMatch ? statusMatch[1]!.toUpperCase() : undefined;
+	const tagStatus = status;
+
 	for (const rawLine of cleaned.split("\n")) {
 		const line = rawLine.trim();
-		const summaryMatch = /^(?:summary|recap)\s*:\s*(.+)$/i.exec(line);
-		if (summaryMatch) {
+		const summaryLine = /^(?:summary|recap)\s*:\s*(.+)$/i.exec(line);
+		if (summaryLine) {
 			if (!tagSummary) {
-				summary = cleanRecap(summaryMatch[1]!.replace(/<\/?recap>/gi, "")) ?? summary;
+				summary = cleanRecap(summaryLine[1]!.replace(/<\/?recap>/gi, "")) ?? summary;
 			}
 			continue;
 		}
-		const statusMatch = /^status\s*:\s*([a-z_]+)/i.exec(line);
-		if (statusMatch) {
-			status = statusMatch[1]!.toUpperCase();
+		const statusLine = /^status\s*:\s*([a-z_]+)/i.exec(line);
+		if (statusLine && !tagStatus) {
+			status = statusLine[1]!.toUpperCase();
 		}
 	}
 	if (!summary) {
