@@ -13,12 +13,11 @@ import type {
 	AgentConnectionState,
 } from "./types.js";
 
-function persistedRecap(
-	sessionManager: { getLatestAgentStatus?: () => { summary: string; basedOnMessageCount: number } | undefined },
-	messageCount: number,
-): string | undefined {
-	const status = sessionManager.getLatestAgentStatus?.();
-	return status && status.basedOnMessageCount === messageCount ? status.summary : undefined;
+function persistedRecap(sessionManager: {
+	getLatestAgentStatus?: () => { summary: string } | undefined;
+}): string | undefined {
+	// Optional-call so a minimal session manager (tests) still works.
+	return sessionManager.getLatestAgentStatus?.()?.summary;
 }
 
 export function createAgentConnectionState(
@@ -55,10 +54,10 @@ export function createAgentConnectionState(
 		})),
 		activeToolNames: session.getActiveToolNames(),
 		contextUsage: session.getContextUsage(),
-		// Baseline recap; the daemon overlays the live summary on attach. Only use it
-		// while it matches the current turn so attach never seeds a stale recap.
-		// Optional-call so a minimal session manager (tests) still works.
-		recap: persistedRecap(sessionManager, session.messages.length),
+		// Baseline recap; the daemon overlays the live summary on attach. Seeded
+		// even when a turn moved on, so attach shows the last recap instead of a
+		// blank one while the summarizer regenerates.
+		recap: persistedRecap(sessionManager),
 	};
 }
 

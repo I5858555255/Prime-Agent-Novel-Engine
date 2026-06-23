@@ -20,8 +20,8 @@ const SUMMARY_MAX_TOKENS = 400;
 
 export const AGENT_STATUS_SYSTEM_PROMPT = `You generate a status line for an AI coding agent dashboard. You are given the recent conversation between a user and the agent, plus whether the agent is currently working or idle.
 
-Output ONLY these two lines, nothing before or after. Do not think out loud, explain, or add any other text.
-SUMMARY: a present-tense clause, at most 12 words, saying what the agent is doing or just did, no trailing period
+Output ONLY these two lines, nothing before or after. Do not think out loud, explain, or count words. Put the summary inside <recap></recap> tags and write nothing after the closing tag.
+SUMMARY: <recap>a present-tense clause, at most 12 words, saying what the agent is doing or just did, no trailing period</recap>
 STATUS: one of WORKING, NEEDS_INPUT, COMPLETED
 
 STATUS meaning:
@@ -31,7 +31,7 @@ STATUS meaning:
 When the agent is idle and you are unsure between COMPLETED and NEEDS_INPUT, choose NEEDS_INPUT.
 
 Example:
-SUMMARY: Refactoring the auth middleware and updating its tests
+SUMMARY: <recap>Refactoring the auth middleware and updating its tests</recap>
 STATUS: WORKING`;
 
 export interface AgentStatusResult {
@@ -100,10 +100,39 @@ export function buildStatusContext(messages: readonly AgentMessage[], isWorking:
 	return `<agent-state>${state}</agent-state>\n<conversation>\n${lines.join("\n")}\n</conversation>`;
 }
 
+// Inline chain-of-thought the model sometimes appends to the recap on the same
+// line (e.g. `Sending X. That's 5 words? Count: X(1)... = 6 words. Under`).
+// Cut the candidate at the first such marker so reasoning never reaches the UI.
+const REASONING_TRAILER =
+	/\s*(?:["”]\s*)?(?:\bthat['’]?s\b|\bcount\s*:|\(\d+\)|=\s*\d+\s*words?\b|\b(?:under|over|wait|actually|hmm|let me)\b).*/i;
+// Counting artifacts that mark a candidate as polluted beyond salvage.
+const COUNTING_ARTIFACT = /\(\d+\)|=\s*\d+\s*words?\b/i;
+const MAX_RECAP_WORDS = 16;
+
+/** Strip a single layer of wrapping quotes and any trailing punctuation/space. */
+function tidyRecap(raw: string): string {
+	let value = raw.trim().replace(REASONING_TRAILER, "").trim();
+	value = value.replace(/^["“']+|["”']+$/g, "").trim();
+	return value.replace(/[.\s]+$/, "");
+}
+
+/** A candidate that still carries counting artifacts or rambles is discarded. */
+function isCleanRecap(candidate: string): boolean {
+	if (!candidate || candidate.startsWith("<") || /present-tense|12 words/i.test(candidate)) {
+		return false;
+	}
+	if (COUNTING_ARTIFACT.test(candidate)) {
+		return false;
+	}
+	return candidate.split(/\s+/).length <= MAX_RECAP_WORDS;
+}
+
 /**
- * Parse the two-line reply. Requires an explicit `SUMMARY:` line (last one wins,
- * after any reasoning) and never falls back to free text, so a model's
- * chain-of-thought can't leak into the recap. Idle verdicts default to
+ * Parse the two-line reply. The recap is delimited by `<recap></recap>` tags so
+ * trailing chain-of-thought falls structurally outside it; when the model omits
+ * the close tag we fall back to capturing the `SUMMARY:`/`RECAP:` line and
+ * cutting off any inline reasoning. A candidate that still looks polluted is
+ * rejected (returns undefined) rather than surfaced. Idle verdicts default to
  * needs_input on anything unrecognized.
  */
 export function parseAgentStatusResponse(text: string, isWorking: boolean): AgentStatusResult | undefined {
@@ -111,18 +140,30 @@ export function parseAgentStatusResponse(text: string, isWorking: boolean): Agen
 	const cleaned = text
 		.replace(/<(think|thinking|reasoning|redacted_thinking)>[\s\S]*?<\/\1>/gi, " ")
 		.replace(reasoningTag, " ");
+
 	let summary: string | undefined;
+	// Prefer the explicit tag; last match wins so reasoning before it is ignored.
+	const tagMatch = [...cleaned.matchAll(/<recap>([\s\S]*?)<\/recap>/gi)].at(-1);
+	if (tagMatch) {
+		const candidate = tidyRecap(tagMatch[1]!);
+		if (isCleanRecap(candidate)) {
+			summary = candidate;
+		}
+	}
+
 	let status: string | undefined;
 	for (const rawLine of cleaned.split("\n")) {
 		const line = rawLine.trim();
-		const summaryMatch = /^summary\s*:\s*(.+)$/i.exec(line);
-		if (summaryMatch) {
-			const candidate = summaryMatch[1]!.trim().replace(/[.\s]+$/, "");
-			// Skip an echoed prompt template (e.g. "<one present-tense clause…>").
-			if (candidate && !candidate.startsWith("<") && !/present-tense|12 words/i.test(candidate)) {
-				summary = candidate;
+		if (!summary) {
+			const summaryMatch = /^(?:summary|recap)\s*:\s*(.+)$/i.exec(line);
+			if (summaryMatch) {
+				// Strip an unclosed `<recap>` tag the model may have left open.
+				const candidate = tidyRecap(summaryMatch[1]!.replace(/<\/?recap>/gi, ""));
+				if (isCleanRecap(candidate)) {
+					summary = candidate;
+				}
+				continue;
 			}
-			continue;
 		}
 		const statusMatch = /^status\s*:\s*([a-z_]+)/i.exec(line);
 		if (statusMatch) {
