@@ -1,10 +1,13 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { IPythonCellComponent } from "../src/modes/interactive/components/ipython-cell.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function hasBackground(line: string): boolean {
+	return /\x1b\[4[0-9]m|\x1b\[48[;:]/.test(line);
 }
 
 function renderCell(state: ConstructorParameters<typeof IPythonCellComponent>[0]): string {
@@ -16,7 +19,7 @@ describe("IPythonCellComponent diff rendering", () => {
 		initTheme("dark");
 	});
 
-	it("renders a streamed diff with absolute line numbers and suppresses the Edited confirmation", () => {
+	it("renders a diff with absolute line numbers and suppresses the Edited confirmation", () => {
 		const out = renderCell({
 			code: 'await edit(path="sample.py", old_str="gamma", new_str="GAMMA")',
 			details: {
@@ -31,19 +34,20 @@ describe("IPythonCellComponent diff rendering", () => {
 			expanded: true,
 		});
 
-		// Header carries the path and the +/- line counts.
-		expect(out).toContain("edit sample.py");
+		// Header carries the path (no "edit" label) and the +/- line counts.
+		expect(out).toContain("sample.py");
+		expect(out).not.toMatch(/edit sample\.py/);
 		expect(out).toMatch(/\+1\s+-1/);
-		// Removed line keeps the old line number + content; added line the new one.
-		expect(out).toMatch(/11 -.*gamma/);
-		expect(out).toMatch(/11 \+.*GAMMA/);
+		// Removed line keeps the old line number; added line the new one.
+		expect(out).toMatch(/-11 .*gamma/);
+		expect(out).toMatch(/\+11 .*GAMMA/);
 		expect(out).toMatch(/10 .*alpha/);
 		// The redundant "Edited sample.py" confirmation must not render as its own line.
 		expect(out.split("\n").some((line) => /^\s*'?Edited sample\.py'?\s*$/.test(line.trim()))).toBe(false);
 	});
 
-	it("pads every diff row to the full content width on a single background block", () => {
-		const out = new IPythonCellComponent({
+	it("renders diffs as foreground text with no background block", () => {
+		const lines = new IPythonCellComponent({
 			code: "await edit(...)",
 			details: {
 				status: "ok",
@@ -53,36 +57,22 @@ describe("IPythonCellComponent diff rendering", () => {
 			argsComplete: true,
 			expanded: true,
 		}).render(72);
-		// Every rendered line is exactly the panel width (no ragged backgrounds).
-		expect(out.every((line) => stripAnsi(line).length === 72)).toBe(true);
+		const diffRows = lines.filter((line) => /alpha|gamma|GAMMA/.test(stripAnsi(line)));
+		expect(diffRows.length).toBeGreaterThan(0);
+		expect(diffRows.some(hasBackground)).toBe(false);
 	});
 
-	it("keeps full width when a wide character straddles the truncation boundary", () => {
-		// CJK chars are 2 cells wide; a narrow render forces truncation mid-character.
-		const wide = "値".repeat(60);
-		const out = new IPythonCellComponent({
-			code: "await edit(...)",
-			details: {
-				status: "ok",
-				diffs: [{ path: "a.py", oldStr: "x = 1", newStr: `x = "${wide}"`, startLine: 1 }],
-			},
-			executionStarted: true,
-			argsComplete: true,
-			expanded: true,
-		}).render(40);
-		// Measure display cells, not code units (CJK chars are 2 cells wide).
-		expect(out.every((line) => visibleWidth(line) === 40)).toBe(true);
-	});
-
-	it("prefixes the edit header with the cell's status marker", () => {
+	it("prefixes the header with the cell's status marker and aligns it with the summary line", () => {
 		const done = renderCell({
 			code: "await edit(...)",
 			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
 			expanded: false,
-		});
-		expect(done).toMatch(/✓ edit a\.ts/);
+		}).split("\n");
+		// Summary line and header share the same single-space indent.
+		expect(done[0]).toMatch(/^ ✓ python/);
+		expect(done.find((l) => l.includes("a.ts"))).toMatch(/^ ✓ a\.ts/);
 
 		const failed = renderCell({
 			code: "await edit(...)",
@@ -92,7 +82,31 @@ describe("IPythonCellComponent diff rendering", () => {
 			expanded: false,
 			isError: true,
 		});
-		expect(failed).toMatch(/✗ edit a\.ts/);
+		expect(failed).toMatch(/✗ a\.ts/);
+	});
+
+	it("renders an edit path relative to the session cwd, or absolute when outside it", () => {
+		const cwd = "/home/me/project";
+		const inside = renderCell({
+			code: "await edit(...)",
+			cwd,
+			details: { status: "ok", diffs: [{ path: `${cwd}/src/app.ts`, oldStr: "x", newStr: "X", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		});
+		expect(inside).toContain("src/app.ts");
+		expect(inside).not.toContain(`${cwd}/src/app.ts`);
+
+		const outside = renderCell({
+			code: "await edit(...)",
+			cwd,
+			details: { status: "ok", diffs: [{ path: "/etc/hosts", oldStr: "a", newStr: "b", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: false,
+		});
+		expect(outside).toContain("/etc/hosts");
 	});
 
 	it("wraps a long diff line onto gutter-aligned continuation rows instead of truncating", () => {
@@ -114,23 +128,6 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(addedRows.length).toBeGreaterThan(1);
 	});
 
-	it("renders diff rows at the full cli width with no side padding", () => {
-		const width = 50;
-		const out = new IPythonCellComponent({
-			code: "await edit(...)",
-			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "alpha", newStr: "ALPHA", startLine: 1 }] },
-			executionStarted: true,
-			argsComplete: true,
-			expanded: false,
-		}).render(width);
-		// The colored diff rows fill the whole width — no 2-col panel inset.
-		const diffRows = out.filter((line) => /alpha|ALPHA/i.test(stripAnsi(line)));
-		expect(diffRows.length).toBeGreaterThan(0);
-		expect(diffRows.every((line) => visibleWidth(line) === width)).toBe(true);
-		// The row starts at column 0, not behind two spaces of panel padding.
-		expect(diffRows.every((line) => !stripAnsi(line).startsWith("  "))).toBe(true);
-	});
-
 	it("separates the diff from the summary line with a blank line", () => {
 		const out = renderCell({
 			code: "await edit(...)",
@@ -139,10 +136,9 @@ describe("IPythonCellComponent diff rendering", () => {
 			argsComplete: true,
 			expanded: false,
 		}).split("\n");
-		// Line 0 is the summary; line 1 is blank; the edit header follows.
 		expect(out[0]).toContain("to expand");
 		expect(out[1].trim()).toBe("");
-		expect(out[2]).toContain("edit a.ts");
+		expect(out[2]).toContain("a.ts");
 	});
 
 	it("shows the full diff in the collapsed view so file changes never hide behind expand", () => {
@@ -159,9 +155,8 @@ describe("IPythonCellComponent diff rendering", () => {
 			argsComplete: true,
 			expanded: false,
 		});
-		// Collapsed keeps the one-line summary but renders the diff under it, in full.
 		expect(collapsed).toContain("to expand");
-		expect(collapsed).toContain("edit big.py");
+		expect(collapsed).toContain("big.py");
 		expect(collapsed).toContain("ROW");
 		// Every changed row is present — the diff is never truncated when collapsed.
 		expect((collapsed.match(/\+.*ROW \d+/g) ?? []).length).toBe(15);
@@ -181,8 +176,8 @@ describe("IPythonCellComponent diff rendering", () => {
 			argsComplete: true,
 			expanded: false,
 		});
-		expect(collapsed).toContain("edit a.py");
-		expect(collapsed).toContain("edit b.py");
+		expect(collapsed).toContain("a.py");
+		expect(collapsed).toContain("b.py");
 		expect(collapsed).toContain("ONE");
 		expect(collapsed).toContain("TWO");
 	});
@@ -201,25 +196,6 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(collapsed).not.toContain("world");
 	});
 
-	it("renders multiple diffs from a single cell", () => {
-		const out = renderCell({
-			code: "await edit(...); await edit(...)",
-			details: {
-				status: "ok",
-				durationMs: 5,
-				diffs: [
-					{ path: "a.py", oldStr: "one", newStr: "ONE", startLine: 1 },
-					{ path: "b.py", oldStr: "two", newStr: "TWO", startLine: 2 },
-				],
-			},
-			executionStarted: true,
-			argsComplete: true,
-			expanded: true,
-		});
-		expect(out).toContain("edit a.py");
-		expect(out).toContain("edit b.py");
-	});
-
 	it("coalesces multiple edits to one file into a single block with hunk separators", () => {
 		const out = renderCell({
 			code: "await edit(...); await edit(...); await edit(...)",
@@ -236,10 +212,9 @@ describe("IPythonCellComponent diff rendering", () => {
 			argsComplete: true,
 		});
 		// One consolidated header for the file, with summed counts.
-		expect(out.split("\n").filter((l) => l.includes("edit app.py")).length).toBe(1);
-		expect(out).toMatch(/edit app\.py\s+\+3\s+-3/);
-		// Non-adjacent hunks are separated by the vertical-ellipsis marker.
-		expect(out).toContain("⋮");
+		expect(out.split("\n").filter((l) => l.includes("app.py")).length).toBe(1);
+		expect(out).toMatch(/app\.py\s+\+3\s+-3/);
+		// Hunks are separated by the vertical-ellipsis marker.
 		expect((out.match(/⋮/g) ?? []).length).toBe(2);
 	});
 });

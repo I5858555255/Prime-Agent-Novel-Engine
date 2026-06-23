@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 import { highlightCode, theme } from "../theme/theme.js";
 
@@ -179,44 +179,23 @@ interface DiffLineSpec {
 	contentFg?: ThemeColor;
 }
 
-/** Pad `inner` to exactly `width` cells (truncating a straddling wide char if over). */
-function fillToWidth(inner: string, width: number): string {
-	if (visibleWidth(inner) > width) {
-		inner = truncateToWidth(inner, width, "");
-	}
-	// Pad after truncating too: a 2-cell character straddling the cutoff leaves
-	// the result a cell short.
-	const pad = width - visibleWidth(inner);
-	if (pad > 0) {
-		inner += " ".repeat(pad);
-	}
-	return inner;
-}
-
-/**
- * Build the row(s) for one diff line, each filling `width` on a single background
- * block. Content wider than the gutter's remaining space wraps onto continuation
- * rows whose gutter is blank, so long lines stay fully visible instead of truncating.
- */
-function buildRichDiffLine(spec: DiffLineSpec): string[] {
+/** Build one diff row filling `width` on a single background block. */
+function buildRichDiffLine(spec: DiffLineSpec): string {
 	const styledGutter = theme.fg(spec.gutterFg, spec.gutter);
 	const renderedContent = spec.contentFg
 		? theme.fg(spec.contentFg, spec.content)
 		: highlightContent(spec.content, spec.language);
-
-	const gutterWidth = visibleWidth(spec.gutter);
-	const contentWidth = Math.max(1, spec.width - gutterWidth);
-	const contentRows = wrapTextWithAnsi(renderedContent, contentWidth);
-	if (contentRows.length === 0) {
-		contentRows.push("");
+	let inner = `${styledGutter}${renderedContent}\x1b[39m`;
+	if (visibleWidth(inner) > spec.width) {
+		inner = truncateToWidth(inner, spec.width, "");
 	}
-
-	const blankGutter = theme.fg(spec.gutterFg, " ".repeat(gutterWidth));
-	return contentRows.map((row, index) => {
-		const gutter = index === 0 ? styledGutter : blankGutter;
-		const inner = fillToWidth(`${gutter}${row}\x1b[39m`, spec.width);
-		return theme.bg(spec.bg, inner);
-	});
+	// Pad after truncating too: a 2-cell character straddling the cutoff leaves
+	// the result a cell short.
+	const pad = spec.width - visibleWidth(inner);
+	if (pad > 0) {
+		inner += " ".repeat(pad);
+	}
+	return theme.bg(spec.bg, inner);
 }
 
 export interface RichDiffOptions {
@@ -245,7 +224,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 		const parsed = parseDiffLine(rawLine);
 		if (!parsed) {
 			rows.push(
-				...buildRichDiffLine({
+				buildRichDiffLine({
 					bg: "toolPanelBg",
 					gutterFg: "toolDiffContext",
 					gutter: "",
@@ -261,7 +240,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 		const text = replaceTabs(content);
 		if (prefix === "+") {
 			rows.push(
-				...buildRichDiffLine({
+				buildRichDiffLine({
 					bg: useBlocks ? "toolDiffAddedBg" : "toolPanelBg",
 					gutterFg: "toolDiffAdded",
 					gutter,
@@ -273,7 +252,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 			);
 		} else if (prefix === "-") {
 			rows.push(
-				...buildRichDiffLine({
+				buildRichDiffLine({
 					bg: useBlocks ? "toolDiffRemovedBg" : "toolPanelBg",
 					gutterFg: "toolDiffRemoved",
 					gutter,
@@ -285,7 +264,7 @@ export function renderRichDiff(diffText: string, contentWidth: number, options: 
 			);
 		} else {
 			rows.push(
-				...buildRichDiffLine({
+				buildRichDiffLine({
 					bg: "toolPanelBg",
 					gutterFg: "toolDiffContext",
 					gutter,

@@ -1,3 +1,4 @@
+import { isAbsolute, relative } from "node:path";
 import {
 	type Component,
 	truncateToWidth,
@@ -5,10 +6,12 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import stripAnsi from "strip-ansi";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
-import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
+import { shortenPath } from "../../../core/tools/render-utils.js";
+import { highlightCode, theme } from "../theme/theme.js";
 import { normalizeErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
-import { renderDiffSeparator, renderRichDiff } from "./diff.js";
+import { renderDiff } from "./diff.js";
 import { keyHint } from "./keybinding-hints.js";
 import { toolPanelContentWidth, toolPanelLine } from "./tool-panel.js";
 
@@ -29,6 +32,8 @@ export interface IPythonCellState {
 	executionStarted?: boolean;
 	argsComplete?: boolean;
 	showImages?: boolean;
+	/** Session cwd — edit paths nested under it render relative, else absolute. */
+	cwd?: string;
 }
 
 interface DiffDisplay {
@@ -206,6 +211,18 @@ function formatDuration(durationMs: number | undefined): string | undefined {
 
 function hiddenLinesLabel(hidden: number): string {
 	return `… +${hidden} line${hidden === 1 ? "" : "s"}`;
+}
+
+// Relative to the session cwd when nested under it, else the absolute path.
+function displayEditPath(path: string, cwd: string | undefined): string {
+	if (cwd && isAbsolute(path)) {
+		const rel = relative(cwd, path);
+		if (rel && !rel.startsWith("..") && !isAbsolute(rel)) {
+			return rel;
+		}
+		return shortenPath(path);
+	}
+	return path;
 }
 
 function isImageBlock(block: IPythonCellContentBlock): boolean {
@@ -613,9 +630,7 @@ export class IPythonCellComponent implements Component {
 		}
 	}
 
-	// Edit diffs render in full regardless of expand state — file changes must be
-	// visible without expanding. Grouped by file: one block per file, edits shown
-	// as `⋮`-separated hunks.
+	// Edits always render in full, regardless of expand state. Grouped by file.
 	private renderDiffs(lines: string[], width: number, diffs: readonly DiffDisplay[], marker: string): void {
 		const diffsByPath = new Map<string, DiffDisplay[]>();
 		for (const diff of diffs) {
@@ -624,9 +639,7 @@ export class IPythonCellComponent implements Component {
 			else diffsByPath.set(diff.path, [diff]);
 		}
 		for (const [path, edits] of diffsByPath) {
-			// Blank line before every file block, including the first, so the diff
-			// stands clear of the summary line above it.
-			this.addBlank(lines, width);
+			this.addPlain(lines, "");
 			this.renderFileDiff(lines, width, path, edits, marker);
 		}
 	}
@@ -638,30 +651,30 @@ export class IPythonCellComponent implements Component {
 		edits: readonly DiffDisplay[],
 		marker: string,
 	): void {
-		// Diff rows span the full cli width — no panel side padding — so they read
-		// as one continuous block like the prompt bar.
-		const contentWidth = Math.max(1, width);
-		const language = getLanguageFromPath(path);
-
-		const rows: string[] = [];
 		let added = 0;
 		let removed = 0;
-		edits.forEach((edit, index) => {
+		const diffTexts: string[] = [];
+		edits.forEach((edit) => {
 			const { diff: diffText } = generateDiffString(edit.oldStr, edit.newStr, 4, edit.startLine ?? 1);
 			for (const row of diffText.split("\n")) {
 				if (row.startsWith("+")) added++;
 				else if (row.startsWith("-")) removed++;
 			}
-			if (index > 0) {
-				rows.push(renderDiffSeparator(contentWidth));
-			}
-			rows.push(...renderRichDiff(diffText, contentWidth, { language }));
+			diffTexts.push(diffText);
 		});
 
 		const counts = `${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`;
-		this.addWrapped(lines, "", `${marker} ${theme.fg("muted", "edit")} ${path}  ${counts}`, width);
+		const displayPath = displayEditPath(path, this.state.cwd);
+		this.addPlainWrapped(lines, `${marker} ${theme.fg("accent", displayPath)}  ${counts}`, width);
 
-		lines.push(...rows);
+		diffTexts.forEach((diffText, index) => {
+			if (index > 0) {
+				this.addPlain(lines, theme.fg("toolDiffContext", "⋮"));
+			}
+			for (const row of renderDiff(diffText).split("\n")) {
+				this.addPlainWrapped(lines, row, width);
+			}
+		});
 	}
 
 	private renderOutputText(
@@ -704,5 +717,22 @@ export class IPythonCellComponent implements Component {
 
 	private addBlank(lines: string[], width: number): void {
 		lines.push(toolPanelLine("", width));
+	}
+
+	// No-background line, indented one space to align with the summary line above.
+	private addPlain(lines: string[], text: string): void {
+		lines.push(` ${text}`);
+	}
+
+	private addPlainWrapped(lines: string[], text: string, width: number): void {
+		const indent = 1;
+		// Align wrapped rows under the `±N ` diff gutter so code stays under its line.
+		const gutter = stripAnsi(text).match(/^[+\- ]\s*\d+\s/)?.[0]?.length ?? 0;
+		const available = Math.max(1, width - indent);
+		const wrapped = wrapTextWithAnsi(text, available);
+		for (const [index, line] of (wrapped.length > 0 ? wrapped : [""]).entries()) {
+			const pad = index === 0 ? indent : indent + gutter;
+			lines.push(`${" ".repeat(pad)}${line}`);
+		}
 	}
 }
