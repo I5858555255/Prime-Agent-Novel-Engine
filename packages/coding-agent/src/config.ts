@@ -529,6 +529,11 @@ export function getClientErrorLogPath(): string {
 	return join(getLogsDir(), "client-errors.log");
 }
 
+/** Log file capturing agent-trace upload outcomes. */
+export function getAgentTracesLogPath(): string {
+	return join(getLogsDir(), "agent-traces.log");
+}
+
 /**
  * Log file for a daemon. The basename keeps it readable; a hash of the full
  * socket path makes it unique so two sockets that share a basename (e.g.

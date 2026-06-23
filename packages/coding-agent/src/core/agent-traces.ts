@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { VERSION } from "../config.js";
+import { appendRotatingLog, getAgentTracesLogPath, VERSION } from "../config.js";
 import { readFirstLineSync } from "../utils/file-lines.js";
 import type { AuthStorage } from "./auth-storage.js";
 import {
@@ -17,6 +17,7 @@ const MAX_TRACE_BYTES = 20 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const TRACE_UPLOAD_DEBOUNCE_MS = 1_000;
 const TRACE_UPLOAD_MIN_INTERVAL_MS = 60_000;
+const TRACE_UPLOAD_RETRY_DELAY_MS = 500;
 
 export type AgentTraceCredentialSource = "environment" | "stored" | "prime-inference" | "prime-cli";
 
@@ -74,6 +75,41 @@ function stringEnv(name: string): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Build a human-readable error string that includes the underlying cause.
+ * Node's `fetch` rejects with a terse `TypeError: fetch failed` and hides the
+ * real reason (DNS, connection refused, reset socket, TLS, ...) on `error.cause`.
+ * Surfacing it turns an opaque "fetch failed" into e.g. "fetch failed (ENOTFOUND)".
+ */
+function describeError(error: unknown): string {
+	if (!(error instanceof Error)) {
+		return String(error);
+	}
+	const cause = (error as { cause?: unknown }).cause;
+	if (isRecord(cause)) {
+		const code = typeof cause.code === "string" ? cause.code : undefined;
+		const causeMessage = typeof cause.message === "string" ? cause.message : undefined;
+		const detail = code ?? causeMessage;
+		if (detail && detail !== error.message) {
+			return `${error.message} (${detail})`;
+		}
+	}
+	return error.message;
+}
+
+/**
+ * A connection-level failure worth one retry: `fetch` rejected before any HTTP
+ * response (DNS, refused, reset, TLS), as opposed to a timeout/user abort. We key
+ * off `error.cause.code` since that's where undici puts the socket-level reason.
+ */
+function isRetriableNetworkError(error: unknown): boolean {
+	if (!(error instanceof Error) || error.name === "AbortError") {
+		return false;
+	}
+	const cause = (error as { cause?: unknown }).cause;
+	return isRecord(cause) && typeof cause.code === "string";
 }
 
 function stringField(data: Record<string, unknown>, key: string): string | undefined {
@@ -234,6 +270,45 @@ async function fetchWithTimeout(
 	}
 }
 
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		const timeout = setTimeout(finish, ms);
+		const onAbort = () => finish();
+		function finish() {
+			clearTimeout(timeout);
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/**
+ * `fetchWithTimeout` plus a single retry on transient connection-level failures
+ * (DNS/refused/reset/TLS). HTTP error responses, timeouts, and user aborts are not
+ * retried — those are returned/thrown as-is on the first attempt.
+ */
+async function fetchWithRetry(
+	fetchFn: typeof fetch,
+	url: string,
+	init: RequestInit,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<Response> {
+	try {
+		return await fetchWithTimeout(fetchFn, url, init, timeoutMs, signal);
+	} catch (error) {
+		if (signal?.aborted || !isRetriableNetworkError(error)) {
+			throw error;
+		}
+		await delay(TRACE_UPLOAD_RETRY_DELAY_MS, signal);
+		if (signal?.aborted) {
+			throw error;
+		}
+		return await fetchWithTimeout(fetchFn, url, init, timeoutMs, signal);
+	}
+}
+
 export async function getPrimeAgentTraceCredential(
 	authStorage: AuthStorage,
 	options: { reloadAuth?: boolean; configPath?: string } = {},
@@ -283,6 +358,42 @@ async function getAgentTracesEnabled(
 }
 
 export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Promise<AgentTraceUploadResult> {
+	const result = await performAgentTraceUpload(options);
+	logAgentTraceOutcome(options.sessionFile, result);
+	return result;
+}
+
+/**
+ * Record meaningful upload outcomes to a rotating log so failures are not lost in
+ * fire-and-forget callers (session teardown). Expected idle states (disabled, no/empty
+ * session) are intentionally skipped to keep the file signal-heavy.
+ */
+function logAgentTraceOutcome(sessionFile: string | undefined, result: AgentTraceUploadResult): void {
+	let line: string | undefined;
+	switch (result.status) {
+		case "uploaded":
+			line = `uploaded session ${result.sessionId} (${result.bytesStored} bytes)`;
+			break;
+		case "failed":
+			line = `upload failed${result.statusCode ? ` (HTTP ${result.statusCode})` : ""}: ${result.message}`;
+			break;
+		case "too_large":
+			line = `upload skipped: session is ${result.size} bytes (limit ${result.maxBytes})`;
+			break;
+		case "invalid_session":
+			line = `upload skipped: ${result.message}`;
+			break;
+		case "missing_credentials":
+			line = "upload skipped: no Prime credential configured (run /traces login)";
+			break;
+		default:
+			return;
+	}
+	const suffix = sessionFile ? ` [${sessionFile}]` : "";
+	appendRotatingLog(getAgentTracesLogPath(), `[${new Date().toISOString()}] ${line}${suffix}`);
+}
+
+async function performAgentTraceUpload(options: AgentTraceUploadOptions): Promise<AgentTraceUploadResult> {
 	if (!(await getAgentTracesEnabled(options))) {
 		return { status: "disabled" };
 	}
@@ -328,7 +439,7 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 	try {
 		body = await readFile(options.sessionFile, "utf8");
 	} catch (error) {
-		return { status: "failed", message: error instanceof Error ? error.message : String(error) };
+		return { status: "failed", message: describeError(error) };
 	}
 	if (!body.trim()) {
 		return { status: "empty_session" };
@@ -366,7 +477,7 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 
 	let response: Response;
 	try {
-		response = await fetchWithTimeout(
+		response = await fetchWithRetry(
 			fetchFn,
 			url,
 			{
@@ -378,7 +489,7 @@ export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Pr
 			options.signal,
 		);
 	} catch (error) {
-		return { status: "failed", message: error instanceof Error ? error.message : String(error) };
+		return { status: "failed", message: describeError(error) };
 	}
 
 	if (!response.ok) {
