@@ -529,7 +529,6 @@ export function getClientErrorLogPath(): string {
 	return join(getLogsDir(), "client-errors.log");
 }
 
-/** Log file capturing agent-trace upload outcomes. */
 export function getAgentTracesLogPath(): string {
 	return join(getLogsDir(), "agent-traces.log");
 }

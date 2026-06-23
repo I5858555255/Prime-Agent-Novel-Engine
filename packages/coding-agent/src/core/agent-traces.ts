@@ -77,8 +77,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Node's `fetch` hides the real reason on `error.cause`; surface it so a bare
-// "fetch failed" becomes e.g. "fetch failed (ENOTFOUND)".
 function describeError(error: unknown): string {
 	if (!(error instanceof Error)) {
 		return String(error);
