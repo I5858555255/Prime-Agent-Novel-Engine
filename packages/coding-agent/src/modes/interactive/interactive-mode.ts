@@ -5606,6 +5606,8 @@ export class InteractiveMode {
 		});
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
+		// Rebuild so the /effort argument hint reflects the new model's levels.
+		this.setupAutocompleteProvider();
 	}
 
 	private async getConnectionAvailableModels(): Promise<AgentConnectionModel[]> {

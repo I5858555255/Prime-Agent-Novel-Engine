@@ -808,6 +808,7 @@ describe("InteractiveMode model selection persistence", () => {
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		completeOnboardingIfCurrentModelReady(): void;
+		setupAutocompleteProvider(): void;
 	};
 
 	const createModel = (provider: string, id: string): AgentConnectionModel =>
@@ -836,6 +837,7 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.footer = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.setupAutocompleteProvider = vi.fn();
 
 		await fakeThis.applySelectedModel(model);
 
@@ -890,6 +892,7 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn(async () => {});
 		fakeThis.checkDaxnutsEasterEgg = vi.fn();
 		fakeThis.completeOnboardingIfCurrentModelReady = vi.fn();
+		fakeThis.setupAutocompleteProvider = vi.fn();
 
 		await fakeThis.handleModelCommand("gpt-5.5");
 
@@ -909,6 +912,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		runOnboardingFlow(): Promise<boolean>;
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+		setupAutocompleteProvider(): void;
 	};
 	type OnboardingFake = OnboardingHarness & {
 		connectionState: AgentConnectionState;
@@ -1037,6 +1041,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn();
 		fakeThis.checkDaxnutsEasterEgg = vi.fn();
 		fakeThis.applySelectedModel = applySelectedModel;
+		fakeThis.setupAutocompleteProvider = vi.fn();
 
 		await handleModelCommand.call(fakeThis, "prime-inference/openai/gpt-5.5");
 

@@ -149,6 +149,7 @@ describe("InteractiveMode /effort", () => {
 				patchConnectionState: (patch: Record<string, unknown>) => void;
 				footer: { invalidate: () => void };
 				updateEditorBorderColor: () => void;
+				setupAutocompleteProvider: () => void;
 			};
 			const applySelectedModel = (
 				InteractiveMode.prototype as unknown as {
@@ -156,12 +157,14 @@ describe("InteractiveMode /effort", () => {
 				}
 			).applySelectedModel;
 			const patchConnectionState = vi.fn();
+			const setupAutocompleteProvider = vi.fn();
 			const context: ModelContext = {
 				agentConnection: { setModel: vi.fn(async () => {}) },
 				settingsManager: { setDefaultModelAndProvider: vi.fn() },
 				patchConnectionState,
 				footer: { invalidate: vi.fn() },
 				updateEditorBorderColor: vi.fn(),
+				setupAutocompleteProvider,
 			};
 			const model = { provider: "anthropic", id: "claude-opus", reasoning: true };
 
@@ -171,6 +174,8 @@ describe("InteractiveMode /effort", () => {
 			expect(patch.model).toBe(model);
 			expect(patch.availableThinkingLevels).toContain("high");
 			expect(patch.availableThinkingLevels.length).toBeGreaterThan(1);
+			// Provider rebuild keeps the /effort argument hint in sync with the model.
+			expect(setupAutocompleteProvider).toHaveBeenCalledTimes(1);
 		});
 	});
 });
