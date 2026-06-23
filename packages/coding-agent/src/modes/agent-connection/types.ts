@@ -554,11 +554,8 @@ export interface AgentConnection {
 	updateHeartbeat(action: AgentHeartbeatUpdateAction): Promise<AgentCronJob | undefined>;
 	getUserMessagesForForking(): Promise<AgentConnectionUserMessage[]>;
 	getLastAssistantText(): Promise<string | undefined>;
-	/**
-	 * The system prompt for display. `prompt` is the exact string last sent to the model;
-	 * if no turn has run yet, `sent` is false and `prompt` is the freshly built base prompt.
-	 */
-	getSystemPrompt(): Promise<{ prompt: string; sent: boolean }>;
+	/** The system prompt currently in effect for the model (with any per-turn extension changes). */
+	getSystemPrompt(): Promise<string>;
 	getToolDefinition(name: string): Promise<AgentConnectionToolDefinition | undefined>;
 	setSessionEntryLabel(entryId: string, label: string | undefined): Promise<void>;
 	respondToExtensionUiRequest(requestId: string, response: AgentConnectionExtensionUiResponse): Promise<void>;

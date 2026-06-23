@@ -184,8 +184,8 @@ export class InProcessAgentConnection implements AgentConnection {
 		return this.session.getLastAssistantText();
 	}
 
-	async getSystemPrompt(): Promise<{ prompt: string; sent: boolean }> {
-		return this.session.getSystemPromptForDisplay();
+	async getSystemPrompt(): Promise<string> {
+		return this.session.systemPrompt;
 	}
 
 	async getToolDefinition(name: string): Promise<AgentConnectionToolDefinition | undefined> {

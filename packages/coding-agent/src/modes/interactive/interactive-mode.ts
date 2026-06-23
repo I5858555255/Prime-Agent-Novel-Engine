@@ -6721,9 +6721,8 @@ export class InteractiveMode {
 	}
 
 	private async handleSystemPromptCommand(): Promise<void> {
-		const { prompt, sent } = await this.agentConnection.getSystemPrompt();
-		const status = sent ? "exact, last sent" : "next turn, not yet sent";
-		const header = `${theme.bold("System Prompt")} ${theme.fg("dim", `(${prompt.length} chars, ${status})`)}`;
+		const prompt = await this.agentConnection.getSystemPrompt();
+		const header = `${theme.bold("System Prompt")} ${theme.fg("dim", `(${prompt.length} chars)`)}`;
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(header, 1, 0));
