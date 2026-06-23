@@ -77,15 +77,12 @@ const COMMENT_LINE_PATTERN = /^\s*#/;
 // Strip a leading `cd … &&` to surface the real command.
 const CD_PREFIX_PATTERN = /^\s*cd\s+[^&;|]+(?:&&|;)\s*/;
 
-// Matches a single SGR escape (the only ANSI we emit here): ESC [ … m.
 const SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 
 /**
- * Append a reset (`ESC[0m`) when `line` ends with foreground or background color
- * still open, so a span that wrapTextWithAnsi split across lines cannot bleed its
- * color into the trailing padding or the next line. Tracks fg and bg separately:
- * theme.fg closes with `39`, theme.bg with `49`, and `0`/empty resets both. A line
- * whose colors already net closed (or that has none) is returned unchanged.
+ * Append `ESC[0m` when `line` ends with a foreground or background color still
+ * open, so a span that wrapTextWithAnsi split across lines cannot bleed into the
+ * trailing padding or the next line.
  */
 function closeOpenSgr(line: string): string {
 	let fgOpen = false;
@@ -98,11 +95,8 @@ function closeOpenSgr(line: string): string {
 				fgOpen = false;
 				bgOpen = false;
 			} else if (code === 38 || code === 48) {
-				// Extended color: `38;5;n` / `38;2;r;g;b` (and 48 for bg). The trailing
-				// parameters are color data, not SGR codes, so consume them here rather
-				// than mis-reading an RGB component (e.g. 38) as a color code.
-				const open = code === 38;
-				if (open) fgOpen = true;
+				// Skip the color data of `38;5;n` / `38;2;r;g;b` so a component (e.g. 38) isn't read as a code.
+				if (code === 38) fgOpen = true;
 				else bgOpen = true;
 				const mode = Number(params[i + 1]);
 				i += mode === 2 ? 4 : mode === 5 ? 2 : 1;
@@ -736,10 +730,6 @@ export class IPythonCellComponent implements Component {
 		const wrapped = wrapTextWithAnsi(text, available);
 		for (const [index, line] of (wrapped.length > 0 ? wrapped : [""]).entries()) {
 			const linePrefix = index === 0 ? prefix : " ".repeat(visibleWidth(prefix));
-			// wrapTextWithAnsi re-opens active styles at the start of each continuation
-			// line but does not close them at the end, so a colored span split across
-			// lines leaks its foreground into the panel padding toolPanelLine adds (and
-			// into the next line). Close any still-open style so each line stands alone.
 			lines.push(toolPanelLine(linePrefix + closeOpenSgr(line), width));
 		}
 	}

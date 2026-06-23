@@ -5,13 +5,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 type CellState = ConstructorParameters<typeof IPythonCellComponent>[0];
 
-/**
- * Whether `line` ends with a foreground color still open. The panel background
- * legitimately wraps the whole line, so only a dangling *foreground* color
- * indicates a leak into the trailing padding (and, on screen, into the next
- * line). Tracks fg and bg separately the way the theme emits them: `39` closes
- * fg, `49` closes bg, `0`/empty resets both.
- */
+// True when `line` ends with a foreground color still open (a leak into the padding).
 function foregroundLeftOpen(line: string): boolean {
 	let fg = false;
 	for (const match of line.matchAll(/\x1b\[([0-9;]*)m/g)) {
@@ -21,8 +15,7 @@ function foregroundLeftOpen(line: string): boolean {
 			if (code === 0 || code === 39) {
 				fg = false;
 			} else if (code === 38) {
-				// Extended fg color: skip its data params (38;5;n or 38;2;r;g;b) so an
-				// RGB component is not mistaken for an SGR code.
+				// Skip the color data of 38;5;n / 38;2;r;g;b so a component isn't read as a code.
 				fg = true;
 				const mode = Number(params[i + 1]);
 				i += mode === 2 ? 4 : mode === 5 ? 2 : 1;
@@ -37,7 +30,6 @@ function foregroundLeftOpen(line: string): boolean {
 	return fg;
 }
 
-// A long output that is forced to wrap at narrow widths — the original bug.
 const WRAPPING_STATE: CellState = {
 	code: "import numpy as np\nresult = np.linspace(0, 100, 50)\nprint('the first element of the linspace array is', result[0])",
 	content: [
@@ -63,7 +55,6 @@ describe("IPythonCellComponent wrapping", () => {
 	});
 
 	it("never leaves a foreground color open at a wrapped line end", () => {
-		// Sweep the narrow widths that force code and output lines to wrap.
 		for (let width = 20; width <= 60; width++) {
 			const lines = new IPythonCellComponent(WRAPPING_STATE).render(width);
 			const leaks = lines.filter(foregroundLeftOpen);
@@ -82,7 +73,6 @@ describe("IPythonCellComponent wrapping", () => {
 	});
 
 	it("renders the same after a resize as a fresh render at the target width", () => {
-		// Resizing must look identical to having started at the new size.
 		const resized = new IPythonCellComponent(WRAPPING_STATE);
 		resized.render(100);
 		resized.invalidate();
@@ -93,11 +83,8 @@ describe("IPythonCellComponent wrapping", () => {
 	});
 
 	it("leaves non-wrapping (wide) output untouched", () => {
-		// At a wide width nothing wraps, so each styled span is already self-contained
-		// and we must not append spurious resets.
 		const lines = new IPythonCellComponent(WRAPPING_STATE).render(100);
 		expect(lines.some(foregroundLeftOpen)).toBe(false);
-		// No line should carry a redundant full reset followed only by padding.
 		expect(lines.every((line) => visibleWidth(line) === 100)).toBe(true);
 	});
 });
