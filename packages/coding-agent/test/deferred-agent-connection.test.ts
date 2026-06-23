@@ -17,7 +17,7 @@ const SEED: DeferredAgentConnectionSeed = {
 	model: MODEL,
 	thinkingLevel: "off",
 	scopedModels: [],
-	availableModels: [MODEL],
+	availableModels: () => [MODEL],
 	steeringMode: "all",
 	followUpMode: "all",
 	autoCompactionEnabled: true,
@@ -107,6 +107,18 @@ describe("DeferredAgentConnection", () => {
 		const state = await conn.getState();
 
 		expect(state.availableThinkingLevels).toEqual(["off"]);
+	});
+
+	test("re-evaluates availableModels on each read so login during onboarding shows models", async () => {
+		const { factory } = makeFactory();
+		let models: AgentConnectionModel[] = [];
+		const conn = new DeferredAgentConnection(factory, { ...SEED, availableModels: () => models });
+
+		expect(await conn.getAvailableModels()).toEqual([]);
+
+		models = [MODEL];
+		expect(await conn.getAvailableModels()).toEqual([MODEL]);
+		expect(factory).not.toHaveBeenCalled();
 	});
 
 	test("creates the session on first prompt and delegates", async () => {
