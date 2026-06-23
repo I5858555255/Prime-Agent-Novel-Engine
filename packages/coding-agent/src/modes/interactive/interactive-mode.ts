@@ -802,6 +802,10 @@ export class InteractiveMode {
 		if (effortCommand) {
 			effortCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
 				this.getThinkingLevelCompletions(prefix);
+			const levels = this.getAvailableThinkingLevels();
+			if (levels.length > 0) {
+				effortCommand.argumentHint = `[${levels.join("/")}]`;
+			}
 		}
 
 		const connectionCommands = this.connectionCommands;
