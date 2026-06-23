@@ -132,6 +132,8 @@ export interface CreateRlmSubagentRuntimeOptions {
 	rlmParentNodeId: string;
 	/** Source of the IPython cell that spawned this subagent, for display. */
 	spawnCode?: string;
+	/** Optional per-request output token cap for the child agent. */
+	maxTokens?: number;
 }
 
 export interface SubagentRuntimeHost {

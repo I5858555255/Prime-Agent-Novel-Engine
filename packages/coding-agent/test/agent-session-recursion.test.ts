@@ -882,6 +882,25 @@ print(_result.answer)
 		await expect(root._closePersistentRlmChild("helper")).resolves.toBeUndefined();
 	});
 
+	it("does not double-count usage across persistent sub-agent advances", async () => {
+		const root = createSession() as unknown as PersistentRlmSession;
+
+		await root._createPersistentRlmChild("helper");
+
+		// First advance: child produces one assistant message (default usage: input=7, output=3).
+		const first = await root._advancePersistentRlmChild("helper", "first question");
+		expect(first.usage).toEqual({ prompt_tokens: 7, completion_tokens: 3 });
+
+		// Second advance: child produces another assistant message with the same per-message usage.
+		// The returned usage must reflect only this advance, not the cumulative total.
+		const second = await root._advancePersistentRlmChild("helper", "second question");
+		expect(second.usage).toEqual({ prompt_tokens: 7, completion_tokens: 3 });
+
+		// Third advance: same — only the delta from this advance.
+		const third = await root._advancePersistentRlmChild("helper", "third question");
+		expect(third.usage).toEqual({ prompt_tokens: 7, completion_tokens: 3 });
+	});
+
 	it("reuses the existing session when a persistent name is created twice", async () => {
 		const root = createSession() as unknown as PersistentRlmSession;
 		const created = await root._createPersistentRlmChild("helper");

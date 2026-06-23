@@ -161,7 +161,7 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.js"
 import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
-import { addAssistantUsage, cloneUsage, emptyUsage } from "./usage.js";
+import { addAssistantUsage, cloneUsage, emptyUsage, subtractAssistantUsage } from "./usage.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -724,7 +724,10 @@ export class AgentSession {
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	/** Named persistent sub-agents created via rlm.send (kept alive across host requests). */
-	private _persistentRlmChildren = new Map<string, { runtime: RlmSubagentRuntime; sessionDir: string }>();
+	private _persistentRlmChildren = new Map<
+		string,
+		{ runtime: RlmSubagentRuntime; sessionDir: string; lastAttributedUsage: Usage; lastReturnedRlmUsage: RlmUsage }
+	>();
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -3855,6 +3858,7 @@ export class AgentSession {
 		spawnCode?: string;
 		sessionDir: string;
 		model: Model<any>;
+		maxTokens?: number;
 	}): CreateRlmSubagentRuntimeOptions {
 		return {
 			parentSession: this,
@@ -3872,6 +3876,7 @@ export class AgentSession {
 			rlmDepth: this._rlmDepth + 1,
 			rlmMaxDepth: this._rlmMaxDepth,
 			rlmParentNodeId: options.id,
+			maxTokens: options.maxTokens,
 		};
 	}
 
@@ -3922,6 +3927,7 @@ export class AgentSession {
 			thinkingBudgets: this.settingsManager.getThinkingBudgets(),
 			transport: this.settingsManager.getTransport(),
 			maxRetryDelayMs: this.settingsManager.getProviderRetrySettings().maxRetryDelayMs,
+			maxTokens: options.maxTokens,
 			toolExecution: this.agent.toolExecution,
 		});
 
@@ -4313,7 +4319,7 @@ export class AgentSession {
 	 * Create a persistent sub-agent session that survives across host requests.
 	 * Called by the rlm.send.create host handler.
 	 */
-	private async _createPersistentRlmChild(name: string, _maxTokens?: number): Promise<{ session_dir: string | null }> {
+	private async _createPersistentRlmChild(name: string, maxTokens?: number): Promise<{ session_dir: string | null }> {
 		// If already exists, just return its session dir
 		const existing = this._persistentRlmChildren.get(name);
 		if (existing) {
@@ -4339,12 +4345,15 @@ export class AgentSession {
 			prompt: `[persistent agent: ${name}]`,
 			sessionDir: childSessionDir,
 			model,
+			maxTokens,
 		});
 
 		const childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 		this._persistentRlmChildren.set(name, {
 			runtime: childRuntime,
 			sessionDir: childSessionDir,
+			lastAttributedUsage: emptyUsage(),
+			lastReturnedRlmUsage: emptyRlmUsage(),
 		});
 
 		return { session_dir: childSessionDir };
@@ -4366,14 +4375,32 @@ export class AgentSession {
 		await session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
 		await session.agent.waitForIdle();
 
+		// Guard: the child may have been closed while we were awaiting above.
+		if (!this._persistentRlmChildren.has(name)) {
+			throw new Error(`Persistent sub-agent '${name}' was closed during advance`);
+		}
+
 		const answer = session.getLastAssistantText() ?? "";
-		const usage = session._usageForCurrentMessages();
-		const assistantUsage = session._assistantUsageForCurrentMessages();
-		this._attributeRlmChildUsageToParent(assistantUsage, parentAssistant);
+		const cumulativeRlmUsage = session._usageForCurrentMessages();
+		const cumulativeAssistantUsage = session._assistantUsageForCurrentMessages();
+
+		// Compute deltas: only attribute/return usage from THIS advance, not prior ones.
+		const usageDelta = emptyUsage();
+		addAssistantUsage(usageDelta, cumulativeAssistantUsage);
+		subtractAssistantUsage(usageDelta, child.lastAttributedUsage);
+		child.lastAttributedUsage = cloneUsage(cumulativeAssistantUsage);
+
+		this._attributeRlmChildUsageToParent(usageDelta, parentAssistant);
+
+		const rlmUsageDelta: RlmUsage = {
+			prompt_tokens: cumulativeRlmUsage.prompt_tokens - child.lastReturnedRlmUsage.prompt_tokens,
+			completion_tokens: cumulativeRlmUsage.completion_tokens - child.lastReturnedRlmUsage.completion_tokens,
+		};
+		child.lastReturnedRlmUsage = { ...cumulativeRlmUsage };
 
 		return {
 			answer,
-			usage,
+			usage: rlmUsageDelta,
 			turns: session._assistantTurnCount(),
 			session_dir: child.sessionDir,
 		};
@@ -4389,6 +4416,14 @@ export class AgentSession {
 			return; // Already closed or never existed; idempotent
 		}
 		this._persistentRlmChildren.delete(name);
+		// Abort any in-flight advance so its prompt/waitForIdle settles before we
+		// dispose the runtime.  Without this, disposeAsync can tear down the child
+		// session while _advancePersistentRlmChild is still mid-await.
+		try {
+			await child.runtime.session.abort();
+		} catch {
+			// best effort — the session may already be idle
+		}
 		const childNodeId = `persistent-${name}`;
 		const subagentOptions = this._createRlmSubagentRuntimeOptions({
 			id: childNodeId,
