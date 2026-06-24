@@ -8,6 +8,7 @@ import {
 	buildSummarizationPrompt,
 	type CompactionSettings,
 	calculateContextTokens,
+	calculatePromptTokens,
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
@@ -209,6 +210,12 @@ describe("Token calculation", () => {
 	it("should handle zero values", () => {
 		const usage = createMockUsage(0, 0, 0, 0);
 		expect(calculateContextTokens(usage)).toBe(0);
+	});
+
+	it("calculatePromptTokens counts the prompt only, excluding output", () => {
+		// input=1000, output=500, cacheRead=200, cacheWrite=100 -> prompt = 1300
+		const usage = createMockUsage(1000, 500, 200, 100);
+		expect(calculatePromptTokens(usage)).toBe(1300);
 	});
 });
 
