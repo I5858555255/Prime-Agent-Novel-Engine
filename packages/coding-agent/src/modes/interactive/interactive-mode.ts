@@ -4324,9 +4324,20 @@ export class InteractiveMode {
 	}
 
 	private getTrayLocationLabel(): string | undefined {
-		const location = this.footerDataProvider.getGitBranch() ?? formatSplashCwd(this.getCurrentCwd());
 		const agentsHint = this.getAgentsViewTrayHint();
-		return [agentsHint, location].filter((label): label is string => label !== undefined).join("  ");
+		return [agentsHint, this.getModelTrayLabel()].filter((label): label is string => label !== undefined).join("  ");
+	}
+
+	private getModelTrayLabel(): string {
+		const model = this.getCurrentModel();
+		if (!model) {
+			return "—";
+		}
+		if (!model.reasoning) {
+			return model.name;
+		}
+		const level = this.connectionState?.thinkingLevel ?? "off";
+		return level === "off" ? model.name : `${model.name} • ${level}`;
 	}
 
 	private getAgentsViewTrayHint(): string | undefined {
@@ -4342,14 +4353,10 @@ export class InteractiveMode {
 	private getTrayContextLabel(): string | undefined {
 		const goalLabel = this.getTrayGoalLabel();
 		const usage = this.getConnectionContextUsage();
-		if (!usage) {
-			return goalLabel;
-		}
-		if (usage.percent === null) {
-			return goalLabel;
-		}
-		const remainingPercent = Math.max(0, Math.min(100, 100 - usage.percent));
-		const contextLabel = remainingPercent <= 50 ? `${Math.round(remainingPercent)}% context left` : undefined;
+		const contextLabel =
+			usage && usage.tokens !== null && usage.percent !== null
+				? `${formatTokenCount(usage.tokens)} (${Math.round(usage.percent)}%)`
+				: undefined;
 		return [goalLabel, contextLabel].filter((label) => label !== undefined).join(" · ") || undefined;
 	}
 
