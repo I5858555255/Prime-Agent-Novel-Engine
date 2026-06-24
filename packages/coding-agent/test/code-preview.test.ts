@@ -95,4 +95,13 @@ run_check()
 			text: "client = OpenAI(api_key=<redacted>)",
 		});
 	});
+
+	it("falls back when heredoc has no useful preview", () => {
+		const command = `npm run check
+python3 - <<'PY'
+import json
+from pathlib import Path
+PY`;
+		expect(previewBashCommand(command)).toEqual({ language: "bash", text: "npm check" });
+	});
 });

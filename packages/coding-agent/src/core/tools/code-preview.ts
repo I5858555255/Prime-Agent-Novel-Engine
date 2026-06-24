@@ -220,7 +220,7 @@ function bashLineScore(line: string, index: number): number {
 export function previewBashCommand(command: string): CodePreview {
 	const lines = command.split("\n");
 	const heredoc = previewHeredoc(lines);
-	if (heredoc) {
+	if (heredoc?.text) {
 		return { language: heredoc.language, text: descriptor(heredoc.text) };
 	}
 
