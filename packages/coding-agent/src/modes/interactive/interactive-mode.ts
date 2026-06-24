@@ -705,6 +705,8 @@ export class InteractiveMode {
 			() => this.getTrayOverrideLabel(),
 		);
 		this.childAgentSummary.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
+		// Fallback for Enter when the list emptied out while focused (no selection).
+		this.childAgentSummary.onOpen = () => this.focusEditor();
 		this.childAgentSummary.onCancel = () => this.focusEditor();
 		this.childAgentSummary.onExit = () => this.handleSubagentSummaryExit();
 		this.childAgentSummary.onChatAction = (data) => this.handleSubagentSummaryChatAction(data);

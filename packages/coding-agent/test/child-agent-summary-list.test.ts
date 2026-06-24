@@ -167,4 +167,16 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		summary.handleInput("\r");
 		expect(opened).toBe("a");
 	});
+
+	it("falls back to onOpen when confirm is pressed with no selection", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.focused = true;
+		summary.setNodes([]); // list emptied while focused: no selection
+		let fellBack = false;
+		summary.onOpen = () => {
+			fellBack = true;
+		};
+		summary.handleInput("\r");
+		expect(fellBack).toBe(true);
+	});
 });
