@@ -5871,6 +5871,7 @@ export class InteractiveMode {
 					},
 					subtitle: options?.subtitle,
 					getRows: () => this.ui.terminal.rows,
+					recentModels: this.settingsManager.getRecentModels(),
 				},
 			);
 			handle = this.showFullPaneOverlay(selector, 96);
