@@ -54,7 +54,6 @@ import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
 	type CompactionResult,
 	calculateContextTokens,
-	calculatePromptTokens,
 	collectEntriesForBranchSummary,
 	compact,
 	estimateContextTokens,
@@ -3016,7 +3015,7 @@ export class AgentSession {
 			return estimate.tokens;
 		}
 		if (assistantMessage.stopReason === "error") return undefined;
-		return calculatePromptTokens(assistantMessage.usage);
+		return calculateContextTokens(assistantMessage.usage);
 	}
 
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {

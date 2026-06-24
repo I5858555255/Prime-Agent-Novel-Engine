@@ -134,22 +134,14 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 // ============================================================================
 
 /**
- * Calculate total tokens billed for a turn (prompt + completion).
+ * Calculate total context tokens from usage.
  * Uses the native totalTokens field when available, falls back to computing from components.
- * Use this for cost/stats; for context-window budgeting use calculatePromptTokens.
+ *
+ * Includes output: the assistant's response becomes part of the prompt on the next
+ * request, so it counts toward the context the next turn will send.
  */
 export function calculateContextTokens(usage: Usage): number {
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-}
-
-/**
- * Tokens that occupy the context window: the prompt only (input + cached input).
- * Output tokens do not count against the context window, so they're excluded here.
- * This matches what providers enforce, keeping the context indicator and overflow
- * detection consistent.
- */
-export function calculatePromptTokens(usage: Usage): number {
-	return usage.input + usage.cacheRead + usage.cacheWrite;
 }
 
 /**
@@ -215,7 +207,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 		};
 	}
 
-	const usageTokens = calculatePromptTokens(usageInfo.usage);
+	const usageTokens = calculateContextTokens(usageInfo.usage);
 	let trailingTokens = 0;
 	for (let i = usageInfo.index + 1; i < messages.length; i++) {
 		trailingTokens += estimateTokens(messages[i]);

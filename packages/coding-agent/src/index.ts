@@ -29,7 +29,6 @@ export {
 	type CompactionResult,
 	type CutPointResult,
 	calculateContextTokens,
-	calculatePromptTokens,
 	collectEntriesForBranchSummary,
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,

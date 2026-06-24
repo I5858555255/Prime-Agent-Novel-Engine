@@ -19,8 +19,6 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		cacheWrite: number;
 		totalTokens?: number;
 	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
-	calculatePromptTokens: (usage: { input: number; cacheRead: number; cacheWrite: number }) =>
-		usage.input + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
 	compact: async () => ({
 		summary: "compacted",
