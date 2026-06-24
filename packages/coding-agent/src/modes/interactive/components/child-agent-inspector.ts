@@ -228,6 +228,8 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 	onCancel?: () => void;
 	onExit?: () => void;
 	onOpenDetail?: (nodeId: string) => void;
+	// Chat actions that should still work while the list holds focus.
+	onChatAction?: (data: string) => void;
 
 	constructor(
 		private readonly getLocationLabel: () => string | undefined = () => undefined,
@@ -303,7 +305,10 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		}
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.onCancel?.();
+			return;
 		}
+		// Keys the list doesn't own fall through to chat actions (expand tools, etc.).
+		this.onChatAction?.(data);
 	}
 
 	private isAtFirstRow(flat: readonly FlatChildAgentNode[]): boolean {

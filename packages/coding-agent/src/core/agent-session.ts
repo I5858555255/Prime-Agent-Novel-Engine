@@ -443,6 +443,10 @@ function addUsage(total: RlmUsage, usage: Usage): void {
 	total.completion_tokens += usage.output;
 }
 
+// Child-agent labels keep more of the prompt than other compacted text so the
+// TUI can surface where near-identical prompts diverge.
+export const RLM_CHILD_LABEL_MAX = 200;
+
 export function compactRlmText(text: string, maxLength = 160): string {
 	const compact = text.replace(/\s+/g, " ").trim();
 	if (compact.length <= maxLength) {
@@ -3984,7 +3988,9 @@ export class AgentSession {
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const transcript: RlmChildAgentTranscriptLine[] = [];
 		const structuredTranscript: RlmChildAgentStructuredTranscriptEntry[] = [];
-		const label = compactRlmText(prompt, 80) || "child agent";
+		// Keep enough of the prompt that near-identical prompts still differ in the
+		// label; the TUI elides shared prefixes, so it needs the divergence point.
+		const label = compactRlmText(prompt, RLM_CHILD_LABEL_MAX) || "child agent";
 		let answerPreview: string | undefined;
 		let durationMs: number | undefined;
 		const run: RlmChildRun = {
@@ -4997,7 +5003,7 @@ export class AgentSession {
 					children: [],
 				}),
 				id: run.id,
-				label: compactRlmText(run.prompt, 80) || "child agent",
+				label: compactRlmText(run.prompt, RLM_CHILD_LABEL_MAX) || "child agent",
 				status: run.status,
 			});
 		}

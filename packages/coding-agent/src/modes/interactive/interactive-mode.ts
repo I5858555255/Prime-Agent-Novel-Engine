@@ -707,6 +707,7 @@ export class InteractiveMode {
 		this.childAgentSummary.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
 		this.childAgentSummary.onCancel = () => this.focusEditor();
 		this.childAgentSummary.onExit = () => this.handleSubagentSummaryExit();
+		this.childAgentSummary.onChatAction = (data) => this.handleSubagentSummaryChatAction(data);
 		this.footerDataProvider = new FooterDataProvider(this.uiServices.getInitialCwd());
 		this.footer = new FooterComponent(this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.settingsManager.getCompactionEnabled());
@@ -4379,6 +4380,18 @@ export class InteractiveMode {
 			return;
 		}
 		this.focusEditor();
+	}
+
+	// Chat actions stay live while the subagent list holds focus; the editor's
+	// own handlers are bypassed because input routes only to the focused list.
+	private handleSubagentSummaryChatAction(data: string): void {
+		if (this.keybindings.matches(data, "app.tools.expand")) {
+			this.toggleToolOutputExpansion();
+			return;
+		}
+		if (this.keybindings.matches(data, "app.thinking.toggle")) {
+			this.toggleThinkingBlockVisibility();
+		}
 	}
 
 	private getTrayOverrideLabel(): string | undefined {

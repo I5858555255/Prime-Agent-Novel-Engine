@@ -96,6 +96,31 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		expect(out).not.toContain("Refactor the authentication module for tokens");
 	});
 
+	it("surfaces the divergence even when the shared prefix is very long", () => {
+		const prefix = "You are a sleeper subagent in a parallel batch. Please sleep for exactly ";
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([
+			{ ...node("a"), label: `${prefix}30 seconds then report done` },
+			{ ...node("b"), label: `${prefix}120 seconds then report done` },
+		]);
+		const out = stripAnsi(summary.render(130).join("\n"));
+		expect(out).toContain("30 seconds");
+		expect(out).toContain("120 seconds");
+	});
+
+	it("forwards unhandled keys to the chat action callback", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.focused = true;
+		summary.setNodes([node("a")]);
+		let forwarded: string | undefined;
+		summary.onChatAction = (data) => {
+			forwarded = data;
+		};
+		// Ctrl+O isn't a list key, so it should bubble to the chat action handler.
+		summary.handleInput("\x0f");
+		expect(forwarded).toBe("\x0f");
+	});
+
 	it("renders a separator line above the list", () => {
 		const summary = new ChildAgentSummaryComponent();
 		summary.setNodes([node("only")]);
