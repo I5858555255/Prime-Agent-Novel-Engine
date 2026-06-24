@@ -277,7 +277,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private filterModels(query: string): void {
-		if (query) {
+		if (query.trim()) {
 			const scored = fuzzyFilterScored(
 				this.activeModels,
 				query,

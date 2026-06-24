@@ -171,6 +171,35 @@ describe("ModelSelectorComponent provider actions", () => {
 		expect(row51).toBeLessThan(row5);
 	});
 
+	it("treats a whitespace-only query as no search and keeps the current model first", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "glm-5", name: "GLM 5", reasoning: true },
+				{ id: "glm-5.1", name: "GLM 5.1", reasoning: true },
+				{ id: "glm-5.2", name: "GLM 5.2", reasoning: true },
+			],
+		});
+		harnesses.push(harness);
+
+		const provider = harness.getModel("glm-5")!.provider;
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			harness.getModel("glm-5"),
+			harness.session.modelRegistry,
+			[],
+			() => {},
+			() => {},
+			"   ",
+			{ recentModels: [`${provider}/glm-5.2`, `${provider}/glm-5.1`] },
+		);
+
+		await waitForAsyncRender();
+
+		const lines = stripAnsi(selector.render(120).join("\n")).split("\n");
+		const firstRow = lines.findIndex((line) => /glm-5/.test(line));
+		expect(/glm-5(?![.\d])/.test(lines[firstRow] ?? "")).toBe(true);
+	});
+
 	it("keeps scoped model help within a short terminal viewport", async () => {
 		const harness = await createHarness({
 			models: Array.from({ length: 12 }, (_, index) => ({
