@@ -95,6 +95,14 @@ export class VirtualTerminal implements Terminal {
 		this.xterm.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
 	}
 
+	enterAltScreen(): void {
+		this.write("\x1b[?1049h");
+	}
+
+	leaveAltScreen(): void {
+		this.write("\x1b[?1049l");
+	}
+
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
 		this.xterm.write(`\x1b]0;${title}\x07`);

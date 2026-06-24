@@ -57,6 +57,12 @@ export interface Terminal {
 	clearFromCursor(): void; // Clear from cursor to end of screen
 	clearScreen(): void; // Clear entire screen and move cursor to (0,0)
 
+	// Alternate screen buffer. The primary screen (and its scrollback) is left
+	// untouched while the alt screen is active, so a full-screen view can be
+	// shown and dismissed without disturbing the transcript history.
+	enterAltScreen(): void;
+	leaveAltScreen(): void;
+
 	// Title operations
 	setTitle(title: string): void; // Set terminal window title
 
@@ -424,6 +430,14 @@ export class ProcessTerminal implements Terminal {
 
 	clearScreen(): void {
 		process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
+	}
+
+	enterAltScreen(): void {
+		process.stdout.write("\x1b[?1049h");
+	}
+
+	leaveAltScreen(): void {
+		process.stdout.write("\x1b[?1049l");
 	}
 
 	setTitle(title: string): void {

@@ -273,6 +273,11 @@ export class TUI extends Container {
 		focusOrder: number;
 	}[] = [];
 
+	// Full-screen pager rendered on the alternate screen. While set, doRender
+	// paints only this component and the primary screen (transcript + scrollback)
+	// is left frozen, so the pager can be dismissed without disturbing history.
+	private pager: { component: Component; preFocus: Component | null } | null = null;
+
 	constructor(terminal: Terminal, showHardwareCursor?: boolean) {
 		super();
 		this.terminal = terminal;
@@ -396,6 +401,40 @@ export class TUI extends Container {
 			},
 			isFocused: () => this.focusedComponent === component,
 		};
+	}
+
+	/**
+	 * Show a full-screen pager on the alternate screen. The primary screen
+	 * (transcript and its scrollback) is preserved untouched until closePager()
+	 * restores it. The component receives focus and all input while active.
+	 */
+	showPager(component: Component): void {
+		if (this.pager) {
+			this.closePager();
+		}
+		this.pager = { component, preFocus: this.focusedComponent };
+		this.terminal.enterAltScreen();
+		this.terminal.hideCursor();
+		this.setFocus(component);
+		// The alt screen starts blank and differs from the primary frame, so the
+		// next render must repaint from scratch rather than diff against it.
+		this.requestRender(true);
+	}
+
+	/** True while a full-screen pager is active. */
+	hasPager(): boolean {
+		return this.pager !== null;
+	}
+
+	/** Dismiss the pager and restore the primary screen and previous focus. */
+	closePager(): void {
+		if (!this.pager) return;
+		const { preFocus } = this.pager;
+		this.pager = null;
+		this.terminal.leaveAltScreen();
+		this.setFocus(preFocus);
+		// Repaint the restored primary screen from scratch.
+		this.requestRender(true);
 	}
 
 	/** Hide the topmost overlay and restore previous focus. */
@@ -969,8 +1008,31 @@ export class TUI extends Container {
 		return null;
 	}
 
+	// Paint the pager full-screen on the alt screen. The pager renders exactly
+	// the visible window for the current size, so this clears and rewrites the
+	// whole screen each frame — cheap on the alt buffer and free of the
+	// transcript's differential/scrollback bookkeeping.
+	private renderPager(): void {
+		if (!this.pager) return;
+		const width = this.terminal.columns;
+		const height = this.terminal.rows;
+		const lines = this.pager.component.render(width).slice(0, height);
+		let buffer = "\x1b[?2026h\x1b[2J\x1b[H";
+		for (let i = 0; i < lines.length; i++) {
+			if (i > 0) buffer += "\r\n";
+			buffer += "\x1b[2K";
+			buffer += lines[i];
+		}
+		buffer += "\x1b[?2026l";
+		this.terminal.write(buffer);
+	}
+
 	private doRender(): void {
 		if (this.stopped) return;
+		if (this.pager) {
+			this.renderPager();
+			return;
+		}
 		// One-shot: consume here so it never leaks into a later render.
 		const preserveViewport = this.preserveViewportOnNextRender;
 		this.preserveViewportOnNextRender = false;

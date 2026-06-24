@@ -821,3 +821,61 @@ describe("TUI above-viewport changes on a tall transcript", () => {
 		tui.stop();
 	});
 });
+
+describe("TUI full-screen pager", () => {
+	it("enters the alt screen and paints the pager full-screen", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const main = new TestComponent();
+		main.lines = Array.from({ length: 30 }, (_, i) => `Main ${i}`);
+		tui.addChild(main);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		const pager = new TestComponent();
+		pager.lines = ["Pager header", "Pager body"];
+		tui.showPager(pager);
+		await terminal.waitForRender();
+
+		assert.ok(tui.hasPager(), "pager is active");
+		assert.ok(terminal.getWrites().includes("\x1b[?1049h"), "enters the alternate screen");
+		const viewport = terminal.getViewport();
+		assert.ok(
+			viewport.some((l) => l.includes("Pager header")),
+			"pager content is painted",
+		);
+		assert.ok(!viewport.some((l) => l.includes("Main 29")), "main transcript is not painted in the pager");
+
+		tui.stop();
+	});
+
+	it("leaves the alt screen and restores the main view on close", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const main = new TestComponent();
+		main.lines = Array.from({ length: 30 }, (_, i) => `Main ${i}`);
+		tui.addChild(main);
+		tui.start();
+		await terminal.waitForRender();
+
+		const pager = new TestComponent();
+		pager.lines = ["Pager body"];
+		tui.showPager(pager);
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		tui.closePager();
+		await terminal.waitForRender();
+
+		assert.ok(!tui.hasPager(), "pager is dismissed");
+		assert.ok(terminal.getWrites().includes("\x1b[?1049l"), "leaves the alternate screen");
+		const viewport = terminal.getViewport();
+		assert.ok(
+			viewport.some((l) => l.includes("Main 29")),
+			"main transcript is restored",
+		);
+
+		tui.stop();
+	});
+});

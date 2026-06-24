@@ -159,6 +159,7 @@ import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
 import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
+import { TranscriptPager } from "./components/transcript-pager.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
@@ -3143,6 +3144,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
+		this.defaultEditor.onAction("app.transcript.open", () => this.openTranscriptPager());
 		this.defaultEditor.onAction("app.subagents.focus", () => this.focusChildAgentInspector());
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
@@ -5101,6 +5103,36 @@ export class InteractiveMode {
 		// otherwise force a full redraw that scrolls to the top and replays the
 		// whole transcript. Keep the user anchored at their current position.
 		this.ui.requestRenderPreservingViewport();
+	}
+
+	// Render the whole transcript with every block expanded, regardless of the
+	// inline expand state, then restore it. Inline children all track the shared
+	// toolOutputExpanded state, so restoring to it is sufficient.
+	private renderExpandedTranscript(width: number): string[] {
+		const expandables = this.chatContainer.children.filter((c): c is Component & Expandable => isExpandable(c));
+		for (const child of expandables) {
+			child.setExpanded(true);
+		}
+		try {
+			return this.chatContainer.render(width);
+		} finally {
+			for (const child of expandables) {
+				child.setExpanded(this.toolOutputExpanded);
+			}
+		}
+	}
+
+	private openTranscriptPager(): void {
+		if (this.ui.hasPager()) {
+			return;
+		}
+		const pager = new TranscriptPager(
+			"Transcript — full history",
+			(width) => this.renderExpandedTranscript(width),
+			this.ui.terminal,
+			() => this.ui.closePager(),
+		);
+		this.ui.showPager(pager);
 	}
 
 	private toggleThinkingBlockVisibility(): void {

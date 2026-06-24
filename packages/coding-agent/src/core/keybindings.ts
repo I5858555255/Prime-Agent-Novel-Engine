@@ -20,6 +20,7 @@ export interface AppKeybindings {
 	"app.provider.add": true;
 	"app.tools.expand": true;
 	"app.thinking.toggle": true;
+	"app.transcript.open": true;
 	"app.subagents.focus": true;
 	"app.session.toggleNamedFilter": true;
 	"app.editor.external": true;
@@ -81,8 +82,12 @@ export const KEYBINDINGS = {
 	"app.provider.add": { defaultKeys: "ctrl+p", description: "Add provider" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.thinking.toggle": {
-		defaultKeys: "ctrl+t",
+		defaultKeys: "alt+t",
 		description: "Toggle thinking blocks",
+	},
+	"app.transcript.open": {
+		defaultKeys: "ctrl+t",
+		description: "Open full transcript",
 	},
 	"app.subagents.focus": {
 		defaultKeys: "alt+a",
@@ -249,6 +254,7 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	selectModel: "app.model.select",
 	expandTools: "app.tools.expand",
 	toggleThinking: "app.thinking.toggle",
+	openTranscript: "app.transcript.open",
 	focusSubagents: "app.subagents.focus",
 	toggleSessionNamedFilter: "app.session.toggleNamedFilter",
 	externalEditor: "app.editor.external",

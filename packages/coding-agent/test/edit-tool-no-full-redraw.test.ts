@@ -26,6 +26,8 @@ class FakeTerminal implements Terminal {
 	clearLine(): void {}
 	clearFromCursor(): void {}
 	clearScreen(): void {}
+	enterAltScreen(): void {}
+	leaveAltScreen(): void {}
 	setTitle(_title: string): void {}
 	setProgress(_active: boolean): void {}
 
