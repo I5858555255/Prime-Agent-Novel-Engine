@@ -348,9 +348,9 @@ export class AgentDaemon {
 			} catch {
 				// Marking is best-effort; the session still works unrestored.
 			}
-			// Restore the last persisted status so it shows before the first sweep.
-			this.summarizer.seed(state);
 		}
+		// Restore the last persisted status so it shows before the first sweep.
+		this.summarizer.seed(state);
 		return state;
 	}
 

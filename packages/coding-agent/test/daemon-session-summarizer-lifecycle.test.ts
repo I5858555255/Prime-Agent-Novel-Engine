@@ -7,7 +7,7 @@ import { DaemonSessionSummarizer } from "../src/modes/daemon/daemon-session-summ
 const SETTLE_MS = 2000;
 
 function makeState(
-	opts: { working?: boolean; messages?: number; kind?: "top-level" | "subagent" } = {},
+	opts: { working?: boolean; messages?: number; kind?: "top-level" | "subagent"; persisted?: unknown } = {},
 ): ActiveSessionState {
 	const appended: unknown[] = [];
 	const state = {
@@ -22,7 +22,10 @@ function makeState(
 				messages: Array.from({ length: opts.messages ?? 2 }, () => ({ role: "user", content: "hi" })),
 				state: { streamingMessage: undefined },
 				modelRegistry: {},
-				sessionManager: { appendAgentStatus: (s: unknown) => appended.push(s) },
+				sessionManager: {
+					appendAgentStatus: (s: unknown) => appended.push(s),
+					getLatestAgentStatus: () => opts.persisted,
+				},
 			},
 		},
 	} as unknown as ActiveSessionState;
@@ -139,5 +142,14 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(generate).toHaveBeenCalledOnce();
 		expect(state.summaryState).toMatchObject({ summary: "Auditing the migration scripts", taskState: "completed" });
 		expect((state as unknown as { appendedStatuses: unknown[] }).appendedStatuses).toHaveLength(1);
+	});
+
+	test("seeds a subagent's persisted recap into memory", () => {
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, vi.fn());
+		const persisted = { summary: "Reviewing the diff", taskState: "needs_input", basedOnMessageCount: 3 };
+		const state = makeState({ kind: "subagent", persisted });
+
+		summarizer.seed(state);
+		expect(state.summaryState).toEqual(persisted);
 	});
 });
