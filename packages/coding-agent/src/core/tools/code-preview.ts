@@ -51,7 +51,12 @@ function truncateDescriptor(text: string): string {
 function redactNoise(text: string): string {
 	return text
 		.replace(/[A-Za-z0-9+/]{80,}={0,2}/g, "<blob>")
-		.replace(/([A-Z_]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Z_]*)=\S+/gi, "$1=<redacted>")
+		.replace(/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*=\s*(["'])[^"']*\2/gi, "$1=<redacted>")
+		.replace(
+			/\b((?=\w*(?:token|key|secret|password))[A-Za-z_]\w*)\s*=\s*(?!<redacted>)(?!["'])\S+/gi,
+			"$1=<redacted>",
+		)
+		.replace(/(["'])sk-[^"']+\1/g, "$1<redacted>$1")
 		.replace(/(["']).{160,}\1/g, "$1…$1");
 }
 
@@ -152,6 +157,7 @@ function splitCommandChain(line: string): string[] {
 }
 
 function heredocBody(lines: readonly string[], startIndex: number, delimiter: string): string | undefined {
+	// While args stream, preview the partial heredoc body rather than the low-signal heredoc opener.
 	const body: string[] = [];
 	for (let i = startIndex + 1; i < lines.length; i++) {
 		const line = lines[i] ?? "";

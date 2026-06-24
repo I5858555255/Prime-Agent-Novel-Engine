@@ -338,7 +338,7 @@ export class IPythonCellComponent implements Component {
 		const parts = [`${this.marker(details)} ${theme.fg("muted", languageLabel)}`];
 
 		if (preview.text) {
-			parts.push(this.highlightInputLine(preview.text, true));
+			parts.push(this.highlightInputLine(preview.text, preview.language === "bash"));
 		} else if (!this.state.executionStarted) {
 			parts.push(theme.fg("muted", "waiting for code"));
 		}

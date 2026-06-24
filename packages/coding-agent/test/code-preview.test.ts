@@ -84,4 +84,15 @@ run_check()
 `;
 		expect(previewPythonCode(code)).toEqual({ language: "python", text: "run_check()" });
 	});
+
+	it("redacts sensitive python preview values", () => {
+		expect(previewPythonCode('password = "supersecretvalue"')).toEqual({
+			language: "python",
+			text: "password=<redacted>",
+		});
+		expect(previewPythonCode('client = OpenAI(api_key="sk-testsecretvalue")')).toEqual({
+			language: "python",
+			text: "client = OpenAI(api_key=<redacted>)",
+		});
+	});
 });
