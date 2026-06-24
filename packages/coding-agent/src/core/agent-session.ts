@@ -443,16 +443,19 @@ function addUsage(total: RlmUsage, usage: Usage): void {
 	total.completion_tokens += usage.output;
 }
 
-// Child-agent labels keep more of the prompt than other compacted text so the
-// TUI can surface where near-identical prompts diverge.
-export const RLM_CHILD_LABEL_MAX = 200;
-
 export function compactRlmText(text: string, maxLength = 160): string {
 	const compact = text.replace(/\s+/g, " ").trim();
 	if (compact.length <= maxLength) {
 		return compact;
 	}
 	return `${compact.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+// Child-agent label: collapse to one line but keep the full prompt — the TUI
+// truncates to the visible width and elides shared prefixes, so capping here
+// would only hide the divergence between near-identical sibling prompts.
+export function rlmChildLabel(prompt: string): string {
+	return prompt.replace(/\s+/g, " ").trim() || "child agent";
 }
 
 function readTextBlocks(content: string | Array<{ type: string; text?: string }>): string {
@@ -3988,9 +3991,7 @@ export class AgentSession {
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const transcript: RlmChildAgentTranscriptLine[] = [];
 		const structuredTranscript: RlmChildAgentStructuredTranscriptEntry[] = [];
-		// Keep enough of the prompt that near-identical prompts still differ in the
-		// label; the TUI elides shared prefixes, so it needs the divergence point.
-		const label = compactRlmText(prompt, RLM_CHILD_LABEL_MAX) || "child agent";
+		const label = rlmChildLabel(prompt);
 		let answerPreview: string | undefined;
 		let durationMs: number | undefined;
 		const run: RlmChildRun = {
@@ -5003,7 +5004,7 @@ export class AgentSession {
 					children: [],
 				}),
 				id: run.id,
-				label: compactRlmText(run.prompt, RLM_CHILD_LABEL_MAX) || "child agent",
+				label: rlmChildLabel(run.prompt),
 				status: run.status,
 			});
 		}
