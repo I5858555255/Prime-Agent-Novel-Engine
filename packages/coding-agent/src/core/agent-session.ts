@@ -131,6 +131,7 @@ import {
 	type RefinementResult,
 	saveHarnessState,
 } from "./refinement/index.js";
+import { resolveConfigValue } from "./resolve-config-value.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import {
 	type CreateRlmSubagentRuntimeOptions,
@@ -159,6 +160,7 @@ import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, cloneUsage, emptyUsage } from "./usage.js";
+import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR } from "./websearch-credential.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -3737,14 +3739,43 @@ export class AgentSession {
 		if (rlmSessionDir) {
 			env.RLM_SESSION_DIR = rlmSessionDir;
 		}
-		// The bundled websearch skill resolves its own Serper key (env var, then
-		// auth.json), so it works even when the kernel started before /login. Export
-		// the resolved agent dir so the skill finds auth.json under a programmatic
-		// (SDK) agentDir, not just the default ~/.prime/agent.
+		this._addWebsearchKeyEnv(env);
+		return env;
+	}
+
+	/**
+	 * Make the bundled websearch skill's Serper key available to the kernel.
+	 *
+	 * The stored credential may be a literal key, an env-var name, or a `!command`
+	 * reference; AuthStorage knows how to resolve all three, so we resolve it here
+	 * (using the session's own auth storage — correct even for a programmatic SDK
+	 * agentDir) and inject the result. Only done when the bundled websearch skill is
+	 * active, so the key isn't exposed to kernels that can't use it. A key already in
+	 * the process env wins. Covers the kernel's initial build; for a key added via
+	 * /login mid-session the skill also reads auth.json directly.
+	 */
+	private _addWebsearchKeyEnv(env: Record<string, string>): void {
+		if (process.env[SERPER_ENV_VAR]?.trim()) {
+			return;
+		}
+		if (!this.settingsManager.getEnableBuiltinSkills() || !this.settingsManager.getBundledWebsearchEnabled()) {
+			return;
+		}
+		// Export an explicitly-configured agent dir so the skill's own auth.json read
+		// (used for keys added mid-session) finds the caller's directory. Only when
+		// explicitly set — the default is already what the skill falls back to.
 		if (this._agentDir) {
 			env.PRIME_AGENT_CODING_AGENT_DIR = this._agentDir;
 		}
-		return env;
+
+		const cred = this._modelRegistry.authStorage.get(SERPER_CREDENTIAL_ID);
+		if (cred?.type !== "api_key") {
+			return;
+		}
+		const resolved = resolveConfigValue(cred.key)?.trim();
+		if (resolved) {
+			env[SERPER_ENV_VAR] = resolved;
+		}
 	}
 
 	// Undefined when there's no persistent artifact dir (e.g. the viewer client):

@@ -42,15 +42,25 @@ def _resolve_api_key() -> str:
         auth = json.loads((_agent_dir() / "auth.json").read_text())
         cred = auth.get("serper") if isinstance(auth, dict) else None
         if isinstance(cred, dict) and cred.get("type") == "api_key":
-            key = str(cred.get("key") or "").strip()
-            # auth.json may store keys as "!cmd" command references; we can't run
-            # those here, so treat them as unset (the agent dir env var should
-            # already carry the resolved value when one is configured that way).
-            if key and not key.startswith("!"):
-                return key
+            return _resolve_config_value(str(cred.get("key") or ""))
     except (OSError, ValueError):
         pass
     return ""
+
+
+def _resolve_config_value(value: str) -> str:
+    """Mirror AuthStorage's key resolution for the common cases.
+
+    Stored keys may be a literal, an env-var name, or a "!command" reference.
+    The agent already resolves and injects the key at kernel build time; this
+    fallback (for keys added mid-session) handles literals and env-var names.
+    "!command" references can't be run safely here, so they're treated as unset
+    and resolved on the next reload via the injected env var.
+    """
+    value = value.strip()
+    if not value or value.startswith("!"):
+        return ""
+    return (os.environ.get(value) or value).strip()
 
 
 def _format_serper_results(data: dict, query: str, num_results: int = 5) -> str:

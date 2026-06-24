@@ -857,9 +857,12 @@ describe("AgentSession RLM session dir", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	function createSession(sessionManager: SessionManager, agentDir?: string): AgentSession {
+	function createSession(sessionManager: SessionManager, agentDir?: string, serperKey?: string): AgentSession {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		if (serperKey !== undefined) {
+			authStorage.set("serper", { type: "api_key", key: serperKey });
+		}
 		const agent = new Agent({
 			convertToLlm,
 			getApiKey: () => "test-key",
@@ -915,5 +918,35 @@ describe("AgentSession RLM session dir", () => {
 		const root = createSession(SessionManager.inMemory(tempDir));
 		const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
 		expect(env.PRIME_AGENT_CODING_AGENT_DIR).toBeUndefined();
+	});
+
+	it("injects a literal stored Serper key into the kernel", () => {
+		const previous = process.env.SERPER_API_KEY;
+		delete process.env.SERPER_API_KEY;
+		try {
+			const root = createSession(SessionManager.inMemory(tempDir), undefined, "literal-serper-key");
+			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+			expect(env.SERPER_API_KEY).toBe("literal-serper-key");
+		} finally {
+			if (previous === undefined) delete process.env.SERPER_API_KEY;
+			else process.env.SERPER_API_KEY = previous;
+		}
+	});
+
+	it("resolves an env-var-reference Serper key before injecting it", () => {
+		const previousKey = process.env.SERPER_API_KEY;
+		const previousRef = process.env.MY_SERPER_REF;
+		delete process.env.SERPER_API_KEY;
+		process.env.MY_SERPER_REF = "resolved-secret";
+		try {
+			const root = createSession(SessionManager.inMemory(tempDir), undefined, "MY_SERPER_REF");
+			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+			expect(env.SERPER_API_KEY).toBe("resolved-secret");
+		} finally {
+			if (previousKey === undefined) delete process.env.SERPER_API_KEY;
+			else process.env.SERPER_API_KEY = previousKey;
+			if (previousRef === undefined) delete process.env.MY_SERPER_REF;
+			else process.env.MY_SERPER_REF = previousRef;
+		}
 	});
 });

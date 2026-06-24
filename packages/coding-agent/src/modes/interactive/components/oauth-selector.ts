@@ -29,6 +29,8 @@ export function compareAuthSelectorProviders(a: AuthSelectorProvider, b: AuthSel
 
 const PREFERRED_VISIBLE_PROVIDERS = 8;
 const PROVIDER_LIST_RESERVED_ROWS = 7;
+/** Extra fixed rows the Providers/Services tab bar (text + spacer) consumes. */
+const TAB_BAR_RESERVED_ROWS = 2;
 const PROVIDER_SCROLL_INDICATOR_ROWS = 1;
 
 /**
@@ -314,12 +316,17 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		}
 	}
 
+	private get reservedRows(): number {
+		// The tab bar (text line + spacer) only renders when >1 category is present.
+		return this.tabBar ? PROVIDER_LIST_RESERVED_ROWS + TAB_BAR_RESERVED_ROWS : PROVIDER_LIST_RESERVED_ROWS;
+	}
+
 	private updateLayout(): void {
 		this.listLayout = getMenuListLayout({
 			getRows: this.viewport.getRows,
 			preferredVisibleItems: PREFERRED_VISIBLE_PROVIDERS,
 			totalItems: this.filteredProviders.length,
-			reservedRows: PROVIDER_LIST_RESERVED_ROWS,
+			reservedRows: this.reservedRows,
 			comfortableItemRows: 3,
 			compactItemRows: 2,
 			scrollIndicatorRows: PROVIDER_SCROLL_INDICATOR_ROWS,
