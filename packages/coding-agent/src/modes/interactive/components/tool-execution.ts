@@ -246,11 +246,23 @@ export class ToolExecutionComponent extends Container {
 		if (this.hideComponent) {
 			return [];
 		}
-		// Refresh the animated glyph without rebuilding the whole panel.
-		if (this.executionStarted && !this.result && !this.usesSelfRenderShell()) {
+		// Refresh the animated glyph without rebuilding the whole panel, for as long
+		// as panelStatus() is still animating (including partial streaming results).
+		if (this.isStatusAnimating() && !this.usesSelfRenderShell()) {
 			this.contentPanel.setHeader(this.panelHeader());
 		}
 		return super.render(width);
+	}
+
+	private isStatusAnimating(): boolean {
+		if (!this.executionStarted) {
+			return false;
+		}
+		// Matches panelStatus(): animating until a non-partial or error result lands.
+		if (this.result && !this.isPartial) {
+			return false;
+		}
+		return !this.result?.isError;
 	}
 
 	private usesSelfRenderShell(): boolean {

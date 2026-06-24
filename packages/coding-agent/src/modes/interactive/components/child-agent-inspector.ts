@@ -450,7 +450,9 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		const timeWidth = 6;
 		// Fixed columns consume: icon + space, the label gap, and a space before time.
 		const fixed = visibleWidth(indent) + visibleWidth(rawIcon) + 1 + labelWidth + SUMMARY_LABEL_GAP + 1 + timeWidth;
-		const promptWidth = Math.max(0, Math.floor((width - fixed) / 2));
+		// The prompt may use all remaining space; the elision keeps it short and the
+		// gap fill still right-aligns the time.
+		const promptWidth = Math.max(0, width - fixed);
 		const prompt = this.elidePrompt(entry.node.label, sharedPrefix, sharedSuffix, promptWidth);
 		const promptCell = theme.fg("dim", prompt);
 		const labelGap = " ".repeat(SUMMARY_LABEL_GAP);
@@ -474,10 +476,9 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 	// Coloring is applied by the caller so the trailing ellipsis matches the text.
 	private elidePrompt(label: string, sharedPrefix: string, sharedSuffix: string, width: number): string {
 		const text = this.elideAroundDiff(label, sharedPrefix, sharedSuffix);
-		if (visibleWidth(text) <= width) {
-			return text;
-		}
-		return `${text.slice(0, Math.max(0, width - 1))}…`;
+		// Column-aware truncation (handles wide/combining chars), with the ellipsis
+		// reserved inside the budget rather than appended past it.
+		return truncateToWidth(text, Math.max(0, width), "…");
 	}
 
 	// Window the prompt around its divergence: "<leading context>…<~2 words before

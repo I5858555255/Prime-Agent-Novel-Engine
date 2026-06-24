@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
 	type ChildAgentInspectorNode,
@@ -82,6 +83,17 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		const out = stripAnsi(summary.render(80).join("\n"));
 		expect(out).toContain("Subagent 1");
 		expect(out).toContain("Subagent 2");
+	});
+
+	it("never exceeds the row width with wide (CJK) characters", () => {
+		const wide = "実行するタスクは非常に長い説明を含んでいてこれは折り返しのテストです".repeat(3);
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([{ ...node("a"), label: wide }]);
+		for (const width of [40, 60, 80]) {
+			for (const line of summary.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
 	});
 
 	it("elides a shared prompt prefix so rows surface where they differ", () => {

@@ -2359,17 +2359,18 @@ export class InteractiveMode {
 			this.workingStartedAt === undefined
 				? undefined
 				: this.formatWorkingElapsed(Date.now() - this.workingStartedAt);
-		if (this.workingMessage !== undefined) {
-			// Extensions and tool bootstrap own the message; keep the plain "<message> <elapsed>" form.
-			return elapsed === undefined ? this.workingMessage : `${this.workingMessage} ${elapsed}`;
-		}
 		const status = this.activityTracker.getStatus();
 		const runningSubagents = this.countRunningChildAgents();
-		// Subagents-only: just the count, no elapsed timer (it resets on view return).
+		// Subagents-only (turn ended, subagents still running): just the count, no
+		// elapsed timer (it resets on view return) and no stale extension message.
 		if (!this.isAgentStreaming()) {
 			return runningSubagents > 0
 				? `${runningSubagents} ${runningSubagents === 1 ? "subagent" : "subagents"} running`
 				: "";
+		}
+		if (this.workingMessage !== undefined) {
+			// Extensions and tool bootstrap own the message; keep the plain "<message> <elapsed>" form.
+			return elapsed === undefined ? this.workingMessage : `${this.workingMessage} ${elapsed}`;
 		}
 		const parts: string[] = [AGENT_ACTIVITY_LABELS[status.activity]];
 		if (runningSubagents > 0) {
@@ -4351,6 +4352,10 @@ export class InteractiveMode {
 		if (this.childAgentPanelMode) {
 			this.closeChildAgentPanel();
 		}
+		// Clearing snapshots can drop the last running subagent; reconcile the
+		// pulse and loader so neither lingers when nothing is in flight.
+		this.updateWorkingPulse();
+		this.syncWorkingLoader();
 	}
 
 	private getChildAgentPanelRows(): number {
