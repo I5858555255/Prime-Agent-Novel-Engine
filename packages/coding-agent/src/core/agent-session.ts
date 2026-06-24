@@ -3744,30 +3744,29 @@ export class AgentSession {
 	}
 
 	/**
-	 * Make the bundled websearch skill's Serper key available to the kernel.
+	 * Make the websearch skill's Serper key available to the kernel.
 	 *
-	 * The stored credential may be a literal key, an env-var name, or a `!command`
-	 * reference; AuthStorage knows how to resolve all three, so we resolve it here
-	 * (using the session's own auth storage — correct even for a programmatic SDK
-	 * agentDir) and inject the result. Only done when the bundled websearch skill is
-	 * active, so the key isn't exposed to kernels that can't use it. A key already in
-	 * the process env wins. Covers the kernel's initial build; for a key added via
-	 * /login mid-session the skill also reads auth.json directly.
+	 * Always export an explicitly-configured agent dir so any websearch skill (the
+	 * bundled one, or a `--skill`/project copy) can locate the caller's auth.json
+	 * for keys added mid-session — it's a path, not a secret. Then, only when the
+	 * *bundled* skill is active, also inject the resolved key so it isn't exposed to
+	 * kernels that can't use it: the stored credential may be a literal, an env-var
+	 * name, or a `!command` reference, all resolved here via the session's own auth
+	 * storage (correct even for a programmatic SDK agentDir). A key already in the
+	 * process env wins.
 	 */
 	private _addWebsearchKeyEnv(env: Record<string, string>): void {
+		// Export only when explicitly set — the default is already the skill's fallback.
+		if (this._agentDir) {
+			env.PRIME_AGENT_CODING_AGENT_DIR = this._agentDir;
+		}
+
 		if (process.env[SERPER_ENV_VAR]?.trim()) {
 			return;
 		}
 		if (!this.settingsManager.getEnableBuiltinSkills() || !this.settingsManager.getBundledWebsearchEnabled()) {
 			return;
 		}
-		// Export an explicitly-configured agent dir so the skill's own auth.json read
-		// (used for keys added mid-session) finds the caller's directory. Only when
-		// explicitly set — the default is already what the skill falls back to.
-		if (this._agentDir) {
-			env.PRIME_AGENT_CODING_AGENT_DIR = this._agentDir;
-		}
-
 		const cred = this._modelRegistry.authStorage.get(SERPER_CREDENTIAL_ID);
 		if (cred?.type !== "api_key") {
 			return;

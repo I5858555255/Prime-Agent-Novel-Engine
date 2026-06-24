@@ -920,6 +920,33 @@ describe("AgentSession RLM session dir", () => {
 		expect(env.PRIME_AGENT_CODING_AGENT_DIR).toBeUndefined();
 	});
 
+	it("exports agentDir even when the bundled websearch skill is disabled", () => {
+		// A websearch skill can still load via --skill or a project copy, so the
+		// agent dir must be exported regardless of the bundled-skill setting.
+		const agentDir = join(tempDir, "custom-agent-dir");
+		const settingsManager = SettingsManager.inMemory({ bundledSkills: { websearch: false } });
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "", tools: [], thinkingLevel: "off" },
+			streamFn: () => streamAnswer("ignored"),
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(tempDir),
+			settingsManager,
+			cwd: tempDir,
+			agentDir,
+			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
+			resourceLoader: createTestResourceLoader(),
+		});
+		const env = (session as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+		expect(env.PRIME_AGENT_CODING_AGENT_DIR).toBe(agentDir);
+		expect(env.SERPER_API_KEY).toBeUndefined();
+	});
+
 	it("injects a literal stored Serper key into the kernel", () => {
 		const previous = process.env.SERPER_API_KEY;
 		delete process.env.SERPER_API_KEY;

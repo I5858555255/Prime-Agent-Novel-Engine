@@ -182,5 +182,9 @@ async def run(
         # Reserve room for the marker so the result stays within max_output.
         half = max(0, (max_output - len(marker)) // 2)
         output = output[:half] + marker + output[len(output) - half:]
+        # When max_output is smaller than the marker itself, the line above can't
+        # fit; hard-clamp so we never exceed the requested budget.
+        if len(output) > max_output:
+            output = output[:max_output]
 
     return output
