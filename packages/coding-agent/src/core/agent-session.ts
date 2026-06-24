@@ -3743,20 +3743,7 @@ export class AgentSession {
 		return env;
 	}
 
-	/**
-	 * Make the websearch skill's Serper key available to the kernel.
-	 *
-	 * Always export an explicitly-configured agent dir so any websearch skill (the
-	 * bundled one, or a `--skill`/project copy) can locate the caller's auth.json
-	 * for keys added mid-session — it's a path, not a secret. Then, only when the
-	 * *bundled* skill is active, also inject the resolved key so it isn't exposed to
-	 * kernels that can't use it: the stored credential may be a literal, an env-var
-	 * name, or a `!command` reference, all resolved here via the session's own auth
-	 * storage (correct even for a programmatic SDK agentDir). A key already in the
-	 * process env wins.
-	 */
 	private _addWebsearchKeyEnv(env: Record<string, string>): void {
-		// Export only when explicitly set — the default is already the skill's fallback.
 		if (this._agentDir) {
 			env.PRIME_AGENT_CODING_AGENT_DIR = this._agentDir;
 		}
@@ -3764,6 +3751,7 @@ export class AgentSession {
 		if (process.env[SERPER_ENV_VAR]?.trim()) {
 			return;
 		}
+		// Gate key injection on the bundled skill so it isn't exposed to kernels that can't use it.
 		if (!this.settingsManager.getEnableBuiltinSkills() || !this.settingsManager.getBundledWebsearchEnabled()) {
 			return;
 		}

@@ -73,7 +73,7 @@ A `SERPER_API_KEY` in the environment, if set, takes precedence over the stored 
 Once loaded, the model can call it directly in the IPython kernel by import name:
 
 ```python
-print(await websearch.run("latest Prime Agent release"))
+print(await websearch("latest Prime Agent release"))
 ```
 
 Until a key is configured, web search returns a clear message telling the agent

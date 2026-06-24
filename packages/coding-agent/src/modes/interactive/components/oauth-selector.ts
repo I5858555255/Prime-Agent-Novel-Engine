@@ -90,7 +90,6 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 
-		// Build the tab list from the categories actually present, providers first.
 		const present = new Set(providers.map((p) => p.category ?? "provider"));
 		this.categories = (["provider", "service"] as const).filter((c) => present.has(c));
 		this.activeCategory = this.categories[0] ?? "provider";
@@ -101,7 +100,6 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		});
 		this.addChild(panel);
 
-		// Tab bar (only when more than one category is present).
 		if (this.categories.length > 1) {
 			this.tabBar = new TruncatedText("");
 			panel.addChild(this.tabBar);
@@ -282,9 +280,8 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			this.selectedIndex = Math.min(this.filteredProviders.length - 1, this.selectedIndex + 1);
 			this.updateList();
 		}
-		// Left/right arrows switch tabs, but only when there are multiple categories
-		// AND the search field is empty — otherwise they keep moving the search
-		// cursor so readline editing still works while filtering.
+		// Only steal left/right for tabs when the search field is empty, so cursor
+		// editing still works while filtering.
 		else if (
 			this.categories.length > 1 &&
 			this.searchInput.getValue() === "" &&
@@ -317,7 +314,6 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	}
 
 	private get reservedRows(): number {
-		// The tab bar (text line + spacer) only renders when >1 category is present.
 		return this.tabBar ? PROVIDER_LIST_RESERVED_ROWS + TAB_BAR_RESERVED_ROWS : PROVIDER_LIST_RESERVED_ROWS;
 	}
 

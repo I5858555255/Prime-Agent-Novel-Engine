@@ -342,7 +342,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager,
 		settingsManager,
 		cwd,
-		agentDir,
+		// Only the explicit dir — the default may not match injected custom storage.
+		agentDir: options.agentDir,
 		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,

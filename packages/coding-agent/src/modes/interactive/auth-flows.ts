@@ -236,8 +236,7 @@ export class ProviderAuthFlows {
 			});
 		}
 
-		// Serper is a skill credential (web search), not a model provider, so it is
-		// not in the model registry. Offer it under the Services tab.
+		// Serper is a skill credential, not a model provider, so add it manually.
 		options.push({
 			id: SERPER_CREDENTIAL_ID,
 			name: SERPER_CREDENTIAL_NAME,

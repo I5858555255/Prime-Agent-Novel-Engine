@@ -28,12 +28,8 @@ def _agent_dir() -> Path:
 
 
 def _resolve_api_key() -> str:
-    """Find the Serper key from the environment or stored credentials.
-
-    The kernel may have started before the key was added via /login, so we read
-    auth.json on each call rather than relying solely on the injected env var.
-    An explicit SERPER_API_KEY in the environment always wins.
-    """
+    # Read auth.json on each call (not just the injected env var) so a key added
+    # via /login after the kernel started is still picked up. Env var wins.
     env_key = os.environ.get("SERPER_API_KEY", "").strip()
     if env_key:
         return env_key
@@ -49,14 +45,8 @@ def _resolve_api_key() -> str:
 
 
 def _resolve_config_value(value: str) -> str:
-    """Mirror AuthStorage's key resolution for the common cases.
-
-    Stored keys may be a literal, an env-var name, or a "!command" reference.
-    The agent already resolves and injects the key at kernel build time; this
-    fallback (for keys added mid-session) handles literals and env-var names.
-    "!command" references can't be run safely here, so they're treated as unset
-    and resolved on the next reload via the injected env var.
-    """
+    # Stored keys may be a literal or an env-var name; "!command" refs can't be run
+    # safely here, so skip them (the agent injects those resolved at build time).
     value = value.strip()
     if not value or value.startswith("!"):
         return ""
@@ -182,9 +172,7 @@ async def run(
         # Reserve room for the marker so the result stays within max_output.
         half = max(0, (max_output - len(marker)) // 2)
         output = output[:half] + marker + output[len(output) - half:]
-        # When max_output is smaller than the marker itself, the line above can't
-        # fit; hard-clamp so we never exceed the requested budget.
-        if len(output) > max_output:
+        if len(output) > max_output:  # marker alone exceeds the budget
             output = output[:max_output]
 
     return output
