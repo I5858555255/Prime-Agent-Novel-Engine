@@ -4354,7 +4354,7 @@ export class InteractiveMode {
 		const goalLabel = this.getTrayGoalLabel();
 		const usage = this.getConnectionContextUsage();
 		const contextLabel =
-			usage && usage.tokens !== null && usage.percent !== null
+			usage && typeof usage.tokens === "number" && typeof usage.percent === "number"
 				? `${formatTokenCount(usage.tokens)} (${Math.round(usage.percent)}%)`
 				: undefined;
 		return [goalLabel, contextLabel].filter((label) => label !== undefined).join(" · ") || undefined;
