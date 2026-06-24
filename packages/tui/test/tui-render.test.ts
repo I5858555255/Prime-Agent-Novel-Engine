@@ -751,6 +751,46 @@ describe("TUI viewport-preserving render", () => {
 
 		tui.stop();
 	});
+
+	// Regression (ENG-4227): Ctrl+O expands tool output, growing the transcript.
+	// A bottom-pin would slide the on-screen calls up out of view so only the last
+	// one appeared to expand. The top-anchored repaint keeps the current top line
+	// fixed, so the visible calls expand in place.
+	it("keeps the viewport top fixed so on-screen calls expand in place", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// 30 lines into a 10-row terminal: viewport shows Line 20..Line 29.
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport()[0]?.includes("Line 20"), "Line 20 starts at the top before expanding");
+		terminal.clearWrites();
+
+		// Expand a block that is on screen (after Line 22).
+		const expanded = [...component.lines];
+		expanded.splice(23, 0, "Expanded A", "Expanded B", "Expanded C");
+		component.lines = expanded;
+		tui.requestRenderPreservingViewportTop();
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(!writes.includes("\x1b[3J"), "Must not clear scrollback");
+		assert.ok(!writes.includes("\x1b[2J"), "Must not clear the screen");
+
+		// The top line stays put and the expanded block is now visible, rather than
+		// being pushed above the viewport by a bottom-pin.
+		const viewport = terminal.getViewport();
+		assert.ok(viewport[0]?.includes("Line 20"), "Line 20 stays at the top");
+		assert.ok(
+			viewport.some((l) => l.includes("Expanded A")),
+			"Expanded content is visible in place",
+		);
+
+		tui.stop();
+	});
 });
 
 describe("TUI above-viewport changes on a tall transcript", () => {
