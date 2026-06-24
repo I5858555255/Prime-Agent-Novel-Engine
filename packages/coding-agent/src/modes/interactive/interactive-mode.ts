@@ -2482,9 +2482,15 @@ export class InteractiveMode {
 	// Reconcile the loader with current state for transitions that fire no live
 	// agent_start edge (returning from agents view, resuming mid-stream).
 	private syncWorkingLoader(): void {
+		// Compaction/retry own the status container while active; don't fight them.
+		if (this.autoCompactionLoader || this.retryLoader) {
+			return;
+		}
 		if (this.shouldShowWorkingLoader()) {
-			if (!this.loadingAnimation) {
-				this.statusContainer.clear();
+			// A bare `loadingAnimation != null` check isn't proof it's on screen:
+			// other paths clear statusContainer without nulling it, orphaning the
+			// loader. Re-attach unless it is actually mounted.
+			if (!this.loadingAnimation || !this.statusContainer.children.includes(this.loadingAnimation)) {
 				this.startWorkingLoader();
 			}
 		} else if (this.loadingAnimation) {
@@ -4020,6 +4026,8 @@ export class InteractiveMode {
 					this.ui.terminal.setProgress(true);
 				}
 				// Keep editor active; submissions are queued during compaction.
+				// Fully stop the working loader (not just detach) so it isn't orphaned.
+				this.stopWorkingLoader();
 				this.statusContainer.clear();
 				const cancelHint = `(${keyText("app.clear")} to cancel)`;
 				const focus = event.customInstructions
@@ -4049,6 +4057,8 @@ export class InteractiveMode {
 					this.autoCompactionLoader = undefined;
 					this.statusContainer.clear();
 				}
+				// Restore the working loader if streaming/subagents still warrant it.
+				this.syncWorkingLoader();
 				if (event.aborted) {
 					if (event.reason === "manual") {
 						this.showError("Compaction cancelled");
@@ -4084,6 +4094,7 @@ export class InteractiveMode {
 
 			case "auto_retry_start": {
 				// Show retry indicator
+				this.stopWorkingLoader();
 				this.statusContainer.clear();
 				this.retryCountdown?.dispose();
 				const retryMessage = (seconds: number) =>
@@ -4120,6 +4131,8 @@ export class InteractiveMode {
 					this.retryLoader = undefined;
 					this.statusContainer.clear();
 				}
+				// Restore the working loader if streaming/subagents still warrant it.
+				this.syncWorkingLoader();
 				// Show error only on final failure (success shows normal response)
 				if (!event.success) {
 					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
