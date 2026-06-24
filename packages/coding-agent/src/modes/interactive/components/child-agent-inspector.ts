@@ -214,7 +214,7 @@ const SHARED_PREFIX_MIN = 12;
 const SUMMARY_LABEL_GAP = 4;
 // Opening chars of the prompt kept for context before eliding a shared prefix.
 const PROMPT_LEADING_CONTEXT = 14;
-// Words to back up before the divergence so the diff reads in context.
+// Words of context kept on each side of the divergence.
 const PROMPT_DIFF_CONTEXT_WORDS = 2;
 
 export class ChildAgentSummaryComponent implements Component, Focusable {
@@ -364,6 +364,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 
 		const labelWidth = `Subagent ${flat.length}`.length;
 		const promptPrefix = this.sharedPromptPrefix(window);
+		const promptSuffix = this.sharedPromptSuffix(window, promptPrefix);
 
 		const lines: string[] = [theme.fg("borderMuted", "─".repeat(width))];
 		for (const entry of window) {
@@ -371,7 +372,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 			const number = flat.indexOf(entry) + 1;
 			lines.push(
 				this.panelLine(
-					this.renderListEntry(entry, number, labelWidth, promptPrefix, contentWidth),
+					this.renderListEntry(entry, number, labelWidth, promptPrefix, promptSuffix, contentWidth),
 					width,
 					selected,
 				),
@@ -405,11 +406,36 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		return prefix.length >= SHARED_PREFIX_MIN && !minTail ? prefix : "";
 	}
 
+	// Common trailing run after the divergence, so the diff window can also drop a
+	// shared tail. Only used when it leaves room past the prefix for a real diff.
+	private sharedPromptSuffix(flat: readonly FlatChildAgentNode[], prefix: string): string {
+		if (flat.length < 2 || !prefix) {
+			return "";
+		}
+		const labels = flat.map((entry) => entry.node.label);
+		let suffix = labels[0] ?? "";
+		for (const label of labels) {
+			let i = 0;
+			while (
+				i < suffix.length &&
+				i < label.length &&
+				suffix[suffix.length - 1 - i] === label[label.length - 1 - i]
+			) {
+				i++;
+			}
+			suffix = suffix.slice(suffix.length - i);
+		}
+		// Keep the suffix clear of the prefix on every label so the diff survives.
+		const safe = labels.every((label) => prefix.length + suffix.length < label.length);
+		return safe && suffix.length >= SHARED_PREFIX_MIN ? suffix : "";
+	}
+
 	private renderListEntry(
 		entry: FlatChildAgentNode,
 		number: number,
 		labelWidth: number,
 		sharedPrefix: string,
+		sharedSuffix: string,
 		width: number,
 	): string {
 		const indent = " ".repeat(SUMMARY_LIST_INDENT + Math.min(6, entry.depth * 2));
@@ -425,7 +451,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		// Fixed columns consume: icon + space, the label gap, and a space before time.
 		const fixed = visibleWidth(indent) + visibleWidth(rawIcon) + 1 + labelWidth + SUMMARY_LABEL_GAP + 1 + timeWidth;
 		const promptWidth = Math.max(0, Math.floor((width - fixed) / 2));
-		const prompt = this.elidePrompt(entry.node.label, sharedPrefix, promptWidth);
+		const prompt = this.elidePrompt(entry.node.label, sharedPrefix, sharedSuffix, promptWidth);
 		const promptCell = theme.fg("dim", prompt);
 		const labelGap = " ".repeat(SUMMARY_LABEL_GAP);
 		const fillWidth = Math.max(
@@ -446,16 +472,17 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 	}
 
 	// Coloring is applied by the caller so the trailing ellipsis matches the text.
-	private elidePrompt(label: string, sharedPrefix: string, width: number): string {
-		const text = this.elideSharedPrefix(label, sharedPrefix);
+	private elidePrompt(label: string, sharedPrefix: string, sharedSuffix: string, width: number): string {
+		const text = this.elideAroundDiff(label, sharedPrefix, sharedSuffix);
 		if (visibleWidth(text) <= width) {
 			return text;
 		}
 		return `${text.slice(0, Math.max(0, width - 1))}…`;
 	}
 
-	// Collapse to "<leading context>…<a couple words before the divergence><tail>".
-	private elideSharedPrefix(label: string, sharedPrefix: string): string {
+	// Window the prompt around its divergence: "<leading context>…<~2 words before
+	// the diff><diff><~2 words after the diff>…", dropping the shared head and tail.
+	private elideAroundDiff(label: string, sharedPrefix: string, sharedSuffix: string): string {
 		// Nothing useful to elide if the whole shared run fits in the leading window.
 		if (!sharedPrefix || !label.startsWith(sharedPrefix) || sharedPrefix.length <= PROMPT_LEADING_CONTEXT) {
 			return label;
@@ -463,15 +490,34 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		// Snap the leading window to a word boundary so it doesn't cut mid-word.
 		const leadSpace = label.lastIndexOf(" ", PROMPT_LEADING_CONTEXT);
 		const lead = label.slice(0, leadSpace > 0 ? leadSpace : PROMPT_LEADING_CONTEXT).trimEnd();
-		let cut = sharedPrefix.length;
-		for (let words = 0; words < PROMPT_DIFF_CONTEXT_WORDS && cut > 0; words++) {
-			const prevSpace = label.lastIndexOf(" ", cut - 2);
+
+		// Back the window start up a couple words before the divergence.
+		let start = sharedPrefix.length;
+		for (let words = 0; words < PROMPT_DIFF_CONTEXT_WORDS && start > 0; words++) {
+			const prevSpace = label.lastIndexOf(" ", start - 2);
 			if (prevSpace <= lead.length) {
 				break;
 			}
-			cut = prevSpace + 1;
+			start = prevSpace + 1;
 		}
-		return `${lead}…${label.slice(cut)}`;
+
+		// Advance the window end a couple words past where the labels re-converge.
+		let end = label.length;
+		if (sharedSuffix && label.endsWith(sharedSuffix)) {
+			end = label.length - sharedSuffix.length;
+			for (let words = 0; words < PROMPT_DIFF_CONTEXT_WORDS && end < label.length; words++) {
+				const nextSpace = label.indexOf(" ", end + 1);
+				if (nextSpace < 0) {
+					end = label.length;
+					break;
+				}
+				end = nextSpace;
+			}
+		}
+
+		const middle = label.slice(start, end).trimEnd();
+		const tail = end < label.length ? "…" : "";
+		return `${lead}…${middle}${tail}`;
 	}
 
 	private scrollHint(total: number, start: number, width: number): string | undefined {

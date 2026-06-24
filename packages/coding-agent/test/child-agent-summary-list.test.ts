@@ -108,6 +108,22 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		expect(out).toContain("120 seconds");
 	});
 
+	it("windows tightly around the diff when prompts share a head and tail", () => {
+		const head =
+			"Hello there. You are a subagent and we give subagents different tasks. Your task is to sleep since you are subagent ";
+		const tail = " and therefore you were assigned to sleep ten minutes total today";
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([
+			{ ...node("a"), label: `${head}#1${tail}` },
+			{ ...node("b"), label: `${head}#2${tail}` },
+		]);
+		const out = stripAnsi(summary.render(120).join("\n"));
+		expect(out).toContain("#1");
+		expect(out).toContain("#2");
+		// The shared tail is dropped behind a trailing ellipsis, not shown in full.
+		expect(out).not.toContain("assigned to sleep ten minutes total today");
+	});
+
 	it("forwards unhandled keys to the chat action callback", () => {
 		const summary = new ChildAgentSummaryComponent();
 		summary.focused = true;
