@@ -261,7 +261,6 @@ export class TUI extends Container {
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
 	private preserveViewportOnNextRender = false; // One-shot: repaint visible viewport in place instead of replaying scrollback
-	private anchorViewportTopOnNextRender = false; // One-shot: keep the current viewport top fixed instead of pinning to the bottom
 	private stopped = false;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -536,15 +535,6 @@ export class TUI extends Container {
 	 */
 	requestRenderPreservingViewport(): void {
 		this.preserveViewportOnNextRender = true;
-		this.requestRender();
-	}
-
-	// Like requestRenderPreservingViewport, but keeps the current top line fixed
-	// rather than pinning the bottom, so growing content expands in place instead
-	// of sliding the on-screen calls up out of view (Ctrl+O).
-	requestRenderPreservingViewportTop(): void {
-		this.preserveViewportOnNextRender = true;
-		this.anchorViewportTopOnNextRender = true;
 		this.requestRender();
 	}
 
@@ -984,8 +974,6 @@ export class TUI extends Container {
 		// One-shot: consume here so it never leaks into a later render.
 		const preserveViewport = this.preserveViewportOnNextRender;
 		this.preserveViewportOnNextRender = false;
-		const anchorViewportTop = this.anchorViewportTopOnNextRender;
-		this.anchorViewportTopOnNextRender = false;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
@@ -1024,14 +1012,8 @@ export class TUI extends Container {
 			// (now-resized) transcript from the top. Only meaningful when there
 			// is a previous frame on screen to paint over.
 			if (preserveViewport && this.previousLines.length > 0) {
-				// Top-anchored toggles (Ctrl+O) keep the current top line fixed so the
-				// on-screen calls expand in place; otherwise pin the bottom.
-				const bottomStart = Math.max(0, newLines.length - height);
-				const windowStart = anchorViewportTop ? Math.min(prevViewportTop, bottomStart) : bottomStart;
-				// Bottom-pin fills exactly one viewport; top-anchor may have more
-				// content below than fits, so cap the painted rows at the height.
-				const visibleCount = Math.min(newLines.length - windowStart, height);
-				const lastPaintedRow = windowStart + visibleCount - 1;
+				const windowStart = Math.max(0, newLines.length - height);
+				const visibleCount = newLines.length - windowStart;
 				// Rows the previous frame occupied on screen.
 				const prevScreenRows = Math.min(height, this.previousLines.length);
 				// Only delete Kitty images within the repainted viewport. Images that
@@ -1070,7 +1052,7 @@ export class TUI extends Container {
 				buffer += "\x1b[?2026l"; // End synchronized output
 				this.terminal.write(buffer);
 				this.cursorRow = Math.max(0, newLines.length - 1);
-				this.hardwareCursorRow = lastPaintedRow;
+				this.hardwareCursorRow = this.cursorRow;
 				// Reset (not just grow) the high-water mark to the repainted content,
 				// mirroring the scrollback-clearing path. Otherwise a preserving
 				// collapse leaves maxLinesRendered inflated, and the next plain render
@@ -1131,14 +1113,6 @@ export class TUI extends Container {
 		if (widthChanged) {
 			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
 			fullRender(true);
-			return;
-		}
-
-		// A top-anchored toggle repositions the window, which the differential path
-		// can't do — route it straight to the in-place preserving repaint.
-		if (anchorViewportTop && !heightChanged && this.previousLines.length > 0) {
-			logRedraw("top-anchored toggle");
-			fullRender(false, true);
 			return;
 		}
 

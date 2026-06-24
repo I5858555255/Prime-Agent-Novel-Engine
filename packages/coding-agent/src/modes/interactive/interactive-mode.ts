@@ -5097,10 +5097,10 @@ export class InteractiveMode {
 			}
 		}
 		this.childAgentDetail.setToolsExpanded(expanded);
-		// Anchor the viewport top so the on-screen calls expand in place. A
-		// bottom-pin would push them up out of view as the transcript grows, and a
-		// full redraw would replay the whole transcript from the top.
-		this.ui.requestRenderPreservingViewportTop();
+		// Force a full redraw so every call's expanded output is rewritten, both
+		// on screen and in scrollback. An in-place repaint can't rewrite scrollback,
+		// so off-screen calls would stay collapsed when scrolled back to.
+		this.ui.requestRender(true);
 	}
 
 	private toggleThinkingBlockVisibility(): void {

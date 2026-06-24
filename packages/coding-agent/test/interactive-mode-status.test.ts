@@ -1259,7 +1259,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 			builtInHeader: header,
 			chatContainer: { children: [chatChild] },
 			childAgentDetail,
-			ui: { requestRender: vi.fn(), requestRenderPreservingViewport: vi.fn() },
+			ui: { requestRender: vi.fn() },
 		};
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
@@ -1268,8 +1268,8 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(childAgentDetail.setToolsExpanded).toHaveBeenCalledWith(true);
-		// Expansion keeps the user anchored, so it uses the viewport-preserving path.
-		expect(fakeThis.ui.requestRenderPreservingViewport).toHaveBeenCalledTimes(1);
+		// Expansion forces a full redraw so off-screen output is rewritten too.
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith(true);
 	});
 });
 
