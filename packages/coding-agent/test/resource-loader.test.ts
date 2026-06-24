@@ -484,9 +484,12 @@ Content`,
 				(d) => d.type === "warning" && d.message.includes("SERPER_API_KEY is not set"),
 			);
 			expect(warning).toBeDefined();
-			expect(warning?.message).toContain("websearch skill is enabled");
-			expect(warning?.message).toContain('"bundledSkills": { "websearch": false }');
-			expect(warning?.message).not.toContain("Bundled");
+			expect(warning?.message).toBe(
+				"websearch is enabled but SERPER_API_KEY is not set.\n" +
+					"Set SERPER_API_KEY to use websearch, or disable it in settings.json:\n\n" +
+					'  "bundledSkills": { "websearch": false }',
+			);
+			expect(warning?.path).toBeUndefined();
 		});
 
 		it("should not warn when SERPER_API_KEY is set", async () => {

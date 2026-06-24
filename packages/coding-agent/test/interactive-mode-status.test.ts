@@ -13,6 +13,7 @@ import type { AuthStatus } from "../src/core/auth-storage.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
+import type { ResourceDiagnostic } from "../src/core/resource-loader.js";
 import type { SourceInfo } from "../src/core/source-info.js";
 import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -666,8 +667,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 		contextFiles?: Array<{ path: string; content?: string }>;
 		extensions?: ExtensionFixture[];
 		skills?: Array<{ filePath: string; name: string }>;
-		skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
+		skillDiagnostics?: ResourceDiagnostic[];
 		useRealScopeGroups?: boolean;
+		useRealDiagnostics?: boolean;
 	}) {
 		const fakeThis: any = {
 			options: { verbose: options.verbose ?? false },
@@ -726,6 +728,13 @@ describe("InteractiveMode.showLoadedResources", () => {
 			formatDiagnostics: () => "diagnostics",
 			getBuiltInCommandConflictDiagnostics: () => [],
 		};
+
+		if (options.useRealDiagnostics) {
+			fakeThis.formatDiagnostics = (
+				diagnostics: readonly ResourceDiagnostic[],
+				sourceInfos: Map<string, SourceInfo>,
+			) => (InteractiveMode as any).prototype.formatDiagnostics.call(fakeThis, diagnostics, sourceInfos);
+		}
 
 		if (options.useRealScopeGroups) {
 			fakeThis.getScopeGroup = (sourceInfo?: SourceInfo) =>
@@ -1302,7 +1311,39 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("[Skill conflicts]");
+		expect(output).toContain("[Skill warning]");
 		expect(output).not.toContain("[Skills]");
+	});
+
+	test("formats bundled websearch warning without path noise", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: true,
+			skillDiagnostics: [
+				{
+					type: "warning",
+					message:
+						"websearch is enabled but SERPER_API_KEY is not set.\n" +
+						"Set SERPER_API_KEY to use websearch, or disable it in settings.json:\n\n" +
+						'  "bundledSkills": { "websearch": false }',
+				},
+			],
+			useRealDiagnostics: true,
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+
+		const output = normalizeRenderedOutput(fakeThis.chatContainer, 100);
+		expect(output).toMatchInlineSnapshot(`
+"[Skill warning]
+  websearch is enabled but SERPER_API_KEY is not set.
+  Set SERPER_API_KEY to use websearch, or disable it in settings.json:
+
+    "bundledSkills": { "websearch": false }"
+`);
+		expect(output).not.toContain("SKILL.md");
+		expect(output).not.toContain("[Skill conflicts]");
 	});
 });

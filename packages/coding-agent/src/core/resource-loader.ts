@@ -536,8 +536,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.skillDiagnostics.push({
 			type: "warning",
 			message:
-				'websearch skill is enabled but SERPER_API_KEY is not set. Set SERPER_API_KEY to use it, or disable the skill in settings.json with "bundledSkills": { "websearch": false }.',
-			path: websearch.filePath,
+				"websearch is enabled but SERPER_API_KEY is not set.\n" +
+				"Set SERPER_API_KEY to use websearch, or disable it in settings.json:\n\n" +
+				'  "bundledSkills": { "websearch": false }',
 		});
 	}
 
