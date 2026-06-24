@@ -180,7 +180,7 @@ export class AgentDaemon {
 	private readonly cronStore: AgentCronJobStore;
 	private readonly cronScheduler: AgentCronScheduler;
 	private readonly summarizer = new DaemonSessionSummarizer(
-		() => [...this.sessions.values()].filter((state) => state.runtime.metadata.kind !== "subagent"),
+		() => [...this.sessions.values()],
 		(state) =>
 			this.broadcastToSession(state, {
 				type: "session_status",
