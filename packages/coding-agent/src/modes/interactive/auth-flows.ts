@@ -45,6 +45,8 @@ export type AuthenticationResult =
 			providerId: string;
 			providerName: string;
 			authType: "oauth" | "api_key";
+			/** "service" credentials (e.g. web search) don't affect model selection. */
+			kind?: "provider" | "service";
 	  }
 	| { status: "cancelled" }
 	| { status: "failed" };
@@ -149,7 +151,8 @@ export class ProviderAuthFlows {
 					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
 						resolve(await this.showBedrockSetupDialog(providerOption.id, providerOption.name));
 					} else {
-						resolve(await this.showApiKeyLoginDialog(providerOption.id, providerOption.name));
+						const kind = providerOption.id === SERPER_CREDENTIAL_ID ? "service" : "provider";
+						resolve(await this.showApiKeyLoginDialog(providerOption.id, providerOption.name, kind));
 					}
 				},
 				() => {
@@ -234,11 +237,12 @@ export class ProviderAuthFlows {
 		}
 
 		// Serper is a skill credential (web search), not a model provider, so it is
-		// not in the model registry. Offer it here as an api-key login target.
+		// not in the model registry. Offer it under the Services tab.
 		options.push({
 			id: SERPER_CREDENTIAL_ID,
 			name: SERPER_CREDENTIAL_NAME,
 			authType: "api_key",
+			category: "service",
 		});
 
 		const filteredOptions = authType ? options.filter((option) => option.authType === authType) : options;
@@ -254,13 +258,12 @@ export class ProviderAuthFlows {
 			if (!credential) {
 				continue;
 			}
+			const isSerper = providerId === SERPER_CREDENTIAL_ID;
 			options.push({
 				id: providerId,
-				name:
-					providerId === SERPER_CREDENTIAL_ID
-						? SERPER_CREDENTIAL_NAME
-						: this.host.modelRegistry.getProviderDisplayName(providerId),
+				name: isSerper ? SERPER_CREDENTIAL_NAME : this.host.modelRegistry.getProviderDisplayName(providerId),
 				authType: credential.type,
+				category: isSerper ? "service" : "provider",
 			});
 		}
 
@@ -272,6 +275,7 @@ export class ProviderAuthFlows {
 		providerName: string,
 		authType: "oauth" | "api_key",
 		statusSuffix?: string,
+		kind: "provider" | "service" = "provider",
 	): Promise<AuthenticationResult> {
 		this.host.modelRegistry.refresh();
 
@@ -286,6 +290,7 @@ export class ProviderAuthFlows {
 			providerId,
 			providerName,
 			authType,
+			kind,
 		};
 	}
 
@@ -689,7 +694,11 @@ export class ProviderAuthFlows {
 		}
 	}
 
-	private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<AuthenticationResult> {
+	private async showApiKeyLoginDialog(
+		providerId: string,
+		providerName: string,
+		kind: "provider" | "service" = "provider",
+	): Promise<AuthenticationResult> {
 		const dialog = new LoginDialogComponent(
 			this.host.ui,
 			providerId,
@@ -715,7 +724,7 @@ export class ProviderAuthFlows {
 			this.host.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
 
 			closeDialog();
-			return await this.completeProviderAuthentication(providerId, providerName, "api_key");
+			return await this.completeProviderAuthentication(providerId, providerName, "api_key", undefined, kind);
 		} catch (error: unknown) {
 			closeDialog();
 			const errorMsg = error instanceof Error ? error.message : String(error);

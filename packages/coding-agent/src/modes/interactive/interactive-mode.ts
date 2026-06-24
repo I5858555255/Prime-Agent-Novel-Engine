@@ -6395,7 +6395,9 @@ export class InteractiveMode {
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
 		if (mode === "login") {
 			const authResult = await this.showLoginProviderSelector();
-			if (authResult.status === "success") {
+			// Service credentials (e.g. web search) don't change the model, so skip
+			// the model picker that normally follows a provider login.
+			if (authResult.status === "success" && authResult.kind !== "service") {
 				await this.promptForModelSelection();
 			}
 			return;

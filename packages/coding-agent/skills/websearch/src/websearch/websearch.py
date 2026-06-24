@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import httpx
 
@@ -13,6 +15,37 @@ def _env_int(name: str, default: int) -> int:
         return int(os.environ[name])
     except (KeyError, ValueError):
         return default
+
+
+def _agent_dir() -> Path:
+    """Resolve the Prime Agent config dir the same way the runtime does."""
+    raw = (
+        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
+        or os.environ.get("PI_CODING_AGENT_DIR")
+        or str(Path.home() / ".prime" / "agent")
+    )
+    return Path(raw).expanduser()
+
+
+def _resolve_api_key() -> str:
+    """Find the Serper key from the environment or stored credentials.
+
+    The kernel may have started before the key was added via /login, so we read
+    auth.json on each call rather than relying solely on the injected env var.
+    An explicit SERPER_API_KEY in the environment always wins.
+    """
+    env_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    try:
+        auth = json.loads((_agent_dir() / "auth.json").read_text())
+        cred = auth.get("serper")
+        if isinstance(cred, dict) and cred.get("type") == "api_key":
+            return str(cred.get("key") or "").strip()
+    except (OSError, ValueError):
+        pass
+    return ""
 
 
 def _format_serper_results(data: dict, query: str, num_results: int = 5) -> str:
@@ -107,7 +140,7 @@ async def run(
     Returns:
         Formatted search results.
     """
-    api_key = os.environ.get("SERPER_API_KEY", "")
+    api_key = _resolve_api_key()
     if not api_key:
         return (
             "Web search is not set up yet: no Serper API key is configured.\n"

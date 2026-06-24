@@ -10,10 +10,14 @@ import {
 	type MenuViewportProvider,
 } from "./menu-panel.js";
 
+export type AuthSelectorCategory = "provider" | "service";
+
 export type AuthSelectorProvider = {
 	id: string;
 	name: string;
 	authType: "oauth" | "api_key";
+	/** Which tab the entry belongs to. Defaults to "provider" when omitted. */
+	category?: AuthSelectorCategory;
 };
 
 export function compareAuthSelectorProviders(a: AuthSelectorProvider, b: AuthSelectorProvider): number {
@@ -44,10 +48,14 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	}
 
 	private listContainer: Container;
+	private tabBar?: TruncatedText;
 	private allProviders: AuthSelectorProvider[];
 	private filteredProviders: AuthSelectorProvider[];
 	private selectedIndex: number = 0;
 	private mode: "login" | "logout";
+	/** Tabs present in the data, in display order. Empty/single → no tab bar. */
+	private categories: AuthSelectorCategory[] = [];
+	private activeCategory: AuthSelectorCategory = "provider";
 	private authStorage: AuthStorage;
 	private getAuthStatus: (providerId: string) => AuthStatus;
 	private onSelectCallback: (provider: AuthSelectorProvider) => void;
@@ -80,11 +88,23 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 
+		// Build the tab list from the categories actually present, providers first.
+		const present = new Set(providers.map((p) => p.category ?? "provider"));
+		this.categories = (["provider", "service"] as const).filter((c) => present.has(c));
+		this.activeCategory = this.categories[0] ?? "provider";
+
 		const panel = new MenuPanel({
 			title: mode === "login" ? "Providers" : "Saved Credentials",
 			subtitle: mode === "login" ? "Connect with a subscription or API key." : "Choose a credential to remove.",
 		});
 		this.addChild(panel);
+
+		// Tab bar (only when more than one category is present).
+		if (this.categories.length > 1) {
+			this.tabBar = new TruncatedText("");
+			panel.addChild(this.tabBar);
+			panel.addChild(new Spacer(1));
+		}
 
 		this.searchInput = new MenuSearchInput("Search providers");
 		this.searchInput.onSubmit = () => {
@@ -104,11 +124,40 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.filterProviders("");
 	}
 
+	private inActiveCategory(provider: AuthSelectorProvider): boolean {
+		return (provider.category ?? "provider") === this.activeCategory;
+	}
+
+	private switchCategory(direction: 1 | -1): void {
+		if (this.categories.length < 2) return;
+		const current = this.categories.indexOf(this.activeCategory);
+		const next = (current + direction + this.categories.length) % this.categories.length;
+		this.activeCategory = this.categories[next];
+		this.selectedIndex = 0;
+		this.searchInput.setValue("");
+		this.filterProviders("");
+	}
+
+	private updateTabBar(): void {
+		if (!this.tabBar) return;
+		const labels: Record<AuthSelectorCategory, string> = { provider: "Providers", service: "Services" };
+		const rendered = this.categories
+			.map((category) =>
+				category === this.activeCategory
+					? theme.bold(theme.fg("accent", labels[category]))
+					: theme.fg("muted", labels[category]),
+			)
+			.join(theme.fg("muted", "  ·  "));
+		this.tabBar.setText(`${rendered}   ${theme.fg("muted", "←/→ switch")}`);
+	}
+
 	private filterProviders(query: string): void {
+		const inCategory = this.allProviders.filter((p) => this.inActiveCategory(p));
 		this.filteredProviders = query
-			? fuzzyFilter(this.allProviders, query, (provider) => `${provider.name} ${provider.id} ${provider.authType}`)
-			: this.allProviders;
+			? fuzzyFilter(inCategory, query, (provider) => `${provider.name} ${provider.id} ${provider.authType}`)
+			: inCategory;
 		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, Math.max(0, this.filteredProviders.length - 1)));
+		this.updateTabBar();
 		this.updateList();
 	}
 
@@ -230,6 +279,13 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			if (this.filteredProviders.length === 0) return;
 			this.selectedIndex = Math.min(this.filteredProviders.length - 1, this.selectedIndex + 1);
 			this.updateList();
+		}
+		// Left/right arrows switch tabs (only when more than one category exists, so
+		// the search field keeps normal cursor movement in single-category mode).
+		else if (this.categories.length > 1 && kb.matches(keyData, "tui.editor.cursorLeft")) {
+			this.switchCategory(-1);
+		} else if (this.categories.length > 1 && kb.matches(keyData, "tui.editor.cursorRight")) {
+			this.switchCategory(1);
 		}
 		// Enter
 		else if (kb.matches(keyData, "tui.select.confirm")) {

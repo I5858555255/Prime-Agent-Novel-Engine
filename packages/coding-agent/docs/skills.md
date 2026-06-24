@@ -55,10 +55,11 @@ Built-in skills behave like any other skill but have the lowest precedence: a us
 
 ### websearch
 
-Setup: get a free API key at [serper.dev](https://serper.dev), then run `/login`
-and choose **Serper (web search)** to paste it. The key is stored alongside your
-other credentials (in `auth.json`) and supplied to the skill automatically — no
-environment variables required.
+Setup: get a free API key at [serper.dev](https://serper.dev), then run `/login`,
+switch to the **Services** tab (left/right arrows), and choose **Serper (web
+search)** to paste it. The key is stored alongside your other credentials (in
+`auth.json`) and read by the skill on each call — no environment variables
+required, and it works even if you add the key mid-session.
 
 Optional overrides (environment variables):
 
