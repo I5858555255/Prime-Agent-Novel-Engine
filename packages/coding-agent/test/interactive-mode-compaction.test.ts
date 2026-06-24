@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { AgentActivityTracker } from "../src/modes/interactive/agent-activity.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
 describe("InteractiveMode compaction events", () => {
@@ -6,7 +7,9 @@ describe("InteractiveMode compaction events", () => {
 		const fakeThis = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
-			autoCompactionEscapeHandler: undefined as (() => void) | undefined,
+			updateConnectionStateFromEvent: vi.fn(),
+			activityTracker: new AgentActivityTracker(),
+			updateWorkingLoaderMessage: vi.fn(),
 			autoCompactionLoader: undefined,
 			defaultEditor: {},
 			statusContainer: { clear: vi.fn() },
@@ -14,6 +17,7 @@ describe("InteractiveMode compaction events", () => {
 			rebuildChatFromMessages: vi.fn(),
 			addMessageToChat: vi.fn(),
 			showError: vi.fn(),
+			showWarning: vi.fn(),
 			showStatus: vi.fn(),
 			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
 			settingsManager: { getShowTerminalProgress: () => false },
@@ -29,6 +33,8 @@ describe("InteractiveMode compaction events", () => {
 				aborted: boolean;
 				willRetry: boolean;
 				errorMessage?: string;
+				errorSeverity?: "warning" | "error";
+				customInstructions?: string;
 			},
 		) => Promise<void>;
 
@@ -54,5 +60,39 @@ describe("InteractiveMode compaction events", () => {
 			}),
 		);
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+
+		await handleEvent.call(fakeThis, {
+			type: "compaction_end",
+			reason: "manual",
+			result: {
+				tokensBefore: 456,
+				summary: "focused summary",
+			},
+			aborted: false,
+			willRetry: false,
+			customInstructions: "focus on xyz",
+		});
+
+		expect(fakeThis.addMessageToChat).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				role: "compactionSummary",
+				tokensBefore: 456,
+				summary: "focused summary",
+				customInstructions: "focus on xyz",
+			}),
+		);
+
+		await handleEvent.call(fakeThis, {
+			type: "compaction_end",
+			reason: "manual",
+			result: undefined,
+			aborted: false,
+			willRetry: false,
+			errorMessage: "Session is too short to compact — try again once it grows",
+			errorSeverity: "warning",
+		});
+
+		expect(fakeThis.showWarning).toHaveBeenCalledWith("Session is too short to compact — try again once it grows");
+		expect(fakeThis.showError).not.toHaveBeenCalled();
 	});
 });

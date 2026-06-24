@@ -9,15 +9,18 @@ export {
 	type AgentSessionEventListener,
 	type ModelCycleResult,
 	type PromptOptions,
-	type SessionStats,
 } from "./agent-session.js";
+export type { AgentSessionRuntimeConfig } from "./agent-session-config.js";
 export {
 	AgentSessionRuntime,
+	type AgentSessionRuntimeKind,
+	type AgentSessionRuntimeMetadata,
 	type CreateAgentSessionRuntimeFactory,
 	type CreateAgentSessionRuntimeResult,
 	createAgentSessionRuntime,
 } from "./agent-session-runtime.js";
 export {
+	type AgentSessionCreationOptions,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,
@@ -74,4 +77,8 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.js";
+export type { RefinementResult } from "./refinement/index.js";
+export type { CreateRlmSubagentRuntimeOptions, RlmSubagentRuntime, SubagentRuntimeHost } from "./rlm-runtime.js";
+export { SessionImportFileNotFoundError } from "./session-import-errors.js";
+export type { SessionStats } from "./session-stats.js";
 export { createSyntheticSourceInfo } from "./source-info.js";

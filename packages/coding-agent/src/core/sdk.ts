@@ -3,11 +3,11 @@ import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
 import { AgentSession } from "./agent-session.js";
+import type { AgentSessionCreationOptions } from "./agent-session-services.js";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
 import { AuthStorage } from "./auth-storage.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
-import { GOAL_TOOL_NAMES } from "./goals.js";
 import { convertToLlm } from "./messages.js";
 import { ModelRegistry } from "./model-registry.js";
 import { findInitialModel } from "./model-resolver.js";
@@ -18,7 +18,7 @@ import { SettingsManager } from "./settings-manager.js";
 import { time } from "./timings.js";
 import { createBashTool, createEditTool, createIpythonTool, withFileMutationQueue } from "./tools/index.js";
 
-export interface CreateAgentSessionOptions {
+export interface CreateAgentSessionOptions extends AgentSessionCreationOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
 	/** Global config directory. Default: ~/.pi/agent */
@@ -79,7 +79,9 @@ export interface CreateAgentSessionResult {
 
 // Re-exports
 
+export type { AgentSessionRuntimeConfig } from "./agent-session-config.js";
 export * from "./agent-session-runtime.js";
+export type { AgentSessionCreationOptions } from "./agent-session-services.js";
 export type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -90,6 +92,7 @@ export type {
 	ToolDefinition,
 } from "./extensions/index.js";
 export type { PromptTemplate } from "./prompt-templates.js";
+export type { CreateRlmSubagentRuntimeOptions, RlmSubagentRuntime, SubagentRuntimeHost } from "./rlm-runtime.js";
 export type { Skill } from "./skills.js";
 export type { Tool } from "./tools/index.js";
 
@@ -220,16 +223,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
-	const includeGoalTools = options.tools !== undefined || options.noTools !== "all";
-	const autoActivateGoalTools = options.tools === undefined && !options.noTools;
-	const defaultActiveToolNames: string[] =
-		includeGoalTools && autoActivateGoalTools ? ["ipython", ...GOAL_TOOL_NAMES] : ["ipython"];
-	const initialActiveToolNames: string[] = options.tools
-		? [...options.tools]
-		: options.noTools
-			? []
-			: defaultActiveToolNames;
+	const allowedToolNames = options.allowedToolNames ?? options.tools ?? (options.noTools === "all" ? [] : undefined);
+	const includeGoals = options.includeGoals ?? (options.tools !== undefined || options.noTools !== "all");
+	const initialActiveToolNames: string[] =
+		options.initialActiveToolNames ?? (options.tools ? [...options.tools] : options.noTools ? [] : ["ipython"]);
 
 	let agent: Agent;
 
@@ -351,10 +348,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		modelRegistry,
 		initialActiveToolNames,
 		allowedToolNames,
-		includeGoalTools,
-		autoActivateGoalTools,
+		includeGoals,
+		rlmHeartbeatController: options.rlmHeartbeatController,
 		extensionRunnerRef,
+		rlmDepth: options.rlmDepth,
+		rlmMaxDepth: options.rlmMaxDepth,
+		rlmSessionDir: options.rlmSessionDir,
+		rlmParentNodeId: options.rlmParentNodeId,
+		subagentRuntimeHost: options.subagentRuntimeHost,
 		sessionStartEvent: options.sessionStartEvent,
+		prewarmIpythonKernel: options.prewarmIpythonKernel,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

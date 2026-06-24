@@ -1,11 +1,29 @@
-import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import {
+	Editor,
+	type EditorOptions,
+	type EditorTheme,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.js";
+
+export interface CustomEditorOptions extends EditorOptions {
+	placeholder?: string;
+	placeholderColor?: (text: string) => string;
+	isArgumentCommand?: (name: string) => boolean;
+}
 
 /**
  * Custom editor that handles app-level keybindings for coding-agent.
  */
 export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
+	private defaultPromptPrefix: string;
+	private readonly configuredPaddingX: number;
+	private placeholder: string | undefined;
+	private readonly placeholderColor: (text: string) => string;
+	private readonly isArgumentCommand: (name: string) => boolean;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
 	// Special handlers that can be dynamically replaced
@@ -13,12 +31,87 @@ export class CustomEditor extends Editor {
 	public onCtrlD?: () => void;
 	public onPasteImage?: () => void;
 	public onMoveBelowPrompt?: () => boolean;
+	public onAgentsBack?: () => boolean;
+	/** When set, the returned line is rendered inside the top of the editor box. */
+	public getHeaderLine?: () => string | undefined;
 	/** Handler for extension-registered shortcuts. Returns true if handled. */
 	public onExtensionShortcut?: (data: string) => boolean;
 
-	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions) {
-		super(tui, theme, options);
+	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: CustomEditorOptions) {
+		const promptPrefix = options?.promptPrefix ?? "> ";
+		super(tui, theme, { ...options, promptPrefix });
 		this.keybindings = keybindings;
+		this.defaultPromptPrefix = promptPrefix;
+		this.configuredPaddingX = options?.paddingX ?? 0;
+		this.placeholder = options?.placeholder;
+		this.placeholderColor = options?.placeholderColor ?? ((text) => text);
+		this.isArgumentCommand = options?.isArgumentCommand ?? (() => false);
+	}
+
+	protected override getPromptPrefix(): string {
+		return this.getBashPromptInfo(this.getLines()[0] ?? "")?.promptPrefix ?? this.defaultPromptPrefix;
+	}
+
+	protected override formatPromptPrefix(prefix: string): string {
+		return prefix.startsWith("!") ? this.borderColor(prefix) : prefix;
+	}
+
+	protected override getHiddenTextPrefixLength(lineIndex: number, line: string): number {
+		if (lineIndex !== 0) {
+			return 0;
+		}
+		return this.getBashPromptInfo(line)?.hiddenTextPrefixLength ?? 0;
+	}
+
+	protected override styleDisplayText(
+		displayText: string,
+		layoutLineIndex: number,
+		lineText: string,
+		cursorCol: number | undefined,
+	): string {
+		const commandColor = this.commandColor;
+		if (!commandColor || layoutLineIndex !== 0) {
+			return displayText;
+		}
+
+		const match = /^(\s*)\/(\S+)/.exec(lineText);
+		if (!match) {
+			return displayText;
+		}
+		const [token, leadingWhitespace, name] = match as unknown as [string, string, string];
+		if (!this.isArgumentCommand(name)) {
+			return displayText;
+		}
+
+		const tokenStart = leadingWhitespace.length;
+		const tokenEnd = token.length;
+
+		if (cursorCol !== undefined && cursorCol < tokenEnd) {
+			return displayText;
+		}
+
+		const before = displayText.slice(0, tokenStart);
+		const tokenText = displayText.slice(tokenStart, tokenEnd);
+		const after = displayText.slice(tokenEnd);
+		return `${before}${commandColor(tokenText)}${after}`;
+	}
+
+	private getBashPromptInfo(line: string): { promptPrefix: string; hiddenTextPrefixLength: number } | undefined {
+		const trimmedLine = line.trimStart();
+		const leadingWhitespaceLength = line.length - trimmedLine.length;
+		if (trimmedLine.startsWith("!!")) {
+			return {
+				promptPrefix: "!! ",
+				hiddenTextPrefixLength: leadingWhitespaceLength + (trimmedLine.startsWith("!! ") ? 3 : 2),
+			};
+		}
+		if (trimmedLine.startsWith("!")) {
+			return {
+				promptPrefix: "! ",
+				hiddenTextPrefixLength: leadingWhitespaceLength + (trimmedLine.startsWith("! ") ? 2 : 1),
+			};
+		}
+		return undefined;
 	}
 
 	/**
@@ -26,6 +119,28 @@ export class CustomEditor extends Editor {
 	 */
 	onAction(action: AppKeybinding, handler: () => void): void {
 		this.actionHandlers.set(action, handler);
+	}
+
+	override render(width: number): string[] {
+		let lines = super.render(width);
+		if (this.placeholder && this.getText().length === 0 && lines.length >= 2) {
+			lines = [lines[0]!, this.renderPlaceholderLine(width), ...lines.slice(2)];
+		}
+		const headerLine = this.getHeaderLine?.();
+		if (headerLine !== undefined && lines.length >= 2) {
+			lines = [
+				lines[0]!,
+				this.renderHeaderContentLine(headerLine, width),
+				this.renderHeaderContentLine("", width),
+				...lines.slice(1),
+			];
+		}
+		return lines;
+	}
+
+	setPlaceholder(placeholder: string | undefined): void {
+		this.placeholder = placeholder;
+		this.invalidate();
 	}
 
 	handleInput(data: string): void {
@@ -42,11 +157,15 @@ export class CustomEditor extends Editor {
 
 		// Check app keybindings first
 
-		// Escape/interrupt - only if autocomplete is NOT active
-		if (this.keybindings.matches(data, "app.interrupt")) {
+		if (this.keybindings.matches(data, "app.agents.back") && this.onAgentsBack?.()) {
+			return;
+		}
+
+		// Clear input - only if autocomplete is NOT active
+		if (this.keybindings.matches(data, "app.input.clear")) {
 			if (!this.isShowingAutocomplete()) {
 				// Use dynamic onEscape if set, otherwise registered handler
-				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
+				const handler = this.onEscape ?? this.actionHandlers.get("app.input.clear");
 				if (handler) {
 					handler();
 					return;
@@ -69,7 +188,10 @@ export class CustomEditor extends Editor {
 
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
-			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
+			if (action !== "app.input.clear" && action !== "app.exit" && this.keybindings.matches(data, action)) {
+				if ((action === "app.clear" || action === "app.interrupt") && this.isShowingAutocomplete()) {
+					this.cancelAutocomplete();
+				}
 				handler();
 				return;
 			}
@@ -87,5 +209,50 @@ export class CustomEditor extends Editor {
 
 		// Pass to parent for editor handling
 		super.handleInput(data);
+	}
+
+	private getEffectivePaddingX(width: number): number {
+		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
+		const configuredPaddingX = Math.min(this.configuredPaddingX, maxPadding);
+		return this.backgroundColor !== undefined
+			? Math.min(Math.max(configuredPaddingX, 2), maxPadding)
+			: configuredPaddingX;
+	}
+
+	private renderHeaderContentLine(content: string, width: number): string {
+		const paddingX = this.getEffectivePaddingX(width);
+		const contentWidth = Math.max(1, width - paddingX * 2);
+		const line = `${" ".repeat(paddingX)}${truncateToWidth(content, contentWidth)}`;
+		const padded = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
+		const backgroundColor = this.backgroundColor;
+		if (!backgroundColor) {
+			return padded;
+		}
+		// Truncation may inject full ANSI resets; wrap each segment so the
+		// background survives past them instead of falling back to the terminal's.
+		return padded
+			.split("\x1b[0m")
+			.map((segment) => backgroundColor(segment))
+			.join("\x1b[0m");
+	}
+
+	private renderPlaceholderLine(width: number): string {
+		const paddingX = this.getEffectivePaddingX(width);
+		const contentWidth = Math.max(1, width - paddingX * 2);
+		const promptPrefixText = this.getPromptPrefix();
+		const promptPrefixWidth = Math.min(visibleWidth(promptPrefixText), Math.max(0, contentWidth - 1));
+		const inputWidth = Math.max(1, contentWidth - promptPrefixWidth);
+		const promptPrefix =
+			promptPrefixWidth > 0 ? this.formatPromptPrefix(truncateToWidth(promptPrefixText, promptPrefixWidth, "")) : "";
+		const promptPrefixInset = promptPrefixWidth > 0 ? Math.min(1, paddingX) : 0;
+		const promptLeadingPadding = " ".repeat(promptPrefixInset);
+		const promptTrailingPadding = " ".repeat(Math.max(0, paddingX - promptPrefixInset));
+		const rightPadding = " ".repeat(paddingX);
+		const placeholderText = truncateToWidth(this.placeholder ?? "", inputWidth, "");
+		const displayText = this.placeholderColor(placeholderText);
+		const padding = " ".repeat(Math.max(0, inputWidth - visibleWidth(placeholderText)));
+		const line = `${promptLeadingPadding}${promptPrefix}${promptTrailingPadding}${displayText}${padding}${rightPadding}`;
+		const padded = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
+		return this.backgroundColor ? this.backgroundColor(padded) : padded;
 	}
 }

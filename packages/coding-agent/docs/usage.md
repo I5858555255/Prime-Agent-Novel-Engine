@@ -43,6 +43,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
 | `/session` | Show session file, ID, and message counts |
+| `/traces [status\|on\|off\|upload\|login]` | Manage opt-in Prime Agent trace sharing |
 | `/usage` | Show token, cost, and context usage |
 | `/tree` | Jump to any point in the session and continue from there |
 | `/fork` | Create a new session from a previous user message |
@@ -62,7 +63,8 @@ You can submit messages while the agent is still working:
 
 - **Enter** queues a steering message, delivered after the current assistant turn finishes executing its tool calls.
 - **Alt+Enter** queues a follow-up message, delivered after the agent finishes all work.
-- **Escape** aborts and restores queued messages to the editor.
+- **Ctrl+C** interrupts the current operation and briefly shows the exit hint; press it again while the hint is visible to exit.
+- **Escape** clears the input bar without interrupting the agent.
 - **Alt+Up** retrieves queued messages back to the editor.
 
 On Windows Terminal, Alt+Enter is fullscreen by default. Remap it as described in [Terminal setup](terminal-setup.md) if you want pi to receive the shortcut.
@@ -268,6 +270,8 @@ pi --tools bash,edit -p "Review the code"
 | `PI_SKIP_VERSION_CHECK` | Skip the Prime Agent version update check at startup. This prevents the release manifest request |
 | `PRIME_AGENT_DOWNLOAD_BASE_URL` | Override the Prime Agent release manifest and tarball base URL |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache where supported |
+| `PRIME_AGENT_TRACES_API_KEY` | Prime API key used only for opt-in trace sharing |
+| `PRIME_AGENT_TRACES_BASE_URL` | Override the Prime Agent trace upload API base URL |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |
 
 ## Design Principles

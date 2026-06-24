@@ -13,11 +13,9 @@ import { getAgentDir } from "../config.js";
 export interface AppKeybindings {
 	"app.interrupt": true;
 	"app.clear": true;
+	"app.input.clear": true;
 	"app.exit": true;
 	"app.suspend": true;
-	"app.thinking.cycle": true;
-	"app.model.cycleForward": true;
-	"app.model.cycleBackward": true;
 	"app.model.select": true;
 	"app.provider.add": true;
 	"app.tools.expand": true;
@@ -32,6 +30,13 @@ export interface AppKeybindings {
 	"app.session.tree": true;
 	"app.session.fork": true;
 	"app.session.resume": true;
+	"app.agents.back": true;
+	"app.agents.open": true;
+	"app.modal.back": true;
+	"app.agents.reply": true;
+	"app.agents.delete": true;
+	"app.agents.program": true;
+	"app.agents.rename": true;
 	"app.tree.foldOrUp": true;
 	"app.tree.unfoldOrDown": true;
 	"app.tree.editLabel": true;
@@ -64,27 +69,16 @@ declare module "@earendil-works/pi-tui" {
 
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
-	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort" },
-	"app.clear": { defaultKeys: "ctrl+c", description: "Clear editor" },
+	"app.interrupt": { defaultKeys: [], description: "Interrupt current operation" },
+	"app.clear": { defaultKeys: "ctrl+c", description: "Interrupt current operation, then exit" },
+	"app.input.clear": { defaultKeys: "escape", description: "Clear input" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },
 	"app.suspend": {
 		defaultKeys: process.platform === "win32" ? [] : "ctrl+z",
 		description: "Suspend to background",
 	},
-	"app.thinking.cycle": {
-		defaultKeys: "shift+tab",
-		description: "Cycle thinking level",
-	},
-	"app.model.cycleForward": {
-		defaultKeys: "ctrl+p",
-		description: "Cycle to next model",
-	},
-	"app.model.cycleBackward": {
-		defaultKeys: "shift+ctrl+p",
-		description: "Cycle to previous model",
-	},
 	"app.model.select": { defaultKeys: "ctrl+l", description: "Open model selector" },
-	"app.provider.add": { defaultKeys: "alt+p", description: "Add provider" },
+	"app.provider.add": { defaultKeys: "ctrl+p", description: "Add provider" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.thinking.toggle": {
 		defaultKeys: "ctrl+t",
@@ -118,6 +112,13 @@ export const KEYBINDINGS = {
 	"app.session.tree": { defaultKeys: [], description: "Open session tree" },
 	"app.session.fork": { defaultKeys: [], description: "Fork current session" },
 	"app.session.resume": { defaultKeys: [], description: "Resume a session" },
+	"app.agents.back": { defaultKeys: "left", description: "Return to agents view" },
+	"app.agents.open": { defaultKeys: "right", description: "Open chat view for selected agent" },
+	"app.modal.back": { defaultKeys: "left", description: "Go back / close the current dialog" },
+	"app.agents.reply": { defaultKeys: "space", description: "Reply to selected agent" },
+	"app.agents.delete": { defaultKeys: "ctrl+x", description: "Stop or delete selected agent" },
+	"app.agents.program": { defaultKeys: "ctrl+o", description: "Show the program that spawned subagents" },
+	"app.agents.rename": { defaultKeys: "ctrl+r", description: "Rename selected agent session" },
 	"app.tree.foldOrUp": {
 		defaultKeys: ["ctrl+left", "alt+left"],
 		description: "Fold tree branch or move up",
@@ -242,11 +243,9 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	selectCancel: "tui.select.cancel",
 	interrupt: "app.interrupt",
 	clear: "app.clear",
+	clearInput: "app.input.clear",
 	exit: "app.exit",
 	suspend: "app.suspend",
-	cycleThinkingLevel: "app.thinking.cycle",
-	cycleModelForward: "app.model.cycleForward",
-	cycleModelBackward: "app.model.cycleBackward",
 	selectModel: "app.model.select",
 	expandTools: "app.tools.expand",
 	toggleThinking: "app.thinking.toggle",
@@ -260,6 +259,11 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	tree: "app.session.tree",
 	fork: "app.session.fork",
 	resume: "app.session.resume",
+	agentsBack: "app.agents.back",
+	agentsReply: "app.agents.reply",
+	agentsDelete: "app.agents.delete",
+	agentsProgram: "app.agents.program",
+	agentsRename: "app.agents.rename",
 	treeFoldOrUp: "app.tree.foldOrUp",
 	treeUnfoldOrDown: "app.tree.unfoldOrDown",
 	treeEditLabel: "app.tree.editLabel",

@@ -1,5 +1,17 @@
 import { spawnSync } from "child_process";
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "fs";
+import { createHash } from "crypto";
+import {
+	accessSync,
+	appendFileSync,
+	constants,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+} from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
@@ -435,7 +447,7 @@ export function getBundledInteractiveAssetPath(name: string): string {
 }
 
 /**
- * Get path to bundled skills directory (shipped with the package).
+ * Get the directory containing built-in skills shipped with the package.
  * - For Bun binary: skills/ next to executable
  * - For Node.js (dist/): dist/skills/
  * - For tsx (src/): skills/ at the package root
@@ -445,7 +457,7 @@ export function getBundledSkillsDir(): string {
 		return join(getPackageDir(), "skills");
 	}
 	const packageDir = getPackageDir();
-	// Source checkouts (tsx) keep the bundled skills at the package root; built
+	// Source checkouts (tsx) keep built-in skills at the package root; built
 	// packages copy them to dist/skills. Decide by whether src/ is present so a
 	// stale dist/ from a prior build never shadows live source edits.
 	const isSourceCheckout = existsSync(join(packageDir, "src"));
@@ -481,7 +493,8 @@ export const VERSION: string = pkg.version || "0.0.0";
 
 // e.g., PI_CODING_AGENT_DIR or PRIME_AGENT_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${envPrefix}_CODING_AGENT_DIR`;
-export const ENV_SESSION_DIR = `${envPrefix}_CODING_AGENT_SESSION_DIR`;
+export const ENV_SESSION_DIR = `${envPrefix}_SESSION_DIR`;
+export const ENV_LEGACY_SESSION_DIR = `${envPrefix}_CODING_AGENT_SESSION_DIR`;
 
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
@@ -515,6 +528,56 @@ export function getCustomThemesDir(): string {
 	return join(getAgentDir(), "themes");
 }
 
+/** Directory where daemon and client diagnostic logs are written (e.g. ~/.prime/agent/logs/). */
+export function getLogsDir(): string {
+	return join(getAgentDir(), "logs");
+}
+
+/** Log file capturing client-side agent-open failures. */
+export function getClientErrorLogPath(): string {
+	return join(getLogsDir(), "client-errors.log");
+}
+
+export function getAgentTracesLogPath(): string {
+	return join(getLogsDir(), "agent-traces.log");
+}
+
+/**
+ * Log file for a daemon. The basename keeps it readable; a hash of the full
+ * socket path makes it unique so two sockets that share a basename (e.g.
+ * daemon.sock in different dirs) don't interleave into one file.
+ */
+export function getDaemonLogPath(socketPath: string): string {
+	const hash = createHash("sha256").update(socketPath).digest("hex").slice(0, 8);
+	return join(getLogsDir(), `${basename(socketPath)}.${hash}.log`);
+}
+
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Append a line to a log file, keeping its size bounded with a single-generation
+ * rotation. Opens and closes per call (no held fd), so rotation works at runtime
+ * — a long-lived writer rotates on the write that crosses the cap, not only at
+ * startup. Best-effort: diagnostics must never throw into the caller.
+ */
+export function appendRotatingLog(logPath: string, message: string): void {
+	try {
+		mkdirSync(dirname(logPath), { recursive: true });
+		try {
+			if (existsSync(logPath) && statSync(logPath).size > MAX_LOG_BYTES) {
+				// Drop any prior .old first: renameSync fails on Windows if it exists.
+				rmSync(`${logPath}.old`, { force: true });
+				renameSync(logPath, `${logPath}.old`);
+			}
+		} catch {
+			// Keep appending rather than dropping the log on a rotation failure.
+		}
+		appendFileSync(logPath, `${message}\n`);
+	} catch {
+		// A read-only or missing log dir must never break the caller.
+	}
+}
+
 /** Get path to models.json */
 export function getModelsPath(): string {
 	return join(getAgentDir(), "models.json");
@@ -528,6 +591,11 @@ export function getAuthPath(): string {
 /** Get path to settings.json */
 export function getSettingsPath(): string {
 	return join(getAgentDir(), "settings.json");
+}
+
+/** Get path to cron jobs store */
+export function getCronJobsPath(agentDir: string = getAgentDir()): string {
+	return join(agentDir, "cron-jobs.json");
 }
 
 /** Get path to tools directory */
@@ -546,8 +614,17 @@ export function getPromptsDir(): string {
 }
 
 /** Get path to sessions directory */
-export function getSessionsDir(): string {
-	return join(getAgentDir(), "sessions");
+export function getSessionsDir(agentDir: string = getAgentDir()): string {
+	const envDir = getSessionDirEnvOverride();
+	if (envDir) {
+		return envDir;
+	}
+	return join(agentDir, "sessions");
+}
+
+export function getSessionDirEnvOverride(): string | undefined {
+	const envDir = process.env[ENV_SESSION_DIR] ?? process.env[ENV_LEGACY_SESSION_DIR];
+	return envDir ? expandTildePath(envDir) : undefined;
 }
 
 /** Get path to debug log file */

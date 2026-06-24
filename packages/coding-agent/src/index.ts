@@ -8,10 +8,7 @@ export {
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
 	type ModelCycleResult,
-	type ParsedSkillBlock,
 	type PromptOptions,
-	parseSkillBlock,
-	type SessionStats,
 } from "./core/agent-session.js";
 // Auth and model registry
 export {
@@ -154,8 +151,12 @@ export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./co
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
 // SDK for programmatic usage
 export {
+	type AgentSessionCreationOptions,
 	AgentSessionRuntime,
+	type AgentSessionRuntimeConfig,
 	type AgentSessionRuntimeDiagnostic,
+	type AgentSessionRuntimeKind,
+	type AgentSessionRuntimeMetadata,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,
 	type CreateAgentSessionOptions,
@@ -163,6 +164,7 @@ export {
 	type CreateAgentSessionRuntimeFactory,
 	type CreateAgentSessionRuntimeResult,
 	type CreateAgentSessionServicesOptions,
+	type CreateRlmSubagentRuntimeOptions,
 	// Factory
 	createAgentSession,
 	createAgentSessionFromServices,
@@ -173,7 +175,10 @@ export {
 	createEditTool,
 	createIpythonTool,
 	type PromptTemplate,
+	type RlmSubagentRuntime,
+	type SubagentRuntimeHost,
 } from "./core/sdk.js";
+export { SessionImportFileNotFoundError } from "./core/session-import-errors.js";
 export {
 	type BranchSummaryEntry,
 	buildSessionContext,
@@ -195,8 +200,12 @@ export {
 	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
+	type SessionState,
+	type SessionStateEntry,
+	type SessionStateStatus,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.js";
+export type { SessionStats } from "./core/session-stats.js";
 export {
 	type CompactionSettings,
 	type ImageSettings,
@@ -204,6 +213,7 @@ export {
 	type RetrySettings,
 	SettingsManager,
 } from "./core/settings-manager.js";
+export { type ParsedSkillBlock, parseSkillBlock } from "./core/skill-blocks.js";
 // Skills
 export {
 	formatSkillsForPrompt,
@@ -240,6 +250,7 @@ export {
 	type EditToolInput,
 	type EditToolOptions,
 	formatSize,
+	IpythonKernelProvisioner,
 	type IpythonToolDetails,
 	type IpythonToolInput,
 	type IpythonToolOptions,
@@ -253,10 +264,60 @@ export {
 } from "./core/tools/index.js";
 // Main entry point
 export { type MainOptions, main } from "./main.js";
+export {
+	type AgentConnection,
+	type AgentConnectionArtifactReference,
+	type AgentConnectionArtifactType,
+	type AgentConnectionEvent,
+	type AgentConnectionExtensionUiRequest,
+	type AgentConnectionExtensionUiResponse,
+	type AgentConnectionModel,
+	type AgentConnectionModelCycleResult,
+	type AgentConnectionQueueState,
+	type AgentConnectionResourceSnapshot,
+	type AgentConnectionRlmChildAgentSnapshot,
+	type AgentConnectionSessionEvent,
+	type AgentConnectionSlashCommand,
+	type AgentConnectionState,
+	DaemonAgentConnection,
+	InProcessAgentConnection,
+} from "./modes/agent-connection/index.js";
 // Run modes for programmatic SDK usage
 export {
+	createInteractiveModeLocalSessionHost,
+	createInteractiveModeUiServices,
+	createInteractiveModeUiServicesFromServices,
+	DAEMON_PROTOCOL_INFO,
+	DAEMON_PROTOCOL_NAME,
+	DAEMON_PROTOCOL_VERSION,
+	type DaemonArtifactReference,
+	type DaemonAttachResult,
+	DaemonClient,
+	type DaemonClientCapability,
+	type DaemonClientId,
+	type DaemonClientMessageListener,
+	type DaemonCommand,
+	type DaemonCommandEnvelope,
+	type DaemonCommandId,
+	type DaemonEventEnvelope,
+	type DaemonEventId,
+	type DaemonEventMeta,
+	type DaemonEventSequence,
+	type DaemonModeOptions,
+	type DaemonOutbound,
+	type DaemonProtocolInfo,
+	type DaemonProtocolName,
+	type DaemonProtocolVersion,
+	type DaemonReplayInfo,
+	type DaemonReplayStatus,
+	type DaemonResponse,
+	type DaemonResumeCursor,
+	type DaemonSessionSnapshot,
+	defaultDaemonSocketPath,
 	InteractiveMode,
+	type InteractiveModeLocalSessionHost,
 	type InteractiveModeOptions,
+	type InteractiveModeUiServices,
 	type ModelInfo,
 	type PrintModeOptions,
 	RpcClient,
@@ -267,6 +328,8 @@ export {
 	type RpcSessionState,
 	runPrintMode,
 	runRpcMode,
+	type SessionStatus,
+	type SessionSummary,
 } from "./modes/index.js";
 // UI components for extensions
 export {

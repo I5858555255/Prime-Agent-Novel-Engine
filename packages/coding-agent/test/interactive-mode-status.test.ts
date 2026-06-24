@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
 import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
@@ -13,8 +12,19 @@ import type { AuthStatus } from "../src/core/auth-storage.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
-import type { ResourceDiagnostic } from "../src/core/resource-loader.js";
-import type { SourceInfo } from "../src/core/source-info.js";
+import type {
+	AgentConnectionExtensionUiRequest,
+	AgentConnectionExtensionUiResponse,
+	AgentConnectionModel,
+	AgentConnectionResourceDiagnostic,
+	AgentConnectionResourceSnapshot,
+	AgentConnectionSessionEvent,
+	AgentConnectionSourceInfo,
+	AgentConnectionState,
+} from "../src/modes/agent-connection/types.js";
+import { AgentActivityTracker } from "../src/modes/interactive/agent-activity.js";
+import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
+import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -36,6 +46,32 @@ function normalizeRenderedOutput(container: Container, width = 220): string {
 		.map((line) => line.replace(/\s+$/g, ""))
 		.join("\n")
 		.trim();
+}
+
+function createConnectionState(overrides: Partial<AgentConnectionState> = {}): AgentConnectionState {
+	return {
+		activeSessionId: "active-1",
+		cwd: "/tmp/project",
+		thinkingLevel: "medium",
+		availableThinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
+		isStreaming: false,
+		isCompacting: false,
+		isBashRunning: false,
+		retryAttempt: 0,
+		steeringMode: "all",
+		followUpMode: "all",
+		sessionId: "session-1",
+		leafId: null,
+		autoCompactionEnabled: true,
+		messageCount: 0,
+		pendingMessageCount: 0,
+		compactionCount: 0,
+		goal: emptyGoalState(),
+		scopedModels: [],
+		activeToolNames: ["ipython"],
+		contextUsage: undefined,
+		...overrides,
+	};
 }
 
 describe("InteractiveMode update notifications", () => {
@@ -83,7 +119,7 @@ describe("InteractiveMode update notifications", () => {
 
 type ExtensionFixture = {
 	path: string;
-	sourceInfo?: SourceInfo;
+	sourceInfo?: AgentConnectionSourceInfo;
 };
 
 describe("InteractiveMode.showStatus", () => {
@@ -133,9 +169,500 @@ describe("InteractiveMode.showStatus", () => {
 	});
 });
 
+type SubmitHandlerHarness = {
+	defaultEditor: { onSubmit?: (text: string) => Promise<void> };
+	editor: { setText: (text: string) => void; addToHistory?: (text: string) => void };
+	showWarning: (message: string) => void;
+	showError: (message: string) => void;
+	isBashRunning: () => boolean;
+	patchConnectionState: (patch: Record<string, unknown>) => void;
+	agentConnection: {
+		prompt: (message: string) => Promise<void>;
+		executeBash: (command: string, options?: { excludeFromContext?: boolean }) => Promise<void>;
+		getState: () => Promise<{ isBashRunning: boolean }>;
+	};
+};
+
+function createSubmitHandlerHarness(overrides: Partial<SubmitHandlerHarness> = {}): SubmitHandlerHarness {
+	const fakeThis: SubmitHandlerHarness = {
+		defaultEditor: {},
+		editor: { setText: vi.fn(), addToHistory: vi.fn() },
+		showWarning: vi.fn(),
+		showError: vi.fn(),
+		isBashRunning: () => false,
+		patchConnectionState: vi.fn(),
+		agentConnection: {
+			prompt: vi.fn(async () => {}),
+			executeBash: vi.fn(async () => {}),
+			getState: vi.fn(async () => ({ isBashRunning: false })),
+		},
+		...overrides,
+	};
+	(
+		InteractiveMode.prototype as unknown as {
+			setupEditorSubmitHandler(this: SubmitHandlerHarness): void;
+		}
+	).setupEditorSubmitHandler.call(fakeThis);
+	return fakeThis;
+}
+
+describe("InteractiveMode submit handling", () => {
+	test("routes ! shortcuts to executeBash on the agent connection", async () => {
+		const fakeThis = createSubmitHandlerHarness();
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.agentConnection.executeBash).toHaveBeenCalledWith("pwd", { excludeFromContext: false });
+		expect(fakeThis.editor.addToHistory).toHaveBeenCalledWith("!pwd");
+		expect(fakeThis.editor.setText).toHaveBeenCalledWith("");
+		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+
+	test("routes !! shortcuts to executeBash with excludeFromContext", async () => {
+		const fakeThis = createSubmitHandlerHarness();
+
+		await fakeThis.defaultEditor.onSubmit?.("!!git status");
+
+		expect(fakeThis.agentConnection.executeBash).toHaveBeenCalledWith("git status", { excludeFromContext: true });
+		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+
+	test("ignores bare ! and !! input instead of prompting the agent", async () => {
+		const fakeThis = createSubmitHandlerHarness();
+
+		await fakeThis.defaultEditor.onSubmit?.("!");
+		await fakeThis.defaultEditor.onSubmit?.("!!");
+
+		expect(fakeThis.agentConnection.executeBash).not.toHaveBeenCalled();
+		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
+	});
+
+	test("warns instead of executing when a bash command is already running", async () => {
+		const fakeThis = createSubmitHandlerHarness({ isBashRunning: () => true });
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.showWarning).toHaveBeenCalledWith(expect.stringContaining("A bash command is already running"));
+		expect(fakeThis.agentConnection.executeBash).not.toHaveBeenCalled();
+		expect(fakeThis.editor.setText).not.toHaveBeenCalled();
+	});
+
+	test("surfaces executeBash transport failures via showError", async () => {
+		const fakeThis = createSubmitHandlerHarness({
+			agentConnection: {
+				prompt: vi.fn(async () => {}),
+				executeBash: vi.fn(async () => {
+					throw new Error("the daemon is running an older build; restart the daemon and try again");
+				}),
+				getState: vi.fn(async () => ({ isBashRunning: false })),
+			},
+		});
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.showError).toHaveBeenCalledWith(expect.stringContaining("older build"));
+		expect(fakeThis.patchConnectionState).toHaveBeenLastCalledWith({ isBashRunning: false });
+	});
+
+	test("re-syncs the bash flag from connection state when executeBash is rejected", async () => {
+		const fakeThis = createSubmitHandlerHarness({
+			agentConnection: {
+				prompt: vi.fn(async () => {}),
+				executeBash: vi.fn(async () => {
+					throw new Error("A bash command is already running");
+				}),
+				// Another attached client holds the bash slot
+				getState: vi.fn(async () => ({ isBashRunning: true })),
+			},
+		});
+
+		await fakeThis.defaultEditor.onSubmit?.("!pwd");
+
+		expect(fakeThis.patchConnectionState).toHaveBeenLastCalledWith({ isBashRunning: true });
+	});
+});
+
+describe("InteractiveMode pending bash components", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	const bashComponent = () => ({ render: () => [], invalidate: () => {} });
+
+	test("keeps pending bash components visible across queue refreshes", () => {
+		const pendingMessagesContainer = new Container();
+		const component = bashComponent();
+		const fakeThis = {
+			pendingMessagesContainer,
+			queuedMessagesContainer: new Container(),
+			pendingBashComponents: [component],
+			getAllQueuedMessages: () => ({ steering: [], followUp: [] }),
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as { updatePendingMessagesDisplay(this: unknown): void }
+		).updatePendingMessagesDisplay.call(fakeThis);
+
+		expect(pendingMessagesContainer.children).toContain(component);
+	});
+
+	test("flushes pending bash components from the pending area to chat", () => {
+		const pendingMessagesContainer = new Container();
+		const chatContainer = new Container();
+		const component = bashComponent();
+		pendingMessagesContainer.addChild(component);
+		const fakeThis = {
+			pendingMessagesContainer,
+			chatContainer,
+			pendingBashComponents: [component],
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as { flushPendingBashComponents(this: unknown): void }
+		).flushPendingBashComponents.call(fakeThis);
+
+		expect(pendingMessagesContainer.children).not.toContain(component);
+		expect(chatContainer.children).toContain(component);
+		expect((fakeThis as unknown as { pendingBashComponents: unknown[] }).pendingBashComponents).toHaveLength(0);
+	});
+
+	test("handles session events in emission order even when a handler suspends", async () => {
+		type ConnectionListener = (event: { type: string; event: { type: string } }) => Promise<void>;
+		let listener: ConnectionListener | undefined;
+		const order: string[] = [];
+		const fakeThis = {
+			agentConnection: {
+				subscribe: (l: ConnectionListener) => {
+					listener = l;
+					return () => {};
+				},
+			},
+			sessionEventQueue: Promise.resolve(),
+			showError: vi.fn(),
+			handleEvent: async (event: { type: string }) => {
+				order.push(`start:${event.type}`);
+				if (event.type === "bash_start") {
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				order.push(`end:${event.type}`);
+			},
+		} as unknown as InteractiveMode;
+
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: unknown): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+
+		const first = listener?.({ type: "session_event", event: { type: "bash_start" } });
+		const second = listener?.({ type: "session_event", event: { type: "bash_end" } });
+		await Promise.all([first, second]);
+
+		expect(order).toEqual(["start:bash_start", "end:bash_start", "start:bash_end", "end:bash_end"]);
+	});
+
+	test("stops an orphaned bash loader when session render state resets", () => {
+		const tuiStub = {
+			terminal: { columns: 120, rows: 24 },
+			requestRender: () => {},
+		} as unknown as ConstructorParameters<typeof BashExecutionComponent>[1];
+		const component = new BashExecutionComponent("sleep 99", tuiStub);
+		const loader = (component as unknown as { loader: { intervalId: unknown } }).loader;
+		expect(loader.intervalId).not.toBeNull();
+
+		const editorStub = { clearHistory: vi.fn(), setText: vi.fn() };
+		const fakeThis = {
+			chatContainer: new Container(),
+			pendingMessagesContainer: new Container(),
+			queuedMessagesContainer: new Container(),
+			compactionQueuedMessages: [],
+			pastedImages: new Map(),
+			defaultEditor: editorStub,
+			editor: editorStub,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			activeBashComponent: component,
+			pendingBashComponents: [component],
+			activityTracker: { reset: vi.fn() },
+			resetPendingToolState: vi.fn(),
+			resetChildAgentInspector: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			syncGoalTray: vi.fn(),
+			getGoalState: () => emptyGoalState(),
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as { resetCurrentSessionRenderState(this: unknown): void }
+		).resetCurrentSessionRenderState.call(fakeThis);
+
+		expect(loader.intervalId).toBeNull();
+		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBeUndefined();
+	});
+});
+
+describe("InteractiveMode connection events", () => {
+	test("clears extension UI when a connection-backed session is replaced", async () => {
+		type SessionReplacedEvent = { type: "session_replaced"; state: AgentConnectionState; messages: [] };
+		let listener: ((event: SessionReplacedEvent) => Promise<void> | void) | undefined;
+		const fakeThis = {
+			agentConnection: {
+				subscribe: vi.fn((callback) => {
+					listener = callback;
+					return vi.fn();
+				}),
+			},
+			resetExtensionUI: vi.fn(),
+			applyConnectionStateSnapshot: vi.fn(),
+			resetCurrentSessionRenderState: vi.fn(),
+			rebindCurrentSession: vi.fn(async () => {}),
+			renderInitialMessages: vi.fn(async () => {}),
+			ui: { requestRender: vi.fn() },
+			handleEvent: vi.fn(),
+			handleConnectionExtensionUiRequest: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+
+		const state = createConnectionState();
+		await listener?.({ type: "session_replaced", state, messages: [] });
+
+		const resetOrder = fakeThis.resetExtensionUI.mock.invocationCallOrder[0];
+		const applySnapshotOrder = fakeThis.applyConnectionStateSnapshot.mock.invocationCallOrder[0];
+		const resetRenderOrder = fakeThis.resetCurrentSessionRenderState.mock.invocationCallOrder[0];
+		const rebindOrder = fakeThis.rebindCurrentSession.mock.invocationCallOrder[0];
+		const renderMessagesOrder = fakeThis.renderInitialMessages.mock.invocationCallOrder[0];
+		expect(resetOrder).toBeLessThan(applySnapshotOrder);
+		expect(applySnapshotOrder).toBeLessThan(resetRenderOrder);
+		expect(resetRenderOrder).toBeLessThan(rebindOrder);
+		expect(rebindOrder).toBeLessThan(renderMessagesOrder);
+		expect(fakeThis.applyConnectionStateSnapshot).toHaveBeenCalledWith(state);
+		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
+		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();
+	});
+});
+
+describe("InteractiveMode connection extension UI", () => {
+	type ActiveConnectionExtensionUiRequest = { cancelLocal(): void };
+
+	type ConnectionExtensionUiCancelHarness = {
+		activeConnectionExtensionUiRequests: Map<string, ActiveConnectionExtensionUiRequest>;
+		agentConnection: {
+			respondToExtensionUiRequest(requestId: string, response: AgentConnectionExtensionUiResponse): Promise<void>;
+		};
+		showError(message: string): void;
+		cancelActiveConnectionExtensionUiRequests(): void;
+	};
+
+	type ConnectionExtensionUiHandlerHarness = ConnectionExtensionUiCancelHarness & {
+		resolveConnectionExtensionUiRequest(
+			request: AgentConnectionExtensionUiRequest,
+		): Promise<AgentConnectionExtensionUiResponse | undefined>;
+		handleConnectionExtensionUiRequest(request: AgentConnectionExtensionUiRequest): Promise<void>;
+	};
+
+	const prototype = InteractiveMode.prototype as unknown as ConnectionExtensionUiHandlerHarness;
+
+	test("reset cancellation responds to active connection UI requests", async () => {
+		const cancelLocal = vi.fn();
+		const fakeThis = Object.create(InteractiveMode.prototype) as ConnectionExtensionUiCancelHarness;
+		fakeThis.activeConnectionExtensionUiRequests = new Map([["request-1", { cancelLocal }]]);
+		fakeThis.agentConnection = {
+			respondToExtensionUiRequest: vi.fn(async () => {}),
+		};
+		fakeThis.showError = vi.fn();
+
+		prototype.cancelActiveConnectionExtensionUiRequests.call(fakeThis);
+		await Promise.resolve();
+
+		expect(fakeThis.activeConnectionExtensionUiRequests.size).toBe(0);
+		expect(cancelLocal).toHaveBeenCalledTimes(1);
+		expect(fakeThis.agentConnection.respondToExtensionUiRequest).toHaveBeenCalledWith("request-1", {
+			cancelled: true,
+		});
+		expect(fakeThis.showError).not.toHaveBeenCalled();
+	});
+
+	test("connection UI handler does not double respond after reset cancellation", async () => {
+		const fakeThis = Object.create(InteractiveMode.prototype) as ConnectionExtensionUiHandlerHarness;
+		fakeThis.activeConnectionExtensionUiRequests = new Map();
+		fakeThis.agentConnection = {
+			respondToExtensionUiRequest: vi.fn(async () => {}),
+		};
+		fakeThis.showError = vi.fn();
+		fakeThis.resolveConnectionExtensionUiRequest = vi.fn(
+			() =>
+				new Promise<AgentConnectionExtensionUiResponse | undefined>(() => {
+					// Intentionally left pending until cancellation wins the race.
+				}),
+		);
+
+		const request: AgentConnectionExtensionUiRequest = {
+			id: "request-1",
+			method: "select",
+			payload: {},
+		};
+		const handling = prototype.handleConnectionExtensionUiRequest.call(fakeThis, request);
+		expect(fakeThis.activeConnectionExtensionUiRequests.size).toBe(1);
+
+		prototype.cancelActiveConnectionExtensionUiRequests.call(fakeThis);
+		await handling;
+
+		expect(fakeThis.agentConnection.respondToExtensionUiRequest).toHaveBeenCalledTimes(1);
+		expect(fakeThis.agentConnection.respondToExtensionUiRequest).toHaveBeenCalledWith("request-1", {
+			cancelled: true,
+		});
+		expect(fakeThis.activeConnectionExtensionUiRequests.size).toBe(0);
+	});
+});
+
+describe("InteractiveMode key handlers", () => {
+	type KeyHandlerHarness = {
+		defaultEditor: {
+			onEscape?: () => void;
+			onCtrlD?: () => void;
+			onMoveBelowPrompt?: () => void;
+			onChange?: () => void;
+			onPasteImage?: () => void;
+			onAction(action: string, handler: () => void): void;
+		};
+		editor: { setText: ReturnType<typeof vi.fn> };
+		ui: { onDebug?: () => void; requestRender: ReturnType<typeof vi.fn> };
+		clearCtrlCExitHint(options?: { render?: boolean }): void;
+		setupKeyHandlers(): void;
+	};
+
+	test("escape clears the input bar without aborting streaming", () => {
+		const fakeThis = Object.create(InteractiveMode.prototype) as KeyHandlerHarness;
+		fakeThis.defaultEditor = {
+			onAction: vi.fn(),
+		};
+		fakeThis.editor = { setText: vi.fn() };
+		fakeThis.ui = { requestRender: vi.fn() };
+		fakeThis.clearCtrlCExitHint = vi.fn();
+
+		fakeThis.setupKeyHandlers();
+		fakeThis.defaultEditor.onEscape?.();
+
+		expect(fakeThis.clearCtrlCExitHint).toHaveBeenCalledWith({ render: false });
+		expect(fakeThis.editor.setText).toHaveBeenCalledWith("");
+		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("InteractiveMode tool event rendering", () => {
+	test("reserves streaming tool call ids before loading tool definitions", async () => {
+		let resolveDefinition!: () => void;
+		const definitionPromise = new Promise<undefined>((resolve) => {
+			resolveDefinition = () => resolve(undefined);
+		});
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			isInitialized: true,
+			init: vi.fn(async () => {}),
+			footer: { invalidate: vi.fn() },
+			updateConnectionStateFromEvent: vi.fn(),
+			activityTracker: new AgentActivityTracker(),
+			streamingComponent: { updateContent: vi.fn() },
+			streamingMessage: undefined,
+			chatContainer: new Container(),
+			pendingTools: new Map<string, ToolExecutionComponent>(),
+			pendingToolCreations: new Set<string>(),
+			startedToolCalls: new Set<string>(),
+			loadToolDefinition: vi.fn(() => definitionPromise),
+			uiServices: {
+				settingsManager: {
+					getShowImages: () => true,
+					getImageWidthCells: () => 60,
+				},
+			},
+			toolOutputExpanded: false,
+			ui: { requestRender: vi.fn() },
+			getCurrentCwd: () => "/tmp/project",
+		});
+		const message = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "tool-1",
+					name: "ipython",
+					arguments: { code: "print(1)" },
+				},
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0,
+				},
+			},
+			stopReason: "stop",
+			timestamp: 1,
+		};
+		const event = {
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial: message },
+		} as unknown as AgentConnectionSessionEvent;
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof fakeThis, event: AgentConnectionSessionEvent): Promise<void>;
+			}
+		).handleEvent;
+
+		const firstUpdate = handleEvent.call(fakeThis, event);
+		const secondUpdate = handleEvent.call(fakeThis, event);
+		await Promise.resolve();
+		expect(fakeThis.loadToolDefinition).toHaveBeenCalledTimes(1);
+
+		resolveDefinition();
+		await Promise.all([firstUpdate, secondUpdate]);
+
+		expect(fakeThis.pendingTools.size).toBe(1);
+		expect(fakeThis.chatContainer.children).toHaveLength(1);
+	});
+});
+
+describe("InteractiveMode transcript rebuild", () => {
+	test("keeps existing chat visible when session context reload fails", async () => {
+		type RebuildHarness = {
+			chatContainer: Container;
+			agentConnection: { getSessionContext(): Promise<never> };
+			renderSessionContext(): Promise<void>;
+			rebuildChatFromMessages(): Promise<void>;
+		};
+		const fakeThis = Object.create(InteractiveMode.prototype) as RebuildHarness;
+		fakeThis.chatContainer = new Container();
+		fakeThis.chatContainer.addChild(new Container());
+		fakeThis.agentConnection = {
+			getSessionContext: vi.fn(async () => {
+				throw new Error("context unavailable");
+			}),
+		};
+		fakeThis.renderSessionContext = vi.fn(async () => {});
+
+		await expect(fakeThis.rebuildChatFromMessages()).rejects.toThrow("context unavailable");
+
+		expect(fakeThis.chatContainer.children).toHaveLength(1);
+		expect(fakeThis.renderSessionContext).not.toHaveBeenCalled();
+	});
+});
+
 describe("InteractiveMode startup onboarding warnings", () => {
 	type StartupWarningHarness = {
 		shouldRunOnboarding(): boolean;
+		getCurrentModel(): AgentConnectionModel | undefined;
 		getModelFallbackWarningAction(
 			modelFallbackMessage: string | undefined,
 			startupNeededOnboarding: boolean,
@@ -145,31 +672,45 @@ describe("InteractiveMode startup onboarding warnings", () => {
 	const getModelFallbackWarningAction = (InteractiveMode.prototype as unknown as StartupWarningHarness)
 		.getModelFallbackWarningAction;
 
+	const createHarness = (options: {
+		shouldRunOnboarding?: boolean;
+		currentModel?: AgentConnectionModel;
+	}): StartupWarningHarness => ({
+		shouldRunOnboarding: vi.fn(() => options.shouldRunOnboarding ?? false),
+		getCurrentModel: vi.fn(() => options.currentModel),
+		getModelFallbackWarningAction,
+	});
+
+	const liveModel = { id: "gpt-5.5", provider: "prime-inference" } as AgentConnectionModel;
+
 	test("suppresses the stale no-model warning after onboarding selects a model", () => {
-		const fakeThis: StartupWarningHarness = {
-			shouldRunOnboarding: vi.fn(() => false),
-			getModelFallbackWarningAction,
-		};
+		const fakeThis = createHarness({ shouldRunOnboarding: false });
 
 		expect(getModelFallbackWarningAction.call(fakeThis, formatNoModelsAvailableMessage(), true)).toBe("suppress");
 		expect(fakeThis.shouldRunOnboarding).toHaveBeenCalledTimes(1);
 	});
 
 	test("waits to suppress the stale no-model warning while onboarding is still needed", () => {
-		const fakeThis: StartupWarningHarness = {
-			shouldRunOnboarding: vi.fn(() => true),
-			getModelFallbackWarningAction,
-		};
+		const fakeThis = createHarness({ shouldRunOnboarding: true });
 
 		expect(getModelFallbackWarningAction.call(fakeThis, formatNoModelsAvailableMessage(), true)).toBe("wait");
 		expect(fakeThis.shouldRunOnboarding).toHaveBeenCalledTimes(1);
 	});
 
+	test("suppresses the no-model warning when the live session has a model", () => {
+		const fakeThis = createHarness({ currentModel: liveModel });
+
+		expect(getModelFallbackWarningAction.call(fakeThis, formatNoModelsAvailableMessage(), false)).toBe("suppress");
+	});
+
+	test("shows the no-model warning when the live session has no model", () => {
+		const fakeThis = createHarness({});
+
+		expect(getModelFallbackWarningAction.call(fakeThis, formatNoModelsAvailableMessage(), false)).toBe("show");
+	});
+
 	test("keeps real model restore fallback warnings after onboarding", () => {
-		const fakeThis: StartupWarningHarness = {
-			shouldRunOnboarding: vi.fn(() => false),
-			getModelFallbackWarningAction,
-		};
+		const fakeThis = createHarness({ shouldRunOnboarding: false, currentModel: liveModel });
 
 		expect(
 			getModelFallbackWarningAction.call(
@@ -182,46 +723,239 @@ describe("InteractiveMode startup onboarding warnings", () => {
 	});
 });
 
+describe("InteractiveMode model candidates", () => {
+	type ModelCandidatesHarness = {
+		agentConnection: { getAvailableModels: () => Promise<AgentConnectionModel[]> };
+		connectionModels: AgentConnectionModel[];
+		getScopedModelState(): AgentConnectionState["scopedModels"];
+		getConnectionAvailableModels(): Promise<AgentConnectionModel[]>;
+		getModelCandidates(): Promise<AgentConnectionModel[]>;
+		getScopedModelsFromModelIds(
+			enabledIds: readonly string[],
+			allModels: readonly AgentConnectionModel[],
+		): AgentConnectionState["scopedModels"];
+	};
+	const prototype = InteractiveMode.prototype as unknown as ModelCandidatesHarness;
+
+	const createModel = (provider: string, id: string): AgentConnectionModel =>
+		({
+			provider,
+			id,
+			name: id,
+		}) as AgentConnectionModel;
+
+	test("loads unscoped model candidates through AgentConnection", async () => {
+		const model = createModel("openai", "gpt-5.5");
+		const getAvailableModels = vi.fn(async () => [model]);
+		const fakeThis: ModelCandidatesHarness = {
+			agentConnection: { getAvailableModels },
+			connectionModels: [],
+			getScopedModelState: () => [],
+			getConnectionAvailableModels: prototype.getConnectionAvailableModels,
+			getModelCandidates: prototype.getModelCandidates,
+			getScopedModelsFromModelIds: prototype.getScopedModelsFromModelIds,
+		};
+
+		const result = await prototype.getModelCandidates.call(fakeThis);
+
+		expect(result).toEqual([model]);
+		expect(getAvailableModels).toHaveBeenCalledTimes(1);
+		expect(fakeThis.connectionModels).toEqual([model]);
+	});
+
+	test("uses connection state for scoped model candidates", async () => {
+		const model = createModel("anthropic", "claude-opus-4-5");
+		const getAvailableModels = vi.fn(async () => [createModel("openai", "gpt-5.5")]);
+		const fakeThis: ModelCandidatesHarness = {
+			agentConnection: { getAvailableModels },
+			connectionModels: [],
+			getScopedModelState: () => [{ model, thinkingLevel: "medium" }],
+			getConnectionAvailableModels: prototype.getConnectionAvailableModels,
+			getModelCandidates: prototype.getModelCandidates,
+			getScopedModelsFromModelIds: prototype.getScopedModelsFromModelIds,
+		};
+
+		const result = await prototype.getModelCandidates.call(fakeThis);
+
+		expect(result).toEqual([model]);
+		expect(getAvailableModels).not.toHaveBeenCalled();
+	});
+
+	test("maps selected scoped model IDs from connection candidates", () => {
+		const anthropicModel = createModel("anthropic", "claude-opus-4-5");
+		const openaiModel = createModel("openai", "gpt-5.5");
+
+		const result = prototype.getScopedModelsFromModelIds(
+			["missing/model", "anthropic/claude-opus-4-5", "anthropic/claude-opus-4-5", "openai/gpt-5.5"],
+			[openaiModel, anthropicModel],
+		);
+
+		expect(result).toEqual([{ model: anthropicModel }, { model: openaiModel }]);
+	});
+});
+
+describe("InteractiveMode model selection persistence", () => {
+	type ModelSelectionHarness = {
+		agentConnection: { setModel(provider: string, modelId: string): Promise<void> };
+		uiServices: {
+			settingsManager: { setDefaultModelAndProvider(provider: string, modelId: string): void };
+		};
+		footer: { invalidate(): void };
+		patchConnectionState(patch: Partial<AgentConnectionState>): void;
+		updateEditorBorderColor(): void;
+		showStatus(message: string): void;
+		showError(message: string): void;
+		findExactModelMatch(searchTerm: string): Promise<AgentConnectionModel | undefined>;
+		maybeWarnAboutAnthropicSubscriptionAuth(model: AgentConnectionModel): Promise<void>;
+		checkDaxnutsEasterEgg(model: AgentConnectionModel): void;
+		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+		handleModelCommand(searchTerm?: string): Promise<void>;
+		completeOnboardingIfCurrentModelReady(): void;
+		setupAutocompleteProvider(): void;
+	};
+
+	const createModel = (provider: string, id: string): AgentConnectionModel =>
+		({
+			provider,
+			id,
+			name: id,
+		}) as AgentConnectionModel;
+
+	test("persists local default only after the connection accepts the model", async () => {
+		const order: string[] = [];
+		const model = createModel("openai", "gpt-5.5");
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
+		fakeThis.agentConnection = {
+			setModel: vi.fn(async () => {
+				order.push("connection");
+			}),
+		};
+		fakeThis.uiServices = {
+			settingsManager: {
+				setDefaultModelAndProvider: vi.fn(() => {
+					order.push("settings");
+				}),
+			},
+		};
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.patchConnectionState = vi.fn();
+		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.setupAutocompleteProvider = vi.fn();
+
+		await fakeThis.applySelectedModel(model);
+
+		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(order).toEqual(["connection", "settings"]);
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
+		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
+		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not persist local default when the connection rejects the model", async () => {
+		const model = createModel("openai", "missing-model");
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
+		fakeThis.agentConnection = {
+			setModel: vi.fn(async () => {
+				throw new Error("model unavailable");
+			}),
+		};
+		fakeThis.uiServices = {
+			settingsManager: {
+				setDefaultModelAndProvider: vi.fn(),
+			},
+		};
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.patchConnectionState = vi.fn();
+		fakeThis.updateEditorBorderColor = vi.fn();
+
+		await expect(fakeThis.applySelectedModel(model)).rejects.toThrow("model unavailable");
+
+		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).not.toHaveBeenCalled();
+		expect(fakeThis.patchConnectionState).not.toHaveBeenCalled();
+		expect(fakeThis.footer.invalidate).not.toHaveBeenCalled();
+		expect(fakeThis.updateEditorBorderColor).not.toHaveBeenCalled();
+	});
+
+	test("persists exact /model command selections after the connection accepts them", async () => {
+		const model = createModel("openai", "gpt-5.5");
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
+		fakeThis.agentConnection = { setModel: vi.fn(async () => {}) };
+		fakeThis.uiServices = {
+			settingsManager: {
+				setDefaultModelAndProvider: vi.fn(),
+			},
+		};
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.patchConnectionState = vi.fn();
+		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showError = vi.fn();
+		fakeThis.findExactModelMatch = vi.fn(async () => model);
+		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn(async () => {});
+		fakeThis.checkDaxnutsEasterEgg = vi.fn();
+		fakeThis.completeOnboardingIfCurrentModelReady = vi.fn();
+		fakeThis.setupAutocompleteProvider = vi.fn();
+
+		await fakeThis.handleModelCommand("gpt-5.5");
+
+		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
+		expect(fakeThis.showError).not.toHaveBeenCalled();
+		expect(fakeThis.completeOnboardingIfCurrentModelReady).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("InteractiveMode Prime CLI onboarding", () => {
 	type OnboardingHarness = {
 		shouldRunOnboarding(): boolean;
 		completeOnboarding(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		runOnboardingFlow(): Promise<boolean>;
+		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+		setupAutocompleteProvider(): void;
 	};
 	type OnboardingFake = OnboardingHarness & {
-		runtimeHost: {
-			session: {
-				model?: Model<"openai-completions">;
-				setModel?: (model: Model<"openai-completions">) => Promise<void>;
-				modelRegistry: {
-					refresh: () => void;
-					getAvailable: () => Model<"openai-completions">[];
-					hasConfiguredAuth: (model: unknown) => boolean;
-					getProviderAuthStatus: (provider: string) => AuthStatus;
-				};
-				settingsManager: {
-					getOnboardingCompleted: () => boolean;
-					setOnboardingCompleted: (completed: boolean) => void;
-				};
+		connectionState: AgentConnectionState;
+		connectionModels: AgentConnectionModel[];
+		agentConnection: {
+			getAvailableModels?: () => Promise<AgentConnectionModel[]>;
+			setModel?: (provider: string, modelId: string) => Promise<void>;
+		};
+		uiServices: {
+			modelRegistry: {
+				refresh: () => void;
+				hasConfiguredAuth: (model: unknown) => boolean;
+				getProviderAuthStatus: (provider: string) => AuthStatus;
+			};
+			settingsManager: {
+				getOnboardingCompleted: () => boolean;
+				setOnboardingCompleted: (completed: boolean) => void;
+				setDefaultModelAndProvider: (provider: string, modelId: string) => void;
 			};
 		};
 		footer?: { invalidate: () => void };
 		updateEditorBorderColor?: () => void;
 		showStatus?: (message: string) => void;
 		showError?: (message: string) => void;
-		maybeWarnAboutAnthropicSubscriptionAuth?: (model?: Model<"openai-completions">) => void;
+		patchConnectionState?: (patch: Partial<AgentConnectionState>) => void;
+		maybeWarnAboutAnthropicSubscriptionAuth?: (model?: AgentConnectionModel) => void;
 		checkDaxnutsEasterEgg?: (model: { provider: string; id: string }) => void;
-		findExactModelMatch?: (searchTerm: string) => Promise<Model<"openai-completions"> | undefined>;
+		findExactModelMatch?: (searchTerm: string) => Promise<AgentConnectionModel | undefined>;
 		showOnboardingModelSelectionSplash?: () => Promise<boolean>;
 		promptForModelSelection?: (options?: { allowProviderSetup?: boolean }) => Promise<boolean>;
+		completeOnboardingIfCurrentModelReady?: () => void;
+		getModelCandidates?: () => Promise<AgentConnectionModel[]>;
 	};
 	const shouldRunOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).shouldRunOnboarding;
 	const completeOnboarding = (InteractiveMode.prototype as unknown as OnboardingHarness).completeOnboarding;
 	const handleModelCommand = (InteractiveMode.prototype as unknown as OnboardingHarness).handleModelCommand;
 	const runOnboardingFlow = (InteractiveMode.prototype as unknown as OnboardingHarness).runOnboardingFlow;
+	const applySelectedModel = (InteractiveMode.prototype as unknown as OnboardingHarness).applySelectedModel;
 
-	const primeModel: Model<"openai-completions"> = {
+	const primeModel: AgentConnectionModel = {
 		id: "openai/gpt-5.5",
 		name: "GPT-5.5",
 		api: "openai-completions",
@@ -237,30 +971,33 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		},
 		contextWindow: 1050000,
 		maxTokens: 128000,
-	};
+	} as AgentConnectionModel;
 
 	function createPrimeCliHarness(completed: boolean): OnboardingFake {
 		const fakeThis = Object.create(InteractiveMode.prototype) as OnboardingFake;
-		fakeThis.runtimeHost = {
-			session: {
-				model: primeModel,
-				modelRegistry: {
-					refresh: vi.fn(),
-					getAvailable: vi.fn(() => [primeModel]),
-					hasConfiguredAuth: vi.fn(() => true),
-					getProviderAuthStatus: vi.fn(
-						(): AuthStatus => ({
-							configured: false,
-							source: "prime_cli",
-						}),
-					),
-				},
-				settingsManager: {
-					getOnboardingCompleted: vi.fn(() => completed),
-					setOnboardingCompleted: vi.fn(),
-				},
+		fakeThis.connectionState = createConnectionState({ model: primeModel });
+		fakeThis.connectionModels = [primeModel];
+		fakeThis.agentConnection = {
+			getAvailableModels: vi.fn(async () => [primeModel]),
+		};
+		fakeThis.uiServices = {
+			modelRegistry: {
+				refresh: vi.fn(),
+				hasConfiguredAuth: vi.fn(() => true),
+				getProviderAuthStatus: vi.fn(
+					(): AuthStatus => ({
+						configured: false,
+						source: "prime_cli",
+					}),
+				),
+			},
+			settingsManager: {
+				getOnboardingCompleted: vi.fn(() => completed),
+				setOnboardingCompleted: vi.fn(),
+				setDefaultModelAndProvider: vi.fn(),
 			},
 		};
+		fakeThis.getModelCandidates = vi.fn(async () => [primeModel]);
 		return fakeThis;
 	}
 
@@ -268,7 +1005,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		const fakeThis = createPrimeCliHarness(false);
 
 		expect(shouldRunOnboarding.call(fakeThis)).toBe(true);
-		expect(fakeThis.runtimeHost.session.modelRegistry.refresh).toHaveBeenCalledTimes(1);
+		expect(fakeThis.uiServices.modelRegistry.refresh).toHaveBeenCalledTimes(1);
 	});
 
 	test("skips Prime CLI onboarding after it has been completed", () => {
@@ -282,32 +1019,37 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 
 		completeOnboarding.call(fakeThis);
 
-		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
 	});
 
 	test("manual exact model selection completes Prime CLI onboarding", async () => {
 		let completed = false;
 		const fakeThis = createPrimeCliHarness(false);
-		fakeThis.runtimeHost.session.model = undefined;
-		fakeThis.runtimeHost.session.settingsManager.getOnboardingCompleted = vi.fn(() => completed);
-		fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted = vi.fn((nextCompleted: boolean) => {
+		fakeThis.connectionState = createConnectionState({ model: undefined });
+		fakeThis.uiServices.settingsManager.getOnboardingCompleted = vi.fn(() => completed);
+		fakeThis.uiServices.settingsManager.setOnboardingCompleted = vi.fn((nextCompleted: boolean) => {
 			completed = nextCompleted;
 		});
-		fakeThis.runtimeHost.session.setModel = vi.fn(async (model: Model<"openai-completions">) => {
-			fakeThis.runtimeHost.session.model = model;
+		fakeThis.agentConnection.setModel = vi.fn(async (_provider: string, _modelId: string) => {
+			fakeThis.connectionState = { ...fakeThis.connectionState, model: primeModel };
 		});
 		fakeThis.findExactModelMatch = vi.fn(async () => primeModel);
 		fakeThis.footer = { invalidate: vi.fn() };
 		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.patchConnectionState = vi.fn((patch: Partial<AgentConnectionState>) => {
+			fakeThis.connectionState = { ...fakeThis.connectionState, ...patch };
+		});
 		fakeThis.showStatus = vi.fn();
 		fakeThis.showError = vi.fn();
 		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn();
 		fakeThis.checkDaxnutsEasterEgg = vi.fn();
+		fakeThis.applySelectedModel = applySelectedModel;
+		fakeThis.setupAutocompleteProvider = vi.fn();
 
 		await handleModelCommand.call(fakeThis, "prime-inference/openai/gpt-5.5");
 
-		expect(fakeThis.runtimeHost.session.setModel).toHaveBeenCalledWith(primeModel);
-		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
+		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith(PRIME_INFERENCE_PROVIDER_ID, "openai/gpt-5.5");
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).toHaveBeenCalledWith(true);
 		expect(shouldRunOnboarding.call(fakeThis)).toBe(false);
 	});
 
@@ -320,13 +1062,13 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBe(false);
 
 		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
-		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model selection required. Use /model to continue.");
 	});
 
 	test("cancelled model picker continues when current model is ready outside Prime CLI onboarding", async () => {
 		const fakeThis = createPrimeCliHarness(false);
-		fakeThis.runtimeHost.session.modelRegistry.getProviderAuthStatus = vi.fn(
+		fakeThis.uiServices.modelRegistry.getProviderAuthStatus = vi.fn(
 			(): AuthStatus => ({
 				configured: true,
 				source: "stored",
@@ -338,7 +1080,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBe(true);
 
 		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
-		expect(fakeThis.runtimeHost.session.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
+		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
 		expect(fakeThis.showStatus).not.toHaveBeenCalled();
 	});
 });
@@ -415,50 +1157,47 @@ describe("InteractiveMode goal status announcements", () => {
 
 describe("InteractiveMode tray goal label", () => {
 	type TrayLabelHarness = {
-		runtimeHost: {
-			session: {
-				goalState: GoalState;
-				getContextUsage(): { contextWindow: number; percent: number | null } | undefined;
-			};
+		connectionState: {
+			goal: GoalState;
+			contextUsage: { contextWindow: number; percent: number | null } | undefined;
 		};
+		uiServices: { getContextUsage(): { contextWindow: number; percent: number | null } | undefined };
 		getTrayContextLabel(): string | undefined;
 	};
 	const getTrayContextLabel = (InteractiveMode.prototype as unknown as TrayLabelHarness).getTrayContextLabel;
 
 	test("shows active goals in the lower tray without an objective", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
-		fakeThis.runtimeHost = {
-			session: {
-				goalState: {
-					active: true,
-					status: "active",
-					objective: "a long objective that should not render in the tray",
-					tokensUsed: 0,
-					timeUsedSeconds: 65,
-					continuationsUsed: 1,
-				} satisfies GoalState,
-				getContextUsage: () => undefined,
-			},
+		fakeThis.connectionState = {
+			goal: {
+				active: true,
+				status: "active",
+				objective: "a long objective that should not render in the tray",
+				tokensUsed: 0,
+				timeUsedSeconds: 65,
+				continuationsUsed: 1,
+			} satisfies GoalState,
+			contextUsage: undefined,
 		};
+		fakeThis.uiServices = { getContextUsage: () => undefined };
 
 		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s)");
 	});
 
 	test("combines active goals with low-context signal in one lower-tray label", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
-		fakeThis.runtimeHost = {
-			session: {
-				goalState: {
-					active: true,
-					status: "active",
-					objective: "finish the task",
-					tokensUsed: 0,
-					timeUsedSeconds: 65,
-					continuationsUsed: 1,
-				} satisfies GoalState,
-				getContextUsage: () => ({ contextWindow: 100_000, percent: 75 }),
-			},
+		fakeThis.connectionState = {
+			goal: {
+				active: true,
+				status: "active",
+				objective: "finish the task",
+				tokensUsed: 0,
+				timeUsedSeconds: 65,
+				continuationsUsed: 1,
+			} satisfies GoalState,
+			contextUsage: { contextWindow: 100_000, percent: 75 },
 		};
+		fakeThis.uiServices = { getContextUsage: () => undefined };
 
 		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · 25% context left");
 	});
@@ -467,28 +1206,22 @@ describe("InteractiveMode tray goal label", () => {
 describe("InteractiveMode.handleGoalStatusCommand", () => {
 	test("prints current goal details without queuing through the agent", () => {
 		type GoalStatusCommandHarness = {
-			runtimeHost: {
-				session: {
-					goalState: GoalState;
-				};
-			};
+			connectionState: { goal: GoalState };
 			chatContainer: Container;
 			ui: { requestRender(): void };
 			handleGoalStatusCommand(): void;
 			formatGoalElapsed(seconds: number): string;
 		};
 		const fakeThis = Object.create(InteractiveMode.prototype) as GoalStatusCommandHarness;
-		fakeThis.runtimeHost = {
-			session: {
-				goalState: {
-					active: true,
-					status: "active",
-					objective: "ship the feature",
-					tokenBudget: 1000,
-					tokensUsed: 125,
-					timeUsedSeconds: 65,
-					continuationsUsed: 2,
-				},
+		fakeThis.connectionState = {
+			goal: {
+				active: true,
+				status: "active",
+				objective: "ship the feature",
+				tokenBudget: 1000,
+				tokensUsed: 125,
+				timeUsedSeconds: 65,
+				continuationsUsed: 2,
 			},
 		};
 		fakeThis.chatContainer = new Container();
@@ -517,15 +1250,17 @@ describe("truncatePathMiddle", () => {
 });
 
 describe("InteractiveMode.setToolsExpanded", () => {
-	test("applies expansion state to the active header and chat entries", () => {
+	test("applies expansion state to the active header, chat entries, and child agent detail", () => {
 		const header = { setExpanded: vi.fn() };
 		const chatChild = { setExpanded: vi.fn() };
+		const childAgentDetail = { setToolsExpanded: vi.fn() };
 		const fakeThis: any = {
 			toolOutputExpanded: false,
 			customHeader: undefined,
 			builtInHeader: header,
 			chatContainer: { children: [chatChild] },
-			ui: { requestRender: vi.fn() },
+			childAgentDetail,
+			ui: { requestRender: vi.fn(), requestRenderPreservingViewport: vi.fn() },
 		};
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
@@ -533,7 +1268,9 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(fakeThis.toolOutputExpanded).toBe(true);
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
-		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
+		expect(childAgentDetail.setToolsExpanded).toHaveBeenCalledWith(true);
+		// Expansion keeps the user anchored, so it uses the viewport-preserving path.
+		expect(fakeThis.ui.requestRenderPreservingViewport).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -667,10 +1404,27 @@ describe("InteractiveMode.showLoadedResources", () => {
 		contextFiles?: Array<{ path: string; content?: string }>;
 		extensions?: ExtensionFixture[];
 		skills?: Array<{ filePath: string; name: string }>;
-		skillDiagnostics?: ResourceDiagnostic[];
+		skillDiagnostics?: AgentConnectionResourceDiagnostic[];
 		useRealScopeGroups?: boolean;
 		useRealDiagnostics?: boolean;
 	}) {
+		const connectionResourceSnapshot: AgentConnectionResourceSnapshot = {
+			contextFiles: (options.contextFiles ?? []).map((contextFile) => ({ path: contextFile.path })),
+			skills: options.skills ?? [],
+			prompts: [],
+			extensions: options.extensions ?? [],
+			themes: [],
+			diagnostics: {
+				skills: options.skillDiagnostics ?? [],
+				prompts: [],
+				extensions: [],
+				themes: [],
+			},
+		};
+		const extensionRunner = {
+			getCommandDiagnostics: () => [],
+			getShortcutDiagnostics: () => [],
+		};
 		const fakeThis: any = {
 			options: { verbose: options.verbose ?? false },
 			toolOutputExpanded: options.toolOutputExpanded ?? false,
@@ -681,40 +1435,25 @@ describe("InteractiveMode.showLoadedResources", () => {
 			sessionManager: {
 				getCwd: () => options.cwd ?? "/tmp/project",
 			},
-			session: {
-				promptTemplates: [],
-				extensionRunner: {
-					getCommandDiagnostics: () => [],
-					getShortcutDiagnostics: () => [],
-				},
-				resourceLoader: {
-					getPathMetadata: () => new Map(),
-					getAgentsFiles: () => ({ agentsFiles: options.contextFiles ?? [] }),
-					getSkills: () => ({
-						skills: options.skills ?? [],
-						diagnostics: options.skillDiagnostics ?? [],
-					}),
-					getPrompts: () => ({ prompts: [], diagnostics: [] }),
-					getExtensions: () => ({ extensions: options.extensions ?? [], errors: [], runtime: {} }),
-					getThemes: () => ({ themes: [], diagnostics: [] }),
-				},
-			},
+			connectionResourceSnapshot,
+			extensionRunner,
 			formatDisplayPath: (p: string) => (InteractiveMode as any).prototype.formatDisplayPath.call(fakeThis, p),
 			formatExtensionDisplayPath: (p: string) =>
 				(InteractiveMode as any).prototype.formatExtensionDisplayPath.call(fakeThis, p),
 			formatContextPath: (p: string) => (InteractiveMode as any).prototype.formatContextPath.call(fakeThis, p),
+			getCurrentCwd: () => options.cwd ?? "/tmp/project",
 			getStartupExpansionState: () => (InteractiveMode as any).prototype.getStartupExpansionState.call(fakeThis),
 			buildScopeGroups: () => [],
 			formatScopeGroups: () => "resource-list",
-			isPackageSource: (sourceInfo?: SourceInfo) =>
+			isPackageSource: (sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.isPackageSource.call(fakeThis, sourceInfo),
-			getShortPath: (p: string, sourceInfo?: SourceInfo) =>
+			getShortPath: (p: string, sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getShortPath.call(fakeThis, p, sourceInfo),
-			getCompactPathLabel: (p: string, sourceInfo?: SourceInfo) =>
+			getCompactPathLabel: (p: string, sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactPathLabel.call(fakeThis, p, sourceInfo),
-			getCompactPackageSourceLabel: (sourceInfo?: SourceInfo) =>
+			getCompactPackageSourceLabel: (sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactPackageSourceLabel.call(fakeThis, sourceInfo),
-			getCompactExtensionLabel: (p: string, sourceInfo?: SourceInfo) =>
+			getCompactExtensionLabel: (p: string, sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getCompactExtensionLabel.call(fakeThis, p, sourceInfo),
 			getCompactDisplayPathSegments: (p: string) =>
 				(InteractiveMode as any).prototype.getCompactDisplayPathSegments.call(fakeThis, p),
@@ -731,15 +1470,15 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 		if (options.useRealDiagnostics) {
 			fakeThis.formatDiagnostics = (
-				diagnostics: readonly ResourceDiagnostic[],
-				sourceInfos: Map<string, SourceInfo>,
+				diagnostics: readonly AgentConnectionResourceDiagnostic[],
+				sourceInfos: Map<string, AgentConnectionSourceInfo>,
 			) => (InteractiveMode as any).prototype.formatDiagnostics.call(fakeThis, diagnostics, sourceInfos);
 		}
 
 		if (options.useRealScopeGroups) {
-			fakeThis.getScopeGroup = (sourceInfo?: SourceInfo) =>
+			fakeThis.getScopeGroup = (sourceInfo?: AgentConnectionSourceInfo) =>
 				(InteractiveMode as any).prototype.getScopeGroup.call(fakeThis, sourceInfo);
-			fakeThis.buildScopeGroups = (items: Array<{ path: string; sourceInfo?: SourceInfo }>) =>
+			fakeThis.buildScopeGroups = (items: Array<{ path: string; sourceInfo?: AgentConnectionSourceInfo }>) =>
 				(InteractiveMode as any).prototype.buildScopeGroups.call(fakeThis, items);
 			fakeThis.formatScopeGroups = (groups: unknown, formatOptions: unknown) =>
 				(InteractiveMode as any).prototype.formatScopeGroups.call(fakeThis, groups, formatOptions);
@@ -756,7 +1495,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			origin: "package" | "top-level";
 			baseDir?: string;
 		},
-	): SourceInfo {
+	): AgentConnectionSourceInfo {
 		return {
 			path: filePath,
 			source: options.source,

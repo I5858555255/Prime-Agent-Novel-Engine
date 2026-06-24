@@ -2,11 +2,14 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
+import { installAgentTraceUpload } from "./agent-traces.js";
 import { AuthStorage } from "./auth-storage.js";
+import type { AgentRlmHeartbeatController } from "./cron-jobs.js";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { ModelRegistry } from "./model-registry.js";
 import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type ResourceLoader } from "./resource-loader.js";
-import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
+import type { SubagentRuntimeHost } from "./rlm-runtime.js";
+import { type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
 import type { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 
@@ -39,22 +42,35 @@ export interface CreateAgentSessionServicesOptions {
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 }
 
+export interface AgentSessionCreationOptions {
+	model?: Model<any>;
+	thinkingLevel?: ThinkingLevel;
+	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	tools?: string[];
+	noTools?: "all" | "builtin";
+	customTools?: ToolDefinition[];
+	initialActiveToolNames?: string[];
+	allowedToolNames?: string[];
+	includeGoals?: boolean;
+	rlmDepth?: number;
+	rlmMaxDepth?: number;
+	rlmSessionDir?: string;
+	rlmParentNodeId?: string;
+	subagentRuntimeHost?: SubagentRuntimeHost;
+	rlmHeartbeatController?: AgentRlmHeartbeatController;
+	prewarmIpythonKernel?: boolean;
+}
+
 /**
  * Inputs for creating an AgentSession from already-created services.
  *
  * Use this after services exist and any cwd-bound model/tool/session options
  * have been resolved against those services.
  */
-export interface CreateAgentSessionFromServicesOptions {
+export interface CreateAgentSessionFromServicesOptions extends AgentSessionCreationOptions {
 	services: AgentSessionServices;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
-	model?: Model<any>;
-	thinkingLevel?: ThinkingLevel;
-	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
-	tools?: string[];
-	noTools?: CreateAgentSessionOptions["noTools"];
-	customTools?: ToolDefinition[];
 }
 
 /**
@@ -179,6 +195,10 @@ export async function createAgentSessionServices(
 export async function createAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 ): Promise<CreateAgentSessionResult> {
+	installAgentTraceUpload(options.sessionManager, {
+		authStorage: options.services.authStorage,
+		settingsManager: options.services.settingsManager,
+	});
 	return createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
@@ -193,6 +213,16 @@ export async function createAgentSessionFromServices(
 		tools: options.tools,
 		noTools: options.noTools,
 		customTools: options.customTools,
+		initialActiveToolNames: options.initialActiveToolNames,
+		allowedToolNames: options.allowedToolNames,
+		includeGoals: options.includeGoals,
+		rlmDepth: options.rlmDepth,
+		rlmMaxDepth: options.rlmMaxDepth,
+		rlmSessionDir: options.rlmSessionDir,
+		rlmParentNodeId: options.rlmParentNodeId,
+		subagentRuntimeHost: options.subagentRuntimeHost,
+		rlmHeartbeatController: options.rlmHeartbeatController,
 		sessionStartEvent: options.sessionStartEvent,
+		prewarmIpythonKernel: options.prewarmIpythonKernel,
 	});
 }

@@ -132,6 +132,8 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"deepseek/deepseek-v3.2": { contextWindow: 128000, maxTokens: 8000 },
 	"deepseek/deepseek-v4-flash": { contextWindow: 1000000, maxTokens: 384000 },
 	"deepseek/deepseek-v4-pro": { contextWindow: 1000000, maxTokens: 384000 },
+	"minimax/minimax-m3": { contextWindow: 204800, maxTokens: 131072 },
+	"moonshotai/kimi-k2.7-code": { contextWindow: 262144, maxTokens: 16000 },
 	"nvidia/nemotron-3-nano-30b-a3b": { contextWindow: 1000000, maxTokens: 228000 },
 	"nvidia/nemotron-3-super-120b-a12b": { contextWindow: 1000000, maxTokens: 4096 },
 	"openai/gpt-5.3-codex": { contextWindow: 400000, maxTokens: 128000 },
@@ -148,6 +150,7 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"x-ai/grok-4.20-multi-agent": { contextWindow: 2000000, maxTokens: 30000 },
 	"z-ai/glm-5": { contextWindow: 202752, maxTokens: 131072 },
 	"z-ai/glm-5.1": { contextWindow: 202800, maxTokens: 131072 },
+	"z-ai/glm-5.2": { contextWindow: 202800, maxTokens: 131072 },
 };
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
@@ -206,8 +209,15 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (supportsOpenAiXhigh(model.id)) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
-	if (model.id.includes("opus-4-6") || model.id.includes("opus-4.6")) {
-		mergeThinkingLevelMap(model, { xhigh: "max" });
+	// Per-family effort support per the Anthropic effort docs. Opus 4.6 / Sonnet 4.6
+	// have no xhigh; Fable 5 / Mythos 5 / Mythos Preview think every turn (off: null).
+	if (
+		model.id.includes("opus-4-6") ||
+		model.id.includes("opus-4.6") ||
+		model.id.includes("sonnet-4-6") ||
+		model.id.includes("sonnet-4.6")
+	) {
+		mergeThinkingLevelMap(model, { max: "max" });
 	}
 	if (
 		model.id.includes("opus-4-7") ||
@@ -215,7 +225,13 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		model.id.includes("opus-4-8") ||
 		model.id.includes("opus-4.8")
 	) {
-		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
+		mergeThinkingLevelMap(model, { xhigh: "xhigh", max: "max" });
+	}
+	if (model.id.includes("fable-5") || model.id.includes("mythos-5")) {
+		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
+	}
+	if (model.id.includes("mythos-preview")) {
+		mergeThinkingLevelMap(model, { off: null, max: "max" });
 	}
 	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
 		mergeThinkingLevelMap(model, DEEPSEEK_V4_THINKING_LEVEL_MAP);
@@ -323,6 +339,8 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 	return (
 		id.includes("thinking") ||
 		id.includes("deepseek-v4") ||
+		id.startsWith("minimax/minimax-m") ||
+		id.startsWith("moonshotai/kimi") ||
 		id.startsWith("x-ai/grok-4") ||
 		id.startsWith("z-ai/glm-") ||
 		(id.startsWith("openai/gpt-5") && !id.includes("-chat")) ||

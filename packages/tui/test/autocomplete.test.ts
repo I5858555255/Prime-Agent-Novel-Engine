@@ -55,6 +55,45 @@ const getSuggestions = (
 ) => provider.getSuggestions(lines, cursorLine, cursorCol, { signal: new AbortController().signal, force });
 
 describe("CombinedAutocompleteProvider", () => {
+	describe("slash commands", () => {
+		it("matches command aliases while previewing and completing the canonical command", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{
+						name: "new",
+						aliases: ["clear"],
+						description: "Start a new session",
+					},
+				],
+				"/tmp",
+			);
+			const result = await getSuggestions(provider, ["/clear"], 0, 6);
+
+			assert.deepStrictEqual(result, {
+				prefix: "/clear",
+				items: [{ value: "new", label: "new", description: "Start a new session" }],
+			});
+		});
+
+		it("surfaces takesArgument on free-form-argument commands and omits it otherwise", async () => {
+			const provider = new CombinedAutocompleteProvider(
+				[
+					{ name: "goal", description: "Set a goal", takesArgument: true },
+					{ name: "new", description: "Start a new session" },
+				],
+				"/tmp",
+			);
+
+			const goal = await getSuggestions(provider, ["/goal"], 0, 5);
+			assert.deepStrictEqual(goal?.items, [
+				{ value: "goal", label: "goal", description: "Set a goal", takesArgument: true },
+			]);
+
+			const fresh = await getSuggestions(provider, ["/new"], 0, 4);
+			assert.deepStrictEqual(fresh?.items, [{ value: "new", label: "new", description: "Start a new session" }]);
+		});
+	});
+
 	describe("extractPathPrefix", () => {
 		it("extracts / from 'hey /' when forced", async () => {
 			const provider = new CombinedAutocompleteProvider([], "/tmp");

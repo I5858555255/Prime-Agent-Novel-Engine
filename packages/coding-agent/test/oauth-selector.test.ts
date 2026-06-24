@@ -4,11 +4,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../src/core/provider-display-names.js";
+import { isApiKeyLoginProvider } from "../src/modes/interactive/auth-flows.js";
 import {
 	compareAuthSelectorProviders,
 	OAuthSelectorComponent,
 } from "../src/modes/interactive/components/oauth-selector.js";
-import { isApiKeyLoginProvider } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
@@ -57,6 +57,28 @@ describe("OAuthSelectorComponent", () => {
 			"api_key:Anthropic",
 			"api_key:OpenAI",
 		]);
+	});
+
+	it("preserves auth type when selecting duplicate provider ids", () => {
+		const authStorage = AuthStorage.inMemory();
+		const selections: string[] = [];
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			[
+				{ id: "anthropic", name: "Anthropic", authType: "oauth" },
+				{ id: "anthropic", name: "Anthropic", authType: "api_key" },
+			],
+			(provider) => {
+				selections.push(`${provider.id}:${provider.authType}`);
+			},
+			() => {},
+		);
+
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\r");
+
+		expect(selections).toEqual(["anthropic:api_key"]);
 	});
 
 	it("shows configured providers before unconfigured providers", () => {
@@ -173,5 +195,33 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).toContain("op-proxy");
 		expect(output).toContain("command in models.json");
 		expect(output).not.toContain("unconfigured");
+	});
+
+	it("keeps the provider menu within a short terminal viewport", () => {
+		const authStorage = AuthStorage.inMemory();
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			Array.from({ length: 12 }, (_, index) => ({
+				id: `provider-${index + 1}`,
+				name: `Provider ${index + 1}`,
+				authType: "api_key" as const,
+			})),
+			() => {},
+			() => {},
+			() => ({ configured: false }),
+			{ getRows: () => 12 },
+		);
+
+		expect(selector.render(80)).toHaveLength(12);
+
+		for (let i = 0; i < 5; i++) {
+			selector.handleInput("\x1b[B");
+		}
+		const output = stripAnsi(selector.render(80).join("\n"));
+
+		expect(selector.render(80)).toHaveLength(12);
+		expect(output).toContain("Provider 3");
+		expect(output).toContain("(6/12)");
 	});
 });

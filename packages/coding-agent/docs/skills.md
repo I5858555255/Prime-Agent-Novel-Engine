@@ -9,7 +9,7 @@ Prime Agent implements the [Agent Skills standard](https://agentskills.io/specif
 ## Table of Contents
 
 - [Locations](#locations)
-- [Bundled Skills](#bundled-skills)
+- [Built-in Skills](#built-in-skills)
 - [How Skills Work](#how-skills-work)
 - [Python-Backed Skills](#python-backed-skills)
 - [Skill Commands](#skill-commands)
@@ -25,7 +25,6 @@ Prime Agent implements the [Agent Skills standard](https://agentskills.io/specif
 
 Prime Agent loads skills from:
 
-- Bundled: skills shipped with Prime Agent (currently `websearch`). Loaded by default; disable with `bundledSkills.websearch: false` or override by defining a skill with the same name in any location below.
 - Global:
   - `~/.prime/agent/skills/`
   - `~/.agents/skills/`
@@ -35,6 +34,7 @@ Prime Agent loads skills from:
 - Packages: `skills/` directories or `pi.skills` entries in `package.json`
 - Settings: `skills` array with files or directories
 - CLI: `--skill <path>` (repeatable, additive even with `--no-skills`)
+- Built-in: `skills/` shipped with the prime-agent package (lowest precedence)
 
 Discovery rules:
 - In `~/.prime/agent/skills/` and `.prime/agent/skills/`, direct root `.md` files are discovered as individual skills
@@ -42,6 +42,61 @@ Discovery rules:
 - In `~/.agents/skills/` and project `.agents/skills/`, root `.md` files are ignored
 
 Disable discovery with `--no-skills` (explicit `--skill` paths still load).
+
+## Built-in Skills
+
+Prime Agent ships with built-in skills that load by default:
+
+- `prime-intellect` - Prime Intellect products and workflows via the prime CLI: verifiers environments and the Environments Hub, evaluations (local and hosted), Hosted Training and prime-rl, sandboxes, tunnels, Prime Inference, GPU compute, and storage. Reference docs for each area load on demand from the skill's `references/` directory.
+- `skill-creator` - teaches the agent to create new skills: markdown skill layout, frontmatter rules, placement and precedence, and the full Python-backed skill contract (package layout, `run()` convention, optional CLI, kernel venv behavior) with a working template in `references/python-skills.md`.
+- `websearch` - a Python-backed Google search skill using the [Serper](https://serper.dev) API.
+
+Built-in skills behave like any other skill but have the lowest precedence: a user, project, package, or `--skill` skill with the same name overrides the built-in one.
+
+### websearch
+
+Setup:
+
+```bash
+export SERPER_API_KEY=...        # required, get a key at https://serper.dev
+# optional overrides:
+export PRIME_AGENT_WEBSEARCH_TIMEOUT=45
+export PRIME_AGENT_WEBSEARCH_NUM_RESULTS=5
+```
+
+Once loaded, the model can call it directly in the IPython kernel by import name:
+
+```python
+print(await websearch.run("latest Prime Agent release"))
+```
+
+Without `SERPER_API_KEY`, Prime Agent warns at startup and direct invocations return a clear error explaining that the key must be set.
+
+Disable only the built-in `websearch` skill in settings:
+
+```json
+{
+  "bundledSkills": {
+    "websearch": false
+  }
+}
+```
+
+To disable all built-in skills, set `enableBuiltinSkills` to `false` in `settings.json` (or toggle "Built-in skills" in `/settings`):
+
+```json
+{
+  "enableBuiltinSkills": false
+}
+```
+
+`--no-skills` also excludes built-in skills. To disable a single built-in skill without a dedicated setting, force-exclude it in the global `skills` array (patterns resolve against the built-in skills directory):
+
+```json
+{
+  "skills": ["-prime-intellect/SKILL.md"]
+}
+```
 
 ### Using Skills from Other Harnesses
 
@@ -63,45 +118,6 @@ For project-level Claude Code skills, add to `.prime/agent/settings.json`:
   "skills": ["../.claude/skills"]
 }
 ```
-
-## Bundled Skills
-
-Prime Agent ships with a small set of skills that load by default, so common capabilities work without manual installation.
-
-### websearch
-
-A Python-backed skill that searches Google via the [Serper](https://serper.dev) API. It takes a single query and returns titles, URLs, snippets, and knowledge-graph data.
-
-Setup:
-
-```bash
-export SERPER_API_KEY=...        # required, get a key at https://serper.dev
-# optional overrides:
-export PRIME_AGENT_WEBSEARCH_TIMEOUT=45
-export PRIME_AGENT_WEBSEARCH_NUM_RESULTS=5
-```
-
-Once loaded, the model can call it directly in the IPython kernel by import name:
-
-```python
-print(await websearch.run("latest Prime Agent release"))
-```
-
-The skill loads by default. Without `SERPER_API_KEY`, Prime Agent warns at startup and direct invocations return a clear error explaining that the key must be set.
-
-To replace it with a different backend (Brave, Exa, Tavily, or your own), define a skill named `websearch` in any user, project, package, or `--skill` location. Same-name skills take precedence over the bundled one.
-
-Disable only the bundled `websearch` skill in settings:
-
-```json
-{
-  "bundledSkills": {
-    "websearch": false
-  }
-}
-```
-
-Disable bundled skills together with discovered skills using `--no-skills` (explicit `--skill` paths still load).
 
 ## How Skills Work
 

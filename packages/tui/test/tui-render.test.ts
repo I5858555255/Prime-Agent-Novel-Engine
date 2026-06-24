@@ -618,3 +618,206 @@ describe("TUI differential rendering", () => {
 		tui.stop();
 	});
 });
+
+describe("TUI viewport-preserving render", () => {
+	// Regression: pressing Ctrl+O to expand all tool output changed lines above
+	// the viewport, which forced a full redraw that cleared scrollback and
+	// replayed the whole transcript from the top. requestRenderPreservingViewport
+	// repaints only the visible viewport in place and leaves scrollback alone.
+	it("repaints in place without clearing scrollback when content above the viewport grows", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// More lines than the viewport, so the top scrolls into scrollback.
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		const initialRedraws = tui.fullRedraws;
+
+		// "Expand" a block near the top: insert lines after Line 2 so the first
+		// changed line is far above the viewport.
+		const expanded = [...component.lines];
+		expanded.splice(3, 0, "Expanded A", "Expanded B", "Expanded C");
+		component.lines = expanded;
+		tui.requestRenderPreservingViewport();
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(tui.fullRedraws > initialRedraws, "Should take the full-redraw branch");
+		assert.ok(!writes.includes("\x1b[3J"), "Must not clear scrollback");
+		assert.ok(!writes.includes("\x1b[2J"), "Must not clear the screen");
+
+		// The viewport stays anchored at the latest content (the bottom).
+		const viewport = terminal.getViewport();
+		assert.ok(viewport[viewport.length - 1]?.includes("Line 29"), "Latest line stays at the bottom");
+
+		// Scrollback above the viewport is untouched — it still holds the
+		// pre-toggle lines rather than being replayed.
+		const scrollback = terminal.getScrollBuffer();
+		assert.ok(
+			scrollback.some((l) => l.includes("Line 0")),
+			"Original scrollback content is preserved",
+		);
+
+		tui.stop();
+	});
+
+	it("still clears scrollback when a tall transcript shrinks below the viewport", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// Tall transcript: viewport anchored at the bottom with history in scrollback.
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		// Collapse to a handful of lines that fit on screen (e.g. a rebuild after
+		// compaction). The visible window no longer maps onto the old scrollback,
+		// so a destructive redraw that clears scrollback and replays is correct —
+		// the in-place repaint is only used while the transcript stays taller than
+		// the viewport.
+		component.lines = ["Summary A", "Summary B", "Summary C"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.ok(terminal.getWrites().includes("\x1b[3J"), "Shrinking below the viewport clears scrollback");
+
+		tui.stop();
+	});
+
+	it("only deletes Kitty images within the repainted viewport", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		const aboveImage = encodeKitty("AAAA", { columns: 2, rows: 1, imageId: 101, moveCursor: false });
+		const visibleImage = encodeKitty("BBBB", { columns: 2, rows: 1, imageId: 202, moveCursor: false });
+		const lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		lines[2] = aboveImage; // scrollback (above the 10-row viewport)
+		lines[25] = visibleImage; // within the visible slice
+		component.lines = lines;
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		// Expand near the top so the repaint takes the viewport-preserving path.
+		const expanded = [...component.lines];
+		expanded.splice(6, 0, "Expanded A", "Expanded B", "Expanded C");
+		component.lines = expanded;
+		tui.requestRenderPreservingViewport();
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(writes.includes(deleteKittyImage(202)), "Visible-slice image is deleted before being redrawn");
+		assert.ok(!writes.includes(deleteKittyImage(101)), "Image in scrollback above the viewport must not be deleted");
+
+		tui.stop();
+	});
+
+	it("does not leave maxLinesRendered inflated after a preserving collapse", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		tui.setClearOnShrink(true);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Collapse (content shrinks) via the preserving path.
+		component.lines = Array.from({ length: 12 }, (_, i) => `Line ${i}`);
+		tui.requestRenderPreservingViewport();
+		await terminal.waitForRender();
+
+		const redrawsAfterCollapse = tui.fullRedraws;
+		terminal.clearWrites();
+
+		// A subsequent plain render with unchanged content must not re-trigger a
+		// clearOnShrink full redraw (which would clear scrollback and replay).
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.fullRedraws, redrawsAfterCollapse, "No extra full redraw after the collapse settled");
+		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Must not clear scrollback on the follow-up render");
+
+		tui.stop();
+	});
+});
+
+describe("TUI above-viewport changes on a tall transcript", () => {
+	it("repaints in place instead of clearing scrollback when off-screen content changes", async () => {
+		// Reproduces the attach-then-stream flicker: when a transcript is taller
+		// than the viewport and content above the visible window changes (e.g. an
+		// off-screen tool result resolving while the model streams), the renderer
+		// used to clear scrollback and replay the whole transcript on every change,
+		// flickering and scrolling from the top. It should now repaint only the
+		// visible window in place, leaving scrollback and history intact.
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// 30 lines into a 10-row terminal: viewport anchored at the bottom, with
+		// lines 0-19 living in scrollback above the visible window.
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+
+		assert.ok(terminal.getViewport().join("\n").includes("Line 29"), "Latest line visible after initial paint");
+		terminal.clearWrites();
+
+		// Mutate several lines above the viewport, as off-screen tool results would
+		// while the model is streaming.
+		for (const i of [3, 7, 12]) {
+			component.lines[i] = `Line ${i} (updated)`;
+			tui.requestRender();
+			await terminal.waitForRender();
+		}
+
+		assert.ok(!terminal.getWrites().includes("\x1b[2J"), "Off-screen changes must not clear the screen");
+		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Off-screen changes must not clear scrollback");
+
+		const viewport = terminal.getViewport().join("\n");
+		assert.ok(viewport.includes("Line 29"), "Viewport stays anchored at the latest content");
+		assert.ok(viewport.includes("Line 20"), "Bottom window remains visible");
+		assert.ok(!viewport.includes("Line 0 "), "Did not scroll back to the top");
+
+		tui.stop();
+	});
+
+	it("clears scrollback when a still-tall transcript shrinks (rebuild/compaction)", async () => {
+		// A rebuild or compaction can replace the transcript with fewer lines that
+		// still exceed the viewport. Preserving scrollback there would leave the
+		// removed lines stale above the visible window, so the shrink must take the
+		// scrollback-clearing redraw even though the result is still taller than
+		// the viewport.
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		// Replace with a shorter transcript that is still taller than the 10-row
+		// viewport (15 lines), as a compaction would.
+		component.lines = Array.from({ length: 15 }, (_, i) => `Rebuilt ${i}`);
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.ok(terminal.getWrites().includes("\x1b[3J"), "A still-tall shrink clears stale scrollback");
+
+		tui.stop();
+	});
+});

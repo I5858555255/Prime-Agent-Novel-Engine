@@ -128,6 +128,8 @@ export interface DefaultResourceLoaderOptions {
 	noPromptTemplates?: boolean;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
+	/** Directory of built-in skills shipped with the package. Defaults to the bundled skills dir; pass null to disable. */
+	bundledSkillsDir?: string | null;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
@@ -156,6 +158,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private settingsManager: SettingsManager;
 	private eventBus: EventBus;
 	private packageManager: DefaultPackageManager;
+	private bundledSkillsDir: string | null;
 	private additionalExtensionPaths: string[];
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
@@ -209,10 +212,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentDir = options.agentDir;
 		this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
 		this.eventBus = options.eventBus ?? createEventBus();
+		this.bundledSkillsDir = options.bundledSkillsDir === undefined ? getBundledSkillsDir() : options.bundledSkillsDir;
 		this.packageManager = new DefaultPackageManager({
 			cwd: this.cwd,
 			agentDir: this.agentDir,
 			settingsManager: this.settingsManager,
+			bundledSkillsDir: this.bundledSkillsDir,
 		});
 		this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
@@ -416,24 +421,15 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;
 		this.applyExtensionSourceInfo(this.extensionsResult.extensions, metadataByPath);
 
-		// Bundled skills ship with the package and load by default. They are placed
-		// last so user/project/CLI skills with the same name take precedence
-		// (loadSkills resolves name collisions first-wins). `--no-skills` excludes them.
-		const bundledSkillsDir = getBundledSkillsDir();
-		const bundledWebsearchDir = join(bundledSkillsDir, "websearch");
-		const bundledWebsearchEnabled = this.settingsManager.getBundledWebsearchEnabled();
-		const bundledSkillPaths =
-			this.noSkills || !bundledWebsearchEnabled || !existsSync(bundledWebsearchDir) ? [] : [bundledWebsearchDir];
 		const skillPaths = this.noSkills
 			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
-			: this.mergePaths(
-					[...cliEnabledSkills, ...enabledSkills],
-					[...this.additionalSkillPaths, ...bundledSkillPaths],
-				);
+			: this.mergePaths([...cliEnabledSkills, ...this.additionalSkillPaths], enabledSkills);
 
 		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
-		this.maybeWarnMissingSerperApiKey(bundledWebsearchDir);
+		// Surface resolution-time skill warnings (e.g. missing bundled skills dir).
+		this.skillDiagnostics.push(...resolvedPaths.diagnostics);
+		this.maybeWarnMissingSerperApiKey();
 		for (const p of this.additionalSkillPaths) {
 			if (isLocalPath(p) && !existsSync(p) && !this.skillDiagnostics.some((d) => d.path === p)) {
 				this.skillDiagnostics.push({ type: "error", message: "Skill path does not exist", path: p });
@@ -519,10 +515,17 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.skillDiagnostics = resolvedSkills.diagnostics;
 	}
 
-	private maybeWarnMissingSerperApiKey(bundledWebsearchDir: string): void {
-		if (this.noSkills || !this.settingsManager.getBundledWebsearchEnabled()) {
+	private maybeWarnMissingSerperApiKey(): void {
+		if (
+			this.noSkills ||
+			!this.bundledSkillsDir ||
+			!this.settingsManager.getEnableBuiltinSkills() ||
+			!this.settingsManager.getBundledWebsearchEnabled()
+		) {
 			return;
 		}
+
+		const bundledWebsearchDir = join(this.bundledSkillsDir, "websearch");
 
 		if (process.env.SERPER_API_KEY?.trim()) {
 			return;

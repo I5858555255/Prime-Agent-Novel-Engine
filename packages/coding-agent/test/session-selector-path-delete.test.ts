@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setKeybindings } from "@earendil-works/pi-tui";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
-import type { SessionInfo } from "../src/core/session-manager.js";
+import type { AgentConnectionSavedSessionInfo } from "../src/modes/agent-connection/index.js";
 import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -34,7 +34,9 @@ function stripAnsi(text: string): string {
 	return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
-function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
+function makeSession(
+	overrides: Partial<AgentConnectionSavedSessionInfo> & { id: string },
+): AgentConnectionSavedSessionInfo {
 	return {
 		path: overrides.path ?? `/tmp/${overrides.id}.jsonl`,
 		id: overrides.id,
@@ -83,7 +85,7 @@ function createSymlinkedSessionPaths(): {
 	};
 }
 
-const CTRL_D = "\x04";
+const CTRL_X = "\x18";
 const CTRL_BACKSPACE = "\x1b[127;5u";
 
 describe("session selector path/delete interactions", () => {
@@ -129,7 +131,7 @@ describe("session selector path/delete interactions", () => {
 		expect(confirmationChanges).toEqual([]);
 	});
 
-	it("enters confirmation mode on Ctrl+D even with a non-empty search query", async () => {
+	it("enters confirmation mode on Ctrl+X even with a non-empty search query", async () => {
 		const sessions = [makeSession({ id: "a" }), makeSession({ id: "b" })];
 
 		const selector = new SessionSelectorComponent(
@@ -148,7 +150,7 @@ describe("session selector path/delete interactions", () => {
 		list.onDeleteConfirmationChange = (path) => confirmationChanges.push(path);
 
 		list.handleInput("a");
-		list.handleInput(CTRL_D);
+		list.handleInput(CTRL_X);
 
 		expect(confirmationChanges).toEqual([sessions[0]!.path]);
 	});
@@ -179,14 +181,38 @@ describe("session selector path/delete interactions", () => {
 		list.handleInput(CTRL_BACKSPACE);
 		expect(confirmationChanges).toEqual([sessions[0]!.path]);
 
-		list.handleInput("\r");
+		list.handleInput(CTRL_BACKSPACE);
 		expect(confirmationChanges).toEqual([sessions[0]!.path, null]);
 		expect(deletedPath).toBe(sessions[0]!.path);
 	});
 
+	it("delegates confirmed deletion to the injected delete handler", async () => {
+		const sessions = [makeSession({ id: "a" })];
+		const deleteSession = vi.fn(async () => ({ ok: true as const, method: "unlink" as const }));
+
+		const selector = new SessionSelectorComponent(
+			async () => sessions,
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, deleteSession },
+		);
+		await flushPromises();
+
+		const list = selector.getSessionList();
+		list.handleInput(CTRL_X);
+		list.handleInput(CTRL_X);
+		await flushPromises();
+
+		expect(deleteSession).toHaveBeenCalledTimes(1);
+		expect(deleteSession).toHaveBeenCalledWith(sessions[0]!.path);
+	});
+
 	it("does not switch scope back to All when All load resolves after toggling back to Current", async () => {
 		const currentSessions = [makeSession({ id: "current" })];
-		const allDeferred = createDeferred<SessionInfo[]>();
+		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
 		let allLoadCalls = 0;
 
 		const selector = new SessionSelectorComponent(
@@ -212,13 +238,13 @@ describe("session selector path/delete interactions", () => {
 
 		expect(allLoadCalls).toBe(1);
 		const output = selector.render(120).join("\n");
-		expect(output).toContain("Resume Session (Current Folder)");
-		expect(output).not.toContain("Resume Session (All)");
+		expect(output).toContain("current folder");
+		expect(output).not.toContain("all projects");
 	});
 
 	it("does not start redundant All loads when toggling scopes while All is already loading", async () => {
 		const currentSessions = [makeSession({ id: "current" })];
-		const allDeferred = createDeferred<SessionInfo[]>();
+		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
 		let allLoadCalls = 0;
 
 		const selector = new SessionSelectorComponent(
@@ -279,7 +305,7 @@ describe("session selector path/delete interactions", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("Parent");
-		expect(output).toContain("└─ Child");
+		expect(output).toContain("└─ ✓ Child");
 	});
 
 	it("treats the current session as active across symlink aliases", async () => {
@@ -307,7 +333,7 @@ describe("session selector path/delete interactions", () => {
 			errorMessage = message;
 		};
 
-		list.handleInput(CTRL_D);
+		list.handleInput(CTRL_X);
 
 		expect(confirmationChanges).toEqual([]);
 		expect(errorMessage).toBe("Cannot delete the currently active session");

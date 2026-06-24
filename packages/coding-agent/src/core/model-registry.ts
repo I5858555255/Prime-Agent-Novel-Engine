@@ -21,8 +21,8 @@ import {
 import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { type Static, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { type Static, type TProperties, Type } from "typebox";
+import type { Validator } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { getAgentDir } from "../config.js";
 import type { AuthStatus, AuthStorage } from "./auth-storage.js";
@@ -89,6 +89,7 @@ const ThinkingLevelMapSchema = Type.Object({
 	medium: Type.Optional(ThinkingLevelMapValueSchema),
 	high: Type.Optional(ThinkingLevelMapValueSchema),
 	xhigh: Type.Optional(ThinkingLevelMapValueSchema),
+	max: Type.Optional(ThinkingLevelMapValueSchema),
 });
 
 const OpenAICompletionsCompatSchema = Type.Object({
@@ -196,7 +197,19 @@ const ModelsConfigSchema = Type.Object({
 	providers: Type.Record(Type.String(), ProviderConfigSchema),
 });
 
-const validateModelsConfig = Compile(ModelsConfigSchema);
+// typebox/compile costs ~300ms to import, so the models.json validator loads
+// lazily. The first load of an existing models.json proceeds on JSON parsing +
+// validateConfig() and reports schema errors asynchronously once the validator
+// is ready; subsequent refreshes validate synchronously.
+let validateModelsConfig: Validator<TProperties, typeof ModelsConfigSchema> | undefined;
+let modelsValidatorPromise: Promise<void> | undefined;
+
+function preloadModelsConfigValidator(): Promise<void> {
+	modelsValidatorPromise ??= import("typebox/compile").then(({ Compile }) => {
+		validateModelsConfig = Compile(ModelsConfigSchema);
+	});
+	return modelsValidatorPromise;
+}
 
 type ModelsConfig = Static<typeof ModelsConfigSchema>;
 
@@ -357,6 +370,10 @@ export class ModelRegistry {
 		this.modelRequestHeaders.clear();
 		this.loadError = undefined;
 
+		// Credentials may have been written by another process (e.g. the UI
+		// process saving a login while the session lives in the daemon).
+		this.authStorage.reload();
+
 		// Ensure dynamic API/OAuth registrations are rebuilt from current provider state.
 		resetApiProviders();
 		resetOAuthProviders();
@@ -459,7 +476,21 @@ export class ModelRegistry {
 			const content = readFileSync(modelsJsonPath, "utf-8");
 			const parsed = JSON.parse(stripJsonComments(content)) as unknown;
 
-			if (!validateModelsConfig.Check(parsed)) {
+			if (!validateModelsConfig) {
+				// Validator not loaded yet (first refresh during startup): proceed on
+				// validateConfig() below and report schema errors asynchronously once
+				// the validator is ready. Later refreshes validate synchronously.
+				void preloadModelsConfigValidator().then(() => {
+					if (validateModelsConfig && !validateModelsConfig.Check(parsed)) {
+						const errors =
+							validateModelsConfig
+								.Errors(parsed)
+								.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
+								.join("\n") || "Unknown schema error";
+						console.error(`Invalid models.json schema:\n${errors}\n\nFile: ${modelsJsonPath}`);
+					}
+				});
+			} else if (!validateModelsConfig.Check(parsed)) {
 				const errors =
 					validateModelsConfig
 						.Errors(parsed)

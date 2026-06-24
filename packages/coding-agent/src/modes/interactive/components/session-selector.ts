@@ -1,6 +1,3 @@
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { unlink } from "node:fs/promises";
 import * as os from "node:os";
 import {
 	type Component,
@@ -14,14 +11,23 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.js";
-import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.js";
+import { type DeleteSessionFileResult, deleteSessionFile } from "../../../core/session-file-actions.js";
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.js";
+import type {
+	AgentConnectionSavedSessionInfo,
+	AgentConnectionSessionListProgress,
+} from "../../agent-connection/index.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { shouldTreatAsBack } from "./modal-back.js";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.js";
 
 type SessionScope = "current" | "all";
+
+// Mirrors the agents view delete flow: press the delete key once to arm, again
+// within this window to confirm; anything else (or the timeout) cancels.
+const DELETE_CONFIRM_DURATION_MS = 2000;
 
 function shortenPath(path: string): string {
 	const home = os.homedir();
@@ -128,26 +134,21 @@ class SessionSelectorHeader implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const title = this.scope === "current" ? "Resume Session (Current Folder)" : "Resume Session (All)";
-		const leftText = theme.bold(title);
+		const leftText = theme.bold("Resume Session");
 
-		const sortLabel = this.sortMode === "threaded" ? "Threaded" : this.sortMode === "recent" ? "Recent" : "Fuzzy";
-		const sortText = theme.fg("muted", "Sort: ") + theme.fg("accent", sortLabel);
-
-		const nameLabel = this.nameFilter === "all" ? "All" : "Named";
-		const nameText = theme.fg("muted", "Name: ") + theme.fg("accent", nameLabel);
-
-		let scopeText: string;
+		const sortLabel = this.sortMode === "threaded" ? "threaded" : this.sortMode === "recent" ? "recent" : "fuzzy";
+		const segments: string[] = [];
 		if (this.loading) {
 			const progressText = this.loadProgress ? `${this.loadProgress.loaded}/${this.loadProgress.total}` : "...";
-			scopeText = `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", `Loading ${progressText}`)}`;
-		} else if (this.scope === "current") {
-			scopeText = `${theme.fg("accent", "◉ Current Folder")}${theme.fg("muted", " | ○ All")}`;
+			segments.push(`loading ${progressText}`);
 		} else {
-			scopeText = `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", "◉ All")}`;
+			segments.push(this.scope === "current" ? "current folder" : "all projects");
 		}
-
-		const rightText = truncateToWidth(`${scopeText}  ${nameText}  ${sortText}`, width, "");
+		segments.push(`sort: ${sortLabel}`);
+		if (this.nameFilter === "named") {
+			segments.push("named only");
+		}
+		const rightText = truncateToWidth(theme.fg("muted", segments.join("  ")), width, "");
 		const availableLeft = Math.max(0, width - visibleWidth(rightText) - 1);
 		const left = truncateToWidth(leftText, availableLeft, "");
 		const spacing = Math.max(0, width - visibleWidth(left) - visibleWidth(rightText));
@@ -156,7 +157,7 @@ class SessionSelectorHeader implements Component {
 		let hintLine1: string;
 		let hintLine2: string;
 		if (this.confirmingDeletePath !== null) {
-			const confirmHint = `Delete session? ${keyHint("tui.select.confirm", "confirm")} · ${keyHint("tui.select.cancel", "cancel")}`;
+			const confirmHint = `Press ${keyText("app.agents.delete")} again to delete`;
 			hintLine1 = theme.fg("error", truncateToWidth(confirmHint, width, "…"));
 			hintLine2 = "";
 		} else if (this.statusMessage) {
@@ -171,7 +172,7 @@ class SessionSelectorHeader implements Component {
 			const hint2Parts = [
 				keyHint("app.session.toggleSort", "sort"),
 				keyHint("app.session.toggleNamedFilter", "named"),
-				keyHint("app.session.delete", "delete"),
+				keyHint("app.agents.delete", "delete"),
 				keyHint("app.session.togglePath", `path ${pathState}`),
 			];
 			if (this.showRenameHint) {
@@ -188,13 +189,13 @@ class SessionSelectorHeader implements Component {
 
 /** A session tree node for hierarchical display */
 interface SessionTreeNode {
-	session: SessionInfo;
+	session: AgentConnectionSavedSessionInfo;
 	children: SessionTreeNode[];
 }
 
 /** Flattened node for display with tree structure info */
 interface FlatSessionNode {
-	session: SessionInfo;
+	session: AgentConnectionSavedSessionInfo;
 	depth: number;
 	isLast: boolean;
 	/** For each ancestor level, whether there are more siblings after it */
@@ -205,7 +206,7 @@ interface FlatSessionNode {
  * Build a tree structure from sessions based on parentSessionPath.
  * Returns root nodes sorted by modified date (descending).
  */
-function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
+function buildSessionTree(sessions: AgentConnectionSavedSessionInfo[]): SessionTreeNode[] {
 	const byPath = new Map<string, SessionTreeNode>();
 
 	for (const session of sessions) {
@@ -271,7 +272,7 @@ class SessionList implements Component, Focusable {
 		const selected = this.filteredSessions[this.selectedIndex];
 		return selected?.session.path;
 	}
-	private allSessions: SessionInfo[] = [];
+	private allSessions: AgentConnectionSavedSessionInfo[] = [];
 	private filteredSessions: FlatSessionNode[] = [];
 	private selectedIndex: number = 0;
 	private searchInput: Input;
@@ -281,6 +282,7 @@ class SessionList implements Component, Focusable {
 	private keybindings: KeybindingsManager;
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
+	private deleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 	private currentSessionCanonicalPath?: string;
 	public onSelect?: (sessionPath: string) => void;
 	public onCancel?: () => void;
@@ -306,7 +308,7 @@ class SessionList implements Component, Focusable {
 	}
 
 	constructor(
-		sessions: SessionInfo[],
+		sessions: AgentConnectionSavedSessionInfo[],
 		showCwd: boolean,
 		sortMode: SortMode,
 		nameFilter: NameFilter,
@@ -334,6 +336,10 @@ class SessionList implements Component, Focusable {
 		};
 	}
 
+	setMaxVisible(maxVisible: number): void {
+		this.maxVisible = Math.max(3, maxVisible);
+	}
+
 	setSortMode(sortMode: SortMode): void {
 		this.sortMode = sortMode;
 		this.filterSessions(this.searchInput.getValue());
@@ -344,7 +350,7 @@ class SessionList implements Component, Focusable {
 		this.filterSessions(this.searchInput.getValue());
 	}
 
-	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
+	setSessions(sessions: AgentConnectionSavedSessionInfo[], showCwd: boolean): void {
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
 		this.filterSessions(this.searchInput.getValue());
@@ -377,6 +383,16 @@ class SessionList implements Component, Focusable {
 		this.onDeleteConfirmationChange?.(path);
 	}
 
+	private clearDeleteConfirmation(): void {
+		if (this.deleteConfirmTimer) {
+			clearTimeout(this.deleteConfirmTimer);
+			this.deleteConfirmTimer = null;
+		}
+		if (this.confirmingDeletePath !== null) {
+			this.setConfirmingDeletePath(null);
+		}
+	}
+
 	private startDeleteConfirmationForSelectedSession(): void {
 		const selected = this.filteredSessions[this.selectedIndex];
 		if (!selected) return;
@@ -387,7 +403,21 @@ class SessionList implements Component, Focusable {
 			return;
 		}
 
+		// Second press within the window confirms.
+		if (this.confirmingDeletePath === selected.session.path) {
+			const pathToDelete = this.confirmingDeletePath;
+			this.clearDeleteConfirmation();
+			void this.onDeleteSession?.(pathToDelete);
+			return;
+		}
+
+		this.clearDeleteConfirmation();
 		this.setConfirmingDeletePath(selected.session.path);
+		this.deleteConfirmTimer = setTimeout(() => {
+			this.deleteConfirmTimer = null;
+			this.setConfirmingDeletePath(null);
+		}, DELETE_CONFIRM_DURATION_MS);
+		this.deleteConfirmTimer.unref?.();
 	}
 
 	private isCurrentSessionPath(path: string): boolean {
@@ -431,7 +461,7 @@ class SessionList implements Component, Focusable {
 		);
 		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredSessions.length);
 
-		// Render visible sessions (one line each with tree structure)
+		// Render visible sessions like agents view rows: icon, title, right-aligned details.
 		for (let i = startIndex; i < endIndex; i++) {
 			const node = this.filteredSessions[i]!;
 			const session = node.session;
@@ -442,55 +472,49 @@ class SessionList implements Component, Focusable {
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
 
-			// Session display text (name or first message)
-			const hasName = !!session.name;
-			const displayText = session.name ?? session.firstMessage;
+			// Session display text (name or first message); an armed delete shows
+			// the confirm prompt in place of the title like the agents view.
+			const displayText = isConfirmingDelete
+				? `${keyText("app.agents.delete")} again to remove`
+				: (session.name ?? session.firstMessage);
 			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 
 			// Right side: message count and age
 			const age = formatSessionDate(session.modified);
-			const msgCount = String(session.messageCount);
-			let rightPart = `${msgCount} ${age}`;
+			let rightPart = `${session.messageCount} · ${age}`;
 			if (this.showCwd && session.cwd) {
-				rightPart = `${shortenPath(session.cwd)} ${rightPart}`;
+				rightPart = `${shortenPath(session.cwd)}  ${rightPart}`;
 			}
 			if (this.showPath) {
-				rightPart = `${shortenPath(session.path)} ${rightPart}`;
+				rightPart = `${shortenPath(session.path)}  ${rightPart}`;
 			}
 
-			// Cursor
-			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
+			const rawIcon = isConfirmingDelete ? "✗" : "✓";
+			const icon = isConfirmingDelete
+				? theme.fg("error", rawIcon)
+				: isCurrent
+					? theme.fg("accent", rawIcon)
+					: theme.fg("success", rawIcon);
 
 			// Calculate available width for message
 			const prefixWidth = visibleWidth(prefix);
 			const rightWidth = visibleWidth(rightPart) + 2; // +2 for spacing
-			const availableForMsg = width - 2 - prefixWidth - rightWidth; // -2 for cursor
+			const availableForMsg = width - 2 - prefixWidth - rightWidth - 2; // icon + gap
 
 			const truncatedMsg = truncateToWidth(normalizedMessage, Math.max(10, availableForMsg), "…");
 
-			// Style message
-			let messageColor: "error" | "warning" | "accent" | null = null;
-			if (isConfirmingDelete) {
-				messageColor = "error";
-			} else if (isCurrent) {
-				messageColor = "accent";
-			} else if (hasName) {
-				messageColor = "warning";
-			}
-			let styledMsg = messageColor ? theme.fg(messageColor, truncatedMsg) : truncatedMsg;
-			if (isSelected) {
-				styledMsg = theme.bold(styledMsg);
-			}
+			const styledMsg = isConfirmingDelete ? theme.fg("error", truncatedMsg) : truncatedMsg;
 
 			// Build line
-			const leftPart = cursor + theme.fg("dim", prefix) + styledMsg;
+			const leftPart = `${theme.fg("dim", prefix)}${icon} ${styledMsg}`;
 			const leftWidth = visibleWidth(leftPart);
 			const spacing = Math.max(1, width - leftWidth - visibleWidth(rightPart));
 			const styledRight = theme.fg(isConfirmingDelete ? "error" : "dim", rightPart);
 
 			let line = leftPart + " ".repeat(spacing) + styledRight;
 			if (isSelected) {
-				line = theme.bg("selectedBg", line);
+				const padded = truncateToWidth(line, width);
+				line = theme.bg("selectedBg", padded + " ".repeat(Math.max(0, width - visibleWidth(padded))));
 			}
 			lines.push(truncateToWidth(line, width));
 		}
@@ -518,20 +542,15 @@ class SessionList implements Component, Focusable {
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
 
-		// Handle delete confirmation state first - intercept all keys
-		if (this.confirmingDeletePath !== null) {
-			if (kb.matches(keyData, "tui.select.confirm")) {
-				const pathToDelete = this.confirmingDeletePath;
-				this.setConfirmingDeletePath(null);
-				void this.onDeleteSession?.(pathToDelete);
-				return;
-			}
-			if (kb.matches(keyData, "tui.select.cancel")) {
-				this.setConfirmingDeletePath(null);
-				return;
-			}
-			// Ignore all other keys while confirming
-			return;
+		// Any key other than another delete press cancels an armed confirmation
+		// and is then handled normally, like the agents view.
+		const hadDeleteConfirmation = this.confirmingDeletePath !== null;
+		if (
+			hadDeleteConfirmation &&
+			!kb.matches(keyData, "app.agents.delete") &&
+			!kb.matches(keyData, "app.session.deleteNoninvasive")
+		) {
+			this.clearDeleteConfirmation();
 		}
 
 		if (kb.matches(keyData, "tui.input.tab")) {
@@ -558,8 +577,8 @@ class SessionList implements Component, Focusable {
 			return;
 		}
 
-		// Ctrl+D: initiate delete confirmation (useful on terminals that don't distinguish Ctrl+Backspace from Backspace)
-		if (kb.matches(keyData, "app.session.delete")) {
+		// Same binding as the agents view: arm on first press, confirm on second.
+		if (kb.matches(keyData, "app.agents.delete")) {
 			this.startDeleteConfirmationForSelectedSession();
 			return;
 		}
@@ -609,8 +628,13 @@ class SessionList implements Component, Focusable {
 				this.onSelect(selected.session.path);
 			}
 		}
-		// Escape - cancel
-		else if (kb.matches(keyData, "tui.select.cancel")) {
+		// Escape, or left arrow when the search field is at its start - cancel.
+		// If this same keypress just disarmed a delete confirmation, left only
+		// disarms (like other nav keys); Esc still cancels, matching its role.
+		else if (
+			kb.matches(keyData, "tui.select.cancel") ||
+			(!hadDeleteConfirmation && shouldTreatAsBack(keyData, this.searchInput))
+		) {
 			if (this.onCancel) {
 				this.onCancel();
 			}
@@ -623,47 +647,8 @@ class SessionList implements Component, Focusable {
 	}
 }
 
-type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
-
-/**
- * Delete a session file, trying the `trash` CLI first, then falling back to unlink
- */
-async function deleteSessionFile(
-	sessionPath: string,
-): Promise<{ ok: boolean; method: "trash" | "unlink"; error?: string }> {
-	// Try `trash` first (if installed)
-	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
-	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8" });
-
-	const getTrashErrorHint = (): string | null => {
-		const parts: string[] = [];
-		if (trashResult.error) {
-			parts.push(trashResult.error.message);
-		}
-		const stderr = trashResult.stderr?.trim();
-		if (stderr) {
-			parts.push(stderr.split("\n")[0] ?? stderr);
-		}
-		if (parts.length === 0) return null;
-		return `trash: ${parts.join(" · ").slice(0, 200)}`;
-	};
-
-	// If trash reports success, or the file is gone afterwards, treat it as successful
-	if (trashResult.status === 0 || !existsSync(sessionPath)) {
-		return { ok: true, method: "trash" };
-	}
-
-	// Fallback to permanent deletion
-	try {
-		await unlink(sessionPath);
-		return { ok: true, method: "unlink" };
-	} catch (err) {
-		const unlinkError = err instanceof Error ? err.message : String(err);
-		const trashErrorHint = getTrashErrorHint();
-		const error = trashErrorHint ? `${unlinkError} (${trashErrorHint})` : unlinkError;
-		return { ok: false, method: "unlink", error };
-	}
-}
+type SessionsLoader = (onProgress?: AgentConnectionSessionListProgress) => Promise<AgentConnectionSavedSessionInfo[]>;
+type SessionDeleter = (sessionPath: string) => Promise<DeleteSessionFileResult>;
 
 /**
  * Component that renders a session selector
@@ -684,19 +669,21 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private canRename = true;
+	private readonly frameless: boolean;
 	private sessionList: SessionList;
 	private header: SessionSelectorHeader;
 	private keybindings: KeybindingsManager;
 	private scope: SessionScope = "current";
 	private sortMode: SortMode = "threaded";
 	private nameFilter: NameFilter = "all";
-	private currentSessions: SessionInfo[] | null = null;
-	private allSessions: SessionInfo[] | null = null;
+	private currentSessions: AgentConnectionSavedSessionInfo[] | null = null;
+	private allSessions: AgentConnectionSavedSessionInfo[] | null = null;
 	private currentSessionsLoader: SessionsLoader;
 	private allSessionsLoader: SessionsLoader;
 	private onCancel: () => void;
 	private requestRender: () => void;
 	private renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
+	private deleteSession: SessionDeleter;
 	private currentLoading = false;
 	private allLoading = false;
 	private allLoadSeq = 0;
@@ -722,15 +709,19 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private buildBaseLayout(content: Component, options?: { showHeader?: boolean }): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-		this.addChild(new Spacer(1));
+		if (!this.frameless) {
+			this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
+			this.addChild(new Spacer(1));
+		}
 		if (options?.showHeader ?? true) {
 			this.addChild(this.header);
 			this.addChild(new Spacer(1));
 		}
 		this.addChild(content);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
+		if (!this.frameless) {
+			this.addChild(new Spacer(1));
+			this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
+		}
 	}
 
 	constructor(
@@ -742,12 +733,16 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		requestRender: () => void,
 		options?: {
 			renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
+			deleteSession?: SessionDeleter;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
+			/** Skip the framing borders; used when the selector fills the whole screen. */
+			frameless?: boolean;
 		},
 		currentSessionFilePath?: string,
 	) {
 		super();
+		this.frameless = options?.frameless ?? false;
 		this.keybindings = options?.keybindings ?? KeybindingsManager.create();
 		this.currentSessionsLoader = currentSessionsLoader;
 		this.allSessionsLoader = allSessionsLoader;
@@ -756,6 +751,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.header = new SessionSelectorHeader(this.scope, this.sortMode, this.nameFilter, this.requestRender);
 		const renameSession = options?.renameSession;
 		this.renameSession = renameSession;
+		this.deleteSession = options?.deleteSession ?? deleteSessionFile;
 		this.canRename = !!renameSession;
 		this.header.setShowRenameHint(options?.showRenameHint ?? this.canRename);
 
@@ -818,7 +814,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Handle session deletion
 		this.sessionList.onDeleteSession = async (sessionPath: string) => {
-			const result = await deleteSessionFile(sessionPath);
+			const result = await this.deleteSession(sessionPath);
 
 			if (result.ok) {
 				if (this.currentSessions) {
@@ -1015,6 +1011,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.header.setLoading(this.currentLoading);
 		this.sessionList.setSessions(this.currentSessions ?? [], false);
 		this.requestRender();
+	}
+
+	setListMaxVisible(maxVisible: number): void {
+		this.sessionList.setMaxVisible(maxVisible);
 	}
 
 	getSessionList(): SessionList {

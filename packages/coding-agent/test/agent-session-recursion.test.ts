@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
@@ -17,9 +17,23 @@ import { AuthStorage } from "../src/core/auth-storage.js";
 import { KernelManager } from "../src/core/kernel/index.js";
 import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
+import { createRlmRunHostHandler } from "../src/core/rlm-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { MISSING_RIPGREP_MESSAGE } from "../src/utils/tools-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
+
+const toolsManagerMock = vi.hoisted(() => ({
+	ensureTool: vi.fn(async (): Promise<string | undefined> => "rg"),
+}));
+
+vi.mock("../src/utils/tools-manager.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/tools-manager.js")>();
+	return {
+		...actual,
+		ensureTool: toolsManagerMock.ensureTool,
+	};
+});
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -91,6 +105,7 @@ interface InspectableRlmRun {
 	abort: () => void;
 	status: string;
 	error?: string;
+	session?: AgentSession;
 }
 
 interface InspectableRlmSession {
@@ -131,14 +146,14 @@ function rlmCommOpenData(commId: string, data: Record<string, unknown>): TestCom
 		metadata: {},
 		content: {
 			comm_id: commId,
-			target_name: "rlm.run",
+			target_name: "host.request",
 			data,
 		},
 	};
 }
 
 function rlmCommOpen(commId: string, prompt: string, kwargs: Record<string, unknown> = {}): TestCommMessage {
-	return rlmCommOpenData(commId, { type: "run", prompt, kwargs });
+	return rlmCommOpenData(commId, { type: "rlm.run", prompt, kwargs });
 }
 
 function encodeTestMessage(message: TestCommMessage): Buffer[] {
@@ -194,6 +209,8 @@ describe("AgentSession rlm recursion", () => {
 	afterEach(() => {
 		session?.dispose();
 		session = undefined;
+		toolsManagerMock.ensureTool.mockReset();
+		toolsManagerMock.ensureTool.mockResolvedValue("rg");
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -250,6 +267,7 @@ describe("AgentSession rlm recursion", () => {
 		expect(result.turns).toBe(1);
 		expect(result.session_dir).not.toBeNull();
 		expect(basename(result.session_dir!)).toMatch(/^sub-/);
+		expect(dirname(result.session_dir!)).toBe(root.sessionManager.getSessionArtifactDir());
 		expect(existsSync(result.session_dir!)).toBe(true);
 		expect(readdirSync(result.session_dir!).some((name) => name.endsWith(".jsonl"))).toBe(true);
 		expect(childUpdates[0]?.status).toBe("running");
@@ -264,6 +282,25 @@ describe("AgentSession rlm recursion", () => {
 				expect.objectContaining({ type: "message", role: "assistant", text: "child answer: summarize shard 1" }),
 			]),
 		);
+	});
+
+	it("surfaces missing ripgrep as one child-agent error before model work starts", async () => {
+		toolsManagerMock.ensureTool.mockResolvedValueOnce(undefined);
+		const streamFn = vi.fn((_model, context: Context) => streamAnswer(`child answer: ${userText(context)}`));
+		const root = createSession({ streamFn });
+		const childUpdates: Array<{ status: string; transcript: readonly { role: string; text: string }[] }> = [];
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") {
+				childUpdates.push(event.child);
+			}
+		});
+
+		await expect(root.runRlmChild("summarize shard 1")).rejects.toThrow(MISSING_RIPGREP_MESSAGE);
+
+		expect(toolsManagerMock.ensureTool).toHaveBeenCalledWith("rg", true);
+		expect(streamFn).not.toHaveBeenCalled();
+		const errorUpdate = [...childUpdates].reverse().find((update) => update.status === "error");
+		expect(errorUpdate?.transcript).toContainEqual({ role: "system", text: MISSING_RIPGREP_MESSAGE });
 	});
 
 	it("adds child usage to the parent session aggregate", async () => {
@@ -373,6 +410,151 @@ describe("AgentSession rlm recursion", () => {
 		await expect(runPromise).rejects.toThrow();
 	});
 
+	it("cancels active rlm children when the parent session is aborted", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				if (text === "slow shard") {
+					childStarted = true;
+					void release.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				}
+				return stream;
+			},
+		});
+
+		const runPromise = root.runRlmChild("slow shard");
+		await waitFor(() => childStarted);
+		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		expect(runs.size).toBe(1);
+		const run = [...runs.values()][0];
+
+		await root.abort();
+
+		expect(run.status).toBe("cancelled");
+		expect(run.error).toBe("Parent session aborted");
+		releaseChild();
+		await expect(runPromise).rejects.toThrow("Parent session aborted");
+	});
+
+	it("cancels a single rlm child run by id and reports unknown ids", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				if (text === "slow shard") {
+					childStarted = true;
+					void release.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				}
+				return stream;
+			},
+		});
+		const childStatuses: string[] = [];
+		root.subscribe((event) => {
+			if (event.type === "rlm_child_update") {
+				childStatuses.push(event.child.status);
+			}
+		});
+
+		const runPromise = root.runRlmChild("slow shard");
+		await waitFor(() => childStarted);
+		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		expect(runs.size).toBe(1);
+		const childId = [...runs.keys()][0];
+		if (!childId) {
+			throw new Error("Missing child run id");
+		}
+		const run = runs.get(childId);
+
+		expect(root.cancelRlmChildRun("unknown-child")).toBe(false);
+		expect(run?.status).toBe("running");
+
+		expect(root.cancelRlmChildRun(childId)).toBe(true);
+		expect(run?.status).toBe("cancelled");
+		expect(run?.error).toBe("Cancelled by user");
+		// The cancelled update is pushed at cancel time, before the (possibly
+		// stuck) child unwinds; viewers must not keep showing a running child.
+		expect(childStatuses[childStatuses.length - 1]).toBe("cancelled");
+		releaseChild();
+		await expect(runPromise).rejects.toThrow("Cancelled by user");
+		expect(childStatuses[childStatuses.length - 1]).toBe("cancelled");
+
+		// The run has finished; a second cancel finds nothing to stop.
+		expect(root.cancelRlmChildRun(childId)).toBe(false);
+	});
+
+	it("cancels nested rlm child runs through the root session", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let releaseNested: () => void = () => {};
+		const nestedRelease = new Promise<void>((resolve) => {
+			releaseNested = resolve;
+		});
+		let childStarted = false;
+		let nestedStarted = false;
+		const root = createSession({
+			maxDepth: 2,
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				if (text === "slow shard") {
+					childStarted = true;
+					void release.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				} else if (text === "nested shard") {
+					nestedStarted = true;
+					void nestedRelease.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				}
+				return stream;
+			},
+		});
+
+		const runPromise = root.runRlmChild("slow shard");
+		await waitFor(() => childStarted);
+		const rootRuns = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		const rootRun = [...rootRuns.values()][0];
+		if (!rootRun?.session) {
+			throw new Error("Missing child session on root run");
+		}
+
+		const childSession = rootRun.session;
+		const nestedPromise = childSession.runRlmChild("nested shard");
+		await waitFor(() => nestedStarted);
+		const nestedRuns = (childSession as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		expect(nestedRuns.size).toBe(1);
+		const nestedId = [...nestedRuns.keys()][0];
+		if (!nestedId) {
+			throw new Error("Missing nested run id");
+		}
+
+		expect(root.cancelRlmChildRun(nestedId)).toBe(true);
+		releaseNested();
+		await expect(nestedPromise).rejects.toThrow("Cancelled by user");
+		expect(rootRun.status).toBe("running");
+
+		releaseChild();
+		await expect(runPromise).resolves.toMatchObject({ answer: "child answer: slow shard" });
+	});
+
 	it("runs parallel rlm comm requests independently", async () => {
 		let active = 0;
 		let maxActive = 0;
@@ -384,18 +566,20 @@ describe("AgentSession rlm recursion", () => {
 		const replies: CapturedCommReply[] = [];
 		const manager = new KernelManager({
 			python: process.execPath,
-			rlmRunHandler: async ({ prompt }) => {
-				active++;
-				started++;
-				maxActive = Math.max(maxActive, active);
-				await release;
-				active--;
-				return {
-					answer: `answer:${prompt}`,
-					usage: { prompt_tokens: 1, completion_tokens: 1 },
-					turns: 1,
-					session_dir: null,
-				};
+			hostHandlers: {
+				"rlm.run": createRlmRunHostHandler(async ({ prompt }) => {
+					active++;
+					started++;
+					maxActive = Math.max(maxActive, active);
+					await release;
+					active--;
+					return {
+						answer: `answer:${prompt}`,
+						usage: { prompt_tokens: 1, completion_tokens: 1 },
+						turns: 1,
+						session_dir: null,
+					};
+				}),
 			},
 		});
 
@@ -439,14 +623,16 @@ describe("AgentSession rlm recursion", () => {
 		let promptSeen = "";
 		const manager = new KernelManager({
 			python: process.execPath,
-			rlmRunHandler: async ({ prompt }) => {
-				promptSeen = prompt;
-				return {
-					answer: `answer:${prompt}`,
-					usage: { prompt_tokens: 1, completion_tokens: 1 },
-					turns: 1,
-					session_dir: null,
-				};
+			hostHandlers: {
+				"rlm.run": createRlmRunHostHandler(async ({ prompt }) => {
+					promptSeen = prompt;
+					return {
+						answer: `answer:${prompt}`,
+						usage: { prompt_tokens: 1, completion_tokens: 1 },
+						turns: 1,
+						session_dir: null,
+					};
+				}),
 			},
 		});
 
@@ -481,14 +667,16 @@ describe("AgentSession rlm recursion", () => {
 		const prompts: string[] = [];
 		const manager = new KernelManager({
 			cwd: tempDir,
-			rlmRunHandler: async ({ prompt }) => {
-				prompts.push(prompt);
-				return {
-					answer: `answer:${prompt}`,
-					usage: { prompt_tokens: 1, completion_tokens: 1 },
-					turns: 1,
-					session_dir: null,
-				};
+			hostHandlers: {
+				"rlm.run": createRlmRunHostHandler(async ({ prompt }) => {
+					prompts.push(prompt);
+					return {
+						answer: `answer:${prompt}`,
+						usage: { prompt_tokens: 1, completion_tokens: 1 },
+						turns: 1,
+						session_dir: null,
+					};
+				}),
 			},
 		});
 
@@ -558,12 +746,14 @@ print(_result.answer)
 		const replies: CapturedCommReply[] = [];
 		const manager = new KernelManager({
 			python: process.execPath,
-			rlmRunHandler: async () => ({
-				answer: "unused",
-				usage: { prompt_tokens: 1, completion_tokens: 1 },
-				turns: 1,
-				session_dir: null,
-			}),
+			hostHandlers: {
+				"rlm.run": createRlmRunHostHandler(async () => ({
+					answer: "unused",
+					usage: { prompt_tokens: 1, completion_tokens: 1 },
+					turns: 1,
+					session_dir: null,
+				})),
+			},
 		});
 
 		try {
@@ -580,7 +770,7 @@ print(_result.answer)
 				commId: "comm-bg",
 				data: {
 					status: "error",
-					error: "rlm.run comm payload must have a supported type",
+					error: 'host request type "background" is not available in this session',
 				},
 			});
 		} finally {
@@ -588,7 +778,7 @@ print(_result.answer)
 		}
 	});
 
-	it("waits for in-flight rlm comm work during dispose and logs failures", async () => {
+	it("waits for in-flight rlm comm work during dispose and buffers failures", async () => {
 		let started = false;
 		let handlerSettled = false;
 		let released = false;
@@ -602,17 +792,19 @@ print(_result.answer)
 		});
 		const manager = new KernelManager({
 			python: process.execPath,
-			rlmRunHandler: async () => {
-				started = true;
-				try {
-					await release;
-					throw new Error("child failed after dispose");
-				} finally {
-					handlerSettled = true;
-				}
+			hostHandlers: {
+				"rlm.run": createRlmRunHostHandler(async () => {
+					started = true;
+					try {
+						await release;
+						throw new Error("child failed after dispose");
+					} finally {
+						handlerSettled = true;
+					}
+				}),
 			},
 		});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
 		try {
 			const kernel = manager as unknown as KernelCommTestApi;
@@ -633,15 +825,81 @@ print(_result.answer)
 			await expectSettlesWithin(trackedDispose, 1000);
 			expect(handlerSettled).toBe(true);
 
-			const logLines = errorSpy.mock.calls.map((call) => call.map(String).join(" "));
-			expect(logLines.some((line) => line.includes("[kernel] rlm.run failed for comm comm-dispose"))).toBe(true);
-			expect(
-				logLines.some((line) => line.includes("[kernel] failed to send rlm.run error reply for comm comm-dispose")),
-			).toBe(true);
+			const kernelStderr = (manager as unknown as { kernelStderr: string }).kernelStderr;
+			expect(kernelStderr).toContain("[kernel] host request failed for comm comm-dispose");
+			expect(kernelStderr).toContain("[kernel] failed to send host request error reply for comm comm-dispose");
+			expect(stderrSpy).not.toHaveBeenCalled();
 		} finally {
 			releaseChild();
 			await manager.dispose();
-			errorSpy.mockRestore();
+			stderrSpy.mockRestore();
 		}
+	});
+});
+
+interface InspectableRlmDirSession {
+	_ensureRlmSessionDir(): string | undefined;
+	_rlmKernelEnv(): Record<string, string>;
+}
+
+describe("AgentSession RLM session dir", () => {
+	let tempDir: string;
+	let session: AgentSession | undefined;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `pi-rlm-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		session?.dispose();
+		session = undefined;
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	function createSession(sessionManager: SessionManager): AgentSession {
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "", tools: [], thinkingLevel: "off" },
+			streamFn: () => streamAnswer("ignored"),
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager: SettingsManager.create(tempDir, tempDir),
+			cwd: tempDir,
+			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
+			resourceLoader: createTestResourceLoader(),
+		});
+		return session;
+	}
+
+	it("does not create a /tmp dir or set RLM_SESSION_DIR for a non-persisted session", () => {
+		const root = createSession(SessionManager.inMemory(tempDir));
+		const inspectable = root as unknown as InspectableRlmDirSession;
+
+		const before = readdirSync(tmpdir()).filter((name) => name.startsWith("prime-agent-rlm-"));
+
+		expect(inspectable._ensureRlmSessionDir()).toBeUndefined();
+		const env = inspectable._rlmKernelEnv();
+		expect(env.RLM_SESSION_DIR).toBeUndefined();
+		expect(env).toMatchObject({ RLM_DEPTH: "0" });
+
+		const after = readdirSync(tmpdir()).filter((name) => name.startsWith("prime-agent-rlm-"));
+		expect(after).toEqual(before);
+	});
+
+	it("uses the persistent artifact dir and sets RLM_SESSION_DIR for a persisted session", () => {
+		const sessionManager = SessionManager.create(tempDir, join(tempDir, "sessions"));
+		const root = createSession(sessionManager);
+		const inspectable = root as unknown as InspectableRlmDirSession;
+
+		const artifactDir = sessionManager.getSessionArtifactDir();
+		expect(artifactDir).toBeDefined();
+		expect(inspectable._ensureRlmSessionDir()).toBe(artifactDir);
+		expect(inspectable._rlmKernelEnv().RLM_SESSION_DIR).toBe(artifactDir);
 	});
 });

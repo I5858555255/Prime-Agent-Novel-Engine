@@ -8,8 +8,16 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
-import type { RlmRunHandler, RlmRunResult } from "../rlm-runtime.js";
-import { ensureKernelPython, type KernelPythonSkill } from "./bootstrap.js";
+import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
+import {
+	buildRestoreCode,
+	buildSnapshotCode,
+	DEFAULT_SNAPSHOT_MAX_BYTES,
+	parseRestoreResult,
+	parseSnapshotResult,
+	type RestoreResult,
+	type SnapshotResult,
+} from "./state-snapshot.js";
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
@@ -18,7 +26,37 @@ const READY_TIMEOUT_MS = 5000;
 // Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
-const RLM_DISPOSE_TIMEOUT_MS = 5000;
+const HOST_REQUEST_DISPOSE_TIMEOUT_MS = 5000;
+const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1500;
+// Snapshot/restore cells can be large to (de)serialize; give them room beyond the user cap.
+const SNAPSHOT_MAX_OUTPUT_CHARS = 1_000_000;
+// Cap how long a graceful dispose waits on the final snapshot; the debounced
+// on-disk copy is the fallback if this is exceeded.
+const SNAPSHOT_DISPOSE_TIMEOUT_MS = 5000;
+
+/** Comm target the kernel-side `rlm.host_request` shim opens for typed host requests. */
+export const HOST_COMM_TARGET = "host.request";
+
+/**
+ * Handles one typed request from Python code running in the kernel.
+ * The returned record is sent back verbatim as the comm reply payload.
+ */
+export type HostRequestHandler = (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+
+/** Host request handlers keyed by request type (e.g. "rlm.run", "goal.complete"). */
+export type HostRequestHandlers = Record<string, HostRequestHandler>;
+
+/** Where and how to persist the kernel's user namespace so it survives resume. */
+export interface KernelSnapshotConfig {
+	/** Absolute path for the dill payload. */
+	path: string;
+	/** Absolute path for the JSON manifest written alongside the payload. */
+	manifestPath: string;
+	/** Skip variables (and abort the payload) above this many bytes. Default 256 MiB. */
+	maxBytes?: number;
+	/** Debounce window for the auto-snapshot after a successful execution. Default 1500 ms. */
+	debounceMs?: number;
+}
 
 export interface KernelManagerOptions {
 	/** Python interpreter that has `ipykernel` available. Defaults to the auto-bootstrapped kernel. */
@@ -26,10 +64,16 @@ export interface KernelManagerOptions {
 	cwd?: string;
 	env?: Record<string, string>;
 	sessionId?: string;
-	rlmRunHandler?: RlmRunHandler;
+	hostHandlers?: HostRequestHandlers;
 	pythonSkills?: readonly KernelPythonSkill[];
+	/** Persist/revive the user namespace across kernel restarts and session resume. */
+	snapshot?: KernelSnapshotConfig;
 	/** Default: "prime-agent". */
 	username?: string;
+}
+
+export interface KernelStartOptions {
+	onBootstrapProgress?: KernelBootstrapProgressHandler;
 }
 
 export interface ExecuteOptions {
@@ -40,17 +84,41 @@ export interface ExecuteOptions {
 	maxOutputChars?: number;
 }
 
+/** MIME tag the `edit` skill emits diff payloads under, via `display_data`. */
+export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
+
+/** One file edit, captured from a {@link DIFF_DISPLAY_MIME} display payload. */
+export interface KernelDiffDisplay {
+	path: string;
+	oldStr: string;
+	newStr: string;
+	/** 1-based line where `oldStr` begins in the file, for absolute line numbers. */
+	startLine?: number;
+}
+
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
 	/** Last `execute_result` payload (text/plain), if the cell produced one. */
 	result?: string;
+	/** Diffs emitted via display_data, in order. */
+	diffs?: KernelDiffDisplay[];
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
 	durationMs: number;
 }
 
-type RlmCommResult = RlmRunResult;
+/** Parse a {@link DIFF_DISPLAY_MIME} payload, tolerating malformed input. */
+function parseDiffDisplay(payload: unknown): KernelDiffDisplay | undefined {
+	if (!isRecord(payload)) {
+		return undefined;
+	}
+	const { path, old_str: oldStr, new_str: newStr, start_line: startLine } = payload;
+	if (typeof path !== "string" || typeof oldStr !== "string" || typeof newStr !== "string") {
+		return undefined;
+	}
+	return { path, oldStr, newStr, startLine: typeof startLine === "number" ? startLine : undefined };
+}
 
 interface ConnectionInfo {
 	ip: string;
@@ -81,6 +149,8 @@ interface JupyterMessage {
 
 interface ActiveExecution {
 	requestMsgId: string;
+	/** Source of the cell currently executing; surfaced to rlm.run spawns. */
+	code: string;
 	started: number;
 	maxChars: number;
 	opts: ExecuteOptions;
@@ -89,6 +159,7 @@ interface ActiveExecution {
 	stdoutTruncated: boolean;
 	stderrTruncated: boolean;
 	result?: string;
+	diffs: KernelDiffDisplay[];
 	error?: ExecuteResult["error"];
 	status: ExecuteResult["status"];
 	resolve: (result: ExecuteResult) => void;
@@ -258,7 +329,8 @@ function installSignalHandlersOnce(): void {
 	signalHandlersInstalled = true;
 
 	const asyncShutdown = async (): Promise<void> => {
-		await Promise.allSettled([...liveKernels].map((k) => k.shutdown()));
+		// These paths can await, so flush the namespace snapshot before tearing down.
+		await Promise.allSettled([...liveKernels].map((k) => k.shutdown({ snapshot: true })));
 	};
 
 	// `beforeExit` and signal handlers can await async cleanup. `exit`
@@ -283,12 +355,12 @@ function installSignalHandlersOnce(): void {
 export class KernelManager {
 	private readonly options: Pick<
 		KernelManagerOptions,
-		"python" | "cwd" | "env" | "sessionId" | "rlmRunHandler" | "pythonSkills"
+		"python" | "cwd" | "env" | "sessionId" | "hostHandlers" | "pythonSkills" | "snapshot"
 	> &
 		Required<Pick<KernelManagerOptions, "username">>;
 	private readonly session = uuid();
 	private readonly commTargets = new Map<string, string>();
-	private readonly handledRlmCommIds = new Set<string>();
+	private readonly handledHostRequestCommIds = new Set<string>();
 	private kernel?: ChildProcess;
 	private shell?: Dealer;
 	private iopub?: Subscriber;
@@ -300,10 +372,16 @@ export class KernelManager {
 	/** Serializes execute() calls — Jupyter shell channel is request/reply. */
 	private executionQueue: Promise<unknown> = Promise.resolve();
 	private activeExecution?: ActiveExecution;
-	private readonly inFlightRlmRuns = new Set<Promise<void>>();
+	// Source of the most recently started cell, retained after it finishes so
+	// rlm.run spawns from detached asyncio tasks (cell already idle) can still
+	// attribute their spawning program.
+	private lastCellCode?: string;
+	private readonly inFlightHostRequests = new Set<Promise<void>>();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
 	/** Memoized so concurrent callers all await the same in-flight startup. */
 	private startPromise?: Promise<void>;
+	/** Pending debounced auto-snapshot, if one has been scheduled. */
+	private snapshotTimer?: ReturnType<typeof globalThis.setTimeout>;
 
 	constructor(options: KernelManagerOptions) {
 		this.options = {
@@ -311,8 +389,9 @@ export class KernelManager {
 			cwd: options.cwd,
 			env: options.env,
 			sessionId: options.sessionId,
-			rlmRunHandler: options.rlmRunHandler,
+			hostHandlers: options.hostHandlers,
 			pythonSkills: options.pythonSkills,
+			snapshot: options.snapshot,
 			username: options.username ?? "prime-agent",
 		};
 	}
@@ -321,25 +400,42 @@ export class KernelManager {
 		return this.options.sessionId;
 	}
 
-	async start(): Promise<void> {
+	private appendKernelDiagnostic(message: string): void {
+		this.kernelStderr += `[kernel] ${message.endsWith("\n") ? message : `${message}\n`}`;
+	}
+
+	async start(options: KernelStartOptions = {}): Promise<void> {
 		if (!this.startPromise) {
-			this.startPromise = this.doStart();
+			this.startPromise = this.doStart(options);
 		}
 		return this.startPromise;
 	}
 
-	private async doStart(): Promise<void> {
+	private async doStart(startOptions: KernelStartOptions): Promise<void> {
 		if (this.state !== "idle") return;
 		this.state = "starting";
 		installSignalHandlersOnce();
+		// Tracked from the moment startup begins so session cleanup and signal
+		// handlers can dispose a kernel that is still booting.
+		liveKernels.add(this);
 
 		let python: string;
 		try {
-			python = this.options.python ?? (await ensureKernelPython({ pythonSkills: this.options.pythonSkills }));
+			python =
+				this.options.python ??
+				(await ensureKernelPython({
+					pythonSkills: this.options.pythonSkills,
+					onProgress: startOptions.onBootstrapProgress,
+				}));
 			this.options.python = python;
 		} catch (error) {
-			this.state = "idle";
+			liveKernels.delete(this);
+			if ((this.state as string) !== "shutdown") this.state = "idle";
 			throw error;
+		}
+
+		if ((this.state as string) === "shutdown") {
+			throw new Error("Kernel was disposed during startup");
 		}
 
 		const { path: connectionPath, tempDir } = makeConnection();
@@ -355,12 +451,11 @@ export class KernelManager {
 		kernel.stderr?.on("data", (buf: Buffer) => {
 			const s = buf.toString();
 			this.kernelStderr += s;
-			process.stderr.write(`[kernel] ${s}`);
 		});
 
 		kernel.on("error", (err) => {
 			if (this.kernel !== kernel) return;
-			console.error(`[kernel] spawn error: ${err.message}`);
+			this.appendKernelDiagnostic(`spawn error: ${err.message}`);
 			this.state = "shutdown";
 			liveKernels.delete(this);
 		});
@@ -368,7 +463,7 @@ export class KernelManager {
 		kernel.on("exit", (code, signal) => {
 			if (this.kernel !== kernel) return;
 			if (this.state !== "shutdown") {
-				console.error(`[kernel] unexpected exit code=${code} signal=${signal}`);
+				this.appendKernelDiagnostic(`unexpected exit code=${code} signal=${signal}`);
 			}
 			this.state = "shutdown";
 			liveKernels.delete(this);
@@ -406,7 +501,6 @@ export class KernelManager {
 			throw e;
 		}
 
-		liveKernels.add(this);
 		this.state = "running";
 	}
 
@@ -469,6 +563,17 @@ export class KernelManager {
 	}
 
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+		const result = await this.enqueueExecute(code, opts);
+		// Refresh the on-disk snapshot after real work so a later resume (or a
+		// crash before graceful shutdown) revives the most recent namespace.
+		if (result.status === "ok") {
+			this.scheduleSnapshot();
+		}
+		return result;
+	}
+
+	/** Queue and run a cell, serializing against all other executions. */
+	private async enqueueExecute(code: string, opts: ExecuteOptions): Promise<ExecuteResult> {
 		if (opts.signal?.aborted) {
 			return { stdout: "", stderr: "", status: "aborted", durationMs: 0 };
 		}
@@ -534,6 +639,7 @@ export class KernelManager {
 			const result = createDeferred<ExecuteResult>();
 			const execution: ActiveExecution = {
 				requestMsgId,
+				code,
 				started,
 				maxChars,
 				opts,
@@ -541,11 +647,13 @@ export class KernelManager {
 				stderr: "",
 				stdoutTruncated: false,
 				stderrTruncated: false,
+				diffs: [],
 				status: "ok",
 				resolve: result.resolve,
 				reject: result.reject,
 			};
 			this.activeExecution = execution;
+			this.lastCellCode = code;
 			try {
 				await shell.send(encode(msg, conn.key));
 			} catch (error) {
@@ -586,7 +694,7 @@ export class KernelManager {
 			}
 		} catch (error) {
 			if ((this.state as string) !== "shutdown") {
-				console.error(`[kernel] iopub pump failed: ${errorMessage(error)}`);
+				this.appendKernelDiagnostic(`iopub pump failed: ${errorMessage(error)}`);
 				this.rejectActiveExecution(new Error(`Kernel IOPub channel failed: ${errorMessage(error)}`));
 			}
 		} finally {
@@ -629,6 +737,10 @@ export class KernelManager {
 		} else if (t === "execute_result") {
 			const c = incoming.content as { data: Record<string, string> };
 			if (c.data["text/plain"]) execution.result = c.data["text/plain"];
+		} else if (t === "display_data" || t === "update_display_data") {
+			const c = incoming.content as { data?: Record<string, unknown> };
+			const diff = parseDiffDisplay(c.data?.[DIFF_DISPLAY_MIME]);
+			if (diff) execution.diffs.push(diff);
 		} else if (t === "error") {
 			const c = incoming.content as { ename: string; evalue: string; traceback: string[] };
 			execution.error = c;
@@ -663,6 +775,7 @@ export class KernelManager {
 			stdout,
 			stderr,
 			result,
+			diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
 			error: execution.error,
 			status,
 			durationMs: Date.now() - execution.started,
@@ -688,7 +801,7 @@ export class KernelManager {
 
 		if (msgType === "comm_close") {
 			this.commTargets.delete(commId);
-			this.handledRlmCommIds.delete(commId);
+			this.handledHostRequestCommIds.delete(commId);
 			return;
 		}
 
@@ -698,69 +811,68 @@ export class KernelManager {
 				return;
 			}
 			this.commTargets.set(commId, targetName);
-			if (targetName === "rlm.run") {
-				this.startRlmRunFromComm(commId, content.data);
+			if (targetName === HOST_COMM_TARGET) {
+				this.startHostRequestFromComm(commId, content.data);
 			}
 			return;
 		}
 
 		const targetName = this.commTargets.get(commId);
-		if (msgType === "comm_msg" && targetName === "rlm.run") {
-			this.startRlmRunFromComm(commId, content.data);
+		if (msgType === "comm_msg" && targetName === HOST_COMM_TARGET) {
+			this.startHostRequestFromComm(commId, content.data);
 		}
 	}
 
-	private startRlmRunFromComm(commId: string, data: unknown): void {
-		if (this.handledRlmCommIds.has(commId)) {
+	private startHostRequestFromComm(commId: string, data: unknown): void {
+		if (this.handledHostRequestCommIds.has(commId)) {
 			return;
 		}
-		this.handledRlmCommIds.add(commId);
+		this.handledHostRequestCommIds.add(commId);
 
 		const task = (async () => {
 			try {
-				const result = await this.handleRlmCommRequest(data);
+				const result = await this.handleHostRequest(data);
 				try {
 					await this.sendCommMessage(commId, { status: "ok", ...result });
 				} catch (replyError) {
-					console.error(
-						`[kernel] failed to send rlm.run ok reply for comm ${commId}: ${errorMessage(replyError)}`,
+					this.appendKernelDiagnostic(
+						`failed to send host request ok reply for comm ${commId}: ${errorMessage(replyError)}`,
 					);
 				}
 			} catch (error) {
-				console.error(`[kernel] rlm.run failed for comm ${commId}: ${errorMessage(error)}`);
+				this.appendKernelDiagnostic(`host request failed for comm ${commId}: ${errorMessage(error)}`);
 				try {
 					await this.sendCommMessage(commId, { status: "error", error: errorMessage(error) });
 				} catch (replyError) {
-					console.error(
-						`[kernel] failed to send rlm.run error reply for comm ${commId}: ${errorMessage(replyError)}`,
+					this.appendKernelDiagnostic(
+						`failed to send host request error reply for comm ${commId}: ${errorMessage(replyError)}`,
 					);
 				}
 			}
 		})();
-		this.inFlightRlmRuns.add(task);
+		this.inFlightHostRequests.add(task);
 		void task.finally(() => {
-			this.inFlightRlmRuns.delete(task);
+			this.inFlightHostRequests.delete(task);
 		});
 	}
 
-	private async handleRlmCommRequest(data: unknown): Promise<RlmCommResult> {
+	private async handleHostRequest(data: unknown): Promise<Record<string, unknown>> {
 		if (!isRecord(data)) {
-			throw new Error("rlm.run comm payload must be an object");
+			throw new Error("host request payload must be an object");
+		}
+		if (typeof data.type !== "string" || data.type.length === 0) {
+			throw new Error("host request payload must have a string type");
 		}
 
-		if (data.type === "run") {
-			const handler = this.options.rlmRunHandler;
-			if (!handler) {
-				throw new Error("rlm.run is not available in this session");
-			}
-			if (typeof data.prompt !== "string") {
-				throw new Error("rlm.run prompt must be a string");
-			}
-			const kwargs = isRecord(data.kwargs) ? data.kwargs : {};
-			return handler({ prompt: data.prompt, kwargs });
+		const handler = this.options.hostHandlers?.[data.type];
+		if (!handler) {
+			throw new Error(`host request type "${data.type}" is not available in this session`);
 		}
-
-		throw new Error("rlm.run comm payload must have a supported type");
+		// Tag the request with the cell that triggered it. A blocking call is still
+		// the in-flight execution; detached spawns (asyncio.create_task) fire after
+		// the scheduling cell goes idle, so fall back to that last cell's source.
+		const cellSourceCode = this.activeExecution?.code ?? this.lastCellCode;
+		return handler({ ...data, cellSourceCode });
 	}
 
 	private async sendCommMessage(commId: string, data: Record<string, unknown>): Promise<void> {
@@ -779,6 +891,7 @@ export class KernelManager {
 	}
 
 	private cleanupResources(): void {
+		this.clearSnapshotTimer();
 		this.rejectActiveExecution(new Error("Kernel has been shut down"));
 		this.shell?.close();
 		this.iopub?.close();
@@ -801,7 +914,7 @@ export class KernelManager {
 		this.startPromise = undefined;
 	}
 
-	private async waitForRlmRunsToSettle(tasks: Promise<void>[], timeoutMs: number): Promise<void> {
+	private async waitForHostRequestsToSettle(tasks: Promise<void>[], timeoutMs: number): Promise<void> {
 		let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
 		const timeoutPromise = new Promise<"timeout">((resolve) => {
 			timeout = globalThis.setTimeout(() => resolve("timeout"), timeoutMs);
@@ -815,15 +928,22 @@ export class KernelManager {
 			globalThis.clearTimeout(timeout);
 		}
 		if (result === "timeout") {
-			console.error(`[kernel] timed out waiting ${timeoutMs}ms for ${tasks.length} rlm.run task(s) during dispose`);
+			this.appendKernelDiagnostic(
+				`timed out waiting ${timeoutMs}ms for ${tasks.length} host request task(s) during dispose`,
+			);
 		}
 	}
 
-	async shutdown(): Promise<void> {
+	async shutdown(opts: { snapshot?: boolean } = {}): Promise<void> {
 		if (this.state === "shutdown") {
 			liveKernels.delete(this);
 			this.cleanupResources();
 			return;
+		}
+		// Best-effort final flush (bounded) before teardown — used by signal handlers
+		// so a SIGINT/SIGTERM exit doesn't lose work the debounced snapshot hasn't saved.
+		if (opts.snapshot) {
+			await this.flushSnapshotForDispose();
 		}
 		this.state = "shutdown";
 		liveKernels.delete(this);
@@ -857,20 +977,97 @@ export class KernelManager {
 		}
 	}
 
-	/** Graceful cleanup. Waits briefly for in-flight rlm.run handlers before closing sockets. */
-	dispose(): Promise<void> {
-		this.state = "shutdown";
-		liveKernels.delete(this);
-		const inFlightRlmRuns = [...this.inFlightRlmRuns];
-		if (inFlightRlmRuns.length === 0) {
-			this.cleanupResources();
-			return Promise.resolve();
+	/**
+	 * Serialize the user namespace to disk (best-effort, per-variable). No-op when
+	 * the kernel isn't running or no snapshot target was configured. Never throws.
+	 */
+	async snapshotState(): Promise<SnapshotResult | null> {
+		const cfg = this.options.snapshot;
+		if (!cfg || !this.isRunning) return null;
+		const code = buildSnapshotCode(cfg.path, cfg.manifestPath, cfg.maxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES);
+		try {
+			const r = await this.enqueueExecute(code, { maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS });
+			if (r.status !== "ok") {
+				this.appendKernelDiagnostic(`state snapshot failed: ${r.error?.evalue ?? r.stderr}`);
+				return null;
+			}
+			return parseSnapshotResult(r.stdout, cfg.path);
+		} catch (error) {
+			this.appendKernelDiagnostic(`state snapshot error: ${errorMessage(error)}`);
+			return null;
 		}
+	}
 
+	/**
+	 * Revive a previously snapshotted namespace into the kernel. Call right after
+	 * start() and before the runtime bootstrap, which then refreshes live handles
+	 * (rlm, skills) over anything restored. Never throws.
+	 */
+	async restoreState(): Promise<RestoreResult | null> {
+		const cfg = this.options.snapshot;
+		if (!cfg) return null;
+		const code = buildRestoreCode(cfg.path);
+		try {
+			const r = await this.enqueueExecute(code, { maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS });
+			if (r.status !== "ok") {
+				this.appendKernelDiagnostic(`state restore failed: ${r.error?.evalue ?? r.stderr}`);
+				return null;
+			}
+			return parseRestoreResult(r.stdout, cfg.path);
+		} catch (error) {
+			this.appendKernelDiagnostic(`state restore error: ${errorMessage(error)}`);
+			return null;
+		}
+	}
+
+	private scheduleSnapshot(): void {
+		const cfg = this.options.snapshot;
+		if (!cfg) return;
+		if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+		this.snapshotTimer = globalThis.setTimeout(() => {
+			this.snapshotTimer = undefined;
+			void this.snapshotState();
+		}, cfg.debounceMs ?? DEFAULT_SNAPSHOT_DEBOUNCE_MS);
+		if (this.snapshotTimer && typeof this.snapshotTimer === "object" && "unref" in this.snapshotTimer) {
+			this.snapshotTimer.unref();
+		}
+	}
+
+	private clearSnapshotTimer(): void {
+		if (this.snapshotTimer) {
+			clearTimeout(this.snapshotTimer);
+			this.snapshotTimer = undefined;
+		}
+	}
+
+	/** Best-effort final snapshot before a graceful dispose, bounded by a timeout. */
+	private async flushSnapshotForDispose(): Promise<void> {
+		if (!this.options.snapshot || !this.isRunning) return;
+		let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+		const guard = new Promise<void>((resolve) => {
+			timeout = globalThis.setTimeout(resolve, SNAPSHOT_DISPOSE_TIMEOUT_MS);
+			if (timeout && typeof timeout === "object" && "unref" in timeout) timeout.unref();
+		});
+		try {
+			await Promise.race([this.snapshotState().then(() => undefined), guard]);
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
+	}
+
+	/** Graceful cleanup. Waits briefly for in-flight host request handlers before closing sockets. */
+	dispose(): Promise<void> {
 		return (async () => {
+			// Final namespace flush while the kernel is still live (session end / reload).
+			await this.flushSnapshotForDispose();
+			this.state = "shutdown";
+			liveKernels.delete(this);
+			const inFlightHostRequests = [...this.inFlightHostRequests];
 			// TODO: plumb AbortSignal through AgentSession.prompt so disposal can cancel long-running child loops.
 			try {
-				await this.waitForRlmRunsToSettle(inFlightRlmRuns, RLM_DISPOSE_TIMEOUT_MS);
+				if (inFlightHostRequests.length > 0) {
+					await this.waitForHostRequestsToSettle(inFlightHostRequests, HOST_REQUEST_DISPOSE_TIMEOUT_MS);
+				}
 			} finally {
 				this.cleanupResources();
 			}

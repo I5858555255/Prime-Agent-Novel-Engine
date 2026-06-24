@@ -16,12 +16,14 @@ describe("Prime Inference models", () => {
 	it("registers the Prime Inference catalog", () => {
 		const modelIds = getModels("prime-inference").map((model) => model.id);
 
-		expect(modelIds.length).toBe(25);
+		expect(modelIds.length).toBe(28);
 		expect(modelIds).toEqual(
 			expect.arrayContaining([
 				"anthropic/claude-opus-4.7",
 				"anthropic/claude-opus-4.8",
 				"deepseek/deepseek-v4-pro",
+				"minimax/minimax-m3",
+				"moonshotai/kimi-k2.7-code",
 				"nvidia/nemotron-3-super-120b-a12b",
 				"openai/gpt-5.4",
 				"openai/gpt-5.5",
@@ -31,6 +33,7 @@ describe("Prime Inference models", () => {
 				"x-ai/grok-4.20",
 				"z-ai/glm-5",
 				"z-ai/glm-5.1",
+				"z-ai/glm-5.2",
 			]),
 		);
 		expect(modelIds).not.toContain("google/gemini-2.5-pro");
@@ -67,8 +70,9 @@ describe("Prime Inference models", () => {
 	it("marks known reasoning-capable Prime Inference model families", () => {
 		const opus48 = getModel("prime-inference", "anthropic/claude-opus-4.8");
 		expect(opus48.reasoning).toBe(true);
-		expect(opus48.thinkingLevelMap).toEqual({ xhigh: "xhigh" });
+		expect(opus48.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
 		expect(getSupportedThinkingLevels(opus48)).toContain("xhigh");
+		expect(getSupportedThinkingLevels(opus48)).toContain("max");
 
 		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").reasoning).toBe(true);
 		const deepseekV4Flash = getModel("prime-inference", "deepseek/deepseek-v4-flash");
@@ -83,8 +87,16 @@ describe("Prime Inference models", () => {
 			supportsReasoningEffort: false,
 			thinkingFormat: "zai",
 		});
+		const glm52 = getModel("prime-inference", "z-ai/glm-5.2");
+		expect(glm52.reasoning).toBe(true);
+		expect(glm52.compat).toMatchObject({
+			supportsReasoningEffort: false,
+			thinkingFormat: "zai",
+		});
 		expect(getModel("prime-inference", "qwen/qwen3-coder-next").reasoning).toBe(false);
 		expect(getModel("prime-inference", "x-ai/grok-4.20").reasoning).toBe(true);
+		expect(getModel("prime-inference", "minimax/minimax-m3").reasoning).toBe(true);
+		expect(getModel("prime-inference", "moonshotai/kimi-k2.7-code").reasoning).toBe(true);
 	});
 
 	it("resolves PRIME_API_KEY from the environment", () => {

@@ -220,14 +220,17 @@ export interface AutocompleteItem {
 	value: string;
 	label: string;
 	description?: string;
+	takesArgument?: boolean;
 }
 
 type Awaitable<T> = T | Promise<T>;
 
 export interface SlashCommand {
 	name: string;
+	aliases?: readonly string[];
 	description?: string;
 	argumentHint?: string;
+	takesArgument?: boolean;
 	// Function to get argument completions for this command
 	// Returns null if no argument completion is available
 	getArgumentCompletions?(argumentPrefix: string): Awaitable<AutocompleteItem[] | null>;
@@ -309,20 +312,25 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				const prefix = textBeforeCursor.slice(1);
 				const commandItems = this.commands.map((cmd) => {
 					const name = "name" in cmd ? cmd.name : cmd.value;
+					const aliases = "aliases" in cmd && cmd.aliases ? cmd.aliases : [];
 					const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
 					const desc = cmd.description ?? "";
 					const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
+					const takesArgument = "takesArgument" in cmd ? cmd.takesArgument === true : false;
 					return {
 						name,
+						searchText: [name, ...aliases].join(" "),
 						label: name,
 						description: fullDesc || undefined,
+						takesArgument,
 					};
 				});
 
-				const filtered = fuzzyFilter(commandItems, prefix, (item) => item.name).map((item) => ({
+				const filtered = fuzzyFilter(commandItems, prefix, (item) => item.searchText).map((item) => ({
 					value: item.name,
 					label: item.label,
 					...(item.description && { description: item.description }),
+					...(item.takesArgument && { takesArgument: true }),
 				}));
 
 				if (filtered.length === 0) return null;

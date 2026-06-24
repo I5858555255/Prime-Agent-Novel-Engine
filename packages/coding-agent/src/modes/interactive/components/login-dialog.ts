@@ -3,6 +3,7 @@ import {
 	type Component,
 	Container,
 	type Focusable,
+	getCapabilities,
 	getKeybindings,
 	Spacer,
 	Text,
@@ -15,6 +16,7 @@ import { PRIME_BUTTERFLY_LOGO } from "../../../themes/prime-logo.js";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
 import { MenuPanel, MenuSearchInput } from "./menu-panel.js";
+import { shouldTreatAsBack } from "./modal-back.js";
 
 const PRIME_INFERENCE_PROVIDER_ID = "prime-inference";
 const PRIME_LOGO_LINES = PRIME_BUTTERFLY_LOGO.split("\n");
@@ -63,6 +65,10 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private abortController = new AbortController();
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
+	// True only while the editable paste field is actually shown in the panel.
+	// Tracks visibility directly rather than inferring it from inputResolver,
+	// which can outlive the field when a new screen clears the content.
+	private inputVisible = false;
 	private continueResolver?: () => void;
 	private continueRejecter?: (error: Error) => void;
 
@@ -140,7 +146,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.addMutedText("The sign-in page should already be opening. If it did not open, use the link below.");
 		this.contentContainer.addChild(new Spacer(1));
 		this.addLabel("Sign-in link");
-		const linkedUrl = `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
+		const linkedUrl = getCapabilities().hyperlinks ? `\x1b]8;;${url}\x07${url}\x1b]8;;\x07` : url;
 		this.contentContainer.addChild(new Text(theme.fg("text", linkedUrl), 0, 0));
 
 		if (instructions) {
@@ -163,9 +169,17 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.addSectionTitle("Manual fallback");
 		this.addMutedText(prompt);
 		this.contentContainer.addChild(this.input);
+		this.inputVisible = true;
 		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
 		this.tui.requestRender();
 
+		return this.waitForInput();
+	}
+
+	/**
+	 * Wait for the next submission of the already-visible input.
+	 */
+	waitForInput(): Promise<string> {
 		return new Promise((resolve, reject) => {
 			this.inputResolver = resolve;
 			this.inputRejecter = reject;
@@ -183,6 +197,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.contentContainer.addChild(new Text(theme.fg("muted", `e.g., ${placeholder}`), 0, 0));
 		}
 		this.contentContainer.addChild(this.input);
+		this.inputVisible = true;
 		this.contentContainer.addChild(
 			new Text(
 				theme.fg("muted", `${keyHint("tui.select.confirm", "submit")}  ${keyHint("tui.select.cancel", "cancel")}`),
@@ -193,10 +208,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.input.setValue("");
 		this.tui.requestRender();
 
-		return new Promise((resolve, reject) => {
-			this.inputResolver = resolve;
-			this.inputRejecter = reject;
-		});
+		return this.waitForInput();
 	}
 
 	/**
@@ -260,6 +272,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 	private startContent(): void {
 		this.contentContainer.clear();
+		// The cleared panel no longer shows the paste field.
+		this.inputVisible = false;
 		if (this.isPrimeInference) {
 			this.contentContainer.addChild(new PrimeLoginHeader());
 			this.contentContainer.addChild(new Spacer(1));
@@ -302,7 +316,11 @@ export class LoginDialogComponent extends Container implements Focusable {
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 
-		if (kb.matches(data, "tui.select.cancel")) {
+		// Left arrow acts as "back" like Esc. While the editable field is actually
+		// shown, only treat it as back at the start of the text so left still moves
+		// the cursor mid-edit; on info/continue screens there is no field to guard.
+		const backGuardInput = this.inputVisible ? this.input : undefined;
+		if (kb.matches(data, "tui.select.cancel") || shouldTreatAsBack(data, backGuardInput)) {
 			this.cancel();
 			return;
 		}

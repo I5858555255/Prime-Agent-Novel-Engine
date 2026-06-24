@@ -1,8 +1,10 @@
 import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
-import { type Component, TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, setKeybindings, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";
 import {
 	ChildAgentDetailComponent,
 	ChildAgentInspectorComponent,
@@ -82,6 +84,7 @@ async function renderInVirtualTerminal(component: Component, width = 100, height
 describe("marquee TUI components", () => {
 	beforeAll(() => {
 		initTheme("dark");
+		setKeybindings(new KeybindingsManager());
 	});
 
 	test("renders ipython cells with shell magic and collapsed traceback", async () => {
@@ -103,12 +106,16 @@ describe("marquee TUI components", () => {
 		const component = new IPythonCellComponent(state);
 
 		const collapsed = await renderInVirtualTerminal(component);
-		expect(collapsed).toContain("error · 1.2s");
+		// Collapsed: marker + the bash command + duration + error name, on one line.
+		expect(collapsed).toContain("bash");
+		expect(collapsed).toContain("echo hi");
+		expect(collapsed).not.toContain("%%bash");
+		expect(collapsed).toContain("1.2s");
+		expect(collapsed).toContain("ValueError");
+		expect(collapsed).not.toContain("ValueError: bad");
 		expect(collapsed).not.toContain("ipython");
-		expect(collapsed).toContain("%%bash");
-		expect(collapsed).toContain("hi");
-		expect(collapsed).toContain("ValueError: bad");
-		expect(collapsed).toContain("traceback collapsed");
+		expect(collapsed).toContain("Ctrl+O to expand");
+		expect(collapsed).not.toContain("traceback collapsed");
 		expect(collapsed).not.toContain('File "<stdin>"');
 
 		component.update({ ...state, expanded: true });
@@ -119,6 +126,82 @@ describe("marquee TUI components", () => {
 		for (const line of component.render(44)) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(44);
 		}
+	});
+
+	test("renders structured ipython bash errors with traceback details collapsed", async () => {
+		const traceback = [
+			"Traceback (most recent call last):",
+			"  Cell In[15], line 1",
+			"----> 1 get_ipython().run_cell_magic('bash', '', 'cat /tmp/missing-file\\n')",
+			"CalledProcessError: Command 'cat /tmp/missing-file' returned non-zero exit status 1.",
+		];
+		const state: IPythonCellState = {
+			code: "%%bash\ncat /tmp/missing-file",
+			content: [
+				{
+					type: "text",
+					text: ["cat: /tmp/missing-file: No such file or directory", ...traceback].join("\n"),
+				},
+			],
+			details: {
+				status: "error",
+				durationMs: 29,
+				stdout: "",
+				stderr: "cat: /tmp/missing-file: No such file or directory\n",
+				error: {
+					ename: "CalledProcessError",
+					evalue: "Command 'cat /tmp/missing-file' returned non-zero exit status 1.",
+					traceback,
+				},
+			},
+			isError: true,
+			expanded: false,
+			executionStarted: true,
+			argsComplete: true,
+		};
+		const component = new IPythonCellComponent(state);
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("cat /tmp/missing-file");
+		expect(collapsed).toContain("CalledProcessError · Ctrl+O to expand");
+		expect(collapsed).not.toContain("No such file or directory");
+		expect(collapsed).not.toContain("returned non-zero exit status 1.");
+		expect(collapsed).not.toContain("traceback collapsed");
+		expect(collapsed).not.toContain("get_ipython().run_cell_magic");
+		expect(collapsed).not.toContain("Cell In[15]");
+
+		component.update({ ...state, expanded: true });
+		const expanded = stripAnsi(component.render(100).join("\n"));
+		expect(expanded).toContain("get_ipython().run_cell_magic");
+		expect(expanded).toContain("Cell In[15]");
+	});
+
+	test("keeps ipython stack frame locations out of collapsed traceback previews", () => {
+		const state: IPythonCellState = {
+			code: "run_job()",
+			content: [
+				{
+					type: "text",
+					text: [
+						"Traceback (most recent call last):",
+						'  File "/tmp/internal.py", line 12, in run',
+						"    run_job()",
+					].join("\n"),
+				},
+			],
+			details: { status: "error", errorEname: "RuntimeError" },
+			isError: true,
+			expanded: false,
+			executionStarted: true,
+			argsComplete: true,
+		};
+		const component = new IPythonCellComponent(state);
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("RuntimeError · Ctrl+O to expand");
+		expect(collapsed).not.toContain("no output");
+		expect(collapsed).not.toContain("/tmp/internal.py");
+		expect(collapsed).not.toContain("line 12");
 	});
 
 	test("caches ipython cell renders until state, width, or invalidation changes", () => {
@@ -160,18 +243,16 @@ describe("marquee TUI components", () => {
 		const component = new IPythonCellComponent(state);
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
-		expect(collapsed).toContain("line_0 = 0");
-		expect(collapsed).toContain("line_2 = 2");
-		expect(collapsed).not.toContain("line_3 = 3");
-		expect(collapsed).not.toContain("line_4 = 4");
+		// Collapsed python shows no code — just the input line count and expand hint.
+		expect(collapsed).not.toContain("line_0 = 0");
 		expect(collapsed).not.toContain("line_7 = 7");
-		expect(collapsed).toContain("… +5 lines");
+		expect(collapsed).toContain("↑ 8");
 		expect(collapsed.match(/to expand/g)?.length).toBe(1);
 
 		component.update({ ...state, expanded: true });
 		const expanded = stripAnsi(component.render(100).join("\n"));
+		expect(expanded).toContain("line_0 = 0");
 		expect(expanded).toContain("line_7 = 7");
-		expect(expanded).not.toContain("… +5 lines");
 	});
 
 	test("shows one expand hint when ipython input and output are both collapsed", () => {
@@ -187,24 +268,9 @@ describe("marquee TUI components", () => {
 		});
 
 		const collapsed = stripAnsi(component.render(100).join("\n"));
-		expect(collapsed).toContain("… +5 lines");
-		expect(collapsed).toContain("… +3 lines");
+		// A single status line carries both counts and exactly one expand hint.
+		expect(collapsed).toContain("↑ 8 ↓ 8 lines");
 		expect(collapsed.match(/to expand/g)?.length).toBe(1);
-	});
-
-	test("pluralizes singular collapsed ipython line markers", () => {
-		const component = new IPythonCellComponent({
-			code: Array.from({ length: 4 }, (_, index) => `line_${index} = ${index}`).join("\n"),
-			content: [{ type: "text", text: Array.from({ length: 6 }, (_, index) => `out_${index}`).join("\n") }],
-			details: { status: "ok", durationMs: 15 },
-			executionStarted: true,
-			argsComplete: true,
-			expanded: false,
-		});
-
-		const collapsed = stripAnsi(component.render(100).join("\n"));
-		expect(collapsed.match(/… \+1 line\b/g)?.length).toBe(2);
-		expect(collapsed).not.toContain("… +1 lines");
 	});
 
 	test("reflows cached ipython cells when terminal width changes", () => {
@@ -219,6 +285,8 @@ describe("marquee TUI components", () => {
 			details: { status: "ok", durationMs: 15 },
 			executionStarted: true,
 			argsComplete: true,
+			// Expanded so the long code/output lines wrap and reflow with width.
+			expanded: true,
 		};
 		const component = new IPythonCellComponent(state);
 
@@ -256,7 +324,8 @@ describe("marquee TUI components", () => {
 
 		const collapsed = component.render(80);
 		const collapsedText = stripAnsi(collapsed.join("\n"));
-		expect(collapsedText).toContain("traceback collapsed");
+		expect(collapsedText).toContain("Ctrl+O to expand");
+		expect(collapsedText).not.toContain("traceback collapsed");
 		expect(collapsedText).not.toContain('File "<stdin>"');
 
 		component.update({ ...state, expanded: true });
@@ -311,6 +380,88 @@ describe("marquee TUI components", () => {
 		component.setExpanded("shard-0", true);
 		const expanded = await renderInVirtualTerminal(component);
 		expect(expanded).toContain("assistant: no anomaly found in this shard");
+	});
+
+	test("renders assistant thinking as quiet text without background styling", () => {
+		const component = new AssistantMessageComponent(
+			createAssistantMessage("answer", "Check **bold** and `code` first.\n```ts\nconst value = 1;\n```"),
+		);
+
+		const rendered = component.render(80).join("\n");
+		const plain = stripAnsi(rendered);
+
+		expect(plain).toContain("Check bold and code first.");
+		expect(plain).not.toContain("**bold**");
+		expect(plain).not.toContain("`code`");
+		expect(plain).not.toContain("```ts");
+		expect(plain).toContain("const value = 1;");
+		expect(rendered).not.toMatch(/\x1b\[(?:4\d|10\d|48;)/);
+	});
+
+	test("collapses multiline assistant errors without changing short errors", () => {
+		const multilineError = [
+			"Provider request failed",
+			"Traceback (most recent call last):",
+			'  File "/tmp/internal.py", line 12, in run',
+			"RuntimeError: backend crashed",
+		].join("\n");
+		const message: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: multilineError,
+		};
+		const component = new AssistantMessageComponent(message);
+
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("Error: Provider request failed");
+		expect(collapsed).toContain("Ctrl+O to expand");
+		expect(collapsed).not.toContain("error details collapsed");
+		expect(collapsed).not.toContain("/tmp/internal.py");
+
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(100).join("\n"));
+		expect(expanded).toContain("/tmp/internal.py");
+
+		const tracebackFirstMessage: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: [
+				"Traceback (most recent call last):",
+				'  File "/tmp/internal.py", line 12, in run',
+				"RuntimeError: backend crashed",
+			].join("\n"),
+		};
+		const tracebackFirstComponent = new AssistantMessageComponent(tracebackFirstMessage);
+		const tracebackFirstCollapsed = stripAnsi(tracebackFirstComponent.render(100).join("\n"));
+		expect(tracebackFirstCollapsed).toContain("Error: RuntimeError: backend crashed");
+		expect(tracebackFirstCollapsed).not.toContain("Traceback (most recent call last):");
+		expect(tracebackFirstCollapsed).not.toContain("/tmp/internal.py");
+
+		const frameFirstMessage: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: ['  File "/tmp/internal.py", line 12, in run', "RuntimeError: backend crashed"].join("\n"),
+		};
+		const frameFirstComponent = new AssistantMessageComponent(frameFirstMessage);
+		const frameFirstCollapsed = stripAnsi(frameFirstComponent.render(100).join("\n"));
+		expect(frameFirstCollapsed).toContain("Error: RuntimeError: backend crashed");
+		expect(frameFirstCollapsed).not.toContain("/tmp/internal.py");
+		expect(frameFirstCollapsed).not.toContain("line 12");
+
+		const shortMessage: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: "provider failure",
+		};
+		const shortComponent = new AssistantMessageComponent(shortMessage);
+		const short = stripAnsi(shortComponent.render(100).join("\n"));
+		expect(short).toContain("Error: provider failure");
+		expect(short).not.toContain("error details collapsed");
+		expect(short).not.toContain("Ctrl+O to expand");
 	});
 
 	test("renders child agent summary and bounded inspector list", () => {
@@ -384,6 +535,10 @@ describe("marquee TUI components", () => {
 		expect(focusedSummary).toContain("37% context left");
 		expect(focusedSummary).toContain("1 subagent running");
 		expect(focusedSummary).not.toContain("▌");
+		const focusedSummaryWide = stripAnsi(summary.render(96).join("\n"));
+		expect(focusedSummaryWide).toContain("Enter open");
+		expect(focusedSummaryWide).not.toContain("editor");
+		expect(focusedSummaryWide).not.toContain("ctrl+c");
 		const summaryRow = summary.render(60).at(-1) ?? "";
 		expect(visibleWidth(summaryRow)).toBe(60);
 		expect(stripAnsi(summaryRow).endsWith("37% context left")).toBe(true);
@@ -405,18 +560,24 @@ describe("marquee TUI components", () => {
 		expect(compact).toContain("─");
 		expect(visibleWidth(component.render(42)[0] ?? "")).toBe(42);
 		expect(compact).toContain("1 running · 2 total");
-		expect(compact).toContain("running · inspect training logs");
-		expect(compact).toContain("done · check shard 2");
+		expect(compact).toContain("◆ inspect training logs");
+		expect(compact).toContain("✓ check shard 2");
 		expect(compact).not.toContain("└─");
 		expect(compact).not.toContain("├─");
 		expect(compact).not.toContain("assistant: reading shard metrics");
+		const wideList = stripAnsi(component.render(96).join("\n"));
+		expect(wideList).toContain("↑/↓ move");
+		expect(wideList).toContain("Enter open");
+		expect(wideList).toContain("← back to chat");
+		expect(wideList).not.toContain("ctrl+c close");
 		for (const line of component.render(96)) {
 			expect(visibleWidth(line)).toBe(96);
 		}
 
 		component.focused = true;
 		const focused = stripAnsi(component.render(42).join("\n"));
-		expect(focused).toContain("▌ running · inspect training logs");
+		expect(focused).not.toContain("▌");
+		expect(focused).toContain("◆ inspect training logs");
 		expect(focused).not.toContain("assistant: reading shard metrics");
 
 		let openedNodeId: string | undefined;
@@ -438,13 +599,15 @@ describe("marquee TUI components", () => {
 		expect(detail).toContain("reading shard metrics");
 		expect(detail).toContain("$ echo hi");
 		expect(detail).toContain("hi");
+		expect(detail).toContain("← back to subagents");
 		expect(detail).not.toContain("user: inspect training logs");
 		expect(detail).not.toContain("assistant: reading shard metrics");
 		expect(detail).not.toContain("tool: bash");
 
 		component.handleInput("\x1b");
 		const returned = stripAnsi(component.render(42).join("\n"));
-		expect(returned).toContain("▌ running · inspect training logs");
+		expect(returned).not.toContain("▌");
+		expect(returned).toContain("◆ inspect training logs");
 		expect(returned).not.toContain("assistant: reading shard metrics");
 
 		for (const line of component.render(42)) {
@@ -452,7 +615,121 @@ describe("marquee TUI components", () => {
 		}
 
 		const narrow = stripAnsi(component.render(24).join("\n"));
-		expect(narrow).toContain("inspect t…");
+		expect(narrow).toContain("◆ inspect train");
+	});
+
+	test("collapses multiline child agent system errors in detail view", () => {
+		const detailComponent = new ChildAgentDetailComponent(() => 20);
+		const errorText = [
+			"ChildProcessError: child exited with status 1",
+			"Traceback (most recent call last):",
+			'  File "/tmp/rlm_harness/internal.py", line 10, in run',
+			"ChildProcessError: child exited with status 1",
+		].join("\n");
+		detailComponent.setNode({
+			id: "sub-error",
+			label: "inspect failure",
+			status: "error",
+			sessionDir: "/tmp/session/sub-error",
+			transcript: [],
+			structuredTranscript: [{ type: "system", role: "system", text: errorText }],
+		});
+
+		const collapsed = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(collapsed).toContain("ChildProcessError: child exited with status 1");
+		expect(collapsed).toContain("Ctrl+O to expand");
+		expect(collapsed).not.toContain("error details collapsed");
+		expect(collapsed).not.toContain("/tmp/rlm_harness/internal.py");
+
+		detailComponent.setToolsExpanded(true);
+		const expanded = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(expanded).toContain("/tmp/rlm_harness/internal.py");
+	});
+
+	test("keeps child agent assistant errors expanded after transcript rebuilds", () => {
+		const detailComponent = new ChildAgentDetailComponent(() => 20);
+		detailComponent.setToolsExpanded(true);
+		const assistantError: AssistantMessage = {
+			...createAssistantMessage(""),
+			content: [],
+			stopReason: "error",
+			errorMessage: [
+				"Provider request failed",
+				"Traceback (most recent call last):",
+				'  File "/tmp/internal.py", line 12, in run',
+				"RuntimeError: backend crashed",
+			].join("\n"),
+		};
+		detailComponent.setNode({
+			id: "sub-assistant-error",
+			label: "inspect failure",
+			status: "error",
+			sessionDir: "/tmp/session/sub-assistant-error",
+			transcript: [],
+			structuredTranscript: [
+				{
+					type: "message",
+					role: "assistant",
+					text: assistantError.errorMessage ?? "",
+					message: assistantError,
+				},
+			],
+		});
+
+		const expanded = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(expanded).toContain("/tmp/internal.py");
+		expect(expanded).not.toContain("Ctrl+O to expand");
+
+		detailComponent.invalidate();
+		const afterInvalidate = stripAnsi(detailComponent.render(100).join("\n"));
+		expect(afterInvalidate).toContain("/tmp/internal.py");
+		expect(afterInvalidate).not.toContain("Ctrl+O to expand");
+	});
+
+	test("routes child agent detail tool expansion through app keybindings", () => {
+		setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+x" }));
+		try {
+			const detailComponent = new ChildAgentDetailComponent(() => 20);
+			let toggleCount = 0;
+			detailComponent.onToggleToolsExpanded = () => {
+				toggleCount += 1;
+			};
+			detailComponent.setNode({
+				id: "sub-a",
+				label: "inspect training logs",
+				status: "running",
+				sessionDir: "/tmp/session/sub-a",
+				transcript: [],
+				structuredTranscript: [
+					{
+						type: "tool",
+						role: "tool",
+						text: "bash: hi",
+						toolCallId: "tool-sub-a",
+						toolName: "bash",
+						args: { command: "echo hi" },
+						result: {
+							content: [{ type: "text", text: "hi" }],
+							isError: false,
+						},
+						isPartial: false,
+						executionStarted: true,
+						argsComplete: true,
+					},
+				],
+			});
+
+			const before = stripAnsi(detailComponent.render(80).join("\n"));
+			expect(before).toContain("Ctrl+X to expand");
+			detailComponent.handleInput("\x18");
+
+			expect(toggleCount).toBe(1);
+			detailComponent.setToolsExpanded(true);
+			const after = stripAnsi(detailComponent.render(80).join("\n"));
+			expect(after).toContain("Ctrl+X to collapse");
+		} finally {
+			setKeybindings(new KeybindingsManager());
+		}
 	});
 
 	test("keeps child agent summary visible when the right tray label is long", () => {
@@ -495,6 +772,7 @@ describe("marquee TUI components", () => {
 		const first = stripAnsi(firstLines.join("\n"));
 		expect(first).toContain("fallback transcript row 01");
 		expect(first).toContain("fallback transcript row 12");
+		expect(first).toContain("← back to subagents");
 		expect(first).not.toContain("↑");
 		expect(first).not.toContain("↓");
 		expect(firstLines.length).toBeGreaterThan(6);
@@ -518,11 +796,25 @@ describe("marquee TUI components", () => {
 			isError: false,
 		});
 
-		const output = stripAnsi(component.render(100).join("\n"));
-		expect(output).toContain("done · 12ms");
-		expect(output).not.toContain("ipython");
-		expect(output).toContain("print(55)");
-		expect(output).toContain("55");
-		expect(output).not.toContain('"code"');
+		// Collapsed: routed through the cell renderer (a status line), not the
+		// generic JSON arg dump.
+		const collapsed = stripAnsi(component.render(100).join("\n"));
+		expect(collapsed).toContain("python");
+		expect(collapsed).toContain("12ms");
+		expect(collapsed).not.toContain("ipython");
+		expect(collapsed).not.toContain('"code"');
+
+		// Expanded: full panel with the code and output on the panel background.
+		component.setExpanded(true);
+		const rawOutput = component.render(100).join("\n");
+		expect(rawOutput).toMatch(/\x1b\[48;(?:2|5);/);
+		const panelLine = component.render(100).find((line) => line.includes("\x1b[48;")) ?? "";
+		expect(panelLine.startsWith("\x1b[48;")).toBe(true);
+		expect(panelLine.endsWith("\x1b[49m")).toBe(true);
+		expect(visibleWidth(panelLine)).toBe(100);
+		const expanded = stripAnsi(rawOutput);
+		expect(expanded).toContain("print(55)");
+		expect(expanded).toContain("55");
+		expect(expanded).not.toContain('"code"');
 	});
 });

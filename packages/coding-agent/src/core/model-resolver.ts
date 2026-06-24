@@ -17,7 +17,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	openai: "gpt-5.4",
 	"azure-openai-responses": "gpt-5.4",
 	"openai-codex": "gpt-5.5",
-	"prime-inference": "openai/gpt-5.5",
+	"prime-inference": "anthropic/claude-opus-4.8",
 	deepseek: "deepseek-v4-pro",
 	google: "gemini-3.1-pro-preview",
 	"google-vertex": "gemini-3.1-pro-preview",
@@ -252,8 +252,7 @@ export function parseModelPattern(
  * The algorithm tries to match the full pattern first, then progressively
  * strips colon-suffixes to find a match.
  */
-export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
-	const availableModels = await modelRegistry.getAvailable();
+export function resolveModelScopeFromModels(patterns: string[], availableModels: Model<Api>[]): ScopedModel[] {
 	const scopedModels: ScopedModel[] = [];
 
 	for (const pattern of patterns) {
@@ -310,6 +309,11 @@ export async function resolveModelScope(patterns: string[], modelRegistry: Model
 	}
 
 	return scopedModels;
+}
+
+export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
+	const availableModels = await modelRegistry.getAvailable();
+	return resolveModelScopeFromModels(patterns, availableModels);
 }
 
 export interface ResolveCliModelResult {
@@ -531,7 +535,11 @@ export async function findInitialModel(options: {
 
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
-		const found = modelRegistry.find(defaultProvider, defaultModelId);
+		// Rebuild from the provider template when the saved id is missing from this
+		// build's snapshot (e.g. prime-inference catalog churn), so it survives updates.
+		const found =
+			modelRegistry.find(defaultProvider, defaultModelId) ??
+			buildFallbackModel(defaultProvider, defaultModelId, modelRegistry.getAll());
 		if (found && modelRegistry.hasConfiguredAuth(found)) {
 			model = found;
 			if (defaultThinkingLevel) {

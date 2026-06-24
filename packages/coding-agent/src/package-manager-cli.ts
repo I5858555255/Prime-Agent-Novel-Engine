@@ -2,6 +2,13 @@ import chalk from "chalk";
 import { spawn } from "child_process";
 import { selectConfig } from "./cli/config-selector.js";
 import {
+	ensureInteractiveDaemonRunning,
+	probeRunningDaemonSessions,
+	type RunningDaemonProbe,
+	shutdownDaemonAndWait,
+} from "./cli/daemon-launch.js";
+import { confirmDaemonSessionLoss, type DaemonSessionLossCopy, pluralizeSessions } from "./cli/daemon-stop-confirm.js";
+import {
 	APP_NAME,
 	CONFIG_DIR_NAME,
 	getAgentDir,
@@ -13,6 +20,7 @@ import {
 } from "./config.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
+import { defaultDaemonSocketPath } from "./modes/daemon/daemon-socket.js";
 import { shouldUseWindowsShell } from "./utils/child-process.js";
 import { getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.js";
 
@@ -346,6 +354,47 @@ async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
 	}
 }
 
+// Only busy sessions (streaming, compacting, or pending messages) would lose work;
+// idle loaded sessions reload from disk on the fresh daemon.
+const UPDATE_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
+	busyDetail(count) {
+		const { noun, pronoun } = pluralizeSessions(count);
+		return `The running daemon has ${count} busy ${noun}. Updating will stop the daemon and terminate ${pronoun}.`;
+	},
+	unlistableDetail:
+		"A running daemon's sessions could not be listed. Updating will stop the daemon and may terminate active sessions.",
+	question: "Continue?",
+	nonTtyHint: "Re-run with --force to proceed.",
+};
+
+// Returns false when the update should be aborted to avoid terminating live sessions.
+function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, force: boolean): Promise<boolean> {
+	return confirmDaemonSessionLoss(probe, { force, copy: UPDATE_SESSION_LOSS_COPY });
+}
+
+async function restartDaemonAfterSelfUpdate(socketPath: string, daemonWasRunning: boolean): Promise<void> {
+	if (!daemonWasRunning) {
+		return;
+	}
+	const stopped = await shutdownDaemonAndWait(socketPath);
+	if (!stopped) {
+		console.error(
+			chalk.yellow(`Warning: could not stop the old daemon on ${socketPath}; it will be replaced on next launch.`),
+		);
+		return;
+	}
+	try {
+		await ensureInteractiveDaemonRunning(socketPath);
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(
+			chalk.yellow(
+				`Warning: updated, but could not relaunch the daemon (${message}); it will start on next launch.`,
+			),
+		);
+	}
+}
+
 export async function handleConfigCommand(args: string[]): Promise<boolean> {
 	if (args[0] !== "config") {
 		return false;
@@ -514,6 +563,16 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						process.exitCode = 1;
 						return true;
 					}
+					// Confirm before the install, since upgrading the daemon afterward stops it.
+					const daemonSocketPath = defaultDaemonSocketPath();
+					const daemonProbe = await probeRunningDaemonSessions(daemonSocketPath);
+					if (!(await confirmDaemonSessionLossBeforeUpdate(daemonProbe, options.force))) {
+						if (process.stdin.isTTY) {
+							console.log(chalk.dim("Update cancelled."));
+						}
+						process.exitCode = 1;
+						return true;
+					}
 					try {
 						await runSelfUpdate(selfUpdateCommand);
 					} catch (error: unknown) {
@@ -524,6 +583,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME}`));
+					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable);
 				}
 				return true;
 			}

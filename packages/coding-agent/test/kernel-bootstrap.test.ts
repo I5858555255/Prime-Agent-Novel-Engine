@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_RLM_EXTRA_IMPORT_NAMES,
 	DEFAULT_RLM_EXTRA_UV_ARGS,
@@ -13,8 +13,6 @@ import {
 
 let tempDir = "";
 let originalEnv: NodeJS.ProcessEnv;
-const RLM_RUNTIME_CHECK =
-	"import rlm; assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')";
 
 function pyprojectHash(pyprojectPath: string): string {
 	return `sha256:${createHash("sha256").update(readFileSync(pyprojectPath)).digest("hex")}`;
@@ -29,9 +27,10 @@ function writeBootstrapVersion(venv: string, pythonSkills: readonly KernelPython
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
 		`${JSON.stringify({
-			schema: 4,
+			schema: 7,
 			ipykernel: "ipykernel",
 			runtime: "prime-agent-runtime",
+			snapshot: "dill",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 			pythonSkills: pythonSkills.map((skill) => ({
 				importName: skill.importName,
@@ -66,7 +65,7 @@ version = "0.1.0"
 
 function writeFakePython(filePath: string, importableModules: readonly string[]): void {
 	const cases = importableModules.map((moduleName) => `    "import ${moduleName}") exit 0 ;;`).join("\n");
-	const runtimeCase = importableModules.includes("rlm") ? `    "${RLM_RUNTIME_CHECK}") exit 0 ;;` : "";
+	const runtimeCase = importableModules.includes("rlm") ? '    *"_harness_methods"*) exit 0 ;;' : "";
 	writeExecutable(
 		filePath,
 		[
@@ -109,7 +108,7 @@ function installFakeUv(): string {
 			'  case "$2" in',
 			'    "import ipykernel"|"import rlm") exit 0 ;;',
 			...extraImportCases,
-			`    "${RLM_RUNTIME_CHECK}") exit 0 ;;`,
+			'    *"_harness_methods"*) exit 0 ;;',
 			"    *) exit 1 ;;",
 			"  esac",
 			"fi",
@@ -172,17 +171,39 @@ describe("kernel bootstrap", () => {
 		expect(log).toContain("pip install --python");
 		expect(log).toContain("ipykernel");
 		expect(log).toContain("prime-agent-runtime");
+		expect(log).toContain("dill");
 		for (const uvArg of DEFAULT_RLM_EXTRA_UV_ARGS) {
 			expect(log).toContain(uvArg);
 		}
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version).toEqual({
-			schema: 4,
+			schema: 7,
 			ipykernel: "ipykernel",
 			runtime: "prime-agent-runtime",
+			snapshot: "dill",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 			pythonSkills: [],
 		});
+	});
+
+	it("routes bootstrap progress through the provided callback", async () => {
+		installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const progress: string[] = [];
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+		const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+		try {
+			await expect(ensureKernelPython({ onProgress: (message) => progress.push(message) })).resolves.toBe(
+				join(venv, "bin", "python"),
+			);
+		} finally {
+			stderrWrite.mockRestore();
+		}
+
+		expect(progress).toEqual(expect.arrayContaining(["› setting up python kernel (one-time, ~30s)…", "✓ ready"]));
+		expect(stderrWrite).not.toHaveBeenCalledWith(expect.stringContaining("setting up python kernel"));
+		expect(stderrWrite).not.toHaveBeenCalledWith(expect.stringContaining("ready"));
 	});
 
 	it("installs Python skills into the bootstrapped venv", async () => {
@@ -393,6 +414,29 @@ dependencies = ["httpx"]
 	it("rejects PRIME_AGENT_KERNEL_PYTHON with a stale rlm runtime", async () => {
 		const overridePython = join(tempDir, "override-python");
 		writeFakePython(overridePython, ["ipykernel"]);
+		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
+
+		await expect(ensureKernelPython()).rejects.toThrow(/current prime-agent-runtime with callable rlm\.run/);
+	});
+
+	it("rejects PRIME_AGENT_KERNEL_PYTHON with a legacy harness API", async () => {
+		const overridePython = join(tempDir, "override-python");
+		writeExecutable(
+			overridePython,
+			[
+				"#!/bin/sh",
+				'if [ "$1" = "-c" ]; then',
+				'  case "$2" in',
+				'    "import ipykernel"|"import rlm") exit 0 ;;',
+				'    *"_harness_methods"*) exit 1 ;;',
+				"    *\"assert not hasattr(rlm.rlm, 'background')\"*) exit 0 ;;",
+				"    *) exit 1 ;;",
+				"  esac",
+				"fi",
+				"exit 0",
+				"",
+			].join("\n"),
+		);
 		process.env.PRIME_AGENT_KERNEL_PYTHON = overridePython;
 
 		await expect(ensureKernelPython()).rejects.toThrow(/current prime-agent-runtime with callable rlm\.run/);

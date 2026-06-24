@@ -27,10 +27,11 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME } from "../config.js";
+import { CONFIG_DIR_NAME, getBundledSkillsDir } from "../config.js";
 import { shouldUseWindowsShell } from "../utils/child-process.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
+import type { ResourceDiagnostic } from "./diagnostics.js";
 import { isStdoutTakenOver } from "./output-guard.js";
 import type { PackageSource, SettingsManager } from "./settings-manager.js";
 
@@ -62,6 +63,7 @@ export interface ResolvedPaths {
 	skills: ResolvedResource[];
 	prompts: ResolvedResource[];
 	themes: ResolvedResource[];
+	diagnostics: ResourceDiagnostic[];
 }
 
 export type MissingSourceAction = "install" | "skip" | "error";
@@ -111,6 +113,8 @@ interface PackageManagerOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
+	/** Directory of built-in skills shipped with the package. Defaults to the bundled skills dir; pass null to disable. */
+	bundledSkillsDir?: string | null;
 }
 
 type SourceScope = "user" | "project" | "temporary";
@@ -156,6 +160,7 @@ interface ResourceAccumulator {
 	skills: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	prompts: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	themes: Map<string, { metadata: PathMetadata; enabled: boolean }>;
+	diagnostics: ResourceDiagnostic[];
 }
 
 /**
@@ -169,8 +174,10 @@ interface ResourceAccumulator {
  *   2  user + settings entry (source: "local", scope: "user")
  *   3  user + auto-discovered (source: "auto", scope: "user")
  *   4  package resource (origin: "package")
+ *   5  built-in resource shipped with prime-agent (source: "builtin")
  */
 function resourcePrecedenceRank(m: PathMetadata): number {
+	if (m.source === "builtin") return 5;
 	if (m.origin === "package") return 4;
 	const scopeBase = m.scope === "project" ? 0 : 2;
 	return scopeBase + (m.source === "local" ? 0 : 1);
@@ -758,6 +765,7 @@ export class DefaultPackageManager implements PackageManager {
 	private cwd: string;
 	private agentDir: string;
 	private settingsManager: SettingsManager;
+	private bundledSkillsDir: string | null;
 	private globalNpmRoot: string | undefined;
 	private globalNpmRootCommandKey: string | undefined;
 	private progressCallback: ProgressCallback | undefined;
@@ -766,6 +774,7 @@ export class DefaultPackageManager implements PackageManager {
 		this.cwd = options.cwd;
 		this.agentDir = options.agentDir;
 		this.settingsManager = options.settingsManager;
+		this.bundledSkillsDir = options.bundledSkillsDir === undefined ? getBundledSkillsDir() : options.bundledSkillsDir;
 	}
 
 	setProgressCallback(callback: ProgressCallback | undefined): void {
@@ -2228,6 +2237,32 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.skills,
 			globalBaseDir,
 		);
+
+		if (this.bundledSkillsDir && this.settingsManager.getEnableBuiltinSkills()) {
+			const builtinMetadata: PathMetadata = {
+				source: "builtin",
+				scope: "user",
+				origin: "top-level",
+				baseDir: this.bundledSkillsDir,
+			};
+			const builtinEntries = collectAutoSkillEntries(this.bundledSkillsDir, "pi");
+			// Built-in skills (edit, goal, …) are expected to ship with the package. A
+			// packaging slip that drops the skills/ dir from the build output would
+			// otherwise degrade silently to zero skills (ENG-4220); surface it loudly.
+			if (builtinEntries.length === 0) {
+				accumulator.diagnostics.push({
+					type: "warning",
+					message: existsSync(this.bundledSkillsDir)
+						? "built-in skills directory contains no skills; this build may be packaged incorrectly"
+						: "built-in skills directory not found; this build may be packaged incorrectly",
+					path: this.bundledSkillsDir,
+				});
+			}
+			const builtinSkillOverrides = this.settingsManager.getBundledWebsearchEnabled()
+				? userOverrides.skills
+				: [...userOverrides.skills, "-websearch/SKILL.md"];
+			addResources("skills", builtinEntries, builtinMetadata, builtinSkillOverrides, this.bundledSkillsDir);
+		}
 		addResources(
 			"prompts",
 			collectAutoPromptEntries(userDirs.prompts),
@@ -2299,6 +2334,7 @@ export class DefaultPackageManager implements PackageManager {
 			skills: new Map(),
 			prompts: new Map(),
 			themes: new Map(),
+			diagnostics: [],
 		};
 	}
 
@@ -2327,6 +2363,7 @@ export class DefaultPackageManager implements PackageManager {
 			skills: mapToResolved(accumulator.skills),
 			prompts: mapToResolved(accumulator.prompts),
 			themes: mapToResolved(accumulator.themes),
+			diagnostics: accumulator.diagnostics,
 		};
 	}
 

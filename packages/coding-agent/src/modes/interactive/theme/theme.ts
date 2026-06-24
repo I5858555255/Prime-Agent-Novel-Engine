@@ -14,9 +14,8 @@ import {
 	type SelectListTheme,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { highlight, supportsLanguage } from "cli-highlight";
-import { type Static, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { type Static, type TProperties, Type } from "typebox";
+import type { Validator } from "typebox/compile";
 import { getCustomThemesDir, getThemesDir } from "../../../config.js";
 import type { SourceInfo } from "../../../core/source-info.js";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.js";
@@ -49,7 +48,7 @@ const ThemeJsonSchema = Type.Object({
 		dim: ColorValueSchema,
 		text: ColorValueSchema,
 		thinkingText: ColorValueSchema,
-		// Backgrounds & Content Text (11 colors)
+		// Backgrounds & Content Text (12 colors)
 		selectedBg: ColorValueSchema,
 		userMessageBg: ColorValueSchema,
 		userMessageText: ColorValueSchema,
@@ -59,6 +58,9 @@ const ThemeJsonSchema = Type.Object({
 		toolPendingBg: ColorValueSchema,
 		toolSuccessBg: ColorValueSchema,
 		toolErrorBg: ColorValueSchema,
+		toolDiffAddedBg: ColorValueSchema,
+		toolDiffRemovedBg: ColorValueSchema,
+		toolPanelBg: ColorValueSchema,
 		toolTitle: ColorValueSchema,
 		toolOutput: ColorValueSchema,
 		// Markdown (10 colors)
@@ -75,6 +77,7 @@ const ThemeJsonSchema = Type.Object({
 		// Tool Diffs (3 colors)
 		toolDiffAdded: ColorValueSchema,
 		toolDiffRemoved: ColorValueSchema,
+		toolDiffText: ColorValueSchema,
 		toolDiffContext: ColorValueSchema,
 		// Syntax Highlighting (9 colors)
 		syntaxComment: ColorValueSchema,
@@ -107,7 +110,19 @@ const ThemeJsonSchema = Type.Object({
 
 type ThemeJson = Static<typeof ThemeJsonSchema>;
 
-const validateThemeJson = Compile(ThemeJsonSchema);
+// typebox/compile costs ~300ms to import, so the theme validator loads lazily.
+// Built-in themes never validate; custom themes get a minimal structural check
+// until the validator is ready (preloaded from initTheme), after which full
+// schema validation applies (e.g. on watcher reloads and setTheme).
+let validateThemeJson: Validator<TProperties, typeof ThemeJsonSchema> | undefined;
+let themeValidatorPromise: Promise<void> | undefined;
+
+export function preloadThemeValidator(): Promise<void> {
+	themeValidatorPromise ??= import("typebox/compile").then(({ Compile }) => {
+		validateThemeJson = Compile(ThemeJsonSchema);
+	});
+	return themeValidatorPromise;
+}
 
 export type ThemeColor =
 	| "accent"
@@ -138,6 +153,7 @@ export type ThemeColor =
 	| "mdListBullet"
 	| "toolDiffAdded"
 	| "toolDiffRemoved"
+	| "toolDiffText"
 	| "toolDiffContext"
 	| "syntaxComment"
 	| "syntaxKeyword"
@@ -162,15 +178,19 @@ export type ThemeBg =
 	| "customMessageBg"
 	| "toolPendingBg"
 	| "toolSuccessBg"
-	| "toolErrorBg";
+	| "toolErrorBg"
+	| "toolDiffAddedBg"
+	| "toolDiffRemovedBg"
+	| "toolPanelBg";
 
 type ColorMode = "truecolor" | "256color";
 
 const ADAPTIVE_LIGHT_BG_ACCENT: Rgb = { r: 0, g: 95, b: 135 };
-const DARK_EDITOR_SURFACE_ALPHA = 0.06;
-const LIGHT_EDITOR_SURFACE_ALPHA = 0.04;
+const SURFACE_MIN_LUMINANCE_DELTA = 12;
+const SURFACE_CONTRAST_ALPHA = 0.08;
 const BLACK: Rgb = { r: 0, g: 0, b: 0 };
 const WHITE: Rgb = { r: 255, g: 255, b: 255 };
+const CUBE_VALUES = [0, 95, 135, 175, 215, 255] as const;
 
 // ============================================================================
 // Color Utilities
@@ -194,9 +214,10 @@ function detectColorMode(): ColorMode {
 	if (process.env.TERM_PROGRAM === "Apple_Terminal") {
 		return "256color";
 	}
-	// GNU screen doesn't support truecolor unless explicitly opted in via COLORTERM=truecolor.
-	// TERM under screen is typically "screen", "screen-256color", or "screen.xterm-256color".
-	if (term === "screen" || term.startsWith("screen-") || term.startsWith("screen.")) {
+	// tmux reports TERM=screen* but forwards 24-bit color, so treat it as
+	// truecolor-capable; only genuine GNU screen (no $TMUX) falls back.
+	const inTmux = process.env.TMUX !== undefined || term.startsWith("tmux");
+	if (!inTmux && (term === "screen" || term.startsWith("screen-") || term.startsWith("screen."))) {
 		return "256color";
 	}
 	// Assume truecolor for everything else - virtually all modern terminals support it
@@ -215,6 +236,62 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 		throw new Error(`Invalid hex color: ${hex}`);
 	}
 	return { r, g, b };
+}
+
+function ansi256ToRgb(index: number): Rgb | undefined {
+	if (index < 0 || index > 255) {
+		return undefined;
+	}
+	if (index < 16) {
+		const basicColors: Rgb[] = [
+			{ r: 0, g: 0, b: 0 },
+			{ r: 128, g: 0, b: 0 },
+			{ r: 0, g: 128, b: 0 },
+			{ r: 128, g: 128, b: 0 },
+			{ r: 0, g: 0, b: 128 },
+			{ r: 128, g: 0, b: 128 },
+			{ r: 0, g: 128, b: 128 },
+			{ r: 192, g: 192, b: 192 },
+			{ r: 128, g: 128, b: 128 },
+			{ r: 255, g: 0, b: 0 },
+			{ r: 0, g: 255, b: 0 },
+			{ r: 255, g: 255, b: 0 },
+			{ r: 0, g: 0, b: 255 },
+			{ r: 255, g: 0, b: 255 },
+			{ r: 0, g: 255, b: 255 },
+			{ r: 255, g: 255, b: 255 },
+		];
+		return basicColors[index];
+	}
+	if (index >= 232) {
+		const value = 8 + (index - 232) * 10;
+		return { r: value, g: value, b: value };
+	}
+	const cubeIndex = index - 16;
+	return {
+		r: CUBE_VALUES[Math.floor(cubeIndex / 36)]!,
+		g: CUBE_VALUES[Math.floor((cubeIndex % 36) / 6)]!,
+		b: CUBE_VALUES[cubeIndex % 6]!,
+	};
+}
+
+function colorValueToRgb(value: string | number | undefined): Rgb | undefined {
+	if (typeof value === "number") {
+		return ansi256ToRgb(value);
+	}
+	if (!value || !value.startsWith("#")) {
+		return undefined;
+	}
+	try {
+		return hexToRgb(value);
+	} catch {
+		// Malformed theme colors (e.g. 3-character hex shorthand) should not crash rendering.
+		return undefined;
+	}
+}
+
+function luminance(rgb: Rgb): number {
+	return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
 }
 
 function hexTo256(hex: string): number {
@@ -290,6 +367,7 @@ export class Theme {
 	sourceInfo?: SourceInfo;
 	private fgColors: Map<ThemeColor, string>;
 	private bgColors: Map<ThemeBg, string>;
+	private bgColorValues: Map<ThemeBg, string | number>;
 	private mode: ColorMode;
 
 	constructor(
@@ -310,6 +388,7 @@ export class Theme {
 		for (const [key, value] of Object.entries(bgColors) as [ThemeBg, string | number][]) {
 			this.bgColors.set(key, bgAnsi(value, mode));
 		}
+		this.bgColorValues = new Map(Object.entries(bgColors) as [ThemeBg, string | number][]);
 	}
 
 	fg(color: ThemeColor, text: string): string {
@@ -324,24 +403,38 @@ export class Theme {
 		return `${ansi}${text}\x1b[49m`; // Reset only background color
 	}
 
-	getEditorBackgroundColor(): ((str: string) => string) | undefined {
-		const terminalBg = getDefaultTerminalColors()?.background;
-		if (!terminalBg) {
-			return undefined;
-		}
+	/** Active color depth (truecolor vs 256color). */
+	get colorMode(): ColorMode {
+		return this.mode;
+	}
 
-		const top = isLightColor(terminalBg) ? BLACK : WHITE;
-		const alpha = isLightColor(terminalBg) ? LIGHT_EDITOR_SURFACE_ALPHA : DARK_EDITOR_SURFACE_ALPHA;
-		const color = bestAnsiColor(blendColor(top, terminalBg, alpha), this.mode);
-		if (color === "") {
-			return undefined;
-		}
-		const ansi = bgAnsi(color, this.mode);
-		return (str: string) => `${ansi}${str}\x1b[49m`;
+	getEditorBackgroundColor(): ((str: string) => string) | undefined {
+		return this.surfaceBackgroundColor("userMessageBg");
 	}
 
 	getUserMessageBackgroundColor(): (str: string) => string {
-		return (str: string) => this.getEditorBackgroundColor()?.(str) ?? str;
+		return this.surfaceBackgroundColor("userMessageBg");
+	}
+
+	private surfaceBackgroundColor(color: ThemeBg): (str: string) => string {
+		const terminalBg = getDefaultTerminalColors()?.background;
+		const surfaceRgb = colorValueToRgb(this.bgColorValues.get(color));
+		if (!terminalBg || !surfaceRgb) {
+			return (str: string) => this.bg(color, str);
+		}
+
+		const delta = Math.abs(luminance(surfaceRgb) - luminance(terminalBg));
+		if (delta >= SURFACE_MIN_LUMINANCE_DELTA) {
+			return (str: string) => this.bg(color, str);
+		}
+
+		const top = isLightColor(terminalBg) ? BLACK : WHITE;
+		const adjustedColor = bestAnsiColor(blendColor(top, surfaceRgb, SURFACE_CONTRAST_ALPHA), this.mode);
+		if (adjustedColor === "") {
+			return (str: string) => this.bg(color, str);
+		}
+		const ansi = bgAnsi(adjustedColor, this.mode);
+		return (str: string) => `${ansi}${str}\x1b[49m`;
 	}
 
 	getAdaptiveAccentColor(): (str: string) => string {
@@ -388,7 +481,9 @@ export class Theme {
 		return this.mode;
 	}
 
-	getThinkingBorderColor(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): (str: string) => string {
+	getThinkingBorderColor(
+		level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+	): (str: string) => string {
 		// Map thinking levels to dedicated theme colors
 		switch (level) {
 			case "off":
@@ -402,6 +497,9 @@ export class Theme {
 			case "high":
 				return (str: string) => this.fg("thinkingHigh", str);
 			case "xhigh":
+				return (str: string) => this.fg("thinkingXhigh", str);
+			case "max":
+				// Reuse the xhigh color: a dedicated max color would touch every theme preset.
 				return (str: string) => this.fg("thinkingXhigh", str);
 			default:
 				return (str: string) => this.fg("thinkingOff", str);
@@ -488,6 +586,23 @@ export function getAvailableThemesWithPaths(): ThemeInfo[] {
 }
 
 function parseThemeJson(label: string, json: unknown): ThemeJson {
+	if (!validateThemeJson) {
+		// Validator not loaded yet (first custom-theme parse during startup):
+		// apply a minimal structural check now and report full schema errors
+		// asynchronously once the validator is ready.
+		const colors = (json as Partial<ThemeJson> | null)?.colors;
+		if (!json || typeof json !== "object" || !colors || typeof colors !== "object") {
+			throw new Error(`Invalid theme "${label}": expected a JSON object with a "colors" object`);
+		}
+		void preloadThemeValidator().then(() => {
+			try {
+				parseThemeJson(label, json);
+			} catch (error) {
+				console.error(error instanceof Error ? error.message : String(error));
+			}
+		});
+		return json as ThemeJson;
+	}
 	if (!validateThemeJson.Check(json)) {
 		const errors = Array.from(validateThemeJson.Errors(json));
 		const missingColors = new Set<string>();
@@ -570,6 +685,9 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 		"toolPendingBg",
 		"toolSuccessBg",
 		"toolErrorBg",
+		"toolDiffAddedBg",
+		"toolDiffRemovedBg",
+		"toolPanelBg",
 	]);
 	for (const [key, value] of Object.entries(resolvedColors)) {
 		if (bgColorKeys.has(key)) {
@@ -671,7 +789,26 @@ export function setRegisteredThemes(themes: Theme[]): void {
 	}
 }
 
+type CodeHighlighterModule = typeof import("./code-highlighter.js");
+let codeHighlighter: CodeHighlighterModule | undefined;
+let codeHighlighterPromise: Promise<void> | undefined;
+
+/**
+ * Start loading the syntax highlighter (cli-highlight pulls in all of
+ * highlight.js, ~350ms) off the startup-critical import path. highlightCode
+ * falls back to unhighlighted output until the load completes; await this
+ * before the first render to guarantee highlighted code blocks.
+ */
+export function preloadCodeHighlighter(): Promise<void> {
+	codeHighlighterPromise ??= import("./code-highlighter.js").then((module) => {
+		codeHighlighter = module;
+	});
+	return codeHighlighterPromise;
+}
+
 export function initTheme(themeName?: string, enableWatcher: boolean = false): void {
+	void preloadCodeHighlighter();
+	void preloadThemeValidator();
 	const name = themeName ?? getDefaultTheme();
 	currentThemeName = name;
 	currentThemeIsAutomatic = themeName === undefined;
@@ -977,12 +1114,14 @@ function getCliHighlightTheme(t: Theme): CliHighlightTheme {
  * Returns array of highlighted lines.
  */
 export function highlightCode(code: string, lang?: string): string[] {
+	// The highlighter loads lazily; until then render the block unhighlighted.
+	const highlighter = codeHighlighter;
 	// Validate language before highlighting to avoid stderr spam from cli-highlight
-	const validLang = lang && supportsLanguage(lang) ? lang : undefined;
+	const validLang = lang && highlighter?.supportsLanguage(lang) ? lang : undefined;
 	// Skip highlighting when no valid language is specified. cli-highlight's
 	// auto-detection is unreliable and can misidentify prose as AppleScript,
 	// LiveCodeServer, etc., coloring random English words as keywords.
-	if (!validLang) {
+	if (!highlighter || !validLang) {
 		return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
 	}
 	const opts = {
@@ -991,7 +1130,7 @@ export function highlightCode(code: string, lang?: string): string[] {
 		theme: getCliHighlightTheme(theme),
 	};
 	try {
-		return highlight(code, opts).split("\n");
+		return highlighter.highlight(code, opts).split("\n");
 	} catch {
 		return code.split("\n");
 	}
@@ -1084,13 +1223,17 @@ export function getMarkdownTheme(): MarkdownTheme {
 		italic: (text: string) => theme.italic(text),
 		underline: (text: string) => theme.underline(text),
 		strikethrough: (text: string) => chalk.strikethrough(text),
+		math: (text: string) => theme.fg("mdCode", text),
+		mathBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		highlightCode: (code: string, lang?: string): string[] => {
+			// The highlighter loads lazily; until then render the block unhighlighted.
+			const highlighter = codeHighlighter;
 			// Validate language before highlighting to avoid stderr spam from cli-highlight
-			const validLang = lang && supportsLanguage(lang) ? lang : undefined;
+			const validLang = lang && highlighter?.supportsLanguage(lang) ? lang : undefined;
 			// Skip highlighting when no valid language is specified. cli-highlight's
 			// auto-detection is unreliable and can misidentify prose as AppleScript,
 			// LiveCodeServer, etc., coloring random English words as keywords.
-			if (!validLang) {
+			if (!highlighter || !validLang) {
 				return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
 			}
 			const opts = {
@@ -1099,7 +1242,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 				theme: getCliHighlightTheme(theme),
 			};
 			try {
-				return highlight(code, opts).split("\n");
+				return highlighter.highlight(code, opts).split("\n");
 			} catch {
 				return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
 			}
@@ -1119,9 +1262,10 @@ export function getSelectListTheme(): SelectListTheme {
 
 export function getEditorTheme(): EditorTheme {
 	return {
-		borderColor: theme.getAdaptiveAccentColor(),
+		borderColor: (text: string) => theme.fg("borderMuted", text),
 		backgroundColor: theme.getEditorBackgroundColor(),
 		selectList: getSelectListTheme(),
+		commandColor: (text: string) => theme.fg("accent", text),
 	};
 }
 

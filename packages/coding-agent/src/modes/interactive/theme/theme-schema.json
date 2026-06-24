@@ -55,6 +55,9 @@
 				"toolPendingBg",
 				"toolSuccessBg",
 				"toolErrorBg",
+				"toolDiffAddedBg",
+				"toolDiffRemovedBg",
+				"toolPanelBg",
 				"toolTitle",
 				"toolOutput",
 				"mdHeading",
@@ -69,6 +72,7 @@
 				"mdListBullet",
 				"toolDiffAdded",
 				"toolDiffRemoved",
+				"toolDiffText",
 				"toolDiffContext",
 				"syntaxComment",
 				"syntaxKeyword",
@@ -168,6 +172,18 @@
 					"$ref": "#/$defs/colorValue",
 					"description": "Tool execution box (error state)"
 				},
+				"toolDiffAddedBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Diff added-line background block"
+				},
+				"toolDiffRemovedBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Diff removed-line background block"
+				},
+				"toolPanelBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Tool panel background (ipython cells and tool executions)"
+				},
 				"toolTitle": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Tool execution box title color"
@@ -223,6 +239,10 @@
 				"toolDiffRemoved": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Removed lines in tool diffs"
+				},
+				"toolDiffText": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Diff line content on colored add/remove blocks"
 				},
 				"toolDiffContext": {
 					"$ref": "#/$defs/colorValue",
