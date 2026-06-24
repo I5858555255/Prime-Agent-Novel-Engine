@@ -475,32 +475,12 @@ Content`,
 			}
 		});
 
-		it("should warn when websearch is enabled without SERPER_API_KEY", async () => {
+		it("should not emit a SERPER_API_KEY warning when the key is unset", async () => {
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
 
 			const { diagnostics } = loader.getSkills();
-			const warning = diagnostics.find(
-				(d) => d.type === "warning" && d.message.includes("SERPER_API_KEY is not set"),
-			);
-			expect(warning).toBeDefined();
-			expect(warning?.message).toBe(
-				"websearch is enabled but SERPER_API_KEY is not set.\n" +
-					"Set SERPER_API_KEY to use websearch, or disable it in settings.json:\n\n" +
-					'  "bundledSkills": { "websearch": false }',
-			);
-			expect(warning?.path).toBeUndefined();
-		});
-
-		it("should not warn when SERPER_API_KEY is set", async () => {
-			process.env.SERPER_API_KEY = "test-key";
-			const loader = new DefaultResourceLoader({ cwd, agentDir });
-			await loader.reload();
-
-			const { diagnostics } = loader.getSkills();
-			expect(diagnostics.some((d) => d.type === "warning" && d.message.includes("SERPER_API_KEY is not set"))).toBe(
-				false,
-			);
+			expect(diagnostics.some((d) => d.type === "warning" && d.message.includes("SERPER_API_KEY"))).toBe(false);
 		});
 
 		it("should not load the bundled websearch skill when disabled in settings", async () => {

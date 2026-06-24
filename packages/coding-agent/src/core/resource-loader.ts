@@ -429,7 +429,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
 		// Surface resolution-time skill warnings (e.g. missing bundled skills dir).
 		this.skillDiagnostics.push(...resolvedPaths.diagnostics);
-		this.maybeWarnMissingSerperApiKey();
 		for (const p of this.additionalSkillPaths) {
 			if (isLocalPath(p) && !existsSync(p) && !this.skillDiagnostics.some((d) => d.path === p)) {
 				this.skillDiagnostics.push({ type: "error", message: "Skill path does not exist", path: p });
@@ -513,36 +512,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 				this.getDefaultSourceInfoForPath(skill.filePath),
 		}));
 		this.skillDiagnostics = resolvedSkills.diagnostics;
-	}
-
-	private maybeWarnMissingSerperApiKey(): void {
-		if (
-			this.noSkills ||
-			!this.bundledSkillsDir ||
-			!this.settingsManager.getEnableBuiltinSkills() ||
-			!this.settingsManager.getBundledWebsearchEnabled()
-		) {
-			return;
-		}
-
-		const bundledWebsearchDir = join(this.bundledSkillsDir, "websearch");
-
-		if (process.env.SERPER_API_KEY?.trim()) {
-			return;
-		}
-
-		const websearch = this.skills.find((skill) => skill.name === "websearch");
-		if (!websearch || !this.isUnderPath(resolve(websearch.filePath), bundledWebsearchDir)) {
-			return;
-		}
-
-		this.skillDiagnostics.push({
-			type: "warning",
-			message:
-				"websearch is enabled but SERPER_API_KEY is not set.\n" +
-				"Set SERPER_API_KEY to use websearch, or disable it in settings.json:\n\n" +
-				'  "bundledSkills": { "websearch": false }',
-		});
 	}
 
 	private updatePromptsFromPaths(promptPaths: string[], metadataByPath?: Map<string, PathMetadata>): void {

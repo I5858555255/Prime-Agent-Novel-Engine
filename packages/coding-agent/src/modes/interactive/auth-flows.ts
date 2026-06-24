@@ -27,6 +27,7 @@ import {
 	resolvePrimeAgentTracesBaseUrl,
 } from "../../core/prime-inference-auth.js";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.js";
+import { SERPER_CREDENTIAL_ID, SERPER_CREDENTIAL_NAME } from "../../core/websearch-credential.js";
 import { showFullPaneOverlay } from "./components/centered-overlay.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
@@ -232,6 +233,14 @@ export class ProviderAuthFlows {
 			});
 		}
 
+		// Serper is a skill credential (web search), not a model provider, so it is
+		// not in the model registry. Offer it here as an api-key login target.
+		options.push({
+			id: SERPER_CREDENTIAL_ID,
+			name: SERPER_CREDENTIAL_NAME,
+			authType: "api_key",
+		});
+
 		const filteredOptions = authType ? options.filter((option) => option.authType === authType) : options;
 		return filteredOptions.sort(compareAuthSelectorProviders);
 	}
@@ -247,7 +256,10 @@ export class ProviderAuthFlows {
 			}
 			options.push({
 				id: providerId,
-				name: this.host.modelRegistry.getProviderDisplayName(providerId),
+				name:
+					providerId === SERPER_CREDENTIAL_ID
+						? SERPER_CREDENTIAL_NAME
+						: this.host.modelRegistry.getProviderDisplayName(providerId),
 				authType: credential.type,
 			});
 		}

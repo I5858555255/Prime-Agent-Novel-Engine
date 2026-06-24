@@ -159,6 +159,7 @@ import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, cloneUsage, emptyUsage } from "./usage.js";
+import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR } from "./websearch-credential.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -3732,6 +3733,16 @@ export class AgentSession {
 		const rlmSessionDir = this._ensureRlmSessionDir();
 		if (rlmSessionDir) {
 			env.RLM_SESSION_DIR = rlmSessionDir;
+		}
+
+		// Surface the stored Serper credential to the bundled websearch skill as a
+		// plain env var, unless one is already set in the process environment (which
+		// takes precedence so power users can still override it).
+		if (!process.env[SERPER_ENV_VAR]?.trim()) {
+			const serper = this._modelRegistry.authStorage.get(SERPER_CREDENTIAL_ID);
+			if (serper?.type === "api_key" && serper.key.trim()) {
+				env[SERPER_ENV_VAR] = serper.key;
+			}
 		}
 		return env;
 	}

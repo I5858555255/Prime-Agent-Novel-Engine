@@ -55,14 +55,19 @@ Built-in skills behave like any other skill but have the lowest precedence: a us
 
 ### websearch
 
-Setup:
+Setup: get a free API key at [serper.dev](https://serper.dev), then run `/login`
+and choose **Serper (web search)** to paste it. The key is stored alongside your
+other credentials (in `auth.json`) and supplied to the skill automatically — no
+environment variables required.
+
+Optional overrides (environment variables):
 
 ```bash
-export SERPER_API_KEY=...        # required, get a key at https://serper.dev
-# optional overrides:
 export PRIME_AGENT_WEBSEARCH_TIMEOUT=45
 export PRIME_AGENT_WEBSEARCH_NUM_RESULTS=5
 ```
+
+A `SERPER_API_KEY` in the environment, if set, takes precedence over the stored key.
 
 Once loaded, the model can call it directly in the IPython kernel by import name:
 
@@ -70,7 +75,8 @@ Once loaded, the model can call it directly in the IPython kernel by import name
 print(await websearch.run("latest Prime Agent release"))
 ```
 
-Without `SERPER_API_KEY`, Prime Agent warns at startup and direct invocations return a clear error explaining that the key must be set.
+Until a key is configured, web search returns a clear message telling the agent
+to walk you through `/login`.
 
 Disable only the built-in `websearch` skill in settings:
 

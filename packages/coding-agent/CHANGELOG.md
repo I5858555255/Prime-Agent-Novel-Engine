@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added a bundled `websearch` skill (Google search via the Serper API) that loads by default, warns when `SERPER_API_KEY` is unset, can be disabled with `bundledSkills.websearch: false`, and can be overridden by a same-named skill in any user, project, package, or `--skill` location.
+- Added a bundled `websearch` skill (Google search via the Serper API) that loads by default. Add a Serper key via `/login` ("Serper (web search)"); it is stored with your other credentials and supplied to the skill automatically. The skill can be disabled with `bundledSkills.websearch: false` and overridden by a same-named skill in any user, project, package, or `--skill` location.
 
 ## [0.2.1] - 2026-06-23
 

@@ -303,7 +303,7 @@ Skills can also be Python-backed. A Python skill is a normal skill directory wit
 
 Place in `~/.prime/agent/skills/`, `~/.agents/skills/`, `.prime/agent/skills/`, or `.agents/skills/` (from `cwd` up through parent directories) or a [Prime Agent package](#prime-agent-packages) to share with others. See [docs/skills.md](docs/skills.md).
 
-Prime Agent ships with a built-in `websearch` skill (Google search via the [Serper](https://serper.dev) API). It loads by default; set `SERPER_API_KEY` to use it, disable it with `bundledSkills.websearch: false`, or override it with your own `websearch` skill in any location above. See [docs/skills.md#built-in-skills](docs/skills.md#built-in-skills).
+Prime Agent ships with a built-in `websearch` skill (Google search via the [Serper](https://serper.dev) API). It loads by default; run `/login` and choose "Serper (web search)" to add your key, disable it with `bundledSkills.websearch: false`, or override it with your own `websearch` skill in any location above. See [docs/skills.md#built-in-skills](docs/skills.md#built-in-skills).
 
 ### Extensions
 

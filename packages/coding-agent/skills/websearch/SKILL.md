@@ -9,9 +9,14 @@ Search the web via the Serper Google Search API.
 
 ## Setup
 
-Set the `SERPER_API_KEY` environment variable. Get a key at https://serper.dev.
+Get a free API key at https://serper.dev, then run `/login` in Prime Agent and
+choose "Serper (web search)" to paste it. The key is stored in Prime Agent and
+made available to this skill automatically.
 
-Optional overrides:
+If web search reports a missing key, walk the user through those two steps;
+don't ask them to set environment variables.
+
+Optional overrides (environment variables):
 
 - `PRIME_AGENT_WEBSEARCH_TIMEOUT` - HTTP timeout in seconds (default 45).
 - `PRIME_AGENT_WEBSEARCH_NUM_RESULTS` - number of organic results to return (default 5).

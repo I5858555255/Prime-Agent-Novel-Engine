@@ -2054,16 +2054,13 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).not.toContain("[Skills]");
 	});
 
-	test("formats bundled websearch warning without path noise", () => {
+	test("formats a multi-line skill warning without path noise", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: true,
 			skillDiagnostics: [
 				{
 					type: "warning",
-					message:
-						"websearch is enabled but SERPER_API_KEY is not set.\n" +
-						"Set SERPER_API_KEY to use websearch, or disable it in settings.json:\n\n" +
-						'  "bundledSkills": { "websearch": false }',
+					message: "first line of the warning.\nsecond line with guidance.\n\n  indented detail",
 				},
 			],
 			useRealDiagnostics: true,
@@ -2077,12 +2074,11 @@ describe("InteractiveMode.showLoadedResources", () => {
 		const output = normalizeRenderedOutput(fakeThis.chatContainer, 100);
 		expect(output).toMatchInlineSnapshot(`
 "[Skill warning]
-  websearch is enabled but SERPER_API_KEY is not set.
-  Set SERPER_API_KEY to use websearch, or disable it in settings.json:
+  first line of the warning.
+  second line with guidance.
 
-    "bundledSkills": { "websearch": false }"
+    indented detail"
 `);
-		expect(output).not.toContain("SKILL.md");
 		expect(output).not.toContain("[Skill conflicts]");
 	});
 });

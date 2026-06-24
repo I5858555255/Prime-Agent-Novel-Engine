@@ -7,6 +7,14 @@ import os
 import httpx
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read an int from the environment, falling back to default on bad values."""
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
 def _format_serper_results(data: dict, query: str, num_results: int = 5) -> str:
     """Format a Serper API response into readable text."""
     sections: list[str] = []
@@ -101,12 +109,18 @@ async def run(
     """
     api_key = os.environ.get("SERPER_API_KEY", "")
     if not api_key:
-        return "Error: SERPER_API_KEY environment variable is not set"
+        return (
+            "Web search is not set up yet: no Serper API key is configured.\n"
+            "Tell the user how to enable it:\n"
+            "  1. Get a free API key at https://serper.dev (sign up, copy the key).\n"
+            "  2. In Prime Agent, run /login and choose \"Serper (web search)\", then paste the key.\n"
+            "Do not ask the user to set environment variables. Once the key is saved, web search works automatically."
+        )
 
     if timeout is None:
-        timeout = int(os.environ.get("PRIME_AGENT_WEBSEARCH_TIMEOUT", "45"))
+        timeout = _env_int("PRIME_AGENT_WEBSEARCH_TIMEOUT", 45)
     if num_results is None:
-        num_results = int(os.environ.get("PRIME_AGENT_WEBSEARCH_NUM_RESULTS", "5"))
+        num_results = _env_int("PRIME_AGENT_WEBSEARCH_NUM_RESULTS", 5)
 
     try:
         result = await _fetch_serper(query, api_key, timeout=timeout, num_results=num_results)
@@ -115,8 +129,10 @@ async def run(
     output = f'Results for query "{query}":\n\n{result}'
 
     if len(output) > max_output:
-        half = max_output // 2
         total = len(output)
-        output = output[:half] + f"\n... [output truncated, {total} chars total] ...\n" + output[-half:]
+        marker = f"\n... [output truncated, {total} chars total] ...\n"
+        # Reserve room for the marker so the result stays within max_output.
+        half = max(0, (max_output - len(marker)) // 2)
+        output = output[:half] + marker + output[len(output) - half:]
 
     return output
