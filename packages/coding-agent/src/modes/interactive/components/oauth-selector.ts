@@ -280,11 +280,20 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			this.selectedIndex = Math.min(this.filteredProviders.length - 1, this.selectedIndex + 1);
 			this.updateList();
 		}
-		// Left/right arrows switch tabs (only when more than one category exists, so
-		// the search field keeps normal cursor movement in single-category mode).
-		else if (this.categories.length > 1 && kb.matches(keyData, "tui.editor.cursorLeft")) {
+		// Left/right arrows switch tabs, but only when there are multiple categories
+		// AND the search field is empty — otherwise they keep moving the search
+		// cursor so readline editing still works while filtering.
+		else if (
+			this.categories.length > 1 &&
+			this.searchInput.getValue() === "" &&
+			kb.matches(keyData, "tui.editor.cursorLeft")
+		) {
 			this.switchCategory(-1);
-		} else if (this.categories.length > 1 && kb.matches(keyData, "tui.editor.cursorRight")) {
+		} else if (
+			this.categories.length > 1 &&
+			this.searchInput.getValue() === "" &&
+			kb.matches(keyData, "tui.editor.cursorRight")
+		) {
 			this.switchCategory(1);
 		}
 		// Enter

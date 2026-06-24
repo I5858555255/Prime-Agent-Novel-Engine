@@ -40,9 +40,14 @@ def _resolve_api_key() -> str:
 
     try:
         auth = json.loads((_agent_dir() / "auth.json").read_text())
-        cred = auth.get("serper")
+        cred = auth.get("serper") if isinstance(auth, dict) else None
         if isinstance(cred, dict) and cred.get("type") == "api_key":
-            return str(cred.get("key") or "").strip()
+            key = str(cred.get("key") or "").strip()
+            # auth.json may store keys as "!cmd" command references; we can't run
+            # those here, so treat them as unset (the agent dir env var should
+            # already carry the resolved value when one is configured that way).
+            if key and not key.startswith("!"):
+                return key
     except (OSError, ValueError):
         pass
     return ""

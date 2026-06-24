@@ -857,7 +857,7 @@ describe("AgentSession RLM session dir", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	function createSession(sessionManager: SessionManager): AgentSession {
+	function createSession(sessionManager: SessionManager, agentDir?: string): AgentSession {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const agent = new Agent({
@@ -871,6 +871,7 @@ describe("AgentSession RLM session dir", () => {
 			sessionManager,
 			settingsManager: SettingsManager.create(tempDir, tempDir),
 			cwd: tempDir,
+			agentDir,
 			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
 			resourceLoader: createTestResourceLoader(),
 		});
@@ -901,5 +902,18 @@ describe("AgentSession RLM session dir", () => {
 		expect(artifactDir).toBeDefined();
 		expect(inspectable._ensureRlmSessionDir()).toBe(artifactDir);
 		expect(inspectable._rlmKernelEnv().RLM_SESSION_DIR).toBe(artifactDir);
+	});
+
+	it("exports the configured agentDir to the kernel so skills find auth.json", () => {
+		const agentDir = join(tempDir, "custom-agent-dir");
+		const root = createSession(SessionManager.inMemory(tempDir), agentDir);
+		const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+		expect(env.PRIME_AGENT_CODING_AGENT_DIR).toBe(agentDir);
+	});
+
+	it("omits the agentDir env var when none is configured", () => {
+		const root = createSession(SessionManager.inMemory(tempDir));
+		const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+		expect(env.PRIME_AGENT_CODING_AGENT_DIR).toBeUndefined();
 	});
 });

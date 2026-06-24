@@ -282,6 +282,8 @@ export interface AgentSessionConfig {
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
 	cwd: string;
+	/** Config dir backing credentials (auth.json); exported to the kernel for skills. */
+	agentDir?: string;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	/** Resource loader for skills, prompts, themes, context files, system prompt */
@@ -695,6 +697,7 @@ export class AgentSession {
 	private _customTools: ToolDefinition[];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
+	private _agentDir?: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
@@ -742,6 +745,7 @@ export class AgentSession {
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
+		this._agentDir = config.agentDir;
 		this._modelRegistry = config.modelRegistry;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -3733,9 +3737,13 @@ export class AgentSession {
 		if (rlmSessionDir) {
 			env.RLM_SESSION_DIR = rlmSessionDir;
 		}
-		// Note: the bundled websearch skill resolves its Serper key itself (env var,
-		// then auth.json), so it works even when the kernel started before /login.
-		// Nothing to inject here.
+		// The bundled websearch skill resolves its own Serper key (env var, then
+		// auth.json), so it works even when the kernel started before /login. Export
+		// the resolved agent dir so the skill finds auth.json under a programmatic
+		// (SDK) agentDir, not just the default ~/.prime/agent.
+		if (this._agentDir) {
+			env.PRIME_AGENT_CODING_AGENT_DIR = this._agentDir;
+		}
 		return env;
 	}
 
@@ -3905,6 +3913,7 @@ export class AgentSession {
 			sessionManager: childSessionManager,
 			settingsManager: this.settingsManager,
 			cwd: this._cwd,
+			agentDir: this._agentDir,
 			scopedModels: options.scopedModels,
 			resourceLoader: this._resourceLoader,
 			customTools: options.customTools,
