@@ -185,7 +185,11 @@ function previewHeredoc(lines: readonly string[]): CodePreview | undefined {
 			continue;
 		}
 		if (/\b(?:uv\s+run\s+)?python3?\b/.test(line)) {
-			return previewPythonCode(body);
+			const preview = previewPythonCode(body);
+			if (preview.text) {
+				return preview;
+			}
+			continue;
 		}
 		if (/\b(?:bash|sh)\b/.test(line)) {
 			const preview = previewBashCommand(body);

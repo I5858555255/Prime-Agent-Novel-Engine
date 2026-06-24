@@ -104,4 +104,17 @@ from pathlib import Path
 PY`;
 		expect(previewBashCommand(command)).toEqual({ language: "bash", text: "npm check" });
 	});
+
+	it("continues past empty python heredocs", () => {
+		const command = `python3 - <<'PY'
+import json
+from pathlib import Path
+PY
+python3 - <<'PY'
+from pathlib import Path
+p = Path("packages/foo.ts")
+p.write_text("hello")
+PY`;
+		expect(previewBashCommand(command)).toEqual({ language: "python", text: "write packages/foo.ts" });
+	});
 });
