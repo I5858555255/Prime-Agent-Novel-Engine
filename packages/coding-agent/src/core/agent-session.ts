@@ -160,7 +160,7 @@ import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, cloneUsage, emptyUsage } from "./usage.js";
-import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR } from "./websearch-credential.js";
+import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR, WEBSEARCH_SKILL_NAME } from "./websearch-credential.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -3751,8 +3751,9 @@ export class AgentSession {
 		if (process.env[SERPER_ENV_VAR]?.trim()) {
 			return;
 		}
-		// Gate key injection on the bundled skill so it isn't exposed to kernels that can't use it.
-		if (!this.settingsManager.getEnableBuiltinSkills() || !this.settingsManager.getBundledWebsearchEnabled()) {
+		// Inject only when a websearch skill (bundled or custom) is actually loaded,
+		// so the key isn't exposed to kernels that can't use it.
+		if (!this._resourceLoader.getSkills().skills.some((skill) => skill.name === WEBSEARCH_SKILL_NAME)) {
 			return;
 		}
 		const cred = this._modelRegistry.authStorage.get(SERPER_CREDENTIAL_ID);

@@ -20,6 +20,8 @@ import { ModelRegistry } from "../src/core/model-registry.js";
 import { createRlmRunHostHandler } from "../src/core/rlm-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import type { Skill } from "../src/core/skills.js";
+import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 import { MISSING_RIPGREP_MESSAGE } from "../src/utils/tools-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
@@ -857,7 +859,12 @@ describe("AgentSession RLM session dir", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	function createSession(sessionManager: SessionManager, agentDir?: string, serperKey?: string): AgentSession {
+	function createSession(
+		sessionManager: SessionManager,
+		agentDir?: string,
+		serperKey?: string,
+		loadWebsearchSkill = false,
+	): AgentSession {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		if (serperKey !== undefined) {
@@ -869,6 +876,19 @@ describe("AgentSession RLM session dir", () => {
 			initialState: { model, systemPrompt: "", tools: [], thinkingLevel: "off" },
 			streamFn: () => streamAnswer("ignored"),
 		});
+		const skills: Skill[] = loadWebsearchSkill
+			? [
+					{
+						kind: "markdown",
+						name: "websearch",
+						description: "",
+						filePath: "/x/websearch/SKILL.md",
+						baseDir: "/x/websearch",
+						sourceInfo: createSyntheticSourceInfo("/x/websearch/SKILL.md", { source: "package" }),
+						disableModelInvocation: false,
+					},
+				]
+			: [];
 		session = new AgentSession({
 			agent,
 			sessionManager,
@@ -876,7 +896,7 @@ describe("AgentSession RLM session dir", () => {
 			cwd: tempDir,
 			agentDir,
 			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
-			resourceLoader: createTestResourceLoader(),
+			resourceLoader: createTestResourceLoader({ skills }),
 		});
 		return session;
 	}
@@ -920,38 +940,34 @@ describe("AgentSession RLM session dir", () => {
 		expect(env.PRIME_AGENT_CODING_AGENT_DIR).toBeUndefined();
 	});
 
-	it("exports agentDir even when the bundled websearch skill is disabled", () => {
-		// A websearch skill can still load via --skill or a project copy, so the
-		// agent dir must be exported regardless of the bundled-skill setting.
+	it("exports agentDir but skips key injection when no websearch skill is loaded", () => {
 		const agentDir = join(tempDir, "custom-agent-dir");
-		const settingsManager = SettingsManager.inMemory({ bundledSkills: { websearch: false } });
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const agent = new Agent({
-			convertToLlm,
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: "", tools: [], thinkingLevel: "off" },
-			streamFn: () => streamAnswer("ignored"),
-		});
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(tempDir),
-			settingsManager,
-			cwd: tempDir,
-			agentDir,
-			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
-			resourceLoader: createTestResourceLoader(),
-		});
-		const env = (session as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+		const root = createSession(SessionManager.inMemory(tempDir), agentDir, "stored-key", false);
+		const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
 		expect(env.PRIME_AGENT_CODING_AGENT_DIR).toBe(agentDir);
 		expect(env.SERPER_API_KEY).toBeUndefined();
+	});
+
+	it("injects the key for a custom websearch skill even when bundled is off", () => {
+		const previous = process.env.SERPER_API_KEY;
+		delete process.env.SERPER_API_KEY;
+		try {
+			// loadWebsearchSkill=true models a --skill/project websearch; the bundled
+			// setting is irrelevant because the gate checks the loaded skill, not settings.
+			const root = createSession(SessionManager.inMemory(tempDir), undefined, "custom-key", true);
+			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+			expect(env.SERPER_API_KEY).toBe("custom-key");
+		} finally {
+			if (previous === undefined) delete process.env.SERPER_API_KEY;
+			else process.env.SERPER_API_KEY = previous;
+		}
 	});
 
 	it("injects a literal stored Serper key into the kernel", () => {
 		const previous = process.env.SERPER_API_KEY;
 		delete process.env.SERPER_API_KEY;
 		try {
-			const root = createSession(SessionManager.inMemory(tempDir), undefined, "literal-serper-key");
+			const root = createSession(SessionManager.inMemory(tempDir), undefined, "literal-serper-key", true);
 			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
 			expect(env.SERPER_API_KEY).toBe("literal-serper-key");
 		} finally {
@@ -966,7 +982,7 @@ describe("AgentSession RLM session dir", () => {
 		delete process.env.SERPER_API_KEY;
 		process.env.MY_SERPER_REF = "resolved-secret";
 		try {
-			const root = createSession(SessionManager.inMemory(tempDir), undefined, "MY_SERPER_REF");
+			const root = createSession(SessionManager.inMemory(tempDir), undefined, "MY_SERPER_REF", true);
 			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
 			expect(env.SERPER_API_KEY).toBe("resolved-secret");
 		} finally {
