@@ -15,16 +15,24 @@ describe("DefaultResourceLoader", () => {
 	let tempDir: string;
 	let agentDir: string;
 	let cwd: string;
+	let previousSerperApiKey: string | undefined;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `rl-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		cwd = join(tempDir, "project");
+		previousSerperApiKey = process.env.SERPER_API_KEY;
+		delete process.env.SERPER_API_KEY;
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(cwd, { recursive: true });
 	});
 
 	afterEach(() => {
+		if (previousSerperApiKey === undefined) {
+			delete process.env.SERPER_API_KEY;
+		} else {
+			process.env.SERPER_API_KEY = previousSerperApiKey;
+		}
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -467,6 +475,43 @@ Content`,
 			}
 		});
 
+		it("should warn when websearch is enabled without SERPER_API_KEY", async () => {
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { diagnostics } = loader.getSkills();
+			const warning = diagnostics.find(
+				(d) => d.type === "warning" && d.message.includes("SERPER_API_KEY is not set"),
+			);
+			expect(warning).toBeDefined();
+			expect(warning?.message).toContain("websearch skill is enabled");
+			expect(warning?.message).toContain('"bundledSkills": { "websearch": false }');
+			expect(warning?.message).not.toContain("Bundled");
+		});
+
+		it("should not warn when SERPER_API_KEY is set", async () => {
+			process.env.SERPER_API_KEY = "test-key";
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			const { diagnostics } = loader.getSkills();
+			expect(diagnostics.some((d) => d.type === "warning" && d.message.includes("SERPER_API_KEY is not set"))).toBe(
+				false,
+			);
+		});
+
+		it("should not load the bundled websearch skill when disabled in settings", async () => {
+			const settingsManager = SettingsManager.inMemory({ bundledSkills: { websearch: false } });
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload();
+
+			const { skills, diagnostics } = loader.getSkills();
+			expect(skills.some((s) => s.name === "websearch")).toBe(false);
+			expect(diagnostics.some((d) => d.type === "warning" && d.message.includes("SERPER_API_KEY is not set"))).toBe(
+				false,
+			);
+		});
+
 		it("should not load bundled skills when noSkills is true", async () => {
 			const loader = new DefaultResourceLoader({ cwd, agentDir, noSkills: true });
 			await loader.reload();
@@ -496,6 +541,9 @@ Project override.`,
 			expect(websearch?.filePath).toBe(join(projectSkillDir, "SKILL.md"));
 			expect(websearch?.kind).toBe("markdown");
 			expect(diagnostics.some((d) => d.type === "collision" && d.collision?.name === "websearch")).toBe(true);
+			expect(diagnostics.some((d) => d.type === "warning" && d.message.includes("SERPER_API_KEY is not set"))).toBe(
+				false,
+			);
 		});
 
 		it("should let an explicit --skill path override the bundled websearch skill", async () => {

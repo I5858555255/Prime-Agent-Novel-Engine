@@ -25,7 +25,7 @@ Prime Agent implements the [Agent Skills standard](https://agentskills.io/specif
 
 Prime Agent loads skills from:
 
-- Bundled: skills shipped with Prime Agent (currently `websearch`). Loaded by default; override by defining a skill with the same name in any location below.
+- Bundled: skills shipped with Prime Agent (currently `websearch`). Loaded by default; disable with `bundledSkills.websearch: false` or override by defining a skill with the same name in any location below.
 - Global:
   - `~/.prime/agent/skills/`
   - `~/.agents/skills/`
@@ -87,9 +87,19 @@ Once loaded, the model can call it directly in the IPython kernel by import name
 print(await websearch.run("latest Prime Agent release"))
 ```
 
-Without `SERPER_API_KEY` the skill stays visible and returns a clear error explaining that the key must be set.
+The skill loads by default. Without `SERPER_API_KEY`, Prime Agent warns at startup and direct invocations return a clear error explaining that the key must be set.
 
 To replace it with a different backend (Brave, Exa, Tavily, or your own), define a skill named `websearch` in any user, project, package, or `--skill` location. Same-name skills take precedence over the bundled one.
+
+Disable only the bundled `websearch` skill in settings:
+
+```json
+{
+  "bundledSkills": {
+    "websearch": false
+  }
+}
+```
 
 Disable bundled skills together with discovered skills using `--no-skills` (explicit `--skill` paths still load).
 

@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added a bundled `websearch` skill (Google search via the Serper API) that loads by default and can be overridden by a same-named skill in any user, project, package, or `--skill` location.
+- Added a bundled `websearch` skill (Google search via the Serper API) that loads by default, warns when `SERPER_API_KEY` is unset, can be disabled with `bundledSkills.websearch: false`, and can be overridden by a same-named skill in any user, project, package, or `--skill` location.
 
 ### Fixed
 

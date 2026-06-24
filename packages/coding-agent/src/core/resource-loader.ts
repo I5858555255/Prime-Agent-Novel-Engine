@@ -420,7 +420,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// last so user/project/CLI skills with the same name take precedence
 		// (loadSkills resolves name collisions first-wins). `--no-skills` excludes them.
 		const bundledSkillsDir = getBundledSkillsDir();
-		const bundledSkillPaths = this.noSkills || !existsSync(bundledSkillsDir) ? [] : [bundledSkillsDir];
+		const bundledWebsearchDir = join(bundledSkillsDir, "websearch");
+		const bundledWebsearchEnabled = this.settingsManager.getBundledWebsearchEnabled();
+		const bundledSkillPaths =
+			this.noSkills || !bundledWebsearchEnabled || !existsSync(bundledWebsearchDir) ? [] : [bundledWebsearchDir];
 		const skillPaths = this.noSkills
 			? this.mergePaths(cliEnabledSkills, this.additionalSkillPaths)
 			: this.mergePaths(
@@ -430,6 +433,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		this.lastSkillPaths = skillPaths;
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
+		this.maybeWarnMissingSerperApiKey(bundledWebsearchDir);
 		for (const p of this.additionalSkillPaths) {
 			if (isLocalPath(p) && !existsSync(p) && !this.skillDiagnostics.some((d) => d.path === p)) {
 				this.skillDiagnostics.push({ type: "error", message: "Skill path does not exist", path: p });
@@ -513,6 +517,28 @@ export class DefaultResourceLoader implements ResourceLoader {
 				this.getDefaultSourceInfoForPath(skill.filePath),
 		}));
 		this.skillDiagnostics = resolvedSkills.diagnostics;
+	}
+
+	private maybeWarnMissingSerperApiKey(bundledWebsearchDir: string): void {
+		if (this.noSkills || !this.settingsManager.getBundledWebsearchEnabled()) {
+			return;
+		}
+
+		if (process.env.SERPER_API_KEY?.trim()) {
+			return;
+		}
+
+		const websearch = this.skills.find((skill) => skill.name === "websearch");
+		if (!websearch || !this.isUnderPath(resolve(websearch.filePath), bundledWebsearchDir)) {
+			return;
+		}
+
+		this.skillDiagnostics.push({
+			type: "warning",
+			message:
+				'websearch skill is enabled but SERPER_API_KEY is not set. Set SERPER_API_KEY to use it, or disable the skill in settings.json with "bundledSkills": { "websearch": false }.',
+			path: websearch.filePath,
+		});
 	}
 
 	private updatePromptsFromPaths(promptPaths: string[], metadataByPath?: Map<string, PathMetadata>): void {
