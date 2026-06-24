@@ -133,7 +133,6 @@ import { BranchSummaryMessageComponent } from "./components/branch-summary-messa
 import { showFullPaneOverlay } from "./components/centered-overlay.js";
 import {
 	ChildAgentDetailComponent,
-	ChildAgentInspectorComponent,
 	type ChildAgentInspectorNode,
 	type ChildAgentStructuredTranscriptEntry,
 	ChildAgentSummaryComponent,
@@ -191,6 +190,7 @@ import {
 	type ThemeColor,
 	theme,
 } from "./theme/theme.js";
+import { setWorkingPulseFrame, WORKING_ICON_INTERVAL_MS } from "./theme/working-icon.js";
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -516,6 +516,8 @@ export class InteractiveMode {
 	private workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 	private workingStartedAt: number | undefined = undefined;
 	private workingTimer: NodeJS.Timeout | undefined = undefined;
+	private pulseTimer: NodeJS.Timeout | undefined = undefined;
+	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
@@ -548,14 +550,13 @@ export class InteractiveMode {
 	private pendingToolGeneration = 0;
 	private toolDefinitionCache = new Map<string, ToolExecutionDefinition | undefined>();
 
-	// RLM child-agent tray: compact entry below the editor, bounded list/detail in the main view.
+	// RLM child-agent tray: inline list below the editor, full-screen detail on open.
 	private childAgentSummary: ChildAgentSummaryComponent;
-	private childAgentInspector: ChildAgentInspectorComponent;
 	private childAgentDetail: ChildAgentDetailComponent;
 	private childAgentSnapshots = new Map<string, AgentConnectionRlmChildAgentSnapshot>();
 	private childAgentNodes: ChildAgentInspectorNode[] = [];
 	private childAgentDetailNodeId: string | undefined;
-	private childAgentPanelMode: "list" | "detail" | undefined;
+	private childAgentPanelMode: "detail" | undefined;
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -664,13 +665,6 @@ export class InteractiveMode {
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.queuedMessagesContainer = new Container();
-		this.childAgentInspector = new ChildAgentInspectorComponent(
-			() => this.getChildAgentPanelRows(),
-			() => this.ui.requestRender(),
-		);
-		this.childAgentInspector.onCancel = () => this.closeChildAgentPanel();
-		this.childAgentInspector.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
-		this.childAgentInspector.onKill = (nodeId) => void this.killChildAgent(nodeId);
 		this.childAgentDetail = new ChildAgentDetailComponent(() => this.getChildAgentPanelRows(), {
 			ui: this.ui,
 			getCwd: () => this.getCurrentCwd(),
@@ -684,7 +678,7 @@ export class InteractiveMode {
 			getHideThinkingBlock: () => this.hideThinkingBlock,
 			getHiddenThinkingLabel: () => this.hiddenThinkingLabel,
 		});
-		this.childAgentDetail.onCancel = () => this.showChildAgentList();
+		this.childAgentDetail.onCancel = () => this.closeChildAgentPanel({ selectNodeId: this.childAgentDetailNodeId });
 		this.childAgentDetail.onToggleToolsExpanded = () => this.toggleToolOutputExpansion();
 		this.childAgentDetail.onKill = (nodeId) => void this.killChildAgent(nodeId);
 		this.widgetContainerAbove = new Container();
@@ -710,8 +704,9 @@ export class InteractiveMode {
 			() => this.getTrayContextLabel(),
 			() => this.getTrayOverrideLabel(),
 		);
-		this.childAgentSummary.onOpen = () => this.openChildAgentList();
+		this.childAgentSummary.onOpenDetail = (nodeId) => this.openChildAgentDetail(nodeId);
 		this.childAgentSummary.onCancel = () => this.focusEditor();
+		this.childAgentSummary.onExit = () => this.handleSubagentSummaryExit();
 		this.footerDataProvider = new FooterDataProvider(this.uiServices.getInitialCwd());
 		this.footer = new FooterComponent(this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.settingsManager.getCompactionEnabled());
@@ -1990,6 +1985,7 @@ export class InteractiveMode {
 		this.footer.setAutoCompactEnabled(state.autoCompactionEnabled);
 		this.sessionRecap = state.recap;
 		this.renderRecap();
+		this.updateWorkingPulse();
 	}
 
 	private patchConnectionState(patch: Partial<AgentConnectionState>): void {
@@ -1997,6 +1993,7 @@ export class InteractiveMode {
 			return;
 		}
 		this.connectionState = { ...this.connectionState, ...patch };
+		this.updateWorkingPulse();
 	}
 
 	private updateConnectionStateFromEvent(event: AgentConnectionSessionEvent): void {
@@ -2116,6 +2113,7 @@ export class InteractiveMode {
 		this.updateTerminalTitle();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
 		this.syncGoalTray(this.getGoalState());
+		this.syncWorkingLoader();
 	}
 
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
@@ -2168,6 +2166,7 @@ export class InteractiveMode {
 	private async renderCurrentSessionState(): Promise<void> {
 		this.resetCurrentSessionRenderState();
 		await this.renderInitialMessages();
+		this.syncWorkingLoader();
 	}
 
 	private getCachedToolDefinition(toolName: string): ToolExecutionDefinition | undefined {
@@ -2364,7 +2363,17 @@ export class InteractiveMode {
 			return elapsed === undefined ? this.workingMessage : `${this.workingMessage} ${elapsed}`;
 		}
 		const status = this.activityTracker.getStatus();
-		const parts = [AGENT_ACTIVITY_LABELS[status.activity]];
+		const runningSubagents = this.countRunningChildAgents();
+		// Subagents-only: just the count, no elapsed timer (it resets on view return).
+		if (!this.isAgentStreaming()) {
+			return runningSubagents > 0
+				? `${runningSubagents} ${runningSubagents === 1 ? "subagent" : "subagents"} running`
+				: "";
+		}
+		const parts: string[] = [AGENT_ACTIVITY_LABELS[status.activity]];
+		if (runningSubagents > 0) {
+			parts.push(`${runningSubagents} ${runningSubagents === 1 ? "subagent" : "subagents"} running`);
+		}
 		if (elapsed !== undefined) {
 			parts.push(elapsed);
 		}
@@ -2427,6 +2436,59 @@ export class InteractiveMode {
 		this.statusContainer.clear();
 	}
 
+	private updateWorkingPulse(): void {
+		const active = this.isAgentStreaming() || this.countRunningChildAgents() > 0;
+		if (!active) {
+			this.stopWorkingPulse();
+			return;
+		}
+		if (!this.pulseTimer) {
+			this.pulseTimer = setInterval(() => this.tickWorkingPulse(), WORKING_ICON_INTERVAL_MS);
+			this.pulseTimer.unref?.();
+		}
+	}
+
+	private tickWorkingPulse(): void {
+		this.pulseFrame += 1;
+		setWorkingPulseFrame(this.pulseFrame);
+		this.ui.requestRender();
+	}
+
+	private stopWorkingPulse(): void {
+		if (this.pulseTimer) {
+			clearInterval(this.pulseTimer);
+			this.pulseTimer = undefined;
+		}
+	}
+
+	private countRunningChildAgents(): number {
+		let count = 0;
+		for (const child of this.childAgentSnapshots.values()) {
+			if (child.status === "running") {
+				count += 1;
+			}
+		}
+		return count;
+	}
+
+	private shouldShowWorkingLoader(): boolean {
+		return this.workingVisible && (this.isAgentStreaming() || this.countRunningChildAgents() > 0);
+	}
+
+	// Reconcile the loader with current state for transitions that fire no live
+	// agent_start edge (returning from agents view, resuming mid-stream).
+	private syncWorkingLoader(): void {
+		if (this.shouldShowWorkingLoader()) {
+			if (!this.loadingAnimation) {
+				this.statusContainer.clear();
+				this.startWorkingLoader();
+			}
+		} else if (this.loadingAnimation) {
+			this.stopWorkingLoader();
+		}
+		this.ui.requestRender();
+	}
+
 	private setWorkingVisible(visible: boolean): void {
 		this.workingVisible = visible;
 		if (!visible) {
@@ -2434,7 +2496,7 @@ export class InteractiveMode {
 			this.ui.requestRender();
 			return;
 		}
-		if (this.isAgentStreaming() && !this.loadingAnimation) {
+		if (this.shouldShowWorkingLoader() && !this.loadingAnimation) {
 			this.statusContainer.clear();
 			this.startWorkingLoader();
 		}
@@ -3143,7 +3205,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
-		this.defaultEditor.onAction("app.subagents.focus", () => this.focusChildAgentInspector());
+		this.defaultEditor.onAction("app.subagents.focus", () => this.focusChildAgentSummary());
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => {
@@ -3930,7 +3992,8 @@ export class InteractiveMode {
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}
-				this.stopWorkingLoader();
+				// Keep the loader up if async subagents outlive the parent turn.
+				this.syncWorkingLoader();
 				if (this.streamingComponent) {
 					if (this.streamingMessage) {
 						this.streamingComponent.updateContent(this.streamingMessage);
@@ -4247,18 +4310,16 @@ export class InteractiveMode {
 		}
 		this.childAgentNodes = this.buildChildAgentInspectorNodes();
 		this.childAgentSummary.setNodes(this.childAgentNodes);
-		this.childAgentInspector.setNodes(this.childAgentNodes);
+		this.updateWorkingPulse();
+		this.syncWorkingLoader();
+		this.updateWorkingLoaderMessage();
 		if (this.childAgentDetailNodeId) {
 			const detailNode = this.findChildAgentInspectorNode(this.childAgentDetailNodeId);
 			if (!detailNode && this.childAgentPanelMode === "detail") {
-				this.showChildAgentList();
+				this.closeChildAgentPanel();
 				return;
 			}
 			this.childAgentDetail.setNode(detailNode);
-		}
-		if (this.childAgentPanelMode === "list" && this.childAgentNodes.length === 0) {
-			this.closeChildAgentPanel();
-			return;
 		}
 		this.ui.requestRender();
 	}
@@ -4284,7 +4345,6 @@ export class InteractiveMode {
 		this.childAgentNodes = [];
 		this.childAgentSummary.setNodes([]);
 		this.childAgentSummary.setHidden(false);
-		this.childAgentInspector.setNodes([]);
 		this.childAgentDetail.setNode(undefined);
 		this.childAgentDetailNodeId = undefined;
 		if (this.childAgentPanelMode) {
@@ -4309,6 +4369,16 @@ export class InteractiveMode {
 		this.ui.setFocus(this.childAgentSummary);
 		this.ui.requestRender();
 		return true;
+	}
+
+	// Left from the focused subagent list: exit to manage sessions if available,
+	// otherwise just drop focus back to the editor.
+	private handleSubagentSummaryExit(): void {
+		if (this.options.returnToAgentsView && !this.editor.getText().trim()) {
+			void this.returnToAgentsView();
+			return;
+		}
+		this.focusEditor();
 	}
 
 	private getTrayOverrideLabel(): string | undefined {
@@ -4336,7 +4406,7 @@ export class InteractiveMode {
 		if (this.editor.getText().trim()) {
 			return undefined;
 		}
-		return keyHint("app.agents.back", "agents");
+		return keyHint("app.agents.back", "manage sessions");
 	}
 
 	private getTrayContextLabel(): string | undefined {
@@ -4388,13 +4458,6 @@ export class InteractiveMode {
 		return `${hours}h ${remainingMinutes.toString().padStart(2, "0")}m`;
 	}
 
-	private openChildAgentList(): void {
-		if (this.childAgentNodes.length === 0) {
-			return;
-		}
-		this.showChildAgentList();
-	}
-
 	private async killChildAgent(nodeId: string): Promise<void> {
 		try {
 			const cancelled = await this.agentConnection.cancelRlmChild(nodeId);
@@ -4404,24 +4467,6 @@ export class InteractiveMode {
 		} catch (error) {
 			this.showError(`Failed to stop subagent: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		this.ui.requestRender();
-	}
-
-	private showChildAgentList(): void {
-		if (this.childAgentNodes.length === 0) {
-			this.closeChildAgentPanel();
-			return;
-		}
-		this.childAgentPanelMode = "list";
-		this.childAgentDetailNodeId = undefined;
-		this.childAgentDetail.setNode(undefined);
-		this.childAgentSummary.setHidden(true);
-		this.childAgentInspector.setNodes(this.childAgentNodes);
-		this.editorContainer.clear();
-		this.queuedMessagesContainer.clear();
-		this.mainViewContainer.clear();
-		this.mainViewContainer.addChild(this.childAgentInspector);
-		this.ui.setFocus(this.childAgentInspector);
 		this.ui.requestRender();
 	}
 
@@ -4443,14 +4488,7 @@ export class InteractiveMode {
 		return true;
 	}
 
-	private focusChildAgentInspector(): void {
-		if (this.childAgentNodes.length === 0) {
-			return;
-		}
-		this.showChildAgentList();
-	}
-
-	private closeChildAgentPanel(): void {
+	private closeChildAgentPanel(options: { selectNodeId?: string } = {}): void {
 		this.childAgentPanelMode = undefined;
 		this.childAgentDetailNodeId = undefined;
 		this.childAgentDetail.setNode(undefined);
@@ -4460,7 +4498,14 @@ export class InteractiveMode {
 		this.updatePendingMessagesDisplay();
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
-		this.ui.setFocus(this.editor);
+		// Returning from a subagent's detail keeps that subagent selected in the
+		// inline list; other closes drop back to the editor.
+		if (options.selectNodeId && this.childAgentSummary.hasNodes()) {
+			this.childAgentSummary.selectNode(options.selectNodeId);
+			this.ui.setFocus(this.childAgentSummary);
+		} else {
+			this.ui.setFocus(this.editor);
+		}
 		this.ui.requestRender();
 	}
 
@@ -7292,6 +7337,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			this.ui.terminal.setProgress(false);
 		}
 		this.stopWorkingLoader();
+		this.stopWorkingPulse();
 		this.stopGoalTrayTimer();
 		this.clearExtensionTerminalInputListeners();
 		this.footer.dispose();
