@@ -1286,14 +1286,14 @@ describe("InteractiveMode live context usage", () => {
 		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 16_000 });
 	});
 
-	test("clears the live count on a new user turn", () => {
+	test("holds the prior count through a new user turn", () => {
 		const fakeThis = createHarness();
 		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
 		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
 
+		// A new user message must not reset the tray to the stale snapshot (or 0).
 		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: { role: "user" } });
-		// Back to the snapshot until the assistant responds again.
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 42_000 });
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 16_000 });
 	});
 });
 

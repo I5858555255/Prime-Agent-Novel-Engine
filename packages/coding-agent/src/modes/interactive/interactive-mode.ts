@@ -2110,10 +2110,8 @@ export class InteractiveMode {
 
 	private updateLiveContextFromMessageEvent(event: { message: AgentMessage }): void {
 		const message = event.message;
-		if (message.role === "user") {
-			this.liveContextTokens = undefined;
-			return;
-		}
+		// Hold the prior turn's count through a new user message; the next assistant usage
+		// (which already includes that message in its input tokens) overwrites it upward.
 		if (message.role !== "assistant") return;
 		if (message.stopReason === "aborted" || message.stopReason === "error") return;
 		const tokens = calculateContextTokens(message.usage);
