@@ -203,7 +203,11 @@ function estimatePriorReasoningTokens(messages: AgentMessage[], lastUsageIndex: 
 	for (let i = 0; i < lastUsageIndex; i++) {
 		const message = messages[i];
 		if (message.role !== "assistant") continue;
-		for (const block of (message as AssistantMessage).content) {
+		const assistant = message as AssistantMessage;
+		// Aborted/error turns are dropped by transformMessages and never replayed, so their
+		// reasoning isn't in context — counting it would inflate the total.
+		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") continue;
+		for (const block of assistant.content) {
 			if (block.type === "thinking") {
 				tokens += Math.ceil(block.thinking.length / 4);
 			}

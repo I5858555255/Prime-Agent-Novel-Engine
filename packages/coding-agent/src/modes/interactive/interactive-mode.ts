@@ -2049,9 +2049,28 @@ export class InteractiveMode {
 		this.updateWorkingPulse();
 	}
 
+	/**
+	 * Bake the just-completed turn's output into the snapshot so the tray doesn't dip in the
+	 * async gap between isStreaming clearing and the authoritative refresh landing.
+	 */
+	private applyOptimisticContextUsage(): void {
+		const snapshot = this.connectionState?.contextUsage;
+		if (!snapshot || snapshot.tokens === null || snapshot.contextWindow <= 0) return;
+		const completed = this.activityTracker.getStatus().tokens;
+		if (completed <= 0) return;
+		const tokens = snapshot.tokens + completed;
+		this.patchConnectionState({
+			contextUsage: {
+				tokens,
+				contextWindow: snapshot.contextWindow,
+				percent: (tokens / snapshot.contextWindow) * 100,
+			},
+		});
+	}
+
 	/** Refresh the tray's context usage from the session after a turn or compaction completes. */
 	private async refreshConnectionContextUsage(): Promise<void> {
-		const stats = await this.agentConnection.getSessionStats().catch(() => undefined);
+		const stats = await this.agentConnection?.getSessionStats?.().catch(() => undefined);
 		if (stats) {
 			this.patchConnectionState({ contextUsage: stats.contextUsage });
 		}
@@ -4084,8 +4103,10 @@ export class InteractiveMode {
 				this.flushPendingBashComponents();
 				this.resetPendingToolState();
 
-				// Pull the authoritative context usage for the completed turn so the tray reflects
-				// the real post-turn size; in-flight streaming only ever added to the prior baseline.
+				// isStreaming is now false, so getConnectionContextUsage would drop the in-flight
+				// tokens it was adding during the turn. Fold them into the snapshot synchronously
+				// first to avoid a visible dip, then reconcile to the authoritative size.
+				this.applyOptimisticContextUsage();
 				await this.refreshConnectionContextUsage();
 
 				await this.checkShutdownRequested();
