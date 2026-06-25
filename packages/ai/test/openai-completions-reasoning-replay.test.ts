@@ -118,6 +118,22 @@ describe("openai-completions reasoning replay", () => {
 		expect(assistant.content).toBe("answer");
 	});
 
+	it("sanitizes unpaired surrogates in replayed reasoning", () => {
+		const reasoningCompat = { ...compat, requiresReasoningContentOnAssistantMessages: true };
+		const messages = convertMessages(
+			buildModel(),
+			// Lone high surrogate (U+D800) would break JSON serialization on the next turn.
+			buildContext([
+				{ type: "thinking", thinking: "before\ud800after" },
+				{ type: "text", text: "answer" },
+			]),
+			reasoningCompat,
+		);
+
+		const assistant = messages[1] as unknown as Record<string, unknown>;
+		expect(assistant.reasoning_content as string).not.toContain("\ud800");
+	});
+
 	it("replays signed thinking alongside a tool call", () => {
 		const messages = convertMessages(
 			buildModel(),

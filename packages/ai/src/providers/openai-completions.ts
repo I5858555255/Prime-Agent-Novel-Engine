@@ -839,7 +839,9 @@ export function convertMessages(
 					// Round-trip it into that same field. With no recorded field, only use the
 					// non-standard reasoning_content when the provider expects it; otherwise keep
 					// the trace by prepending it as text rather than inventing an unsupported field.
-					const reasoningText = nonEmptyThinkingBlocks.map((block) => block.thinking).join("\n");
+					const reasoningText = nonEmptyThinkingBlocks
+						.map((block) => sanitizeSurrogates(block.thinking))
+						.join("\n");
 					const reasoningField =
 						nonEmptyThinkingBlocks[0].thinkingSignature ||
 						(compat.requiresReasoningContentOnAssistantMessages ? "reasoning_content" : undefined);
