@@ -16,6 +16,7 @@ import {
 	type Model,
 	type ToolCall,
 } from "@earendil-works/pi-ai";
+import { BUILTIN_MCP_CATALOG } from "@earendil-works/pi-ai/mcp";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -3598,6 +3599,11 @@ export class InteractiveMode {
 				await this.showOAuthSelector("logout");
 				return;
 			}
+			if (commandName === "mcp") {
+				this.editor.setText("");
+				await this.handleMcpCommand(commandArgs);
+				return;
+			}
 			if (commandName === "new" && !commandArgs) {
 				this.editor.setText("");
 				await this.handleClearCommand();
@@ -6586,6 +6592,53 @@ export class InteractiveMode {
 		return this.createAuthFlows().runLogin(authType);
 	}
 
+	private async handleMcpCommand(args: string | undefined): Promise<void> {
+		const [sub, server] = (args ?? "").trim().split(/\s+/);
+		const authStorage = this.modelRegistry.authStorage;
+		const isAuthed = (name: string) => authStorage.get(`mcp:${name}`) !== undefined;
+
+		if (!sub || sub === "list") {
+			const lines = BUILTIN_MCP_CATALOG.map((entry) => {
+				const status = isAuthed(entry.server) ? "connected" : "not connected";
+				return `  ${entry.label} (${entry.server}) — ${status}`;
+			});
+			this.showStatus(
+				`MCP integrations:\n${lines.join("\n")}\n\nUse /mcp login <name> to connect, /mcp logout <name> to disconnect.`,
+			);
+			return;
+		}
+
+		if (sub === "login") {
+			if (!server) {
+				this.showError("Usage: /mcp login <name> (e.g. /mcp login linear)");
+				return;
+			}
+			const result = await this.createAuthFlows().runMcpLogin(server);
+			if (result.status === "success") {
+				this.showStatus(`Connected ${server}. Reloading so the integration becomes available…`);
+				await this.handleReloadCommand();
+			}
+			return;
+		}
+
+		if (sub === "logout") {
+			if (!server) {
+				this.showError("Usage: /mcp logout <name>");
+				return;
+			}
+			if (!isAuthed(server)) {
+				this.showStatus(`${server} is not connected.`);
+				return;
+			}
+			authStorage.logout(`mcp:${server}`);
+			this.showStatus(`Disconnected ${server}. Reloading…`);
+			await this.handleReloadCommand();
+			return;
+		}
+
+		this.showError(`Unknown /mcp subcommand: ${sub}. Use list, login, or logout.`);
+	}
+
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
 		if (mode === "login") {
 			const authResult = await this.showLoginProviderSelector();
@@ -6593,10 +6646,16 @@ export class InteractiveMode {
 			if (authResult.status === "success" && authResult.kind !== "service") {
 				await this.promptForModelSelection();
 			}
+			// An MCP integration login enables its skill, so reload resources.
+			if (authResult.status === "success" && authResult.providerId.startsWith("mcp:")) {
+				await this.handleReloadCommand();
+			}
 			return;
 		}
 
+		// Reload after logout so a removed MCP integration's skill is disabled.
 		await this.createAuthFlows().runLogout();
+		await this.handleReloadCommand();
 	}
 
 	// =========================================================================

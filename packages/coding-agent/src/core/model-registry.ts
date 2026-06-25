@@ -18,6 +18,7 @@ import {
 	resetApiProviders,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { registerBuiltinMcpOAuthProviders } from "@earendil-works/pi-ai/mcp";
 import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
@@ -377,6 +378,8 @@ export class ModelRegistry {
 		// Ensure dynamic API/OAuth registrations are rebuilt from current provider state.
 		resetApiProviders();
 		resetOAuthProviders();
+		// reset drops everything but model-provider built-ins; re-add MCP integrations.
+		registerBuiltinMcpOAuthProviders();
 
 		this.loadModels();
 
