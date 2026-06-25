@@ -522,9 +522,11 @@ export class InteractiveMode {
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
-	// Provider reports full prompt size at message_start and grows output as it streams,
-	// so this ticks up live; undefined until the first response of a turn.
-	private liveContextTokens: number | undefined = undefined;
+	// Live context-token count: a number when known (provider reports prompt size at
+	// message_start and grows output as it streams), null when known-unknown (right after
+	// a successful compaction, until the next assistant usage), undefined to defer to the
+	// connection snapshot.
+	private liveContextTokens: number | null | undefined = undefined;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
@@ -2074,9 +2076,10 @@ export class InteractiveMode {
 				break;
 			case "compaction_end":
 				this.patchConnectionState({ isCompacting: false });
-				// Pre-compaction usage no longer reflects context size; unknown until the next response.
-				if (!event.aborted) {
-					this.liveContextTokens = undefined;
+				// Only a completed compaction (result set) shrinks context; mark it known-unknown
+				// until the next assistant usage. Skips/failures leave the count intact.
+				if (event.result) {
+					this.liveContextTokens = null;
 				}
 				break;
 			case "message_start":
@@ -2166,12 +2169,12 @@ export class InteractiveMode {
 		if (this.liveContextTokens !== undefined) {
 			const contextWindow = this.getCurrentModel()?.contextWindow ?? snapshot?.contextWindow ?? 0;
 			if (contextWindow > 0) {
-				const usage: ContextUsage = {
-					tokens: this.liveContextTokens,
+				const tokens = this.liveContextTokens;
+				return {
+					tokens,
 					contextWindow,
-					percent: (this.liveContextTokens / contextWindow) * 100,
-				};
-				return usage;
+					percent: tokens === null ? null : (tokens / contextWindow) * 100,
+				} satisfies ContextUsage;
 			}
 		}
 		return snapshot;
