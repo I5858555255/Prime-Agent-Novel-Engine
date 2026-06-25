@@ -61,9 +61,11 @@ import {
 	uploadAgentTraceFile,
 } from "../../core/agent-traces.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
+import { calculateContextTokens } from "../../core/compaction/index.js";
 import { type AgentCronJob, parseHeartbeatCommand } from "../../core/cron-jobs.js";
 import type {
 	AutocompleteProviderFactory,
+	ContextUsage,
 	EditorFactory,
 	ExtensionCommandContext,
 	ExtensionContext,
@@ -520,6 +522,12 @@ export class InteractiveMode {
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
+	// Live context-token count from the most recent (or in-flight) assistant message.
+	// Anthropic reports the full prompt size (input + cache) at message_start and grows
+	// output as it streams, so calculateContextTokens(usage) tracks the real context the
+	// next turn will send and ticks up live — unlike the snapshot's stale contextUsage.
+	// undefined until the first response; cleared on compaction until a new turn lands.
+	private liveContextTokens: number | undefined = undefined;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
@@ -2069,6 +2077,16 @@ export class InteractiveMode {
 				break;
 			case "compaction_end":
 				this.patchConnectionState({ isCompacting: false });
+				// Pre-compaction usage no longer reflects context size; the count is unknown
+				// until the next assistant response reports post-compaction usage.
+				if (!event.aborted) {
+					this.liveContextTokens = undefined;
+				}
+				break;
+			case "message_start":
+			case "message_update":
+			case "message_end":
+				this.updateLiveContextFromMessageEvent(event);
 				break;
 			case "session_info_changed":
 				this.patchConnectionState({ sessionName: event.name });
@@ -2091,6 +2109,26 @@ export class InteractiveMode {
 			case "bash_end":
 				this.patchConnectionState({ isBashRunning: false });
 				break;
+		}
+	}
+
+	/**
+	 * Keep the live context-token count in sync with assistant message usage so the tray
+	 * context label ticks up as tokens stream, instead of showing the stale snapshot value
+	 * captured at session load. A fresh user turn clears it until the assistant responds.
+	 */
+	private updateLiveContextFromMessageEvent(event: { message: AgentMessage }): void {
+		const message = event.message;
+		if (message.role === "user") {
+			// New turn: the prior count is about to be superseded once the assistant replies.
+			this.liveContextTokens = undefined;
+			return;
+		}
+		if (message.role !== "assistant") return;
+		if (message.stopReason === "aborted" || message.stopReason === "error") return;
+		const tokens = calculateContextTokens(message.usage);
+		if (tokens > 0) {
+			this.liveContextTokens = tokens;
 		}
 	}
 
@@ -2135,7 +2173,22 @@ export class InteractiveMode {
 	}
 
 	private getConnectionContextUsage(): AgentConnectionState["contextUsage"] {
-		return this.connectionState?.contextUsage;
+		const snapshot = this.connectionState?.contextUsage;
+		// Prefer the live count derived from streaming usage so the tray updates as tokens
+		// arrive, rather than the value frozen at the last full state snapshot. Fall back to
+		// the snapshot before the first response and whenever the live count is unknown.
+		if (this.liveContextTokens !== undefined) {
+			const contextWindow = this.getCurrentModel()?.contextWindow ?? snapshot?.contextWindow ?? 0;
+			if (contextWindow > 0) {
+				const usage: ContextUsage = {
+					tokens: this.liveContextTokens,
+					contextWindow,
+					percent: (this.liveContextTokens / contextWindow) * 100,
+				};
+				return usage;
+			}
+		}
+		return snapshot;
 	}
 
 	private getScopedModelState(): AgentConnectionState["scopedModels"] {
@@ -2202,6 +2255,9 @@ export class InteractiveMode {
 		this.activeBashComponent = undefined;
 		this.pendingBashComponents = [];
 		this.activityTracker.reset();
+		// Drop the prior session's live count so the new session's snapshot drives the tray
+		// until its first response reports usage.
+		this.liveContextTokens = undefined;
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());

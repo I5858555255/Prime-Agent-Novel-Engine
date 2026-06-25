@@ -1222,6 +1222,81 @@ describe("InteractiveMode tray goal label", () => {
 	});
 });
 
+describe("InteractiveMode live context usage", () => {
+	type LiveContextHarness = {
+		connectionState: Pick<AgentConnectionState, "contextUsage"> | undefined;
+		liveContextTokens: number | undefined;
+		getCurrentModel(): AgentConnectionModel | undefined;
+		getConnectionContextUsage(): AgentConnectionState["contextUsage"];
+		updateLiveContextFromMessageEvent(event: { message: unknown }): void;
+	};
+	const prototype = InteractiveMode.prototype as unknown as LiveContextHarness;
+	const model = { contextWindow: 100_000 } as AgentConnectionModel;
+
+	function createHarness(): LiveContextHarness {
+		const fakeThis = Object.create(InteractiveMode.prototype) as LiveContextHarness;
+		fakeThis.connectionState = { contextUsage: undefined };
+		fakeThis.liveContextTokens = undefined;
+		fakeThis.getCurrentModel = () => model;
+		return fakeThis;
+	}
+
+	const assistantMessage = (output: number, overrides: Record<string, unknown> = {}) => ({
+		role: "assistant",
+		stopReason: "stop",
+		usage: { input: 10_000, output, cacheRead: 5_000, cacheWrite: 0, totalTokens: 0 },
+		...overrides,
+	});
+
+	test("falls back to the snapshot before any streaming usage arrives", () => {
+		const fakeThis = createHarness();
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
+
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toEqual({
+			contextWindow: 100_000,
+			tokens: 42_000,
+			percent: 42,
+		});
+	});
+
+	test("reports the live count from in-flight assistant usage", () => {
+		const fakeThis = createHarness();
+
+		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
+		// 10k input + 5k cacheRead + 1k output = 16k
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toEqual({
+			contextWindow: 100_000,
+			tokens: 16_000,
+			percent: 16,
+		});
+
+		// Output grows as the model streams; the tray count tracks it live.
+		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(3_000) });
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 18_000, percent: 18 });
+	});
+
+	test("ignores aborted and errored assistant usage", () => {
+		const fakeThis = createHarness();
+		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
+
+		prototype.updateLiveContextFromMessageEvent.call(fakeThis, {
+			message: assistantMessage(9_000, { stopReason: "aborted" }),
+		});
+		// The live count is unchanged by the aborted message.
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 16_000 });
+	});
+
+	test("clears the live count on a new user turn", () => {
+		const fakeThis = createHarness();
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
+		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
+
+		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: { role: "user" } });
+		// Back to the snapshot until the assistant responds again.
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 42_000 });
+	});
+});
+
 describe("InteractiveMode.handleGoalStatusCommand", () => {
 	test("prints current goal details without queuing through the agent", () => {
 		type GoalStatusCommandHarness = {
