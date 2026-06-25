@@ -194,7 +194,8 @@ function previewHeredoc(lines: readonly string[]): CodePreview | undefined {
 			}
 			continue;
 		}
-		if (/\b(?:bash|sh)\b/.test(line)) {
+		// Match bash/sh as an interpreter word (incl. /bin/sh), not a path suffix like script.sh.
+		if (/(?<![\w.])(?:bash|sh)\b/.test(line)) {
 			const preview = previewBashCommand(body);
 			return preview.text ? preview : { language: "bash", text: descriptor(body) };
 		}

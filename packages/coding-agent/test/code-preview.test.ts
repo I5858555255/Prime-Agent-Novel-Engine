@@ -118,6 +118,14 @@ PY`;
 		expect(previewBashCommand(command)).toEqual({ language: "python", text: "write packages/foo.ts" });
 	});
 
+	it("does not treat a .sh script path as an inline bash heredoc", () => {
+		const command = `./script.sh <<'EOF'
+hello world
+EOF`;
+		// The .sh suffix must not trigger the bash-interpreter branch; preview the body.
+		expect(previewBashCommand(command)).toEqual({ language: "bash", text: "hello world" });
+	});
+
 	it("prefers a later meaningful heredoc over an earlier generic one", () => {
 		const command = `cat <<'CFG'
 key=value
