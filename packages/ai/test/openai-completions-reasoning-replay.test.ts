@@ -118,6 +118,23 @@ describe("openai-completions reasoning replay", () => {
 		expect(assistant.content).toBe("answer");
 	});
 
+	it("writes reasoning_content (not the signature field) when the provider requires it", () => {
+		const reasoningCompat = { ...compat, requiresReasoningContentOnAssistantMessages: true };
+		const messages = convertMessages(
+			buildModel(),
+			// Recorded signature is "reasoning", but a reasoning_content provider must get the
+			// trace in reasoning_content or the reasoning_content="" default would erase it.
+			buildContext([
+				{ type: "thinking", thinking: "step by step", thinkingSignature: "reasoning" },
+				{ type: "text", text: "answer" },
+			]),
+			reasoningCompat,
+		);
+
+		const assistant = messages[1] as unknown as Record<string, unknown>;
+		expect(assistant.reasoning_content).toBe("step by step");
+	});
+
 	it("sanitizes unpaired surrogates in replayed reasoning", () => {
 		const reasoningCompat = { ...compat, requiresReasoningContentOnAssistantMessages: true };
 		const messages = convertMessages(

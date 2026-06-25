@@ -836,15 +836,16 @@ export function convertMessages(
 
 					// thinkingSignature holds the field the provider streamed reasoning in
 					// (reasoning_content / reasoning / reasoning_text), not a crypto signature.
-					// Round-trip it into that same field. With no recorded field, only use the
-					// non-standard reasoning_content when the provider expects it; otherwise keep
-					// the trace by prepending it as text rather than inventing an unsupported field.
+					// Prefer reasoning_content when the provider requires it (otherwise the
+					// reasoning_content="" default below would clobber the trace); else round-trip
+					// into the recorded field; with neither, keep the trace as text rather than
+					// inventing an unsupported field.
 					const reasoningText = nonEmptyThinkingBlocks
 						.map((block) => sanitizeSurrogates(block.thinking))
 						.join("\n");
-					const reasoningField =
-						nonEmptyThinkingBlocks[0].thinkingSignature ||
-						(compat.requiresReasoningContentOnAssistantMessages ? "reasoning_content" : undefined);
+					const reasoningField = compat.requiresReasoningContentOnAssistantMessages
+						? "reasoning_content"
+						: nonEmptyThinkingBlocks[0].thinkingSignature || undefined;
 					if (reasoningField) {
 						(assistantMsg as any)[reasoningField] = reasoningText;
 					} else {
