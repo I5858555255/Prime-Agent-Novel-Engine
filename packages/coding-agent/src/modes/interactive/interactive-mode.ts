@@ -522,11 +522,8 @@ export class InteractiveMode {
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
-	// Live context-token count from the most recent (or in-flight) assistant message.
-	// Anthropic reports the full prompt size (input + cache) at message_start and grows
-	// output as it streams, so calculateContextTokens(usage) tracks the real context the
-	// next turn will send and ticks up live — unlike the snapshot's stale contextUsage.
-	// undefined until the first response; cleared on compaction until a new turn lands.
+	// Provider reports full prompt size at message_start and grows output as it streams,
+	// so this ticks up live; undefined until the first response of a turn.
 	private liveContextTokens: number | undefined = undefined;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
@@ -2077,8 +2074,7 @@ export class InteractiveMode {
 				break;
 			case "compaction_end":
 				this.patchConnectionState({ isCompacting: false });
-				// Pre-compaction usage no longer reflects context size; the count is unknown
-				// until the next assistant response reports post-compaction usage.
+				// Pre-compaction usage no longer reflects context size; unknown until the next response.
 				if (!event.aborted) {
 					this.liveContextTokens = undefined;
 				}
@@ -2112,15 +2108,9 @@ export class InteractiveMode {
 		}
 	}
 
-	/**
-	 * Keep the live context-token count in sync with assistant message usage so the tray
-	 * context label ticks up as tokens stream, instead of showing the stale snapshot value
-	 * captured at session load. A fresh user turn clears it until the assistant responds.
-	 */
 	private updateLiveContextFromMessageEvent(event: { message: AgentMessage }): void {
 		const message = event.message;
 		if (message.role === "user") {
-			// New turn: the prior count is about to be superseded once the assistant replies.
 			this.liveContextTokens = undefined;
 			return;
 		}
@@ -2174,9 +2164,7 @@ export class InteractiveMode {
 
 	private getConnectionContextUsage(): AgentConnectionState["contextUsage"] {
 		const snapshot = this.connectionState?.contextUsage;
-		// Prefer the live count derived from streaming usage so the tray updates as tokens
-		// arrive, rather than the value frozen at the last full state snapshot. Fall back to
-		// the snapshot before the first response and whenever the live count is unknown.
+		// Prefer the live count over the snapshot, which only refreshes on full state loads.
 		if (this.liveContextTokens !== undefined) {
 			const contextWindow = this.getCurrentModel()?.contextWindow ?? snapshot?.contextWindow ?? 0;
 			if (contextWindow > 0) {
@@ -2255,8 +2243,6 @@ export class InteractiveMode {
 		this.activeBashComponent = undefined;
 		this.pendingBashComponents = [];
 		this.activityTracker.reset();
-		// Drop the prior session's live count so the new session's snapshot drives the tray
-		// until its first response reports usage.
 		this.liveContextTokens = undefined;
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
