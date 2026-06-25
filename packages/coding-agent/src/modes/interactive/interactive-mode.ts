@@ -521,6 +521,9 @@ export class InteractiveMode {
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
+	// activityTracker token count already folded into the context snapshot; only output beyond
+	// this counts as live in-flight (keeps auto-retries from re-adding a failed attempt).
+	private contextUsageTokenBaseline = 0;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
@@ -2049,12 +2052,12 @@ export class InteractiveMode {
 		this.updateWorkingPulse();
 	}
 
-	// Bake the completed turn's output into the snapshot so the tray doesn't dip in the gap
-	// between isStreaming clearing and the async refresh landing.
+	// Bake this attempt's output into the snapshot so the tray doesn't dip in the gap between
+	// isStreaming clearing and the async refresh landing.
 	private applyOptimisticContextUsage(): void {
 		const snapshot = this.connectionState?.contextUsage;
 		if (!snapshot || snapshot.tokens === null || snapshot.contextWindow <= 0) return;
-		const completed = this.activityTracker.getStatus().tokens;
+		const completed = Math.max(0, this.activityTracker.getStatus().tokens - this.contextUsageTokenBaseline);
 		if (completed <= 0) return;
 		const tokens = snapshot.tokens + completed;
 		this.patchConnectionState({
@@ -2070,6 +2073,8 @@ export class InteractiveMode {
 	private async refreshConnectionContextUsage(): Promise<void> {
 		const stats = await this.agentConnection?.getSessionStats?.().catch(() => undefined);
 		if (stats) {
+			// Anything counted so far is now reflected in the snapshot; only later output is in-flight.
+			this.contextUsageTokenBaseline = this.activityTracker.getStatus().tokens;
 			this.patchConnectionState({ contextUsage: stats.contextUsage });
 		}
 	}
@@ -2165,9 +2170,12 @@ export class InteractiveMode {
 		if (!snapshot || snapshot.tokens === null || snapshot.contextWindow <= 0) {
 			return snapshot;
 		}
-		// While a turn streams, add the in-flight output so the tray ticks up live rather than
-		// sitting on the last-turn baseline.
-		const inFlight = this.isAgentStreaming() ? this.activityTracker.getStatus().tokens : 0;
+		// Add only the output produced since the snapshot was last refreshed. The activity
+		// tracker accumulates across auto-retries within a turn, so subtract the baseline
+		// captured at the last refresh to avoid re-adding a failed attempt's tokens.
+		const inFlight = this.isAgentStreaming()
+			? Math.max(0, this.activityTracker.getStatus().tokens - this.contextUsageTokenBaseline)
+			: 0;
 		if (inFlight <= 0) {
 			return snapshot;
 		}
@@ -2243,6 +2251,7 @@ export class InteractiveMode {
 		this.activeBashComponent = undefined;
 		this.pendingBashComponents = [];
 		this.activityTracker.reset();
+		this.contextUsageTokenBaseline = 0;
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
@@ -3888,6 +3897,11 @@ export class InteractiveMode {
 
 		this.footer.invalidate();
 		this.updateConnectionStateFromEvent(event);
+		// A new user message resets the activity tracker to 0, so the in-flight baseline must
+		// reset with it. (agent_start on auto-retry does not reset the tracker.)
+		if (event.type === "message_start" && event.message.role === "user") {
+			this.contextUsageTokenBaseline = 0;
+		}
 		this.activityTracker.handleEvent(event);
 		this.updateWorkingLoaderMessage();
 

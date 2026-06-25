@@ -1227,15 +1227,19 @@ describe("InteractiveMode live context usage", () => {
 		connectionState: Pick<AgentConnectionState, "contextUsage"> | undefined;
 		activityTracker: { getStatus(): { tokens: number } };
 		isAgentStreaming(): boolean;
+		contextUsageTokenBaseline: number;
 		getConnectionContextUsage(): AgentConnectionState["contextUsage"];
 	};
 	const prototype = InteractiveMode.prototype as unknown as LiveContextHarness;
 
-	function createHarness(opts: { streaming?: boolean; inFlight?: number } = {}): LiveContextHarness {
+	function createHarness(
+		opts: { streaming?: boolean; inFlight?: number; baseline?: number } = {},
+	): LiveContextHarness {
 		const fakeThis = Object.create(InteractiveMode.prototype) as LiveContextHarness;
 		fakeThis.connectionState = { contextUsage: undefined };
 		fakeThis.activityTracker = { getStatus: () => ({ tokens: opts.inFlight ?? 0 }) };
 		fakeThis.isAgentStreaming = () => opts.streaming ?? false;
+		fakeThis.contextUsageTokenBaseline = opts.baseline ?? 0;
 		return fakeThis;
 	}
 
@@ -1256,6 +1260,15 @@ describe("InteractiveMode live context usage", () => {
 
 		// 42k baseline + 3k in-flight = 45k; ticks up live as the model writes.
 		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 45_000, percent: 45 });
+	});
+
+	test("only adds output beyond the refresh baseline (auto-retry does not double count)", () => {
+		// Tracker holds 5k from a failed attempt (baseline), now 6k after 1k of the retry.
+		const fakeThis = createHarness({ streaming: true, inFlight: 6_000, baseline: 5_000 });
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
+
+		// Only the 1k generated since the refresh is in-flight, not the failed attempt's 5k.
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 43_000 });
 	});
 
 	test("does not add in-flight output when not streaming", () => {
