@@ -2049,10 +2049,8 @@ export class InteractiveMode {
 		this.updateWorkingPulse();
 	}
 
-	/**
-	 * Bake the just-completed turn's output into the snapshot so the tray doesn't dip in the
-	 * async gap between isStreaming clearing and the authoritative refresh landing.
-	 */
+	// Bake the completed turn's output into the snapshot so the tray doesn't dip in the gap
+	// between isStreaming clearing and the async refresh landing.
 	private applyOptimisticContextUsage(): void {
 		const snapshot = this.connectionState?.contextUsage;
 		if (!snapshot || snapshot.tokens === null || snapshot.contextWindow <= 0) return;
@@ -2167,9 +2165,8 @@ export class InteractiveMode {
 		if (!snapshot || snapshot.tokens === null || snapshot.contextWindow <= 0) {
 			return snapshot;
 		}
-		// The snapshot is the authoritative context size at the last completed turn (refreshed
-		// on agent_end). While a turn streams, add the in-flight output the activity tracker is
-		// counting so the tray ticks up live instead of sitting on the stale baseline.
+		// While a turn streams, add the in-flight output so the tray ticks up live rather than
+		// sitting on the last-turn baseline.
 		const inFlight = this.isAgentStreaming() ? this.activityTracker.getStatus().tokens : 0;
 		if (inFlight <= 0) {
 			return snapshot;
@@ -4103,9 +4100,6 @@ export class InteractiveMode {
 				this.flushPendingBashComponents();
 				this.resetPendingToolState();
 
-				// isStreaming is now false, so getConnectionContextUsage would drop the in-flight
-				// tokens it was adding during the turn. Fold them into the snapshot synchronously
-				// first to avoid a visible dip, then reconcile to the authoritative size.
 				this.applyOptimisticContextUsage();
 				await this.refreshConnectionContextUsage();
 
@@ -4169,7 +4163,6 @@ export class InteractiveMode {
 							event.customInstructions,
 						),
 					);
-					// Context shrank; pull the new size so the tray drops immediately.
 					await this.refreshConnectionContextUsage();
 					this.footer.invalidate();
 				} else if (event.errorMessage) {

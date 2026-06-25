@@ -834,10 +834,8 @@ export function convertMessages(
 						assistantMsg.content = assistantText;
 					}
 
-					// Always replay reasoning back to the model. thinkingSignature records the
-					// field the provider streamed reasoning in (reasoning_content / reasoning /
-					// reasoning_text); default to reasoning_content when it is missing so the
-					// trace is never silently dropped on the next turn.
+					// thinkingSignature holds the field the provider streamed reasoning in
+					// (reasoning_content / reasoning / reasoning_text), not a crypto signature.
 					const reasoningField = nonEmptyThinkingBlocks[0].thinkingSignature || "reasoning_content";
 					(assistantMsg as any)[reasoningField] = nonEmptyThinkingBlocks.map((block) => block.thinking).join("\n");
 				}
