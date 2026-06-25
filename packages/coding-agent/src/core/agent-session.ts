@@ -215,6 +215,12 @@ export interface RlmChildAgentSnapshot {
 	status: RlmChildAgentStatus;
 	durationMs?: number;
 	answerPreview?: string;
+	/** Number of tool executions the subagent has started so far. */
+	toolUseCount?: number;
+	/** Context size (tokens) of the subagent's latest turn. */
+	tokenCount?: number;
+	/** Latest recap of what the subagent is doing, from the summarizer. */
+	recap?: string;
 	sessionDir: string;
 	transcript: readonly RlmChildAgentTranscriptLine[];
 	structuredTranscript?: readonly RlmChildAgentStructuredTranscriptEntry[];
@@ -245,6 +251,7 @@ export type AgentSessionEvent =
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
+	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
 	| { type: "bash_start"; command: string; excludeFromContext: boolean }
 	| { type: "bash_output"; chunk: string }
@@ -727,6 +734,8 @@ export class AgentSession {
 	private _rlmParentNodeId?: string;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
+	/** Latest recap for this session, written by the daemon summarizer; read by a parent to label its child snapshots. */
+	private _currentRecap?: string;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -3794,6 +3803,24 @@ export class AgentSession {
 		return usage;
 	}
 
+	/** Context size (tokens) of this session's latest assistant turn, for live subagent display. */
+	_contextTokensForCurrentMessages(): number | undefined {
+		const last = this._findLastAssistantMessage();
+		return last ? calculateContextTokens(last.usage) : undefined;
+	}
+
+	setCurrentRecap(recap: string | undefined): void {
+		if (this._currentRecap === recap) {
+			return;
+		}
+		this._currentRecap = recap;
+		this._emit({ type: "recap_update", recap });
+	}
+
+	getCurrentRecap(): string | undefined {
+		return this._currentRecap;
+	}
+
 	private _assistantUsageForCurrentMessages(): Usage {
 		const usage = emptyUsage();
 		for (const message of this.agent.state.messages) {
@@ -3994,6 +4021,7 @@ export class AgentSession {
 		const label = rlmChildLabel(prompt);
 		let answerPreview: string | undefined;
 		let durationMs: number | undefined;
+		let toolUseCount = 0;
 		const run: RlmChildRun = {
 			id: childNodeId,
 			prompt,
@@ -4017,6 +4045,9 @@ export class AgentSession {
 					status: run.status,
 					durationMs,
 					answerPreview,
+					toolUseCount: toolUseCount > 0 ? toolUseCount : undefined,
+					tokenCount: run.session?._contextTokensForCurrentMessages(),
+					recap: run.session?.getCurrentRecap(),
 					sessionDir: childSessionDir,
 					transcript: [...transcript],
 					structuredTranscript: [...structuredTranscript],
@@ -4126,6 +4157,11 @@ export class AgentSession {
 						this._emit(event);
 						return;
 					}
+					if (event.type === "recap_update") {
+						// The summarizer set the child's recap; refresh its snapshot so the parent UI shows it.
+						emitChildUpdate();
+						return;
+					}
 					switch (event.type) {
 						case "message_start": {
 							if (event.message.role === "user") {
@@ -4150,6 +4186,7 @@ export class AgentSession {
 						case "tool_execution_start": {
 							const args = formatRlmToolArgs(event.args);
 							const text = args ? `${event.toolName} running ${args}` : `${event.toolName} running`;
+							toolUseCount += 1;
 							// Tool break: next assistant text starts a new entry after this tool row.
 							currentAssistantIndex = undefined;
 							lastToolTranscriptIndex = transcript.length;
