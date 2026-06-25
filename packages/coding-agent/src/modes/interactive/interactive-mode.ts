@@ -2038,9 +2038,10 @@ export class InteractiveMode {
 
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
 		this.connectionState = state;
-		// The snapshot's contextUsage already reflects usage so far, so re-baseline the in-flight
-		// add to avoid counting the current attempt's output twice.
-		this.contextUsageTokenBaseline = this.activityTracker.getStatus().tokens;
+		// Don't touch contextUsageTokenBaseline: a mid-stream snapshot reflects only completed
+		// turns (the in-flight message isn't persisted yet), so the in-flight delta must keep
+		// accumulating. The baseline is managed at turn end (refreshConnectionContextUsage) and
+		// reset on a new user message.
 		this.footer.setAutoCompactEnabled(state.autoCompactionEnabled);
 		this.sessionRecap = state.recap;
 		this.renderRecap();
