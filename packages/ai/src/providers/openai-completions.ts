@@ -836,8 +836,19 @@ export function convertMessages(
 
 					// thinkingSignature holds the field the provider streamed reasoning in
 					// (reasoning_content / reasoning / reasoning_text), not a crypto signature.
-					const reasoningField = nonEmptyThinkingBlocks[0].thinkingSignature || "reasoning_content";
-					(assistantMsg as any)[reasoningField] = nonEmptyThinkingBlocks.map((block) => block.thinking).join("\n");
+					// Round-trip it into that same field. With no recorded field, only use the
+					// non-standard reasoning_content when the provider expects it; otherwise keep
+					// the trace by prepending it as text rather than inventing an unsupported field.
+					const reasoningText = nonEmptyThinkingBlocks.map((block) => block.thinking).join("\n");
+					const reasoningField =
+						nonEmptyThinkingBlocks[0].thinkingSignature ||
+						(compat.requiresReasoningContentOnAssistantMessages ? "reasoning_content" : undefined);
+					if (reasoningField) {
+						(assistantMsg as any)[reasoningField] = reasoningText;
+					} else {
+						assistantMsg.content =
+							assistantText.length > 0 ? `${reasoningText}\n\n${assistantText}` : reasoningText;
+					}
 				}
 			} else if (assistantText.length > 0) {
 				// Always send assistant content as a plain string (OpenAI Chat Completions

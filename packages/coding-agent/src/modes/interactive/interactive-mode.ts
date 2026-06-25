@@ -2038,6 +2038,9 @@ export class InteractiveMode {
 
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
 		this.connectionState = state;
+		// The snapshot's contextUsage already reflects usage so far, so re-baseline the in-flight
+		// add to avoid counting the current attempt's output twice.
+		this.contextUsageTokenBaseline = this.activityTracker.getStatus().tokens;
 		this.footer.setAutoCompactEnabled(state.autoCompactionEnabled);
 		this.sessionRecap = state.recap;
 		this.renderRecap();

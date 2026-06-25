@@ -85,7 +85,7 @@ describe("openai-completions reasoning replay", () => {
 		expect(assistant.reasoning).toBe("step by step");
 	});
 
-	it("never drops thinking when no signature was recorded", () => {
+	it("keeps unsigned thinking as text when the provider doesn't use a reasoning field", () => {
 		const messages = convertMessages(
 			buildModel(),
 			buildContext([
@@ -96,22 +96,40 @@ describe("openai-completions reasoning replay", () => {
 		);
 
 		const assistant = messages[1] as unknown as Record<string, unknown>;
-		// Falls back to reasoning_content so the trace is still sent back to the model.
-		expect(assistant.reasoning_content).toBe("unsigned reasoning");
+		// No recorded field and provider doesn't force reasoning_content: prepend as text so the
+		// trace is still sent back without inventing a non-standard field.
+		expect(assistant.reasoning_content).toBeUndefined();
+		expect(assistant.content).toBe("unsigned reasoning\n\nanswer");
 	});
 
-	it("replays thinking alongside a tool call", () => {
+	it("uses reasoning_content for unsigned thinking only when the provider requires it", () => {
+		const reasoningCompat = { ...compat, requiresReasoningContentOnAssistantMessages: true };
 		const messages = convertMessages(
 			buildModel(),
 			buildContext([
-				{ type: "thinking", thinking: "deciding to call a tool" },
+				{ type: "thinking", thinking: "unsigned reasoning" },
+				{ type: "text", text: "answer" },
+			]),
+			reasoningCompat,
+		);
+
+		const assistant = messages[1] as unknown as Record<string, unknown>;
+		expect(assistant.reasoning_content).toBe("unsigned reasoning");
+		expect(assistant.content).toBe("answer");
+	});
+
+	it("replays signed thinking alongside a tool call", () => {
+		const messages = convertMessages(
+			buildModel(),
+			buildContext([
+				{ type: "thinking", thinking: "deciding to call a tool", thinkingSignature: "reasoning" },
 				{ type: "toolCall", id: "call-1", name: "search", arguments: { q: "x" } },
 			]),
 			compat,
 		);
 
 		const assistant = messages[1] as unknown as Record<string, unknown>;
-		expect(assistant.reasoning_content).toBe("deciding to call a tool");
+		expect(assistant.reasoning).toBe("deciding to call a tool");
 		expect(Array.isArray(assistant.tool_calls)).toBe(true);
 	});
 });
