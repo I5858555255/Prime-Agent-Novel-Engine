@@ -48,6 +48,42 @@ describe("SubagentTreeView", () => {
 		expect(text).not.toContain("err");
 	});
 
+	test("includes in-flight nested subagents from the children tree", () => {
+		const view = new SubagentTreeView();
+		view.setNodes([
+			node({
+				id: "parent",
+				label: "parent",
+				status: "running",
+				children: [
+					node({ id: "child-run", label: "nested running", status: "running" }),
+					node({ id: "child-done", label: "nested done", status: "done" }),
+				],
+			}),
+		]);
+		const text = renderText(view);
+		// parent + nested running counted; nested done dropped.
+		expect(text).toContain("Running 2 agents…");
+		expect(text).toContain("nested running");
+		expect(text).not.toContain("nested done");
+	});
+
+	test("shows a running nested subagent even when its parent has finished", () => {
+		const view = new SubagentTreeView();
+		view.setNodes([
+			node({
+				id: "parent",
+				label: "parent",
+				status: "done",
+				children: [node({ id: "child-run", label: "nested running", status: "running" })],
+			}),
+		]);
+		const text = renderText(view);
+		expect(text).toContain("Running 1 agent…");
+		expect(text).toContain("nested running");
+		expect(text).not.toContain("parent");
+	});
+
 	test("disappears once every subagent is done", () => {
 		const view = new SubagentTreeView();
 		view.setNodes([node({ id: "a", status: "done" }), node({ id: "b", status: "cancelled" })]);

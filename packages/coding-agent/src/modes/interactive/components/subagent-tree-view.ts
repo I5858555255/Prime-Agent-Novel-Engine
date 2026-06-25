@@ -22,8 +22,21 @@ export class SubagentTreeView implements Component {
 	private nodes: readonly ChildAgentInspectorNode[] = [];
 
 	setNodes(nodes: readonly ChildAgentInspectorNode[]): void {
-		// Only in-flight subagents belong in the live tree; finished ones disappear.
-		this.nodes = nodes.filter((node) => node.status === "running" || node.status === "queued");
+		// Flatten the whole inspector tree — nested subagents live under `children` —
+		// and keep only the in-flight ones; finished subagents disappear.
+		const flat: ChildAgentInspectorNode[] = [];
+		const walk = (list: readonly ChildAgentInspectorNode[]): void => {
+			for (const node of list) {
+				if (node.status === "running" || node.status === "queued") {
+					flat.push(node);
+				}
+				if (node.children) {
+					walk(node.children);
+				}
+			}
+		};
+		walk(nodes);
+		this.nodes = flat;
 	}
 
 	hasNodes(): boolean {
