@@ -170,6 +170,9 @@ function heredocBody(lines: readonly string[], startIndex: number, delimiter: st
 }
 
 function previewHeredoc(lines: readonly string[]): CodePreview | undefined {
+	// A generic heredoc body is low-signal; keep it as a fallback and prefer a
+	// later, more specific heredoc (python/bash/node/write) if one follows.
+	let fallback: CodePreview | undefined;
 	for (let i = 0; i < lines.length; i++) {
 		const line = stripBashPrefix(lines[i] ?? "");
 		if (isSkippableBashLine(line)) {
@@ -205,9 +208,9 @@ function previewHeredoc(lines: readonly string[]): CodePreview | undefined {
 		if (/\bapply_patch\b/.test(line)) {
 			return { language: "bash", text: "apply patch" };
 		}
-		return { language: "bash", text: descriptor(body) };
+		fallback ??= { language: "bash", text: descriptor(body) };
 	}
-	return undefined;
+	return fallback;
 }
 
 function bashLineScore(line: string, index: number): number {

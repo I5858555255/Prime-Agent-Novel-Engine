@@ -117,4 +117,16 @@ p.write_text("hello")
 PY`;
 		expect(previewBashCommand(command)).toEqual({ language: "python", text: "write packages/foo.ts" });
 	});
+
+	it("prefers a later meaningful heredoc over an earlier generic one", () => {
+		const command = `cat <<'CFG'
+key=value
+CFG
+python3 - <<'PY'
+from pathlib import Path
+p = Path("packages/foo.ts")
+p.write_text("hello")
+PY`;
+		expect(previewBashCommand(command)).toEqual({ language: "python", text: "write packages/foo.ts" });
+	});
 });
