@@ -2074,12 +2074,16 @@ export class InteractiveMode {
 
 	/** Refresh the tray's context usage from the session after a turn or compaction completes. */
 	private async refreshConnectionContextUsage(): Promise<void> {
-		const stats = await this.agentConnection?.getSessionStats?.().catch(() => undefined);
-		if (stats) {
-			// Anything counted so far is now reflected in the snapshot; only later output is in-flight.
-			this.contextUsageTokenBaseline = this.activityTracker.getStatus().tokens;
-			this.patchConnectionState({ contextUsage: stats.contextUsage });
-		}
+		const connection = this.agentConnection;
+		const sessionId = this.connectionState?.sessionId;
+		const stats = await connection?.getSessionStats?.().catch(() => undefined);
+		if (!stats) return;
+		// Drop the result if the user switched sessions or the connection was rebound while the
+		// async call was in flight — otherwise stale stats would overwrite the new session.
+		if (this.agentConnection !== connection || this.connectionState?.sessionId !== sessionId) return;
+		// Anything counted so far is now reflected in the snapshot; only later output is in-flight.
+		this.contextUsageTokenBaseline = this.activityTracker.getStatus().tokens;
+		this.patchConnectionState({ contextUsage: stats.contextUsage });
 	}
 
 	private updateConnectionStateFromEvent(event: AgentConnectionSessionEvent): void {

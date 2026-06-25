@@ -1291,6 +1291,36 @@ describe("InteractiveMode live context usage", () => {
 
 		expect(prototype.getConnectionContextUsage.call(fakeThis)).toBeUndefined();
 	});
+
+	test("refreshConnectionContextUsage drops stale stats after a session switch", async () => {
+		type RefreshHarness = {
+			agentConnection: { getSessionStats(): Promise<{ contextUsage: unknown }> };
+			connectionState: { sessionId?: string; contextUsage?: unknown };
+			activityTracker: { getStatus(): { tokens: number } };
+			contextUsageTokenBaseline: number;
+			patchConnectionState(patch: Record<string, unknown>): void;
+			refreshConnectionContextUsage(): Promise<void>;
+		};
+		const refresh = (InteractiveMode.prototype as unknown as RefreshHarness).refreshConnectionContextUsage;
+		const fakeThis = Object.create(InteractiveMode.prototype) as RefreshHarness;
+		const patched: Record<string, unknown>[] = [];
+		fakeThis.activityTracker = { getStatus: () => ({ tokens: 0 }) };
+		fakeThis.contextUsageTokenBaseline = 0;
+		fakeThis.connectionState = { sessionId: "session-A", contextUsage: undefined };
+		fakeThis.patchConnectionState = (p) => patched.push(p);
+		fakeThis.agentConnection = {
+			getSessionStats: async () => {
+				// User switches sessions while the stats call is in flight.
+				fakeThis.connectionState = { sessionId: "session-B", contextUsage: undefined };
+				return { contextUsage: { contextWindow: 100_000, tokens: 50_000, percent: 50 } };
+			},
+		};
+
+		await refresh.call(fakeThis);
+
+		// Stats belonged to session-A; must not overwrite session-B.
+		expect(patched).toHaveLength(0);
+	});
 });
 
 describe("InteractiveMode.handleGoalStatusCommand", () => {
