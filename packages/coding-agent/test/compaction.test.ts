@@ -212,52 +212,6 @@ describe("Token calculation", () => {
 	});
 });
 
-describe("estimateContextTokens prior-reasoning add-back", () => {
-	function assistantWithThinking(thinking: string, text: string, usage: Usage): AssistantMessage {
-		return {
-			role: "assistant",
-			content: [
-				{ type: "thinking", thinking },
-				{ type: "text", text },
-			],
-			usage,
-			stopReason: "stop",
-			timestamp: Date.now(),
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet-4-5",
-		};
-	}
-
-	it("adds prior turns' thinking tokens so the total stays monotonic", () => {
-		const bigThinking = "x".repeat(4000); // ~1000 tokens
-		const messages: AgentMessage[] = [
-			createUserMessage("first"),
-			// A reasoning-heavy turn: its big output is in this usage...
-			assistantWithThinking(bigThinking, "answer one", createMockUsage(1000, 1100)),
-			createUserMessage("second"),
-			// ...but the next turn's usage does NOT re-bill that thinking (input barely grew).
-			assistantWithThinking("brief", "answer two", createMockUsage(1100, 200)),
-		];
-
-		const estimate = estimateContextTokens(messages);
-		// Last usage = 1300, plus ~1000 tokens of the earlier turn's thinking added back.
-		expect(estimate.priorReasoningTokens).toBeGreaterThanOrEqual(900);
-		expect(estimate.tokens).toBe(estimate.usageTokens + estimate.trailingTokens + estimate.priorReasoningTokens);
-		// Without the add-back the total would have dropped vs the prior turn (2100); with it, it does not.
-		expect(estimate.tokens).toBeGreaterThan(2100);
-	});
-
-	it("does not add back the last turn's own thinking (already in its usage)", () => {
-		const messages: AgentMessage[] = [
-			createUserMessage("only"),
-			assistantWithThinking("y".repeat(4000), "answer", createMockUsage(1000, 1100)),
-		];
-		const estimate = estimateContextTokens(messages);
-		expect(estimate.priorReasoningTokens).toBe(0);
-	});
-});
-
 describe("getLastAssistantUsage", () => {
 	it("should find the last non-aborted assistant message usage", () => {
 		const entries: SessionEntry[] = [

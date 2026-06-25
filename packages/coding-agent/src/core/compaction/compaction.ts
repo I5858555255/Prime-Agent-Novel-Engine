@@ -176,8 +176,6 @@ export interface ContextUsageEstimate {
 	tokens: number;
 	usageTokens: number;
 	trailingTokens: number;
-	/** Estimated thinking tokens from turns before the last usage, not re-billed by some providers. */
-	priorReasoningTokens: number;
 	lastUsageIndex: number | null;
 }
 
@@ -187,33 +185,6 @@ function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; in
 		if (usage) return { usage, index: i };
 	}
 	return undefined;
-}
-
-/**
- * Estimated tokens of thinking blocks in assistant messages strictly before `lastUsageIndex`.
- *
- * The last assistant usage already counts that turn's own reasoning, but providers that don't
- * re-bill replayed reasoning report each later turn's `input` without the prior turns' thinking.
- * Those traces are still sent back (and consume context), so adding their estimate keeps the
- * context total from collapsing turn-over-turn on reasoning-heavy turns. Mirrors Codex's
- * get_non_last_reasoning_items_tokens add-back.
- */
-function estimatePriorReasoningTokens(messages: AgentMessage[], lastUsageIndex: number): number {
-	let tokens = 0;
-	for (let i = 0; i < lastUsageIndex; i++) {
-		const message = messages[i];
-		if (message.role !== "assistant") continue;
-		const assistant = message as AssistantMessage;
-		// Aborted/error turns are dropped by transformMessages and never replayed, so their
-		// reasoning isn't in context — counting it would inflate the total.
-		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") continue;
-		for (const block of assistant.content) {
-			if (block.type === "thinking") {
-				tokens += Math.ceil(block.thinking.length / 4);
-			}
-		}
-	}
-	return tokens;
 }
 
 /**
@@ -232,7 +203,6 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 			tokens: estimated,
 			usageTokens: 0,
 			trailingTokens: estimated,
-			priorReasoningTokens: 0,
 			lastUsageIndex: null,
 		};
 	}
@@ -242,13 +212,11 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 	for (let i = usageInfo.index + 1; i < messages.length; i++) {
 		trailingTokens += estimateTokens(messages[i]);
 	}
-	const priorReasoningTokens = estimatePriorReasoningTokens(messages, usageInfo.index);
 
 	return {
-		tokens: usageTokens + trailingTokens + priorReasoningTokens,
+		tokens: usageTokens + trailingTokens,
 		usageTokens,
 		trailingTokens,
-		priorReasoningTokens,
 		lastUsageIndex: usageInfo.index,
 	};
 }
