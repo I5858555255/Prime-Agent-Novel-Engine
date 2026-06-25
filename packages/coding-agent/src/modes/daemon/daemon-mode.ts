@@ -180,13 +180,19 @@ export class AgentDaemon {
 	private readonly cronStore: AgentCronJobStore;
 	private readonly cronScheduler: AgentCronScheduler;
 	private readonly summarizer = new DaemonSessionSummarizer(
-		() => [...this.sessions.values()].filter((state) => state.runtime.metadata.kind !== "subagent"),
-		(state) =>
+		() => [...this.sessions.values()],
+		(state) => {
+			// Subagents share their recap with the parent so it shows in the parent's
+			// subagent tree; their own session channel usually has no attached client.
+			if (state.runtime.metadata.kind === "subagent") {
+				state.runtime.session.setCurrentRecap(state.summaryState?.summary);
+			}
 			this.broadcastToSession(state, {
 				type: "session_status",
 				activeSessionId: state.activeSessionId,
 				recap: state.summaryState?.summary,
-			}),
+			});
+		},
 	);
 
 	constructor(
@@ -348,9 +354,9 @@ export class AgentDaemon {
 			} catch {
 				// Marking is best-effort; the session still works unrestored.
 			}
-			// Restore the last persisted status so it shows before the first sweep.
-			this.summarizer.seed(state);
 		}
+		// Restore the last persisted status so it shows before the first sweep.
+		this.summarizer.seed(state);
 		return state;
 	}
 

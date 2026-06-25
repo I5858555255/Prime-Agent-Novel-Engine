@@ -6,9 +6,11 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { previewIpythonCode } from "../../../core/tools/code-preview.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
 import { shortenPath } from "../../../core/tools/render-utils.js";
 import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
+import { getWorkingPulseFrame, WORKING_ICON_FRAMES, workingIconFrame } from "../theme/working-icon.js";
 import { normalizeErrorDetails, summarizeErrorDetails } from "./collapsible-error.js";
 import { renderDiffSeparator, renderRichDiff } from "./diff.js";
 import { keyHint } from "./keybinding-hints.js";
@@ -73,13 +75,6 @@ const CELL_MAGIC_PATTERN = /^\s*%%bash\b/;
 const OUTPUT_PREVIEW_LINES = 5;
 const INPUT_PREVIEW_LINES = 3;
 
-// Cap so the trailing duration/counts stay visible on narrow widths.
-const DESCRIPTOR_MAX_WIDTH = 64;
-
-const COMMENT_LINE_PATTERN = /^\s*#/;
-// Strip a leading `cd … &&` to surface the real command.
-const CD_PREFIX_PATTERN = /^\s*cd\s+[^&;|]+(?:&&|;)\s*/;
-
 const SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
 
 /**
@@ -115,36 +110,6 @@ function closeOpenSgr(line: string): string {
 		}
 	}
 	return fgOpen || bgOpen ? `${line}\x1b[0m` : line;
-}
-
-function collapseWhitespace(text: string): string {
-	return text.replace(/\s+/g, " ").trim();
-}
-
-function truncateDescriptor(text: string): string {
-	if (text.length <= DESCRIPTOR_MAX_WIDTH) {
-		return text;
-	}
-	return `${text.slice(0, DESCRIPTOR_MAX_WIDTH - 1).trimEnd()}…`;
-}
-
-/** Leading meaningful command of a cell; "" while code is still streaming. */
-function summarizeCell(code: string): string {
-	const lines = code.split("\n");
-	const isBashCell = CELL_MAGIC_PATTERN.test(lines[0] ?? "");
-	const body = isBashCell ? lines.slice(1) : lines;
-	for (const rawLine of body) {
-		const trimmed = rawLine.trim();
-		if (!trimmed || COMMENT_LINE_PATTERN.test(trimmed)) {
-			continue;
-		}
-		const command = trimmed.replace(MAGIC_LINE_PATTERN, "").trim();
-		if (!command) {
-			continue;
-		}
-		return truncateDescriptor(collapseWhitespace(command.replace(CD_PREFIX_PATTERN, "")));
-	}
-	return "";
 }
 
 export function getIpythonCodeFromArgs(args: unknown): string {
@@ -328,12 +293,18 @@ export class IPythonCellComponent implements Component {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const cached = this.renderCache.get(safeWidth, this.stateVersion);
+		const details = readDetails(this.state.details);
+		// Fold the animation frame into the cache key while running (offset within
+		// a stateVersion slot so it never collides with another version).
+		const frames = WORKING_ICON_FRAMES.length;
+		const cacheVersion =
+			this.statusKind(details) === "running"
+				? this.stateVersion * frames + (getWorkingPulseFrame() % frames)
+				: this.stateVersion * frames;
+		const cached = this.renderCache.get(safeWidth, cacheVersion);
 		if (cached) {
 			return cached;
 		}
-
-		const details = readDetails(this.state.details);
 
 		// Collapsed default: one line, indented to match message text. Cached by
 		// state version so it never re-renders on unrelated repaints (would flicker).
@@ -342,11 +313,11 @@ export class IPythonCellComponent implements Component {
 		if (!this.state.expanded) {
 			const summary = truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "");
 			if ((details.diffs?.length ?? 0) === 0) {
-				return this.renderCache.set(safeWidth, this.stateVersion, [summary]);
+				return this.renderCache.set(safeWidth, cacheVersion, [summary]);
 			}
 			const lines = [summary];
 			this.renderDiffs(lines, safeWidth, details.diffs ?? [], this.marker(details));
-			return this.renderCache.set(safeWidth, this.stateVersion, lines);
+			return this.renderCache.set(safeWidth, cacheVersion, lines);
 		}
 
 		const lines: string[] = [];
@@ -363,22 +334,20 @@ export class IPythonCellComponent implements Component {
 		lines.push(toolPanelLine(this.header(details), safeWidth));
 		const hasCode = this.renderCode(lines, safeWidth, withExpandHint, hasDiffs);
 		this.renderOutput(lines, safeWidth, details, hasCode, withExpandHint);
-		return this.renderCache.set(safeWidth, this.stateVersion, lines);
+		return this.renderCache.set(safeWidth, cacheVersion, lines);
 	}
 
-	// Command is bash-only: python first-lines are usually imports/setup, not intent.
 	private collapsedLine(details: IpythonDetails): string {
 		const code = this.state.code.trimEnd();
 		const isBashCell = CELL_MAGIC_PATTERN.test(code.split("\n")[0] ?? "");
-		const parts = [`${this.marker(details)} ${theme.fg("muted", isBashCell ? "bash" : "python")}`];
+		const preview = previewIpythonCode(code);
+		const languageLabel = isBashCell && preview.language !== "bash" ? `bash · ${preview.language}` : preview.language;
+		const parts = [`${this.marker(details)} ${theme.fg("muted", languageLabel)}`];
 
-		if (isBashCell) {
-			const command = summarizeCell(code);
-			if (command) {
-				parts.push(this.highlightInputLine(command, true));
-			} else if (!this.state.executionStarted) {
-				parts.push(theme.fg("muted", "waiting for code"));
-			}
+		if (preview.text) {
+			parts.push(this.highlightInputLine(preview.text, preview.language === "bash"));
+		} else if (!this.state.executionStarted) {
+			parts.push(theme.fg("muted", "waiting for code"));
 		}
 
 		const counts = this.lineCounts(details);
@@ -410,7 +379,7 @@ export class IPythonCellComponent implements Component {
 			case "done":
 				return theme.fg("success", "✓");
 			case "running":
-				return theme.fg("bashMode", "▸");
+				return theme.fg("bashMode", workingIconFrame(getWorkingPulseFrame()));
 			default: // queued
 				return theme.fg("muted", "▸");
 		}
