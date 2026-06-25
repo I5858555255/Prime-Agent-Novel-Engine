@@ -61,7 +61,6 @@ import {
 	uploadAgentTraceFile,
 } from "../../core/agent-traces.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
-import { calculateContextTokens } from "../../core/compaction/index.js";
 import { type AgentCronJob, parseHeartbeatCommand } from "../../core/cron-jobs.js";
 import type {
 	AutocompleteProviderFactory,
@@ -522,11 +521,6 @@ export class InteractiveMode {
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
-	// Live context-token count: a number when known (provider reports prompt size at
-	// message_start and grows output as it streams), null when known-unknown (right after
-	// a successful compaction, until the next assistant usage), undefined to defer to the
-	// connection snapshot.
-	private liveContextTokens: number | null | undefined = undefined;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
@@ -2055,6 +2049,14 @@ export class InteractiveMode {
 		this.updateWorkingPulse();
 	}
 
+	/** Refresh the tray's context usage from the session after a turn or compaction completes. */
+	private async refreshConnectionContextUsage(): Promise<void> {
+		const stats = await this.agentConnection.getSessionStats().catch(() => undefined);
+		if (stats) {
+			this.patchConnectionState({ contextUsage: stats.contextUsage });
+		}
+	}
+
 	private updateConnectionStateFromEvent(event: AgentConnectionSessionEvent): void {
 		if (!this.connectionState) {
 			return;
@@ -2076,16 +2078,6 @@ export class InteractiveMode {
 				break;
 			case "compaction_end":
 				this.patchConnectionState({ isCompacting: false });
-				// Only a completed compaction (result set) shrinks context; mark it known-unknown
-				// until the next assistant usage. Skips/failures leave the count intact.
-				if (event.result) {
-					this.liveContextTokens = null;
-				}
-				break;
-			case "message_start":
-			case "message_update":
-			case "message_end":
-				this.updateLiveContextFromMessageEvent(event);
 				break;
 			case "session_info_changed":
 				this.patchConnectionState({ sessionName: event.name });
@@ -2108,18 +2100,6 @@ export class InteractiveMode {
 			case "bash_end":
 				this.patchConnectionState({ isBashRunning: false });
 				break;
-		}
-	}
-
-	private updateLiveContextFromMessageEvent(event: { message: AgentMessage }): void {
-		const message = event.message;
-		// Hold the prior turn's count through a new user message; the next assistant usage
-		// (which already includes that message in its input tokens) overwrites it upward.
-		if (message.role !== "assistant") return;
-		if (message.stopReason === "aborted" || message.stopReason === "error") return;
-		const tokens = calculateContextTokens(message.usage);
-		if (tokens > 0) {
-			this.liveContextTokens = tokens;
 		}
 	}
 
@@ -2165,19 +2145,22 @@ export class InteractiveMode {
 
 	private getConnectionContextUsage(): AgentConnectionState["contextUsage"] {
 		const snapshot = this.connectionState?.contextUsage;
-		// Prefer the live count over the snapshot, which only refreshes on full state loads.
-		if (this.liveContextTokens !== undefined) {
-			const contextWindow = this.getCurrentModel()?.contextWindow ?? snapshot?.contextWindow ?? 0;
-			if (contextWindow > 0) {
-				const tokens = this.liveContextTokens;
-				return {
-					tokens,
-					contextWindow,
-					percent: tokens === null ? null : (tokens / contextWindow) * 100,
-				} satisfies ContextUsage;
-			}
+		if (!snapshot || snapshot.tokens === null || snapshot.contextWindow <= 0) {
+			return snapshot;
 		}
-		return snapshot;
+		// The snapshot is the authoritative context size at the last completed turn (refreshed
+		// on agent_end). While a turn streams, add the in-flight output the activity tracker is
+		// counting so the tray ticks up live instead of sitting on the stale baseline.
+		const inFlight = this.isAgentStreaming() ? this.activityTracker.getStatus().tokens : 0;
+		if (inFlight <= 0) {
+			return snapshot;
+		}
+		const tokens = snapshot.tokens + inFlight;
+		return {
+			tokens,
+			contextWindow: snapshot.contextWindow,
+			percent: (tokens / snapshot.contextWindow) * 100,
+		} satisfies ContextUsage;
 	}
 
 	private getScopedModelState(): AgentConnectionState["scopedModels"] {
@@ -2244,7 +2227,6 @@ export class InteractiveMode {
 		this.activeBashComponent = undefined;
 		this.pendingBashComponents = [];
 		this.activityTracker.reset();
-		this.liveContextTokens = undefined;
 		this.resetPendingToolState();
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
@@ -4102,6 +4084,10 @@ export class InteractiveMode {
 				this.flushPendingBashComponents();
 				this.resetPendingToolState();
 
+				// Pull the authoritative context usage for the completed turn so the tray reflects
+				// the real post-turn size; in-flight streaming only ever added to the prior baseline.
+				await this.refreshConnectionContextUsage();
+
 				await this.checkShutdownRequested();
 
 				this.ui.requestRender();
@@ -4162,6 +4148,8 @@ export class InteractiveMode {
 							event.customInstructions,
 						),
 					);
+					// Context shrank; pull the new size so the tray drops immediately.
+					await this.refreshConnectionContextUsage();
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.errorSeverity === "warning") {

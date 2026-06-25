@@ -1225,42 +1225,21 @@ describe("InteractiveMode tray goal label", () => {
 describe("InteractiveMode live context usage", () => {
 	type LiveContextHarness = {
 		connectionState: Pick<AgentConnectionState, "contextUsage"> | undefined;
-		liveContextTokens: number | null | undefined;
-		getCurrentModel(): AgentConnectionModel | undefined;
+		activityTracker: { getStatus(): { tokens: number } };
+		isAgentStreaming(): boolean;
 		getConnectionContextUsage(): AgentConnectionState["contextUsage"];
-		updateLiveContextFromMessageEvent(event: { message: unknown }): void;
-		updateConnectionStateFromEvent(event: AgentConnectionSessionEvent): void;
-		patchConnectionState(patch: Partial<AgentConnectionState>): void;
 	};
 	const prototype = InteractiveMode.prototype as unknown as LiveContextHarness;
-	const model = { contextWindow: 100_000 } as AgentConnectionModel;
 
-	function createHarness(): LiveContextHarness {
+	function createHarness(opts: { streaming?: boolean; inFlight?: number } = {}): LiveContextHarness {
 		const fakeThis = Object.create(InteractiveMode.prototype) as LiveContextHarness;
 		fakeThis.connectionState = { contextUsage: undefined };
-		fakeThis.liveContextTokens = undefined;
-		fakeThis.getCurrentModel = () => model;
-		fakeThis.patchConnectionState = () => {};
+		fakeThis.activityTracker = { getStatus: () => ({ tokens: opts.inFlight ?? 0 }) };
+		fakeThis.isAgentStreaming = () => opts.streaming ?? false;
 		return fakeThis;
 	}
 
-	const compactionEnd = (overrides: Record<string, unknown> = {}): AgentConnectionSessionEvent =>
-		({
-			type: "compaction_end",
-			reason: "manual",
-			aborted: false,
-			willRetry: false,
-			...overrides,
-		}) as AgentConnectionSessionEvent;
-
-	const assistantMessage = (output: number, overrides: Record<string, unknown> = {}) => ({
-		role: "assistant",
-		stopReason: "stop",
-		usage: { input: 10_000, output, cacheRead: 5_000, cacheWrite: 0, totalTokens: 0 },
-		...overrides,
-	});
-
-	test("falls back to the snapshot before any streaming usage arrives", () => {
+	test("returns the snapshot verbatim when idle", () => {
 		const fakeThis = createHarness();
 		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
 
@@ -1271,71 +1250,33 @@ describe("InteractiveMode live context usage", () => {
 		});
 	});
 
-	test("reports the live count from in-flight assistant usage", () => {
-		const fakeThis = createHarness();
-
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
-		// 10k input + 5k cacheRead + 1k output = 16k
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toEqual({
-			contextWindow: 100_000,
-			tokens: 16_000,
-			percent: 16,
-		});
-
-		// Output grows as the model streams; the tray count tracks it live.
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(3_000) });
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 18_000, percent: 18 });
-	});
-
-	test("ignores aborted and errored assistant usage", () => {
-		const fakeThis = createHarness();
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
-
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, {
-			message: assistantMessage(9_000, { stopReason: "aborted" }),
-		});
-		// The live count is unchanged by the aborted message.
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 16_000 });
-	});
-
-	test("holds the prior count through a new user turn", () => {
-		const fakeThis = createHarness();
+	test("adds in-flight streaming output to the snapshot baseline while streaming", () => {
+		const fakeThis = createHarness({ streaming: true, inFlight: 3_000 });
 		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
 
-		// A new user message must not reset the tray to the stale snapshot (or 0).
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: { role: "user" } });
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 16_000 });
+		// 42k baseline + 3k in-flight = 45k; ticks up live as the model writes.
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 45_000, percent: 45 });
 	});
 
-	test("reports unknown after a successful compaction, not the stale snapshot", () => {
-		const fakeThis = createHarness();
-		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 80_000, percent: 80 } };
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
+	test("does not add in-flight output when not streaming", () => {
+		const fakeThis = createHarness({ streaming: false, inFlight: 3_000 });
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
 
-		prototype.updateConnectionStateFromEvent.call(
-			fakeThis,
-			compactionEnd({ result: { summary: "s", tokensBefore: 90_000 } }),
-		);
-		// Context shrank; the tray must show unknown rather than the pre-compaction total.
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 42_000 });
+	});
+
+	test("passes through an unknown (post-compaction) snapshot without inflating it", () => {
+		const fakeThis = createHarness({ streaming: true, inFlight: 3_000 });
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: null, percent: null } };
+
 		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: null, percent: null });
-
-		// The next assistant usage resolves the count.
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(2_000) });
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 17_000 });
 	});
 
-	test("keeps the live count when compaction is skipped or fails", () => {
-		const fakeThis = createHarness();
-		prototype.updateLiveContextFromMessageEvent.call(fakeThis, { message: assistantMessage(1_000) });
+	test("returns undefined when there is no snapshot yet", () => {
+		const fakeThis = createHarness({ streaming: true, inFlight: 3_000 });
+		fakeThis.connectionState = { contextUsage: undefined };
 
-		// No result (nothing to compact / failure) leaves the accurate count intact.
-		prototype.updateConnectionStateFromEvent.call(fakeThis, compactionEnd({ result: undefined }));
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 16_000 });
-
-		// An aborted compaction also leaves it intact.
-		prototype.updateConnectionStateFromEvent.call(fakeThis, compactionEnd({ aborted: true }));
-		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 16_000 });
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toBeUndefined();
 	});
 });
 

@@ -834,11 +834,12 @@ export function convertMessages(
 						assistantMsg.content = assistantText;
 					}
 
-					// Use the signature from the first thinking block if available (for llama.cpp server + gpt-oss)
-					const signature = nonEmptyThinkingBlocks[0].thinkingSignature;
-					if (signature && signature.length > 0) {
-						(assistantMsg as any)[signature] = nonEmptyThinkingBlocks.map((block) => block.thinking).join("\n");
-					}
+					// Always replay reasoning back to the model. thinkingSignature records the
+					// field the provider streamed reasoning in (reasoning_content / reasoning /
+					// reasoning_text); default to reasoning_content when it is missing so the
+					// trace is never silently dropped on the next turn.
+					const reasoningField = nonEmptyThinkingBlocks[0].thinkingSignature || "reasoning_content";
+					(assistantMsg as any)[reasoningField] = nonEmptyThinkingBlocks.map((block) => block.thinking).join("\n");
 				}
 			} else if (assistantText.length > 0) {
 				// Always send assistant content as a plain string (OpenAI Chat Completions
