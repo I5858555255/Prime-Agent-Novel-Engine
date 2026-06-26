@@ -134,6 +134,25 @@ describe("buildSessionList", () => {
 		expect(entry).toMatchObject({ summary: "Shipped the fix", taskState: "completed" });
 	});
 
+	it("drops a stale persisted verdict when later messages outpaced it", () => {
+		const path = resolve("/tmp/project/stale.jsonl");
+		const [entry] = buildSessionList(
+			[],
+			[
+				makeSessionInfo({
+					path,
+					id: "stale",
+					messageCount: 5,
+					state: { status: "active" },
+					// Verdict was based on an earlier turn (3 < 5), so it must not show.
+					agentStatus: { summary: "Old recap", taskState: "completed", basedOnMessageCount: 3 },
+				}),
+			],
+		);
+		expect(entry?.summary).toBeUndefined();
+		expect(entry?.taskState).toBeUndefined();
+	});
+
 	it("includes active subagent parent metadata", () => {
 		const entries = buildSessionList(
 			[

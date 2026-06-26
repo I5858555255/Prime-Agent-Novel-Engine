@@ -197,8 +197,11 @@ export function summaryForInactiveSession(session: SessionInfo): SessionSummary 
 		parentSessionPath: session.parentSessionPath,
 		// Carry the persisted recap/verdict so an off-daemon session keeps its
 		// agents-view bucket (e.g. Completed) instead of defaulting to Needs Input.
-		summary: session.agentStatus?.summary,
-		taskState: session.agentStatus?.taskState,
+		// Gate on message-count currency like isSummaryCurrent does for resident
+		// sessions, so a verdict from before later messages isn't shown stale.
+		...(session.agentStatus?.basedOnMessageCount === session.messageCount
+			? { summary: session.agentStatus.summary, taskState: session.agentStatus.taskState }
+			: {}),
 	};
 }
 
