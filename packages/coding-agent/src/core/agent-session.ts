@@ -2734,21 +2734,23 @@ export class AgentSession {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
-	// Appended straight to history (not a nextTurn message) so it also reaches the
-	// continue()-driven auto-compaction resume, which never injects nextTurn messages.
+	// Added to history (not a nextTurn message) so it also reaches the continue()-driven
+	// auto-compaction resume, which never injects nextTurn messages.
 	private async _notifyKernelStateAfterCompaction(): Promise<void> {
 		const provisioner = this._ipythonKernelProvisioner;
 		// No kernel means no state to remind about; only stay silent in that case.
 		if (!provisioner?.hasRunningKernel) return;
-		// Bound the listing: a wedged kernel can leave the queued cell unresolved, which would
-		// otherwise hang the compaction path before its continue() retry.
-		const names = await Promise.race([
-			provisioner.listNamespaceNames().catch(() => null),
-			new Promise<null>((resolve) => {
-				const t = setTimeout(() => resolve(null), KERNEL_STATE_LISTING_TIMEOUT_MS);
-				if (typeof t === "object" && "unref" in t) t.unref();
-			}),
-		]);
+		// Bound the probe so a wedged kernel can't stall recovery, and abort it on timeout so
+		// the kernel's serialized execution queue isn't left occupied by a never-resolving cell.
+		const abort = new AbortController();
+		const timer = setTimeout(() => abort.abort(), KERNEL_STATE_LISTING_TIMEOUT_MS);
+		if (typeof timer === "object" && "unref" in timer) timer.unref();
+		let names: string[] | null;
+		try {
+			names = await provisioner.listNamespaceNames(abort.signal).catch(() => null);
+		} finally {
+			clearTimeout(timer);
+		}
 		// null is a listing failure/timeout; only claim state survived if the kernel is still up
 		// (it may have died in the window since the check above).
 		if (names === null && !provisioner.hasRunningKernel) return;
@@ -2770,7 +2772,15 @@ export class AgentSession {
 			display: false,
 			timestamp: Date.now(),
 		} satisfies CustomMessage;
-		this.agent.state.messages.push(message);
+		// Insert before a trailing assistant error so overflow-retry cleanup can still strip it.
+		const messages = this.agent.state.messages;
+		const last = messages[messages.length - 1];
+		const insertBeforeError = last?.role === "assistant" && (last as AssistantMessage).stopReason === "error";
+		if (insertBeforeError) {
+			messages.splice(messages.length - 1, 0, message);
+		} else {
+			messages.push(message);
+		}
 		this.sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, undefined);
 		this._emit({ type: "message_start", message });
 		this._emit({ type: "message_end", message });

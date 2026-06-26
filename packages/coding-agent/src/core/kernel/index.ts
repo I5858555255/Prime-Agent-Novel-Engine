@@ -1027,12 +1027,13 @@ export class KernelManager {
 	}
 
 	/** Live user-defined top-level names, or null if the kernel isn't running. Never throws. */
-	async listNamespaceNames(): Promise<string[] | null> {
+	async listNamespaceNames(signal?: AbortSignal): Promise<string[] | null> {
 		if (!this.isRunning) return null;
 		try {
 			const r = await this.enqueueExecute(buildListNamesCode(), {
 				maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS,
 				internal: true,
+				signal,
 			});
 			if (r.status !== "ok") {
 				this.appendKernelDiagnostic(`namespace listing failed: ${r.error?.evalue ?? r.stderr}`);

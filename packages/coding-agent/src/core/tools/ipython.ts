@@ -203,9 +203,9 @@ export class IpythonKernelProvisioner {
 	}
 
 	/** Live user-defined names in the kernel namespace, or null if listing failed / no kernel. */
-	async listNamespaceNames(): Promise<string[] | null> {
+	async listNamespaceNames(signal?: AbortSignal): Promise<string[] | null> {
 		const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
-		return (await m?.listNamespaceNames()) ?? null;
+		return (await m?.listNamespaceNames(signal)) ?? null;
 	}
 
 	/** Dispose the kernel owned by this provisioner, including one still starting up. */
