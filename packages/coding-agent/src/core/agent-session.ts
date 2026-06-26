@@ -2734,15 +2734,20 @@ export class AgentSession {
 	// Appended straight to history (not a nextTurn message) so it also reaches the
 	// continue()-driven auto-compaction resume, which never injects nextTurn messages.
 	private async _notifyKernelStateAfterCompaction(): Promise<void> {
-		const names = await this._ipythonKernelProvisioner?.listNamespaceNames().catch(() => null);
-		if (!names) return;
+		const provisioner = this._ipythonKernelProvisioner;
+		// No kernel means no state to remind about; only stay silent in that case.
+		if (!provisioner?.hasRunningKernel) return;
+		// null here is a listing failure (kernel is up) — still tell the model state persisted.
+		const names = await provisioner.listNamespaceNames().catch(() => null);
 		const detail =
-			names.length > 0
-				? `These names are still defined: ${names.join(", ")}.`
-				: "You have not defined any names yet.";
+			names === null
+				? ""
+				: names.length > 0
+					? ` These names are still defined: ${names.join(", ")}.`
+					: " You have not defined any names yet.";
 		const content = [
 			"<ipython_state>",
-			`Your IPython kernel persisted through compaction; all variables, imports, and helpers you defined remain available. ${detail}`,
+			`Your IPython kernel persisted through compaction; all variables, imports, and helpers you defined remain available.${detail}`,
 			"</ipython_state>",
 		].join("\n");
 		const message = {

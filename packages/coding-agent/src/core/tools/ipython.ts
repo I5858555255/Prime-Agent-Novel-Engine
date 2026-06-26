@@ -197,7 +197,12 @@ export class IpythonKernelProvisioner {
 		void this.ensure().catch(() => {});
 	}
 
-	/** Live user-defined names in the kernel namespace, or null if no kernel is running. */
+	/** Whether a kernel has finished starting and is currently running. */
+	get hasRunningKernel(): boolean {
+		return this.startedManager?.isRunning ?? false;
+	}
+
+	/** Live user-defined names in the kernel namespace, or null if listing failed / no kernel. */
 	async listNamespaceNames(): Promise<string[] | null> {
 		const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
 		return (await m?.listNamespaceNames()) ?? null;
