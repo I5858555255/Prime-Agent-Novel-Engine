@@ -1514,13 +1514,22 @@ export class AgentDaemon {
 		if (state.runtime.metadata.kind === "subagent") {
 			return false;
 		}
-		const session = state.runtime.session;
-		// Any messages, a running user bash, an in-flight turn, persisted config
-		// (model/name/etc.), or scheduled jobs all make the draft worth keeping.
-		if (session.messages.length > 0 || session.isBashRunning || isActiveSessionBusy(state)) {
+		// A running bash or in-flight turn means there is live work to preserve.
+		if (state.runtime.session.isBashRunning || isActiveSessionBusy(state)) {
 			return false;
 		}
-		if (session.sessionManager.hasUserContent()) {
+		return this.isEmptyDraftContent(state);
+	}
+
+	/**
+	 * True when a session holds nothing worth persisting: no messages, no user
+	 * config (model/name/etc.), and no scheduled jobs. Shared by the detach-time
+	 * discard and the close-time file deletion so both agree on what an abandoned
+	 * draft is.
+	 */
+	private isEmptyDraftContent(state: ActiveSessionState): boolean {
+		const session = state.runtime.session;
+		if (session.messages.length > 0 || session.sessionManager.hasUserContent()) {
 			return false;
 		}
 		return !this.hasScheduledJobsForSession(state.activeSessionId);
@@ -1529,7 +1538,10 @@ export class AgentDaemon {
 	private hasScheduledJobsForSession(activeSessionId: string): boolean {
 		return this.cronStore
 			.list()
-			.some((job) => job.activeSessionId === activeSessionId && job.status !== "cancelled" && job.status !== "completed");
+			.some(
+				(job) =>
+					job.activeSessionId === activeSessionId && job.status !== "cancelled" && job.status !== "completed",
+			);
 	}
 
 	private detachClient(client: DaemonSocketClient): void {
@@ -1576,8 +1588,10 @@ export class AgentDaemon {
 		// agent_status to a session being torn down.
 		this.summarizer.forget(state.activeSessionId);
 		const cascadeError = await this.closeChildSessions(state, reason);
-		// Message-less draft: discard rather than persist an empty session file.
-		const isEmptyDraftSession = reason !== "shutdown" && state.runtime.session.messages.length === 0;
+		// Empty draft (no messages, config, or jobs): discard rather than persist an
+		// empty session file. Mirrors the detach-time discard so a config-bearing
+		// draft closed via kill/completed is never wiped.
+		const isEmptyDraftSession = reason !== "shutdown" && this.isEmptyDraftContent(state);
 		let persistError: unknown;
 		if (reason !== "shutdown" && !isEmptyDraftSession) {
 			try {
