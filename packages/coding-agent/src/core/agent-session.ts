@@ -2731,8 +2731,28 @@ export class AgentSession {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
-	private async _restartIpythonKernelAfterCompaction(): Promise<void> {
-		await this._ipythonKernelProvisioner?.restart();
+	/**
+	 * Compaction summarizes the conversation but leaves the IPython kernel running,
+	 * so every variable, import, and helper the model defined is still live. The
+	 * cells that defined them are gone from the compacted context, though, so remind
+	 * the model which names remain available. Best-effort and silent on failure.
+	 */
+	private async _notifyKernelStateAfterCompaction(): Promise<void> {
+		const names = await this._ipythonKernelProvisioner?.listNamespaceNames().catch(() => null);
+		if (!names) return;
+		const detail =
+			names.length > 0
+				? `These names are still defined: ${names.join(", ")}.`
+				: "You have not defined any names yet.";
+		const content = [
+			"<ipython_state>",
+			`Your IPython kernel persisted through compaction; all variables, imports, and helpers you defined remain available. ${detail}`,
+			"</ipython_state>",
+		].join("\n");
+		void this.sendCustomMessage(
+			{ customType: "ipython_state", content, display: false },
+			{ deliverAs: "nextTurn" },
+		).catch(() => {});
 	}
 
 	/**
@@ -2902,7 +2922,7 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
-			await this._restartIpythonKernelAfterCompaction();
+			await this._notifyKernelStateAfterCompaction();
 
 			const compactionResult = {
 				summary,
@@ -3240,7 +3260,7 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
-			await this._restartIpythonKernelAfterCompaction();
+			await this._notifyKernelStateAfterCompaction();
 
 			const result: CompactionResult = {
 				summary,

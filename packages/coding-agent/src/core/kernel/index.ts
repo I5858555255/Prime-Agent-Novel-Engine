@@ -10,9 +10,11 @@ import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
 import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
 import {
+	buildListNamesCode,
 	buildRestoreCode,
 	buildSnapshotCode,
 	DEFAULT_SNAPSHOT_MAX_BYTES,
+	parseListNamesResult,
 	parseRestoreResult,
 	parseSnapshotResult,
 	type RestoreResult,
@@ -1016,6 +1018,26 @@ export class KernelManager {
 			return parseRestoreResult(r.stdout, cfg.path);
 		} catch (error) {
 			this.appendKernelDiagnostic(`state restore error: ${errorMessage(error)}`);
+			return null;
+		}
+	}
+
+	/**
+	 * List the user-defined top-level names currently live in the namespace,
+	 * using the same filtering as the snapshot. Returns null if the kernel isn't
+	 * running or the listing cell fails. Never throws.
+	 */
+	async listNamespaceNames(): Promise<string[] | null> {
+		if (!this.isRunning) return null;
+		try {
+			const r = await this.enqueueExecute(buildListNamesCode(), { maxOutputChars: SNAPSHOT_MAX_OUTPUT_CHARS });
+			if (r.status !== "ok") {
+				this.appendKernelDiagnostic(`namespace listing failed: ${r.error?.evalue ?? r.stderr}`);
+				return null;
+			}
+			return parseListNamesResult(r.stdout);
+		} catch (error) {
+			this.appendKernelDiagnostic(`namespace listing error: ${errorMessage(error)}`);
 			return null;
 		}
 	}
