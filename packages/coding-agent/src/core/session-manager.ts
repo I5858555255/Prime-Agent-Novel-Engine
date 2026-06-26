@@ -1408,20 +1408,23 @@ export class SessionManager {
 	/**
 	 * True when the session holds user-meaningful persisted content, as opposed to
 	 * only daemon-written bookkeeping (session_state, agent_status, git_state) or
-	 * the default model/thinking entries every new session is created with. Used to
-	 * decide whether a message-less draft is safe to discard.
+	 * the default model/thinking entries every new session is created with. Used by
+	 * the daemon discard guard to decide whether a message-less draft is safe to
+	 * delete (that guard always also requires zero messages).
 	 *
-	 * New sessions open with the creation signature `model_change` then
-	 * `thinking_level_change` (see createAgentSession). Only those exact leading
-	 * entries are skipped as defaults; everything after — and any other opening
-	 * shape, e.g. an older session with a lone user-made model change — counts as
-	 * content, so we never discard a session that holds real configuration.
+	 * createAgentSession opens a new session with an optional leading `model_change`
+	 * (only when a model is available) followed by `thinking_level_change`. That
+	 * creation prefix is skipped; anything beyond it is user content.
 	 */
 	hasUserContent(): boolean {
 		const contentEntries = this.getEntries().filter((entry) => CONTENT_ENTRY_TYPES.has(entry.type));
-		// Drop the creation signature if present, then anything left is user content.
-		const start =
-			contentEntries[0]?.type === "model_change" && contentEntries[1]?.type === "thinking_level_change" ? 2 : 0;
+		let start = 0;
+		if (contentEntries[start]?.type === "model_change") {
+			start++;
+		}
+		if (contentEntries[start]?.type === "thinking_level_change") {
+			start++;
+		}
 		return contentEntries.length > start;
 	}
 

@@ -42,17 +42,18 @@ describe("SessionManager.hasUserContent", () => {
 		});
 	});
 
-	it("treats a lone model change (older session without creation defaults) as content", () => {
+	it("is false for a fresh session created with no model available (thinking entry only)", () => {
 		withSession((session) => {
-			// Pre-default-entries sessions never wrote the model_change+thinking pair,
-			// so a single model_change here is a real user choice, not a default.
-			session.appendModelChange("openai", "gpt-5");
-			expect(session.hasUserContent()).toBe(true);
+			// createAgentSession skips the model_change when no model is configured,
+			// leaving a lone leading thinking_level_change as the creation default.
+			session.appendThinkingLevelChange("off");
+			expect(session.hasUserContent()).toBe(false);
 		});
 	});
 
-	it("treats a lone thinking-level change as content", () => {
+	it("is true once the user changes the thinking level on a no-model session", () => {
 		withSession((session) => {
+			session.appendThinkingLevelChange("off");
 			session.appendThinkingLevelChange("high");
 			expect(session.hasUserContent()).toBe(true);
 		});
