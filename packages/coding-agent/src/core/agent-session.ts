@@ -2737,8 +2737,10 @@ export class AgentSession {
 		const provisioner = this._ipythonKernelProvisioner;
 		// No kernel means no state to remind about; only stay silent in that case.
 		if (!provisioner?.hasRunningKernel) return;
-		// null here is a listing failure (kernel is up) — still tell the model state persisted.
 		const names = await provisioner.listNamespaceNames().catch(() => null);
+		// null is a listing failure; only claim state survived if the kernel is still up
+		// (it may have died in the window since the check above).
+		if (names === null && !provisioner.hasRunningKernel) return;
 		const detail =
 			names === null
 				? ""
