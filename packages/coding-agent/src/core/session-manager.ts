@@ -1391,22 +1391,35 @@ export class SessionManager {
 	}
 
 	/**
-	 * True when the session holds any user-meaningful persisted content (messages,
-	 * model/name/label changes, etc.), as opposed to only daemon-written bookkeeping
-	 * (session_state, agent_status, git_state, usage). Used to decide whether a
-	 * message-less draft is safe to discard.
+	 * True when the session holds user-meaningful persisted content, as opposed to
+	 * only daemon-written bookkeeping (session_state, agent_status, git_state) or
+	 * the default model/thinking entries every new session is created with. Used to
+	 * decide whether a message-less draft is safe to discard.
+	 *
+	 * The first model_change and thinking_level_change are the creation defaults and
+	 * do not count; a second occurrence means the user actually changed the setting.
 	 */
 	hasUserContent(): boolean {
+		let modelChanges = 0;
+		let thinkingChanges = 0;
 		for (const entry of this.getEntries()) {
 			switch (entry.type) {
 				case "message":
 				case "custom_message":
-				case "model_change":
-				case "thinking_level_change":
 				case "session_info":
 				case "label":
 				case "compaction":
 					return true;
+				case "model_change":
+					if (++modelChanges > 1) {
+						return true;
+					}
+					break;
+				case "thinking_level_change":
+					if (++thinkingChanges > 1) {
+						return true;
+					}
+					break;
 			}
 		}
 		return false;
