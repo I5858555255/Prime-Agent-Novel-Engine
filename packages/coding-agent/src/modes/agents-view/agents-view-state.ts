@@ -76,12 +76,6 @@ export function getAgentsViewSummaryIdentity(summary: SessionSummary): string {
 	return `session:${summary.sessionId}`;
 }
 
-/**
- * A row's `identity` keys on `sessionFile` first and falls back to the
- * runtime-only `activeSessionId`, both of which can change as a session is
- * persisted or torn down and re-attached. These stable keys let us re-find the
- * same logical session across those transitions when restoring selection.
- */
 export interface AgentsViewSelectionKey {
 	sessionId: string;
 	activeSessionId?: string;
@@ -91,13 +85,9 @@ export function getAgentsViewSelectionKey(summary: SessionSummary): AgentsViewSe
 	return { sessionId: summary.sessionId, activeSessionId: summary.activeSessionId };
 }
 
-/**
- * Re-find the previously selected session in a rebuilt row list. Tries, in
- * order: the exact row `identity`, the live `activeSessionId`, then the stable
- * `sessionId`. The latter two survive transitions that change `identity`
- * (a session being persisted, or torn down and re-attached with a fresh active
- * id). Returns -1 when the session is gone so callers fall back to a default.
- */
+// Matches by identity, then activeSessionId, then sessionId: a row's identity
+// changes when a session is persisted or re-attached, so the latter two keys
+// re-find the same session across those transitions. Returns -1 when gone.
 export function resolveAgentsViewSelectionIndex(
 	rows: readonly AgentsViewRow[],
 	identity: string | undefined,

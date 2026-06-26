@@ -95,9 +95,6 @@ export interface AgentsViewModeOptions {
 type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary; subagent?: SessionSummary };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
-	// Stable keys for the selected session, used to re-find it when its
-	// identity changes (e.g. persisted, or re-attached with a new active id)
-	// across re-entry into the agents view.
 	selectedSessionKey?: AgentsViewSelectionKey;
 	statusMessage?: string;
 	initialPromptsSent?: boolean;
@@ -232,9 +229,6 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 		if (result.type === "exit") {
 			return;
 		}
-		// Pin selection to the session being opened so it stays highlighted when
-		// the user returns; the stable key re-finds it even if its identity
-		// changes (persisted / re-attached) while the session was open.
 		persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
 		persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.summary);
 

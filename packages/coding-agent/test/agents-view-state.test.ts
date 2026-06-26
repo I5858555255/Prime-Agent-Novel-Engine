@@ -460,7 +460,6 @@ describe("agents view state", () => {
 	});
 
 	describe("restores selection to the previously open session", () => {
-		// The session the user opened, with both a persisted file and a live runtime.
 		const opened = makeSummary({
 			id: "active-open",
 			activeSessionId: "active-open",
@@ -489,8 +488,7 @@ describe("agents view state", () => {
 		});
 
 		test("falls back to activeSessionId when the row identity changed", () => {
-			// The opened session had no file when selected (identity was active:...),
-			// then persisted one while open, so its row identity is now file:...
+			// Selected before the session had a file, so the stored identity is active:...
 			const rows = buildAgentsViewRows([other, opened]);
 			const staleIdentity = "active:active-open";
 			expect(resolveAgentsViewSelectionIndex(rows, staleIdentity, key)).toBe(
@@ -499,8 +497,7 @@ describe("agents view state", () => {
 		});
 
 		test("falls back to sessionId after a daemon re-attach regenerates the active id", () => {
-			// Re-attaching produced a fresh activeSessionId, so neither the stored
-			// identity nor activeSessionId match; the stable sessionId still does.
+			// Re-attach gives a fresh activeSessionId, so only the sessionId still matches.
 			const reattached = { ...opened, id: "active-open-2", activeSessionId: "active-open-2" };
 			const rows = buildAgentsViewRows([other, reattached]);
 			expect(resolveAgentsViewSelectionIndex(rows, identity, key)).toBe(
