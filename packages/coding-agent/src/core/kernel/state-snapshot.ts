@@ -193,12 +193,7 @@ finally:
 `.trim();
 }
 
-/**
- * Python that prints a single marker line listing the user-defined top-level
- * names currently live in the namespace, using the same filtering as the
- * snapshot (skip internals, IPython-injected names, and live handles). Used to
- * remind the model what survived a compaction. Never raises.
- */
+/** Marker-line list of live user-defined names, filtered like the snapshot. Never raises. */
 export function buildListNamesCode(): string {
 	return `
 def _prime_agent_list_state_names():

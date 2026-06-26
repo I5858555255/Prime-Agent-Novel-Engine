@@ -197,12 +197,7 @@ export class IpythonKernelProvisioner {
 		void this.ensure().catch(() => {});
 	}
 
-	/**
-	 * List the user-defined names currently live in the kernel namespace, or null
-	 * if no kernel is running. Used after compaction to remind the model which
-	 * variables, imports, and helpers survived — the kernel itself is never torn
-	 * down, so the namespace stays intact across compaction.
-	 */
+	/** Live user-defined names in the kernel namespace, or null if no kernel is running. */
 	async listNamespaceNames(): Promise<string[] | null> {
 		const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
 		return (await m?.listNamespaceNames()) ?? null;

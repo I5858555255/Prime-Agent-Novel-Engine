@@ -2731,12 +2731,8 @@ export class AgentSession {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
-	/**
-	 * Compaction summarizes the conversation but leaves the IPython kernel running,
-	 * so every variable, import, and helper the model defined is still live. The
-	 * cells that defined them are gone from the compacted context, though, so remind
-	 * the model which names remain available. Best-effort and silent on failure.
-	 */
+	// Appended straight to history (not a nextTurn message) so it also reaches the
+	// continue()-driven auto-compaction resume, which never injects nextTurn messages.
 	private async _notifyKernelStateAfterCompaction(): Promise<void> {
 		const names = await this._ipythonKernelProvisioner?.listNamespaceNames().catch(() => null);
 		if (!names) return;
@@ -2749,10 +2745,16 @@ export class AgentSession {
 			`Your IPython kernel persisted through compaction; all variables, imports, and helpers you defined remain available. ${detail}`,
 			"</ipython_state>",
 		].join("\n");
-		void this.sendCustomMessage(
-			{ customType: "ipython_state", content, display: false },
-			{ deliverAs: "nextTurn" },
-		).catch(() => {});
+		const message = {
+			role: "custom" as const,
+			customType: "ipython_state",
+			content,
+			display: false,
+			timestamp: Date.now(),
+		} satisfies CustomMessage;
+		this.agent.state.messages.push(message);
+		this.sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, undefined);
+		this._emit({ type: "message_start", message });
 	}
 
 	/**
