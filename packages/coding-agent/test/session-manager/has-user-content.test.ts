@@ -42,6 +42,22 @@ describe("SessionManager.hasUserContent", () => {
 		});
 	});
 
+	it("treats a lone model change (older session without creation defaults) as content", () => {
+		withSession((session) => {
+			// Pre-default-entries sessions never wrote the model_change+thinking pair,
+			// so a single model_change here is a real user choice, not a default.
+			session.appendModelChange("openai", "gpt-5");
+			expect(session.hasUserContent()).toBe(true);
+		});
+	});
+
+	it("treats a lone thinking-level change as content", () => {
+		withSession((session) => {
+			session.appendThinkingLevelChange("high");
+			expect(session.hasUserContent()).toBe(true);
+		});
+	});
+
 	it("is true for a session with a message", () => {
 		withSession((session) => {
 			session.appendMessage(userMsg("hello"));

@@ -32,6 +32,21 @@ const SESSION_LIST_SEARCH_TEXT_MAX_CHARS = 64 * 1024;
 const SESSION_LIST_PARSE_MAX_LINE_CHARS = 1024 * 1024;
 const SESSION_LIST_LARGE_MESSAGE_PREVIEW_MAX_CHARS = 256;
 
+// Entry types that can represent user intent (vs. daemon bookkeeping like
+// session_state/agent_status/git_state/child_usage_attributed). Used by
+// hasUserContent to decide whether a message-less draft is safe to discard.
+const CONTENT_ENTRY_TYPES = new Set([
+	"message",
+	"custom_message",
+	"custom",
+	"model_change",
+	"thinking_level_change",
+	"session_info",
+	"label",
+	"compaction",
+	"branch_summary",
+]);
+
 export interface SessionHeader {
 	type: "session";
 	version?: number; // v1 sessions don't have this
@@ -1396,33 +1411,18 @@ export class SessionManager {
 	 * the default model/thinking entries every new session is created with. Used to
 	 * decide whether a message-less draft is safe to discard.
 	 *
-	 * The first model_change and thinking_level_change are the creation defaults and
-	 * do not count; a second occurrence means the user actually changed the setting.
+	 * New sessions open with the creation signature `model_change` then
+	 * `thinking_level_change` (see createAgentSession). Only those exact leading
+	 * entries are skipped as defaults; everything after — and any other opening
+	 * shape, e.g. an older session with a lone user-made model change — counts as
+	 * content, so we never discard a session that holds real configuration.
 	 */
 	hasUserContent(): boolean {
-		let modelChanges = 0;
-		let thinkingChanges = 0;
-		for (const entry of this.getEntries()) {
-			switch (entry.type) {
-				case "message":
-				case "custom_message":
-				case "session_info":
-				case "label":
-				case "compaction":
-					return true;
-				case "model_change":
-					if (++modelChanges > 1) {
-						return true;
-					}
-					break;
-				case "thinking_level_change":
-					if (++thinkingChanges > 1) {
-						return true;
-					}
-					break;
-			}
-		}
-		return false;
+		const contentEntries = this.getEntries().filter((entry) => CONTENT_ENTRY_TYPES.has(entry.type));
+		// Drop the creation signature if present, then anything left is user content.
+		const start =
+			contentEntries[0]?.type === "model_change" && contentEntries[1]?.type === "thinking_level_change" ? 2 : 0;
+		return contentEntries.length > start;
 	}
 
 	/** Append the latest agent status (summary + completion judgment). Returns entry id. */
