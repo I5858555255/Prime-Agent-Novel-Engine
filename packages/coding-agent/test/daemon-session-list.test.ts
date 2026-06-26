@@ -12,27 +12,41 @@ import {
 } from "../src/modes/daemon/daemon-session-list.js";
 
 describe("buildSessionList", () => {
-	it("derives active session statuses", () => {
+	it("derives active session lifecycle and activity", () => {
+		const oneMessage = [{ role: "user", content: "hi" }] as unknown as AgentMessage[];
+		const currentSummary = { basedOnMessageCount: 1 } as ActiveSessionState["summaryState"];
 		const entries = buildSessionList(
 			[
-				makeState({ activeSessionId: "model", sessionFile: "/tmp/model.jsonl", isStreaming: true }),
+				makeState({ activeSessionId: "model", sessionFile: "/tmp/model.jsonl", isStreaming: true, messages: oneMessage }),
 				makeState({
 					activeSessionId: "tool",
 					sessionFile: "/tmp/tool.jsonl",
 					isStreaming: true,
 					pendingToolCalls: ["tool-1"],
+					messages: oneMessage,
 				}),
-				makeState({ activeSessionId: "needs-user", sessionFile: "/tmp/needs-user.jsonl", clients: 1 }),
-				makeState({ activeSessionId: "done", sessionFile: "/tmp/done.jsonl" }),
+				makeState({
+					activeSessionId: "needs-user",
+					sessionFile: "/tmp/needs-user.jsonl",
+					clients: 1,
+					messages: oneMessage,
+					summaryState: currentSummary,
+				}),
+				makeState({
+					activeSessionId: "done",
+					sessionFile: "/tmp/done.jsonl",
+					messages: oneMessage,
+					summaryState: currentSummary,
+				}),
 			],
 			[],
 		);
 
-		expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
-			["model", "model"],
-			["tool", "tool"],
-			["needs-user", "user"],
-			["done", "idle"],
+		expect(entries.map((entry) => [entry.id, entry.lifecycle, entry.activity])).toEqual([
+			["model", "live", "working"],
+			["tool", "live", "working"],
+			["needs-user", "live", "idle"],
+			["done", "live", "idle"],
 		]);
 	});
 
@@ -47,15 +61,23 @@ describe("buildSessionList", () => {
 		];
 
 		const entries = buildSessionList(
-			[makeState({ activeSessionId: "active-1", sessionFile: activePath, sessionId: "saved-active" })],
+			[
+				makeState({
+					activeSessionId: "active-1",
+					sessionFile: activePath,
+					sessionId: "saved-active",
+					messages: [{ role: "user", content: "hi" }] as unknown as AgentMessage[],
+					summaryState: { basedOnMessageCount: 1 } as ActiveSessionState["summaryState"],
+				}),
+			],
 			savedSessions,
 		);
 
 		expect(entries).toHaveLength(3);
-		expect(entries.map((entry) => [entry.id, entry.sessionId, entry.status])).toEqual([
-			["active-1", "saved-active", "idle"],
-			["saved-sleeping", "saved-sleeping", "sleep"],
-			["saved-crashed", "saved-crashed", "crash"],
+		expect(entries.map((entry) => [entry.id, entry.sessionId, entry.lifecycle, entry.activity])).toEqual([
+			["active-1", "saved-active", "live", "idle"],
+			["saved-sleeping", "saved-sleeping", "archived", "idle"],
+			["saved-crashed", "saved-crashed", "archived", "idle"],
 		]);
 		expect(entries[0]!.sessionName).toBe("session active-1");
 	});
@@ -234,7 +256,8 @@ describe("resolveAttachModelFallbackMessage", () => {
 	function makeSummary(overrides: Partial<SessionSummary>): SessionSummary {
 		return {
 			id: "active-1",
-			status: "idle",
+			lifecycle: "draft",
+			activity: "idle",
 			sessionId: "session-1",
 			cwd: "/tmp/project",
 			isStreaming: false,

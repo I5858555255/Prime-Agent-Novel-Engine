@@ -318,12 +318,21 @@ export class DaemonSessionSummarizer {
 		const controller = new AbortController();
 		this.inFlight.set(id, controller);
 		try {
-			const result = await this.generate({
+			const generated = await this.generate({
 				registry: session.modelRegistry,
 				messages: contextMessages,
 				isWorking,
 				signal: controller.signal,
 			});
+			// A failed/empty classification on an idle session still owes a verdict:
+			// the activity axis holds an unjudged idle session at "working", so
+			// without a fallback it would spin forever. Settle it to needs_input —
+			// a stalled session nags for attention rather than masquerading as done.
+			const result =
+				generated ??
+				(!isWorking && owesIdleVerdict
+					? { summary: previous?.summary ?? "", taskState: "needs_input" as const }
+					: undefined);
 			if (!result) {
 				return;
 			}

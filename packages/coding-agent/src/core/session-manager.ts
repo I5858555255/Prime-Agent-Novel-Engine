@@ -138,7 +138,11 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
-export type SessionStateStatus = "active" | "sleep" | "crash";
+// On-disk lifecycle status. "archived" replaces the legacy "sleep"; old records
+// are normalized on read by normalizeSessionStateStatus below. "crash" is
+// retained for back-compat reads but is no longer written (a crashed session is
+// just live).
+export type SessionStateStatus = "active" | "archived" | "crash";
 
 export interface SessionState {
 	status: SessionStateStatus;
@@ -699,13 +703,14 @@ function extractTextContent(message: Message): string {
 		.join(" ");
 }
 
-// Legacy "hidden" status is coerced to "sleep" for sessions written by older versions.
+// Legacy "hidden" and "sleep" statuses (written by older versions) both map to
+// the current "archived".
 function normalizeSessionStateStatus(value: unknown): SessionStateStatus | undefined {
-	if (value === "active" || value === "sleep" || value === "crash") {
+	if (value === "active" || value === "archived" || value === "crash") {
 		return value;
 	}
-	if (value === "hidden") {
-		return "sleep";
+	if (value === "hidden" || value === "sleep") {
+		return "archived";
 	}
 	return undefined;
 }

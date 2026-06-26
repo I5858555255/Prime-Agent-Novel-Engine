@@ -62,7 +62,7 @@ export {
 	DAEMON_PROTOCOL_NAME,
 	DAEMON_PROTOCOL_VERSION,
 } from "./daemon/daemon-protocol.js";
-export type { SessionStatus, SessionSummary } from "./daemon/daemon-session-list.js";
+export type { SessionActivity, SessionLifecycle, SessionSummary } from "./daemon/daemon-session-list.js";
 export { resolveAttachModelFallbackMessage } from "./daemon/daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon/daemon-socket.js";
 export {

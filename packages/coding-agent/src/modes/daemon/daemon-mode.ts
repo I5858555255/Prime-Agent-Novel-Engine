@@ -81,7 +81,7 @@ export interface DaemonModeOptions {
 }
 
 export type { DaemonCommand, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
-export type { SessionStatus, SessionSummary } from "./daemon-session-list.js";
+export type { SessionActivity, SessionLifecycle, SessionSummary } from "./daemon-session-list.js";
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
 const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
@@ -1536,12 +1536,12 @@ export class AgentDaemon {
 		this.summarizer.forget(state.activeSessionId);
 		const cascadeError = await this.closeChildSessions(state, reason);
 		// A killed session with no messages (abandoned new-chat) is discarded
-		// outright instead of persisting a sleep state that clutters the list.
+		// outright instead of persisting an archived state that clutters the list.
 		const isEmptyKilledSession = reason === "killed" && state.runtime.session.messages.length === 0;
 		let persistError: unknown;
 		if (reason !== "shutdown" && !isEmptyKilledSession) {
 			try {
-				state.runtime.session.sessionManager.appendSessionState({ status: "sleep" });
+				state.runtime.session.sessionManager.appendSessionState({ status: "archived" });
 			} catch (error) {
 				persistError = error;
 			}

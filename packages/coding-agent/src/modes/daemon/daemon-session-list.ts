@@ -9,11 +9,26 @@ import type { AgentTaskState, SessionInfo } from "../../core/session-manager.js"
 import type {
 	AgentConnectionRlmChildAgentSnapshot,
 	AgentConnectionRlmChildAgentTranscriptLine,
-	AgentConnectionSavedSessionStateStatus,
 } from "../agent-connection/types.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 
-export type SessionStatus = "user" | "idle" | "tool" | "model" | AgentConnectionSavedSessionStateStatus;
+/**
+ * Durable lifecycle of a session — the axis that decides whether it appears in
+ * the agents view at all.
+ * - "draft": created but no message ever sent; daemon-only, never persisted,
+ *   discarded on close. Hidden from the agents view.
+ * - "live": at least one message sent and not archived. The only state shown.
+ * - "archived": user archived it (ctrl+x); detached from the daemon and saved to
+ *   disk, reachable only via /resume and `prime-agent --resume`.
+ */
+export type SessionLifecycle = "draft" | "live" | "archived";
+
+/**
+ * Heuristic, confident activity of a live session. Computed once in the daemon
+ * rather than recomputed inline at each call site. Classification-in-flight
+ * counts as "working" so the view never observes an unlabeled idle session.
+ */
+export type SessionActivity = "working" | "idle";
 
 // Upper bound on the spawn-code source carried in a session summary. Generous
 // enough for real spawn cells while keeping the daemon wire payload bounded.
@@ -22,7 +37,10 @@ const SPAWN_CODE_MAX_CHARS = 4000;
 // Lightweight daemon session shape used by list, create, rename, attach, and state responses.
 export interface SessionSummary {
 	id: string;
-	status: SessionStatus;
+	/** Durable lifecycle axis; decides agents-view visibility. */
+	lifecycle: SessionLifecycle;
+	/** Heuristic activity axis for live sessions; "idle" for non-live. */
+	activity: SessionActivity;
 	runtimeKind?: "top-level" | "subagent";
 	activeSessionId?: string;
 	sessionId: string;
@@ -34,6 +52,8 @@ export interface SessionSummary {
 	isStreaming: boolean;
 	isCompacting: boolean;
 	isBashRunning?: boolean;
+	/** True while the agent is streaming with tool calls pending; drives the "running tools" label. */
+	isRunningTools?: boolean;
 	attachedClients: number;
 	messageCount: number;
 	pendingMessageCount: number;
@@ -122,7 +142,8 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 
 	return {
 		id: activeSession.activeSessionId,
-		status: activeStatusForSession(activeSession),
+		lifecycle: activeLifecycleForSession(activeSession, savedSession),
+		activity: activeActivityForSession(activeSession),
 		runtimeKind: metadata.kind,
 		activeSessionId: activeSession.activeSessionId,
 		sessionId: session.sessionId,
@@ -134,6 +155,7 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
 		isBashRunning: session.isBashRunning,
+		isRunningTools: session.isStreaming && session.state.pendingToolCalls.size > 0,
 		attachedClients: activeSession.clients.size,
 		messageCount: session.messages.length,
 		pendingMessageCount: session.pendingMessageCount,
@@ -169,7 +191,12 @@ export function isSummaryCurrent(activeSession: ActiveSessionState): boolean {
 export function summaryForInactiveSession(session: SessionInfo): SessionSummary {
 	return {
 		id: session.id,
-		status: session.state?.status ?? "sleep",
+		// A persisted session not resident in the daemon is either explicitly
+		// archived or was left "active"/"crash" by a dead daemon; treat anything
+		// other than a clean active record as archived so it stays out of the view.
+		lifecycle: session.state?.status === "active" ? "live" : "archived",
+		// Not daemon-resident, so nothing is running.
+		activity: "idle",
 		sessionId: session.id,
 		sessionFile: session.path,
 		sessionName: session.name,
@@ -280,10 +307,36 @@ function readMessageText(content: unknown): string {
 		.join("\n");
 }
 
-function activeStatusForSession(activeSession: ActiveSessionState): SessionStatus {
+/** True when the agent itself is doing work, ignoring the classification verdict. */
+export function isActiveSessionBusy(activeSession: ActiveSessionState): boolean {
 	const session = activeSession.runtime.session;
-	if (session.isStreaming) {
-		return session.state.pendingToolCalls.size > 0 ? "tool" : "model";
+	return session.isStreaming || session.isCompacting || session.pendingMessageCount > 0;
+}
+
+/**
+ * Activity for a daemon-resident session. Busy sessions are "working"; an
+ * otherwise-idle session whose idle verdict is not yet current is also held at
+ * "working" so the view never shows it in an idle bucket before it is labeled.
+ * Client attachment is deliberately not part of this — it is a separate count.
+ */
+export function activeActivityForSession(activeSession: ActiveSessionState): SessionActivity {
+	if (isActiveSessionBusy(activeSession)) {
+		return "working";
 	}
-	return activeSession.clients.size > 0 ? "user" : "idle";
+	return isSummaryCurrent(activeSession) ? "idle" : "working";
+}
+
+/**
+ * Lifecycle for a daemon-resident session. A session with no messages yet is a
+ * draft; an explicitly-archived persisted record stays archived even while
+ * resident; everything else resident is live.
+ */
+export function activeLifecycleForSession(
+	activeSession: ActiveSessionState,
+	savedSession?: SessionInfo,
+): SessionLifecycle {
+	if (savedSession?.state?.status === "archived" || savedSession?.state?.status === "crash") {
+		return "archived";
+	}
+	return activeSession.runtime.session.messages.length === 0 ? "draft" : "live";
 }
