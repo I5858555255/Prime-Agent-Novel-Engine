@@ -313,5 +313,9 @@ export function activeLifecycleForSession(activeSession: ActiveSessionState): Se
 	// A daemon-resident session is live (or a draft) by definition. Stale on-disk
 	// "archived"/"crash" markers must not override that — the daemon's best-effort
 	// "active" write can fail, so persisted state is not authoritative here.
-	return activeSession.runtime.session.messages.length === 0 ? "draft" : "live";
+	const session = activeSession.runtime.session;
+	// A draft has no messages AND no user config; a session the user configured
+	// (model/name/etc.) before sending is kept on detach, so it must show as live.
+	const isDraft = session.messages.length === 0 && !session.sessionManager.hasUserContent();
+	return isDraft ? "draft" : "live";
 }

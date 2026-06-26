@@ -1402,6 +1402,7 @@ export class SessionManager {
 				case "message":
 				case "custom_message":
 				case "model_change":
+				case "thinking_level_change":
 				case "session_info":
 				case "label":
 				case "compaction":

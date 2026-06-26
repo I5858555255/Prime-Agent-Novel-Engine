@@ -17,7 +17,12 @@ describe("buildSessionList", () => {
 		const currentSummary = { basedOnMessageCount: 1 } as ActiveSessionState["summaryState"];
 		const entries = buildSessionList(
 			[
-				makeState({ activeSessionId: "model", sessionFile: "/tmp/model.jsonl", isStreaming: true, messages: oneMessage }),
+				makeState({
+					activeSessionId: "model",
+					sessionFile: "/tmp/model.jsonl",
+					isStreaming: true,
+					messages: oneMessage,
+				}),
 				makeState({
 					activeSessionId: "tool",
 					sessionFile: "/tmp/tool.jsonl",
@@ -294,6 +299,7 @@ interface StateOptions {
 	pendingToolCalls?: string[];
 	clients?: number;
 	messages?: AgentMessage[];
+	hasUserContent?: boolean;
 	summaryState?: ActiveSessionState["summaryState"];
 	childRunStatuses?: Record<string, "queued" | "running" | "done" | "error" | "cancelled">;
 	metadata?: {
@@ -334,6 +340,7 @@ function makeState(options: StateOptions): ActiveSessionState {
 				sessionManager: {
 					getCwd: () => "/tmp/project",
 					getSessionDir: () => "/tmp/sessions",
+					hasUserContent: () => options.hasUserContent ?? false,
 				},
 				messages: options.messages ?? ([] as AgentMessage[]),
 				getRlmChildRunStatus: (childId: string) => options.childRunStatuses?.[childId],
