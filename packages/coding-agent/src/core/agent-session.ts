@@ -2760,6 +2760,7 @@ export class AgentSession {
 		this.agent.state.messages.push(message);
 		this.sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, undefined);
 		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
 	}
 
 	/**
