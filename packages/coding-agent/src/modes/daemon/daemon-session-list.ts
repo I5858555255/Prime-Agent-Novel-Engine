@@ -309,26 +309,26 @@ export function activeActivityForSession(activeSession: ActiveSessionState): Ses
 
 /**
  * Lifecycle for an on-disk session not resident in the daemon. Only a clean
- * "active" record with real content is live; anything else (archived/crash, a
- * dead-daemon "active", or an empty draft file with no messages or name) stays
- * out of the agents view. SessionInfo lacks per-entry detail, so messages or a
- * user-given name are the available signals for "real content".
+ * "active" record with at least one message is live; a message-less "active"
+ * file is a draft, and anything else (archived/crash, or a dead-daemon "active")
+ * stays out of the agents view. Message-based to match activeLifecycleForSession,
+ * so a session keeps its lifecycle across leaving daemon memory.
  */
 export function inactiveLifecycleForSession(session: SessionInfo): SessionLifecycle {
 	if (session.state?.status !== "active") {
 		return "archived";
 	}
-	const hasContent = session.messageCount > 0 || (session.name?.trim().length ?? 0) > 0;
-	return hasContent ? "live" : "draft";
+	return session.messageCount > 0 ? "live" : "draft";
 }
 
 export function activeLifecycleForSession(activeSession: ActiveSessionState): SessionLifecycle {
-	// A daemon-resident session is live (or a draft) by definition. Stale on-disk
-	// "archived"/"crash" markers must not override that — the daemon's best-effort
-	// "active" write can fail, so persisted state is not authoritative here.
-	const session = activeSession.runtime.session;
-	// A draft has no messages AND no user config; a session the user configured
-	// (model/name/etc.) before sending is kept on detach, so it must show as live.
-	const isDraft = session.messages.length === 0 && !session.sessionManager.hasUserContent();
-	return isDraft ? "draft" : "live";
+	// Lifecycle drives agents-view visibility and is message-based: a session
+	// becomes live once a message is sent. A message-less session is a draft (hidden
+	// from the view) even if the user changed its model/name first — that config is
+	// still preserved on disk by the discard guard (see isEmptyDraftContent), it
+	// just doesn't surface a conversation-less row. Keeping this purely message-based
+	// matches inactiveLifecycleForSession, so a session doesn't change lifecycle when
+	// it leaves daemon memory. Stale on-disk archived/crash markers never apply to a
+	// resident session.
+	return activeSession.runtime.session.messages.length === 0 ? "draft" : "live";
 }

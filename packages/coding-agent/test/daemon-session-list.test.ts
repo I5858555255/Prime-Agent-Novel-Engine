@@ -87,33 +87,33 @@ describe("buildSessionList", () => {
 		expect(entries[0]!.sessionName).toBe("session active-1");
 	});
 
-	it("treats an empty on-disk active session as a hidden draft", () => {
+	it("treats a message-less on-disk active session as a hidden draft", () => {
 		const emptyPath = resolve("/tmp/project/empty.jsonl");
-		const namedPath = resolve("/tmp/project/named.jsonl");
+		const usedPath = resolve("/tmp/project/used.jsonl");
 		const entries = buildSessionList(
 			[],
 			[
-				// Active record, no messages, no name: an abandoned draft file.
+				// Active record, no messages: a draft, hidden from the view (lifecycle is
+				// message-based; any config it holds is still preserved on disk).
 				makeSessionInfo({
 					path: emptyPath,
 					id: "empty",
 					messageCount: 0,
-					name: undefined,
+					name: "named draft",
 					state: { status: "active" },
 				}),
-				// Active record the user named before sending: real content, stays live.
+				// Active record with a message: a real conversation, stays live.
 				makeSessionInfo({
-					path: namedPath,
-					id: "named",
-					messageCount: 0,
-					name: "my draft",
+					path: usedPath,
+					id: "used",
+					messageCount: 1,
 					state: { status: "active" },
 				}),
 			],
 		);
 		expect(entries.map((entry) => [entry.id, entry.lifecycle])).toEqual([
 			["empty", "draft"],
-			["named", "live"],
+			["used", "live"],
 		]);
 	});
 
