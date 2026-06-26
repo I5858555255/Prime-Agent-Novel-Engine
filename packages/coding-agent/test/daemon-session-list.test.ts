@@ -87,6 +87,36 @@ describe("buildSessionList", () => {
 		expect(entries[0]!.sessionName).toBe("session active-1");
 	});
 
+	it("treats an empty on-disk active session as a hidden draft", () => {
+		const emptyPath = resolve("/tmp/project/empty.jsonl");
+		const namedPath = resolve("/tmp/project/named.jsonl");
+		const entries = buildSessionList(
+			[],
+			[
+				// Active record, no messages, no name: an abandoned draft file.
+				makeSessionInfo({
+					path: emptyPath,
+					id: "empty",
+					messageCount: 0,
+					name: undefined,
+					state: { status: "active" },
+				}),
+				// Active record the user named before sending: real content, stays live.
+				makeSessionInfo({
+					path: namedPath,
+					id: "named",
+					messageCount: 0,
+					name: "my draft",
+					state: { status: "active" },
+				}),
+			],
+		);
+		expect(entries.map((entry) => [entry.id, entry.lifecycle])).toEqual([
+			["empty", "draft"],
+			["named", "live"],
+		]);
+	});
+
 	it("includes active subagent parent metadata", () => {
 		const entries = buildSessionList(
 			[
@@ -363,7 +393,7 @@ function makeSessionInfo(overrides: Pick<SessionInfo, "path" | "id"> & Partial<S
 		state: overrides.state,
 		created: new Date("2026-05-01T00:00:00.000Z"),
 		modified: new Date("2026-05-02T00:00:00.000Z"),
-		messageCount: 2,
+		messageCount: overrides.messageCount ?? 2,
 		firstMessage: "hello",
 		allMessagesText: "hello world",
 	};

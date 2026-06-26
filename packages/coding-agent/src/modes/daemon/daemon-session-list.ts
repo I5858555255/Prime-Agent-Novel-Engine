@@ -180,9 +180,7 @@ export function isSummaryCurrent(activeSession: ActiveSessionState): boolean {
 export function summaryForInactiveSession(session: SessionInfo): SessionSummary {
 	return {
 		id: session.id,
-		// Not resident: a clean "active" record is live; anything else (archived,
-		// or "active"/"crash" left by a dead daemon) stays out of the view.
-		lifecycle: session.state?.status === "active" ? "live" : "archived",
+		lifecycle: inactiveLifecycleForSession(session),
 		activity: "idle",
 		sessionId: session.id,
 		sessionFile: session.path,
@@ -307,6 +305,21 @@ export function activeActivityForSession(activeSession: ActiveSessionState): Ses
 	// Hold at "working" until the idle verdict is current, so the view never
 	// buckets an unlabeled idle session.
 	return isSummaryCurrent(activeSession) ? "idle" : "working";
+}
+
+/**
+ * Lifecycle for an on-disk session not resident in the daemon. Only a clean
+ * "active" record with real content is live; anything else (archived/crash, a
+ * dead-daemon "active", or an empty draft file with no messages or name) stays
+ * out of the agents view. SessionInfo lacks per-entry detail, so messages or a
+ * user-given name are the available signals for "real content".
+ */
+export function inactiveLifecycleForSession(session: SessionInfo): SessionLifecycle {
+	if (session.state?.status !== "active") {
+		return "archived";
+	}
+	const hasContent = session.messageCount > 0 || (session.name?.trim().length ?? 0) > 0;
+	return hasContent ? "live" : "draft";
 }
 
 export function activeLifecycleForSession(activeSession: ActiveSessionState): SessionLifecycle {
