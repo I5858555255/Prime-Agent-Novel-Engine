@@ -1642,12 +1642,21 @@ export class AgentDaemon {
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
-		// A finished turn/compaction is the cue to refresh status.
-		if (
-			message.type === "session_event" &&
-			(message.event.type === "turn_end" || message.event.type === "compaction_end")
-		) {
-			this.summarizer.notifyActivity(state);
+		if (message.type === "session_event") {
+			const eventType = message.event.type;
+			// A finished turn/compaction is the cue to refresh status.
+			if (eventType === "turn_end" || eventType === "compaction_end") {
+				this.summarizer.notifyActivity(state);
+			}
+			// A draft whose last client detached while it was busy isn't discardable
+			// at detach time; re-check once any work (turn, compaction, or bash)
+			// settles so it doesn't linger in the daemon.
+			if (
+				(eventType === "turn_end" || eventType === "compaction_end" || eventType === "bash_end") &&
+				this.isDiscardableDraft(state)
+			) {
+				void this.closeSession(state, "killed");
+			}
 		}
 		const sequencedMessage = this.addSessionEventMeta(state, message);
 		for (const client of state.clients) {
