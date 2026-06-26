@@ -417,6 +417,9 @@ interface RlmChildRun {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
+/** Cap on the post-compaction kernel namespace probe so a wedged kernel can't stall recovery. */
+const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
+
 function noopRlmChildAbort(): void {}
 
 function isRlmChildRunCancelled(run: RlmChildRun): boolean {
@@ -2737,8 +2740,16 @@ export class AgentSession {
 		const provisioner = this._ipythonKernelProvisioner;
 		// No kernel means no state to remind about; only stay silent in that case.
 		if (!provisioner?.hasRunningKernel) return;
-		const names = await provisioner.listNamespaceNames().catch(() => null);
-		// null is a listing failure; only claim state survived if the kernel is still up
+		// Bound the listing: a wedged kernel can leave the queued cell unresolved, which would
+		// otherwise hang the compaction path before its continue() retry.
+		const names = await Promise.race([
+			provisioner.listNamespaceNames().catch(() => null),
+			new Promise<null>((resolve) => {
+				const t = setTimeout(() => resolve(null), KERNEL_STATE_LISTING_TIMEOUT_MS);
+				if (typeof t === "object" && "unref" in t) t.unref();
+			}),
+		]);
+		// null is a listing failure/timeout; only claim state survived if the kernel is still up
 		// (it may have died in the window since the check above).
 		if (names === null && !provisioner.hasRunningKernel) return;
 		const detail =
