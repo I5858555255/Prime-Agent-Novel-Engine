@@ -130,7 +130,10 @@ export function createAgentsViewResumeConfig(config: AgentSessionRuntimeConfig):
 export function createAgentsViewListCommand(
 	config: AgentSessionRuntimeConfig,
 ): Extract<DaemonCommand, { type: "list" }> {
-	const command: Extract<DaemonCommand, { type: "list" }> = { type: "list" };
+	// `all` makes the daemon merge on-disk sessions with in-memory ones; without it
+	// only daemon-resident sessions return and live sessions saved to disk are lost
+	// from the view. No cwd is set so the fleet view spans every directory.
+	const command: Extract<DaemonCommand, { type: "list" }> = { type: "list", all: true };
 	if (config.sessionDir) {
 		command.sessionDir = config.sessionDir;
 	}

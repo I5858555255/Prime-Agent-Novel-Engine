@@ -1497,7 +1497,13 @@ export class AgentDaemon {
 		// Abandoned new-chat: discard it so it doesn't linger in memory or leave an
 		// empty file. Replaces the old DeferredAgentConnection.
 		if (this.isDiscardableDraft(state)) {
-			void this.closeSession(state, "killed");
+			// Re-check after yielding: a client may reattach before the async close
+			// runs, in which case the draft is no longer abandoned and must be kept.
+			queueMicrotask(() => {
+				if (this.sessions.has(state.activeSessionId) && this.isDiscardableDraft(state)) {
+					void this.closeSession(state, "killed");
+				}
+			});
 		}
 	}
 
@@ -1509,10 +1515,21 @@ export class AgentDaemon {
 			return false;
 		}
 		const session = state.runtime.session;
-		if (session.messages.length > 0) {
+		// Any messages, a running user bash, an in-flight turn, persisted config
+		// (model/name/etc.), or scheduled jobs all make the draft worth keeping.
+		if (session.messages.length > 0 || session.isBashRunning || isActiveSessionBusy(state)) {
 			return false;
 		}
-		return !isActiveSessionBusy(state);
+		if (session.sessionManager.hasUserContent()) {
+			return false;
+		}
+		return !this.hasScheduledJobsForSession(state.activeSessionId);
+	}
+
+	private hasScheduledJobsForSession(activeSessionId: string): boolean {
+		return this.cronStore
+			.list()
+			.some((job) => job.activeSessionId === activeSessionId && job.status !== "cancelled" && job.status !== "completed");
 	}
 
 	private detachClient(client: DaemonSocketClient): void {

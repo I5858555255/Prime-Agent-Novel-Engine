@@ -131,7 +131,7 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 
 	return {
 		id: activeSession.activeSessionId,
-		lifecycle: activeLifecycleForSession(activeSession, savedSession),
+		lifecycle: activeLifecycleForSession(activeSession),
 		activity: activeActivityForSession(activeSession),
 		runtimeKind: metadata.kind,
 		activeSessionId: activeSession.activeSessionId,
@@ -309,12 +309,9 @@ export function activeActivityForSession(activeSession: ActiveSessionState): Ses
 	return isSummaryCurrent(activeSession) ? "idle" : "working";
 }
 
-export function activeLifecycleForSession(
-	activeSession: ActiveSessionState,
-	savedSession?: SessionInfo,
-): SessionLifecycle {
-	if (savedSession?.state?.status === "archived" || savedSession?.state?.status === "crash") {
-		return "archived";
-	}
+export function activeLifecycleForSession(activeSession: ActiveSessionState): SessionLifecycle {
+	// A daemon-resident session is live (or a draft) by definition. Stale on-disk
+	// "archived"/"crash" markers must not override that — the daemon's best-effort
+	// "active" write can fail, so persisted state is not authoritative here.
 	return activeSession.runtime.session.messages.length === 0 ? "draft" : "live";
 }

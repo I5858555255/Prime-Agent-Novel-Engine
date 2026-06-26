@@ -1390,6 +1390,27 @@ export class SessionManager {
 		return undefined;
 	}
 
+	/**
+	 * True when the session holds any user-meaningful persisted content (messages,
+	 * model/name/label changes, etc.), as opposed to only daemon-written bookkeeping
+	 * (session_state, agent_status, git_state, usage). Used to decide whether a
+	 * message-less draft is safe to discard.
+	 */
+	hasUserContent(): boolean {
+		for (const entry of this.getEntries()) {
+			switch (entry.type) {
+				case "message":
+				case "custom_message":
+				case "model_change":
+				case "session_info":
+				case "label":
+				case "compaction":
+					return true;
+			}
+		}
+		return false;
+	}
+
 	/** Append the latest agent status (summary + completion judgment). Returns entry id. */
 	appendAgentStatus(status: AgentStatus): string {
 		const entry: AgentStatusEntry = {
