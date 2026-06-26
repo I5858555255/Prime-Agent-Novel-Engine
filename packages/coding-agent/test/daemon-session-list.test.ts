@@ -117,6 +117,23 @@ describe("buildSessionList", () => {
 		]);
 	});
 
+	it("carries the persisted recap and verdict for off-daemon sessions", () => {
+		const path = resolve("/tmp/project/done.jsonl");
+		const [entry] = buildSessionList(
+			[],
+			[
+				makeSessionInfo({
+					path,
+					id: "done",
+					messageCount: 3,
+					state: { status: "active" },
+					agentStatus: { summary: "Shipped the fix", taskState: "completed", basedOnMessageCount: 3 },
+				}),
+			],
+		);
+		expect(entry).toMatchObject({ summary: "Shipped the fix", taskState: "completed" });
+	});
+
 	it("includes active subagent parent metadata", () => {
 		const entries = buildSessionList(
 			[
@@ -396,5 +413,6 @@ function makeSessionInfo(overrides: Pick<SessionInfo, "path" | "id"> & Partial<S
 		messageCount: overrides.messageCount ?? 2,
 		firstMessage: "hello",
 		allMessagesText: "hello world",
+		agentStatus: overrides.agentStatus,
 	};
 }

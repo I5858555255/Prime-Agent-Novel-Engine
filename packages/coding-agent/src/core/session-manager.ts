@@ -261,6 +261,8 @@ export interface SessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+	/** Latest persisted recap/verdict, so off-daemon sessions keep their status. */
+	agentStatus?: AgentStatus;
 }
 
 export type ReadonlySessionManager = Pick<
@@ -886,6 +888,7 @@ async function scanSessionInfo(filePath: string, stats: Awaited<ReturnType<typeo
 		let allMessagesText = "";
 		let name: string | undefined;
 		let state: SessionState | undefined;
+		let agentStatus: AgentStatus | undefined;
 		let lastActivityTime: number | undefined;
 
 		for await (const line of lines) {
@@ -928,6 +931,11 @@ async function scanSessionInfo(filePath: string, stats: Awaited<ReturnType<typeo
 				if (status) {
 					state = { status };
 				}
+			}
+			// Keep the latest recap/verdict so off-daemon sessions don't all show as
+			// unjudged in the agents view. Append-only, so last seen wins.
+			if (entry.type === "agent_status") {
+				agentStatus = (entry as AgentStatusEntry).status;
 			}
 
 			if (!header) {
@@ -972,6 +980,7 @@ async function scanSessionInfo(filePath: string, stats: Awaited<ReturnType<typeo
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
 			allMessagesText,
+			agentStatus,
 		};
 	} catch {
 		return null;
