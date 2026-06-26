@@ -12,22 +12,13 @@ import type {
 } from "../agent-connection/types.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 
-/**
- * Durable lifecycle of a session — the axis that decides whether it appears in
- * the agents view at all.
- * - "draft": created but no message ever sent; daemon-only, never persisted,
- *   discarded on close. Hidden from the agents view.
- * - "live": at least one message sent and not archived. The only state shown.
- * - "archived": user archived it (ctrl+x); detached from the daemon and saved to
- *   disk, reachable only via /resume and `prime-agent --resume`.
- */
+// Durable lifecycle; decides agents-view visibility. Only "live" is shown.
+// "draft" = no message sent yet (discarded on close); "archived" = ctrl+x'd,
+// reachable only via /resume.
 export type SessionLifecycle = "draft" | "live" | "archived";
 
-/**
- * Heuristic, confident activity of a live session. Computed once in the daemon
- * rather than recomputed inline at each call site. Classification-in-flight
- * counts as "working" so the view never observes an unlabeled idle session.
- */
+// Heuristic activity of a live session. Classification-in-flight counts as
+// "working" so the view never sees an unlabeled idle session.
 export type SessionActivity = "working" | "idle";
 
 // Upper bound on the spawn-code source carried in a session summary. Generous
@@ -37,9 +28,7 @@ const SPAWN_CODE_MAX_CHARS = 4000;
 // Lightweight daemon session shape used by list, create, rename, attach, and state responses.
 export interface SessionSummary {
 	id: string;
-	/** Durable lifecycle axis; decides agents-view visibility. */
 	lifecycle: SessionLifecycle;
-	/** Heuristic activity axis for live sessions; "idle" for non-live. */
 	activity: SessionActivity;
 	runtimeKind?: "top-level" | "subagent";
 	activeSessionId?: string;
@@ -191,11 +180,9 @@ export function isSummaryCurrent(activeSession: ActiveSessionState): boolean {
 export function summaryForInactiveSession(session: SessionInfo): SessionSummary {
 	return {
 		id: session.id,
-		// A persisted session not resident in the daemon is either explicitly
-		// archived or was left "active"/"crash" by a dead daemon; treat anything
-		// other than a clean active record as archived so it stays out of the view.
+		// Not resident: a clean "active" record is live; anything else (archived,
+		// or "active"/"crash" left by a dead daemon) stays out of the view.
 		lifecycle: session.state?.status === "active" ? "live" : "archived",
-		// Not daemon-resident, so nothing is running.
 		activity: "idle",
 		sessionId: session.id,
 		sessionFile: session.path,
@@ -307,30 +294,21 @@ function readMessageText(content: unknown): string {
 		.join("\n");
 }
 
-/** True when the agent itself is doing work, ignoring the classification verdict. */
+// Agent doing work, ignoring the classification verdict.
 export function isActiveSessionBusy(activeSession: ActiveSessionState): boolean {
 	const session = activeSession.runtime.session;
 	return session.isStreaming || session.isCompacting || session.pendingMessageCount > 0;
 }
 
-/**
- * Activity for a daemon-resident session. Busy sessions are "working"; an
- * otherwise-idle session whose idle verdict is not yet current is also held at
- * "working" so the view never shows it in an idle bucket before it is labeled.
- * Client attachment is deliberately not part of this — it is a separate count.
- */
 export function activeActivityForSession(activeSession: ActiveSessionState): SessionActivity {
 	if (isActiveSessionBusy(activeSession)) {
 		return "working";
 	}
+	// Hold at "working" until the idle verdict is current, so the view never
+	// buckets an unlabeled idle session.
 	return isSummaryCurrent(activeSession) ? "idle" : "working";
 }
 
-/**
- * Lifecycle for a daemon-resident session. A session with no messages yet is a
- * draft; an explicitly-archived persisted record stays archived even while
- * resident; everything else resident is live.
- */
 export function activeLifecycleForSession(
 	activeSession: ActiveSessionState,
 	savedSession?: SessionInfo,

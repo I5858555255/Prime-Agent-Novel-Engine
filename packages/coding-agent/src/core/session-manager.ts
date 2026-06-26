@@ -138,10 +138,8 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
-// On-disk lifecycle status. "archived" replaces the legacy "sleep"; old records
-// are normalized on read by normalizeSessionStateStatus below. "crash" is
-// retained for back-compat reads but is no longer written (a crashed session is
-// just live).
+// On-disk lifecycle. "archived" replaces legacy "sleep" (normalized on read).
+// "crash" is read-only back-compat; no longer written.
 export type SessionStateStatus = "active" | "archived" | "crash";
 
 export interface SessionState {

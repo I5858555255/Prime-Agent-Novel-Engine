@@ -29,9 +29,6 @@ export interface AgentsViewRow {
 }
 
 export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSection {
-	// Activity is the confident heuristic; the soft taskState only buckets idle
-	// sessions. Working includes classification-in-flight, so an idle session
-	// always carries a verdict by the time it reaches one of the idle buckets.
 	if (summary.activity === "working") {
 		return "working";
 	}
@@ -39,8 +36,7 @@ export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSe
 	return summary.taskState === "completed" ? "completed" : "needs-input";
 }
 
-// The agents view shows live sessions only. Drafts (no message sent yet) and
-// archived sessions stay out; archived are reachable only via /resume.
+// Live sessions only; drafts and archived stay out.
 export function shouldShowAgentsViewSession(summary: SessionSummary, manuallyInactive = false): boolean {
 	if (manuallyInactive) {
 		return false;

@@ -65,7 +65,12 @@ import {
 	isDaemonDialogExtensionUiRequest,
 	success,
 } from "./daemon-protocol.js";
-import { buildRlmChildSnapshots, buildSessionList, summaryForActiveSession } from "./daemon-session-list.js";
+import {
+	buildRlmChildSnapshots,
+	buildSessionList,
+	isActiveSessionBusy,
+	summaryForActiveSession,
+} from "./daemon-session-list.js";
 import { DaemonSessionSummarizer } from "./daemon-session-summarizer.js";
 import {
 	cleanupDaemonSocketPath,
@@ -1489,6 +1494,25 @@ export class AgentDaemon {
 	private detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void {
 		detachClientFromActiveSession(client, state);
 		this.write(client, { type: "session_detached", activeSessionId: state.activeSessionId });
+		// Abandoned new-chat: discard it so it doesn't linger in memory or leave an
+		// empty file. Replaces the old DeferredAgentConnection.
+		if (this.isDiscardableDraft(state)) {
+			void this.closeSession(state, "killed");
+		}
+	}
+
+	private isDiscardableDraft(state: ActiveSessionState): boolean {
+		if (state.clients.size > 0) {
+			return false;
+		}
+		if (state.runtime.metadata.kind === "subagent") {
+			return false;
+		}
+		const session = state.runtime.session;
+		if (session.messages.length > 0) {
+			return false;
+		}
+		return !isActiveSessionBusy(state);
 	}
 
 	private detachClient(client: DaemonSocketClient): void {
@@ -1535,11 +1559,10 @@ export class AgentDaemon {
 		// agent_status to a session being torn down.
 		this.summarizer.forget(state.activeSessionId);
 		const cascadeError = await this.closeChildSessions(state, reason);
-		// A killed session with no messages (abandoned new-chat) is discarded
-		// outright instead of persisting an archived state that clutters the list.
-		const isEmptyKilledSession = reason === "killed" && state.runtime.session.messages.length === 0;
+		// Message-less draft: discard rather than persist an empty session file.
+		const isEmptyDraftSession = reason !== "shutdown" && state.runtime.session.messages.length === 0;
 		let persistError: unknown;
-		if (reason !== "shutdown" && !isEmptyKilledSession) {
+		if (reason !== "shutdown" && !isEmptyDraftSession) {
 			try {
 				state.runtime.session.sessionManager.appendSessionState({ status: "archived" });
 			} catch (error) {
@@ -1558,7 +1581,7 @@ export class AgentDaemon {
 		}
 		state.clients.clear();
 		this.sessions.delete(state.activeSessionId);
-		if (isEmptyKilledSession) {
+		if (isEmptyDraftSession) {
 			const sessionFile = state.runtime.session.sessionFile;
 			if (sessionFile) {
 				await deleteSessionFile(sessionFile).catch(() => undefined);

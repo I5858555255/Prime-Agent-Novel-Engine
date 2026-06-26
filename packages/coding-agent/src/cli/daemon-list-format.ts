@@ -2,8 +2,7 @@ import chalk from "chalk";
 import { formatSessionDisplayId } from "../modes/daemon/daemon-session-id.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
 
-// Display status derived from the lifecycle + activity axes. Working sorts first,
-// then idle live sessions, then archived; this mirrors the agents view.
+// Display status derived from the lifecycle + activity axes.
 type ListStatus = "working" | "idle" | "archived";
 
 const LIST_STATUS_ORDER: Record<ListStatus, number> = {

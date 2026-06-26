@@ -324,10 +324,9 @@ export class DaemonSessionSummarizer {
 				isWorking,
 				signal: controller.signal,
 			});
-			// A failed/empty classification on an idle session still owes a verdict:
-			// the activity axis holds an unjudged idle session at "working", so
-			// without a fallback it would spin forever. Settle it to needs_input —
-			// a stalled session nags for attention rather than masquerading as done.
+			// A failed classification on an idle session would spin at "working"
+			// forever (the activity axis holds unjudged idle sessions there), so
+			// settle it to needs_input.
 			const result =
 				generated ??
 				(!isWorking && owesIdleVerdict
