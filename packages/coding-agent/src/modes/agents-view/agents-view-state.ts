@@ -76,6 +76,56 @@ export function getAgentsViewSummaryIdentity(summary: SessionSummary): string {
 	return `session:${summary.sessionId}`;
 }
 
+/**
+ * A row's `identity` keys on `sessionFile` first and falls back to the
+ * runtime-only `activeSessionId`, both of which can change as a session is
+ * persisted or torn down and re-attached. These stable keys let us re-find the
+ * same logical session across those transitions when restoring selection.
+ */
+export interface AgentsViewSelectionKey {
+	sessionId: string;
+	activeSessionId?: string;
+}
+
+export function getAgentsViewSelectionKey(summary: SessionSummary): AgentsViewSelectionKey {
+	return { sessionId: summary.sessionId, activeSessionId: summary.activeSessionId };
+}
+
+/**
+ * Re-find the previously selected session in a rebuilt row list. Tries, in
+ * order: the exact row `identity`, the live `activeSessionId`, then the stable
+ * `sessionId`. The latter two survive transitions that change `identity`
+ * (a session being persisted, or torn down and re-attached with a fresh active
+ * id). Returns -1 when the session is gone so callers fall back to a default.
+ */
+export function resolveAgentsViewSelectionIndex(
+	rows: readonly AgentsViewRow[],
+	identity: string | undefined,
+	key: AgentsViewSelectionKey | undefined,
+): number {
+	const findSelectable = (predicate: (row: AgentsViewRow) => boolean): number =>
+		rows.findIndex((row) => row.selectable && predicate(row));
+
+	if (identity !== undefined) {
+		const index = findSelectable((row) => row.identity === identity);
+		if (index >= 0) {
+			return index;
+		}
+	}
+	if (key?.activeSessionId !== undefined) {
+		const activeSessionId = key.activeSessionId;
+		const index = findSelectable((row) => (row.summary.activeSessionId ?? row.summary.id) === activeSessionId);
+		if (index >= 0) {
+			return index;
+		}
+	}
+	if (key?.sessionId !== undefined) {
+		const sessionId = key.sessionId;
+		return findSelectable((row) => row.summary.sessionId === sessionId);
+	}
+	return -1;
+}
+
 export function buildAgentsViewRows(
 	summaries: readonly SessionSummary[],
 	expandedSubagentParents: ReadonlySet<string> = new Set(),

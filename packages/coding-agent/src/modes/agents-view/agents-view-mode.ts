@@ -55,8 +55,11 @@ import {
 import {
 	type AgentsViewRow,
 	type AgentsViewSection,
+	type AgentsViewSelectionKey,
 	buildAgentsViewRows,
+	getAgentsViewSelectionKey,
 	getAgentsViewSummaryIdentity as getSummaryIdentity,
+	resolveAgentsViewSelectionIndex,
 	sectionTitle,
 	shouldShowAgentsViewSession,
 } from "./agents-view-state.js";
@@ -92,6 +95,10 @@ export interface AgentsViewModeOptions {
 type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary; subagent?: SessionSummary };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
+	// Stable keys for the selected session, used to re-find it when its
+	// identity changes (e.g. persisted, or re-attached with a new active id)
+	// across re-entry into the agents view.
+	selectedSessionKey?: AgentsViewSelectionKey;
 	statusMessage?: string;
 	initialPromptsSent?: boolean;
 	// Gathered once and reused across agents-view instances so the notices survive
@@ -225,7 +232,11 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 		if (result.type === "exit") {
 			return;
 		}
+		// Pin selection to the session being opened so it stays highlighted when
+		// the user returns; the stable key re-finds it even if its identity
+		// changes (persisted / re-attached) while the session was open.
 		persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
+		persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.summary);
 
 		let opened: { connection: DaemonAgentConnection; summary: SessionSummary } | undefined;
 		try {
@@ -293,6 +304,7 @@ class AgentsViewMode implements Component, Focusable {
 	private selectedIndex = 0;
 	private selectedRowIdentity: string | undefined;
 	private selectedActiveSessionId: string | undefined;
+	private selectedSessionKey: AgentsViewSelectionKey | undefined;
 	private replyActiveSessionId: string | undefined;
 	private replyLastAssistantText: string | undefined;
 	private replyLastAssistantTextLoading = false;
@@ -313,6 +325,8 @@ class AgentsViewMode implements Component, Focusable {
 		private readonly persistentState: AgentsViewPersistentState = {},
 	) {
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
+		this.selectedSessionKey = persistentState.selectedSessionKey;
+		this.selectedActiveSessionId = persistentState.selectedSessionKey?.activeSessionId;
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		setRegisteredThemes(options.uiServices.getThemes());
@@ -1400,7 +1414,9 @@ class AgentsViewMode implements Component, Focusable {
 			await this.refreshSessions();
 			this.selectedRowIdentity = getSummaryIdentity(summary);
 			this.selectedActiveSessionId = activeSessionId;
+			this.selectedSessionKey = getAgentsViewSelectionKey(summary);
 			this.persistentState.selectedRowIdentity = this.selectedRowIdentity;
+			this.persistentState.selectedSessionKey = this.selectedSessionKey;
 			this.restoreSelection();
 			return { summary, activeSessionId };
 		} catch (error) {
@@ -1504,20 +1520,7 @@ class AgentsViewMode implements Component, Focusable {
 			this.selectedActiveSessionId = undefined;
 			return;
 		}
-		const selectedIdentity = this.selectedRowIdentity ?? this.persistentState.selectedRowIdentity;
-		let index =
-			selectedIdentity === undefined
-				? -1
-				: this.rows.findIndex((row) => row.selectable && row.identity === selectedIdentity);
-		const selectedId = this.selectedActiveSessionId;
-		if (index < 0) {
-			index =
-				selectedId === undefined
-					? -1
-					: this.rows.findIndex(
-							(row) => row.selectable && (row.summary.activeSessionId ?? row.summary.id) === selectedId,
-						);
-		}
+		const index = this.findSelectedRowIndex();
 		if (index >= 0) {
 			this.selectedIndex = index;
 		} else if (!this.rows[this.selectedIndex]?.selectable) {
@@ -1528,6 +1531,12 @@ class AgentsViewMode implements Component, Focusable {
 		this.syncSelectedRowState();
 	}
 
+	private findSelectedRowIndex(): number {
+		const identity = this.selectedRowIdentity ?? this.persistentState.selectedRowIdentity;
+		const key = this.selectedSessionKey ?? this.persistentState.selectedSessionKey;
+		return resolveAgentsViewSelectionIndex(this.rows, identity, key);
+	}
+
 	private getSelectableRowIndexes(): number[] {
 		return this.rows.flatMap((row, index) => (row.selectable ? [index] : []));
 	}
@@ -1536,7 +1545,9 @@ class AgentsViewMode implements Component, Focusable {
 		const row = this.rows[this.selectedIndex];
 		this.selectedActiveSessionId = row?.selectable ? (row.summary.activeSessionId ?? row.summary.id) : undefined;
 		this.selectedRowIdentity = getSelectedRowIdentity(row);
+		this.selectedSessionKey = row?.selectable ? getAgentsViewSelectionKey(row.summary) : undefined;
 		this.persistentState.selectedRowIdentity = this.selectedRowIdentity;
+		this.persistentState.selectedSessionKey = this.selectedSessionKey;
 	}
 
 	private finish(result: AgentsViewRunResult): void {
