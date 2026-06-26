@@ -315,14 +315,15 @@ export function activeActivityForSession(activeSession: ActiveSessionState): Ses
 }
 
 /**
- * Lifecycle for an on-disk session not resident in the daemon. Only a clean
- * "active" record with at least one message is live; a message-less "active"
- * file is a draft, and anything else (archived/crash, or a dead-daemon "active")
- * stays out of the agents view. Message-based to match activeLifecycleForSession,
- * so a session keeps its lifecycle across leaving daemon memory.
+ * Lifecycle for an on-disk session not resident in the daemon. Explicitly
+ * archived/crashed records stay out of the view; everything else is classified
+ * by message count (live once a message exists, draft otherwise). A missing
+ * session_state is treated as not-archived, so older sessions that never wrote a
+ * lifecycle entry still surface. Message-based to match activeLifecycleForSession.
  */
 export function inactiveLifecycleForSession(session: SessionInfo): SessionLifecycle {
-	if (session.state?.status !== "active") {
+	const status = session.state?.status;
+	if (status === "archived" || status === "crash") {
 		return "archived";
 	}
 	return session.messageCount > 0 ? "live" : "draft";

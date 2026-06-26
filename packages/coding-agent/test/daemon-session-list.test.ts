@@ -61,7 +61,12 @@ describe("buildSessionList", () => {
 		const crashedPath = resolve("/tmp/project/crashed.jsonl");
 		const savedSessions = [
 			makeSessionInfo({ path: activePath, id: "saved-active", name: "active saved" }),
-			makeSessionInfo({ path: sleepingPath, id: "saved-sleeping", name: "sleeping saved" }),
+			makeSessionInfo({
+				path: sleepingPath,
+				id: "saved-sleeping",
+				name: "sleeping saved",
+				state: { status: "archived" },
+			}),
 			makeSessionInfo({ path: crashedPath, id: "saved-crashed", state: { status: "crash" } }),
 		];
 
@@ -115,6 +120,23 @@ describe("buildSessionList", () => {
 			["empty", "draft"],
 			["used", "live"],
 		]);
+	});
+
+	it("shows an off-daemon session with messages but no lifecycle entry as live", () => {
+		// Older sessions never wrote a session_state entry; a missing state must not
+		// be treated as archived, or those conversations vanish from the view.
+		const [entry] = buildSessionList(
+			[],
+			[
+				makeSessionInfo({
+					path: resolve("/tmp/project/legacy.jsonl"),
+					id: "legacy",
+					messageCount: 4,
+					state: undefined,
+				}),
+			],
+		);
+		expect(entry?.lifecycle).toBe("live");
 	});
 
 	it("carries the persisted recap and verdict for off-daemon sessions", () => {
