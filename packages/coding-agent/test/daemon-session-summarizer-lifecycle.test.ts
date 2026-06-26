@@ -70,6 +70,26 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(state.summaryState).toMatchObject({ taskState: "needs_input", basedOnMessageCount: 2 });
 	});
 
+	test("retries after a needs_input fallback until a real summary lands", async () => {
+		vi.useFakeTimers();
+		const generate = vi
+			.fn()
+			.mockResolvedValueOnce(undefined) // transient failure → blank needs_input fallback
+			.mockResolvedValue({ summary: "Reviewed the diff", taskState: "completed" });
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
+		const state = makeState({ working: false });
+
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(state.summaryState).toMatchObject({ summary: "", taskState: "needs_input" });
+
+		// A blank recap still owes a summary, so a later sweep retries and records it.
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(generate).toHaveBeenCalledTimes(2);
+		expect(state.summaryState).toMatchObject({ summary: "Reviewed the diff", taskState: "completed" });
+	});
+
 	test("refreshes a working session even when the message count is unchanged", async () => {
 		vi.useFakeTimers();
 		const generate = vi.fn().mockResolvedValue({ summary: "Editing the router" });

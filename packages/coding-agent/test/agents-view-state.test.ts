@@ -32,11 +32,13 @@ describe("agents view state", () => {
 
 	test("idle sessions split by the summarizer's completion verdict", () => {
 		// Working is heuristic and ignores taskState.
-		expect(classifyAgentsViewSession(makeSummary({ isStreaming: true, activity: "working", taskState: "completed" }))).toBe(
-			"working",
-		);
+		expect(
+			classifyAgentsViewSession(makeSummary({ isStreaming: true, activity: "working", taskState: "completed" })),
+		).toBe("working");
 		// Idle sessions follow the verdict; absent one they default to needs-input.
-		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: "needs_input" }))).toBe("needs-input");
+		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: "needs_input" }))).toBe(
+			"needs-input",
+		);
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: "completed" }))).toBe("completed");
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: undefined }))).toBe("needs-input");
 	});
@@ -56,8 +58,18 @@ describe("agents view state", () => {
 				messageCount: 2,
 				modified: "2026-01-01T00:00:00Z",
 			}),
-			makeSummary({ sessionName: "older working", activity: "working", isStreaming: true, modified: "2026-01-01T00:00:00Z" }),
-			makeSummary({ sessionName: "newer working", activity: "working", isStreaming: true, modified: "2026-01-02T00:00:00Z" }),
+			makeSummary({
+				sessionName: "older working",
+				activity: "working",
+				isStreaming: true,
+				modified: "2026-01-01T00:00:00Z",
+			}),
+			makeSummary({
+				sessionName: "newer working",
+				activity: "working",
+				isStreaming: true,
+				modified: "2026-01-02T00:00:00Z",
+			}),
 		]);
 
 		expect(rows.map((row) => row.title)).toEqual(["newer working", "older working", "completed"]);
@@ -408,10 +420,11 @@ describe("agents view state", () => {
 		expect(config.cwd).toBe("/tmp/dashboard");
 	});
 
-	test("requests only daemon-resident sessions for the agents view refresh", () => {
-		expect(createAgentsViewListCommand({ cwd: "/tmp/project" })).toEqual({ type: "list" });
+	test("requests all sessions (in-memory + on-disk) for the agents view refresh", () => {
+		expect(createAgentsViewListCommand({ cwd: "/tmp/project" })).toEqual({ type: "list", all: true });
 		expect(createAgentsViewListCommand({ cwd: "/tmp/project", sessionDir: "/tmp/sessions" })).toEqual({
 			type: "list",
+			all: true,
 			sessionDir: "/tmp/sessions",
 		});
 	});
