@@ -13,30 +13,44 @@ afterEach(() => {
 });
 
 describe("Prime Inference models", () => {
-	it("registers the Prime Inference catalog", () => {
+	it("registers the full Prime Inference catalog", () => {
 		const modelIds = getModels("prime-inference").map((model) => model.id);
 
-		expect(modelIds.length).toBe(28);
+		// The whole catalog is registered, not a curated subset.
+		expect(modelIds.length).toBeGreaterThan(28);
 		expect(modelIds).toEqual(
 			expect.arrayContaining([
 				"anthropic/claude-opus-4.7",
 				"anthropic/claude-opus-4.8",
 				"deepseek/deepseek-v4-pro",
 				"minimax/minimax-m3",
-				"moonshotai/kimi-k2.7-code",
-				"nvidia/nemotron-3-super-120b-a12b",
-				"openai/gpt-5.4",
 				"openai/gpt-5.5",
 				"prime-intellect/intellect-3",
 				"qwen/qwen3-coder-next",
-				"qwen/qwen3-vl-235b-a22b-thinking",
 				"x-ai/grok-4.20",
-				"z-ai/glm-5",
-				"z-ai/glm-5.1",
 				"z-ai/glm-5.2",
+				// Previously excluded by the whitelist, now included.
+				"google/gemini-2.5-pro",
+				"z-ai/glm-4.6",
+				"meta-llama/llama-3.3-70b-instruct",
 			]),
 		);
-		expect(modelIds).not.toContain("google/gemini-2.5-pro");
+		// Raw/quantization and case-variant duplicates are dropped.
+		expect(modelIds).not.toContain("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16");
+		expect(modelIds).not.toContain("Qwen/Qwen3-235B-A22B-Instruct-2507");
+		expect(modelIds).not.toContain("zai-org/GLM-4.7");
+	});
+
+	it("sources metadata for non-curated models from OpenRouter", () => {
+		const glm46 = getModel("prime-inference", "z-ai/glm-4.6");
+		expect(glm46.contextWindow).toBe(202752);
+		expect(glm46.reasoning).toBe(true);
+		expect(glm46.provider).toBe("prime-inference");
+		expect(glm46.api).toBe("openai-completions");
+
+		const gemini = getModel("prime-inference", "google/gemini-2.5-pro");
+		expect(gemini.input).toEqual(["text", "image"]);
+		expect(gemini.contextWindow).toBeGreaterThan(128000);
 	});
 
 	it("registers the default OpenAI-compatible model", () => {

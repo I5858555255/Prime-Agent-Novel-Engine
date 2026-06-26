@@ -115,14 +115,21 @@ interface PrimeInferenceCatalogEntry {
 }
 
 interface PrimeInferenceModelMetadata {
-	contextWindow: number;
-	maxTokens: number;
+	contextWindow?: number;
+	maxTokens?: number;
 	vision?: boolean;
 }
 
-// Prime Inference intentionally exposes a curated subset of the catalog in the
-// model picker. Add new model IDs here, then rerun this script to refresh
-// src/models.generated.ts.
+// Default metadata for catalog models with no curated override and no
+// OpenRouter match. Conservative: under-declaring the window is safe, an
+// over-declared one breaks the context bar.
+const PRIME_INFERENCE_DEFAULT_CONTEXT_WINDOW = 128000;
+const PRIME_INFERENCE_DEFAULT_MAX_TOKENS = 8192;
+
+// Curated overrides for Prime Inference's enforced limits, which differ from
+// what OpenRouter advertises (e.g. Anthropic models proxied without the
+// context-1m beta header cap at 200k, not 1M). These win over the OpenRouter
+// lookup; everything else in the catalog falls back to OpenRouter metadata.
 const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata> = {
 	// prime-inference proxies Anthropic models through OpenRouter without the
 	// context-1m beta header, so the enforced window is the standard 200k, not 1M.
@@ -369,6 +376,41 @@ function getPrimeInferenceCompat(modelId: string): OpenAICompletionsCompat {
 	return PRIME_INFERENCE_COMPAT;
 }
 
+interface OpenRouterModelMetadata {
+	contextWindow?: number;
+	maxTokens?: number;
+	vision: boolean;
+}
+
+// Prime Inference routes most models through OpenRouter and its catalog API
+// exposes only id + pricing, so we borrow capability metadata (context window,
+// max tokens, vision) from the OpenRouter catalog we already fetch.
+function buildOpenRouterMetadataIndex(openRouterModels: Model<any>[]): Map<string, OpenRouterModelMetadata> {
+	const index = new Map<string, OpenRouterModelMetadata>();
+	for (const model of openRouterModels) {
+		index.set(model.id.toLowerCase(), {
+			contextWindow: model.contextWindow,
+			maxTokens: model.maxTokens,
+			vision: model.input.includes("image"),
+		});
+	}
+	return index;
+}
+
+// Vendor-prefixed aliases that duplicate a canonical lowercase id but don't
+// carry the uppercase-vendor tell below (e.g. zai-org/GLM-4.7 == z-ai/glm-4.7).
+const PRIME_INFERENCE_DUPLICATE_VENDOR_PREFIXES = ["zai-org/"];
+
+// Raw/quantization-suffixed and case-variant duplicate ids the catalog exposes
+// alongside their canonical lowercase form (e.g. NVIDIA-Nemotron-*-BF16,
+// Qwen/Qwen3-*, zai-org/GLM-*). Skip them so the picker stays clean.
+function isPrimeInferenceRawVariant(id: string): boolean {
+	if (/-bf16$/i.test(id)) return true;
+	if (PRIME_INFERENCE_DUPLICATE_VENDOR_PREFIXES.some((prefix) => id.startsWith(prefix))) return true;
+	const vendor = id.split("/")[0] ?? id;
+	return vendor !== vendor.toLowerCase();
+}
+
 function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[] {
 	if (!isRecord(data) || !Array.isArray(data.data)) {
 		return [];
@@ -400,7 +442,9 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 	});
 }
 
-async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
+async function fetchPrimeInferenceModels(
+	openRouterIndex: Map<string, OpenRouterModelMetadata>,
+): Promise<Model<"openai-completions">[]> {
 	const apiKey = process.env.PRIME_API_KEY;
 
 	try {
@@ -411,11 +455,20 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 		});
 		const catalog = parsePrimeInferenceCatalog(await response.json());
 		if (catalog.length > 0) {
+			const skipped: string[] = [];
 			const models = catalog.flatMap((entry): Model<"openai-completions">[] => {
-				const metadata = PRIME_INFERENCE_MODEL_METADATA[entry.id.toLowerCase()];
-				return metadata === undefined ? [] : [createPrimeInferenceModel(entry, metadata)];
+				if (isPrimeInferenceRawVariant(entry.id)) {
+					skipped.push(entry.id);
+					return [];
+				}
+				const override = PRIME_INFERENCE_MODEL_METADATA[entry.id.toLowerCase()];
+				const orMeta = openRouterIndex.get(entry.id.toLowerCase());
+				return [createPrimeInferenceModel(entry, override, orMeta)];
 			});
-			console.log(`Fetched ${models.length} curated models from Prime Inference`);
+			if (skipped.length > 0) {
+				console.log(`Skipped ${skipped.length} Prime Inference raw/duplicate variants: ${skipped.join(", ")}`);
+			}
+			console.log(`Fetched ${models.length} models from Prime Inference`);
 			return models;
 		}
 	} catch (error) {
@@ -427,24 +480,32 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 
 function createPrimeInferenceModel(
 	entry: PrimeInferenceCatalogEntry,
-	metadata: PrimeInferenceModelMetadata,
+	override: PrimeInferenceModelMetadata | undefined,
+	orMeta: OpenRouterModelMetadata | undefined,
 ): Model<"openai-completions"> {
+	// Precedence: curated override → OpenRouter metadata → catalog → default.
+	const contextWindow =
+		override?.contextWindow ?? orMeta?.contextWindow ?? entry.contextWindow ?? PRIME_INFERENCE_DEFAULT_CONTEXT_WINDOW;
+	const maxTokens =
+		override?.maxTokens ?? orMeta?.maxTokens ?? entry.maxTokens ?? PRIME_INFERENCE_DEFAULT_MAX_TOKENS;
+	const vision = override?.vision ?? orMeta?.vision ?? false;
 	return {
 		id: entry.id,
 		name: getPrimeInferenceDisplayName(entry.id),
 		api: "openai-completions",
 		provider: "prime-inference",
 		baseUrl: PRIME_INFERENCE_BASE_URL,
+		// OpenRouter over-reports reasoning, so keep the id heuristic authoritative.
 		reasoning: isPrimeInferenceReasoningModel(entry.id, entry.reasoning),
-		input: metadata.vision ? ["text", "image"] : ["text"],
+		input: vision ? ["text", "image"] : ["text"],
 		cost: {
 			input: entry.input,
 			output: entry.output,
 			cacheRead: 0,
 			cacheWrite: 0,
 		},
-		contextWindow: entry.contextWindow ?? metadata.contextWindow,
-		maxTokens: entry.maxTokens ?? metadata.maxTokens,
+		contextWindow,
+		maxTokens,
 		compat: getPrimeInferenceCompat(entry.id),
 	};
 }
@@ -1988,7 +2049,7 @@ async function generateModels() {
 	];
 	allModels.push(...vertexModels);
 
-	const primeInferenceModels = await fetchPrimeInferenceModels();
+	const primeInferenceModels = await fetchPrimeInferenceModels(buildOpenRouterMetadataIndex(openRouterModels));
 	allModels.push(...primeInferenceModels);
 
 	const azureOpenAiModels: Model<Api>[] = allModels
