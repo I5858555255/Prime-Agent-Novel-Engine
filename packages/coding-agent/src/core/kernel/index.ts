@@ -87,7 +87,7 @@ export interface ExecuteOptions {
 /** MIME tag the `edit` skill emits diff payloads under, via `display_data`. */
 export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
 
-/** MIME tag the `attach-media` skill emits media payloads under, via `display_data`. */
+/** MIME tag the `attach-image` skill emits media payloads under, via `display_data`. */
 export const ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json";
 
 /** Cap a single attachment's base64 payload (~7MB raw) to bound memory and request size. */

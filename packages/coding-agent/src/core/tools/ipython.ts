@@ -136,7 +136,7 @@ export interface IpythonToolDetails {
 	result?: string;
 	/** Diffs streamed from file edits, rendered by the IPython cell. */
 	diffs?: KernelDiffDisplay[];
-	/** Media attachments loaded into context (e.g. by the attach-media skill). */
+	/** Media attachments loaded into context (e.g. by the attach-image skill). */
 	attachments?: KernelAttachment[];
 	error?: {
 		ename: string;

@@ -87,7 +87,7 @@ async def run(*paths: str) -> str:
         RuntimeError: If the current model cannot accept images.
     """
     if not paths:
-        raise ValueError("attach_media requires at least one image path")
+        raise ValueError("attach_image requires at least one image path")
 
     from rlm import host_request
 
