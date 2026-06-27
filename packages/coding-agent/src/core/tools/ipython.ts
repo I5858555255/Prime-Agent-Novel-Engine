@@ -2,10 +2,17 @@
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
+import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
 import type { ToolDefinition } from "../extensions/types.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
-import { type HostRequestHandlers, type KernelDiffDisplay, KernelManager } from "../kernel/index.js";
+import {
+	type HostRequestHandlers,
+	type KernelAttachment,
+	type KernelDiffDisplay,
+	KernelManager,
+} from "../kernel/index.js";
 import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
@@ -337,6 +344,14 @@ export class IpythonKernelProvisioner {
 	}
 }
 
+/** Turn kernel image attachments into `ImageContent` blocks; non-image types are dropped. */
+export function imageBlocksFromAttachments(attachments: readonly KernelAttachment[] | undefined): ImageContent[] {
+	if (!attachments) return [];
+	return attachments
+		.filter((a) => IMAGE_MIME_TYPES.has(a.mimeType))
+		.map((a) => ({ type: "image", data: a.data, mimeType: a.mimeType }));
+}
+
 export function createIpythonToolDefinition(
 	cwd: string,
 	options?: IpythonToolOptions,
@@ -382,8 +397,11 @@ export function createIpythonToolDefinition(
 					text += (text ? "\n" : "") + r.error.traceback.join("\n");
 				}
 
+				const imageBlocks = imageBlocksFromAttachments(r.attachments);
+				const content: (TextContent | ImageContent)[] = [{ type: "text", text: text || "" }, ...imageBlocks];
+
 				return {
-					content: [{ type: "text", text: text || "" }],
+					content,
 					details: {
 						durationMs: r.durationMs,
 						status: r.status,
@@ -392,6 +410,7 @@ export function createIpythonToolDefinition(
 						stderr: r.stderr,
 						result: r.result,
 						diffs: r.diffs,
+						attachments: r.attachments,
 						error: r.error,
 					},
 					isError: r.status === "error" || r.status === "aborted",

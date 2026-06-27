@@ -87,6 +87,9 @@ export interface ExecuteOptions {
 /** MIME tag the `edit` skill emits diff payloads under, via `display_data`. */
 export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
 
+/** MIME tag the `attach-media` skill emits media payloads under, via `display_data`. */
+export const ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json";
+
 /** One file edit, captured from a {@link DIFF_DISPLAY_MIME} display payload. */
 export interface KernelDiffDisplay {
 	path: string;
@@ -96,6 +99,15 @@ export interface KernelDiffDisplay {
 	startLine?: number;
 }
 
+/** One media attachment, captured from an {@link ATTACHMENT_DISPLAY_MIME} display payload. */
+export interface KernelAttachment {
+	mimeType: string;
+	/** base64-encoded bytes. */
+	data: string;
+	/** Source path, surfaced to the TUI renderer. */
+	path?: string;
+}
+
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
@@ -103,6 +115,8 @@ export interface ExecuteResult {
 	result?: string;
 	/** Diffs emitted via display_data, in order. */
 	diffs?: KernelDiffDisplay[];
+	/** Media attachments emitted via display_data, in order. */
+	attachments?: KernelAttachment[];
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
 	durationMs: number;
@@ -118,6 +132,18 @@ function parseDiffDisplay(payload: unknown): KernelDiffDisplay | undefined {
 		return undefined;
 	}
 	return { path, oldStr, newStr, startLine: typeof startLine === "number" ? startLine : undefined };
+}
+
+/** Parse an {@link ATTACHMENT_DISPLAY_MIME} payload, tolerating malformed input. */
+function parseAttachmentDisplay(payload: unknown): KernelAttachment | undefined {
+	if (!isRecord(payload)) {
+		return undefined;
+	}
+	const { mime_type: mimeType, data, path } = payload;
+	if (typeof mimeType !== "string" || typeof data !== "string") {
+		return undefined;
+	}
+	return { mimeType, data, path: typeof path === "string" ? path : undefined };
 }
 
 interface ConnectionInfo {
@@ -160,6 +186,7 @@ interface ActiveExecution {
 	stderrTruncated: boolean;
 	result?: string;
 	diffs: KernelDiffDisplay[];
+	attachments: KernelAttachment[];
 	error?: ExecuteResult["error"];
 	status: ExecuteResult["status"];
 	resolve: (result: ExecuteResult) => void;
@@ -648,6 +675,7 @@ export class KernelManager {
 				stdoutTruncated: false,
 				stderrTruncated: false,
 				diffs: [],
+				attachments: [],
 				status: "ok",
 				resolve: result.resolve,
 				reject: result.reject,
@@ -741,6 +769,8 @@ export class KernelManager {
 			const c = incoming.content as { data?: Record<string, unknown> };
 			const diff = parseDiffDisplay(c.data?.[DIFF_DISPLAY_MIME]);
 			if (diff) execution.diffs.push(diff);
+			const attachment = parseAttachmentDisplay(c.data?.[ATTACHMENT_DISPLAY_MIME]);
+			if (attachment) execution.attachments.push(attachment);
 		} else if (t === "error") {
 			const c = incoming.content as { ename: string; evalue: string; traceback: string[] };
 			execution.error = c;
@@ -776,6 +806,7 @@ export class KernelManager {
 			stderr,
 			result,
 			diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
+			attachments: execution.attachments.length > 0 ? execution.attachments : undefined,
 			error: execution.error,
 			status,
 			durationMs: Date.now() - execution.started,
