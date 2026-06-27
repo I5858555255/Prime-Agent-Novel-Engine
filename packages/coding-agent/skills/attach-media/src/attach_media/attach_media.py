@@ -95,8 +95,8 @@ async def run(*paths: str) -> str:
     if "image" not in info.get("input", []):
         model_id = info.get("id") or "the current model"
         raise RuntimeError(
-            f"{model_id} is not vision-capable, so it cannot load images into context. "
-            "Switch to a multimodal model and try again."
+            f"{model_id} does not support vision. "
+            "Tell the user to switch to a vision-capable model to load images into context."
         )
 
     # Validate every path before emitting anything (so a later failure never
