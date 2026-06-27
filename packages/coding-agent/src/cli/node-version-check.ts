@@ -25,11 +25,9 @@ export function assertNodeVersion(io: NodeVersionGuardIO): boolean {
 
 	io.log(`prime-agent requires Node ${MIN_NODE_MAJOR} or newer, but the active Node is v${io.version}.`);
 	io.log("");
-	io.log("Upgrade Node, then reinstall so the command resolves to the new version:");
-	io.log("");
-	io.log("  nvm install 22 && nvm use 22   # or: install Node 22+ from https://nodejs.org");
-	io.log("  npm install -g prime-agent");
-	io.log("");
+	io.log(`  1. Install Node ${MIN_NODE_MAJOR}+ (e.g. "nvm install 22 && nvm use 22", or from https://nodejs.org)`);
+	io.log("  2. Reinstall prime-agent under that Node so the command resolves to it:");
+	io.log("     https://github.com/PrimeIntellect-ai/prime-agent/releases/latest");
 	io.exit(1);
 	return false;
 }

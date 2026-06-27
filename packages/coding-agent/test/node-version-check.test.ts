@@ -35,7 +35,7 @@ describe("assertNodeVersion", () => {
 		const text = logs.join("\n");
 		expect(text).toContain(`Node ${MIN_NODE_MAJOR}`);
 		expect(text).toContain("20.18.1");
-		expect(text).toContain("npm install -g prime-agent");
+		expect(text).toContain("github.com/PrimeIntellect-ai/prime-agent/releases/latest");
 	});
 
 	test("lets an unparseable version through rather than blocking", () => {
