@@ -142,8 +142,13 @@ function parseDiffDisplay(payload: unknown): KernelDiffDisplay | undefined {
 	return { path, oldStr, newStr, startLine: typeof startLine === "number" ? startLine : undefined };
 }
 
-/** Parse an {@link ATTACHMENT_DISPLAY_MIME} payload, tolerating malformed input. */
-function parseAttachmentDisplay(payload: unknown): KernelAttachment | undefined {
+/**
+ * Parse an {@link ATTACHMENT_DISPLAY_MIME} payload. Malformed payloads are
+ * tolerantly ignored (`undefined`); a well-formed payload exceeding
+ * {@link MAX_ATTACHMENT_DATA_CHARS} is reported as `"oversized"` so the caller
+ * can fail the cell loudly rather than silently dropping the image.
+ */
+function parseAttachmentDisplay(payload: unknown): KernelAttachment | "oversized" | undefined {
 	if (!isRecord(payload)) {
 		return undefined;
 	}
@@ -152,7 +157,7 @@ function parseAttachmentDisplay(payload: unknown): KernelAttachment | undefined 
 		return undefined;
 	}
 	if (data.length > MAX_ATTACHMENT_DATA_CHARS) {
-		return undefined;
+		return "oversized";
 	}
 	return { mimeType, data, path: typeof path === "string" ? path : undefined };
 }
@@ -781,7 +786,12 @@ export class KernelManager {
 			const diff = parseDiffDisplay(c.data?.[DIFF_DISPLAY_MIME]);
 			if (diff) execution.diffs.push(diff);
 			const attachment = parseAttachmentDisplay(c.data?.[ATTACHMENT_DISPLAY_MIME]);
-			if (attachment) execution.attachments.push(attachment);
+			if (attachment === "oversized") {
+				execution.stderr += `${execution.stderr ? "\n" : ""}attachment dropped: exceeds ${MAX_ATTACHMENT_DATA_CHARS} base64 chars`;
+				execution.status = "error";
+			} else if (attachment) {
+				execution.attachments.push(attachment);
+			}
 		} else if (t === "error") {
 			const c = incoming.content as { ename: string; evalue: string; traceback: string[] };
 			execution.error = c;

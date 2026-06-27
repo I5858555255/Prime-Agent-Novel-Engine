@@ -108,4 +108,19 @@ except ValueError as error:
 		expect(result.stdout.trim()).toContain("is not a supported image");
 		expect(result.attachments).toBeUndefined();
 	});
+
+	it("fails the cell loudly when an emitted attachment exceeds the size cap", async () => {
+		provisioner = new IpythonKernelProvisioner(tempDir, { pythonSkills: [] });
+		const manager = await provisioner.ensure();
+		// Emit an oversized attachment directly, bypassing the skill's own cap.
+		const result = await manager.execute(`
+from IPython.display import display
+display({"application/vnd.prime-agent.attachment+json": {"mime_type": "image/png", "data": "A" * 10_000_001}}, raw=True)
+print("done")
+`);
+
+		expect(result.status).toBe("error");
+		expect(result.stderr).toContain("attachment dropped");
+		expect(result.attachments).toBeUndefined();
+	});
 });
