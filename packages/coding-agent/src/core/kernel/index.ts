@@ -90,7 +90,12 @@ export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
 /** MIME tag the `attach-image` skill emits media payloads under, via `display_data`. */
 export const ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json";
 
-/** Cap a single attachment's base64 payload (~7MB raw) to bound memory and request size. */
+/**
+ * Hard ceiling on a single attachment's base64 payload, a defensive guard
+ * against a runaway direct `display_data` emit. The `attach-image` skill caps
+ * its own images well under this (see `_MAX_IMAGE_BYTES`), so a skill-produced
+ * attachment is never dropped here — only a non-skill emit can hit this.
+ */
 const MAX_ATTACHMENT_DATA_CHARS = 10_000_000;
 
 /** One file edit, captured from a {@link DIFF_DISPLAY_MIME} display payload. */

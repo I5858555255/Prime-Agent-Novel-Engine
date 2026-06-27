@@ -8,6 +8,9 @@ from pathlib import Path
 # Keep in sync with ATTACHMENT_DISPLAY_MIME in src/core/kernel/index.ts.
 _ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json"
 
+# Base64 expands by ~4/3, so this stays well under MAX_ATTACHMENT_DATA_CHARS in
+# src/core/kernel/index.ts — keep it that way so the kernel never drops (and
+# thus silently loses) an image this skill reports as loaded.
 _MAX_IMAGE_BYTES = 3_500_000
 
 # Matches IMAGE_MIME_TYPES in src/utils/mime.ts.
