@@ -3506,13 +3506,13 @@ export class InteractiveMode {
 				return;
 			}
 			if (commandName === "session" && !commandArgs) {
-				this.echoLocalCommand(canonicalCommandText);
+				this.echoLocalCommand(text);
 				await this.handleSessionCommand();
 				this.editor.setText("");
 				return;
 			}
 			if (commandName === "system-prompt" && !commandArgs) {
-				this.echoLocalCommand(canonicalCommandText);
+				this.echoLocalCommand(text);
 				await this.handleSystemPromptCommand();
 				this.editor.setText("");
 				return;
@@ -3523,19 +3523,19 @@ export class InteractiveMode {
 				return;
 			}
 			if (commandName === "context" && !commandArgs) {
-				this.echoLocalCommand(canonicalCommandText);
+				this.echoLocalCommand(text);
 				await this.handleContextCommand();
 				this.editor.setText("");
 				return;
 			}
 			if (commandName === "logs" && !commandArgs) {
-				this.echoLocalCommand(canonicalCommandText);
+				this.echoLocalCommand(text);
 				this.handleLogsCommand();
 				this.editor.setText("");
 				return;
 			}
 			if (commandName === "goal" && (!commandArgs || commandArgs === "status")) {
-				this.echoLocalCommand(canonicalCommandText);
+				this.echoLocalCommand(text);
 				this.handleGoalStatusCommand();
 				this.editor.setText("");
 				return;
@@ -3546,13 +3546,13 @@ export class InteractiveMode {
 				return;
 			}
 			if (commandName === "changelog" && !commandArgs) {
-				this.echoLocalCommand(canonicalCommandText);
+				this.echoLocalCommand(text);
 				this.handleChangelogCommand();
 				this.editor.setText("");
 				return;
 			}
 			if (commandName === "hotkeys" && !commandArgs) {
-				this.echoLocalCommand(canonicalCommandText);
+				this.echoLocalCommand(text);
 				this.handleHotkeysCommand();
 				this.editor.setText("");
 				return;
