@@ -90,6 +90,9 @@ export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
 /** MIME tag the `attach-media` skill emits media payloads under, via `display_data`. */
 export const ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json";
 
+/** Cap a single attachment's base64 payload (~7MB raw) to bound memory and request size. */
+const MAX_ATTACHMENT_DATA_CHARS = 10_000_000;
+
 /** One file edit, captured from a {@link DIFF_DISPLAY_MIME} display payload. */
 export interface KernelDiffDisplay {
 	path: string;
@@ -141,6 +144,9 @@ function parseAttachmentDisplay(payload: unknown): KernelAttachment | undefined 
 	}
 	const { mime_type: mimeType, data, path } = payload;
 	if (typeof mimeType !== "string" || typeof data !== "string") {
+		return undefined;
+	}
+	if (data.length > MAX_ATTACHMENT_DATA_CHARS) {
 		return undefined;
 	}
 	return { mimeType, data, path: typeof path === "string" ? path : undefined };

@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 dependencies = ["prime-agent-runtime"]
 
 [project.scripts]
-attach-media = "rlm.skill:cli"
+attach_media = "rlm.skill:cli"
 
 [build-system]
 requires = ["hatchling"]

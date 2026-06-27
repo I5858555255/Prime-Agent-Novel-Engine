@@ -1,11 +1,4 @@
-"""Load on-disk images into the model's context as multimodal attachments.
-
-Each image is base64-encoded and streamed to the TypeScript host via
-`display_data`, where it becomes an image content block on this tool's result —
-the same path a pasted image takes. The model then *sees* the image. This is
-distinct from opening an image with PIL in the kernel, which only lets you
-compute over its bytes/pixels.
-"""
+"""Load on-disk images into the model's context as multimodal attachments."""
 
 from __future__ import annotations
 
@@ -15,11 +8,9 @@ from pathlib import Path
 # Keep in sync with ATTACHMENT_DISPLAY_MIME in src/core/kernel/index.ts.
 _ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json"
 
-# Anthropic/most providers accept up to ~5MB per image. Cap the raw bytes well
-# under that so the base64 payload stays within range.
 _MAX_IMAGE_BYTES = 3_500_000
 
-# (mime_type, magic-byte prefix). Matches IMAGE_MIME_TYPES in src/utils/mime.ts.
+# Matches IMAGE_MIME_TYPES in src/utils/mime.ts.
 _IMAGE_SIGNATURES = (
     ("image/png", b"\x89PNG\r\n\x1a\n"),
     ("image/jpeg", b"\xff\xd8\xff"),
@@ -32,10 +23,29 @@ def _detect_image_mime(data: bytes) -> str | None:
     for mime, prefix in _IMAGE_SIGNATURES:
         if data.startswith(prefix):
             return mime
-    # WebP: "RIFF"<4 size bytes>"WEBP"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
     return None
+
+
+def _read_image(path: str) -> tuple[str, str, str]:
+    filepath = Path(path).expanduser()
+    if not filepath.is_file():
+        raise FileNotFoundError(f"{path} is not an existing regular file")
+    size = filepath.stat().st_size
+    if size > _MAX_IMAGE_BYTES:
+        raise ValueError(
+            f"{path} is {size // 1_000_000}MB; images must be under "
+            f"{_MAX_IMAGE_BYTES // 1_000_000}MB. Resize it (e.g. with PIL) first."
+        )
+    data = filepath.read_bytes()
+    mime = _detect_image_mime(data)
+    if mime is None:
+        raise ValueError(
+            f"{path} is not a supported image (PNG, JPEG, GIF, WebP). "
+            "Only images can be loaded into context; open other files in the kernel instead."
+        )
+    return str(filepath), mime, base64.b64encode(data).decode("ascii")
 
 
 def _emit_attachment(path: str, mime_type: str, data_b64: str) -> None:
@@ -70,7 +80,7 @@ async def run(*paths: str) -> str:
         A short confirmation listing the images loaded into context.
 
     Raises:
-        FileNotFoundError: If a path does not exist.
+        FileNotFoundError: If a path does not exist or is not a regular file.
         ValueError: If a file is not a supported image or is too large.
         RuntimeError: If the current model cannot accept images.
     """
@@ -87,24 +97,10 @@ async def run(*paths: str) -> str:
             "Switch to a multimodal model and try again."
         )
 
-    loaded: list[str] = []
-    for path in paths:
-        filepath = Path(path).expanduser()
-        if not filepath.exists():
-            raise FileNotFoundError(f"{path} not found")
-        data = filepath.read_bytes()
-        mime = _detect_image_mime(data)
-        if mime is None:
-            raise ValueError(
-                f"{path} is not a supported image (PNG, JPEG, GIF, WebP). "
-                "Only images can be loaded into context; open other files in the kernel instead."
-            )
-        if len(data) > _MAX_IMAGE_BYTES:
-            raise ValueError(
-                f"{path} is {len(data) // 1_000_000}MB; images must be under "
-                f"{_MAX_IMAGE_BYTES // 1_000_000}MB. Resize it (e.g. with PIL) first."
-            )
-        _emit_attachment(str(filepath), mime, base64.b64encode(data).decode("ascii"))
-        loaded.append(path)
+    # Validate and read every path before emitting anything, so a later failure
+    # never leaves a partial subset of images injected into context.
+    attachments = [_read_image(path) for path in paths]
+    for resolved, mime, data_b64 in attachments:
+        _emit_attachment(resolved, mime, data_b64)
 
-    return f"Loaded {len(loaded)} image(s) into context: {', '.join(loaded)}"
+    return f"Loaded {len(attachments)} image(s) into context: {', '.join(paths)}"
