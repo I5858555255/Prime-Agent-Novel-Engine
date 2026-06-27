@@ -28,7 +28,7 @@ def _detect_image_mime(data: bytes) -> str | None:
     return None
 
 
-def _read_image(path: str) -> tuple[str, str, str]:
+def _validate_image(path: str) -> tuple[Path, str]:
     filepath = Path(path).expanduser()
     if not filepath.is_file():
         raise FileNotFoundError(f"{path} is not an existing regular file")
@@ -38,23 +38,25 @@ def _read_image(path: str) -> tuple[str, str, str]:
             f"{path} is {size // 1_000_000}MB; images must be under "
             f"{_MAX_IMAGE_BYTES // 1_000_000}MB. Resize it (e.g. with PIL) first."
         )
-    data = filepath.read_bytes()
-    mime = _detect_image_mime(data)
+    with filepath.open("rb") as f:
+        head = f.read(16)
+    mime = _detect_image_mime(head)
     if mime is None:
         raise ValueError(
             f"{path} is not a supported image (PNG, JPEG, GIF, WebP). "
             "Only images can be loaded into context; open other files in the kernel instead."
         )
-    return str(filepath), mime, base64.b64encode(data).decode("ascii")
+    return filepath, mime
 
 
-def _emit_attachment(path: str, mime_type: str, data_b64: str) -> None:
+def _emit_attachment(filepath: Path, mime_type: str) -> None:
     from IPython.display import display
 
+    data_b64 = base64.b64encode(filepath.read_bytes()).decode("ascii")
     display(
         {
-            _ATTACHMENT_DISPLAY_MIME: {"mime_type": mime_type, "data": data_b64, "path": path},
-            "text/plain": f"Loaded image into context: {path}",
+            _ATTACHMENT_DISPLAY_MIME: {"mime_type": mime_type, "data": data_b64, "path": str(filepath)},
+            "text/plain": f"Loaded image into context: {filepath}",
         },
         raw=True,
     )
@@ -97,10 +99,11 @@ async def run(*paths: str) -> str:
             "Switch to a multimodal model and try again."
         )
 
-    # Validate and read every path before emitting anything, so a later failure
-    # never leaves a partial subset of images injected into context.
-    attachments = [_read_image(path) for path in paths]
-    for resolved, mime, data_b64 in attachments:
-        _emit_attachment(resolved, mime, data_b64)
+    # Validate every path before emitting anything (so a later failure never
+    # leaves a partial subset injected), but read+encode one image at a time to
+    # avoid holding every base64 payload in memory at once.
+    validated = [_validate_image(path) for path in paths]
+    for filepath, mime in validated:
+        _emit_attachment(filepath, mime)
 
-    return f"Loaded {len(attachments)} image(s) into context: {', '.join(paths)}"
+    return f"Loaded {len(validated)} image(s) into context: {', '.join(paths)}"
