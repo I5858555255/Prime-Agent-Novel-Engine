@@ -561,9 +561,6 @@ export class InteractiveMode {
 	private childAgentNodes: ChildAgentInspectorNode[] = [];
 	private childAgentDetailNodeId: string | undefined;
 	private childAgentPanelMode: "detail" | undefined;
-	// True while the subagent detail panel is the session's entry point (opened
-	// via initialSubagentNodeId), so "back" returns to the agents view rather
-	// than the parent chat the user never asked for.
 	private enteredSessionViaSubagentDetail = false;
 
 	// Tool output expansion state
@@ -4595,8 +4592,6 @@ export class InteractiveMode {
 	private closeChildAgentPanel(options: { selectNodeId?: string } = {}): void {
 		this.childAgentPanelMode = undefined;
 		this.childAgentDetailNodeId = undefined;
-		// Reaching the parent chat means the detail panel is no longer the entry
-		// point; any later subagent detail goes "back to chat" from here on.
 		this.enteredSessionViaSubagentDetail = false;
 		this.childAgentDetail.setBackHintLabel("back to chat");
 		this.childAgentDetail.setNode(undefined);
