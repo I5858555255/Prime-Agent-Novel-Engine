@@ -6617,8 +6617,14 @@ export class InteractiveMode {
 			}
 			const result = await this.createAuthFlows().runMcpLogin(server);
 			if (result.status === "success") {
-				this.showStatus(`Connected ${server}. Reloading so the integration becomes available…`);
-				await this.handleReloadCommand();
+				// Enabling the skill needs a reload, which is refused mid-turn; tell the
+				// user to /reload rather than silently leaving creds saved but inactive.
+				if (this.isAgentStreaming() || this.isAgentCompacting()) {
+					this.showStatus(`Connected ${server}. Run /reload (after the current turn) to activate it.`);
+				} else {
+					this.showStatus(`Connected ${server}. Reloading so the integration becomes available…`);
+					await this.handleReloadCommand();
+				}
 			}
 			return;
 		}
@@ -6633,8 +6639,12 @@ export class InteractiveMode {
 				return;
 			}
 			authStorage.logout(`mcp:${server}`);
-			this.showStatus(`Disconnected ${server}. Reloading…`);
-			await this.handleReloadCommand();
+			if (this.isAgentStreaming() || this.isAgentCompacting()) {
+				this.showStatus(`Disconnected ${server}. Run /reload (after the current turn) to fully unload it.`);
+			} else {
+				this.showStatus(`Disconnected ${server}. Reloading…`);
+				await this.handleReloadCommand();
+			}
 			return;
 		}
 

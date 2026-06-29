@@ -72,20 +72,28 @@ describe("McpManager", () => {
 		expect(getOAuthProvider("mcp:acme")).toBeDefined();
 	});
 
-	it("exposes mcp.refresh and mcp.begin_login host handlers", async () => {
+	it("exposes only mcp.refresh when no interactive login is wired", async () => {
 		const manager = new McpManager({ authStorage });
 		const handlers = manager.hostHandlers();
-		expect(Object.keys(handlers)).toEqual(["mcp.refresh", "mcp.begin_login"]);
+		expect(Object.keys(handlers)).toEqual(["mcp.refresh"]);
 
 		// refresh with no credentials is a no-op that does not throw.
 		await expect(handlers["mcp.refresh"]({ server: "linear" })).resolves.toEqual({});
 		await expect(handlers["mcp.refresh"]({})).rejects.toThrow("requires a server");
 	});
 
-	it("begin_login errors when no interactive login is wired", async () => {
-		const manager = new McpManager({ authStorage });
+	it("exposes mcp.begin_login only when beginLogin is provided", async () => {
+		let called = "";
+		const manager = new McpManager({
+			authStorage,
+			beginLogin: async (server) => {
+				called = server;
+			},
+		});
 		const handlers = manager.hostHandlers();
-		await expect(handlers["mcp.begin_login"]({ server: "linear" })).rejects.toThrow("not available");
+		expect(Object.keys(handlers).sort()).toEqual(["mcp.begin_login", "mcp.refresh"]);
+		await handlers["mcp.begin_login"]({ server: "linear" });
+		expect(called).toBe("linear");
 	});
 
 	it("honors a bearer-token env var for user-declared servers", () => {

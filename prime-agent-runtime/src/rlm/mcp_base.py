@@ -56,7 +56,9 @@ def _agent_dir() -> Path:
         or os.environ.get("PI_CODING_AGENT_DIR")
         or str(Path.home() / ".prime" / "agent")
     )
-    return Path(raw).expanduser()
+    # resolve() so a relative env override reads auth.json from the right place,
+    # not relative to the kernel's cwd.
+    return Path(raw).expanduser().resolve()
 
 
 def _read_auth(provider: str) -> dict[str, Any] | None:

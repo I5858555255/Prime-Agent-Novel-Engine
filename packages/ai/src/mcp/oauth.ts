@@ -281,9 +281,12 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 			// absent we fall back to a blocking prompt after the callback resolves.
 			let result: { code: string; state: string } | null;
 			if (callbacks.onManualCodeInput) {
+				// .catch so that if the callback wins the race and the manual prompt is
+				// later cancelled (rejects), it doesn't become an unhandled rejection.
 				const manual = callbacks
 					.onManualCodeInput()
 					.then((input) => parseRedirectInput(input, verifier))
+					.catch(() => null)
 					.finally(() => cb.cancel());
 				const fromCallback = await cb.waitForCode();
 				result = fromCallback ?? (await manual);

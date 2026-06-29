@@ -8,7 +8,7 @@ import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
 import { AuthStorage } from "./auth-storage.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
-import type { McpManager } from "./mcp/mcp-manager.js";
+import { McpManager } from "./mcp/mcp-manager.js";
 import { convertToLlm } from "./messages.js";
 import { ModelRegistry } from "./model-registry.js";
 import { findInitialModel } from "./model-resolver.js";
@@ -163,8 +163,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
 
+	// Ensure MCP providers are registered and built-in MCP skills are gated by
+	// auth even on the bare SDK path (not just the CLI's createAgentSessionServices).
+	const mcpManager =
+		options.mcpManager ?? new McpManager({ authStorage, getUserServers: () => settingsManager.getMcpServers() });
+	modelRegistry.setOnOAuthProvidersReset(() => mcpManager.registerUserProviders());
+
 	if (!resourceLoader) {
-		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			extraBuiltinSkillOverrides: () => mcpManager.getDisabledBuiltinSkillOverrides(),
+		});
 		await resourceLoader.reload();
 		time("resourceLoader.reload");
 	}
@@ -352,7 +363,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		resourceLoader,
 		customTools: options.customTools,
 		modelRegistry,
-		mcpManager: options.mcpManager,
+		mcpManager,
 		initialActiveToolNames,
 		allowedToolNames,
 		includeGoals,

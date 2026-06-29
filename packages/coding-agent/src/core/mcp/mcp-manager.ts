@@ -4,7 +4,6 @@
 import {
 	BUILTIN_MCP_CATALOG,
 	createMcpOAuthProvider,
-	getCatalogEntry,
 	registerBuiltinMcpOAuthProviders,
 } from "@earendil-works/pi-ai/mcp";
 import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
@@ -27,6 +26,8 @@ interface ResolvedIntegration {
 	usesOAuth: boolean;
 	bearerTokenEnvVar?: string;
 	enabled?: boolean;
+	/** True when this came from Settings.mcpServers (may override a catalog name). */
+	userDeclared?: boolean;
 }
 
 export class McpManager {
@@ -72,6 +73,7 @@ export class McpManager {
 				usesOAuth: config.oauth === true,
 				bearerTokenEnvVar: config.bearerTokenEnvVar,
 				enabled: config.enabled,
+				userDeclared: true,
 			});
 		}
 		this.integrations = integrations;
@@ -89,7 +91,9 @@ export class McpManager {
 	 */
 	registerUserProviders(): void {
 		for (const integration of this.integrations.values()) {
-			if (!integration.usesOAuth || getCatalogEntry(integration.server)) continue;
+			// Register based on userDeclared (not getCatalogEntry) so a user server that
+			// overrides a catalog name still gets a provider pointed at its own URL.
+			if (!integration.usesOAuth || !integration.userDeclared) continue;
 			registerOAuthProvider(
 				createMcpOAuthProvider({
 					server: integration.server,
@@ -124,7 +128,7 @@ export class McpManager {
 
 	/** Host-request handlers exposed to the kernel. */
 	hostHandlers(): Record<string, (payload: Record<string, unknown>) => Promise<Record<string, unknown>>> {
-		return {
+		const handlers: Record<string, (payload: Record<string, unknown>) => Promise<Record<string, unknown>>> = {
 			"mcp.refresh": async (payload) => {
 				const server = String(payload.server ?? "");
 				if (!server) throw new Error("mcp.refresh requires a server");
@@ -132,16 +136,19 @@ export class McpManager {
 				await this.authStorage.getApiKey(this.providerId(server));
 				return {};
 			},
-			"mcp.begin_login": async (payload) => {
+		};
+		// Only expose begin_login when an interactive login is actually wired, so the
+		// kernel doesn't get a handler whose only behavior is to throw.
+		const beginLogin = this.beginLogin;
+		if (beginLogin) {
+			handlers["mcp.begin_login"] = async (payload) => {
 				const server = String(payload.server ?? "");
 				if (!server) throw new Error("mcp.begin_login requires a server");
-				if (!this.beginLogin) {
-					throw new Error("Interactive MCP login is not available in this mode");
-				}
-				await this.beginLogin(server);
+				await beginLogin(server);
 				return {};
-			},
-		};
+			};
+		}
+		return handlers;
 	}
 
 	/** Status for the /mcp list command. */

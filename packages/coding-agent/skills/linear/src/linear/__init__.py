@@ -21,7 +21,15 @@ class Linear(McpIntegration):
 linear = Linear()
 
 
+# Names the kernel bootstrap probes to decide if a module is a callable skill.
+# Don't forward them, or `getattr(module, "run")` returns an MCP tool stub and the
+# module gets wrapped as callable, breaking `await linear.<tool>()` dispatch.
+_RESERVED = {"run", "__wrapped__", "__call__"}
+
+
 def __getattr__(name: str):
     # Forward bare module-level access (e.g. linear.list_issues) to the instance,
     # so `import linear; await linear.list_issues(...)` works without `.linear`.
+    if name.startswith("_") or name in _RESERVED:
+        raise AttributeError(name)
     return getattr(linear, name)
