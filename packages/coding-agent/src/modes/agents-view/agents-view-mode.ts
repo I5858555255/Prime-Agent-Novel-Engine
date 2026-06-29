@@ -55,8 +55,11 @@ import {
 import {
 	type AgentsViewRow,
 	type AgentsViewSection,
+	type AgentsViewSelectionKey,
 	buildAgentsViewRows,
+	getAgentsViewSelectionKey,
 	getAgentsViewSummaryIdentity as getSummaryIdentity,
+	resolveAgentsViewSelectionIndex,
 	sectionTitle,
 	shouldShowAgentsViewSession,
 } from "./agents-view-state.js";
@@ -92,6 +95,7 @@ export interface AgentsViewModeOptions {
 type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary; subagent?: SessionSummary };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
+	selectedSessionKey?: AgentsViewSelectionKey;
 	expandedSubagentParents?: string[];
 	statusMessage?: string;
 	initialPromptsSent?: boolean;
@@ -131,7 +135,10 @@ export function createAgentsViewResumeConfig(config: AgentSessionRuntimeConfig):
 export function createAgentsViewListCommand(
 	config: AgentSessionRuntimeConfig,
 ): Extract<DaemonCommand, { type: "list" }> {
-	const command: Extract<DaemonCommand, { type: "list" }> = { type: "list" };
+	// `all` makes the daemon merge on-disk sessions with in-memory ones; without it
+	// only daemon-resident sessions return and live sessions saved to disk are lost
+	// from the view. No cwd is set so the fleet view spans every directory.
+	const command: Extract<DaemonCommand, { type: "list" }> = { type: "list", all: true };
 	if (config.sessionDir) {
 		command.sessionDir = config.sessionDir;
 	}
@@ -230,12 +237,14 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			// Returning from a subagent reopens the agents view with its parent's
 			// list expanded and that subagent reselected.
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.subagent);
+			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.subagent);
 			const parentIdentity = getSummaryIdentity(result.summary);
 			persistentState.expandedSubagentParents = [
 				...new Set([...(persistentState.expandedSubagentParents ?? []), parentIdentity]),
 			];
 		} else {
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
+			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.summary);
 		}
 
 		let opened: { connection: DaemonAgentConnection; summary: SessionSummary } | undefined;
@@ -304,6 +313,7 @@ class AgentsViewMode implements Component, Focusable {
 	private selectedIndex = 0;
 	private selectedRowIdentity: string | undefined;
 	private selectedActiveSessionId: string | undefined;
+	private selectedSessionKey: AgentsViewSelectionKey | undefined;
 	private replyActiveSessionId: string | undefined;
 	private replyLastAssistantText: string | undefined;
 	private replyLastAssistantTextLoading = false;
@@ -324,6 +334,8 @@ class AgentsViewMode implements Component, Focusable {
 		private readonly persistentState: AgentsViewPersistentState = {},
 	) {
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
+		this.selectedSessionKey = persistentState.selectedSessionKey;
+		this.selectedActiveSessionId = persistentState.selectedSessionKey?.activeSessionId;
 		this.expandedSubagentParents = new Set(persistentState.expandedSubagentParents ?? []);
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
@@ -1374,13 +1386,13 @@ class AgentsViewMode implements Component, Focusable {
 				}
 			}
 			if (pending.sessionFile) {
-				// The kill above normally persists sleep, but it can be skipped or
-				// hit an unknown session (e.g. the daemon died after listing). Make
-				// sure the file is not left marked active, or a restarted daemon
-				// would resurrect a deliberately deactivated agent.
+				// The kill above normally persists the archived state, but it can be
+				// skipped or hit an unknown session (e.g. the daemon died after
+				// listing). Make sure the file is not left marked active, or a
+				// restarted daemon would resurrect a deliberately deactivated agent.
 				const sessionManager = SessionManager.open(pending.sessionFile, this.options.config.sessionDir);
 				if (sessionManager.getSessionState()?.status === "active") {
-					sessionManager.appendSessionState({ status: "sleep" });
+					sessionManager.appendSessionState({ status: "archived" });
 				}
 			}
 			this.inactiveAgentIdentities.add(pending.identity);
@@ -1413,7 +1425,9 @@ class AgentsViewMode implements Component, Focusable {
 			await this.refreshSessions();
 			this.selectedRowIdentity = getSummaryIdentity(summary);
 			this.selectedActiveSessionId = activeSessionId;
+			this.selectedSessionKey = getAgentsViewSelectionKey(summary);
 			this.persistentState.selectedRowIdentity = this.selectedRowIdentity;
+			this.persistentState.selectedSessionKey = this.selectedSessionKey;
 			this.restoreSelection();
 			return { summary, activeSessionId };
 		} catch (error) {
@@ -1517,20 +1531,7 @@ class AgentsViewMode implements Component, Focusable {
 			this.selectedActiveSessionId = undefined;
 			return;
 		}
-		const selectedIdentity = this.selectedRowIdentity ?? this.persistentState.selectedRowIdentity;
-		let index =
-			selectedIdentity === undefined
-				? -1
-				: this.rows.findIndex((row) => row.selectable && row.identity === selectedIdentity);
-		const selectedId = this.selectedActiveSessionId;
-		if (index < 0) {
-			index =
-				selectedId === undefined
-					? -1
-					: this.rows.findIndex(
-							(row) => row.selectable && (row.summary.activeSessionId ?? row.summary.id) === selectedId,
-						);
-		}
+		const index = this.findSelectedRowIndex();
 		if (index >= 0) {
 			this.selectedIndex = index;
 		} else if (!this.rows[this.selectedIndex]?.selectable) {
@@ -1541,6 +1542,12 @@ class AgentsViewMode implements Component, Focusable {
 		this.syncSelectedRowState();
 	}
 
+	private findSelectedRowIndex(): number {
+		const identity = this.selectedRowIdentity ?? this.persistentState.selectedRowIdentity;
+		const key = this.selectedSessionKey ?? this.persistentState.selectedSessionKey;
+		return resolveAgentsViewSelectionIndex(this.rows, identity, key);
+	}
+
 	private getSelectableRowIndexes(): number[] {
 		return this.rows.flatMap((row, index) => (row.selectable ? [index] : []));
 	}
@@ -1549,7 +1556,9 @@ class AgentsViewMode implements Component, Focusable {
 		const row = this.rows[this.selectedIndex];
 		this.selectedActiveSessionId = row?.selectable ? (row.summary.activeSessionId ?? row.summary.id) : undefined;
 		this.selectedRowIdentity = getSelectedRowIdentity(row);
+		this.selectedSessionKey = row?.selectable ? getAgentsViewSelectionKey(row.summary) : undefined;
 		this.persistentState.selectedRowIdentity = this.selectedRowIdentity;
+		this.persistentState.selectedSessionKey = this.selectedSessionKey;
 	}
 
 	private finish(result: AgentsViewRunResult): void {
@@ -1878,13 +1887,7 @@ function rowHasSpawnCode(row: AgentsViewRow): boolean {
 }
 
 function isRunningSessionSummary(summary: SessionSummary): boolean {
-	return (
-		summary.isStreaming ||
-		summary.isCompacting ||
-		summary.pendingMessageCount > 0 ||
-		summary.status === "model" ||
-		summary.status === "tool"
-	);
+	return summary.activity === "working";
 }
 
 export function createAgentsViewSessionName(text: string): string {
