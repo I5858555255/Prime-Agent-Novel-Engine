@@ -51,21 +51,21 @@ describe("buildRlmPrompt", () => {
 				"You are a general purpose agent that uses code to solve tasks.",
 				"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating one step at a time.",
 				"When you are done, stop calling tools and state your final answer.",
+				"",
 				"Working directory: /repo",
 				"Conversation log: /repo/.pi/sessions/session.jsonl",
+				`Pre-installed Python packages: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}.`,
+				"Install additional packages with `uv pip install <pkg>` (this is a uv-managed venv with no pip module).",
 				"",
-				"Configured Python skills for IPython: `websearch`.",
-				"When available, each Python skill is an async callable by the same import name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
-				"If a Python skill is unavailable, calling it raises a RuntimeError with the import error.",
-				"Each Python skill may also be available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
+				"Installed skills (pre-imported): `websearch`.",
+				"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
+				"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 				"",
 				"IPython is the agent's long-lived notebook: a persistent control environment for reasoning, context management, state, tool orchestration, and recursive subcalls. Use it to keep intermediate variables, inspect and transform outputs, write small helper functions, and preserve useful state across turns or compaction.",
 				"",
 				"Do not assume IPython is the native runtime of the external thing being investigated. A repository, package, service, dataset, paper, website, benchmark, or API may have its own environment and normal interface. Evaluate external systems through their own interface, then use IPython to coordinate the process and analyze what comes back.",
 				"",
 				"When running shell commands from IPython, use `%%bash` cells. If you use `%%bash`, it must be the first line of the code cell: no comments, spaces, blank lines, imports, or Python statements before it. Avoid `!cmd` shell escapes for project commands so shell behavior is explicit and multi-line commands share one shell context.",
-				"",
-				'Project import checks are target-environment checks. If the user asks whether the current project, package, or repository imports from Python, do not run `import <project>` directly in IPython. Use a `%%bash` cell with the target environment, such as `uv run python -c "import <package>"`, `.venv/bin/python -c "import <package>"`, or the documented project command.',
 				"",
 				"Important: do not install dependencies into the IPython kernel just to make an external project import or run there. If a project import, test, script, CLI, or dependency check is needed, run it through that project's own environment and normal command interface. For example, in a Python repo use its documented commands, `uv run ...`, `.venv/bin/python ...`, or the active project interpreter from the repo root. Treat failures from that native environment as the relevant result.",
 				"",
@@ -75,15 +75,11 @@ describe("buildRlmPrompt", () => {
 				"",
 				"Python state in the kernel, by contrast, persists across cells: named variables, helper functions, classes, imports, notes, parsed outputs, and helper data structures all remain available in every later turn. Tool calls are themselves Python `await` expressions, so their return values can be bound to variables and composed into program logic just like any other call.",
 				"",
-				`The kernel has these Python imports available: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}. Import them directly; no pip install needed.`,
-				"",
 				"Global continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. Use it to record reset-free improvements to prompt notes, memory, reusable skills, and subagent specs that should persist across Prime Agent sessions. Use explicit CRUD calls such as `rlm.harness.create_memory(...)`, `rlm.harness.update_memory(...)`, `rlm.harness.delete_memory(...)`, `rlm.harness.create_skill(...)`, `rlm.harness.update_skill(...)`, `rlm.harness.delete_skill(...)`, `rlm.harness.create_subagent(...)`, `rlm.harness.update_subagent(...)`, `rlm.harness.delete_subagent(...)`, `rlm.harness.create_prompt_note(...)`, `rlm.harness.update_prompt_note(...)`, `rlm.harness.delete_prompt_note(...)`, plus `rlm.harness.record_refinement(...)` and `rlm.harness.overview()`.",
 				"",
 				"RLM-native call contract for refined entries: installed Python skills are called from IPython as `await <skill_import>(...)` with keyword arguments, or as `<skill_import> ...` from shell when a CLI exists. Harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Harness subagent entries are reusable delegation specs; invoke them by turning the spec into a concise task prompt and calling `await rlm('sub-task')`, or `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Do not invent non-native wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
 				"",
 				"Treat harness refinement as a small, evidence-backed update after observing a repeated failure or reusable tactic: diagnose the issue, update the smallest relevant harness component, validate on the next action, then record the outcome. Do not rewrite the whole harness when a focused memory, skill, prompt note, or subagent spec is enough.",
-				"",
-				"Call at most one built-in tool per turn.",
 			].join("\n"),
 		);
 	});
@@ -360,14 +356,11 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("run_subagent(...)");
 		expect(prompt).toContain("named subagent registries");
 		expect(prompt).toContain("Do not assume IPython is the native runtime");
-		expect(prompt).toContain("Project import checks are target-environment checks");
-		expect(prompt).toContain("do not run `import <project>` directly in IPython");
-		expect(prompt).toContain('uv run python -c "import <package>"');
 		expect(prompt).toContain("do not install dependencies into the IPython kernel");
 		expect(prompt).toContain("run it through that project's own environment");
 		expect(prompt).not.toContain("!cd build && make");
 		expect(prompt).not.toContain("out = !cmd");
-		expect(prompt).toContain("Call at most one built-in tool per turn.");
+		expect(prompt).not.toContain("Call at most one built-in tool per turn.");
 		expect(prompt).not.toContain("# IPython Kernel Guidance");
 		expect(prompt).not.toContain("Available tools:");
 		expect(prompt).not.toContain("## Worked example:");
@@ -430,9 +423,10 @@ describe("buildSystemPrompt", () => {
 			cwd: "/repo",
 		});
 
-		expect(prompt.indexOf("Call at most one built-in tool per turn.")).toBeLessThan(
+		expect(prompt.indexOf("Treat harness refinement as a small, evidence-backed update")).toBeLessThan(
 			prompt.indexOf("extra instruction"),
 		);
+		expect(prompt).not.toContain("Call at most one built-in tool per turn.");
 	});
 
 	test("project context files are appended", () => {
@@ -455,7 +449,7 @@ describe("buildSystemPrompt", () => {
 			cwd: "/repo",
 		});
 
-		expect(prompt).not.toContain("Configured Python skills for IPython");
+		expect(prompt).not.toContain("Installed skills (pre-imported)");
 		expect(prompt).toContain("<available_skills>");
 		expect(prompt).toContain("<name>websearch</name>");
 		expect(prompt).toContain("<type>markdown</type>");
@@ -470,7 +464,7 @@ describe("buildSystemPrompt", () => {
 			cwd: "/repo",
 		});
 
-		expect(prompt).toContain("Configured Python skills for IPython: `web_search`.");
+		expect(prompt).toContain("Installed skills (pre-imported): `web_search`.");
 		expect(prompt).toContain("<name>web-search</name>");
 		expect(prompt).toContain("<type>python</type>");
 		expect(prompt).toContain("<python_import>web_search</python_import>");

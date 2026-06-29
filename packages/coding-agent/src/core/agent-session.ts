@@ -152,6 +152,7 @@ import {
 	type RefinementResult,
 	saveHarnessState,
 } from "./refinement/index.js";
+import { resolveConfigValue } from "./resolve-config-value.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import {
 	type CreateRlmSubagentRuntimeOptions,
@@ -180,6 +181,7 @@ import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, cloneUsage, emptyUsage } from "./usage.js";
+import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR, WEBSEARCH_SKILL_NAME } from "./websearch-credential.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -236,6 +238,12 @@ export interface RlmChildAgentSnapshot {
 	status: RlmChildAgentStatus;
 	durationMs?: number;
 	answerPreview?: string;
+	/** Number of tool executions the subagent has started so far. */
+	toolUseCount?: number;
+	/** Context size (tokens) of the subagent's latest turn. */
+	tokenCount?: number;
+	/** Latest recap of what the subagent is doing, from the summarizer. */
+	recap?: string;
 	sessionDir: string;
 	transcript: readonly RlmChildAgentTranscriptLine[];
 	structuredTranscript?: readonly RlmChildAgentStructuredTranscriptEntry[];
@@ -266,6 +274,7 @@ export type AgentSessionEvent =
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
+	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
 	| { type: "bash_start"; command: string; excludeFromContext: boolean }
 	| { type: "bash_output"; chunk: string }
@@ -303,6 +312,8 @@ export interface AgentSessionConfig {
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
 	cwd: string;
+	/** Config dir backing credentials (auth.json); exported to the kernel for skills. */
+	agentDir?: string;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	/** Resource loader for skills, prompts, themes, context files, system prompt */
@@ -431,6 +442,9 @@ interface RlmChildRun {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
+/** Cap on the post-compaction kernel namespace probe so a wedged kernel can't stall recovery. */
+const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
+
 function noopRlmChildAbort(): void {}
 
 function isRlmChildRunCancelled(run: RlmChildRun): boolean {
@@ -474,6 +488,13 @@ export function compactRlmText(text: string, maxLength = 160): string {
 		return compact;
 	}
 	return `${compact.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+// Child-agent label: collapse to one line but keep the full prompt — the TUI
+// truncates to the visible width and elides shared prefixes, so capping here
+// would only hide the divergence between near-identical sibling prompts.
+export function rlmChildLabel(prompt: string): string {
+	return prompt.replace(/\s+/g, " ").trim() || "child agent";
 }
 
 function readTextBlocks(content: string | Array<{ type: string; text?: string }>): string {
@@ -720,6 +741,7 @@ export class AgentSession {
 	private _customTools: ToolDefinition[];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
+	private _agentDir?: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
@@ -747,6 +769,8 @@ export class AgentSession {
 	private _rlmParentNodeId?: string;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
+	/** Latest recap for this session, written by the daemon summarizer; read by a parent to label its child snapshots. */
+	private _currentRecap?: string;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -769,6 +793,7 @@ export class AgentSession {
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
+		this._agentDir = config.agentDir;
 		this._modelRegistry = config.modelRegistry;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1781,8 +1806,11 @@ export class AgentSession {
 	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
+			this.sessionManager.recordGitStateIfChanged();
 			await this._extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
+			// Also capture at end of turn so commits made during the run (e.g. via a bash tool) land.
+			this.sessionManager.recordGitStateIfChanged();
 			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {
@@ -2796,8 +2824,56 @@ export class AgentSession {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 	}
 
-	private async _restartIpythonKernelAfterCompaction(): Promise<void> {
-		await this._ipythonKernelProvisioner?.restart();
+	// Added to history (not a nextTurn message) so it also reaches the continue()-driven
+	// auto-compaction resume, which never injects nextTurn messages.
+	private async _notifyKernelStateAfterCompaction(): Promise<void> {
+		const provisioner = this._ipythonKernelProvisioner;
+		// No kernel means no state to remind about; only stay silent in that case.
+		if (!provisioner?.hasRunningKernel) return;
+		// Bound the probe so a wedged kernel can't stall recovery, and abort it on timeout so
+		// the kernel's serialized execution queue isn't left occupied by a never-resolving cell.
+		const abort = new AbortController();
+		const timer = setTimeout(() => abort.abort(), KERNEL_STATE_LISTING_TIMEOUT_MS);
+		if (typeof timer === "object" && "unref" in timer) timer.unref();
+		let names: string[] | null;
+		try {
+			names = await provisioner.listNamespaceNames(abort.signal).catch(() => null);
+		} finally {
+			clearTimeout(timer);
+		}
+		// null is a listing failure/timeout; only claim state survived if the kernel is still up
+		// (it may have died in the window since the check above).
+		if (names === null && !provisioner.hasRunningKernel) return;
+		const detail =
+			names === null
+				? ""
+				: names.length > 0
+					? ` These names are still defined: ${names.join(", ")}.`
+					: " You have not defined any names yet.";
+		const content = [
+			"<ipython_state>",
+			`Your IPython kernel persisted through compaction; all variables, imports, and helpers you defined remain available.${detail}`,
+			"</ipython_state>",
+		].join("\n");
+		const message = {
+			role: "custom" as const,
+			customType: "ipython_state",
+			content,
+			display: false,
+			timestamp: Date.now(),
+		} satisfies CustomMessage;
+		// Insert before a trailing assistant error so overflow-retry cleanup can still strip it.
+		const messages = this.agent.state.messages;
+		const last = messages[messages.length - 1];
+		const insertBeforeError = last?.role === "assistant" && (last as AssistantMessage).stopReason === "error";
+		if (insertBeforeError) {
+			messages.splice(messages.length - 1, 0, message);
+		} else {
+			messages.push(message);
+		}
+		this.sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, undefined);
+		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
 	}
 
 	/**
@@ -2967,7 +3043,7 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
-			await this._restartIpythonKernelAfterCompaction();
+			await this._notifyKernelStateAfterCompaction();
 
 			const compactionResult = {
 				summary,
@@ -3305,7 +3381,7 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
-			await this._restartIpythonKernelAfterCompaction();
+			await this._notifyKernelStateAfterCompaction();
 
 			const result: CompactionResult = {
 				summary,
@@ -3777,6 +3853,11 @@ export class AgentSession {
 			"rlm.run": createRlmRunHostHandler(({ prompt, kwargs, cellSourceCode }) =>
 				this.runRlmChild(prompt, kwargs, cellSourceCode),
 			),
+			"model.info": async () => ({
+				id: this.model?.id ?? null,
+				provider: this.model?.provider ?? null,
+				input: this.model?.input ?? [],
+			}),
 		};
 		if (this._includeGoals) {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
@@ -3860,7 +3941,31 @@ export class AgentSession {
 		if (rlmSessionDir) {
 			env.RLM_SESSION_DIR = rlmSessionDir;
 		}
+		this._addWebsearchKeyEnv(env);
 		return env;
+	}
+
+	private _addWebsearchKeyEnv(env: Record<string, string>): void {
+		if (this._agentDir) {
+			env.PRIME_AGENT_CODING_AGENT_DIR = this._agentDir;
+		}
+
+		if (process.env[SERPER_ENV_VAR]?.trim()) {
+			return;
+		}
+		// Inject only when a websearch skill (bundled or custom) is actually loaded,
+		// so the key isn't exposed to kernels that can't use it.
+		if (!this._resourceLoader.getSkills().skills.some((skill) => skill.name === WEBSEARCH_SKILL_NAME)) {
+			return;
+		}
+		const cred = this._modelRegistry.authStorage.get(SERPER_CREDENTIAL_ID);
+		if (cred?.type !== "api_key") {
+			return;
+		}
+		const resolved = resolveConfigValue(cred.key)?.trim();
+		if (resolved) {
+			env[SERPER_ENV_VAR] = resolved;
+		}
 	}
 
 	// Undefined when there's no persistent artifact dir (e.g. the viewer client):
@@ -3912,6 +4017,24 @@ export class AgentSession {
 			}
 		}
 		return usage;
+	}
+
+	/** Context size (tokens) of this session's latest assistant turn, for live subagent display. */
+	_contextTokensForCurrentMessages(): number | undefined {
+		const last = this._findLastAssistantMessage();
+		return last ? calculateContextTokens(last.usage) : undefined;
+	}
+
+	setCurrentRecap(recap: string | undefined): void {
+		if (this._currentRecap === recap) {
+			return;
+		}
+		this._currentRecap = recap;
+		this._emit({ type: "recap_update", recap });
+	}
+
+	getCurrentRecap(): string | undefined {
+		return this._currentRecap;
 	}
 
 	private _assistantUsageForCurrentMessages(): Usage {
@@ -4029,6 +4152,7 @@ export class AgentSession {
 			sessionManager: childSessionManager,
 			settingsManager: this.settingsManager,
 			cwd: this._cwd,
+			agentDir: this._agentDir,
 			scopedModels: options.scopedModels,
 			resourceLoader: this._resourceLoader,
 			customTools: options.customTools,
@@ -4111,9 +4235,10 @@ export class AgentSession {
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const transcript: RlmChildAgentTranscriptLine[] = [];
 		const structuredTranscript: RlmChildAgentStructuredTranscriptEntry[] = [];
-		const label = compactRlmText(prompt, 80) || "child agent";
+		const label = rlmChildLabel(prompt);
 		let answerPreview: string | undefined;
 		let durationMs: number | undefined;
+		let toolUseCount = 0;
 		const run: RlmChildRun = {
 			id: childNodeId,
 			prompt,
@@ -4137,6 +4262,9 @@ export class AgentSession {
 					status: run.status,
 					durationMs,
 					answerPreview,
+					toolUseCount: toolUseCount > 0 ? toolUseCount : undefined,
+					tokenCount: run.session?._contextTokensForCurrentMessages(),
+					recap: run.session?.getCurrentRecap(),
 					sessionDir: childSessionDir,
 					transcript: [...transcript],
 					structuredTranscript: [...structuredTranscript],
@@ -4246,6 +4374,11 @@ export class AgentSession {
 						this._emit(event);
 						return;
 					}
+					if (event.type === "recap_update") {
+						// The summarizer set the child's recap; refresh its snapshot so the parent UI shows it.
+						emitChildUpdate();
+						return;
+					}
 					switch (event.type) {
 						case "message_start": {
 							if (event.message.role === "user") {
@@ -4270,6 +4403,7 @@ export class AgentSession {
 						case "tool_execution_start": {
 							const args = formatRlmToolArgs(event.args);
 							const text = args ? `${event.toolName} running ${args}` : `${event.toolName} running`;
+							toolUseCount += 1;
 							// Tool break: next assistant text starts a new entry after this tool row.
 							currentAssistantIndex = undefined;
 							lastToolTranscriptIndex = transcript.length;
@@ -5124,7 +5258,7 @@ export class AgentSession {
 					children: [],
 				}),
 				id: run.id,
-				label: compactRlmText(run.prompt, 80) || "child agent",
+				label: rlmChildLabel(run.prompt),
 				status: run.status,
 			});
 		}

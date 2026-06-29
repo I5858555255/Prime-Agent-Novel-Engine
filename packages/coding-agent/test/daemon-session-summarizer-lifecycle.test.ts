@@ -6,13 +6,15 @@ import { DaemonSessionSummarizer } from "../src/modes/daemon/daemon-session-summ
 // SETTLE_DEBOUNCE_MS in the module).
 const SETTLE_MS = 2000;
 
-function makeState(opts: { working?: boolean; messages?: number } = {}): ActiveSessionState {
+function makeState(
+	opts: { working?: boolean; messages?: number; kind?: "top-level" | "subagent"; persisted?: unknown } = {},
+): ActiveSessionState {
 	const appended: unknown[] = [];
-	return {
+	const state = {
 		activeSessionId: "a1",
 		summaryState: undefined,
 		runtime: {
-			metadata: { kind: "top-level" },
+			metadata: { kind: opts.kind ?? "top-level" },
 			session: {
 				isStreaming: opts.working ?? false,
 				isCompacting: false,
@@ -20,10 +22,15 @@ function makeState(opts: { working?: boolean; messages?: number } = {}): ActiveS
 				messages: Array.from({ length: opts.messages ?? 2 }, () => ({ role: "user", content: "hi" })),
 				state: { streamingMessage: undefined },
 				modelRegistry: {},
-				sessionManager: { appendAgentStatus: (s: unknown) => appended.push(s) },
+				sessionManager: {
+					appendAgentStatus: (s: unknown) => appended.push(s),
+					getLatestAgentStatus: () => opts.persisted,
+				},
 			},
 		},
 	} as unknown as ActiveSessionState;
+	(state as unknown as { appendedStatuses: unknown[] }).appendedStatuses = appended;
+	return state;
 }
 
 describe("DaemonSessionSummarizer lifecycle", () => {
@@ -49,7 +56,7 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(onStatusChanged).toHaveBeenCalled();
 	});
 
-	test("a failing model leaves no verdict — the view then defaults to completed", async () => {
+	test("a failing model on an idle session settles to a needs_input fallback verdict", async () => {
 		vi.useFakeTimers();
 		const generate = vi.fn().mockResolvedValue(undefined); // 404 / 401 / timeout / unparseable
 		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
@@ -58,8 +65,29 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		summarizer.notifyActivity(state);
 		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
 		expect(generate).toHaveBeenCalledOnce();
-		// No status recorded; taskState stays undefined so classification → completed.
-		expect(state.summaryState).toBeUndefined();
+		// The activity axis holds an unjudged idle session at "working"; the fallback
+		// settles it to needs_input so it doesn't spin forever.
+		expect(state.summaryState).toMatchObject({ taskState: "needs_input", basedOnMessageCount: 2 });
+	});
+
+	test("retries after a needs_input fallback until a real summary lands", async () => {
+		vi.useFakeTimers();
+		const generate = vi
+			.fn()
+			.mockResolvedValueOnce(undefined) // transient failure → blank needs_input fallback
+			.mockResolvedValue({ summary: "Reviewed the diff", taskState: "completed" });
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
+		const state = makeState({ working: false });
+
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(state.summaryState).toMatchObject({ summary: "", taskState: "needs_input" });
+
+		// A blank recap still owes a summary, so a later sweep retries and records it.
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+		expect(generate).toHaveBeenCalledTimes(2);
+		expect(state.summaryState).toMatchObject({ summary: "Reviewed the diff", taskState: "completed" });
 	});
 
 	test("refreshes a working session even when the message count is unchanged", async () => {
@@ -121,5 +149,28 @@ describe("DaemonSessionSummarizer lifecycle", () => {
 		expect(generate).toHaveBeenCalledOnce();
 		// Result is for an outdated turn → dropped, nothing persisted.
 		expect(state.summaryState).toBeUndefined();
+	});
+
+	test("summarizes a subagent and persists its settled idle verdict", async () => {
+		vi.useFakeTimers();
+		const generate = vi.fn().mockResolvedValue({ summary: "Auditing the migration scripts", taskState: "completed" });
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, generate);
+		const state = makeState({ working: false, kind: "subagent" });
+
+		summarizer.notifyActivity(state);
+		await vi.advanceTimersByTimeAsync(SETTLE_MS + 500);
+
+		expect(generate).toHaveBeenCalledOnce();
+		expect(state.summaryState).toMatchObject({ summary: "Auditing the migration scripts", taskState: "completed" });
+		expect((state as unknown as { appendedStatuses: unknown[] }).appendedStatuses).toHaveLength(1);
+	});
+
+	test("seeds a subagent's persisted recap into memory", () => {
+		const summarizer = new DaemonSessionSummarizer(() => [], undefined, vi.fn());
+		const persisted = { summary: "Reviewing the diff", taskState: "needs_input", basedOnMessageCount: 3 };
+		const state = makeState({ kind: "subagent", persisted });
+
+		summarizer.seed(state);
+		expect(state.summaryState).toEqual(persisted);
 	});
 });

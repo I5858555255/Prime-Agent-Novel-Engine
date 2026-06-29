@@ -16,6 +16,7 @@ import type {
 	AgentConnectionExtensionUiRequest,
 	AgentConnectionExtensionUiResponse,
 	AgentConnectionModel,
+	AgentConnectionResourceDiagnostic,
 	AgentConnectionResourceSnapshot,
 	AgentConnectionSessionEvent,
 	AgentConnectionSourceInfo,
@@ -293,6 +294,7 @@ describe("InteractiveMode pending bash components", () => {
 		const component = bashComponent();
 		const fakeThis = {
 			pendingMessagesContainer,
+			queuedMessagesContainer: new Container(),
 			pendingBashComponents: [component],
 			getAllQueuedMessages: () => ({ steering: [], followUp: [] }),
 		} as unknown as InteractiveMode;
@@ -366,10 +368,15 @@ describe("InteractiveMode pending bash components", () => {
 		const loader = (component as unknown as { loader: { intervalId: unknown } }).loader;
 		expect(loader.intervalId).not.toBeNull();
 
+		const editorStub = { clearHistory: vi.fn(), setText: vi.fn() };
 		const fakeThis = {
 			chatContainer: new Container(),
 			pendingMessagesContainer: new Container(),
+			queuedMessagesContainer: new Container(),
 			compactionQueuedMessages: [],
+			pastedImages: new Map(),
+			defaultEditor: editorStub,
+			editor: editorStub,
 			streamingComponent: undefined,
 			streamingMessage: undefined,
 			activeBashComponent: component,
@@ -804,6 +811,7 @@ describe("InteractiveMode model selection persistence", () => {
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		completeOnboardingIfCurrentModelReady(): void;
+		setupAutocompleteProvider(): void;
 	};
 
 	const createModel = (provider: string, id: string): AgentConnectionModel =>
@@ -832,13 +840,14 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.footer = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.setupAutocompleteProvider = vi.fn();
 
 		await fakeThis.applySelectedModel(model);
 
 		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(order).toEqual(["connection", "settings"]);
-		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model });
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
 		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
 		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
 	});
@@ -886,12 +895,13 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn(async () => {});
 		fakeThis.checkDaxnutsEasterEgg = vi.fn();
 		fakeThis.completeOnboardingIfCurrentModelReady = vi.fn();
+		fakeThis.setupAutocompleteProvider = vi.fn();
 
 		await fakeThis.handleModelCommand("gpt-5.5");
 
 		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
-		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model });
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
 		expect(fakeThis.showError).not.toHaveBeenCalled();
 		expect(fakeThis.completeOnboardingIfCurrentModelReady).toHaveBeenCalledTimes(1);
@@ -905,6 +915,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		runOnboardingFlow(): Promise<boolean>;
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+		setupAutocompleteProvider(): void;
 	};
 	type OnboardingFake = OnboardingHarness & {
 		connectionState: AgentConnectionState;
@@ -1033,6 +1044,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn();
 		fakeThis.checkDaxnutsEasterEgg = vi.fn();
 		fakeThis.applySelectedModel = applySelectedModel;
+		fakeThis.setupAutocompleteProvider = vi.fn();
 
 		await handleModelCommand.call(fakeThis, "prime-inference/openai/gpt-5.5");
 
@@ -1144,12 +1156,13 @@ describe("InteractiveMode goal status announcements", () => {
 });
 
 describe("InteractiveMode tray goal label", () => {
+	type TrayUsage = { contextWindow: number; tokens: number | null; percent: number | null };
 	type TrayLabelHarness = {
 		connectionState: {
 			goal: GoalState;
-			contextUsage: { contextWindow: number; percent: number | null } | undefined;
+			contextUsage: TrayUsage | undefined;
 		};
-		uiServices: { getContextUsage(): { contextWindow: number; percent: number | null } | undefined };
+		uiServices: { getContextUsage(): TrayUsage | undefined };
 		getTrayContextLabel(): string | undefined;
 	};
 	const getTrayContextLabel = (InteractiveMode.prototype as unknown as TrayLabelHarness).getTrayContextLabel;
@@ -1172,7 +1185,7 @@ describe("InteractiveMode tray goal label", () => {
 		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s)");
 	});
 
-	test("combines active goals with low-context signal in one lower-tray label", () => {
+	test("combines active goals with token/context usage in one lower-tray label", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
 		fakeThis.connectionState = {
 			goal: {
@@ -1183,11 +1196,130 @@ describe("InteractiveMode tray goal label", () => {
 				timeUsedSeconds: 65,
 				continuationsUsed: 1,
 			} satisfies GoalState,
-			contextUsage: { contextWindow: 100_000, percent: 75 },
+			contextUsage: { contextWindow: 100_000, tokens: 75_000, percent: 75 },
 		};
 		fakeThis.uiServices = { getContextUsage: () => undefined };
 
-		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · 25% context left");
+		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · 75k (75%)");
+	});
+
+	test("omits the usage segment when token count is unknown", () => {
+		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.connectionState = {
+			goal: {
+				active: true,
+				status: "active",
+				objective: "finish the task",
+				tokensUsed: 0,
+				timeUsedSeconds: 65,
+				continuationsUsed: 1,
+			} satisfies GoalState,
+			contextUsage: { contextWindow: 100_000, tokens: null, percent: null },
+		};
+		fakeThis.uiServices = { getContextUsage: () => undefined };
+
+		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s)");
+	});
+});
+
+describe("InteractiveMode live context usage", () => {
+	type LiveContextHarness = {
+		connectionState: Pick<AgentConnectionState, "contextUsage"> | undefined;
+		activityTracker: { getStatus(): { tokens: number } };
+		isAgentStreaming(): boolean;
+		contextUsageTokenBaseline: number;
+		getConnectionContextUsage(): AgentConnectionState["contextUsage"];
+	};
+	const prototype = InteractiveMode.prototype as unknown as LiveContextHarness;
+
+	function createHarness(
+		opts: { streaming?: boolean; inFlight?: number; baseline?: number } = {},
+	): LiveContextHarness {
+		const fakeThis = Object.create(InteractiveMode.prototype) as LiveContextHarness;
+		fakeThis.connectionState = { contextUsage: undefined };
+		fakeThis.activityTracker = { getStatus: () => ({ tokens: opts.inFlight ?? 0 }) };
+		fakeThis.isAgentStreaming = () => opts.streaming ?? false;
+		fakeThis.contextUsageTokenBaseline = opts.baseline ?? 0;
+		return fakeThis;
+	}
+
+	test("returns the snapshot verbatim when idle", () => {
+		const fakeThis = createHarness();
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
+
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toEqual({
+			contextWindow: 100_000,
+			tokens: 42_000,
+			percent: 42,
+		});
+	});
+
+	test("adds in-flight streaming output to the snapshot baseline while streaming", () => {
+		const fakeThis = createHarness({ streaming: true, inFlight: 3_000 });
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
+
+		// 42k baseline + 3k in-flight = 45k; ticks up live as the model writes.
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 45_000, percent: 45 });
+	});
+
+	test("only adds output beyond the refresh baseline (auto-retry does not double count)", () => {
+		// Tracker holds 5k from a failed attempt (baseline), now 6k after 1k of the retry.
+		const fakeThis = createHarness({ streaming: true, inFlight: 6_000, baseline: 5_000 });
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
+
+		// Only the 1k generated since the refresh is in-flight, not the failed attempt's 5k.
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 43_000 });
+	});
+
+	test("does not add in-flight output when not streaming", () => {
+		const fakeThis = createHarness({ streaming: false, inFlight: 3_000 });
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: 42_000, percent: 42 } };
+
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: 42_000 });
+	});
+
+	test("passes through an unknown (post-compaction) snapshot without inflating it", () => {
+		const fakeThis = createHarness({ streaming: true, inFlight: 3_000 });
+		fakeThis.connectionState = { contextUsage: { contextWindow: 100_000, tokens: null, percent: null } };
+
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toMatchObject({ tokens: null, percent: null });
+	});
+
+	test("returns undefined when there is no snapshot yet", () => {
+		const fakeThis = createHarness({ streaming: true, inFlight: 3_000 });
+		fakeThis.connectionState = { contextUsage: undefined };
+
+		expect(prototype.getConnectionContextUsage.call(fakeThis)).toBeUndefined();
+	});
+
+	test("refreshConnectionContextUsage drops stale stats after a session switch", async () => {
+		type RefreshHarness = {
+			agentConnection: { getSessionStats(): Promise<{ contextUsage: unknown }> };
+			connectionState: { sessionId?: string; contextUsage?: unknown };
+			activityTracker: { getStatus(): { tokens: number } };
+			contextUsageTokenBaseline: number;
+			patchConnectionState(patch: Record<string, unknown>): void;
+			refreshConnectionContextUsage(): Promise<void>;
+		};
+		const refresh = (InteractiveMode.prototype as unknown as RefreshHarness).refreshConnectionContextUsage;
+		const fakeThis = Object.create(InteractiveMode.prototype) as RefreshHarness;
+		const patched: Record<string, unknown>[] = [];
+		fakeThis.activityTracker = { getStatus: () => ({ tokens: 0 }) };
+		fakeThis.contextUsageTokenBaseline = 0;
+		fakeThis.connectionState = { sessionId: "session-A", contextUsage: undefined };
+		fakeThis.patchConnectionState = (p) => patched.push(p);
+		fakeThis.agentConnection = {
+			getSessionStats: async () => {
+				// User switches sessions while the stats call is in flight.
+				fakeThis.connectionState = { sessionId: "session-B", contextUsage: undefined };
+				return { contextUsage: { contextWindow: 100_000, tokens: 50_000, percent: 50 } };
+			},
+		};
+
+		await refresh.call(fakeThis);
+
+		// Stats belonged to session-A; must not overwrite session-B.
+		expect(patched).toHaveLength(0);
 	});
 });
 
@@ -1392,8 +1524,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 		contextFiles?: Array<{ path: string; content?: string }>;
 		extensions?: ExtensionFixture[];
 		skills?: Array<{ filePath: string; name: string }>;
-		skillDiagnostics?: AgentConnectionResourceSnapshot["diagnostics"]["skills"];
+		skillDiagnostics?: AgentConnectionResourceDiagnostic[];
 		useRealScopeGroups?: boolean;
+		useRealDiagnostics?: boolean;
 	}) {
 		const connectionResourceSnapshot: AgentConnectionResourceSnapshot = {
 			contextFiles: (options.contextFiles ?? []).map((contextFile) => ({ path: contextFile.path })),
@@ -1454,6 +1587,13 @@ describe("InteractiveMode.showLoadedResources", () => {
 			formatDiagnostics: () => "diagnostics",
 			getBuiltInCommandConflictDiagnostics: () => [],
 		};
+
+		if (options.useRealDiagnostics) {
+			fakeThis.formatDiagnostics = (
+				diagnostics: readonly AgentConnectionResourceDiagnostic[],
+				sourceInfos: Map<string, AgentConnectionSourceInfo>,
+			) => (InteractiveMode as any).prototype.formatDiagnostics.call(fakeThis, diagnostics, sourceInfos);
+		}
 
 		if (options.useRealScopeGroups) {
 			fakeThis.getScopeGroup = (sourceInfo?: AgentConnectionSourceInfo) =>
@@ -2030,7 +2170,35 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("[Skill conflicts]");
+		expect(output).toContain("[Skill warning]");
 		expect(output).not.toContain("[Skills]");
+	});
+
+	test("formats a multi-line skill warning without path noise", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: true,
+			skillDiagnostics: [
+				{
+					type: "warning",
+					message: "first line of the warning.\nsecond line with guidance.\n\n  indented detail",
+				},
+			],
+			useRealDiagnostics: true,
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+
+		const output = normalizeRenderedOutput(fakeThis.chatContainer, 100);
+		expect(output).toMatchInlineSnapshot(`
+"[Skill warning]
+  first line of the warning.
+  second line with guidance.
+
+    indented detail"
+`);
+		expect(output).not.toContain("[Skill conflicts]");
 	});
 });
