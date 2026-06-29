@@ -60,6 +60,18 @@ describe("McpManager", () => {
 		expect(getOAuthProvider("mcp:notion")).toBeDefined();
 	});
 
+	it("re-registers user-declared OAuth servers after ModelRegistry.refresh via the reset hook", () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({ acme: { type: "http", url: "https://mcp.acme.test/mcp", oauth: true } }),
+		});
+		const registry = ModelRegistry.create(authStorage, join(tempDir, "models.json"));
+		registry.setOnOAuthProvidersReset(() => manager.registerUserProviders());
+		expect(getOAuthProvider("mcp:acme")).toBeDefined();
+		registry.refresh(); // resets registry; hook must re-add the custom provider
+		expect(getOAuthProvider("mcp:acme")).toBeDefined();
+	});
+
 	it("exposes mcp.refresh and mcp.begin_login host handlers", async () => {
 		const manager = new McpManager({ authStorage });
 		const handlers = manager.hostHandlers();

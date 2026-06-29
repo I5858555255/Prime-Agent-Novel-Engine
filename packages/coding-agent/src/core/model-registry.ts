@@ -348,11 +348,18 @@ export class ModelRegistry {
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
 	private loadError: string | undefined = undefined;
 
+	/** Re-register dynamic OAuth providers (e.g. user MCP servers) after refresh() resets the registry. */
+	private onOAuthProvidersReset?: () => void;
+
 	private constructor(
 		readonly authStorage: AuthStorage,
 		private modelsJsonPath: string | undefined,
 	) {
 		this.loadModels();
+	}
+
+	setOnOAuthProvidersReset(hook: () => void): void {
+		this.onOAuthProvidersReset = hook;
 	}
 
 	static create(authStorage: AuthStorage, modelsJsonPath: string = join(getAgentDir(), "models.json")): ModelRegistry {
@@ -378,8 +385,10 @@ export class ModelRegistry {
 		// Ensure dynamic API/OAuth registrations are rebuilt from current provider state.
 		resetApiProviders();
 		resetOAuthProviders();
-		// reset drops everything but model-provider built-ins; re-add MCP integrations.
+		// reset drops everything but model-provider built-ins; re-add MCP integrations
+		// (built-in catalog + any user-declared servers via the hook).
 		registerBuiltinMcpOAuthProviders();
+		this.onOAuthProvidersReset?.();
 
 		this.loadModels();
 

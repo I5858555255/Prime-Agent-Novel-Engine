@@ -79,7 +79,15 @@ export class McpManager {
 
 	private registerProviders(): void {
 		registerBuiltinMcpOAuthProviders();
-		// User-declared OAuth servers (not in the catalog) register here.
+		this.registerUserProviders();
+	}
+
+	/**
+	 * Register OAuth providers for user-declared (non-catalog) servers. Public so it
+	 * can run after ModelRegistry.refresh() resets the registry — otherwise custom
+	 * `mcp:<server>` providers vanish on every refresh (e.g. post-login).
+	 */
+	registerUserProviders(): void {
 		for (const integration of this.integrations.values()) {
 			if (!integration.usesOAuth || getCatalogEntry(integration.server)) continue;
 			registerOAuthProvider(

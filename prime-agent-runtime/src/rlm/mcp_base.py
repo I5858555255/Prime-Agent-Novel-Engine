@@ -105,6 +105,9 @@ class McpIntegration:
     #: Remote MCP endpoint. Required unless a subclass overrides ``_open_streams``.
     url: str | None = None
 
+    #: Optional env var holding a static bearer token (used instead of auth.json OAuth).
+    bearer_token_env: str | None = None
+
     def __init__(self) -> None:
         if not self.server:
             raise ValueError(f"{type(self).__name__} must set a non-empty `server`")
@@ -118,10 +121,15 @@ class McpIntegration:
         return f"mcp:{self.server}"
 
     def _token(self) -> str | None:
-        """Current bearer token from auth.json, refreshing via the host if expired.
+        """Current usable bearer token, or None if missing/expired (needs refresh).
 
-        Returns None when no credential exists (caller raises :class:`NotEnabled`).
+        A static bearer-token env var wins (matches the host's `isAuthed` check);
+        otherwise read auth.json. OAuth tokens are only returned while still fresh.
         """
+        if self.bearer_token_env:
+            env_token = os.environ.get(self.bearer_token_env, "").strip()
+            if env_token:
+                return env_token
         cred = _read_auth(self._provider_id)
         if cred is None:
             return None
@@ -141,17 +149,16 @@ class McpIntegration:
         token = self._token()
         if token:
             return token
-        # Either expired or missing-access; ask the host to refresh, then re-read.
+        # Expired or missing-access: ask the host to refresh, then re-validate via
+        # _token() (which re-checks expiry) rather than trusting any access value.
         if _read_auth(self._provider_id) is not None:
             try:
                 await host_request("mcp.refresh", {"server": self.server})
             except RuntimeError:
-                pass  # fall through to a fresh read; raise NotEnabled if still bad
-            cred = _read_auth(self._provider_id)
-            if cred:
-                token = str(cred.get("access") or cred.get("key") or "")
-                if token:
-                    return token
+                pass  # fall through; raise NotEnabled if still unusable
+            token = self._token()
+            if token:
+                return token
         raise NotEnabled(self.server)
 
     # -- connection ---------------------------------------------------------
@@ -256,7 +263,7 @@ class McpIntegration:
 def _parse_result(result: Any) -> Any:
     """Normalize a CallToolResult into plain Python (structured output preferred)."""
     structured = getattr(result, "structuredContent", None)
-    if structured:
+    if structured is not None:  # falsy-but-valid payloads ({} / []) are real results
         return structured
     texts: list[str] = []
     for block in getattr(result, "content", None) or []:

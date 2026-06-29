@@ -101,6 +101,32 @@ class McpIntegrationTest(unittest.TestCase):
         with mock.patch.object(mcp_base, "host_request", fake_host_request):
             self.assertEqual(_run(_Integration()._resolve_token()), "new")
 
+    def test_not_enabled_when_refresh_leaves_token_expired(self):
+        # Host refresh "succeeds" but auth.json still holds an expired token →
+        # must raise NotEnabled, not return the stale access value.
+        self._write_auth(
+            {"type": "oauth", "access": "stale", "refresh": "r", "expires": (time.time() - 10) * 1000}
+        )
+
+        async def fake_host_request(req_type, payload):
+            return {}  # no-op: token stays expired
+
+        with mock.patch.object(mcp_base, "host_request", fake_host_request):
+            with self.assertRaises(NotEnabled):
+                _run(_Integration()._resolve_token())
+
+    def test_bearer_token_env_wins(self):
+        class EnvIntegration(_Integration):
+            bearer_token_env = "DEMO_MCP_TOKEN"
+
+        with mock.patch.dict("os.environ", {"DEMO_MCP_TOKEN": "env-secret"}):
+            self.assertEqual(_run(EnvIntegration()._resolve_token()), "env-secret")
+
+    def test_empty_structured_result_preserved(self):
+        for payload in ({}, []):
+            result = type("R", (), {"structuredContent": payload, "content": []})()
+            self.assertEqual(mcp_base._parse_result(result), payload)
+
     def test_auto_bound_tool_calls_session(self):
         session = _FakeSession(
             tools=[("list_issues", "List issues", {"type": "object"})],
