@@ -7,7 +7,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { configCandidatePaths, loadMcpConfig, type McpConfig } from "./config.js";
+import { configCandidatePaths, loadMcpConfig } from "./config.js";
 import { createDefaultConnector } from "./connector.js";
 import { registerDirectTools } from "./direct-tools.js";
 import { McpManager } from "./manager.js";
@@ -18,39 +18,46 @@ function notify(ctx: ExtensionCommandContext, message: string, level: "info" | "
 }
 
 export default function primeMcpExtension(pi: ExtensionAPI): void {
-	const warnings: string[] = [];
-	const logger = (message: string) => warnings.push(message);
+	// Persistent problems from loading config / promoting tools. Live connection
+	// errors are not kept here; `/mcp status` reads those from the manager so they
+	// reflect the current state instead of going stale.
+	let configWarnings: string[] = [];
 	const promoted = new Map<string, string>();
-	let loaded = false;
+	let loadPromise: Promise<void> | undefined;
 
-	const manager = new McpManager({ mcpServers: {}, directTools: [] }, { connector: createDefaultConnector(), logger });
+	const manager = new McpManager({ mcpServers: {}, directTools: [] }, { connector: createDefaultConnector() });
 
 	pi.registerTool(createMcpProxyTool(manager));
+
+	const doLoad = async (cwd: string): Promise<void> => {
+		configWarnings = [];
+		const loaded = await loadMcpConfig(cwd);
+		configWarnings.push(...loaded.warnings);
+		await manager.setConfig(loaded.config);
+		if (loaded.config.directTools.length > 0) {
+			await registerDirectTools(pi, manager, loaded.config.directTools, (m) => configWarnings.push(m), promoted);
+		}
+	};
 
 	// Config (servers and promoted directTools) is resolved once, from the first
 	// session's working directory. Promoted tools register globally and cannot be
 	// unregistered, so reloading per session would risk leaving direct tools that
 	// point at servers a later config removed. Restart to apply config changes.
-	const loadOnce = async (cwd: string): Promise<void> => {
-		if (loaded) return;
-		loaded = true;
-		let config: McpConfig;
-		try {
-			config = (await loadMcpConfig(cwd)).config;
-		} catch (error) {
-			warnings.push(error instanceof Error ? error.message : String(error));
-			config = { mcpServers: {}, directTools: [] };
+	// Concurrent session starts share one load; a failed load is retried later.
+	const loadOnce = (cwd: string): Promise<void> => {
+		if (!loadPromise) {
+			loadPromise = doLoad(cwd).catch((error) => {
+				configWarnings.push(error instanceof Error ? error.message : String(error));
+				loadPromise = undefined;
+			});
 		}
-		await manager.setConfig(config);
-		if (config.directTools.length > 0) {
-			await registerDirectTools(pi, manager, config.directTools, logger, promoted);
-		}
+		return loadPromise;
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		await loadOnce(ctx.cwd);
-		if (warnings.length > 0 && ctx.hasUI) {
-			ctx.ui.notify(`MCP: ${warnings.join("; ")}`, "warning");
+		if (configWarnings.length > 0 && ctx.hasUI) {
+			ctx.ui.notify(`MCP: ${configWarnings.join("; ")}`, "warning");
 		}
 	});
 
@@ -81,7 +88,7 @@ export default function primeMcpExtension(pi: ExtensionAPI): void {
 								status.toolCount !== undefined ? `, ${status.toolCount} tools` : ""
 							}${status.error ? ` — ${status.error}` : ""}`,
 					);
-					if (warnings.length > 0) lines.push(`warnings: ${warnings.join("; ")}`);
+					if (configWarnings.length > 0) lines.push(`warnings: ${configWarnings.join("; ")}`);
 					notify(ctx, lines.join("\n"), "info");
 					return;
 				}

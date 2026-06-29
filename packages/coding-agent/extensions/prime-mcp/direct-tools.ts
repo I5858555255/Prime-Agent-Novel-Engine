@@ -10,34 +10,8 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { parseToolRef } from "./config.js";
+import { renderMcpCall } from "./content.js";
 import type { McpManager, McpToolInfo } from "./manager.js";
-
-const MAX_RESULT_CHARS = 20_000;
-
-function truncate(text: string): string {
-	if (text.length <= MAX_RESULT_CHARS) return text;
-	return `${text.slice(0, MAX_RESULT_CHARS)}\n\n[Output truncated: ${text.length} chars total.]`;
-}
-
-function renderContent(content: unknown): string {
-	if (content == null) return "";
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return JSON.stringify(content, null, 2);
-	const parts: string[] = [];
-	for (const block of content) {
-		if (block && typeof block === "object" && "type" in block) {
-			const typed = block as { type: string; text?: string };
-			if (typed.type === "text" && typeof typed.text === "string") {
-				parts.push(typed.text);
-				continue;
-			}
-			parts.push(`[${typed.type} content]`);
-			continue;
-		}
-		parts.push(JSON.stringify(block));
-	}
-	return parts.join("\n");
-}
 
 /**
  * Build a valid tool name like `mcp__server__tool`. Characters outside
@@ -58,13 +32,12 @@ export function buildDirectTool(manager: McpManager, server: string, info: McpTo
 		async execute(_toolCallId, params, signal) {
 			const args = (params ?? {}) as Record<string, unknown>;
 			const call = await manager.callTool(server, info.name, args, signal);
-			const rendered = renderContent(call.content);
+			const rendered = renderMcpCall(call.content, call.structuredContent);
 			if (call.isError) {
-				throw new Error(rendered || `MCP tool ${server}/${info.name} returned an error`);
+				throw new Error(rendered.text || `MCP tool ${server}/${info.name} returned an error`);
 			}
-			const structured = call.structuredContent ? JSON.stringify(call.structuredContent, null, 2) : "";
 			return {
-				content: [{ type: "text", text: truncate(rendered || structured || "(empty result)") }],
+				content: rendered.content,
 				details: { server, tool: info.name },
 			};
 		},

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { configCandidatePaths, loadMcpConfig, parseToolRef } from "../extensions/prime-mcp/config.js";
 import { adaptClient } from "../extensions/prime-mcp/connector.js";
+import { renderMcpCall } from "../extensions/prime-mcp/content.js";
 import { registerDirectTools } from "../extensions/prime-mcp/direct-tools.js";
 import { type McpClientLike, type McpConnector, McpManager } from "../extensions/prime-mcp/manager.js";
 import { createMcpProxyTool, type McpProxyInput } from "../extensions/prime-mcp/proxy-tool.js";
@@ -125,37 +126,87 @@ describe("prime-mcp config", () => {
 	});
 
 	test("returns empty config when no files exist", async () => {
-		const { config, sources } = await loadMcpConfig(join(root, "nope"), join(root, "nohome"));
+		const { config, sources, warnings } = await loadMcpConfig(join(root, "nope"), join(root, "nohome"));
 		expect(config).toEqual({ mcpServers: {}, directTools: [] });
 		expect(sources).toEqual([]);
+		expect(warnings).toEqual([]);
 	});
 
-	test("throws on malformed JSON", async () => {
+	test("warns and skips a malformed file instead of failing the whole load", async () => {
+		const home = join(root, "home");
+		await mkdir(join(home, ".prime", "agent"), { recursive: true });
+		await writeFile(
+			join(home, ".prime", "agent", "mcp.json"),
+			JSON.stringify({ mcpServers: { good: { command: "ok" } } }),
+		);
 		await writeFile(join(root, ".mcp.json"), "{ not json");
-		await expect(loadMcpConfig(root, join(root, "nohome"))).rejects.toThrow(/Invalid JSON/);
+
+		const { config, warnings } = await loadMcpConfig(root, home);
+		expect(Object.keys(config.mcpServers)).toEqual(["good"]);
+		expect(warnings.some((w) => /Invalid JSON/.test(w))).toBe(true);
 	});
 
-	test("throws when a server defines neither command nor url", async () => {
+	test("warns when a server defines neither command nor url", async () => {
 		await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { bad: { foo: 1 } } }));
-		await expect(loadMcpConfig(root, join(root, "nohome"))).rejects.toThrow(/either "command".*or "url"/);
+		const { warnings } = await loadMcpConfig(root, join(root, "nohome"));
+		expect(warnings.some((w) => /either "command".*or "url"/.test(w))).toBe(true);
 	});
 
-	test("throws when a header value is not a string", async () => {
+	test("warns when a header value is not a string", async () => {
 		await writeFile(
 			join(root, ".mcp.json"),
 			JSON.stringify({ mcpServers: { remote: { url: "https://x/mcp", headers: { Authorization: 123 } } } }),
 		);
-		await expect(loadMcpConfig(root, join(root, "nohome"))).rejects.toThrow(
-			/headers\.Authorization must be a string/,
-		);
+		const { warnings } = await loadMcpConfig(root, join(root, "nohome"));
+		expect(warnings.some((w) => /headers\.Authorization must be a string/.test(w))).toBe(true);
 	});
 
-	test("throws when an env value is not a string", async () => {
+	test("warns when both command and url are defined", async () => {
 		await writeFile(
 			join(root, ".mcp.json"),
-			JSON.stringify({ mcpServers: { local: { command: "x", env: { TOKEN: true } } } }),
+			JSON.stringify({ mcpServers: { mixed: { command: "x", url: "https://x/mcp" } } }),
 		);
-		await expect(loadMcpConfig(root, join(root, "nohome"))).rejects.toThrow(/env\.TOKEN must be a string/);
+		const { warnings } = await loadMcpConfig(root, join(root, "nohome"));
+		expect(warnings.some((w) => /defines both "command".*and "url"/.test(w))).toBe(true);
+	});
+
+	test("drops a global directTools entry when a project file redefines its server", async () => {
+		const home = join(root, "home");
+		await mkdir(join(home, ".prime", "agent"), { recursive: true });
+		await writeFile(
+			join(home, ".prime", "agent", "mcp.json"),
+			JSON.stringify({ mcpServers: { shared: { command: "trusted" } }, directTools: ["shared/echo"] }),
+		);
+		await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { shared: { command: "attacker" } } }));
+
+		const { config, warnings } = await loadMcpConfig(root, home);
+		expect(config.directTools).toEqual([]);
+		expect(warnings.some((w) => /Ignoring directTools entry "shared\/echo"/.test(w))).toBe(true);
+	});
+});
+
+describe("prime-mcp content rendering", () => {
+	test("passes image blocks through as image content and keeps text", () => {
+		const rendered = renderMcpCall([
+			{ type: "text", text: "here is a chart" },
+			{ type: "image", data: "AAAA", mimeType: "image/png" },
+		]);
+		expect(rendered.content).toEqual([
+			{ type: "text", text: "here is a chart" },
+			{ type: "image", data: "AAAA", mimeType: "image/png" },
+		]);
+	});
+
+	test("renders resource_link blocks with their uri instead of a placeholder", () => {
+		const rendered = renderMcpCall([{ type: "resource_link", name: "report", uri: "file:///report.md" }]);
+		expect(rendered.text).toContain("file:///report.md");
+		expect(rendered.text).toContain("report");
+	});
+
+	test("falls back to structuredContent when there is no content", () => {
+		const rendered = renderMcpCall([], { answer: 42 });
+		expect(rendered.text).toContain("answer");
+		expect(rendered.text).toContain("42");
 	});
 });
 

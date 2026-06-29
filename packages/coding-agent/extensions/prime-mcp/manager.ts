@@ -186,24 +186,53 @@ export class McpManager {
 		return connection;
 	}
 
-	/** End an operation; rearm idle disconnect once nothing else is running. */
-	private end(name: string): void {
-		const connection = this.connections.get(name);
-		if (!connection) return;
+	/**
+	 * End an operation against a specific connection. Decrement that instance's
+	 * counter (not whatever is current under `name`, which may have been replaced
+	 * by a reconnect) and rearm idle disconnect only for the live, idle one.
+	 */
+	private end(name: string, connection: Connection): void {
 		connection.active = Math.max(0, connection.active - 1);
-		this.scheduleIdleDisconnect(name);
+		if (this.connections.get(name) === connection && connection.active <= 0) {
+			this.scheduleIdleDisconnect(name);
+		}
+	}
+
+	/**
+	 * Run an operation against a connected client, retrying once on a dead
+	 * transport. Only transport-level failures are retried; tool-level errors and
+	 * aborts propagate untouched so a tool that already acted is never re-invoked.
+	 */
+	private async withConnection<T>(
+		name: string,
+		signal: AbortSignal | undefined,
+		op: (connection: Connection) => Promise<T>,
+	): Promise<T> {
+		this.requireServerConfig(name);
+		let connection = await this.begin(name, signal);
+		try {
+			try {
+				return await op(connection);
+			} catch (error) {
+				if (isAbort(error) || signal?.aborted || !isConnectionError(error)) throw error;
+				this.options.logger?.(`MCP server "${name}" operation failed, reconnecting: ${errorMessage(error)}`);
+			}
+			this.end(name, connection);
+			await this.disconnect(name);
+			connection = await this.begin(name, signal);
+			return await op(connection);
+		} finally {
+			this.end(name, connection);
+		}
 	}
 
 	async listTools(name: string, signal?: AbortSignal): Promise<McpToolInfo[]> {
-		const connection = await this.begin(name, signal);
-		try {
+		return this.withConnection(name, signal, async (connection) => {
 			if (!connection.tools) {
 				connection.tools = await connection.client.listTools(signal);
 			}
 			return connection.tools;
-		} finally {
-			this.end(name);
-		}
+		});
 	}
 
 	async describeTool(name: string, tool: string, signal?: AbortSignal): Promise<McpToolInfo> {
@@ -221,30 +250,14 @@ export class McpManager {
 		args: Record<string, unknown> | undefined,
 		signal?: AbortSignal,
 	): Promise<McpCallResult> {
-		this.requireServerConfig(name);
-		try {
-			const connection = await this.begin(name, signal);
-			try {
-				return await connection.client.callTool(tool, args, signal);
-			} catch (error) {
-				// Only retry when the transport looks dead; never re-invoke a tool
-				// that failed after the server may have already acted on it.
-				if (isAbort(error) || signal?.aborted || !isConnectionError(error)) throw error;
-				this.options.logger?.(`MCP server "${name}" call failed, reconnecting: ${errorMessage(error)}`);
-			}
-			await this.disconnect(name);
-			const reconnected = await this.begin(name, signal);
-			return await reconnected.client.callTool(tool, args, signal);
-		} finally {
-			this.end(name);
-		}
+		return this.withConnection(name, signal, (connection) => connection.client.callTool(tool, args, signal));
 	}
 
 	async reconnect(name: string, signal?: AbortSignal): Promise<void> {
 		this.requireServerConfig(name);
 		await this.disconnect(name);
-		await this.begin(name, signal);
-		this.end(name);
+		const connection = await this.begin(name, signal);
+		this.end(name, connection);
 	}
 
 	async disconnect(name: string): Promise<void> {

@@ -45,6 +45,8 @@ export interface LoadedMcpConfig {
 	config: McpConfig;
 	/** Files that contributed to the merged config, highest precedence first. */
 	sources: string[];
+	/** Non-fatal problems (unreadable files, dropped directTools, etc.). */
+	warnings: string[];
 }
 
 export function isHttpServer(config: McpServerConfig): config is HttpServerConfig {
@@ -91,6 +93,12 @@ function parseStringRecord(
 function parseServer(name: string, raw: unknown, source: string): McpServerConfig {
 	if (!isRecord(raw)) {
 		throw new Error(`Invalid MCP config in ${source}: server "${name}" must be an object`);
+	}
+
+	if (typeof raw.url === "string" && typeof raw.command === "string") {
+		throw new Error(
+			`Invalid MCP config in ${source}: server "${name}" defines both "command" (stdio) and "url" (http); use one transport`,
+		);
 	}
 
 	if (typeof raw.url === "string") {
@@ -174,7 +182,11 @@ async function readConfigFile(path: string): Promise<ParsedFile | undefined> {
 	try {
 		text = await readFile(path, "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+		const code = (error as NodeJS.ErrnoException).code;
+		// Treat "not found" and "a path component isn't a directory" as absent so
+		// an unrelated layout (e.g. a file where `.prime/` is expected) doesn't
+		// disable every other config file.
+		if (code === "ENOENT" || code === "ENOTDIR") {
 			return undefined;
 		}
 		throw error;
@@ -186,31 +198,73 @@ async function readConfigFile(path: string): Promise<ParsedFile | undefined> {
  * Load and merge MCP config from all candidate paths.
  *
  * Lower-precedence files are applied first, so higher-precedence files override
- * servers with the same name. `directTools` are unioned (first occurrence wins
- * for ordering) and `idleTimeoutMs` from the highest-precedence file that sets
- * it takes effect.
+ * servers with the same name. `directTools` are unioned and `idleTimeoutMs` from
+ * the highest-precedence file that sets it takes effect.
+ *
+ * A file that cannot be read or parsed is skipped with a warning rather than
+ * failing the whole load, so one bad file never disables every other config.
+ *
+ * A `directTools` entry is only honored when the config file that declared it is
+ * the same one that won the referenced server's definition. This stops a
+ * lower-trust file (e.g. a repo `.mcp.json`) from redefining a server name that
+ * a higher-trust file (e.g. `~/.prime/agent/mcp.json`) opted to auto-promote,
+ * which would otherwise spawn an attacker-controlled command at startup.
  */
 export async function loadMcpConfig(cwd: string, home: string = homedir()): Promise<LoadedMcpConfig> {
 	const paths = configCandidatePaths(cwd, home);
 	const merged: McpConfig = { mcpServers: {}, directTools: [] };
 	const sources: string[] = [];
+	const warnings: string[] = [];
+
+	const serverSource = new Map<string, string>();
+	const directToolSources = new Map<string, Set<string>>();
+	let idleTimeoutMs: number | undefined;
 
 	// Apply from lowest to highest precedence so later overlays win.
 	for (const path of [...paths].reverse()) {
-		const parsed = await readConfigFile(path);
+		let parsed: ParsedFile | undefined;
+		try {
+			parsed = await readConfigFile(path);
+		} catch (error) {
+			warnings.push(error instanceof Error ? error.message : String(error));
+			continue;
+		}
 		if (!parsed) continue;
 		sources.unshift(path);
 
 		for (const [name, server] of Object.entries(parsed.mcpServers)) {
 			merged.mcpServers[name] = server;
+			serverSource.set(name, path);
 		}
 		for (const ref of parsed.directTools) {
-			if (!merged.directTools.includes(ref)) merged.directTools.push(ref);
+			let set = directToolSources.get(ref);
+			if (!set) {
+				set = new Set();
+				directToolSources.set(ref, set);
+			}
+			set.add(path);
 		}
-		if (parsed.idleTimeoutMs !== undefined) merged.idleTimeoutMs = parsed.idleTimeoutMs;
+		if (parsed.idleTimeoutMs !== undefined) idleTimeoutMs = parsed.idleTimeoutMs;
 	}
 
-	return { config: merged, sources };
+	if (idleTimeoutMs !== undefined) merged.idleTimeoutMs = idleTimeoutMs;
+
+	for (const [ref, declaredIn] of directToolSources) {
+		const parsedRef = parseToolRef(ref);
+		// Keep malformed refs and refs to unknown servers; both are reported with a
+		// clearer message later by registerDirectTools.
+		const winner = parsedRef ? serverSource.get(parsedRef.server) : undefined;
+		if (parsedRef && winner !== undefined && !declaredIn.has(winner)) {
+			warnings.push(
+				`Ignoring directTools entry "${ref}": server "${parsedRef.server}" is defined by ${winner}, ` +
+					`which did not opt into promoting it`,
+			);
+			continue;
+		}
+		merged.directTools.push(ref);
+	}
+
+	return { config: merged, sources, warnings };
 }
 
 /** Split a `server/tool` reference. Tool names may contain slashes. */

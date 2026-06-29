@@ -7,6 +7,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { renderMcpCall } from "./content.js";
 import type { McpManager, McpToolInfo } from "./manager.js";
 
 const MAX_RESULT_CHARS = 20_000;
@@ -44,27 +45,6 @@ function truncate(text: string): string {
 function summarizeTool(tool: McpToolInfo): string {
 	const description = tool.description?.split("\n")[0]?.trim();
 	return description ? `${tool.name} — ${description}` : tool.name;
-}
-
-function renderCallContent(content: unknown): string {
-	if (content == null) return "";
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return JSON.stringify(content, null, 2);
-
-	const parts: string[] = [];
-	for (const block of content) {
-		if (block && typeof block === "object" && "type" in block) {
-			const typed = block as { type: string; text?: string };
-			if (typed.type === "text" && typeof typed.text === "string") {
-				parts.push(typed.text);
-				continue;
-			}
-			parts.push(`[${typed.type} content]`);
-			continue;
-		}
-		parts.push(JSON.stringify(block));
-	}
-	return parts.join("\n");
 }
 
 function result(text: string, details: McpProxyDetails) {
@@ -134,20 +114,16 @@ export function createMcpProxyTool(manager: McpManager): ToolDefinition<typeof M
 					if (!params.server) throw new Error("action=call requires a server");
 					if (!params.tool) throw new Error("action=call requires a tool");
 					const call = await manager.callTool(params.server, params.tool, params.arguments, signal);
-					const rendered = renderCallContent(call.content);
+					const rendered = renderMcpCall(call.content, call.structuredContent);
 					// Surface MCP tool errors as tool errors so the agent loop flags them,
 					// matching how promoted directTools behave.
 					if (call.isError) {
-						throw new Error(rendered || `MCP tool ${params.server}/${params.tool} returned an error`);
+						throw new Error(rendered.text || `MCP tool ${params.server}/${params.tool} returned an error`);
 					}
-					// Fall back to structuredContent for servers that return data there
-					// without an accompanying text block.
-					const structured = call.structuredContent ? JSON.stringify(call.structuredContent, null, 2) : "";
-					return result(rendered || structured || "(empty result)", {
-						action: params.action,
-						server: params.server,
-						tool: params.tool,
-					});
+					return {
+						content: rendered.content,
+						details: { action: params.action, server: params.server, tool: params.tool },
+					};
 				}
 			}
 		},

@@ -85,7 +85,15 @@ Config is read from these paths, **highest precedence first**:
 All existing files are merged. Lower-precedence files are applied first, so a
 higher-precedence file overrides a server with the same name. `directTools` are
 unioned across files; `idleTimeoutMs` from the highest-precedence file that sets
-it wins.
+it wins. A file that cannot be read or parsed is skipped with a warning (shown
+in `/mcp status`) rather than disabling the others.
+
+A `directTools` entry is only honored when the config file that declared it is
+also the one that won the referenced server's definition. This prevents a
+lower-trust file (a repo `.mcp.json`) from redefining a server name that a
+higher-trust file (`~/.prime/agent/mcp.json`) opted to auto-promote, which would
+otherwise spawn an unexpected command at startup. Define a server and its
+`directTools` in the same file.
 
 Config is read **once**, from the working directory of the first session in the
 process. Promoted `directTools` register as global tools and cannot be
@@ -110,9 +118,13 @@ committed config files (a missing variable expands to an empty string).
   `describe`, `call`, or a `directTools` promotion at startup).
 - **Idle disconnect.** Connections close after `idleTimeoutMs` of inactivity and
   reconnect transparently on next use.
-- **Reconnect on failure.** If a `call` fails on a dead transport, the extension
-  drops the connection and retries once before surfacing the error.
-- **Shutdown.** All connections close on `session_shutdown`.
+- **Reconnect on failure.** If an operation fails on a dead transport, the
+  extension drops the connection and retries once before surfacing the error.
+- **Shutdown.** All connections close on `session_shutdown`; HTTP sessions are
+  terminated server-side so they don't pile up.
+
+Text, image, and resource content from tool results are passed through to the
+model; images are returned as image content rather than a placeholder.
 
 ## The `/mcp` command
 
