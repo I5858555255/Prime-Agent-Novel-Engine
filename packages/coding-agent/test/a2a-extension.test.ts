@@ -212,6 +212,7 @@ describe("createAgentPromptBridge", () => {
 			settled = true;
 		});
 		await Promise.resolve();
+		await Promise.resolve();
 		expect(promptCorrelationId).toBeTruthy();
 
 		await emit({ type: "before_agent_start", prompt: "local prompt", promptCorrelationId: "local" });
@@ -280,6 +281,7 @@ describe("createAgentPromptBridge", () => {
 			return sentPrompt.promise;
 		});
 		const result = bridge.runPrompt("same text");
+		await Promise.resolve();
 		await Promise.resolve();
 		expect(sentCorrelationId).toBeTruthy();
 
