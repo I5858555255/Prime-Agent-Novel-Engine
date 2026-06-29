@@ -9,7 +9,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { configCandidatePaths, loadMcpConfig } from "./config.js";
 import { createDefaultConnector } from "./connector.js";
-import { registerDirectTools } from "./direct-tools.js";
+import { type DirectToolRegistration, registerDirectTools } from "./direct-tools.js";
 import { McpManager } from "./manager.js";
 import { createMcpProxyTool } from "./proxy-tool.js";
 
@@ -22,7 +22,8 @@ export default function primeMcpExtension(pi: ExtensionAPI): void {
 	// errors are not kept here; `/mcp status` reads those from the manager so they
 	// reflect the current state instead of going stale.
 	let configWarnings: string[] = [];
-	const promoted = new Map<string, string>();
+	let directToolRefs: string[] = [];
+	const promoted = new Map<string, DirectToolRegistration>();
 	let loadPromise: Promise<void> | undefined;
 
 	const manager = new McpManager({ mcpServers: {}, directTools: [] }, { connector: createDefaultConnector() });
@@ -33,9 +34,10 @@ export default function primeMcpExtension(pi: ExtensionAPI): void {
 		configWarnings = [];
 		const loaded = await loadMcpConfig(cwd);
 		configWarnings.push(...loaded.warnings);
+		directToolRefs = loaded.config.directTools;
 		await manager.setConfig(loaded.config);
-		if (loaded.config.directTools.length > 0) {
-			await registerDirectTools(pi, manager, loaded.config.directTools, (m) => configWarnings.push(m), promoted);
+		if (directToolRefs.length > 0) {
+			await registerDirectTools(pi, manager, directToolRefs, (m) => configWarnings.push(m), promoted);
 		}
 	};
 
@@ -139,6 +141,16 @@ export default function primeMcpExtension(pi: ExtensionAPI): void {
 					for (const name of targets) {
 						try {
 							await manager.reconnect(name, ctx.signal);
+							if (directToolRefs.length > 0) {
+								await registerDirectTools(
+									pi,
+									manager,
+									directToolRefs,
+									(message) => failed.push(message),
+									promoted,
+									ctx.signal,
+								);
+							}
 							reconnected.push(name);
 						} catch (error) {
 							failed.push(`${name} (${error instanceof Error ? error.message : String(error)})`);

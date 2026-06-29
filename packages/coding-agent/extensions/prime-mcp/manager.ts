@@ -2,9 +2,9 @@
  * Connection manager for configured MCP servers.
  *
  * Connections are established lazily on first use, cached, torn down after an
- * idle period, and transparently re-established once if a call fails on a dead
- * transport. The actual transport wiring lives in `connector.ts` and is
- * injectable so tests can run against an in-memory server.
+ * idle period, and transparently re-established once if an idempotent metadata
+ * read fails on a dead transport. The actual transport wiring lives in
+ * `connector.ts` and is injectable so tests can run against an in-memory server.
  */
 
 import { isHttpServer, type McpConfig, type McpServerConfig } from "./config.js";
@@ -70,14 +70,14 @@ function isAbort(error: unknown): boolean {
 }
 
 const CONNECTION_ERROR =
-	/\b(not connected|connection (closed|reset|refused|lost)|transport (closed|error)|socket hang up|econnreset|econnrefused|epipe|premature close|stream is not readable|terminated)\b/i;
+	/\b(not connected|connection (closed|reset|refused|lost)|transport (closed|error)|socket hang up|econnreset|econnrefused|epipe|premature close|stream is not readable|terminated|timed out|timeout)\b/i;
 
 /**
  * Whether an error looks like a dead transport rather than a tool-level failure.
  * Only these are retried, so a stateful tool that errored after doing work is
  * never silently re-invoked.
  */
-function isConnectionError(error: unknown): boolean {
+export function isMcpConnectionError(error: unknown): boolean {
 	return error instanceof Error && CONNECTION_ERROR.test(error.message);
 }
 
@@ -250,15 +250,19 @@ export class McpManager {
 	private async withConnection<T>(
 		name: string,
 		signal: AbortSignal | undefined,
+		retryOnConnectionError: boolean,
 		op: (connection: Connection) => Promise<T>,
 	): Promise<T> {
 		this.requireServerConfig(name);
-		let connection = await this.begin(name, signal);
+		const connection = await this.begin(name, signal);
+		let endConnection = true;
 		try {
 			try {
 				return await op(connection);
 			} catch (error) {
-				if (isAbort(error) || signal?.aborted || !isConnectionError(error)) throw error;
+				if (!retryOnConnectionError || isAbort(error) || signal?.aborted || !isMcpConnectionError(error)) {
+					throw error;
+				}
 				this.options.logger?.(`MCP server "${name}" operation failed, reconnecting: ${errorMessage(error)}`);
 			}
 			// Retire only this dead instance. Sibling calls sharing it keep it
@@ -266,15 +270,21 @@ export class McpManager {
 			// them. A fresh begin() reconnects for our retry.
 			this.evict(name, connection);
 			this.end(name, connection);
-			connection = await this.begin(name, signal);
-			return await op(connection);
+			endConnection = false;
+			let next: Connection | undefined;
+			try {
+				next = await this.begin(name, signal);
+				return await op(next);
+			} finally {
+				if (next) this.end(name, next);
+			}
 		} finally {
-			this.end(name, connection);
+			if (endConnection) this.end(name, connection);
 		}
 	}
 
 	async listTools(name: string, signal?: AbortSignal): Promise<McpToolInfo[]> {
-		return this.withConnection(name, signal, async (connection) => {
+		return this.withConnection(name, signal, true, async (connection) => {
 			if (!connection.tools) {
 				connection.tools = await connection.client.listTools(signal);
 			}
@@ -297,13 +307,13 @@ export class McpManager {
 		args: Record<string, unknown> | undefined,
 		signal?: AbortSignal,
 	): Promise<McpCallResult> {
-		return this.withConnection(name, signal, (connection) => connection.client.callTool(tool, args, signal));
+		return this.withConnection(name, signal, false, (connection) => connection.client.callTool(tool, args, signal));
 	}
 
-	async reconnect(name: string, _signal?: AbortSignal): Promise<void> {
+	async reconnect(name: string, signal?: AbortSignal): Promise<void> {
 		this.requireServerConfig(name);
 		await this.disconnect(name);
-		const connection = await this.begin(name);
+		const connection = await this.begin(name, signal);
 		this.end(name, connection);
 	}
 
@@ -354,6 +364,7 @@ export class McpManager {
 		const connection = this.connections.get(name);
 		if (!connection) return;
 		this.evict(name, connection);
+		if (connection.active > 0) return;
 		await this.closeClient(name, connection);
 	}
 

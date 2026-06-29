@@ -209,6 +209,12 @@ describe("prime-mcp content rendering", () => {
 		expect(rendered.text).toContain("42");
 	});
 
+	test("ignores nullish content blocks instead of failing the whole render", () => {
+		const rendered = renderMcpCall([null, undefined, { type: "text", text: "ok" }]);
+		expect(rendered.content).toEqual([{ type: "text", text: "ok" }]);
+		expect(rendered.text).toBe("ok");
+	});
+
 	test("bounds the error summary text so a huge payload can't flood the transcript", () => {
 		const rendered = renderMcpCall([{ type: "text", text: "x".repeat(100_000) }]);
 		expect(rendered.text.length).toBeLessThan(30_000);
@@ -286,18 +292,20 @@ describe("prime-mcp proxy tool", () => {
 });
 
 describe("prime-mcp manager lifecycle", () => {
-	test("reconnects once and retries when a call fails on a dead transport", async () => {
+	test("reconnects once and retries when listing tools fails on a dead transport", async () => {
 		let connectCount = 0;
-		let failNextCall = true;
+		let failNextList = true;
 		const connector: McpConnector = async () => {
 			connectCount++;
 			return {
-				listTools: async () => [{ name: "echo", inputSchema: { type: "object" } }],
-				callTool: async () => {
-					if (failNextCall) {
-						failNextCall = false;
+				listTools: async () => {
+					if (failNextList) {
+						failNextList = false;
 						throw new Error("transport closed");
 					}
+					return [{ name: "echo", inputSchema: { type: "object" } }];
+				},
+				callTool: async () => {
 					return { content: [{ type: "text", text: "ok" }], isError: false };
 				},
 				close: async () => {},
@@ -305,10 +313,31 @@ describe("prime-mcp manager lifecycle", () => {
 		};
 
 		const manager = managerWith(connector);
-		const result = await manager.callTool("demo", "echo", {});
+		const result = await manager.listTools("demo");
 
-		expect(result.isError).toBe(false);
+		expect(result.map((tool) => tool.name)).toEqual(["echo"]);
 		expect(connectCount).toBe(2);
+	});
+
+	test("does not retry tool calls after transport errors to avoid duplicate side effects", async () => {
+		let connectCount = 0;
+		let callCount = 0;
+		const connector: McpConnector = async () => {
+			connectCount++;
+			return {
+				listTools: async () => [{ name: "mutate", inputSchema: { type: "object" } }],
+				callTool: async () => {
+					callCount++;
+					throw new Error("socket hang up");
+				},
+				close: async () => {},
+			};
+		};
+
+		const manager = managerWith(connector);
+		await expect(manager.callTool("demo", "mutate", {})).rejects.toThrow(/socket hang up/);
+		expect(callCount).toBe(1);
+		expect(connectCount).toBe(1);
 	});
 
 	test("does not retry when a call fails with a non-transport error", async () => {
@@ -410,7 +439,110 @@ describe("prime-mcp manager lifecycle", () => {
 		expect(manager.hasServer("demo")).toBe(true);
 	});
 
-	test("a parallel call keeps its connection alive while a sibling reconnects", async () => {
+	test("does not double-end the old connection when reconnecting after a list failure cannot reconnect", async () => {
+		let connectCount = 0;
+		const closed: number[] = [];
+		let releaseSlow!: () => void;
+		let slowStarted!: () => void;
+		const slowGate = new Promise<void>((resolve) => {
+			releaseSlow = resolve;
+		});
+		const started = new Promise<void>((resolve) => {
+			slowStarted = resolve;
+		});
+		const connector: McpConnector = async () => {
+			connectCount++;
+			const id = connectCount;
+			if (id === 2) throw new Error("connection refused");
+			return {
+				listTools: async () => {
+					throw new Error("transport closed");
+				},
+				callTool: async () => {
+					slowStarted();
+					await slowGate;
+					return { content: [{ type: "text", text: `slow-${id}` }], isError: false };
+				},
+				close: async () => {
+					closed.push(id);
+				},
+			};
+		};
+
+		const manager = managerWith(connector);
+		const slow = manager.callTool("demo", "slow", {});
+		await started;
+
+		await expect(manager.listTools("demo")).rejects.toThrow(/connection refused/);
+		expect(closed).not.toContain(1);
+
+		releaseSlow();
+		await expect(slow).resolves.toMatchObject({ isError: false });
+		expect(closed.filter((id) => id === 1)).toEqual([1]);
+	});
+
+	test("passes the caller signal through reconnect waits", async () => {
+		const connector: McpConnector = (_name, _config, signal) =>
+			new Promise<McpClientLike>((_resolve, reject) => {
+				signal?.addEventListener("abort", () => reject(new Error("aborted")));
+			});
+		const manager = managerWith(connector);
+		const controller = new AbortController();
+		controller.abort();
+
+		const reconnect = manager.reconnect("demo", controller.signal);
+		try {
+			const outcome = await Promise.race([
+				reconnect.then(
+					() => "resolved",
+					(error: unknown) => error,
+				),
+				new Promise<"pending">((resolve) => {
+					setTimeout(() => resolve("pending"), 0);
+				}),
+			]);
+
+			expect(outcome).toBeInstanceOf(Error);
+			expect(String((outcome as Error).message)).toMatch(/abort/i);
+		} finally {
+			await manager.disconnectAll();
+		}
+	});
+
+	test("disconnect waits for in-flight operations before closing the client", async () => {
+		let closeCount = 0;
+		let releaseSlow!: () => void;
+		let slowStarted!: () => void;
+		const slowGate = new Promise<void>((resolve) => {
+			releaseSlow = resolve;
+		});
+		const started = new Promise<void>((resolve) => {
+			slowStarted = resolve;
+		});
+		const connector: McpConnector = async () => ({
+			listTools: async () => [],
+			callTool: async () => {
+				slowStarted();
+				await slowGate;
+				return { content: [{ type: "text", text: "done" }], isError: false };
+			},
+			close: async () => {
+				closeCount++;
+			},
+		});
+		const manager = managerWith(connector);
+		const slow = manager.callTool("demo", "slow", {});
+		await started;
+
+		await manager.disconnect("demo");
+		expect(closeCount).toBe(0);
+
+		releaseSlow();
+		await expect(slow).resolves.toMatchObject({ isError: false });
+		expect(closeCount).toBe(1);
+	});
+
+	test("a parallel call keeps its connection alive while a sibling list reconnects", async () => {
 		let connectCount = 0;
 		const closed: number[] = [];
 		let releaseSlow!: () => void;
@@ -421,9 +553,11 @@ describe("prime-mcp manager lifecycle", () => {
 			connectCount++;
 			const id = connectCount;
 			return {
-				listTools: async () => [],
+				listTools: async () => {
+					if (id === 1) throw new Error("transport closed");
+					return [{ name: "ok", inputSchema: { type: "object" } }];
+				},
 				callTool: async (tool) => {
-					if (tool === "fail" && id === 1) throw new Error("transport closed");
 					if (tool === "slow") {
 						await slowGate;
 						return { content: [{ type: "text", text: `slow-${id}` }], isError: false };
@@ -437,11 +571,11 @@ describe("prime-mcp manager lifecycle", () => {
 		};
 
 		const manager = managerWith(connector);
-		// "slow" parks in-flight on connection 1; "fail" forces a reconnect.
+		// "slow" parks in-flight on connection 1; listTools forces a reconnect.
 		const slow = manager.callTool("demo", "slow", {});
-		const a = await manager.callTool("demo", "fail", {});
+		const a = await manager.listTools("demo");
 
-		expect(a.isError).toBe(false);
+		expect(a.map((tool) => tool.name)).toEqual(["ok"]);
 		// The slow sibling still holds connection 1, so it must not be closed yet.
 		expect(closed).not.toContain(1);
 
@@ -471,6 +605,44 @@ describe("prime-mcp manager lifecycle", () => {
 
 		expect(registeredNames).toEqual(["mcp__demo__foo_bar"]);
 		expect(warnings.some((w) => w.includes("collides"))).toBe(true);
+		await manager.disconnectAll();
+	});
+
+	test("registers a deferred direct tool on connection errors and upgrades it on retry", async () => {
+		let listToolsAvailable = false;
+		const connector: McpConnector = async () => ({
+			listTools: async () => {
+				if (!listToolsAvailable) throw new Error("connection refused");
+				return [
+					{
+						name: "echo",
+						description: "Echo text",
+						inputSchema: { type: "object", properties: { text: { type: "string" } } },
+					},
+				];
+			},
+			callTool: async () => ({ content: [{ type: "text", text: "called" }], isError: false }),
+			close: async () => {},
+		});
+		const manager = managerWith(connector);
+
+		const registeredTools: ToolDefinition[] = [];
+		const warnings: string[] = [];
+		const pi = { registerTool: (tool: ToolDefinition) => registeredTools.push(tool) } as unknown as ExtensionAPI;
+
+		await registerDirectTools(pi, manager, ["demo/echo"], (m) => warnings.push(m));
+		expect(registeredTools.map((tool) => tool.name)).toEqual(["mcp__demo__echo"]);
+		expect(warnings.some((w) => w.includes("deferred schema"))).toBe(true);
+
+		listToolsAvailable = true;
+		await manager.reconnect("demo");
+		await registerDirectTools(pi, manager, ["demo/echo"], (m) => warnings.push(m));
+
+		expect(registeredTools.map((tool) => tool.name)).toEqual(["mcp__demo__echo", "mcp__demo__echo"]);
+		expect(registeredTools[1]?.parameters).toEqual({
+			type: "object",
+			properties: { text: { type: "string" } },
+		});
 		await manager.disconnectAll();
 	});
 

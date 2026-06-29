@@ -45,10 +45,10 @@ function truncate(text: string): string {
 	return `${text.slice(0, MAX_TEXT_CHARS)}\n\n[Output truncated: ${text.length} chars total. Call the tool with narrower arguments for less output.]`;
 }
 
-function normalizeBlocks(content: unknown): McpBlock[] {
+function normalizeBlocks(content: unknown): Array<McpBlock | null | undefined> {
 	if (content == null) return [];
 	if (typeof content === "string") return [{ type: "text", text: content }];
-	if (Array.isArray(content)) return content as McpBlock[];
+	if (Array.isArray(content)) return content as Array<McpBlock | null | undefined>;
 	return [{ type: "_json" }];
 }
 
@@ -90,6 +90,7 @@ export function renderMcpCall(content: unknown, structuredContent?: unknown): Re
 	};
 
 	for (const block of normalizeBlocks(content)) {
+		if (block == null) continue;
 		switch (block.type) {
 			case "text":
 				if (typeof block.text === "string") pushText(block.text);

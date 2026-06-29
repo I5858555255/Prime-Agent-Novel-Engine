@@ -9,14 +9,19 @@
 
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
+import { type TSchema, Type } from "typebox";
 import { parseToolRef } from "./config.js";
 import { renderMcpCall } from "./content.js";
-import type { McpManager, McpToolInfo } from "./manager.js";
+import { isMcpConnectionError, type McpManager, type McpToolInfo } from "./manager.js";
 
 // OpenAI-compatible providers cap tool names at 64 characters; exceed it and the
 // whole request is rejected, not just the offending tool.
 const MAX_TOOL_NAME = 64;
+
+export interface DirectToolRegistration {
+	ref: string;
+	status: "deferred" | "resolved";
+}
 
 /**
  * Build a valid tool name like `mcp__server__tool`. Characters outside
@@ -54,6 +59,27 @@ export function buildDirectTool(manager: McpManager, server: string, info: McpTo
 	};
 }
 
+function buildDeferredDirectTool(manager: McpManager, server: string, tool: string): ToolDefinition {
+	return {
+		name: directToolName(server, tool),
+		label: `${server}/${tool}`,
+		description: `[MCP ${server}] Tool "${tool}" (schema unavailable until the server reconnects)`,
+		parameters: Type.Record(Type.String(), Type.Unknown()),
+		async execute(_toolCallId, params, signal) {
+			const args = (params ?? {}) as Record<string, unknown>;
+			const call = await manager.callTool(server, tool, args, signal);
+			const rendered = renderMcpCall(call.content, call.structuredContent);
+			if (call.isError) {
+				throw new Error(rendered.text || `MCP tool ${server}/${tool} returned an error`);
+			}
+			return {
+				content: rendered.content,
+				details: { server, tool },
+			};
+		},
+	};
+}
+
 /**
  * Resolve and register every `directTools` reference. Failures are logged and
  * skipped so a single bad server never blocks the rest of the extension.
@@ -63,7 +89,8 @@ export async function registerDirectTools(
 	manager: McpManager,
 	refs: string[],
 	logger: (message: string) => void,
-	registered: Map<string, string> = new Map<string, string>(),
+	registered: Map<string, DirectToolRegistration> = new Map<string, DirectToolRegistration>(),
+	signal?: AbortSignal,
 ): Promise<void> {
 	// `refs` arrives lowest-precedence first. Process highest first so that when
 	// two distinct refs sanitize to the same tool name, the higher-precedence
@@ -79,21 +106,28 @@ export async function registerDirectTools(
 			continue;
 		}
 
+		const name = directToolName(parsed.server, parsed.tool);
+		const owner = registered.get(name);
+		if (owner !== undefined && owner.ref !== ref) {
+			logger(`directTools entry "${ref}" collides with "${owner.ref}" as tool "${name}"; skipping`);
+			continue;
+		}
+		if (owner?.status === "resolved") continue;
+
 		try {
-			const info = await manager.describeTool(parsed.server, parsed.tool);
-			const name = directToolName(parsed.server, info.name);
-			const owner = registered.get(name);
-			if (owner !== undefined) {
-				// Already promoted by this ref (idempotent reload), or a different
-				// ref sanitized to the same tool name — warn so the collision is visible.
-				if (owner !== ref) {
-					logger(`directTools entry "${ref}" collides with "${owner}" as tool "${name}"; skipping`);
-				}
-				continue;
-			}
-			registered.set(name, ref);
+			const info = await manager.describeTool(parsed.server, parsed.tool, signal);
+			registered.set(name, { ref, status: "resolved" });
 			pi.registerTool(buildDirectTool(manager, parsed.server, info));
 		} catch (error) {
+			if (isMcpConnectionError(error)) {
+				if (owner?.status !== "deferred") {
+					registered.set(name, { ref, status: "deferred" });
+					pi.registerTool(buildDeferredDirectTool(manager, parsed.server, parsed.tool));
+				}
+				const message = error instanceof Error ? error.message : String(error);
+				logger(`Registered directTools entry "${ref}" with deferred schema: ${message}`);
+				continue;
+			}
 			const message = error instanceof Error ? error.message : String(error);
 			logger(`Could not promote directTools entry "${ref}": ${message}`);
 		}
