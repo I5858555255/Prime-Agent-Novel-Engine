@@ -1091,13 +1091,21 @@ class AgentsViewMode implements Component, Focusable {
 		});
 	}
 
-	/** Row identities of every ancestor of a subagent row, root-most first. */
+	/**
+	 * Session ids of every ancestor of a subagent row, root-most first. Keyed by
+	 * sessionId rather than row identity so the breadcrumb survives a parent's
+	 * active→persisted identity flip while the subagent is open.
+	 */
 	private collectSubagentAncestorIdentities(row: AgentsViewRow): string[] {
 		const ancestors: string[] = [];
 		let parentIdentity = row.parentIdentity;
 		while (parentIdentity !== undefined) {
-			ancestors.unshift(parentIdentity);
-			parentIdentity = this.rows.find((candidate) => candidate.identity === parentIdentity)?.parentIdentity;
+			const parent = this.rows.find((candidate) => candidate.identity === parentIdentity);
+			if (!parent) {
+				break;
+			}
+			ancestors.unshift(parent.summary.sessionId);
+			parentIdentity = parent.parentIdentity;
 		}
 		return ancestors;
 	}
