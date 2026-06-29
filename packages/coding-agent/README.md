@@ -337,6 +337,8 @@ The default export can also be `async`. Prime Agent waits for async extension fa
 
 Place in `~/.prime/agent/extensions/`, `.prime/agent/extensions/`, or a [Prime Agent package](#prime-agent-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
 
+**MCP:** Prime Agent ships a first-party [Model Context Protocol](https://modelcontextprotocol.io) client extension that reaches external MCP servers (stdio or HTTP) through a single token-efficient proxy tool, with optional promotion of hot tools to first-class tools. See [docs/mcp.md](docs/mcp.md).
+
 ### Themes
 
 Built-in: `dark`, `light`. Themes hot-reload: modify the active theme file and Prime Agent immediately applies changes.

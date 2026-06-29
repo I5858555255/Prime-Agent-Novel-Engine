@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added a first-party MCP (Model Context Protocol) client extension (`extensions/prime-mcp`) that reaches external stdio and HTTP MCP servers through a single token-efficient `mcp` proxy tool, with optional `directTools` promotion, lazy connect, idle disconnect, reconnect-on-failure, and a `/mcp` command. See [docs/mcp.md](docs/mcp.md).
+
 ## [0.2.2] - 2026-06-25
 
 - Added a bundled `websearch` skill (Google search via the Serper API) that loads by default. Add a Serper key via `/login` ("Serper (web search)"); it is stored with your other credentials and supplied to the skill automatically. The skill can be disabled with `bundledSkills.websearch: false` and overridden by a same-named skill in any user, project, package, or `--skill` location ([#86](https://github.com/PrimeIntellect-ai/prime-agent/issues/86)).

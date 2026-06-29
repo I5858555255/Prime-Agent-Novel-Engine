@@ -1,0 +1,23 @@
+{
+	"mcpServers": {
+		"everything": {
+			"command": "npx",
+			"args": ["-y", "@modelcontextprotocol/server-everything"]
+		},
+		"filesystem": {
+			"command": "npx",
+			"args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
+			"env": {
+				"EXAMPLE_TOKEN": "set-me"
+			}
+		},
+		"remote": {
+			"url": "https://example.com/mcp",
+			"headers": {
+				"Authorization": "Bearer ${YOUR_TOKEN}"
+			}
+		}
+	},
+	"directTools": ["everything/echo"],
+	"idleTimeoutMs": 300000
+}
