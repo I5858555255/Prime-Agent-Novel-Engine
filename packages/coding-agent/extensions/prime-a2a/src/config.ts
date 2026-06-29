@@ -87,10 +87,14 @@ function readConfigFile(path: string): A2AConfigFile {
 function mergeConfig(base: A2AConfigFile, override: A2AConfigFile): A2AConfigFile {
 	return {
 		peers: { ...(base.peers ?? {}), ...(override.peers ?? {}) },
-		allowedEndpoints: dedupe([...(base.allowedEndpoints ?? []), ...(override.allowedEndpoints ?? [])]),
+		allowedEndpoints: dedupe([...arrayOrEmpty(base.allowedEndpoints), ...arrayOrEmpty(override.allowedEndpoints)]),
 		requestTimeoutMs: override.requestTimeoutMs ?? base.requestTimeoutMs,
 		server: { ...(base.server ?? {}), ...(override.server ?? {}) },
 	};
+}
+
+function arrayOrEmpty(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function dedupe(values: string[]): string[] {
@@ -163,8 +167,16 @@ function hostnameMatches(patternHost: string, host: string): boolean {
 function patternMatches(pattern: ParsedPattern, target: URL): boolean {
 	if (pattern.protocol !== target.protocol) return false;
 	if (!hostnameMatches(pattern.hostname, target.hostname)) return false;
-	if (pattern.port && pattern.port !== target.port) return false;
+	const patternPort = pattern.port || defaultPortForProtocol(pattern.protocol);
+	const targetPort = target.port || defaultPortForProtocol(target.protocol);
+	if (patternPort !== targetPort) return false;
 	return true;
+}
+
+function defaultPortForProtocol(protocol: string): string {
+	if (protocol === "https:") return "443";
+	if (protocol === "http:") return "80";
+	return "";
 }
 
 /**

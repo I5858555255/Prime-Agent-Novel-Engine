@@ -55,15 +55,18 @@ function agentMessage(text: string, taskId: string, contextId: string): Message 
 
 /** AgentExecutor that runs each inbound message as a single Prime Agent turn. */
 class PrimeAgentExecutor implements AgentExecutor {
-	/** taskId -> contextId, so cancelTask (which only receives taskId) can report the right context. */
-	private readonly contexts = new Map<string, string>();
+	private readonly executions = new Map<
+		string,
+		{ contextId: string; controller: AbortController; canceled: boolean }
+	>();
 
 	constructor(private readonly runPrompt: RunPrompt) {}
 
 	async execute(requestContext: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
 		const { userMessage, taskId, contextId } = requestContext;
 		const promptText = partsToText(userMessage.parts);
-		this.contexts.set(taskId, contextId);
+		const execution = { contextId, controller: new AbortController(), canceled: false };
+		this.executions.set(taskId, execution);
 
 		const working: Task = {
 			kind: "task",
@@ -75,7 +78,8 @@ class PrimeAgentExecutor implements AgentExecutor {
 		eventBus.publish(working);
 
 		try {
-			const replyText = (await this.runPrompt(promptText)) || "(empty response)";
+			const replyText = (await this.runPrompt(promptText, execution.controller.signal)) || "(empty response)";
+			if (execution.canceled || execution.controller.signal.aborted) return;
 
 			const artifact: Artifact = {
 				artifactId: randomUUID(),
@@ -104,6 +108,7 @@ class PrimeAgentExecutor implements AgentExecutor {
 			};
 			eventBus.publish(completed);
 		} catch (err) {
+			if (execution.canceled || execution.controller.signal.aborted) return;
 			const message = err instanceof Error ? err.message : String(err);
 			const failed: TaskStatusUpdateEvent = {
 				kind: "status-update",
@@ -118,17 +123,21 @@ class PrimeAgentExecutor implements AgentExecutor {
 			};
 			eventBus.publish(failed);
 		} finally {
-			this.contexts.delete(taskId);
-			eventBus.finished();
+			this.executions.delete(taskId);
+			if (!execution.canceled) eventBus.finished();
 		}
 	}
 
 	async cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void> {
-		// v1 does not interrupt an in-flight turn; report cancellation and stop.
+		const execution = this.executions.get(taskId);
+		if (execution) {
+			execution.canceled = true;
+			execution.controller.abort();
+		}
 		const canceled: TaskStatusUpdateEvent = {
 			kind: "status-update",
 			taskId,
-			contextId: this.contexts.get(taskId) ?? taskId,
+			contextId: execution?.contextId ?? taskId,
 			final: true,
 			status: { state: "canceled", timestamp: new Date().toISOString() },
 		};

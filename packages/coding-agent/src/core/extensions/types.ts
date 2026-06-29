@@ -369,7 +369,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; promptCorrelationId?: string },
 	): Promise<void>;
 }
 
@@ -616,6 +616,8 @@ export interface AfterProviderResponseEvent {
 /** Fired after user submits prompt but before agent loop. */
 export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
+	/** Optional caller-provided id that links before/start/end events for this prompt. */
+	promptCorrelationId?: string;
 	/** The raw user prompt text (after expansion). */
 	prompt: string;
 	/** Images attached to the user prompt, if any. */
@@ -629,11 +631,15 @@ export interface BeforeAgentStartEvent {
 /** Fired when an agent loop starts */
 export interface AgentStartEvent {
 	type: "agent_start";
+	/** Optional caller-provided id that links before/start/end events for this prompt. */
+	promptCorrelationId?: string;
 }
 
 /** Fired when an agent loop ends */
 export interface AgentEndEvent {
 	type: "agent_end";
+	/** Optional caller-provided id that links before/start/end events for this prompt. */
+	promptCorrelationId?: string;
 	messages: AgentMessage[];
 }
 
@@ -1111,7 +1117,7 @@ export interface ExtensionAPI {
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; promptCorrelationId?: string },
 	): Promise<void>;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
@@ -1336,7 +1342,7 @@ export type SendMessageHandler = <T = unknown>(
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: { deliverAs?: "steer" | "followUp"; promptCorrelationId?: string },
 ) => Promise<void>;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;

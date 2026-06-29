@@ -136,12 +136,13 @@ When running it serves:
 Each inbound `message/send` becomes one task: `working` -> artifact ->
 `completed`, with the agent's reply as the artifact. Work is delegated to the
 live session through `pi.sendUserMessage()`; the reply is captured from the next
-`agent_end` event. Requests are **serialized** by a mutex so two callers (or a
-caller and a local user) cannot interleave a turn.
+matching `agent_end` event. Requests are **serialized** by a mutex so two A2A
+callers cannot interleave a turn.
 
 The server expects an otherwise-idle session. Running it alongside heavy
-interactive use will mix A2A turns with local turns. v1 advertises no streaming
-and no push notifications; it returns a single completed task per request.
+interactive use may make A2A requests fail while the local turn is active. v1
+advertises no streaming and no push notifications; it returns a single completed
+task per request.
 
 Bind to loopback (`127.0.0.1`) unless you front it with TLS and auth. There is
 no built-in authentication on the JSON-RPC endpoint.

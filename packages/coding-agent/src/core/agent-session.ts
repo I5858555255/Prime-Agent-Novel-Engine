@@ -365,6 +365,8 @@ export interface PromptOptions {
 	followUpQueueKey?: string;
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
+	/** Optional caller-provided id echoed on extension agent lifecycle events. */
+	promptCorrelationId?: string;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
 }
@@ -1523,6 +1525,7 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
+	private _activePromptCorrelationId: string | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = (event: AgentEvent): void => {
@@ -1533,9 +1536,12 @@ export class AgentSession {
 		// and waitForRetry() can miss the in-flight retry.
 		this._createRetryPromiseForAgentEnd(event);
 
+		const promptCorrelationId =
+			event.type === "agent_start" || event.type === "agent_end" ? this._activePromptCorrelationId : undefined;
+
 		this._agentEventQueue = this._agentEventQueue.then(
-			() => this._processAgentEvent(event),
-			() => this._processAgentEvent(event),
+			() => this._processAgentEvent(event, promptCorrelationId),
+			() => this._processAgentEvent(event, promptCorrelationId),
 		);
 
 		// Keep queue alive if an event handler fails
@@ -1572,7 +1578,7 @@ export class AgentSession {
 		return undefined;
 	}
 
-	private async _processAgentEvent(event: AgentEvent): Promise<void> {
+	private async _processAgentEvent(event: AgentEvent, promptCorrelationId?: string): Promise<void> {
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -1596,7 +1602,7 @@ export class AgentSession {
 		}
 
 		// Emit to extensions first
-		await this._emitExtensionEvent(event);
+		await this._emitExtensionEvent(event, promptCorrelationId);
 
 		// Notify all listeners
 		this._emit(event);
@@ -1713,15 +1719,15 @@ export class AgentSession {
 	}
 
 	/** Emit extension events based on agent events */
-	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
+	private async _emitExtensionEvent(event: AgentEvent, promptCorrelationId?: string): Promise<void> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
 			this.sessionManager.recordGitStateIfChanged();
-			await this._extensionRunner.emit({ type: "agent_start" });
+			await this._extensionRunner.emit({ type: "agent_start", promptCorrelationId });
 		} else if (event.type === "agent_end") {
 			// Also capture at end of turn so commits made during the run (e.g. via a bash tool) land.
 			this.sessionManager.recordGitStateIfChanged();
-			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
+			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages, promptCorrelationId });
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {
 				type: "turn_start",
@@ -2201,6 +2207,7 @@ export class AgentSession {
 				currentImages,
 				this._baseSystemPrompt,
 				this._baseSystemPromptOptions,
+				options?.promptCorrelationId,
 			);
 			// Add all custom messages from extensions
 			if (result?.messages) {
@@ -2232,8 +2239,15 @@ export class AgentSession {
 		}
 
 		preflightResult?.(true);
-		await this.agent.prompt(messages);
-		await this.waitForRetry();
+		this._activePromptCorrelationId = options?.promptCorrelationId;
+		try {
+			await this.agent.prompt(messages);
+			await this.waitForRetry();
+		} finally {
+			if (this._activePromptCorrelationId === options?.promptCorrelationId) {
+				this._activePromptCorrelationId = undefined;
+			}
+		}
 	}
 
 	/**
@@ -2451,7 +2465,7 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; promptCorrelationId?: string },
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -2479,6 +2493,7 @@ export class AgentSession {
 			streamingBehavior: options?.deliverAs,
 			images,
 			source: "extension",
+			promptCorrelationId: options?.promptCorrelationId,
 		});
 	}
 
@@ -3484,17 +3499,7 @@ export class AgentSession {
 						});
 					});
 				},
-				sendUserMessage: (content, options) => {
-					const promise = this.sendUserMessage(content, options);
-					promise.catch((err) => {
-						runner.emitError({
-							extensionPath: "<runtime>",
-							event: "send_user_message",
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
-					return promise;
-				},
+				sendUserMessage: (content, options) => this.sendUserMessage(content, options),
 				appendEntry: (customType, data) => {
 					this.sessionManager.appendCustomEntry(customType, data);
 				},

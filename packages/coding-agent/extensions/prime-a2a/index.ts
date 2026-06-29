@@ -64,24 +64,42 @@ export default function (pi: ExtensionAPI): void {
 	async function startServer(notify: Notify): Promise<void> {
 		const host = config.server.host ?? DEFAULT_HOST;
 		const port = config.server.port ?? DEFAULT_PORT;
-		const baseUrl = (config.server.publicUrl ?? `http://${host}:${port}`).replace(/\/+$/, "");
+		const configuredBaseUrl = (config.server.publicUrl ?? `http://${host}:${port}`).replace(/\/+$/, "");
 		const card = buildAgentCard({
-			baseUrl,
+			baseUrl: configuredBaseUrl,
 			name: config.server.name ?? "Prime Agent",
 			description: config.server.description ?? "A Prime Agent instance exposed over A2A.",
 			version: VERSION || "0.0.1",
 		});
-		const cardUrl = `${baseUrl}${WELL_KNOWN_PATH}`;
 
 		const handle = createA2AServer({ card, host, port, runPrompt: bridge.runPrompt });
 		try {
 			const bound = await handle.start();
+			const baseUrl = config.server.publicUrl?.replace(/\/+$/, "") ?? `http://${bound.host}:${bound.port}`;
+			if (!config.server.publicUrl) {
+				Object.assign(
+					card,
+					buildAgentCard({
+						baseUrl,
+						name: config.server.name ?? "Prime Agent",
+						description: config.server.description ?? "A Prime Agent instance exposed over A2A.",
+						version: VERSION || "0.0.1",
+					}),
+				);
+			}
+			const cardUrl = `${baseUrl}${WELL_KNOWN_PATH}`;
 			serverHandle = handle;
 			serverStatus = { enabled: true, running: true, host: bound.host, port: bound.port, card, cardUrl };
 			notify(`A2A server listening at http://${bound.host}:${bound.port}`, "info");
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			serverStatus = { enabled: true, running: false, error: message, card, cardUrl };
+			serverStatus = {
+				enabled: true,
+				running: false,
+				error: message,
+				card,
+				cardUrl: `${configuredBaseUrl}${WELL_KNOWN_PATH}`,
+			};
 			notify(`A2A server failed to start: ${message}`, "error");
 		}
 	}

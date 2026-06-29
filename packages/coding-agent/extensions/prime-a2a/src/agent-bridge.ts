@@ -13,6 +13,7 @@
  * inside the agent image. See docs/a2a.md.
  */
 
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -73,6 +74,7 @@ class Mutex {
  */
 export function createAgentPromptBridge(pi: ExtensionAPI): PromptBridge {
 	interface PendingPrompt {
+		id: string;
 		text: string;
 		started: boolean;
 		messages: AgentMessage[] | undefined;
@@ -83,7 +85,7 @@ export function createAgentPromptBridge(pi: ExtensionAPI): PromptBridge {
 	const mutex = new Mutex();
 
 	pi.on("before_agent_start", (event) => {
-		if (pending && !pending.started && event.prompt === pending.text) {
+		if (pending && !pending.started && event.promptCorrelationId === pending.id && event.prompt === pending.text) {
 			pending.started = true;
 		}
 	});
@@ -94,34 +96,40 @@ export function createAgentPromptBridge(pi: ExtensionAPI): PromptBridge {
 
 	pi.on("agent_end", (event) => {
 		if (activeTurns > 0) activeTurns--;
-		if (pending?.started) {
+		if (pending?.started && event.promptCorrelationId === pending.id) {
 			pending.messages = event.messages;
 		}
 	});
 
 	async function runPrompt(text: string, signal?: AbortSignal): Promise<string> {
 		const release = await mutex.acquire();
+		let released = false;
+		const releaseOnce = () => {
+			if (released) return;
+			released = true;
+			release();
+		};
 
 		// Refuse if a turn is already running (e.g. interactive use). sendUserMessage
 		// would queue behind it and the next agent_end would belong to that turn, so
 		// we would otherwise hand the caller someone else's reply.
 		if (activeTurns > 0) {
-			release();
+			releaseOnce();
 			throw new Error("Agent is busy with another turn; A2A requests require an otherwise-idle session.");
 		}
 
-		const current: PendingPrompt = { text, started: false, messages: undefined };
+		const current: PendingPrompt = { id: randomUUID(), text, started: false, messages: undefined };
 		pending = current;
 
 		const prompt = (async () => {
 			try {
-				await pi.sendUserMessage(text);
+				await pi.sendUserMessage(text, { promptCorrelationId: current.id });
 				return getFinalAssistantText(current.messages ?? []);
 			} finally {
 				if (pending === current) pending = null;
 				// Release the lock only once the submitted prompt completes, so
 				// auto-retry and late agent_end events cannot leak into the next caller.
-				release();
+				releaseOnce();
 			}
 		})();
 
@@ -132,11 +140,16 @@ export function createAgentPromptBridge(pi: ExtensionAPI): PromptBridge {
 		return Promise.race([
 			prompt,
 			new Promise<string>((_, reject) => {
-				if (signal.aborted) {
+				const abort = () => {
+					if (pending === current) pending = null;
+					releaseOnce();
 					reject(new Error("aborted"));
+				};
+				if (signal.aborted) {
+					abort();
 					return;
 				}
-				signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+				signal.addEventListener("abort", abort, { once: true });
 			}),
 		]);
 	}
