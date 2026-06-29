@@ -132,12 +132,19 @@ export function createDefaultConnector(options: ConnectorOptions = {}): McpConne
 	return async (name, config, signal) => {
 		const client = new Client(CLIENT_INFO);
 		const transport = buildTransport(config);
+		// Abort the underlying connect on timeout (or caller abort) so the SDK
+		// actually cancels the in-flight request, rather than leaving an orphaned
+		// connect that can still open a server-side HTTP session after we bail.
+		const controller = new AbortController();
+		const onCallerAbort = () => controller.abort();
+		if (signal) {
+			if (signal.aborted) controller.abort();
+			else signal.addEventListener("abort", onCallerAbort, { once: true });
+		}
+		const timer = setTimeout(() => controller.abort(), connectTimeoutMs);
+		timer.unref?.();
 		try {
-			await withTimeout(
-				client.connect(transport, { signal }),
-				connectTimeoutMs,
-				`Connecting to MCP server "${name}"`,
-			);
+			await client.connect(transport, { signal: controller.signal });
 		} catch (error) {
 			// A stalled connect may already hold a server-side HTTP session; end it
 			// (bounded) so timed-out connects don't leak sessions on the remote.
@@ -146,6 +153,9 @@ export function createDefaultConnector(options: ConnectorOptions = {}): McpConne
 			}
 			await client.close().catch(() => {});
 			throw error;
+		} finally {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onCallerAbort);
 		}
 		return adaptClient(client, name, transport instanceof StreamableHTTPClientTransport ? transport : undefined);
 	};

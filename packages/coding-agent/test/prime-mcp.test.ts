@@ -9,7 +9,7 @@ import { z } from "zod";
 import { configCandidatePaths, loadMcpConfig, parseToolRef } from "../extensions/prime-mcp/config.js";
 import { adaptClient } from "../extensions/prime-mcp/connector.js";
 import { renderMcpCall } from "../extensions/prime-mcp/content.js";
-import { registerDirectTools } from "../extensions/prime-mcp/direct-tools.js";
+import { directToolName, registerDirectTools } from "../extensions/prime-mcp/direct-tools.js";
 import { type McpClientLike, type McpConnector, McpManager } from "../extensions/prime-mcp/manager.js";
 import { createMcpProxyTool, type McpProxyInput } from "../extensions/prime-mcp/proxy-tool.js";
 import type { ExtensionAPI, ToolDefinition } from "../src/core/extensions/types.js";
@@ -208,6 +208,25 @@ describe("prime-mcp content rendering", () => {
 		expect(rendered.text).toContain("answer");
 		expect(rendered.text).toContain("42");
 	});
+
+	test("bounds the error summary text so a huge payload can't flood the transcript", () => {
+		const rendered = renderMcpCall([{ type: "text", text: "x".repeat(100_000) }]);
+		expect(rendered.text.length).toBeLessThan(30_000);
+		expect(rendered.text).toContain("[Output truncated");
+	});
+});
+
+describe("prime-mcp direct tool naming", () => {
+	test("keeps short names verbatim", () => {
+		expect(directToolName("demo", "echo")).toBe("mcp__demo__echo");
+	});
+
+	test("caps names that exceed the provider limit while staying unique", () => {
+		const long = directToolName("server", "t".repeat(80));
+		expect(long.length).toBeLessThanOrEqual(64);
+		// Distinct long refs must not collapse to the same capped name.
+		expect(directToolName("server", `${"t".repeat(80)}-other`)).not.toBe(long);
+	});
 });
 
 describe("prime-mcp proxy tool", () => {
@@ -351,6 +370,44 @@ describe("prime-mcp manager lifecycle", () => {
 		await op;
 
 		expect(aborted).toBe(true);
+	});
+
+	test("a cancelled call stops waiting on a connect without aborting it for others", async () => {
+		let connectAborted = false;
+		let resolveConnect: ((client: McpClientLike) => void) | undefined;
+		const pending = new Promise<McpClientLike>((resolve) => {
+			resolveConnect = resolve;
+		});
+		const connector: McpConnector = (_name, _config, signal) => {
+			signal?.addEventListener("abort", () => {
+				connectAborted = true;
+			});
+			return pending;
+		};
+
+		const manager = managerWith(connector);
+		const controller = new AbortController();
+		const cancelled = manager.listTools("demo", controller.signal);
+		controller.abort();
+		await expect(cancelled).rejects.toThrow(/abort/i);
+		// The shared connect must still be live for other callers.
+		expect(connectAborted).toBe(false);
+
+		resolveConnect?.({
+			listTools: async () => [{ name: "echo", inputSchema: { type: "object" } }],
+			callTool: async () => ({ content: [], isError: false }),
+			close: async () => {},
+		});
+		const tools = await manager.listTools("demo");
+		expect(tools.map((t) => t.name)).toEqual(["echo"]);
+		await manager.disconnectAll();
+	});
+
+	test("treats inherited Object keys like toString as unknown servers", () => {
+		const manager = managerWith(async () => inMemoryEchoClient());
+		expect(manager.hasServer("toString")).toBe(false);
+		expect(manager.hasServer("constructor")).toBe(false);
+		expect(manager.hasServer("demo")).toBe(true);
 	});
 
 	test("a parallel call keeps its connection alive while a sibling reconnects", async () => {

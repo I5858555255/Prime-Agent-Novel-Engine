@@ -136,5 +136,8 @@ export function renderMcpCall(content: unknown, structuredContent?: unknown): Re
 	}
 	if (out.length === 0) out.push({ type: "text", text: "(empty result)" });
 
-	return { content: out, text };
+	// `text` feeds thrown error messages, which the agent loop turns into tool
+	// result content verbatim; bound it so a huge error payload can't blow past
+	// the output cap the content blocks already respect.
+	return { content: out, text: truncate(text) };
 }

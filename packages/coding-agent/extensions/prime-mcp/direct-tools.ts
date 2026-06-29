@@ -7,20 +7,30 @@
  * Schema, so an MCP tool's `inputSchema` is used as the tool parameters as-is.
  */
 
+import { createHash } from "node:crypto";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { parseToolRef } from "./config.js";
 import { renderMcpCall } from "./content.js";
 import type { McpManager, McpToolInfo } from "./manager.js";
 
+// OpenAI-compatible providers cap tool names at 64 characters; exceed it and the
+// whole request is rejected, not just the offending tool.
+const MAX_TOOL_NAME = 64;
+
 /**
  * Build a valid tool name like `mcp__server__tool`. Characters outside
  * `[A-Za-z0-9_]` are replaced, so distinct refs can in theory collide;
- * `registerDirectTools` detects and warns about that.
+ * `registerDirectTools` detects and warns about that. Names longer than the
+ * provider limit are truncated with a short hash of the original ref appended,
+ * keeping them unique and stable.
  */
 export function directToolName(server: string, tool: string): string {
 	const clean = (value: string) => value.replace(/[^a-zA-Z0-9_]/g, "_");
-	return `mcp__${clean(server)}__${clean(tool)}`;
+	const name = `mcp__${clean(server)}__${clean(tool)}`;
+	if (name.length <= MAX_TOOL_NAME) return name;
+	const hash = createHash("sha1").update(`${server}\u0000${tool}`).digest("hex").slice(0, 8);
+	return `${name.slice(0, MAX_TOOL_NAME - hash.length - 1)}_${hash}`;
 }
 
 export function buildDirectTool(manager: McpManager, server: string, info: McpToolInfo): ToolDefinition {
@@ -55,7 +65,10 @@ export async function registerDirectTools(
 	logger: (message: string) => void,
 	registered: Map<string, string> = new Map<string, string>(),
 ): Promise<void> {
-	for (const ref of refs) {
+	// `refs` arrives lowest-precedence first. Process highest first so that when
+	// two distinct refs sanitize to the same tool name, the higher-precedence
+	// (e.g. project) one wins and the lower-precedence one is the skipped collision.
+	for (const ref of [...refs].reverse()) {
 		const parsed = parseToolRef(ref);
 		if (!parsed) {
 			logger(`Ignoring malformed directTools entry "${ref}" (expected "server/tool")`);

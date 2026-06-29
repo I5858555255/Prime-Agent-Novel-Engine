@@ -108,7 +108,9 @@ export class McpManager {
 	}
 
 	hasServer(name: string): boolean {
-		return name in this.config.mcpServers;
+		// Own-property check only: `"toString" in {}` is true, which would
+		// otherwise treat inherited Object members as configured servers.
+		return Object.hasOwn(this.config.mcpServers, name);
 	}
 
 	getStatus(name: string): ServerStatus | undefined {
@@ -129,9 +131,8 @@ export class McpManager {
 	}
 
 	private requireServerConfig(name: string): McpServerConfig {
-		const serverConfig = this.config.mcpServers[name];
-		if (!serverConfig) throw new Error(`Unknown MCP server: "${name}"`);
-		return serverConfig;
+		if (!Object.hasOwn(this.config.mcpServers, name)) throw new Error(`Unknown MCP server: "${name}"`);
+		return this.config.mcpServers[name];
 	}
 
 	private clearIdle(name: string): void {
@@ -188,11 +189,36 @@ export class McpManager {
 	}
 
 	/**
+	 * Wait for a (possibly shared) connect, abandoning the wait if the caller
+	 * aborts. The shared connect controller is left untouched so cancelling one
+	 * call never tears down a connection other callers are still waiting on.
+	 */
+	private waitForConnect(name: string, signal?: AbortSignal): Promise<Connection> {
+		const connectPromise = this.connect(name);
+		if (!signal) return connectPromise;
+		if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+		return new Promise<Connection>((resolve, reject) => {
+			const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+			signal.addEventListener("abort", onAbort, { once: true });
+			connectPromise.then(
+				(connection) => {
+					signal.removeEventListener("abort", onAbort);
+					resolve(connection);
+				},
+				(error) => {
+					signal.removeEventListener("abort", onAbort);
+					reject(error);
+				},
+			);
+		});
+	}
+
+	/**
 	 * Begin an operation: ensure a live connection and disarm idle disconnect so
 	 * the timer can never close a connection out from under an in-flight call.
 	 */
-	private async begin(name: string): Promise<Connection> {
-		const connection = this.connections.get(name) ?? (await this.connect(name));
+	private async begin(name: string, signal?: AbortSignal): Promise<Connection> {
+		const connection = this.connections.get(name) ?? (await this.waitForConnect(name, signal));
 		connection.active += 1;
 		this.clearIdle(name);
 		return connection;
@@ -227,7 +253,7 @@ export class McpManager {
 		op: (connection: Connection) => Promise<T>,
 	): Promise<T> {
 		this.requireServerConfig(name);
-		let connection = await this.begin(name);
+		let connection = await this.begin(name, signal);
 		try {
 			try {
 				return await op(connection);
@@ -240,7 +266,7 @@ export class McpManager {
 			// them. A fresh begin() reconnects for our retry.
 			this.evict(name, connection);
 			this.end(name, connection);
-			connection = await this.begin(name);
+			connection = await this.begin(name, signal);
 			return await op(connection);
 		} finally {
 			this.end(name, connection);
