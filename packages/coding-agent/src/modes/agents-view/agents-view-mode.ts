@@ -105,9 +105,8 @@ type AgentsViewRunResult =
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
 	selectedSessionKey?: AgentsViewSelectionKey;
-	// Session ids of the ancestor chain to re-expand when returning to a subagent.
-	// Resolved to live row identities on first build, then cleared; kept by
-	// sessionId so it survives a parent's active→persisted identity flip.
+	// Ancestor chain to re-expand on return to a subagent. Kept by sessionId, not
+	// row identity, so it survives a parent's active→persisted identity flip.
 	pendingExpandedAncestorSessionIds?: string[];
 	statusMessage?: string;
 	initialPromptsSent?: boolean;
@@ -728,12 +727,8 @@ class AgentsViewMode implements Component, Focusable {
 		this.ui.requestRender();
 	}
 
-	/**
-	 * Resolve the persisted ancestor breadcrumb (session ids) to live row
-	 * identities and expand them, so returning to a subagent reopens its whole
-	 * chain. Identity-keyed from here on, matching the rest of the expansion
-	 * lifecycle; runs once then clears.
-	 */
+	// Resolve the persisted sessionId breadcrumb to live row identities once, so
+	// the rest of the expansion lifecycle stays uniformly identity-keyed.
 	private applyPendingAncestorExpansion(): void {
 		const sessionIds = this.persistentState.pendingExpandedAncestorSessionIds;
 		if (!sessionIds || sessionIds.length === 0) {
@@ -1117,11 +1112,7 @@ class AgentsViewMode implements Component, Focusable {
 		});
 	}
 
-	/**
-	 * Session ids of every ancestor of a subagent row, root-most first. Keyed by
-	 * sessionId rather than row identity so the breadcrumb survives a parent's
-	 * active→persisted identity flip while the subagent is open.
-	 */
+	/** Session ids of every ancestor of a subagent row, root-most first. */
 	private collectSubagentAncestorSessionIds(row: AgentsViewRow): string[] {
 		const ancestors: string[] = [];
 		let parentIdentity = row.parentIdentity;
