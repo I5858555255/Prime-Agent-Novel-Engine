@@ -247,15 +247,13 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			// list expanded and that subagent reselected.
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.subagent);
 			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.subagent);
-			persistentState.expandedSubagentParents = [
-				...new Set([
-					...(persistentState.expandedSubagentParents ?? []),
-					...(result.subagentAncestorIdentities ?? []),
-				]),
-			];
+			persistentState.expandedSubagentParents = result.subagentAncestorIdentities ?? [];
 		} else {
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
 			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.summary);
+			// Don't carry expansions into a plain agent re-entry; that would
+			// resurrect collapsed lists, contradicting collapse-on-leave.
+			persistentState.expandedSubagentParents = undefined;
 		}
 
 		let opened: { connection: DaemonAgentConnection; summary: SessionSummary } | undefined;
@@ -767,7 +765,6 @@ class AgentsViewMode implements Component, Focusable {
 	/** Rebuild rows from the last fetched summaries, keeping selection on the same row. */
 	private rebuildRows(): void {
 		const selectedIdentity = this.rows[this.selectedIndex]?.identity;
-		this.persistentState.expandedSubagentParents = [...this.expandedSubagentParents];
 		this.rows = buildAgentsViewRows(
 			this.lastVisibleSummaries,
 			this.expandedSubagentParents,
