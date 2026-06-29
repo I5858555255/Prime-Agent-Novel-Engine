@@ -24,6 +24,7 @@ type AutoRefineInternals = {
 	_assistantTurnsSinceAutoRefine: number;
 	_lastAutoRefineReviewAt: number;
 	_compactAutoRefinePending: boolean;
+	_postCompactionContinuationScheduled: boolean;
 	_pendingAutoRefineReview?: unknown;
 	_autoRefineInProgress: boolean;
 	_autoRefineBranchVersion: number;
@@ -172,6 +173,27 @@ describe("AgentSession queue characterization", () => {
 		internals._scheduleAutoRefineAfterAgentEnd();
 
 		expect(internals._compactAutoRefinePending).toBe(true);
+		expect(scheduleAutoRefine).toHaveBeenCalledWith("compact");
+		expect(scheduleAutoRefine).toHaveBeenCalledTimes(1);
+	});
+
+	it("auto-refine compact hook waits until the scheduled post-compaction continuation starts", async () => {
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 25, cooldownMs: 0 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		const scheduleAutoRefine = vi.spyOn(internals, "_scheduleAutoRefine").mockImplementation(() => {});
+		internals._compactAutoRefinePending = true;
+		internals._postCompactionContinuationScheduled = true;
+
+		internals._scheduleAutoRefineAfterAgentEnd();
+
+		expect(scheduleAutoRefine).not.toHaveBeenCalled();
+
+		internals._postCompactionContinuationScheduled = false;
+		internals._scheduleAutoRefineAfterAgentEnd();
+
 		expect(scheduleAutoRefine).toHaveBeenCalledWith("compact");
 		expect(scheduleAutoRefine).toHaveBeenCalledTimes(1);
 	});

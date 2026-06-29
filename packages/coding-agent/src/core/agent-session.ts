@@ -783,6 +783,7 @@ export class AgentSession {
 	private _lastAutoRefineReviewAt = 0;
 	private _autoRefineInProgress = false;
 	private _compactAutoRefinePending = false;
+	private _postCompactionContinuationScheduled = false;
 	private _pendingAutoRefineReview:
 		| { reason: AutoRefineReason; review: AutoRefineReview; branchVersion: number }
 		| undefined;
@@ -3068,6 +3069,9 @@ export class AgentSession {
 			return;
 		}
 		if (this._compactAutoRefinePending) {
+			if (this._postCompactionContinuationScheduled) {
+				return;
+			}
 			this._scheduleAutoRefine("compact");
 			return;
 		}
@@ -3085,6 +3089,14 @@ export class AgentSession {
 		}
 
 		this._scheduleAutoRefine("compact");
+	}
+
+	private _schedulePostCompactionContinue(): void {
+		this._postCompactionContinuationScheduled = true;
+		setTimeout(() => {
+			this._postCompactionContinuationScheduled = false;
+			this.agent.continue().catch(() => {});
+		}, 100);
 	}
 
 	private _shouldSkipAutoRefineForActiveAgent(): boolean {
@@ -3571,7 +3583,6 @@ export class AgentSession {
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 			const hasQueuedMessages = this.agent.hasQueuedMessages();
 			const willContinueAfterCompaction = willRetry || shouldContinueAfterThreshold || hasQueuedMessages;
-			this._scheduleAutoRefineAfterCompaction(willContinueAfterCompaction);
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;
@@ -3580,16 +3591,16 @@ export class AgentSession {
 					this.agent.state.messages = messages.slice(0, -1);
 				}
 
-				setTimeout(() => {
-					this.agent.continue().catch(() => {});
-				}, 100);
+				this._schedulePostCompactionContinue();
+				this._scheduleAutoRefineAfterCompaction(willContinueAfterCompaction);
 				return true;
 			} else if (shouldContinueAfterThreshold || hasQueuedMessages) {
 				// Threshold compaction can intentionally stop a tool loop between turns.
 				// Queued follow-up/steering/custom messages can also be waiting.
-				setTimeout(() => {
-					this.agent.continue().catch(() => {});
-				}, 100);
+				this._schedulePostCompactionContinue();
+				this._scheduleAutoRefineAfterCompaction(willContinueAfterCompaction);
+			} else {
+				this._scheduleAutoRefineAfterCompaction(willContinueAfterCompaction);
 			}
 			return false;
 		} catch (error) {
