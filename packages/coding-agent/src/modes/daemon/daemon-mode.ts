@@ -485,6 +485,7 @@ export class AgentDaemon {
 		}
 		await state.runtime.session.prompt(job.prompt, {
 			streamingBehavior: "followUp",
+			followUpQueueKey: isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined,
 			source: "rpc",
 		});
 	}
