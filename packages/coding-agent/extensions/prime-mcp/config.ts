@@ -112,12 +112,15 @@ function parseServer(name: string, raw: unknown, source: string): McpServerConfi
 			throw new Error(`Invalid MCP config in ${source}: server "${name}" args must be an array of strings`);
 		}
 		const env = parseStringRecord(raw.env, name, "env", source);
+		if (raw.cwd !== undefined && typeof raw.cwd !== "string") {
+			throw new Error(`Invalid MCP config in ${source}: server "${name}" cwd must be a string`);
+		}
 		return {
 			type: "stdio",
 			command: raw.command,
 			args: args as string[] | undefined,
 			env,
-			cwd: typeof raw.cwd === "string" ? raw.cwd : undefined,
+			cwd: raw.cwd,
 		};
 	}
 
@@ -152,6 +155,9 @@ function parseConfigFile(text: string, source: string): ParsedFile {
 			throw new Error(`Invalid MCP config in ${source}: "mcpServers" must be an object`);
 		}
 		for (const [name, raw] of Object.entries(rawServers)) {
+			if (name === "__proto__" || name === "constructor" || name === "prototype") {
+				throw new Error(`Invalid MCP config in ${source}: server name "${name}" is reserved`);
+			}
 			servers[name] = parseServer(name, raw, source);
 		}
 	}

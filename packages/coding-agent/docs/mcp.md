@@ -120,11 +120,14 @@ committed config files (a missing variable expands to an empty string).
   reconnect transparently on next use.
 - **Reconnect on failure.** If an operation fails on a dead transport, the
   extension drops the connection and retries once before surfacing the error.
-- **Shutdown.** All connections close on `session_shutdown`; HTTP sessions are
-  terminated server-side so they don't pile up.
+- **Shutdown.** All connections close on `session_shutdown`. HTTP sessions are
+  terminated server-side on a best-effort basis (servers that don't support
+  explicit termination may keep the session until their own cleanup).
 
-Text, image, and resource content from tool results are passed through to the
-model; images are returned as image content rather than a placeholder.
+Tool result content is passed through in order: text and images (including
+images embedded in `resource` blocks) reach the model as text and image content.
+`resource_link` blocks and non-image embedded resources are rendered as text
+summaries (uri, name, and any inline text), not as separate attachments.
 
 ## The `/mcp` command
 

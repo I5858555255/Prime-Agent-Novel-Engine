@@ -18,7 +18,8 @@ export interface McpToolInfo {
 export interface McpCallResult {
 	content: unknown;
 	isError: boolean;
-	structuredContent?: Record<string, unknown>;
+	/** MCP allows any JSON value here, including scalars. */
+	structuredContent?: unknown;
 }
 
 /** Minimal client surface the manager depends on. */
@@ -78,7 +79,7 @@ function isConnectionError(error: unknown): boolean {
 
 export class McpManager {
 	private readonly connections = new Map<string, Connection>();
-	private readonly connecting = new Map<string, Promise<Connection>>();
+	private readonly connecting = new Map<string, { promise: Promise<Connection>; controller: AbortController }>();
 	private readonly states = new Map<string, { state: ServerState; error?: string }>();
 	private config: McpConfig;
 	private idleTimeoutMs: number;
@@ -151,14 +152,21 @@ export class McpManager {
 		connection.idleTimer.unref?.();
 	}
 
-	private async connect(name: string, signal?: AbortSignal): Promise<Connection> {
+	/**
+	 * Connect to a server, deduping concurrent attempts. The attempt has its own
+	 * AbortController (not any caller's signal) so one caller aborting cannot kill
+	 * a connection others are waiting on, while `disconnect` can still cancel a
+	 * hung connect promptly instead of blocking on the connector's own timeout.
+	 */
+	private connect(name: string): Promise<Connection> {
 		const existing = this.connecting.get(name);
-		if (existing) return existing;
+		if (existing) return existing.promise;
 
 		const serverConfig = this.requireServerConfig(name);
-		const attempt = (async (): Promise<Connection> => {
+		const controller = new AbortController();
+		const promise = (async (): Promise<Connection> => {
 			try {
-				const client = await this.options.connector(name, serverConfig, signal);
+				const client = await this.options.connector(name, serverConfig, controller.signal);
 				const connection: Connection = { client, active: 0 };
 				this.connections.set(name, connection);
 				this.states.set(name, { state: "connected" });
@@ -171,16 +179,16 @@ export class McpManager {
 			}
 		})();
 
-		this.connecting.set(name, attempt);
-		return attempt;
+		this.connecting.set(name, { promise, controller });
+		return promise;
 	}
 
 	/**
 	 * Begin an operation: ensure a live connection and disarm idle disconnect so
 	 * the timer can never close a connection out from under an in-flight call.
 	 */
-	private async begin(name: string, signal?: AbortSignal): Promise<Connection> {
-		const connection = this.connections.get(name) ?? (await this.connect(name, signal));
+	private async begin(name: string): Promise<Connection> {
+		const connection = this.connections.get(name) ?? (await this.connect(name));
 		connection.active += 1;
 		this.clearIdle(name);
 		return connection;
@@ -209,7 +217,7 @@ export class McpManager {
 		op: (connection: Connection) => Promise<T>,
 	): Promise<T> {
 		this.requireServerConfig(name);
-		let connection = await this.begin(name, signal);
+		let connection = await this.begin(name);
 		try {
 			try {
 				return await op(connection);
@@ -218,8 +226,8 @@ export class McpManager {
 				this.options.logger?.(`MCP server "${name}" operation failed, reconnecting: ${errorMessage(error)}`);
 			}
 			this.end(name, connection);
-			await this.disconnect(name);
-			connection = await this.begin(name, signal);
+			await this.dropConnection(name, connection);
+			connection = await this.begin(name);
 			return await op(connection);
 		} finally {
 			this.end(name, connection);
@@ -253,34 +261,47 @@ export class McpManager {
 		return this.withConnection(name, signal, (connection) => connection.client.callTool(tool, args, signal));
 	}
 
-	async reconnect(name: string, signal?: AbortSignal): Promise<void> {
+	async reconnect(name: string, _signal?: AbortSignal): Promise<void> {
 		this.requireServerConfig(name);
 		await this.disconnect(name);
-		const connection = await this.begin(name, signal);
+		const connection = await this.begin(name);
 		this.end(name, connection);
 	}
 
-	async disconnect(name: string): Promise<void> {
-		// A connect may still be in flight; wait for it so we never leak a client
-		// that resolves after we thought the server was gone.
-		const pending = this.connecting.get(name);
-		if (pending) {
-			try {
-				await pending;
-			} catch {
-				// Connection failed; nothing to close.
-			}
+	/**
+	 * Close one connection instance, evicting it from the map only if it is still
+	 * the current one. Used by the retry path so a failing call never closes a
+	 * sibling call's freshly reconnected client.
+	 */
+	private async dropConnection(name: string, connection: Connection): Promise<void> {
+		if (this.connections.get(name) === connection) {
+			this.connections.delete(name);
+			this.states.set(name, { state: "disconnected" });
 		}
-		const connection = this.connections.get(name);
-		if (!connection) return;
-		this.connections.delete(name);
 		if (connection.idleTimer) clearTimeout(connection.idleTimer);
-		this.states.set(name, { state: "disconnected" });
 		try {
 			await connection.client.close();
 		} catch (error) {
 			this.options.logger?.(`Error closing MCP server "${name}": ${errorMessage(error)}`);
 		}
+	}
+
+	async disconnect(name: string): Promise<void> {
+		// A connect may still be in flight; abort it (so a hung connector doesn't
+		// block shutdown) and wait so we never leak a client that resolves after
+		// we thought the server was gone.
+		const pending = this.connecting.get(name);
+		if (pending) {
+			pending.controller.abort();
+			try {
+				await pending.promise;
+			} catch {
+				// Connection failed or was aborted; nothing to close.
+			}
+		}
+		const connection = this.connections.get(name);
+		if (!connection) return;
+		await this.dropConnection(name, connection);
 	}
 
 	async disconnectAll(): Promise<void> {

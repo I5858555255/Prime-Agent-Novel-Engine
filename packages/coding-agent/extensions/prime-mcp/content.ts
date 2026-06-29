@@ -4,7 +4,8 @@
  * MCP results carry an array of typed content blocks (text, image, audio,
  * resource links, embedded resources) plus optional `structuredContent`. The
  * proxy tool and promoted direct tools share this so non-text payloads (notably
- * images) reach the model instead of being flattened to a placeholder.
+ * images) reach the model instead of being flattened to a placeholder. Block
+ * order is preserved so captions stay attached to the right image.
  */
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
@@ -14,10 +15,18 @@ const MAX_TEXT_CHARS = 20_000;
 export type ToolContent = TextContent | ImageContent;
 
 export interface RenderedCall {
-	/** Full content (text + images) for an AgentToolResult. */
+	/** Full content (text + images) for an AgentToolResult, in original order. */
 	content: ToolContent[];
 	/** Plain-text summary, used for error messages. */
 	text: string;
+}
+
+interface EmbeddedResource {
+	uri?: string;
+	text?: string;
+	blob?: string;
+	mimeType?: string;
+	name?: string;
 }
 
 interface McpBlock {
@@ -28,7 +37,7 @@ interface McpBlock {
 	uri?: string;
 	name?: string;
 	description?: string;
-	resource?: { uri?: string; text?: string; blob?: string; mimeType?: string; name?: string };
+	resource?: EmbeddedResource;
 }
 
 function truncate(text: string): string {
@@ -43,60 +52,88 @@ function normalizeBlocks(content: unknown): McpBlock[] {
 	return [{ type: "_json" }];
 }
 
-function renderResourceLink(block: McpBlock): string {
-	const label = block.name ?? block.uri ?? "resource";
-	const suffix = block.description ? ` — ${block.description}` : "";
-	return block.uri ? `[resource_link] ${label}: ${block.uri}${suffix}` : `[resource_link] ${label}${suffix}`;
+function isImageMime(mimeType: string | undefined): mimeType is string {
+	return typeof mimeType === "string" && mimeType.startsWith("image/");
 }
 
-function renderEmbeddedResource(block: McpBlock): string {
-	const resource = block.resource;
-	if (!resource) return "[resource]";
-	if (typeof resource.text === "string") return resource.text;
-	if (resource.uri) return `[resource] ${resource.name ?? resource.uri}: ${resource.uri}`;
-	return "[resource]";
+function resourceLinkLine(block: McpBlock): string {
+	const suffix = block.description ? ` — ${block.description}` : "";
+	if (block.name && block.uri) return `[resource_link] ${block.name}: ${block.uri}${suffix}`;
+	const label = block.name ?? block.uri ?? "resource";
+	return `[resource_link] ${label}${suffix}`;
+}
+
+function embeddedResourceLine(resource: EmbeddedResource): string {
+	if (resource.name && resource.uri) return `[resource] ${resource.name}: ${resource.uri}`;
+	const label = resource.name ?? resource.uri;
+	return label ? `[resource] ${label}` : "[resource]";
 }
 
 /** Convert an MCP content array (with structuredContent fallback) to tool content. */
-export function renderMcpCall(content: unknown, structuredContent?: Record<string, unknown>): RenderedCall {
-	const textParts: string[] = [];
-	const images: ImageContent[] = [];
+export function renderMcpCall(content: unknown, structuredContent?: unknown): RenderedCall {
+	const out: ToolContent[] = [];
+	const textSummary: string[] = [];
+	let buffer: string[] = [];
+
+	const flush = (): void => {
+		if (buffer.length === 0) return;
+		out.push({ type: "text", text: truncate(buffer.join("\n")) });
+		buffer = [];
+	};
+	const pushText = (text: string): void => {
+		buffer.push(text);
+		textSummary.push(text);
+	};
+	const pushImage = (data: string, mimeType: string): void => {
+		flush();
+		out.push({ type: "image", data, mimeType });
+	};
 
 	for (const block of normalizeBlocks(content)) {
 		switch (block.type) {
 			case "text":
-				if (typeof block.text === "string") textParts.push(block.text);
+				if (typeof block.text === "string") pushText(block.text);
 				break;
 			case "image":
 				if (typeof block.data === "string" && typeof block.mimeType === "string") {
-					images.push({ type: "image", data: block.data, mimeType: block.mimeType });
+					pushImage(block.data, block.mimeType);
 				} else {
-					textParts.push("[image content]");
+					pushText("[image content]");
 				}
 				break;
 			case "audio":
-				textParts.push(block.mimeType ? `[audio content: ${block.mimeType}]` : "[audio content]");
+				pushText(block.mimeType ? `[audio content: ${block.mimeType}]` : "[audio content]");
 				break;
 			case "resource_link":
-				textParts.push(renderResourceLink(block));
+				pushText(resourceLinkLine(block));
 				break;
-			case "resource":
-				textParts.push(renderEmbeddedResource(block));
+			case "resource": {
+				const resource = block.resource;
+				if (resource?.blob && isImageMime(resource.mimeType)) {
+					pushImage(resource.blob, resource.mimeType);
+				} else if (typeof resource?.text === "string") {
+					pushText(resource.text);
+				} else if (resource) {
+					pushText(embeddedResourceLine(resource));
+				} else {
+					pushText("[resource]");
+				}
 				break;
+			}
 			case "_json":
-				textParts.push(JSON.stringify(content, null, 2));
+				pushText(JSON.stringify(content, null, 2));
 				break;
 			default:
-				textParts.push(JSON.stringify(block));
+				pushText(JSON.stringify(block));
 		}
 	}
+	flush();
 
-	let text = textParts.join("\n");
-	if (!text && structuredContent) text = JSON.stringify(structuredContent, null, 2);
-
-	const out: ToolContent[] = [];
-	if (text) out.push({ type: "text", text: truncate(text) });
-	out.push(...images);
+	let text = textSummary.join("\n");
+	if (out.length === 0 && structuredContent !== undefined) {
+		text = JSON.stringify(structuredContent, null, 2);
+		out.push({ type: "text", text: truncate(text) });
+	}
 	if (out.length === 0) out.push({ type: "text", text: "(empty result)" });
 
 	return { content: out, text };

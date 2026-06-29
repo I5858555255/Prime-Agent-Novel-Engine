@@ -335,6 +335,50 @@ describe("prime-mcp manager lifecycle", () => {
 		expect(manager.getStatus("demo")?.state).toBe("disconnected");
 	});
 
+	test("aborts an in-flight connect when disconnecting instead of waiting it out", async () => {
+		let aborted = false;
+		const connector: McpConnector = (_name, _config, signal) =>
+			new Promise<McpClientLike>((_resolve, reject) => {
+				signal?.addEventListener("abort", () => {
+					aborted = true;
+					reject(new Error("aborted"));
+				});
+			});
+
+		const manager = managerWith(connector);
+		const op = manager.listTools("demo").catch(() => undefined);
+		await manager.disconnect("demo");
+		await op;
+
+		expect(aborted).toBe(true);
+	});
+
+	test("a failing call's reconnect does not cancel a parallel call on the same server", async () => {
+		let connectCount = 0;
+		const connector: McpConnector = async () => {
+			connectCount++;
+			const id = connectCount;
+			let firstCall = true;
+			return {
+				listTools: async () => [],
+				callTool: async () => {
+					if (id === 1 && firstCall) {
+						firstCall = false;
+						throw new Error("transport closed");
+					}
+					return { content: [{ type: "text", text: `conn-${id}` }], isError: false };
+				},
+				close: async () => {},
+			};
+		};
+
+		const manager = managerWith(connector);
+		const [a, b] = await Promise.all([manager.callTool("demo", "x", {}), manager.callTool("demo", "y", {})]);
+
+		expect(a.isError).toBe(false);
+		expect(b.isError).toBe(false);
+	});
+
 	test("warns and skips when two directTools refs collide on a sanitized name", async () => {
 		const connector: McpConnector = async () => ({
 			listTools: async () => [

@@ -86,7 +86,7 @@ export function adaptClient(client: Client, transport?: StreamableHTTPClientTran
 				content?: unknown;
 				toolResult?: unknown;
 				isError?: boolean;
-				structuredContent?: Record<string, unknown>;
+				structuredContent?: unknown;
 			};
 			return {
 				content: result.content ?? result.toolResult,
@@ -125,6 +125,11 @@ export function createDefaultConnector(options: ConnectorOptions = {}): McpConne
 				`Connecting to MCP server "${name}"`,
 			);
 		} catch (error) {
+			// A stalled connect may already hold a server-side HTTP session; end it
+			// so timed-out connects don't leak sessions on the remote.
+			if (transport instanceof StreamableHTTPClientTransport) {
+				await transport.terminateSession().catch(() => {});
+			}
 			await client.close().catch(() => {});
 			throw error;
 		}

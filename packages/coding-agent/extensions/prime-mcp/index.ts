@@ -79,7 +79,9 @@ export default function primeMcpExtension(pi: ExtensionAPI): void {
 				case "status": {
 					const statuses = manager.listStatuses();
 					if (statuses.length === 0) {
-						notify(ctx, "No MCP servers configured. Run /mcp setup.", "info");
+						const base = "No MCP servers configured. Run /mcp setup.";
+						const message = configWarnings.length > 0 ? `${base}\nwarnings: ${configWarnings.join("; ")}` : base;
+						notify(ctx, message, configWarnings.length > 0 ? "warning" : "info");
 						return;
 					}
 					const lines = statuses.map(
