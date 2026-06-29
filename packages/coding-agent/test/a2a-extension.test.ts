@@ -1,12 +1,14 @@
 import { createServer } from "node:net";
 import type { Message, Task } from "@a2a-js/sdk";
 import { ClientFactory, JsonRpcTransportFactory } from "@a2a-js/sdk/client";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
+import { createAgentPromptBridge } from "../extensions/prime-a2a/src/agent-bridge.js";
 import { buildAgentCard } from "../extensions/prime-a2a/src/card.js";
 import { extractResponseText, registerA2ASendTool } from "../extensions/prime-a2a/src/client.js";
 import { type A2AConfig, isEndpointAllowed } from "../extensions/prime-a2a/src/config.js";
 import { type A2AServerHandle, createA2AServer, type RunPrompt } from "../extensions/prime-a2a/src/server.js";
-import type { ExtensionAPI } from "../src/core/extensions/index.js";
+import type { ExtensionAPI, ExtensionHandler } from "../src/core/extensions/index.js";
 
 function getFreePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -31,6 +33,43 @@ function makeConfig(overrides: Partial<A2AConfig> = {}): A2AConfig {
 }
 
 const runningServers: A2AServerHandle[] = [];
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
+	let resolve!: (value: T) => void;
+	let reject!: (error: Error) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+function assistantMessage(text: string): AgentMessage {
+	return { role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() } as AgentMessage;
+}
+
+function createBridgeHarness(sendUserMessage: (content: string) => Promise<void>): {
+	bridge: ReturnType<typeof createAgentPromptBridge>;
+	emit: <TEvent extends { type: string }>(event: TEvent) => Promise<void>;
+} {
+	const handlers = new Map<string, ExtensionHandler<{ type: string }>[]>();
+	const pi = {
+		on: (event: string, handler: ExtensionHandler<{ type: string }>) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		sendUserMessage,
+	} as unknown as ExtensionAPI;
+	const bridge = createAgentPromptBridge(pi);
+
+	return {
+		bridge,
+		emit: async (event) => {
+			for (const handler of handlers.get(event.type) ?? []) {
+				await handler(event, {} as never);
+			}
+		},
+	};
+}
 
 async function startMockPeer(runPrompt: RunPrompt): Promise<{ baseUrl: string; handle: A2AServerHandle }> {
 	const port = await getFreePort();
@@ -124,6 +163,64 @@ describe("extractResponseText", () => {
 			artifacts: [{ artifactId: "a1", parts: [{ kind: "text", text: "from artifact" }] }],
 		};
 		expect(extractResponseText(task)).toContain("from artifact");
+	});
+});
+
+describe("createAgentPromptBridge", () => {
+	it("ignores unrelated agent_end events and waits for the submitted prompt to settle", async () => {
+		const sentPrompt = deferred<void>();
+		const { bridge, emit } = createBridgeHarness(async () => sentPrompt.promise);
+		const result = bridge.runPrompt("a2a prompt");
+		let settled = false;
+		void result.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+
+		await emit({ type: "before_agent_start", prompt: "local prompt" });
+		await emit({ type: "agent_start" });
+		await emit({ type: "agent_end", messages: [assistantMessage("wrong reply")] });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		await emit({ type: "before_agent_start", prompt: "a2a prompt" });
+		await emit({ type: "agent_start" });
+		await emit({ type: "agent_end", messages: [assistantMessage("retryable error snapshot")] });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		await emit({ type: "agent_start" });
+		await emit({ type: "agent_end", messages: [assistantMessage("final reply")] });
+		sentPrompt.resolve();
+
+		await expect(result).resolves.toBe("final reply");
+	});
+
+	it("releases the A2A mutex when sendUserMessage rejects before agent_start", async () => {
+		const failedPrompt = deferred<void>();
+		const successfulPrompt = deferred<void>();
+		let calls = 0;
+		const { bridge, emit } = createBridgeHarness(async () => {
+			calls++;
+			return calls === 1 ? failedPrompt.promise : successfulPrompt.promise;
+		});
+
+		const first = bridge.runPrompt("fail");
+		await Promise.resolve();
+		failedPrompt.reject(new Error("missing model"));
+		await expect(first).rejects.toThrow("missing model");
+
+		const second = bridge.runPrompt("ok");
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(calls).toBe(2);
+
+		await emit({ type: "before_agent_start", prompt: "ok" });
+		await emit({ type: "agent_start" });
+		await emit({ type: "agent_end", messages: [assistantMessage("ok reply")] });
+		successfulPrompt.resolve();
+
+		await expect(second).resolves.toBe("ok reply");
 	});
 });
 

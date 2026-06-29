@@ -2,7 +2,7 @@
  * Bridges inbound A2A requests to the running Prime Agent session.
  *
  * An inbound A2A message becomes a user turn via `pi.sendUserMessage`, and the
- * agent's reply is captured from the next `agent_end` event. Requests are
+ * agent's reply is captured from that turn's `agent_end` event. Requests are
  * serialized so two callers (or a caller and a local user) cannot interleave a
  * turn. This expects an otherwise-idle session; running the server alongside
  * heavy interactive use will mix A2A turns with user turns.
@@ -68,13 +68,25 @@ class Mutex {
 }
 
 /**
- * Create a prompt bridge over the extension API. Registers a single persistent
- * `agent_end` listener that resolves the in-flight request, if any.
+ * Create a prompt bridge over the extension API. Registers persistent listeners
+ * that capture the in-flight request's final messages, if any.
  */
 export function createAgentPromptBridge(pi: ExtensionAPI): PromptBridge {
-	let pending: ((messages: AgentMessage[]) => void) | null = null;
+	interface PendingPrompt {
+		text: string;
+		started: boolean;
+		messages: AgentMessage[] | undefined;
+	}
+
+	let pending: PendingPrompt | null = null;
 	let activeTurns = 0;
 	const mutex = new Mutex();
+
+	pi.on("before_agent_start", (event) => {
+		if (pending && !pending.started && event.prompt === pending.text) {
+			pending.started = true;
+		}
+	});
 
 	pi.on("agent_start", () => {
 		activeTurns++;
@@ -82,10 +94,8 @@ export function createAgentPromptBridge(pi: ExtensionAPI): PromptBridge {
 
 	pi.on("agent_end", (event) => {
 		if (activeTurns > 0) activeTurns--;
-		const resolve = pending;
-		if (resolve) {
-			pending = null;
-			resolve(event.messages);
+		if (pending?.started) {
+			pending.messages = event.messages;
 		}
 	});
 
@@ -100,31 +110,27 @@ export function createAgentPromptBridge(pi: ExtensionAPI): PromptBridge {
 			throw new Error("Agent is busy with another turn; A2A requests require an otherwise-idle session.");
 		}
 
-		let resolveTurn!: (messages: AgentMessage[]) => void;
-		const turn = new Promise<AgentMessage[]>((resolve) => {
-			resolveTurn = resolve;
-		});
-		pending = resolveTurn;
+		const current: PendingPrompt = { text, started: false, messages: undefined };
+		pending = current;
 
-		// Release the lock only once the turn actually ends, so a late agent_end
-		// from an aborted request cannot leak into the next caller's turn.
-		void turn.then(() => {
-			pending = null;
-			release();
-		});
+		const prompt = (async () => {
+			try {
+				await pi.sendUserMessage(text);
+				return getFinalAssistantText(current.messages ?? []);
+			} finally {
+				if (pending === current) pending = null;
+				// Release the lock only once the submitted prompt completes, so
+				// auto-retry and late agent_end events cannot leak into the next caller.
+				release();
+			}
+		})();
 
-		try {
-			pi.sendUserMessage(text);
-		} catch (err) {
-			pending = null;
-			release();
-			throw err instanceof Error ? err : new Error(String(err));
-		}
+		void prompt.catch(() => undefined);
 
-		if (!signal) return getFinalAssistantText(await turn);
+		if (!signal) return prompt;
 
 		return Promise.race([
-			turn.then(getFinalAssistantText),
+			prompt,
 			new Promise<string>((_, reject) => {
 				if (signal.aborted) {
 					reject(new Error("aborted"));
