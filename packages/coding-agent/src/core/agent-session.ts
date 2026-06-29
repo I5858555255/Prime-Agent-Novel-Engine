@@ -2223,11 +2223,13 @@ export class AgentSession {
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
 
-			// If streaming, queue via steer() or followUp() based on option
-			if (this.isStreaming) {
+			// If streaming or queued work already exists, enqueue according to the requested behavior.
+			// The pending-message case preserves FIFO order for daemon-delivered messages when a
+			// session is idle but still has queued steering/follow-up work.
+			if (this.isStreaming || this.pendingMessageCount > 0) {
 				if (!options?.streamingBehavior) {
 					throw new Error(
-						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+						"Agent is already processing or has queued work. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
@@ -2585,6 +2587,24 @@ export class AgentSession {
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };
+	}
+
+	clearQueuedUserMessagesMatching(predicate: (text: string) => boolean): { steering: string[]; followUp: string[] } {
+		const steering = this._steeringMessages.filter(predicate);
+		const followUp = this._followUpMessages.filter((message) => predicate(message.text));
+		if (steering.length === 0 && followUp.length === 0) {
+			return { steering: [], followUp: [] };
+		}
+		this._steeringMessages = this._steeringMessages.filter((text) => !predicate(text));
+		this._followUpMessages = this._followUpMessages.filter((message) => !predicate(message.text));
+		this.agent.removeQueuedMessages((message) => {
+			if (message.role !== "user") {
+				return false;
+			}
+			return predicate(readTextBlocks(message.content));
+		});
+		this._emitQueueUpdate();
+		return { steering, followUp: followUp.map((message) => message.text) };
 	}
 
 	/** Number of pending messages (includes both steering and follow-up) */

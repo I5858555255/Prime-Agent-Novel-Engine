@@ -135,6 +135,12 @@ export function resolveAgentSessionMessageStreamingBehavior(
 	return "followUp";
 }
 
+export function isAgentSessionMessagePrompt(text: string): boolean {
+	return text.startsWith(`Agent-to-agent message received.
+Source: ${AGENT_MESSAGE_SOURCE}
+`);
+}
+
 export function createAgentSessionMessagePrompt(payload: AgentSessionMessagePayload): string {
 	const lines = ["Agent-to-agent message received.", `Source: ${payload.source}`];
 	if (payload.from) {

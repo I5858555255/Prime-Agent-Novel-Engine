@@ -27,6 +27,7 @@ import {
 	DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
 	DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY,
 	DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS,
+	isAgentSessionMessagePrompt,
 	normalizeAgentSessionMessage,
 	resolveAgentSessionMessageStreamingBehavior,
 } from "../../core/agent-messages.js";
@@ -367,7 +368,11 @@ export class AgentDaemon {
 		cleanupDaemonSocketPath(this.socketPath);
 	}
 
-	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<ActiveSessionState> {
+	private async addRuntime(
+		runtime: AgentSessionRuntime,
+		name?: string,
+		onStateCreated?: (state: ActiveSessionState) => void,
+	): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
 			activeSessionId: createActiveSessionId(this.sessions),
 			runtime,
@@ -375,6 +380,11 @@ export class AgentDaemon {
 			extensionUiRequests: new Map(),
 			lastEventSequence: 0,
 		};
+		if (name) {
+			state.runtime.session.setSessionName(name);
+		}
+		this.sessions.set(state.activeSessionId, state);
+		onStateCreated?.(state);
 		try {
 			await bindActiveSessionState(state, {
 				broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
@@ -385,14 +395,11 @@ export class AgentDaemon {
 			});
 		} catch (error) {
 			state.unsubscribe?.();
+			this.sessions.delete(state.activeSessionId);
 			await runtime.dispose().catch(() => undefined);
 			throw error;
 		}
-		this.sessions.set(state.activeSessionId, state);
 		this.rebindCronJobsToState(state);
-		if (name) {
-			state.runtime.session.setSessionName(name);
-		}
 		if (runtime.metadata.kind !== "subagent") {
 			// Mark the session as daemon-resident so a restarted daemon can
 			// restore it. Closes for kill/completed/replaced flip this back to
@@ -505,9 +512,9 @@ export class AgentDaemon {
 					agentObserveController: this.createAgentObserveController(() => stateRef),
 				},
 			});
-			const state = await this.addRuntime(runtime, command.name);
-			stateRef = state;
-			return state;
+			return this.addRuntime(runtime, command.name, (state) => {
+				stateRef = state;
+			});
 		};
 
 		const sessionFile = sessionManager.getSessionFile();
@@ -859,8 +866,9 @@ export class AgentDaemon {
 				sessionDir: options.sessionDir,
 			},
 		});
-		const state = await this.addRuntime(runtime);
-		stateRef = state;
+		await this.addRuntime(runtime, undefined, (state) => {
+			stateRef = state;
+		});
 		return runtime;
 	}
 
@@ -1237,7 +1245,11 @@ export class AgentDaemon {
 			case "agent_messages_clear": {
 				const state = this.getSessionState(command.activeSessionId);
 				this.agentMessageRateLimiter.clearMatching((key) => key.endsWith(`->${state.activeSessionId}`));
-				return success(command.id, "agent_messages_clear", state.runtime.session.clearQueue());
+				return success(
+					command.id,
+					"agent_messages_clear",
+					state.runtime.session.clearQueuedUserMessagesMatching(isAgentSessionMessagePrompt),
+				);
 			}
 
 			case "abort": {
@@ -1830,7 +1842,7 @@ export class AgentDaemon {
 		try {
 			await this.withAgentMessageTargetLock(targetState.activeSessionId, () => {
 				const streamingBehavior = resolveAgentSessionMessageStreamingBehavior(
-					targetState.runtime.session.isStreaming,
+					targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0,
 					payload.deliveryMode,
 				);
 				return targetState.runtime.session.prompt(createAgentSessionMessagePrompt(payload), {
