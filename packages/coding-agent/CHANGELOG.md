@@ -2,10 +2,18 @@
 
 ## [Unreleased]
 
-### Added
-
-- Added a bundled `websearch` skill (Google search via the Serper API) that loads by default. Add a Serper key via `/login` ("Serper (web search)"); it is stored with your other credentials and supplied to the skill automatically. The skill can be disabled with `bundledSkills.websearch: false` and overridden by a same-named skill in any user, project, package, or `--skill` location.
 - Added an opt-in auto-refine review hook that can ask whether `/refine` should run after turn intervals or compaction checkpoints.
+
+## [0.2.2] - 2026-06-25
+
+- Added a bundled `websearch` skill (Google search via the Serper API) that loads by default. Add a Serper key via `/login` ("Serper (web search)"); it is stored with your other credentials and supplied to the skill automatically. The skill can be disabled with `bundledSkills.websearch: false` and overridden by a same-named skill in any user, project, package, or `--skill` location ([#86](https://github.com/PrimeIntellect-ai/prime-agent/issues/86)).
+- Added image input support for vision-capable Prime Inference models (Claude, GPT-5.x, Grok, Kimi K2.7 Code, Qwen3-VL), which previously dropped attached images as unsupported ([#261](https://github.com/PrimeIntellect-ai/prime-agent/issues/261)).
+- Added a live subagent tree above the working loader showing each in-flight subagent with a prompt excerpt, tool-use and token counts, and its recap once generated; finished subagents drop out of the tree ([#254](https://github.com/PrimeIntellect-ai/prime-agent/issues/254)).
+- Changed the prompt bar to show the active model and thinking level on the left and always show context token count and percentage used on the right, instead of only surfacing context usage past the halfway point ([#252](https://github.com/PrimeIntellect-ai/prime-agent/issues/252)).
+- Changed the `/model` picker to rank results by most-recently-used, so models you actually pick float to the top and break ties among equally-good fuzzy matches ([#251](https://github.com/PrimeIntellect-ai/prime-agent/issues/251)).
+- Changed the collapsed bash and IPython tool previews to pick the most informative line via a shared heuristic, skipping low-signal setup lines and redacting long blobs and secret-looking values ([#248](https://github.com/PrimeIntellect-ai/prime-agent/issues/248)).
+- Changed subagents to render as an inline, scrollable list below the prompt with arrow-key navigation and prompts that elide shared prefixes, replacing the full-screen subagent viewer; running subagents and in-progress markers now animate so the agent never looks crashed ([#247](https://github.com/PrimeIntellect-ai/prime-agent/issues/247)).
+- Fixed context overflow appearing at ~50% remaining for Prime Inference Claude models by correcting their context window to 200k and counting prompt tokens only (excluding output) for the context indicator and compaction trigger ([#246](https://github.com/PrimeIntellect-ai/prime-agent/issues/246)).
 
 ## [0.2.1] - 2026-06-23
 
@@ -181,7 +189,7 @@
 - Added a built-in `skill-creator` skill that teaches the agent to create new skills: markdown layout, frontmatter rules, placement and precedence, and the Python-backed skill contract (package layout, `run()` convention, optional CLI, kernel venv behavior) with a test-verified working template.
 - Added built-in skills shipped with prime-agent, starting with `prime-intellect`: ecosystem knowledge and prime CLI workflows for verifiers environments, evaluations, Hosted Training, sandboxes, inference, and compute. Built-in skills have the lowest precedence (user, project, and package skills with the same name win) and can be disabled with the `enableBuiltinSkills` setting or `--no-skills`.
 - Added a session-backed `rlm.harness` state helper for reset-free prompt notes, memory, skills, subagent specs, and refinement events.
-- Added `/refine` to update editable continual harness state with Create/Update/Delete edits and rollback support based on refinement history.
+- Added `/refine` to update editable harness state with Create/Update/Delete edits and rollback support based on refinement history.
 
 ### Changed
 

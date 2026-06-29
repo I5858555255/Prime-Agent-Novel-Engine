@@ -1,11 +1,17 @@
 // TODO: reconsider whether the persistent kernel is needed once RLM-1 weights land.
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
+import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
 import type { ToolDefinition } from "../extensions/types.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
-import { type HostRequestHandlers, type KernelDiffDisplay, KernelManager } from "../kernel/index.js";
+import {
+	type HostRequestHandlers,
+	type KernelAttachment,
+	type KernelDiffDisplay,
+	KernelManager,
+} from "../kernel/index.js";
 import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
@@ -129,6 +135,8 @@ export interface IpythonToolDetails {
 	result?: string;
 	/** Diffs streamed from file edits, rendered by the IPython cell. */
 	diffs?: KernelDiffDisplay[];
+	/** Media attachments loaded into context (e.g. by the attach-image skill). */
+	attachments?: KernelAttachment[];
 	error?: {
 		ename: string;
 		evalue: string;
@@ -149,7 +157,7 @@ export interface IpythonToolOptions {
 	/** Resolves before this kernel starts — e.g. the previous provisioner's dispose, so a
 	 * /reload's old-kernel snapshot flush can't race the new kernel's restore. */
 	readyGate?: Promise<unknown>;
-	/** Filled after the first kernel start so the owning session can restart it after compaction. */
+	/** Filled with the live KernelManager after the first kernel start; cleared on construction. */
 	kernelManagerRef?: { current?: KernelManager };
 	/**
 	 * Fires once per kernel start when a previous session's namespace was revived
@@ -198,26 +206,15 @@ export class IpythonKernelProvisioner {
 		void this.ensure().catch(() => {});
 	}
 
-	/** Restart the kernel if one is running (e.g. after compaction). */
-	async restart(): Promise<void> {
-		try {
-			// Await any in-flight startup first, so we restart a fully-started kernel and
-			// delete the snapshot after (not during) a concurrent restore.
-			const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
-			await m?.restart();
-		} finally {
-			// Compaction deliberately wipes the namespace and tells the model so. Drop the
-			// stale on-disk snapshot too — even if the restart threw — so a later resume
-			// doesn't revive state the model was told is gone (a fresh cell re-snapshots).
-			this._lastRestore = undefined;
-			const dir = this.options?.snapshotDir;
-			if (dir) {
-				await Promise.allSettled([
-					rm(snapshotPathIn(dir), { force: true }),
-					rm(manifestPathIn(dir), { force: true }),
-				]);
-			}
-		}
+	/** Whether a kernel has finished starting and is currently running. */
+	get hasRunningKernel(): boolean {
+		return this.startedManager?.isRunning ?? false;
+	}
+
+	/** Live user-defined names in the kernel namespace, or null if listing failed / no kernel. */
+	async listNamespaceNames(signal?: AbortSignal): Promise<string[] | null> {
+		const m = this.startedManager ?? (await this.managerPromise?.catch(() => undefined));
+		return (await m?.listNamespaceNames(signal)) ?? null;
 	}
 
 	/** Dispose the kernel owned by this provisioner, including one still starting up. */
@@ -337,6 +334,14 @@ export class IpythonKernelProvisioner {
 	}
 }
 
+/** Turn kernel image attachments into `ImageContent` blocks; non-image types are dropped. */
+export function imageBlocksFromAttachments(attachments: readonly KernelAttachment[] | undefined): ImageContent[] {
+	if (!attachments) return [];
+	return attachments
+		.filter((a) => IMAGE_MIME_TYPES.has(a.mimeType))
+		.map((a) => ({ type: "image", data: a.data, mimeType: a.mimeType }));
+}
+
 export function createIpythonToolDefinition(
 	cwd: string,
 	options?: IpythonToolOptions,
@@ -382,8 +387,11 @@ export function createIpythonToolDefinition(
 					text += (text ? "\n" : "") + r.error.traceback.join("\n");
 				}
 
+				const imageBlocks = imageBlocksFromAttachments(r.attachments);
+				const content: (TextContent | ImageContent)[] = [{ type: "text", text: text || "" }, ...imageBlocks];
+
 				return {
-					content: [{ type: "text", text: text || "" }],
+					content,
 					details: {
 						durationMs: r.durationMs,
 						status: r.status,
@@ -392,6 +400,7 @@ export function createIpythonToolDefinition(
 						stderr: r.stderr,
 						result: r.result,
 						diffs: r.diffs,
+						attachments: r.attachments,
 						error: r.error,
 					},
 					isError: r.status === "error" || r.status === "aborted",
