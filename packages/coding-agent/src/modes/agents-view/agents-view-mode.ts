@@ -737,15 +737,20 @@ class AgentsViewMode implements Component, Focusable {
 		}
 		this.persistentState.pendingExpandedAncestorSessionIds = undefined;
 		const wanted = new Set(sessionIds);
-		let added = false;
-		for (const row of this.rows) {
-			if (wanted.has(row.summary.sessionId) && !this.expandedSubagentParents.has(row.identity)) {
-				this.expandedSubagentParents.add(row.identity);
-				added = true;
+		// A nested ancestor's row only appears once its own parent is expanded, so
+		// expand-and-rebuild until a pass reveals nothing new.
+		let added = true;
+		while (added) {
+			added = false;
+			for (const row of this.rows) {
+				if (wanted.has(row.summary.sessionId) && !this.expandedSubagentParents.has(row.identity)) {
+					this.expandedSubagentParents.add(row.identity);
+					added = true;
+				}
 			}
-		}
-		if (added) {
-			this.rebuildRows();
+			if (added) {
+				this.rebuildRows();
+			}
 		}
 	}
 
