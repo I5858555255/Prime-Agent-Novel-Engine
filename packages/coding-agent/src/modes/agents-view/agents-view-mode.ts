@@ -92,7 +92,16 @@ export interface AgentsViewModeOptions {
 	verbose?: boolean;
 }
 
-type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary; subagent?: SessionSummary };
+type AgentsViewRunResult =
+	| { type: "exit" }
+	| {
+			type: "open";
+			summary: SessionSummary;
+			subagent?: SessionSummary;
+			// Row identities of every ancestor that must be expanded to reveal the
+			// opened subagent, from the root agent down to its immediate parent.
+			subagentAncestorIdentities?: string[];
+	  };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
 	selectedSessionKey?: AgentsViewSelectionKey;
@@ -234,13 +243,15 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			return;
 		}
 		if (result.subagent) {
-			// Returning from a subagent reopens the agents view with its parent's
+			// Returning from a subagent reopens the agents view with every ancestor
 			// list expanded and that subagent reselected.
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.subagent);
 			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.subagent);
-			const parentIdentity = getSummaryIdentity(result.summary);
 			persistentState.expandedSubagentParents = [
-				...new Set([...(persistentState.expandedSubagentParents ?? []), parentIdentity]),
+				...new Set([
+					...(persistentState.expandedSubagentParents ?? []),
+					...(result.subagentAncestorIdentities ?? []),
+				]),
 			];
 		} else {
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
@@ -1075,7 +1086,23 @@ class AgentsViewMode implements Component, Focusable {
 			this.setStatusMessage("Cannot open subagent without its parent agent");
 			return;
 		}
-		this.finish({ type: "open", summary: root.summary, subagent: row.summary });
+		this.finish({
+			type: "open",
+			summary: root.summary,
+			subagent: row.summary,
+			subagentAncestorIdentities: this.collectSubagentAncestorIdentities(row),
+		});
+	}
+
+	/** Row identities of every ancestor of a subagent row, root-most first. */
+	private collectSubagentAncestorIdentities(row: AgentsViewRow): string[] {
+		const ancestors: string[] = [];
+		let parentIdentity = row.parentIdentity;
+		while (parentIdentity !== undefined) {
+			ancestors.unshift(parentIdentity);
+			parentIdentity = this.rows.find((candidate) => candidate.identity === parentIdentity)?.parentIdentity;
+		}
+		return ancestors;
 	}
 
 	/**
