@@ -1,0 +1,24 @@
+{
+	"name": "pi-extension-prime-a2a",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "First-party A2A (Agent-to-Agent) client and minimal server for Prime Agent",
+	"scripts": {
+		"clean": "echo 'nothing to clean'",
+		"build": "echo 'nothing to build'",
+		"check": "echo 'nothing to check'"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"@a2a-js/sdk": "^0.3.13",
+		"express": "^5.1.0"
+	},
+	"devDependencies": {
+		"@types/express": "^5.0.0"
+	}
+}

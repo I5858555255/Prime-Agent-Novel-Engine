@@ -337,6 +337,11 @@ The default export can also be `async`. Prime Agent waits for async extension fa
 
 Place in `~/.prime/agent/extensions/`, `.prime/agent/extensions/`, or a [Prime Agent package](#prime-agent-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
 
+First-party [A2A (Agent-to-Agent)](https://a2a-protocol.org) support is available
+as the opt-in `prime-a2a` extension: an `a2a_send` tool for calling external
+agents and an optional local server that exposes this instance over A2A. See
+[docs/a2a.md](docs/a2a.md) for how to enable it.
+
 ### Themes
 
 Built-in: `dark`, `light`. Themes hot-reload: modify the active theme file and Prime Agent immediately applies changes.

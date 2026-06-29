@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added a first-party A2A (Agent-to-Agent) extension (`prime-a2a`, opt-in): an `a2a_send` tool for calling external A2A agents with default-deny egress allowlisting and untrusted-data handling, an optional local A2A server that exposes this instance over JSON-RPC, and a `/a2a` command (status, card, peers). See `docs/a2a.md`.
+
 ## [0.2.2] - 2026-06-25
 
 - Added a bundled `websearch` skill (Google search via the Serper API) that loads by default. Add a Serper key via `/login` ("Serper (web search)"); it is stored with your other credentials and supplied to the skill automatically. The skill can be disabled with `bundledSkills.websearch: false` and overridden by a same-named skill in any user, project, package, or `--skill` location ([#86](https://github.com/PrimeIntellect-ai/prime-agent/issues/86)).
