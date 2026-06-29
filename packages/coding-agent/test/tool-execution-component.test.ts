@@ -1,4 +1,4 @@
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -63,6 +63,80 @@ describe("ToolExecutionComponent parity", () => {
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered).toContain("custom call");
 		expect(rendered).toContain("custom result");
+	});
+
+	test("renders inline images by default when terminal supports them", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-default",
+				{},
+				{ showImages: true },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+
+			expect(component.render(120).join("\n")).toContain("\x1b_G");
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("can suppress inline image escape sequences for session history", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-history",
+				{},
+				{ showImages: true, allowInlineImages: false },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+
+			let rendered = component.render(120).join("\n");
+			expect(rendered).not.toContain("\x1b_G");
+			expect(stripAnsi(rendered)).toContain("[Image: [image/png]]");
+
+			component.setShowImages(false);
+			component.setShowImages(true);
+			rendered = component.render(120).join("\n");
+			expect(rendered).not.toContain("\x1b_G");
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("suppressed history image fallbacks skip dimension parsing", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const onePixelPng =
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-history-dims",
+				{},
+				{ showImages: true, allowInlineImages: false },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({
+				content: [{ type: "image", data: onePixelPng, mimeType: "image/png" }],
+				isError: false,
+			});
+
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			expect(rendered).toContain("[Image: [image/png]]");
+			expect(rendered).not.toContain("1x1");
+		} finally {
+			resetCapabilitiesCache();
+		}
 	});
 
 	test("uses built-in rendering for built-in overrides without custom renderers", () => {
