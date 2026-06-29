@@ -121,8 +121,9 @@ committed config files (a missing variable expands to an empty string).
 - **Reconnect on failure.** If an operation fails on a dead transport, the
   extension drops the connection and retries once before surfacing the error.
 - **Shutdown.** All connections close on `session_shutdown`. HTTP sessions are
-  terminated server-side on a best-effort basis (servers that don't support
-  explicit termination may keep the session until their own cleanup).
+  terminated server-side on a best-effort basis with a short timeout, so a
+  server that doesn't support explicit termination — or stops responding to it —
+  can't stall shutdown; the client is closed regardless.
 
 Tool result content is passed through in order: text and images (including
 images embedded in `resource` blocks) reach the model as text and image content.

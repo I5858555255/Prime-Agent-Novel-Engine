@@ -12,6 +12,9 @@ import type { McpCallResult, McpClientLike, McpConnector, McpToolInfo } from "./
 const CLIENT_INFO = { name: "prime-agent-mcp", version: "0.2.2" } as const;
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+// A server that accepts the session DELETE but never answers must not be able
+// to wedge shutdown, which awaits disconnectAll().
+const TERMINATE_SESSION_TIMEOUT_MS = 5_000;
 
 /** Expand `${VAR}` references in a string from the current environment. Missing vars become "". */
 function expandEnv(value: string): string {
@@ -60,7 +63,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 	});
 }
 
-export function adaptClient(client: Client, transport?: StreamableHTTPClientTransport): McpClientLike {
+async function terminateHttpSession(name: string, transport: StreamableHTTPClientTransport): Promise<void> {
+	try {
+		await withTimeout(
+			transport.terminateSession(),
+			TERMINATE_SESSION_TIMEOUT_MS,
+			`Terminating MCP session for "${name}"`,
+		);
+	} catch {
+		// Server may not support explicit termination, may error, or may stall
+		// past the timeout. In every case we still close the client below.
+	}
+}
+
+export function adaptClient(client: Client, name: string, transport?: StreamableHTTPClientTransport): McpClientLike {
 	return {
 		async listTools(signal) {
 			const tools: McpToolInfo[] = [];
@@ -96,15 +112,13 @@ export function adaptClient(client: Client, transport?: StreamableHTTPClientTran
 		},
 		async close() {
 			// End the server-side session for HTTP transports so idle disconnects
-			// and shutdown don't accumulate abandoned sessions on the remote.
-			if (transport) {
-				try {
-					await transport.terminateSession();
-				} catch {
-					// Server may not support explicit termination; close anyway.
-				}
+			// and shutdown don't accumulate abandoned sessions on the remote, but
+			// always close the client even if termination stalls or fails.
+			try {
+				if (transport) await terminateHttpSession(name, transport);
+			} finally {
+				await client.close();
 			}
-			await client.close();
 		},
 	};
 }
@@ -126,13 +140,13 @@ export function createDefaultConnector(options: ConnectorOptions = {}): McpConne
 			);
 		} catch (error) {
 			// A stalled connect may already hold a server-side HTTP session; end it
-			// so timed-out connects don't leak sessions on the remote.
+			// (bounded) so timed-out connects don't leak sessions on the remote.
 			if (transport instanceof StreamableHTTPClientTransport) {
-				await transport.terminateSession().catch(() => {});
+				await terminateHttpSession(name, transport);
 			}
 			await client.close().catch(() => {});
 			throw error;
 		}
-		return adaptClient(client, transport instanceof StreamableHTTPClientTransport ? transport : undefined);
+		return adaptClient(client, name, transport instanceof StreamableHTTPClientTransport ? transport : undefined);
 	};
 }

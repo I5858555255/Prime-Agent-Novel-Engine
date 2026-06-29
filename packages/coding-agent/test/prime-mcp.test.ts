@@ -37,7 +37,7 @@ async function inMemoryEchoClient(): Promise<McpClientLike> {
 	await server.connect(serverTransport);
 	const client = new Client({ name: "test-client", version: "1.0.0" });
 	await client.connect(clientTransport);
-	return adaptClient(client);
+	return adaptClient(client, "demo");
 }
 
 function managerWith(connector: McpConnector, idleTimeoutMs = 0): McpManager {
@@ -353,30 +353,46 @@ describe("prime-mcp manager lifecycle", () => {
 		expect(aborted).toBe(true);
 	});
 
-	test("a failing call's reconnect does not cancel a parallel call on the same server", async () => {
+	test("a parallel call keeps its connection alive while a sibling reconnects", async () => {
 		let connectCount = 0;
+		const closed: number[] = [];
+		let releaseSlow!: () => void;
+		const slowGate = new Promise<void>((resolve) => {
+			releaseSlow = resolve;
+		});
 		const connector: McpConnector = async () => {
 			connectCount++;
 			const id = connectCount;
-			let firstCall = true;
 			return {
 				listTools: async () => [],
-				callTool: async () => {
-					if (id === 1 && firstCall) {
-						firstCall = false;
-						throw new Error("transport closed");
+				callTool: async (tool) => {
+					if (tool === "fail" && id === 1) throw new Error("transport closed");
+					if (tool === "slow") {
+						await slowGate;
+						return { content: [{ type: "text", text: `slow-${id}` }], isError: false };
 					}
-					return { content: [{ type: "text", text: `conn-${id}` }], isError: false };
+					return { content: [{ type: "text", text: `ok-${id}` }], isError: false };
 				},
-				close: async () => {},
+				close: async () => {
+					closed.push(id);
+				},
 			};
 		};
 
 		const manager = managerWith(connector);
-		const [a, b] = await Promise.all([manager.callTool("demo", "x", {}), manager.callTool("demo", "y", {})]);
+		// "slow" parks in-flight on connection 1; "fail" forces a reconnect.
+		const slow = manager.callTool("demo", "slow", {});
+		const a = await manager.callTool("demo", "fail", {});
 
 		expect(a.isError).toBe(false);
+		// The slow sibling still holds connection 1, so it must not be closed yet.
+		expect(closed).not.toContain(1);
+
+		releaseSlow();
+		const b = await slow;
 		expect(b.isError).toBe(false);
+		// Once the sibling drains, connection 1 is closed exactly once.
+		expect(closed.filter((id) => id === 1)).toEqual([1]);
 	});
 
 	test("warns and skips when two directTools refs collide on a sanitized name", async () => {

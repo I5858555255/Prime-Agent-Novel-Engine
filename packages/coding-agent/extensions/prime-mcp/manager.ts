@@ -49,6 +49,10 @@ interface Connection {
 	idleTimer?: ReturnType<typeof setTimeout>;
 	/** Number of operations currently running against this connection. */
 	active: number;
+	/** Evicted from the map; close once the last in-flight operation drains. */
+	doomed?: boolean;
+	/** Guards against closing the same client twice. */
+	closed?: boolean;
 }
 
 interface ManagerOptions {
@@ -197,11 +201,17 @@ export class McpManager {
 	/**
 	 * End an operation against a specific connection. Decrement that instance's
 	 * counter (not whatever is current under `name`, which may have been replaced
-	 * by a reconnect) and rearm idle disconnect only for the live, idle one.
+	 * by a reconnect). A doomed connection is closed once the last operation
+	 * drains; the live, idle one rearms idle disconnect instead.
 	 */
 	private end(name: string, connection: Connection): void {
 		connection.active = Math.max(0, connection.active - 1);
-		if (this.connections.get(name) === connection && connection.active <= 0) {
+		if (connection.active > 0) return;
+		if (connection.doomed) {
+			void this.closeClient(name, connection);
+			return;
+		}
+		if (this.connections.get(name) === connection) {
 			this.scheduleIdleDisconnect(name);
 		}
 	}
@@ -225,8 +235,11 @@ export class McpManager {
 				if (isAbort(error) || signal?.aborted || !isConnectionError(error)) throw error;
 				this.options.logger?.(`MCP server "${name}" operation failed, reconnecting: ${errorMessage(error)}`);
 			}
+			// Retire only this dead instance. Sibling calls sharing it keep it
+			// alive until they drain (see end); we never close it out from under
+			// them. A fresh begin() reconnects for our retry.
+			this.evict(name, connection);
 			this.end(name, connection);
-			await this.dropConnection(name, connection);
 			connection = await this.begin(name);
 			return await op(connection);
 		} finally {
@@ -269,16 +282,29 @@ export class McpManager {
 	}
 
 	/**
-	 * Close one connection instance, evicting it from the map only if it is still
-	 * the current one. Used by the retry path so a failing call never closes a
-	 * sibling call's freshly reconnected client.
+	 * Mark a connection retired and remove it from the map if it is still the
+	 * current one, without closing it. The actual close is deferred to `end` so
+	 * sibling operations still using this client are never cut off mid-call.
 	 */
-	private async dropConnection(name: string, connection: Connection): Promise<void> {
+	private evict(name: string, connection: Connection): void {
 		if (this.connections.get(name) === connection) {
 			this.connections.delete(name);
 			this.states.set(name, { state: "disconnected" });
 		}
-		if (connection.idleTimer) clearTimeout(connection.idleTimer);
+		connection.doomed = true;
+		if (connection.idleTimer) {
+			clearTimeout(connection.idleTimer);
+			connection.idleTimer = undefined;
+		}
+	}
+
+	private async closeClient(name: string, connection: Connection): Promise<void> {
+		if (connection.closed) return;
+		connection.closed = true;
+		if (connection.idleTimer) {
+			clearTimeout(connection.idleTimer);
+			connection.idleTimer = undefined;
+		}
 		try {
 			await connection.client.close();
 		} catch (error) {
@@ -301,7 +327,8 @@ export class McpManager {
 		}
 		const connection = this.connections.get(name);
 		if (!connection) return;
-		await this.dropConnection(name, connection);
+		this.evict(name, connection);
+		await this.closeClient(name, connection);
 	}
 
 	async disconnectAll(): Promise<void> {
