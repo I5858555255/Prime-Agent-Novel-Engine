@@ -92,6 +92,7 @@ export interface AgentsViewModeOptions {
 type AgentsViewRunResult = { type: "exit" } | { type: "open"; summary: SessionSummary; subagent?: SessionSummary };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
+	expandedSubagentParents?: string[];
 	statusMessage?: string;
 	initialPromptsSent?: boolean;
 	// Gathered once and reused across agents-view instances so the notices survive
@@ -225,7 +226,17 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 		if (result.type === "exit") {
 			return;
 		}
-		persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
+		if (result.subagent) {
+			// Returning from a subagent reopens the agents view with its parent's
+			// list expanded and that subagent reselected.
+			persistentState.selectedRowIdentity = getSummaryIdentity(result.subagent);
+			const parentIdentity = getSummaryIdentity(result.summary);
+			persistentState.expandedSubagentParents = [
+				...new Set([...(persistentState.expandedSubagentParents ?? []), parentIdentity]),
+			];
+		} else {
+			persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
+		}
 
 		let opened: { connection: DaemonAgentConnection; summary: SessionSummary } | undefined;
 		try {
@@ -313,6 +324,7 @@ class AgentsViewMode implements Component, Focusable {
 		private readonly persistentState: AgentsViewPersistentState = {},
 	) {
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
+		this.expandedSubagentParents = new Set(persistentState.expandedSubagentParents ?? []);
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		setRegisteredThemes(options.uiServices.getThemes());
@@ -732,6 +744,7 @@ class AgentsViewMode implements Component, Focusable {
 	/** Rebuild rows from the last fetched summaries, keeping selection on the same row. */
 	private rebuildRows(): void {
 		const selectedIdentity = this.rows[this.selectedIndex]?.identity;
+		this.persistentState.expandedSubagentParents = [...this.expandedSubagentParents];
 		this.rows = buildAgentsViewRows(
 			this.lastVisibleSummaries,
 			this.expandedSubagentParents,
