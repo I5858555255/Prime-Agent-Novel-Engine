@@ -157,7 +157,7 @@ export async function createAgentSessionServices(
 	// integration skills by whether the user is logged in (enable-by-login).
 	const mcpManager = new McpManager({
 		authStorage,
-		userServers: settingsManager.getMcpServers(),
+		getUserServers: () => settingsManager.getMcpServers(),
 	});
 
 	const resourceLoader = new DefaultResourceLoader({

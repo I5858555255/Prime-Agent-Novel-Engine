@@ -13,8 +13,8 @@ import type { McpServerConfig } from "../settings-manager.js";
 
 export interface McpManagerOptions {
 	authStorage: AuthStorage;
-	/** User-declared servers from Settings.mcpServers (name → config). */
-	userServers?: Record<string, McpServerConfig>;
+	/** Reads the current Settings.mcpServers (name → config). Re-read on refresh(). */
+	getUserServers?: () => Record<string, McpServerConfig> | undefined;
 	/** Start an interactive host-side login for a server. Provided by the UI mode. */
 	beginLogin?: (server: string) => Promise<void>;
 }
@@ -31,14 +31,20 @@ interface ResolvedIntegration {
 
 export class McpManager {
 	private readonly authStorage: AuthStorage;
-	private readonly userServers: Record<string, McpServerConfig>;
+	private readonly getUserServers: () => Record<string, McpServerConfig> | undefined;
 	private readonly beginLogin?: (server: string) => Promise<void>;
-	private readonly integrations = new Map<string, ResolvedIntegration>();
+	private integrations = new Map<string, ResolvedIntegration>();
 
 	constructor(options: McpManagerOptions) {
 		this.authStorage = options.authStorage;
-		this.userServers = options.userServers ?? {};
+		this.getUserServers = options.getUserServers ?? (() => undefined);
 		this.beginLogin = options.beginLogin;
+		this.resolveIntegrations();
+		this.registerProviders();
+	}
+
+	/** Re-read settings and re-register providers; call after a session reload. */
+	refresh(): void {
 		this.resolveIntegrations();
 		this.registerProviders();
 	}
@@ -48,17 +54,18 @@ export class McpManager {
 	}
 
 	private resolveIntegrations(): void {
+		const integrations = new Map<string, ResolvedIntegration>();
 		for (const entry of BUILTIN_MCP_CATALOG) {
-			this.integrations.set(entry.server, {
+			integrations.set(entry.server, {
 				server: entry.server,
 				label: entry.label,
 				url: entry.url,
 				usesOAuth: entry.oauth?.kind === "oauth",
 			});
 		}
-		for (const [server, config] of Object.entries(this.userServers)) {
+		for (const [server, config] of Object.entries(this.getUserServers() ?? {})) {
 			if (config.type !== "http") continue; // stdio servers self-manage in Python
-			this.integrations.set(server, {
+			integrations.set(server, {
 				server,
 				label: server,
 				url: config.url,
@@ -67,6 +74,7 @@ export class McpManager {
 				enabled: config.enabled,
 			});
 		}
+		this.integrations = integrations;
 	}
 
 	private registerProviders(): void {

@@ -184,13 +184,14 @@ export class ProviderAuthFlows {
 	}
 
 	/** Shows the stored-credential selector and removes the chosen credential. */
-	runLogout(): Promise<void> {
+	/** Returns the provider id that was logged out, or null if nothing changed (cancelled / none). */
+	runLogout(): Promise<string | null> {
 		const providerOptions = this.getLogoutProviderOptions();
 		if (providerOptions.length === 0) {
 			this.host.showStatus(
 				"No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
 			);
-			return Promise.resolve();
+			return Promise.resolve(null);
 		}
 
 		return new Promise((resolve) => {
@@ -215,14 +216,15 @@ export class ProviderAuthFlows {
 								? `Logged out of ${providerOption.name}`
 								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
 						this.host.showStatus(message);
+						resolve(providerOption.id);
 					} catch (error: unknown) {
 						this.host.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
+						resolve(null);
 					}
-					resolve();
 				},
 				() => {
 					close();
-					resolve();
+					resolve(null);
 				},
 				undefined,
 				{ getRows: () => this.host.ui.terminal.rows },

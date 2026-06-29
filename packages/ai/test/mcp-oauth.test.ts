@@ -76,8 +76,13 @@ describe.sequential("MCP OAuth provider", () => {
 
 	it("falls back to the next port when the base callback port is in use", async () => {
 		const http = await import("node:http");
+		// Occupy the base callback port. If something already holds it (e.g. a stray
+		// local daemon), that satisfies the precondition too — bind best-effort.
 		const blocker = http.createServer();
-		await new Promise<void>((resolve) => blocker.listen(53700, "127.0.0.1", resolve));
+		const blockerBound = await new Promise<boolean>((resolve) => {
+			blocker.once("error", () => resolve(false));
+			blocker.listen(53700, "127.0.0.1", () => resolve(true));
+		});
 		try {
 			let authUrl = "";
 			vi.stubGlobal(
@@ -107,7 +112,7 @@ describe.sequential("MCP OAuth provider", () => {
 			expect(redirect).not.toContain(":53700/");
 			expect(redirect).toContain(":5370");
 		} finally {
-			await new Promise<void>((resolve) => blocker.close(() => resolve()));
+			if (blockerBound) await new Promise<void>((resolve) => blocker.close(() => resolve()));
 		}
 	});
 

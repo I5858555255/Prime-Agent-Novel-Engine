@@ -6598,9 +6598,11 @@ export class InteractiveMode {
 		const isAuthed = (name: string) => authStorage.get(`mcp:${name}`) !== undefined;
 
 		if (!sub || sub === "list") {
-			const lines = BUILTIN_MCP_CATALOG.map((entry) => {
-				const status = isAuthed(entry.server) ? "connected" : "not connected";
-				return `  ${entry.label} (${entry.server}) — ${status}`;
+			const labels = new Map(BUILTIN_MCP_CATALOG.map((e) => [e.server, e.label]));
+			const names = new Set([...labels.keys(), ...Object.keys(this.settingsManager.getMcpServers() ?? {})]);
+			const lines = [...names].map((name) => {
+				const status = isAuthed(name) ? "connected" : "not connected";
+				return `  ${labels.get(name) ?? name} (${name}) — ${status}`;
 			});
 			this.showStatus(
 				`MCP integrations:\n${lines.join("\n")}\n\nUse /mcp login <name> to connect, /mcp logout <name> to disconnect.`,
@@ -6653,9 +6655,12 @@ export class InteractiveMode {
 			return;
 		}
 
-		// Reload after logout so a removed MCP integration's skill is disabled.
-		await this.createAuthFlows().runLogout();
-		await this.handleReloadCommand();
+		// Only reload when an MCP integration was actually removed (its skill must
+		// be disabled); a cancelled or non-MCP logout needs no reload.
+		const loggedOut = await this.createAuthFlows().runLogout();
+		if (loggedOut?.startsWith("mcp:")) {
+			await this.handleReloadCommand();
+		}
 	}
 
 	// =========================================================================

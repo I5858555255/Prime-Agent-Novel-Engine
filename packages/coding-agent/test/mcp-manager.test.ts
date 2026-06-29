@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { McpManager } from "../src/core/mcp/mcp-manager.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
+import type { McpServerConfig } from "../src/core/settings-manager.js";
 
 describe("McpManager", () => {
 	let tempDir: string;
@@ -80,14 +81,25 @@ describe("McpManager", () => {
 		try {
 			const manager = new McpManager({
 				authStorage,
-				userServers: {
+				getUserServers: () => ({
 					custom: { type: "http", url: "https://example.test/mcp", bearerTokenEnvVar: "MY_MCP_TOKEN" },
-				},
+				}),
 			});
 			const status = manager.listStatus().find((s) => s.server === "custom");
 			expect(status?.enabled).toBe(true);
 		} finally {
 			delete process.env.MY_MCP_TOKEN;
 		}
+	});
+
+	it("picks up mcpServers added after construction on refresh()", () => {
+		let servers: Record<string, McpServerConfig> = {};
+		const manager = new McpManager({ authStorage, getUserServers: () => servers });
+		expect(manager.listStatus().find((s) => s.server === "acme")).toBeUndefined();
+
+		servers = { acme: { type: "http", url: "https://mcp.acme.test/mcp", oauth: true } };
+		manager.refresh();
+		expect(manager.listStatus().find((s) => s.server === "acme")).toBeDefined();
+		expect(getOAuthProvider("mcp:acme")).toBeDefined();
 	});
 });

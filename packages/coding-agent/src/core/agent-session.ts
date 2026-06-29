@@ -3794,6 +3794,8 @@ export class AgentSession {
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 		await this.settingsManager.reload();
 		resetApiProviders();
+		// Re-read mcpServers and re-register user MCP providers from the reloaded settings.
+		this._mcpManager?.refresh();
 		await this._resourceLoader.reload();
 		this._buildRuntime({
 			activeToolNames: this.getActiveToolNames(),
