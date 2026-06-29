@@ -3061,6 +3061,8 @@ export class InteractiveMode {
 			// Re-render queued previews cleared on panel entry; the queue may still hold messages.
 			this.updatePendingMessagesDisplay();
 			this.childAgentDetailNodeId = undefined;
+			this.enteredSessionViaSubagentDetail = false;
+			this.childAgentDetail.setBackHintLabel("back to chat");
 			this.childAgentDetail.setNode(undefined);
 		}
 		this.childAgentPanelMode = undefined;
