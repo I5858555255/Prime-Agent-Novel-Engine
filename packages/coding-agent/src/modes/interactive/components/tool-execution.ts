@@ -214,7 +214,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private maybeConvertImagesForKitty(): void {
-		if (!this.shouldRenderInlineImages()) return;
+		if (!this.allowInlineImages) return;
 		const caps = getCapabilities();
 		if (caps.images !== "kitty") return;
 		if (!this.result) return;
@@ -244,6 +244,17 @@ export class ToolExecutionComponent extends Container {
 
 	setShowImages(show: boolean): void {
 		this.showImages = show;
+		if (show) {
+			this.maybeConvertImagesForKitty();
+		}
+		this.updateDisplay();
+	}
+
+	setAllowInlineImages(allow: boolean): void {
+		this.allowInlineImages = allow;
+		if (allow) {
+			this.maybeConvertImagesForKitty();
+		}
 		this.updateDisplay();
 	}
 

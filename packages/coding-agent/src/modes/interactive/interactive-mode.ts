@@ -4971,6 +4971,8 @@ export class InteractiveMode {
 		}
 
 		for (const [toolCallId, component] of renderedPendingTools) {
+			// These tool calls have no historical result yet, so future updates are live output.
+			component.setAllowInlineImages(true);
 			this.pendingTools.set(toolCallId, component);
 		}
 		this.ui.requestRender();

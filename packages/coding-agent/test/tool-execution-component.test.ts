@@ -28,6 +28,14 @@ function createFakeTui(): TUI {
 	} as unknown as TUI;
 }
 
+async function waitForCondition(condition: () => boolean): Promise<void> {
+	for (let i = 0; i < 50; i++) {
+		if (condition()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("condition was not met");
+}
+
 describe("ToolExecutionComponent parity", () => {
 	beforeAll(() => {
 		initTheme("dark");
@@ -134,6 +142,57 @@ describe("ToolExecutionComponent parity", () => {
 			const rendered = stripAnsi(component.render(120).join("\n"));
 			expect(rendered).toContain("[Image: [image/png]]");
 			expect(rendered).not.toContain("1x1");
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("pending history components can be restored to live inline image rendering", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-pending-history",
+				{},
+				{ showImages: true, allowInlineImages: false },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+			expect(component.render(120).join("\n")).not.toContain("\x1b_G");
+
+			component.setAllowInlineImages(true);
+
+			expect(component.render(120).join("\n")).toContain("\x1b_G");
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("converts kitty images even if image display is toggled off when the result arrives", async () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const tinyJpeg =
+				"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAIDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAGCf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AD3VTB3/2Q==";
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-hidden-conversion",
+				{},
+				{ showImages: false },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({
+				content: [{ type: "image", data: tinyJpeg, mimeType: "image/jpeg" }],
+				isError: false,
+			});
+
+			await waitForCondition(() => (component as any).convertedImages.size === 1);
+			component.setShowImages(true);
+
+			expect(component.render(120).join("\n")).toContain("\x1b_G");
 		} finally {
 			resetCapabilitiesCache();
 		}
