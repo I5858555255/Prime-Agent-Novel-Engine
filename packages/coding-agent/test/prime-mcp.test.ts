@@ -8,8 +8,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { configCandidatePaths, loadMcpConfig, parseToolRef } from "../extensions/prime-mcp/config.js";
 import { adaptClient } from "../extensions/prime-mcp/connector.js";
+import { registerDirectTools } from "../extensions/prime-mcp/direct-tools.js";
 import { type McpClientLike, type McpConnector, McpManager } from "../extensions/prime-mcp/manager.js";
 import { createMcpProxyTool, type McpProxyInput } from "../extensions/prime-mcp/proxy-tool.js";
+import type { ExtensionAPI, ToolDefinition } from "../src/core/extensions/types.js";
 
 async function callProxy(manager: McpManager, params: McpProxyInput): Promise<string> {
 	const tool = createMcpProxyTool(manager);
@@ -137,6 +139,24 @@ describe("prime-mcp config", () => {
 		await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { bad: { foo: 1 } } }));
 		await expect(loadMcpConfig(root, join(root, "nohome"))).rejects.toThrow(/either "command".*or "url"/);
 	});
+
+	test("throws when a header value is not a string", async () => {
+		await writeFile(
+			join(root, ".mcp.json"),
+			JSON.stringify({ mcpServers: { remote: { url: "https://x/mcp", headers: { Authorization: 123 } } } }),
+		);
+		await expect(loadMcpConfig(root, join(root, "nohome"))).rejects.toThrow(
+			/headers\.Authorization must be a string/,
+		);
+	});
+
+	test("throws when an env value is not a string", async () => {
+		await writeFile(
+			join(root, ".mcp.json"),
+			JSON.stringify({ mcpServers: { local: { command: "x", env: { TOKEN: true } } } }),
+		);
+		await expect(loadMcpConfig(root, join(root, "nohome"))).rejects.toThrow(/env\.TOKEN must be a string/);
+	});
 });
 
 describe("prime-mcp proxy tool", () => {
@@ -169,6 +189,19 @@ describe("prime-mcp proxy tool", () => {
 		await expect(callProxy(manager, { action: "call", server: "demo", tool: "boom", arguments: {} })).rejects.toThrow(
 			/tool blew up/,
 		);
+		await manager.disconnectAll();
+	});
+
+	test("renders structuredContent when a call returns no text content", async () => {
+		const connector: McpConnector = async () => ({
+			listTools: async () => [{ name: "data", inputSchema: { type: "object" } }],
+			callTool: async () => ({ content: [], isError: false, structuredContent: { answer: 42 } }),
+			close: async () => {},
+		});
+		const manager = managerWith(connector);
+		const out = await callProxy(manager, { action: "call", server: "demo", tool: "data", arguments: {} });
+		expect(out).toContain("answer");
+		expect(out).toContain("42");
 		await manager.disconnectAll();
 	});
 
@@ -224,6 +257,53 @@ describe("prime-mcp manager lifecycle", () => {
 		const manager = managerWith(connector);
 		await expect(manager.callTool("demo", "echo", {})).rejects.toThrow(/invalid arguments/);
 		expect(connectCount).toBe(1);
+	});
+
+	test("closes a connection that resolves after disconnect was requested", async () => {
+		let closeCount = 0;
+		let resolveConnect: ((client: McpClientLike) => void) | undefined;
+		const pending = new Promise<McpClientLike>((resolve) => {
+			resolveConnect = resolve;
+		});
+		const connector: McpConnector = async () => pending;
+
+		const manager = managerWith(connector);
+		const op = manager.listTools("demo").catch(() => undefined);
+		const dis = manager.disconnectAll();
+		resolveConnect?.({
+			listTools: async () => [],
+			callTool: async () => ({ content: [], isError: false }),
+			close: async () => {
+				closeCount++;
+			},
+		});
+		await op;
+		await dis;
+
+		expect(closeCount).toBe(1);
+		expect(manager.getStatus("demo")?.state).toBe("disconnected");
+	});
+
+	test("warns and skips when two directTools refs collide on a sanitized name", async () => {
+		const connector: McpConnector = async () => ({
+			listTools: async () => [
+				{ name: "foo-bar", inputSchema: { type: "object" } },
+				{ name: "foo_bar", inputSchema: { type: "object" } },
+			],
+			callTool: async () => ({ content: [], isError: false }),
+			close: async () => {},
+		});
+		const manager = managerWith(connector);
+
+		const registeredNames: string[] = [];
+		const warnings: string[] = [];
+		const pi = { registerTool: (tool: ToolDefinition) => registeredNames.push(tool.name) } as unknown as ExtensionAPI;
+
+		await registerDirectTools(pi, manager, ["demo/foo-bar", "demo/foo_bar"], (m) => warnings.push(m));
+
+		expect(registeredNames).toEqual(["mcp__demo__foo_bar"]);
+		expect(warnings.some((w) => w.includes("collides"))).toBe(true);
+		await manager.disconnectAll();
 	});
 
 	test("disconnects an idle server after the idle timeout", async () => {

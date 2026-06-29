@@ -46,6 +46,8 @@ interface Connection {
 	client: McpClientLike;
 	tools?: McpToolInfo[];
 	idleTimer?: ReturnType<typeof setTimeout>;
+	/** Number of operations currently running against this connection. */
+	active: number;
 }
 
 interface ManagerOptions {
@@ -139,6 +141,8 @@ export class McpManager {
 		const connection = this.connections.get(name);
 		if (!connection) return;
 		if (connection.idleTimer) clearTimeout(connection.idleTimer);
+		// An operation is still in flight; it will reschedule when it finishes.
+		if (connection.active > 0) return;
 		if (this.idleTimeoutMs <= 0) return;
 		connection.idleTimer = setTimeout(() => {
 			void this.disconnect(name);
@@ -155,7 +159,7 @@ export class McpManager {
 		const attempt = (async (): Promise<Connection> => {
 			try {
 				const client = await this.options.connector(name, serverConfig, signal);
-				const connection: Connection = { client };
+				const connection: Connection = { client, active: 0 };
 				this.connections.set(name, connection);
 				this.states.set(name, { state: "connected" });
 				return connection;
@@ -171,25 +175,34 @@ export class McpManager {
 		return attempt;
 	}
 
-	private async ensureConnected(name: string, signal?: AbortSignal): Promise<Connection> {
+	/**
+	 * Begin an operation: ensure a live connection and disarm idle disconnect so
+	 * the timer can never close a connection out from under an in-flight call.
+	 */
+	private async begin(name: string, signal?: AbortSignal): Promise<Connection> {
+		const connection = this.connections.get(name) ?? (await this.connect(name, signal));
+		connection.active += 1;
+		this.clearIdle(name);
+		return connection;
+	}
+
+	/** End an operation; rearm idle disconnect once nothing else is running. */
+	private end(name: string): void {
 		const connection = this.connections.get(name);
-		if (connection) {
-			// An operation is about to run; disarm idle disconnect until it finishes.
-			this.clearIdle(name);
-			return connection;
-		}
-		return this.connect(name, signal);
+		if (!connection) return;
+		connection.active = Math.max(0, connection.active - 1);
+		this.scheduleIdleDisconnect(name);
 	}
 
 	async listTools(name: string, signal?: AbortSignal): Promise<McpToolInfo[]> {
-		const connection = await this.ensureConnected(name, signal);
+		const connection = await this.begin(name, signal);
 		try {
 			if (!connection.tools) {
 				connection.tools = await connection.client.listTools(signal);
 			}
 			return connection.tools;
 		} finally {
-			this.scheduleIdleDisconnect(name);
+			this.end(name);
 		}
 	}
 
@@ -209,30 +222,42 @@ export class McpManager {
 		signal?: AbortSignal,
 	): Promise<McpCallResult> {
 		this.requireServerConfig(name);
-		const connection = await this.ensureConnected(name, signal);
 		try {
-			return await connection.client.callTool(tool, args, signal);
-		} catch (error) {
-			// Only retry when the transport looks dead; never re-invoke a tool that
-			// failed after the server may have already acted on it.
-			if (isAbort(error) || signal?.aborted || !isConnectionError(error)) throw error;
-			this.options.logger?.(`MCP server "${name}" call failed, reconnecting: ${errorMessage(error)}`);
+			const connection = await this.begin(name, signal);
+			try {
+				return await connection.client.callTool(tool, args, signal);
+			} catch (error) {
+				// Only retry when the transport looks dead; never re-invoke a tool
+				// that failed after the server may have already acted on it.
+				if (isAbort(error) || signal?.aborted || !isConnectionError(error)) throw error;
+				this.options.logger?.(`MCP server "${name}" call failed, reconnecting: ${errorMessage(error)}`);
+			}
 			await this.disconnect(name);
-			const reconnected = await this.ensureConnected(name, signal);
+			const reconnected = await this.begin(name, signal);
 			return await reconnected.client.callTool(tool, args, signal);
 		} finally {
-			this.scheduleIdleDisconnect(name);
+			this.end(name);
 		}
 	}
 
 	async reconnect(name: string, signal?: AbortSignal): Promise<void> {
 		this.requireServerConfig(name);
 		await this.disconnect(name);
-		await this.ensureConnected(name, signal);
-		this.scheduleIdleDisconnect(name);
+		await this.begin(name, signal);
+		this.end(name);
 	}
 
 	async disconnect(name: string): Promise<void> {
+		// A connect may still be in flight; wait for it so we never leak a client
+		// that resolves after we thought the server was gone.
+		const pending = this.connecting.get(name);
+		if (pending) {
+			try {
+				await pending;
+			} catch {
+				// Connection failed; nothing to close.
+			}
+		}
 		const connection = this.connections.get(name);
 		if (!connection) return;
 		this.connections.delete(name);
@@ -246,6 +271,7 @@ export class McpManager {
 	}
 
 	async disconnectAll(): Promise<void> {
-		await Promise.all([...this.connections.keys()].map((name) => this.disconnect(name)));
+		const names = new Set([...this.connections.keys(), ...this.connecting.keys()]);
+		await Promise.all([...names].map((name) => this.disconnect(name)));
 	}
 }

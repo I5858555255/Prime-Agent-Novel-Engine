@@ -18,21 +18,22 @@ function notify(ctx: ExtensionCommandContext, message: string, level: "info" | "
 }
 
 export default function primeMcpExtension(pi: ExtensionAPI): void {
-	let warnings: string[] = [];
+	const warnings: string[] = [];
 	const logger = (message: string) => warnings.push(message);
-	const promoted = new Set<string>();
-	let loadedCwd: string | undefined;
+	const promoted = new Map<string, string>();
+	let loaded = false;
 
 	const manager = new McpManager({ mcpServers: {}, directTools: [] }, { connector: createDefaultConnector(), logger });
 
 	pi.registerTool(createMcpProxyTool(manager));
 
-	// Load config against the session cwd, which may differ from the process cwd
-	// (resumed sessions, daemon sessions, cwd overrides).
-	const loadForCwd = async (cwd: string): Promise<void> => {
-		if (cwd === loadedCwd) return;
-		loadedCwd = cwd;
-		warnings = [];
+	// Config (servers and promoted directTools) is resolved once, from the first
+	// session's working directory. Promoted tools register globally and cannot be
+	// unregistered, so reloading per session would risk leaving direct tools that
+	// point at servers a later config removed. Restart to apply config changes.
+	const loadOnce = async (cwd: string): Promise<void> => {
+		if (loaded) return;
+		loaded = true;
 		let config: McpConfig;
 		try {
 			config = (await loadMcpConfig(cwd)).config;
@@ -47,7 +48,7 @@ export default function primeMcpExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		await loadForCwd(ctx.cwd);
+		await loadOnce(ctx.cwd);
 		if (warnings.length > 0 && ctx.hasUI) {
 			ctx.ui.notify(`MCP: ${warnings.join("; ")}`, "warning");
 		}

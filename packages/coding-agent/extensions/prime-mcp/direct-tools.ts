@@ -20,6 +20,7 @@ function truncate(text: string): string {
 }
 
 function renderContent(content: unknown): string {
+	if (content == null) return "";
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return JSON.stringify(content, null, 2);
 	const parts: string[] = [];
@@ -38,7 +39,11 @@ function renderContent(content: unknown): string {
 	return parts.join("\n");
 }
 
-/** Build a valid, collision-resistant tool name like `mcp__server__tool`. */
+/**
+ * Build a valid tool name like `mcp__server__tool`. Characters outside
+ * `[A-Za-z0-9_]` are replaced, so distinct refs can in theory collide;
+ * `registerDirectTools` detects and warns about that.
+ */
 export function directToolName(server: string, tool: string): string {
 	const clean = (value: string) => value.replace(/[^a-zA-Z0-9_]/g, "_");
 	return `mcp__${clean(server)}__${clean(tool)}`;
@@ -57,8 +62,9 @@ export function buildDirectTool(manager: McpManager, server: string, info: McpTo
 			if (call.isError) {
 				throw new Error(rendered || `MCP tool ${server}/${info.name} returned an error`);
 			}
+			const structured = call.structuredContent ? JSON.stringify(call.structuredContent, null, 2) : "";
 			return {
-				content: [{ type: "text", text: truncate(rendered || "(empty result)") }],
+				content: [{ type: "text", text: truncate(rendered || structured || "(empty result)") }],
 				details: { server, tool: info.name },
 			};
 		},
@@ -74,7 +80,7 @@ export async function registerDirectTools(
 	manager: McpManager,
 	refs: string[],
 	logger: (message: string) => void,
-	registered: Set<string> = new Set<string>(),
+	registered: Map<string, string> = new Map<string, string>(),
 ): Promise<void> {
 	for (const ref of refs) {
 		const parsed = parseToolRef(ref);
@@ -90,9 +96,16 @@ export async function registerDirectTools(
 		try {
 			const info = await manager.describeTool(parsed.server, parsed.tool);
 			const name = directToolName(parsed.server, info.name);
-			// Already promoted (e.g. on a session reload) — registering again would duplicate it.
-			if (registered.has(name)) continue;
-			registered.add(name);
+			const owner = registered.get(name);
+			if (owner !== undefined) {
+				// Already promoted by this ref (idempotent reload), or a different
+				// ref sanitized to the same tool name — warn so the collision is visible.
+				if (owner !== ref) {
+					logger(`directTools entry "${ref}" collides with "${owner}" as tool "${name}"; skipping`);
+				}
+				continue;
+			}
+			registered.set(name, ref);
 			pi.registerTool(buildDirectTool(manager, parsed.server, info));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

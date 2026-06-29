@@ -87,6 +87,11 @@ higher-precedence file overrides a server with the same name. `directTools` are
 unioned across files; `idleTimeoutMs` from the highest-precedence file that sets
 it wins.
 
+Config is read **once**, from the working directory of the first session in the
+process. Promoted `directTools` register as global tools and cannot be
+unregistered, so applying config changes (new servers, changed `directTools`)
+requires restarting Prime Agent.
+
 ### Keys
 
 - `mcpServers` — map of server name to stdio or http config.

@@ -60,7 +60,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 	});
 }
 
-export function adaptClient(client: Client): McpClientLike {
+export function adaptClient(client: Client, transport?: StreamableHTTPClientTransport): McpClientLike {
 	return {
 		async listTools(signal) {
 			const tools: McpToolInfo[] = [];
@@ -95,6 +95,15 @@ export function adaptClient(client: Client): McpClientLike {
 			};
 		},
 		async close() {
+			// End the server-side session for HTTP transports so idle disconnects
+			// and shutdown don't accumulate abandoned sessions on the remote.
+			if (transport) {
+				try {
+					await transport.terminateSession();
+				} catch {
+					// Server may not support explicit termination; close anyway.
+				}
+			}
 			await client.close();
 		},
 	};
@@ -119,6 +128,6 @@ export function createDefaultConnector(options: ConnectorOptions = {}): McpConne
 			await client.close().catch(() => {});
 			throw error;
 		}
-		return adaptClient(client);
+		return adaptClient(client, transport instanceof StreamableHTTPClientTransport ? transport : undefined);
 	};
 }

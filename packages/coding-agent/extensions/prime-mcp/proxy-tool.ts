@@ -47,6 +47,7 @@ function summarizeTool(tool: McpToolInfo): string {
 }
 
 function renderCallContent(content: unknown): string {
+	if (content == null) return "";
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return JSON.stringify(content, null, 2);
 
@@ -139,7 +140,10 @@ export function createMcpProxyTool(manager: McpManager): ToolDefinition<typeof M
 					if (call.isError) {
 						throw new Error(rendered || `MCP tool ${params.server}/${params.tool} returned an error`);
 					}
-					return result(rendered || "(empty result)", {
+					// Fall back to structuredContent for servers that return data there
+					// without an accompanying text block.
+					const structured = call.structuredContent ? JSON.stringify(call.structuredContent, null, 2) : "";
+					return result(rendered || structured || "(empty result)", {
 						action: params.action,
 						server: params.server,
 						tool: params.tool,

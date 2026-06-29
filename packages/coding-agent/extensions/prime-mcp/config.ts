@@ -66,33 +66,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Validate that a config value is a string map (e.g. `headers`, `env`). Values
+ * must be strings so `${VAR}` expansion at connect time never hits a non-string.
+ */
+function parseStringRecord(
+	value: unknown,
+	name: string,
+	field: string,
+	source: string,
+): Record<string, string> | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		throw new Error(`Invalid MCP config in ${source}: server "${name}" ${field} must be an object`);
+	}
+	for (const [key, entry] of Object.entries(value)) {
+		if (typeof entry !== "string") {
+			throw new Error(`Invalid MCP config in ${source}: server "${name}" ${field}.${key} must be a string`);
+		}
+	}
+	return value as Record<string, string>;
+}
+
 function parseServer(name: string, raw: unknown, source: string): McpServerConfig {
 	if (!isRecord(raw)) {
 		throw new Error(`Invalid MCP config in ${source}: server "${name}" must be an object`);
 	}
 
 	if (typeof raw.url === "string") {
-		const headers = raw.headers;
-		if (headers !== undefined && !isRecord(headers)) {
-			throw new Error(`Invalid MCP config in ${source}: server "${name}" headers must be an object`);
-		}
-		return { type: "http", url: raw.url, headers: headers as Record<string, string> | undefined };
+		const headers = parseStringRecord(raw.headers, name, "headers", source);
+		return { type: "http", url: raw.url, headers };
 	}
 
 	if (typeof raw.command === "string") {
 		const args = raw.args;
-		if (args !== undefined && !Array.isArray(args)) {
-			throw new Error(`Invalid MCP config in ${source}: server "${name}" args must be an array`);
+		if (args !== undefined && (!Array.isArray(args) || args.some((arg) => typeof arg !== "string"))) {
+			throw new Error(`Invalid MCP config in ${source}: server "${name}" args must be an array of strings`);
 		}
-		const env = raw.env;
-		if (env !== undefined && !isRecord(env)) {
-			throw new Error(`Invalid MCP config in ${source}: server "${name}" env must be an object`);
-		}
+		const env = parseStringRecord(raw.env, name, "env", source);
 		return {
 			type: "stdio",
 			command: raw.command,
 			args: args as string[] | undefined,
-			env: env as Record<string, string> | undefined,
+			env,
 			cwd: typeof raw.cwd === "string" ? raw.cwd : undefined,
 		};
 	}
