@@ -476,16 +476,14 @@ export class AgentDaemon {
 		if (shouldDeferHeartbeatCronJob(job, state.runtime.session)) {
 			return "skipped";
 		}
-		const followUpQueueKey = isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined;
-		if (!followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
+		if (
+			!isHeartbeatCronJob(job) &&
+			(state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)
+		) {
 			await state.runtime.session.followUp(job.prompt);
 			return;
 		}
-		await state.runtime.session.prompt(job.prompt, {
-			streamingBehavior: state.runtime.session.isStreaming ? "followUp" : undefined,
-			followUpQueueKey,
-			source: "rpc",
-		});
+		await state.runtime.session.prompt(job.prompt, { source: "rpc" });
 	}
 
 	private createCronJobForState(state: ActiveSessionState, schedule: string, prompt: string): AgentCronJob {
