@@ -54,7 +54,9 @@ import {
 	type AgentHeartbeatUpdateAction,
 	createAgentHeartbeatToolDefinitions,
 	DEFAULT_HEARTBEAT_SCHEDULE,
+	isHeartbeatCronJob,
 	normalizeHeartbeatSchedule,
+	shouldDeferHeartbeatCronJob,
 } from "../../core/cron-jobs.js";
 import type {
 	CreateRlmSubagentRuntimeOptions,
@@ -538,18 +540,19 @@ export class AgentDaemon {
 		if (!state) {
 			return;
 		}
-		const followUpQueueKey = isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined;
-		if (followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
-			const didQueue = await state.runtime.session.followUp(job.prompt, undefined, { queueKey: followUpQueueKey });
-			return didQueue ? undefined : "skipped";
+		if (shouldDeferHeartbeatCronJob(job, state.runtime.session)) {
+			return "skipped";
 		}
-		if (!followUpQueueKey && (state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)) {
+		if (
+			!isHeartbeatCronJob(job) &&
+			(state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)
+		) {
 			await state.runtime.session.followUp(job.prompt);
 			return;
 		}
 		await state.runtime.session.prompt(job.prompt, {
-			streamingBehavior: state.runtime.session.isStreaming ? "followUp" : undefined,
-			followUpQueueKey,
+			streamingBehavior: "followUp",
+			followUpQueueKey: isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined,
 			source: "rpc",
 		});
 	}
@@ -2085,10 +2088,6 @@ export class AgentDaemon {
 		this.cleanupSocketPath();
 		process.exit(exitCode);
 	}
-}
-
-function isHeartbeatCronJob(job: AgentCronJob): boolean {
-	return job.source === "heartbeat" || job.source === "rlm_heartbeat";
 }
 
 function serializeSavedSessionInfo(session: SessionInfo): DaemonSavedSessionInfo {
