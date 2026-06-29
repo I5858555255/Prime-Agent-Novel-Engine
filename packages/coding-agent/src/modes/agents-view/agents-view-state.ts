@@ -159,9 +159,7 @@ export function buildAgentsViewRows(
 			return;
 		}
 		const childHasSpawnCode = children.some((child) => hasSpawnCode(child.summary));
-		// Match identity or sessionId: a persisted ancestor breadcrumb keys by the
-		// stable sessionId, while in-session expansions key by row identity.
-		if (expandedSubagentParents.has(row.identity) || expandedSubagentParents.has(row.summary.sessionId)) {
+		if (expandedSubagentParents.has(row.identity)) {
 			const showProgram = programShownParents.has(row.identity);
 			const groups = groupChildrenBySpawnCode(children.sort(compareAgentsViewRows));
 			for (const [groupIndex, group] of groups.entries()) {

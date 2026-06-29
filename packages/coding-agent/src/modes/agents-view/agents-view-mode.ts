@@ -98,14 +98,17 @@ type AgentsViewRunResult =
 			type: "open";
 			summary: SessionSummary;
 			subagent?: SessionSummary;
-			// Row identities of every ancestor that must be expanded to reveal the
+			// Session ids of every ancestor that must be expanded to reveal the
 			// opened subagent, from the root agent down to its immediate parent.
-			subagentAncestorIdentities?: string[];
+			subagentAncestorSessionIds?: string[];
 	  };
 type AgentsViewPersistentState = {
 	selectedRowIdentity?: string;
 	selectedSessionKey?: AgentsViewSelectionKey;
-	expandedSubagentParents?: string[];
+	// Session ids of the ancestor chain to re-expand when returning to a subagent.
+	// Resolved to live row identities on first build, then cleared; kept by
+	// sessionId so it survives a parent's active→persisted identity flip.
+	pendingExpandedAncestorSessionIds?: string[];
 	statusMessage?: string;
 	initialPromptsSent?: boolean;
 	// Gathered once and reused across agents-view instances so the notices survive
@@ -247,13 +250,11 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			// list expanded and that subagent reselected.
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.subagent);
 			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.subagent);
-			persistentState.expandedSubagentParents = result.subagentAncestorIdentities ?? [];
+			persistentState.pendingExpandedAncestorSessionIds = result.subagentAncestorSessionIds ?? [];
 		} else {
 			persistentState.selectedRowIdentity = getSummaryIdentity(result.summary);
 			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.summary);
-			// Don't carry expansions into a plain agent re-entry; that would
-			// resurrect collapsed lists, contradicting collapse-on-leave.
-			persistentState.expandedSubagentParents = undefined;
+			persistentState.pendingExpandedAncestorSessionIds = undefined;
 		}
 
 		let opened: { connection: DaemonAgentConnection; summary: SessionSummary } | undefined;
@@ -345,7 +346,6 @@ class AgentsViewMode implements Component, Focusable {
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
 		this.selectedSessionKey = persistentState.selectedSessionKey;
 		this.selectedActiveSessionId = persistentState.selectedSessionKey?.activeSessionId;
-		this.expandedSubagentParents = new Set(persistentState.expandedSubagentParents ?? []);
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		setRegisteredThemes(options.uiServices.getThemes());
@@ -728,6 +728,32 @@ class AgentsViewMode implements Component, Focusable {
 		this.ui.requestRender();
 	}
 
+	/**
+	 * Resolve the persisted ancestor breadcrumb (session ids) to live row
+	 * identities and expand them, so returning to a subagent reopens its whole
+	 * chain. Identity-keyed from here on, matching the rest of the expansion
+	 * lifecycle; runs once then clears.
+	 */
+	private applyPendingAncestorExpansion(): void {
+		const sessionIds = this.persistentState.pendingExpandedAncestorSessionIds;
+		if (!sessionIds || sessionIds.length === 0) {
+			this.persistentState.pendingExpandedAncestorSessionIds = undefined;
+			return;
+		}
+		this.persistentState.pendingExpandedAncestorSessionIds = undefined;
+		const wanted = new Set(sessionIds);
+		let added = false;
+		for (const row of this.rows) {
+			if (wanted.has(row.summary.sessionId) && !this.expandedSubagentParents.has(row.identity)) {
+				this.expandedSubagentParents.add(row.identity);
+				added = true;
+			}
+		}
+		if (added) {
+			this.rebuildRows();
+		}
+	}
+
 	/** Expanded subagent lists collapse back to their summary row once selection leaves them. */
 	private collapseSubagentListsOutsideSelection(): void {
 		if (this.expandedSubagentParents.size === 0) {
@@ -1087,7 +1113,7 @@ class AgentsViewMode implements Component, Focusable {
 			type: "open",
 			summary: root.summary,
 			subagent: row.summary,
-			subagentAncestorIdentities: this.collectSubagentAncestorIdentities(row),
+			subagentAncestorSessionIds: this.collectSubagentAncestorSessionIds(row),
 		});
 	}
 
@@ -1096,7 +1122,7 @@ class AgentsViewMode implements Component, Focusable {
 	 * sessionId rather than row identity so the breadcrumb survives a parent's
 	 * active→persisted identity flip while the subagent is open.
 	 */
-	private collectSubagentAncestorIdentities(row: AgentsViewRow): string[] {
+	private collectSubagentAncestorSessionIds(row: AgentsViewRow): string[] {
 		const ancestors: string[] = [];
 		let parentIdentity = row.parentIdentity;
 		while (parentIdentity !== undefined) {
@@ -1531,6 +1557,7 @@ class AgentsViewMode implements Component, Focusable {
 				this.expandedSubagentParents,
 				this.programShownParents,
 			);
+			this.applyPendingAncestorExpansion();
 			this.restoreSelection();
 			this.ui.requestRender();
 		} catch (error) {

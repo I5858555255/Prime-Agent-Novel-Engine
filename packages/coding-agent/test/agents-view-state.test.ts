@@ -191,12 +191,6 @@ describe("agents view state", () => {
 			["Completed child", "subagent", 1],
 		]);
 		expect(expanded.slice(1).every((row) => row.selectable && row.parentIdentity === parentIdentity)).toBe(true);
-
-		// A persisted parent's row identity is file:-keyed, but a breadcrumb stored
-		// by stable sessionId must still expand it.
-		expect(parentIdentity).not.toBe("parent-session");
-		const expandedBySessionId = buildAgentsViewRows(summaries, new Set(["parent-session"]));
-		expect(expandedBySessionId.map((row) => row.kind)).toEqual(["agent", "subagent", "subagent"]);
 	});
 
 	test("keeps finished subagents reachable via the summary row", () => {
