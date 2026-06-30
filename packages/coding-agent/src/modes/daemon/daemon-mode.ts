@@ -279,8 +279,7 @@ export class AgentDaemon {
 		this.registerSignalHandlers();
 		this.summarizer.start();
 		this.log(`Prime Agent daemon listening on ${this.socketPath}`);
-		// The daemon starts with no resident sessions: on-disk sessions are
-		// brought back only via explicit /resume or --resume, never auto-restored.
+		// No startup restore: on-disk sessions return only via /resume or --resume.
 		if (!this.shuttingDown) {
 			this.cronScheduler.start();
 		}
@@ -1566,9 +1565,7 @@ export class AgentDaemon {
 		// draft closed via kill/completed is never wiped.
 		const isEmptyDraftSession = reason !== "shutdown" && this.isEmptyDraftContent(state);
 		let persistError: unknown;
-		// A clean shutdown leaves the session un-archived on purpose: it stays an
-		// on-disk "live" record reachable via /resume and --resume. Other closes
-		// (kill/completed/replaced) archive it so it drops out of the resume list.
+		// Clean shutdown leaves the session un-archived so it stays in the resume list.
 		if (reason !== "shutdown" && !isEmptyDraftSession) {
 			try {
 				state.runtime.session.sessionManager.appendSessionState({ status: "archived" });

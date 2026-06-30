@@ -154,9 +154,8 @@ export function createAgentsViewResumeConfig(
 }
 
 export function createAgentsViewListCommand(): Extract<DaemonCommand, { type: "list" }> {
-	// Resident-only: omitting `all` makes the daemon return just its in-memory
-	// sessions. On-disk sessions are reachable via /resume and --resume, never
-	// auto-surfaced here.
+	// Omitting `all` returns daemon-resident sessions only; on-disk ones come back
+	// via /resume.
 	return { type: "list" };
 }
 
