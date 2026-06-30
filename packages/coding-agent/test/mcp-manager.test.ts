@@ -97,14 +97,35 @@ describe("McpManager", () => {
 		expect(called).toBe("linear");
 	});
 
-	it("mcp.config returns the resolved URL, honoring a user override of a catalog name", async () => {
+	it("mcp.config returns the resolved URL + headers, honoring a user override of a catalog name", async () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({
+				linear: { type: "http", url: "https://proxy.test/mcp", oauth: true, headers: { "X-Extra": "1" } },
+			}),
+		});
+		const handlers = manager.hostHandlers();
+		expect(await handlers["mcp.config"]({ server: "linear" })).toEqual({
+			url: "https://proxy.test/mcp",
+			headers: { "X-Extra": "1" },
+		});
+		expect(await handlers["mcp.config"]({ server: "notion" })).toEqual({ url: "https://mcp.notion.com/mcp" });
+	});
+
+	it("does not treat an oauth override of a catalog name as authed via the official stored cred", () => {
+		// Pre-existing official Linear cred from a prior login.
+		authStorage.set("mcp:linear", {
+			type: "oauth",
+			access: "official",
+			refresh: "r",
+			expires: Date.now() + 3600_000,
+		});
 		const manager = new McpManager({
 			authStorage,
 			getUserServers: () => ({ linear: { type: "http", url: "https://proxy.test/mcp", oauth: true } }),
 		});
-		const handlers = manager.hostHandlers();
-		expect(await handlers["mcp.config"]({ server: "linear" })).toEqual({ url: "https://proxy.test/mcp" });
-		expect(await handlers["mcp.config"]({ server: "notion" })).toEqual({ url: "https://mcp.notion.com/mcp" });
+		// Must NOT be enabled — else the official token would be sent to the override URL.
+		expect(manager.listStatus().find((s) => s.server === "linear")?.enabled).toBe(false);
 	});
 
 	it("honors a bearer-token env var for user-declared servers", () => {

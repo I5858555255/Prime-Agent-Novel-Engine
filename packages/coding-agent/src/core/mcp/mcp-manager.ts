@@ -27,6 +27,8 @@ interface ResolvedIntegration {
 	usesOAuth: boolean;
 	bearerTokenEnvVar?: string;
 	enabled?: boolean;
+	/** Extra static HTTP headers from the user config. */
+	headers?: Record<string, string>;
 	/** True when this came from Settings.mcpServers (may override a catalog name). */
 	userDeclared?: boolean;
 }
@@ -76,6 +78,7 @@ export class McpManager {
 				usesOAuth: config.oauth === true,
 				bearerTokenEnvVar: config.bearerTokenEnvVar,
 				enabled: config.enabled,
+				headers: config.headers,
 				userDeclared: true,
 			});
 		}
@@ -126,10 +129,11 @@ export class McpManager {
 		if (integration.bearerTokenEnvVar && process.env[integration.bearerTokenEnvVar]?.trim()) {
 			return true;
 		}
-		// A user server that overrides a catalog name without OAuth must NOT inherit
-		// the built-in's stored mcp: creds — those belong to the official endpoint and
-		// would be sent to the override URL. Such a server authes only via its env var.
-		if (integration.userDeclared && !integration.usesOAuth && getCatalogEntry(integration.server)) {
+		// A user server that overrides a catalog name must NOT inherit the built-in's
+		// stored mcp: creds — those were issued for the official endpoint and could be
+		// sent to the override URL. Such an override authenticates only via a bearer
+		// env var (handled above); we don't trust auth.json OAuth creds for it.
+		if (integration.userDeclared && getCatalogEntry(integration.server)) {
 			return false;
 		}
 		const cred = this.authStorage.get(this.providerId(integration.server));
@@ -166,8 +170,13 @@ export class McpManager {
 			"mcp.config": async (payload) => {
 				const server = String(payload.server ?? "");
 				if (!server) throw new Error("mcp.config requires a server");
-				const url = this.integrations.get(server)?.url;
-				return url ? { url } : {};
+				const integration = this.integrations.get(server);
+				if (!integration) return {};
+				const config: Record<string, unknown> = { url: integration.url };
+				if (integration.headers && Object.keys(integration.headers).length > 0) {
+					config.headers = integration.headers;
+				}
+				return config;
 			},
 		};
 		// Only expose begin_login when an interactive login is actually wired, so the
