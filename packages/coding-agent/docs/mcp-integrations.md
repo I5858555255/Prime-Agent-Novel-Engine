@@ -117,14 +117,14 @@ acme/
   src/acme/__init__.py
 ```
 
-`pyproject.toml` (depends on `mcp` and `prime-agent-runtime`):
+`pyproject.toml` (depends on `mcp`, `httpx`, and `prime-agent-runtime`):
 
 ```toml
 [project]
 name = "prime-agent-skill-acme"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["mcp", "prime-agent-runtime"]
+dependencies = ["mcp", "httpx", "prime-agent-runtime"]
 
 [build-system]
 requires = ["hatchling"]
