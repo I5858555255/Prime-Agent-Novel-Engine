@@ -78,10 +78,11 @@ the reference implementations.
 
 ### 1. Declare the server
 
-Add it under `mcpServers` in `~/.prime/settings.json` (or project
-`.prime/settings.json`):
+Add it under `mcpServers` in `~/.prime/agent/settings.json` (or project
+`.prime/agent/settings.json`):
 
 ```jsonc
+// ~/.prime/agent/settings.json
 {
   "mcpServers": {
     "acme": {
@@ -144,7 +145,14 @@ class Acme(McpIntegration):
 
 acme = Acme()
 
-def __getattr__(name):                   # so `import acme; await acme.<tool>(...)` works
+# Forward bare module access (`import acme; await acme.<tool>(...)`) to the
+# instance, but NOT the names the kernel bootstrap probes — forwarding `run`
+# would make it treat the module as a callable skill and break tool dispatch.
+_RESERVED = {"run", "__wrapped__", "__call__"}
+
+def __getattr__(name):
+    if name.startswith("_") or name in _RESERVED:
+        raise AttributeError(name)
     return getattr(acme, name)
 ```
 
