@@ -293,13 +293,18 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 			// another machine). The login dialog supplies onManualCodeInput; when
 			// absent we fall back to a blocking prompt after the callback resolves.
 			let result: { code: string; state: string } | null;
+			let manualCancelled = false;
 			if (callbacks.onManualCodeInput) {
-				// .catch so that if the callback wins the race and the manual prompt is
-				// later cancelled (rejects), it doesn't become an unhandled rejection.
+				// Catch so a manual-prompt rejection after the callback wins isn't an
+				// unhandled rejection — but remember it so a genuine cancel surfaces as
+				// a cancellation, not a misleading "Missing authorization code".
 				const manual = callbacks
 					.onManualCodeInput()
 					.then((input) => parseRedirectInput(input, state))
-					.catch(() => null)
+					.catch(() => {
+						manualCancelled = true;
+						return null;
+					})
 					.finally(() => cb.cancel());
 				const fromCallback = await cb.waitForCode();
 				result = fromCallback ?? (await manual);
@@ -314,7 +319,7 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 				}
 			}
 			if (!result) {
-				throw new Error("Missing authorization code");
+				throw new Error(manualCancelled ? "Login cancelled" : "Missing authorization code");
 			}
 			if (result.state !== state) {
 				throw new Error("OAuth state mismatch");

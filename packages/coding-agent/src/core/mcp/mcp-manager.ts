@@ -6,7 +6,7 @@ import {
 	createMcpOAuthProvider,
 	registerBuiltinMcpOAuthProviders,
 } from "@earendil-works/pi-ai/mcp";
-import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import { registerOAuthProvider, unregisterOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import type { AuthStorage } from "../auth-storage.js";
 import type { McpServerConfig } from "../settings-manager.js";
 
@@ -35,6 +35,8 @@ export class McpManager {
 	private readonly getUserServers: () => Record<string, McpServerConfig> | undefined;
 	private readonly beginLogin?: (server: string) => Promise<void>;
 	private integrations = new Map<string, ResolvedIntegration>();
+	/** Provider ids we registered for user servers, so refresh can drop removed ones. */
+	private registeredUserProviderIds = new Set<string>();
 
 	constructor(options: McpManagerOptions) {
 		this.authStorage = options.authStorage;
@@ -90,10 +92,13 @@ export class McpManager {
 	 * `mcp:<server>` providers vanish on every refresh (e.g. post-login).
 	 */
 	registerUserProviders(): void {
+		const current = new Set<string>();
 		for (const integration of this.integrations.values()) {
 			// Register based on userDeclared (not getCatalogEntry) so a user server that
 			// overrides a catalog name still gets a provider pointed at its own URL.
 			if (!integration.usesOAuth || !integration.userDeclared) continue;
+			const id = this.providerId(integration.server);
+			current.add(id);
 			registerOAuthProvider(
 				createMcpOAuthProvider({
 					server: integration.server,
@@ -102,6 +107,11 @@ export class McpManager {
 				}),
 			);
 		}
+		// Drop providers for user servers removed since the last registration.
+		for (const id of this.registeredUserProviderIds) {
+			if (!current.has(id)) unregisterOAuthProvider(id);
+		}
+		this.registeredUserProviderIds = current;
 	}
 
 	/** True when valid credentials exist for the integration (drives enablement). */

@@ -84,6 +84,11 @@ class McpIntegrationTest(unittest.TestCase):
         self._write_auth({"type": "api_key", "key": "key-abc"})
         self.assertEqual(_run(_Integration()._resolve_token()), "key-abc")
 
+    def test_api_key_env_indirection_resolved(self):
+        self._write_auth({"type": "api_key", "key": "MY_MCP_KEY"})
+        with mock.patch.dict("os.environ", {"MY_MCP_KEY": "resolved-secret"}):
+            self.assertEqual(_run(_Integration()._resolve_token()), "resolved-secret")
+
     def test_refreshes_via_host_when_expired(self):
         self._write_auth(
             {"type": "oauth", "access": "old", "refresh": "r", "expires": (time.time() - 10) * 1000}

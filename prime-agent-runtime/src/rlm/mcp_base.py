@@ -77,6 +77,19 @@ def _read_auth(provider: str) -> dict[str, Any] | None:
     return cred if isinstance(cred, dict) else None
 
 
+def _resolve_config_value(value: str) -> str:
+    """Resolve a stored api_key value the way the host does.
+
+    A value may be a literal, an env-var name, or a `!command` indirection. The
+    command form can't run safely in the kernel (the host injects those resolved),
+    so skip it; otherwise treat the value as an env-var name if set, else literal.
+    """
+    value = value.strip()
+    if not value or value.startswith("!"):
+        return ""
+    return (os.environ.get(value) or value).strip()
+
+
 def _resolve_streamable_http():
     """Return an SDK streamable-HTTP transport callable.
 
@@ -140,7 +153,7 @@ class McpIntegration:
         if cred is None:
             return None
         if cred.get("type") == "api_key":
-            return str(cred.get("key") or "") or None
+            return _resolve_config_value(str(cred.get("key") or "")) or None
         # OAuth credential: {access, refresh, expires(ms)}.
         access = str(cred.get("access") or "")
         expires = cred.get("expires")

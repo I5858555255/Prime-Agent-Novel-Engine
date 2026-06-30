@@ -132,4 +132,16 @@ describe("McpManager", () => {
 		expect(manager.listStatus().find((s) => s.server === "acme")).toBeDefined();
 		expect(getOAuthProvider("mcp:acme")).toBeDefined();
 	});
+
+	it("unregisters a user server's OAuth provider when it's removed on refresh()", () => {
+		let servers: Record<string, McpServerConfig> = {
+			acme: { type: "http", url: "https://mcp.acme.test/mcp", oauth: true },
+		};
+		const manager = new McpManager({ authStorage, getUserServers: () => servers });
+		expect(getOAuthProvider("mcp:acme")).toBeDefined();
+
+		servers = {};
+		manager.refresh();
+		expect(getOAuthProvider("mcp:acme")).toBeUndefined();
+	});
 });
