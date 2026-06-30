@@ -295,17 +295,24 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 			let result: { code: string; state: string } | null;
 			let manualCancelled = false;
 			if (callbacks.onManualCodeInput) {
-				// Catch so a manual-prompt rejection after the callback wins isn't an
-				// unhandled rejection — but remember it so a genuine cancel surfaces as
-				// a cancellation, not a misleading "Missing authorization code".
+				// Manual paste races the browser callback. A real paste cancels the
+				// callback waiter (we're done). On manual cancellation we still settle
+				// the waiter to avoid hanging when no redirect arrives — but only after
+				// a short grace period so an in-flight browser redirect can win first.
+				// .catch keeps a late rejection from becoming an unhandled rejection.
 				const manual = callbacks
 					.onManualCodeInput()
-					.then((input) => parseRedirectInput(input, state))
-					.catch(() => {
-						manualCancelled = true;
-						return null;
+					.then((input) => {
+						const parsed = parseRedirectInput(input, state);
+						cb.cancel();
+						return parsed;
 					})
-					.finally(() => cb.cancel());
+					.catch(async () => {
+						manualCancelled = true;
+						await new Promise((r) => setTimeout(r, 500));
+						cb.cancel();
+						return null;
+					});
 				const fromCallback = await cb.waitForCode();
 				result = fromCallback ?? (await manual);
 			} else {
