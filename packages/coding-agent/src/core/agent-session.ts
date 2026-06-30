@@ -2236,7 +2236,9 @@ export class AgentSession {
 				() => undefined,
 				(error: unknown) => error,
 			),
-			new Promise<typeof promptAccepted>((resolve) => queueMicrotask(() => resolve(promptAccepted))),
+			new Promise<typeof promptAccepted>((resolve) => {
+				setTimeout(() => resolve(promptAccepted), 0);
+			}),
 		]);
 		if (firstOutcome !== undefined && firstOutcome !== promptAccepted) {
 			reportPreflight(false);

@@ -1170,27 +1170,49 @@ export class AgentDaemon {
 					responseSent = true;
 					this.write(client, success(command.id, "prompt"));
 				};
-				void state.runtime.session
-					.prompt(command.message, {
-						images: command.images,
-						streamingBehavior: command.streamingBehavior,
-						source: "rpc",
-						preflightResult: (didSucceed) => {
-							if (didSucceed) {
-								sendSuccessResponse();
-							}
-						},
-					})
-					.then(() => {
-						sendSuccessResponse();
-					})
-					.catch((error) => {
-						if (responseSent) {
-							this.broadcastToSession(state, failure(undefined, "prompt", error, serializeDaemonError(error)));
-						} else {
-							this.write(client, failure(command.id, "prompt", error, serializeDaemonError(error)));
-						}
-					});
+				void this.withAgentMessageTargetLock(
+					state.activeSessionId,
+					() =>
+						new Promise<void>((resolveLock) => {
+							let lockReleased = false;
+							const releaseLock = () => {
+								if (lockReleased) {
+									return;
+								}
+								lockReleased = true;
+								resolveLock();
+							};
+							void state.runtime.session
+								.prompt(command.message, {
+									images: command.images,
+									streamingBehavior: command.streamingBehavior,
+									source: "rpc",
+									preflightResult: (didSucceed) => {
+										if (didSucceed) {
+											sendSuccessResponse();
+											releaseLock();
+										}
+									},
+								})
+								.then(() => {
+									sendSuccessResponse();
+									releaseLock();
+								})
+								.catch((error) => {
+									if (responseSent) {
+										this.broadcastToSession(
+											state,
+											failure(undefined, "prompt", error, serializeDaemonError(error)),
+										);
+									} else {
+										this.write(client, failure(command.id, "prompt", error, serializeDaemonError(error)));
+									}
+									releaseLock();
+								});
+						}),
+				).catch((error) => {
+					this.write(client, failure(command.id, "prompt", error, serializeDaemonError(error)));
+				});
 				return undefined;
 			}
 
