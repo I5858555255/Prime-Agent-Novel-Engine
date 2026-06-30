@@ -220,8 +220,14 @@ activate the integration.
 a skills directory is loaded like any other skill — visible to the model and
 imported into the kernel immediately, regardless of `auth.json`. It simply fails
 at call time with `NotEnabled` until credentials exist. So make the skill's
-`SKILL.md` tell the model to prompt the user to log in (e.g. via `/mcp login`)
-rather than assuming it's connected.
+`SKILL.md` tell the model how to connect when a call raises `NotEnabled`, matching
+the auth mode you configured:
+
+- **OAuth** (`"oauth": true`): instruct the user to run `/mcp login <server>` (or
+  `/login` → Services). `/mcp login` only works for OAuth servers.
+- **Bearer token** (`bearerTokenEnvVar`): instruct the user to set that env var —
+  do *not* point them at `/mcp login`, which has no provider for a bearer-only
+  server and reports "Unknown MCP integration".
 
 ## Caveats
 
