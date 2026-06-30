@@ -547,17 +547,18 @@ async function resolveRuntimeSourceDir(): Promise<string | null> {
 }
 
 // Identity of the runtime to be installed. For a local source checkout this is a
-// content hash of every rlm/*.py file, so any runtime change invalidates an
-// existing venv automatically. Falls back to the bare package name when the
-// runtime resolves to a registry install (no local source to hash).
+// content hash of every rlm/*.py file plus pyproject.toml, so any runtime code or
+// dependency change invalidates an existing venv automatically. Falls back to the
+// bare package name when the runtime resolves to a registry install (no local source).
 export async function resolveRuntimeIdentity(): Promise<string> {
 	const sourceDir = await resolveRuntimeSourceDir();
 	if (!sourceDir) return RUNTIME_REQUIREMENT;
-	return hashRuntimeSource(path.join(sourceDir, "src", "rlm"));
+	return hashRuntimeSource(sourceDir);
 }
 
-async function hashRuntimeSource(rlmDir: string): Promise<string> {
-	const files: string[] = [];
+async function hashRuntimeSource(sourceDir: string): Promise<string> {
+	const rlmDir = path.join(sourceDir, "src", "rlm");
+	const files: string[] = [path.join(sourceDir, "pyproject.toml")];
 	async function collect(dir: string): Promise<void> {
 		const entries = await readdir(dir, { withFileTypes: true });
 		for (const entry of entries) {
@@ -577,7 +578,7 @@ async function hashRuntimeSource(rlmDir: string): Promise<string> {
 	files.sort();
 	const hash = createHash("sha256");
 	for (const file of files) {
-		hash.update(path.relative(rlmDir, file));
+		hash.update(path.relative(sourceDir, file));
 		hash.update("\0");
 		hash.update(await readFile(file));
 		hash.update("\0");
