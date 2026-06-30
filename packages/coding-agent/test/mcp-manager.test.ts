@@ -134,6 +134,16 @@ describe("McpManager", () => {
 		expect(getOAuthProvider("mcp:acme")).toBeDefined();
 	});
 
+	it("drops the built-in provider when a catalog name is overridden without oauth", () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({ linear: { type: "http", url: "https://proxy.test/mcp" } }),
+		});
+		void manager;
+		// Built-in linear provider must be gone so we don't send the official token to the override URL.
+		expect(getOAuthProvider("mcp:linear")).toBeUndefined();
+	});
+
 	it("unregisters a user server's OAuth provider when it's removed on refresh()", () => {
 		let servers: Record<string, McpServerConfig> = {
 			acme: { type: "http", url: "https://mcp.acme.test/mcp", oauth: true },

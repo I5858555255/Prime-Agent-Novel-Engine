@@ -4,6 +4,7 @@
 import {
 	BUILTIN_MCP_CATALOG,
 	createMcpOAuthProvider,
+	getCatalogEntry,
 	registerBuiltinMcpOAuthProviders,
 } from "@earendil-works/pi-ai/mcp";
 import { registerOAuthProvider, unregisterOAuthProvider } from "@earendil-works/pi-ai/oauth";
@@ -94,18 +95,23 @@ export class McpManager {
 	registerUserProviders(): void {
 		const current = new Set<string>();
 		for (const integration of this.integrations.values()) {
-			// Register based on userDeclared (not getCatalogEntry) so a user server that
-			// overrides a catalog name still gets a provider pointed at its own URL.
-			if (!integration.usesOAuth || !integration.userDeclared) continue;
+			if (!integration.userDeclared) continue;
 			const id = this.providerId(integration.server);
-			current.add(id);
-			registerOAuthProvider(
-				createMcpOAuthProvider({
-					server: integration.server,
-					label: integration.label,
-					url: integration.url,
-				}),
-			);
+			if (integration.usesOAuth) {
+				// Register pointing at the user's URL (overrides a catalog default too).
+				current.add(id);
+				registerOAuthProvider(
+					createMcpOAuthProvider({
+						server: integration.server,
+						label: integration.label,
+						url: integration.url,
+					}),
+				);
+			} else if (getCatalogEntry(integration.server)) {
+				// User overrode a catalog server with a custom URL but no oauth: drop the
+				// built-in provider so we never send the official token to that URL.
+				unregisterOAuthProvider(id);
+			}
 		}
 		// Drop providers for user servers removed since the last registration.
 		for (const id of this.registeredUserProviderIds) {
