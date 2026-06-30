@@ -1857,6 +1857,7 @@ export class AgentDaemon {
 				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
 				session.isStreaming ||
 				session.isRetrying ||
+				session.hasAcceptedPromptInFlight ||
 				session.pendingMessageCount > 0;
 			const streamingBehavior =
 				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
