@@ -582,6 +582,66 @@ describe("AgentSession queue characterization", () => {
 		}
 	});
 
+	it("strips global display prefixes before applying local refine edits", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			const localDir = getLocalHarnessStateDir(harness.sessionManager.getSessionArtifactDir())!;
+			const localState = loadHarnessState(localDir, "local");
+			applyRefinementProposal(
+				localState,
+				{
+					summary: "Local memory",
+					rationale: "seed",
+					expectedOutcome: "seeded",
+					edits: [
+						{
+							action: "create",
+							kind: "memory",
+							id: "shared",
+							title: "Shared",
+							content: "Local content",
+						},
+					],
+				},
+				{ id: "seed_local", scope: "local" },
+			);
+			saveHarnessState(localDir, localState);
+			harness.setResponses([
+				fauxAssistantMessage(
+					JSON.stringify({
+						summary: "Update local memory",
+						rationale: "The display id came from merged state.",
+						expectedOutcome: "The local entry changes without a prefixed id.",
+						edits: [
+							{
+								action: "update",
+								kind: "memory",
+								id: "global:shared",
+								title: "Shared",
+								content: "Updated local content",
+							},
+						],
+					}),
+				),
+			]);
+
+			const result = await harness.session.refine({ instructions: "update local memory" });
+
+			expect(result.appliedEdits[0]).toMatchObject({ id: "shared", applied: true });
+			expect(loadHarnessState(localDir, "local").entries.memory.shared.content).toBe("Updated local content");
+			expect(loadHarnessState(localDir, "local").entries.memory["global:shared"]).toBeUndefined();
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
+
 	it("strips global display prefixes before applying global refine edits", async () => {
 		const harness = await createAutoRefineHarness();
 		harnesses.push(harness);

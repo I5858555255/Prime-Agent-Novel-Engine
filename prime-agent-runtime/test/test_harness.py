@@ -471,6 +471,24 @@ class HarnessStateTest(unittest.TestCase):
             )
             self.assertFalse((env_global_dir / "harness_state.json").exists())
 
+    def test_local_state_requires_local_path(self) -> None:
+        previous_local = os.environ.get("RLM_HARNESS_STATE_DIR")
+        previous_session = os.environ.get("RLM_SESSION_DIR")
+        try:
+            os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+            os.environ.pop("RLM_SESSION_DIR", None)
+            with self.assertRaisesRegex(RuntimeError, "Local harness state requires"):
+                HarnessState()
+        finally:
+            if previous_local is None:
+                os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+            else:
+                os.environ["RLM_HARNESS_STATE_DIR"] = previous_local
+            if previous_session is None:
+                os.environ.pop("RLM_SESSION_DIR", None)
+            else:
+                os.environ["RLM_SESSION_DIR"] = previous_session
+
     def test_default_state_uses_global_harness_env_dir(self) -> None:
         previous = os.environ.get("RLM_HARNESS_STATE_DIR")
         with tempfile.TemporaryDirectory() as temp_dir:

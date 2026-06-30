@@ -62,6 +62,11 @@ def _state_file(state_dir: str | Path | None = None, *, global_: bool = False) -
         root = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR") if global_ else os.environ.get("RLM_HARNESS_STATE_DIR")
     if root is None and not global_ and os.environ.get("RLM_SESSION_DIR"):
         root = Path(os.environ["RLM_SESSION_DIR"]) / _DEFAULT_HARNESS_DIR_NAME
+    if root is None and not global_:
+        raise RuntimeError(
+            "Local harness state requires RLM_HARNESS_STATE_DIR or RLM_SESSION_DIR. "
+            "Use get_harness_state(global_=True) for global state."
+        )
     if root:
         return Path(root).expanduser().resolve() / _DEFAULT_FILE_NAME
     return _agent_dir() / _DEFAULT_HARNESS_DIR_NAME / _DEFAULT_FILE_NAME

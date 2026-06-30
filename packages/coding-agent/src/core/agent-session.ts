@@ -3305,10 +3305,15 @@ export class AgentSession {
 			const proposal = {
 				...plan.proposal,
 				edits: plan.proposal.edits.map((edit) => {
-					const displayPrefix = `${targetScope}:`;
+					const localPrefix = "local:";
+					const globalPrefix = "global:";
 					return {
 						...edit,
-						id: edit.id?.startsWith(displayPrefix) ? edit.id.slice(displayPrefix.length) : edit.id,
+						id: edit.id?.startsWith(localPrefix)
+							? edit.id.slice(localPrefix.length)
+							: edit.id?.startsWith(globalPrefix)
+								? edit.id.slice(globalPrefix.length)
+								: edit.id,
 					};
 				}),
 			};
