@@ -6658,9 +6658,14 @@ export class InteractiveMode {
 			if (authResult.status === "success" && authResult.kind !== "service") {
 				await this.promptForModelSelection();
 			}
-			// An MCP integration login enables its skill, so reload resources.
+			// An MCP integration login enables its skill, so reload resources — but a
+			// reload is refused mid-turn, so tell the user to /reload (matching /mcp login).
 			if (authResult.status === "success" && authResult.providerId.startsWith("mcp:")) {
-				await this.handleReloadCommand();
+				if (this.isAgentStreaming() || this.isAgentCompacting()) {
+					this.showStatus("Connected. Run /reload (after the current turn) to activate the integration.");
+				} else {
+					await this.handleReloadCommand();
+				}
 			}
 			return;
 		}

@@ -294,27 +294,35 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 			// absent we fall back to a blocking prompt after the callback resolves.
 			let result: { code: string; state: string } | null;
 			let manualCancelled = false;
+			let manualError: Error | undefined;
 			if (callbacks.onManualCodeInput) {
 				// Manual paste races the browser callback. A real paste cancels the
 				// callback waiter (we're done). On manual cancellation we still settle
 				// the waiter to avoid hanging when no redirect arrives — but only after
 				// a short grace period so an in-flight browser redirect can win first.
-				// .catch keeps a late rejection from becoming an unhandled rejection.
 				const manual = callbacks
 					.onManualCodeInput()
 					.then((input) => {
-						const parsed = parseRedirectInput(input, state);
+						const parsed = parseRedirectInput(input, state); // may throw a validation error
 						cb.cancel();
 						return parsed;
 					})
-					.catch(async () => {
-						manualCancelled = true;
+					.catch(async (err) => {
+						// A validation error on a real paste (bad state / no code) is a genuine
+						// failure to surface; a UI cancellation is not. .catch also prevents an
+						// unhandled rejection when the callback wins the race.
+						if (err instanceof Error && /state mismatch|authorization code/i.test(err.message)) {
+							manualError = err;
+						} else {
+							manualCancelled = true;
+						}
 						await new Promise((r) => setTimeout(r, 500));
 						cb.cancel();
 						return null;
 					});
 				const fromCallback = await cb.waitForCode();
 				result = fromCallback ?? (await manual);
+				if (!result && manualError) throw manualError;
 			} else {
 				result = await cb.waitForCode();
 				if (!result) {

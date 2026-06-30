@@ -126,6 +126,12 @@ export class McpManager {
 		if (integration.bearerTokenEnvVar && process.env[integration.bearerTokenEnvVar]?.trim()) {
 			return true;
 		}
+		// A user server that overrides a catalog name without OAuth must NOT inherit
+		// the built-in's stored mcp: creds — those belong to the official endpoint and
+		// would be sent to the override URL. Such a server authes only via its env var.
+		if (integration.userDeclared && !integration.usesOAuth && getCatalogEntry(integration.server)) {
+			return false;
+		}
 		const cred = this.authStorage.get(this.providerId(integration.server));
 		return cred !== undefined;
 	}
