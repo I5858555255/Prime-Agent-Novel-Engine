@@ -1849,20 +1849,22 @@ export class AgentDaemon {
 				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
 				(payload.deliveryMode === "steer" ? "steer" : "followUp");
 			this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
-			void targetState.runtime.session
-				.prompt(createAgentSessionMessagePrompt(payload), {
-					expandPromptTemplates: false,
-					streamingBehavior,
-					queueIfBusy: true,
-					skipPrePromptWork: true,
-					returnAfterAccepted: true,
-					source: "rpc",
-					preflightResult: (didSucceed) => {
-						if (didSucceed) {
-							settleAccepted();
-						}
-					},
-				})
+			const session = targetState.runtime.session;
+			const acceptPrompt =
+				typeof session.acceptAgentMessagePrompt === "function"
+					? session.acceptAgentMessagePrompt.bind(session)
+					: session.prompt.bind(session);
+			void acceptPrompt(createAgentSessionMessagePrompt(payload), {
+				expandPromptTemplates: false,
+				streamingBehavior,
+				queueIfBusy: true,
+				source: "rpc",
+				preflightResult: (didSucceed) => {
+					if (didSucceed) {
+						settleAccepted();
+					}
+				},
+			})
 				.then(settleAccepted)
 				.catch((error) => {
 					if (accepted) {

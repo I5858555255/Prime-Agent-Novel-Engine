@@ -394,9 +394,10 @@ export interface PromptOptions {
 	preflightResult?: (success: boolean) => void;
 	/** Queue instead of starting immediately when the session is idle but already has queued work. */
 	queueIfBusy?: boolean;
-	/** Internal daemon fast path: start accepted message without compaction or before-start extension hooks. */
+}
+
+interface InternalPromptOptions extends PromptOptions {
 	skipPrePromptWork?: boolean;
-	/** Internal daemon fast path: return once prompt is accepted instead of after the full turn. */
 	returnAfterAccepted?: boolean;
 }
 
@@ -2178,6 +2179,14 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		return this._prompt(text, options);
+	}
+
+	async acceptAgentMessagePrompt(text: string, options?: PromptOptions): Promise<void> {
+		return this._prompt(text, { ...options, skipPrePromptWork: true, returnAfterAccepted: true });
+	}
+
+	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let preflightSettled = false;
