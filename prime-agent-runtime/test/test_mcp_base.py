@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from rlm import mcp_base
-from rlm.mcp_base import McpIntegration, NotEnabled
+from rlm.mcp_base import McpIntegration, McpToolError, NotEnabled
 
 
 def _run(coro):
@@ -124,8 +124,15 @@ class McpIntegrationTest(unittest.TestCase):
 
     def test_empty_structured_result_preserved(self):
         for payload in ({}, []):
-            result = type("R", (), {"structuredContent": payload, "content": []})()
+            result = type("R", (), {"structuredContent": payload, "content": [], "isError": False})()
             self.assertEqual(mcp_base._parse_result(result), payload)
+
+    def test_error_result_raises(self):
+        block = type("B", (), {"text": "boom"})()
+        result = type("R", (), {"isError": True, "content": [block], "structuredContent": None})()
+        with self.assertRaises(McpToolError) as ctx:
+            mcp_base._parse_result(result)
+        self.assertIn("boom", str(ctx.exception))
 
     def test_auto_bound_tool_calls_session(self):
         session = _FakeSession(

@@ -386,7 +386,12 @@ export class ModelRegistry {
 		resetApiProviders();
 		resetOAuthProviders();
 		// reset drops everything but model-provider built-ins; re-add MCP integrations
-		// (built-in catalog + any user-declared servers via the hook).
+		// (built-in catalog + this session's user-declared servers via the hook).
+		// NOTE: the OAuth registry is process-global. Built-in MCP providers are
+		// identical across sessions so they always survive; a user-declared server
+		// unique to another daemon session is dropped here and re-registered on that
+		// session's next refresh. Fully isolating it would require a session-scoped
+		// registry in pi-ai (out of scope here).
 		registerBuiltinMcpOAuthProviders();
 		this.onOAuthProvidersReset?.();
 

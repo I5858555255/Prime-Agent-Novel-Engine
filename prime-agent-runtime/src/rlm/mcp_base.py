@@ -26,7 +26,7 @@ from typing import Any
 
 from . import host_request
 
-__all__ = ["McpIntegration", "NotEnabled"]
+__all__ = ["McpIntegration", "McpToolError", "NotEnabled"]
 
 # Stored access tokens are treated as expired this many seconds early so a token
 # never dies mid-request. Mirrors the host's refresh buffer.
@@ -47,6 +47,10 @@ class NotEnabled(RuntimeError):
             f"Tell the user to run `/mcp login {server}` in Prime Agent to connect it. "
             f"Do not ask them to set environment variables."
         )
+
+
+class McpToolError(RuntimeError):
+    """Raised when an MCP tool call returns a result flagged as an error."""
 
 
 def _agent_dir() -> Path:
@@ -263,15 +267,22 @@ class McpIntegration:
 
 
 def _parse_result(result: Any) -> Any:
-    """Normalize a CallToolResult into plain Python (structured output preferred)."""
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:  # falsy-but-valid payloads ({} / []) are real results
-        return structured
+    """Normalize a CallToolResult into plain Python (structured output preferred).
+
+    Raises McpToolError when the server flags the result as an error, so a failed
+    tool call doesn't look like a successful one to the caller.
+    """
     texts: list[str] = []
     for block in getattr(result, "content", None) or []:
         text = getattr(block, "text", None)
         if text is not None:
             texts.append(text)
+    if getattr(result, "isError", False):
+        raise McpToolError("\n".join(texts) or "MCP tool returned an error")
+
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:  # falsy-but-valid payloads ({} / []) are real results
+        return structured
     if texts:
         return "\n".join(texts)
     return result
