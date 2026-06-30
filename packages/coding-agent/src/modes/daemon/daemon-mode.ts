@@ -1824,6 +1824,9 @@ export class AgentDaemon {
 				this.acceptAgentSessionMessage(targetState, payload),
 			);
 			return createAgentSessionMessageReceipt(payload);
+		} catch (error) {
+			this.agentMessageRateLimiter.refund(rateLimitKey);
+			throw error;
 		} finally {
 			releaseQueueSlot();
 		}
@@ -1874,8 +1877,10 @@ export class AgentDaemon {
 				},
 			})
 				.then(() => {
-					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 					settleAccepted();
+					setTimeout(() => {
+						this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
+					}, 0);
 				})
 				.catch((error) => {
 					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);

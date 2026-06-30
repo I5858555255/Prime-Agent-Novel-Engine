@@ -165,6 +165,7 @@ describe("daemon mode helpers", () => {
 					isStreaming: false,
 					pendingMessageCount: 0,
 					prompt: vi.fn(async () => {}),
+					followUp: vi.fn(async () => true),
 					clearQueue: vi.fn(() => ({ cleared: 0 })),
 					clearQueuedUserMessagesMatching: vi.fn(() => ({ steering: [], followUp: [] })),
 				},
@@ -322,11 +323,11 @@ describe("daemon mode helpers", () => {
 		await expect(
 			internals.sendAgentSessionMessage({
 				targetSelector: targetState.activeSessionId,
-				message: "over limit",
+				message: "after failed sends",
 				fromState,
 				origin: "agent",
 			}),
-		).rejects.toThrow("Agent messaging rate limit exceeded");
+		).rejects.toThrow("missing model");
 	});
 
 	it("counts concurrent agent message queue reservations against the target queue cap", async () => {
@@ -469,10 +470,8 @@ describe("daemon mode helpers", () => {
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(prompt).toHaveBeenCalledTimes(2);
-		expect(prompt.mock.calls[1]?.[1]).toMatchObject({ streamingBehavior: "followUp" });
-
-		promptResolves[1]?.();
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(followUp).toHaveBeenCalledOnce();
 		await expect(second).resolves.toMatchObject({ message: "second" });
 	});
 
