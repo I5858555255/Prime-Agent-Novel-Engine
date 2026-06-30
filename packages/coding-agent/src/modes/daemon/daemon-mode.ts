@@ -1202,6 +1202,7 @@ export class AgentDaemon {
 					message: command.message,
 					fromState,
 					clientId: client.id,
+					senderKey: this.createCliAgentMessageSenderKey(),
 					deliveryMode: command.deliveryMode,
 					origin: "cli",
 				});
@@ -1744,6 +1745,10 @@ export class AgentDaemon {
 		};
 	}
 
+	private createCliAgentMessageSenderKey(): string {
+		return `cli:${this.socketPath}`;
+	}
+
 	private reserveAgentMessageQueueSlot(targetState: ActiveSessionState): () => void {
 		const activeSessionId = targetState.activeSessionId;
 		const reserved = this.agentMessagePendingReservations.get(activeSessionId) ?? 0;
@@ -1791,6 +1796,7 @@ export class AgentDaemon {
 		message: string;
 		fromState?: ActiveSessionState;
 		clientId?: string;
+		senderKey?: string;
 		deliveryMode?: AgentSessionMessagePayload["deliveryMode"];
 		origin: "agent" | "cli";
 	}): Promise<AgentSessionMessageReceipt> {
@@ -1804,7 +1810,8 @@ export class AgentDaemon {
 		}
 		const message = normalizeAgentSessionMessage(options.message, DEFAULT_AGENT_MESSAGE_MAX_CHARS);
 		const releaseQueueSlot = this.reserveAgentMessageQueueSlot(targetState);
-		const senderKey = options.fromState?.activeSessionId ?? `client:${options.clientId ?? "unknown"}`;
+		const senderKey =
+			options.fromState?.activeSessionId ?? options.senderKey ?? `client:${options.clientId ?? "unknown"}`;
 		const rateLimitKey = `${senderKey}->${targetState.activeSessionId}`;
 		const rateLimit = this.agentMessageRateLimiter.tryConsume(rateLimitKey);
 		if (!rateLimit.ok) {
@@ -1845,10 +1852,12 @@ export class AgentDaemon {
 				}
 			};
 			const session = targetState.runtime.session;
+			assertAgentMessageQueueCapacity(session.pendingMessageCount, DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION);
 			const shouldQueue =
 				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
 				session.isStreaming ||
 				session.isRetrying ||
+				session.hasAcceptedPromptInFlight ||
 				session.pendingMessageCount > 0;
 			const streamingBehavior =
 				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
@@ -1878,9 +1887,7 @@ export class AgentDaemon {
 			})
 				.then(() => {
 					settleAccepted();
-					setTimeout(() => {
-						this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
-					}, 0);
+					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 				})
 				.catch((error) => {
 					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);

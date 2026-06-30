@@ -138,12 +138,15 @@ async def initialize(
             if not _interval_matches_schedule(interval, heartbeat.get("schedule")):
                 update_args["interval"] = interval
             updated = await rlm_heartbeat.update(heartbeat["id"], **update_args)
-            return {
-                "action": "updated",
-                "heartbeat": updated.get("heartbeat"),
-                "sessions": agents,
-                "instruction": instruction,
-            }
+            updated_heartbeat = updated.get("heartbeat")
+            if updated_heartbeat is not None:
+                return {
+                    "action": "updated",
+                    "heartbeat": updated_heartbeat,
+                    "sessions": agents,
+                    "instruction": instruction,
+                }
+            break
 
     created = await rlm_heartbeat.create(instruction, interval=interval, label=label)
     return {

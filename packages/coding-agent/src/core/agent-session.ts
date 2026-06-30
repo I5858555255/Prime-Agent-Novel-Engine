@@ -734,6 +734,7 @@ export class AgentSession {
 	private _retryAttempt = 0;
 	private _retryPromise: Promise<void> | undefined = undefined;
 	private _retryResolve: (() => void) | undefined = undefined;
+	private _acceptedPromptCompletions = new Set<Promise<void>>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -2255,10 +2256,16 @@ export class AgentSession {
 
 			// If streaming, or a caller explicitly asked to respect existing queued work,
 			// enqueue according to the requested behavior.
-			if (this.isStreaming || (options?.queueIfBusy === true && this.pendingMessageCount > 0)) {
+			const shouldQueueForStreaming = this.isStreaming;
+			const shouldQueueForPendingWork =
+				options?.queueIfBusy === true && (this.pendingMessageCount > 0 || this.hasAcceptedPromptInFlight);
+			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
 				if (!options?.streamingBehavior) {
+					const stateDescription = shouldQueueForStreaming
+						? "Agent is already processing"
+						: "Agent has queued work";
 					throw new Error(
-						"Agent is already processing or has queued work. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+						`${stateDescription}. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`,
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
@@ -2290,6 +2297,7 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 			if (options?.skipPrePromptWork) {
+				this.agent.state.systemPrompt = this._baseSystemPrompt;
 				messages = [];
 				for (const msg of this._pendingNextTurnMessages) {
 					messages.push(msg);
@@ -2382,12 +2390,23 @@ export class AgentSession {
 			throw firstOutcome;
 		}
 		reportPreflight(true);
+		const promptCompletion = promptPromise.then(async () => {
+			await this.waitForRetry();
+		});
 		if (options?.returnAfterAccepted) {
-			void promptPromise.catch(() => undefined);
+			this._acceptedPromptCompletions.add(promptCompletion);
+			void promptCompletion.then(
+				() => {
+					this._acceptedPromptCompletions.delete(promptCompletion);
+				},
+				() => {
+					this._acceptedPromptCompletions.delete(promptCompletion);
+				},
+			);
+			void promptCompletion.catch(() => undefined);
 			return;
 		}
-		await promptPromise;
-		await this.waitForRetry();
+		await promptCompletion;
 	}
 
 	/**
@@ -3956,7 +3975,12 @@ export class AgentSession {
 				handlers[type] = async (payload) => this.handleRlmHeartbeatHostRequest(type, payload);
 			}
 		}
-		if (this._agentMessageController) {
+		const visibleKernelSkillNames = new Set(
+			this._modelVisibleSkills()
+				.filter((skill) => !skill.disableModelInvocation)
+				.map((skill) => skill.name),
+		);
+		if (this._agentMessageController && visibleKernelSkillNames.has(AGENT_MESSAGE_SKILL_NAME)) {
 			Object.assign(
 				handlers,
 				createAgentMessageHostHandlers({
@@ -4747,6 +4771,11 @@ export class AgentSession {
 	/** Whether auto-retry is currently in progress */
 	get isRetrying(): boolean {
 		return this._retryPromise !== undefined;
+	}
+
+	/** Whether an accepted prompt is still running or waiting for retry completion. */
+	get hasAcceptedPromptInFlight(): boolean {
+		return this._acceptedPromptCompletions.size > 0;
 	}
 
 	/** Whether auto-retry is enabled */

@@ -129,22 +129,162 @@ function fileContentHash(filePath: string): string {
 
 function normalizePythonSkills(pythonSkills: readonly KernelPythonSkill[] | undefined): BootstrapPythonSkill[] {
 	const byKey = new Map<string, BootstrapPythonSkill>();
-	for (const skill of pythonSkills ?? []) {
+	const addSkill = (skill: Pick<KernelPythonSkill, "importName" | "packagePath" | "pyprojectPath">): void => {
 		const packagePath = path.resolve(skill.packagePath);
 		const pyprojectPath = path.resolve(skill.pyprojectPath);
 		const key = `${skill.importName}\0${packagePath}`;
-		byKey.set(key, {
+		if (byKey.has(key)) {
+			return;
+		}
+		const bootstrapSkill: BootstrapPythonSkill = {
 			importName: skill.importName,
 			packagePath,
 			pyprojectPath,
 			pyprojectHash: fileContentHash(pyprojectPath),
-		});
+		};
+		byKey.set(key, bootstrapSkill);
+		for (const dependencyName of readPythonSkillDependencyNames(bootstrapSkill)) {
+			const siblingDependency = resolveSiblingPythonSkillDependency(bootstrapSkill, dependencyName);
+			if (siblingDependency) {
+				addSkill(siblingDependency);
+			}
+		}
+	};
+	for (const skill of pythonSkills ?? []) {
+		addSkill(skill);
 	}
 	return [...byKey.values()].sort((a, b) => {
 		const packageCompare = a.packagePath.localeCompare(b.packagePath);
 		if (packageCompare !== 0) return packageCompare;
 		return a.importName.localeCompare(b.importName);
 	});
+}
+
+function readTomlProjectSection(pyprojectPath: string): string | undefined {
+	try {
+		const text = readFileSync(pyprojectPath, "utf-8");
+		const match = text.match(/^\s*\[project\]\s*$/m);
+		if (!match || match.index === undefined) {
+			return undefined;
+		}
+		const sectionStart = match.index + match[0].length;
+		const rest = text.slice(sectionStart);
+		const nextSection = rest.search(/^\s*\[/m);
+		return nextSection >= 0 ? rest.slice(0, nextSection) : rest;
+	} catch {
+		return undefined;
+	}
+}
+
+function readPythonSkillProjectName(skill: BootstrapPythonSkill): string {
+	const projectSection = readTomlProjectSection(skill.pyprojectPath);
+	const name = projectSection?.match(/^\s*name\s*=\s*["']([^"']+)["']/m)?.[1];
+	return name?.trim() || skill.importName.replaceAll("_", "-");
+}
+
+function parseDependencyPackageName(dependency: string): string | undefined {
+	const withoutMarker = dependency.split(";")[0]?.trim() ?? "";
+	if (!withoutMarker) {
+		return undefined;
+	}
+	const match = withoutMarker.match(/^([A-Za-z0-9_.-]+)/);
+	return match?.[1]?.replaceAll("_", "-").toLowerCase();
+}
+
+function readPythonSkillDependencyNames(skill: BootstrapPythonSkill): Set<string> {
+	const projectSection = readTomlProjectSection(skill.pyprojectPath);
+	if (!projectSection) {
+		return new Set();
+	}
+	const dependenciesStart = projectSection.search(/^\s*dependencies\s*=\s*\[/m);
+	if (dependenciesStart < 0) {
+		return new Set();
+	}
+	const afterDependencies = projectSection.slice(dependenciesStart);
+	const dependenciesEnd = afterDependencies.indexOf("]");
+	if (dependenciesEnd < 0) {
+		return new Set();
+	}
+	const dependenciesArray = afterDependencies.slice(0, dependenciesEnd + 1);
+	const dependencies = new Set<string>();
+	const dependencyPattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'/g;
+	for (const match of dependenciesArray.matchAll(dependencyPattern)) {
+		const dependency = (match[1] ?? match[2] ?? "").replaceAll('\\"', '"').replaceAll("\\'", "'");
+		const name = parseDependencyPackageName(dependency);
+		if (name) {
+			dependencies.add(name);
+		}
+	}
+	return dependencies;
+}
+
+function resolveSiblingPythonSkillDependency(
+	skill: BootstrapPythonSkill,
+	dependencyName: string,
+): BootstrapPythonSkill | undefined {
+	const packagePath = path.join(path.dirname(skill.packagePath), dependencyName);
+	const pyprojectPath = path.join(packagePath, "pyproject.toml");
+	if (!existsSync(pyprojectPath)) {
+		return undefined;
+	}
+	const dependency: BootstrapPythonSkill = {
+		importName: dependencyName.replaceAll("-", "_"),
+		packagePath,
+		pyprojectPath,
+		pyprojectHash: fileContentHash(pyprojectPath),
+	};
+	if (readPythonSkillProjectName(dependency).replaceAll("_", "-").toLowerCase() !== dependencyName) {
+		return undefined;
+	}
+	return dependency;
+}
+
+function sortPythonSkillsForInstall(pythonSkills: readonly BootstrapPythonSkill[]): BootstrapPythonSkill[] {
+	const byProjectName = new Map<string, BootstrapPythonSkill>();
+	const originalIndex = new Map<BootstrapPythonSkill, number>();
+	for (const [index, skill] of pythonSkills.entries()) {
+		originalIndex.set(skill, index);
+		byProjectName.set(readPythonSkillProjectName(skill).replaceAll("_", "-").toLowerCase(), skill);
+	}
+
+	const dependenciesBySkill = new Map<BootstrapPythonSkill, BootstrapPythonSkill[]>();
+	for (const skill of pythonSkills) {
+		dependenciesBySkill.set(
+			skill,
+			[...readPythonSkillDependencyNames(skill)]
+				.map(
+					(dependencyName) =>
+						byProjectName.get(dependencyName) ?? resolveSiblingPythonSkillDependency(skill, dependencyName),
+				)
+				.filter((dependency): dependency is BootstrapPythonSkill => Boolean(dependency)),
+		);
+	}
+
+	const pending = new Set(pythonSkills);
+	const sorted: BootstrapPythonSkill[] = [];
+	while (pending.size > 0) {
+		let progressed = false;
+		for (const skill of [...pending].sort((a, b) => (originalIndex.get(a) ?? 0) - (originalIndex.get(b) ?? 0))) {
+			const dependencies = dependenciesBySkill.get(skill) ?? [];
+			if (dependencies.some((dependency) => pending.has(dependency))) {
+				continue;
+			}
+			sorted.push(skill);
+			pending.delete(skill);
+			progressed = true;
+		}
+		if (!progressed) {
+			// Cyclic local skill dependencies cannot be topologically ordered; keep a
+			// deterministic order and let uv surface the packaging error if needed.
+			sorted.push(...[...pending].sort((a, b) => a.packagePath.localeCompare(b.packagePath)));
+			break;
+		}
+	}
+	return sorted;
+}
+
+function formatPythonSkillInstallArgs(skill: BootstrapPythonSkill): string[] {
+	return ["--editable", skill.packagePath];
 }
 
 function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): string {
@@ -526,17 +666,61 @@ async function syncPythonSkills(
 	const currentPythonSkills = new Map(
 		(version?.pythonSkills ?? []).map((skill) => [`${skill.importName}\0${skill.packagePath}`, skill]),
 	);
+	const pythonSkillsByProjectName = new Map(
+		pythonSkills.map((skill) => [readPythonSkillProjectName(skill).replaceAll("_", "-").toLowerCase(), skill]),
+	);
+	const dependenciesBySkill = new Map(
+		pythonSkills.map((skill) => [
+			skill,
+			[...readPythonSkillDependencyNames(skill)]
+				.map(
+					(dependencyName) =>
+						pythonSkillsByProjectName.get(dependencyName) ??
+						resolveSiblingPythonSkillDependency(skill, dependencyName),
+				)
+				.filter((dependency): dependency is BootstrapPythonSkill => Boolean(dependency)),
+		]),
+	);
 
-	for (const skill of pythonSkills) {
+	for (const skill of sortPythonSkillsForInstall(pythonSkills)) {
 		const existingSkill = currentPythonSkills.get(`${skill.importName}\0${skill.packagePath}`);
 		if (existingSkill?.pyprojectPath === skill.pyprojectPath && existingSkill.pyprojectHash === skill.pyprojectHash) {
 			installedPythonSkills.push(skill);
 			continue;
 		}
 
+		const localDependencies = dependenciesBySkill.get(skill) ?? [];
+		const localDependencyArgs = localDependencies
+			.filter((dependency) => {
+				const installedDependency = currentPythonSkills.get(`${dependency.importName}\0${dependency.packagePath}`);
+				const installedThisSync = installedPythonSkills.some(
+					(installed) =>
+						installed.importName === dependency.importName &&
+						installed.packagePath === dependency.packagePath &&
+						installed.pyprojectPath === dependency.pyprojectPath &&
+						installed.pyprojectHash === dependency.pyprojectHash,
+				);
+				return !(
+					installedThisSync ||
+					(installedDependency?.pyprojectPath === dependency.pyprojectPath &&
+						installedDependency.pyprojectHash === dependency.pyprojectHash)
+				);
+			})
+			.flatMap(formatPythonSkillInstallArgs);
+
 		try {
-			await run(uv, ["pip", "install", "--python", python, "--editable", skill.packagePath]);
-			installedPythonSkills.push(skill);
+			await run(uv, [
+				"pip",
+				"install",
+				"--python",
+				python,
+				...formatPythonSkillInstallArgs(skill),
+				...localDependencyArgs,
+			]);
+			installedPythonSkills.push(
+				skill,
+				...localDependencies.filter((dependency) => !installedPythonSkills.includes(dependency)),
+			);
 		} catch (error) {
 			reportProgress(
 				options,
