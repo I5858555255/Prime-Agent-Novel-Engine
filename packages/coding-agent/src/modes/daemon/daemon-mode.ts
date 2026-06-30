@@ -227,6 +227,7 @@ export class AgentDaemon {
 	private readonly agentMessageRateLimiter = new AgentSessionMessageRateLimiter();
 	private readonly agentMessagePendingReservations = new Map<string, number>();
 	private readonly agentMessageTargetLocks = new Map<string, Promise<void>>();
+	private readonly agentMessageAcceptingTargets = new Set<string>();
 	private agentMessagesPaused = false;
 	private readonly summarizer = new DaemonSessionSummarizer(
 		() => [...this.sessions.values()],
@@ -1840,17 +1841,21 @@ export class AgentDaemon {
 					resolve();
 				}
 			};
+			const shouldQueue =
+				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
+				targetState.runtime.session.isStreaming ||
+				targetState.runtime.session.pendingMessageCount > 0;
 			const streamingBehavior =
-				resolveAgentSessionMessageStreamingBehavior(
-					targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0,
-					payload.deliveryMode,
-				) ?? (payload.deliveryMode === "steer" ? "steer" : "followUp");
+				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
+				(payload.deliveryMode === "steer" ? "steer" : "followUp");
+			this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
 			void targetState.runtime.session
 				.prompt(createAgentSessionMessagePrompt(payload), {
 					expandPromptTemplates: false,
 					streamingBehavior,
 					queueIfBusy: true,
 					skipPrePromptWork: true,
+					returnAfterAccepted: true,
 					source: "rpc",
 					preflightResult: (didSucceed) => {
 						if (didSucceed) {
@@ -1868,6 +1873,9 @@ export class AgentDaemon {
 						return;
 					}
 					reject(error);
+				})
+				.finally(() => {
+					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 				});
 		});
 	}

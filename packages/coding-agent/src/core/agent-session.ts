@@ -396,6 +396,8 @@ export interface PromptOptions {
 	queueIfBusy?: boolean;
 	/** Internal daemon fast path: start accepted message without compaction or before-start extension hooks. */
 	skipPrePromptWork?: boolean;
+	/** Internal daemon fast path: return once prompt is accepted instead of after the full turn. */
+	returnAfterAccepted?: boolean;
 }
 
 interface QueuedFollowUpMessage {
@@ -2350,7 +2352,23 @@ export class AgentSession {
 		}
 
 		const promptPromise = this.agent.prompt(messages);
+		const promptAccepted = Symbol("promptAccepted");
+		const firstOutcome = await Promise.race([
+			promptPromise.then(
+				() => undefined,
+				(error: unknown) => error,
+			),
+			new Promise<typeof promptAccepted>((resolve) => queueMicrotask(() => resolve(promptAccepted))),
+		]);
+		if (firstOutcome !== undefined && firstOutcome !== promptAccepted) {
+			reportPreflight(false);
+			throw firstOutcome;
+		}
 		reportPreflight(true);
+		if (options?.returnAfterAccepted) {
+			void promptPromise.catch(() => undefined);
+			return;
+		}
 		await promptPromise;
 		await this.waitForRetry();
 	}
