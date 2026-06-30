@@ -550,6 +550,23 @@ export function isKeyRelease(data: string): boolean {
 	return false;
 }
 
+// SGR mouse: ESC [ < b ; x ; y (M|m). Legacy X10 mouse: ESC [ M + 3 bytes.
+const SGR_MOUSE_PATTERN = /^\x1b\[<\d+;\d+;\d+[Mm]$/;
+
+/**
+ * Check if a sequence is a mouse event forwarded by the terminal.
+ *
+ * pi-tui never enables mouse tracking, but terminals/multiplexers with their
+ * own mouse mode (e.g. tmux `mouse on`) still relay these during selection and
+ * scrolling. No component consumes them, so they must be treated as no-ops.
+ */
+export function isMouseSequence(data: string): boolean {
+	if (SGR_MOUSE_PATTERN.test(data)) {
+		return true;
+	}
+	return data.length === 6 && data.startsWith("\x1b[M");
+}
+
 /**
  * Check if the last parsed key event was a key repeat.
  * Only meaningful when Kitty keyboard protocol with flag 2 is active.

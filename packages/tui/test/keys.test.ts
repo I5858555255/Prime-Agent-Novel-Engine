@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import {
 	decodeKittyPrintable,
 	decodePrintableKey,
+	isMouseSequence,
 	Key,
 	matchesKey,
 	parseKey,
@@ -612,6 +613,27 @@ describe("parseKey", () => {
 
 		it("should parse double bracket pageUp", () => {
 			assert.strictEqual(parseKey("\x1b[[5~"), "pageUp");
+		});
+	});
+
+	describe("isMouseSequence", () => {
+		it("recognizes SGR mouse press and release", () => {
+			assert.strictEqual(isMouseSequence("\x1b[<0;10;5M"), true);
+			assert.strictEqual(isMouseSequence("\x1b[<0;10;5m"), true);
+			assert.strictEqual(isMouseSequence("\x1b[<64;120;30M"), true);
+		});
+
+		it("recognizes legacy X10 mouse", () => {
+			assert.strictEqual(isMouseSequence("\x1b[M !!"), true);
+			assert.strictEqual(isMouseSequence("\x1b[M"), false);
+		});
+
+		it("rejects non-mouse input", () => {
+			assert.strictEqual(isMouseSequence("a"), false);
+			assert.strictEqual(isMouseSequence("\x1b[A"), false);
+			assert.strictEqual(isMouseSequence("\x1b[97u"), false);
+			assert.strictEqual(isMouseSequence("\x1b[200~text\x1b[201~"), false);
+			assert.strictEqual(isMouseSequence("\x1b[<0;10;5"), false);
 		});
 	});
 });

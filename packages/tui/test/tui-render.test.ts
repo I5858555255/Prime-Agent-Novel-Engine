@@ -2,13 +2,28 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { deleteKittyImage, encodeKitty } from "../src/terminal-image.js";
-import { type Component, TUI } from "../src/tui.js";
+import { type Component, CURSOR_MARKER, type Focusable, TUI } from "../src/tui.js";
 import { VirtualTerminal } from "./virtual-terminal.js";
 
 class TestComponent implements Component {
 	lines: string[] = [];
 	render(_width: number): string[] {
 		return this.lines;
+	}
+	invalidate(): void {}
+}
+
+// A focused component that emits CURSOR_MARKER, like the editor. Tracks any
+// input it receives so tests can assert mouse events are not forwarded.
+class FocusableComponent implements Component, Focusable {
+	focused = false;
+	receivedInput: string[] = [];
+	constructor(private text = "prompt") {}
+	render(_width: number): string[] {
+		return [this.focused ? `${this.text}${CURSOR_MARKER}` : this.text];
+	}
+	handleInput(data: string): void {
+		this.receivedInput.push(data);
 	}
 	invalidate(): void {}
 }
@@ -817,6 +832,68 @@ describe("TUI above-viewport changes on a tall transcript", () => {
 		await terminal.waitForRender();
 
 		assert.ok(terminal.getWrites().includes("\x1b[3J"), "A still-tall shrink clears stale scrollback");
+
+		tui.stop();
+	});
+});
+
+describe("TUI mouse event handling (ENG-4374)", () => {
+	it("ignores relayed mouse events without writing to the terminal", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new FocusableComponent();
+		tui.addChild(component);
+		tui.setFocus(component);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		// Simulate the SGR mouse events tmux relays during a drag-select.
+		terminal.sendInput("\x1b[<0;5;3M");
+		terminal.sendInput("\x1b[<32;6;3M");
+		terminal.sendInput("\x1b[<0;8;3m");
+		await terminal.waitForRender();
+
+		assert.strictEqual(terminal.getWrites(), "", "mouse events must not produce any terminal output");
+		assert.deepStrictEqual(component.receivedInput, [], "mouse events must not reach the focused component");
+
+		tui.stop();
+	});
+
+	it("does not reposition the hardware cursor on a no-op render", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new FocusableComponent();
+		tui.addChild(component);
+		tui.setFocus(component);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		// A render with identical content and an unchanged cursor target should
+		// emit nothing — re-emitting cursor motion is what scrolls the viewport.
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(terminal.getWrites(), "", "no-op render with unchanged cursor must emit no output");
+
+		tui.stop();
+	});
+
+	it("still forwards normal key input and renders", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new FocusableComponent();
+		tui.addChild(component);
+		tui.setFocus(component);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		terminal.sendInput("a");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(component.receivedInput, ["a"], "normal keys must still reach the focused component");
 
 		tui.stop();
 	});

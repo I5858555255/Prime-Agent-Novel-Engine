@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
-import { isKeyRelease, matchesKey } from "./keys.js";
+import { isKeyRelease, isMouseSequence, matchesKey } from "./keys.js";
 import type { Terminal } from "./terminal.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.js";
@@ -255,6 +255,7 @@ export class TUI extends Container {
 	private static readonly MIN_RENDER_INTERVAL_MS = 16;
 	private cursorRow = 0; // Logical cursor row (end of rendered content)
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
+	private hardwareCursorCol = -1; // Last positioned hardware cursor column (-1 = unknown)
 	private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
 	private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
@@ -578,6 +579,14 @@ export class TUI extends Container {
 
 		// Consume terminal cell size responses without blocking unrelated input.
 		if (this.consumeCellSizeResponse(data)) {
+			return;
+		}
+
+		// Drop mouse events relayed by the terminal/multiplexer (e.g. tmux
+		// `mouse on`). No component consumes them, and reacting would trigger a
+		// render that repositions the hardware cursor and yanks a scrolled-up
+		// viewport back to the bottom (ENG-4374).
+		if (isMouseSequence(data)) {
 			return;
 		}
 
@@ -1161,9 +1170,9 @@ export class TUI extends Container {
 		}
 		const appendStart = appendedLines && firstChanged === this.previousLines.length && firstChanged > 0;
 
-		// No changes - but still need to update hardware cursor position if it moved
+		// No changes - reposition only if the cursor target actually moved
 		if (firstChanged === -1) {
-			this.positionHardwareCursor(cursorPos, newLines.length);
+			this.positionHardwareCursor(cursorPos, newLines.length, false);
 			this.previousViewportTop = prevViewportTop;
 			this.previousHeight = height;
 			return;
@@ -1384,8 +1393,13 @@ export class TUI extends Container {
 	 * @param cursorPos The cursor position extracted from rendered output, or null
 	 * @param totalLines Total number of rendered lines
 	 */
-	private positionHardwareCursor(cursorPos: { row: number; col: number } | null, totalLines: number): void {
+	private positionHardwareCursor(
+		cursorPos: { row: number; col: number } | null,
+		totalLines: number,
+		contentChanged = true,
+	): void {
 		if (!cursorPos || totalLines <= 0) {
+			this.hardwareCursorCol = -1;
 			this.terminal.hideCursor();
 			return;
 		}
@@ -1393,6 +1407,20 @@ export class TUI extends Container {
 		// Clamp cursor position to valid range
 		const targetRow = Math.max(0, Math.min(cursorPos.row, totalLines - 1));
 		const targetCol = Math.max(0, cursorPos.col);
+
+		// On a render that wrote no content, the hardware cursor is still where we
+		// last left it. Re-emitting the same move would make a scrolled-up terminal
+		// snap to the cursor row (ENG-4374), so skip it when the target is unchanged.
+		// When content changed the cursor was moved by the content writes, so the
+		// tracked column is stale and we must always re-position.
+		if (!contentChanged && targetRow === this.hardwareCursorRow && targetCol === this.hardwareCursorCol) {
+			if (this.showHardwareCursor) {
+				this.terminal.showCursor();
+			} else {
+				this.terminal.hideCursor();
+			}
+			return;
+		}
 
 		// Move cursor from current position to target
 		const rowDelta = targetRow - this.hardwareCursorRow;
@@ -1410,6 +1438,7 @@ export class TUI extends Container {
 		}
 
 		this.hardwareCursorRow = targetRow;
+		this.hardwareCursorCol = targetCol;
 		if (this.showHardwareCursor) {
 			this.terminal.showCursor();
 		} else {
