@@ -67,9 +67,6 @@ describe("SessionManager session state", () => {
 		}
 	});
 
-	// Mirrors the agents-view Ctrl+X deactivate guard: a session that never wrote a
-	// session_state entry (off-daemon / older sessions) must still become archived,
-	// or inactiveLifecycleForSession would re-derive "live" and the row would return.
 	it("archives a deactivated session that has no prior state entry", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "session-state-deactivate-"));
 		try {
@@ -80,7 +77,6 @@ describe("SessionManager session state", () => {
 			session.appendMessage(assistantMsg("hi"));
 			const sessionFile = session.getSessionFile()!;
 
-			// Reopen exactly as deactivatePendingAgent does and apply the guard.
 			const reopened = SessionManager.open(sessionFile, sessionDir);
 			expect(reopened.getSessionState()).toBeUndefined();
 			if (reopened.getSessionState()?.status !== "archived") {

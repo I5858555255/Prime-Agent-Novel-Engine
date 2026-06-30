@@ -450,7 +450,7 @@ export interface InteractiveModeOptions {
 	migratedProviders?: string[];
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
-	/** One-off warning shown on startup (e.g. session opened in a fallback cwd). */
+	/** One-off warning shown on startup. */
 	startupNotice?: string;
 	/** Initial message to send on startup (can include @file content) */
 	initialMessage?: string;

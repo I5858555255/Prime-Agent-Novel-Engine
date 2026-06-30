@@ -138,10 +138,8 @@ export async function resolveAgentsViewSessionUiServices(
 	return options.createUiServicesForSession ? await options.createUiServicesForSession(summary) : options.uiServices;
 }
 
-// Stripping cwd lets a session open in its own stored directory rather than
-// wherever the fleet view was launched. When overrideCwd is given (the stored
-// cwd no longer exists), it is sent instead so the daemon resolves the runtime
-// against a real directory rather than throwing MissingSessionCwdError.
+// Stripping cwd opens the session in its own stored directory; overrideCwd is
+// sent when that directory no longer exists so the daemon doesn't reject it.
 export function createAgentsViewResumeConfig(
 	config: AgentSessionRuntimeConfig,
 	overrideCwd?: string,
@@ -185,14 +183,9 @@ export function createAgentsViewReplyHeadline(text: string | undefined): string 
 interface OpenedAgentsViewSession {
 	connection: DaemonAgentConnection;
 	summary: SessionSummary;
-	// Set when the session's stored cwd was missing and we opened it in a
-	// fallback directory; surfaced to the user as a startup notice.
 	cwdFallbackNotice?: string;
 }
 
-// A session created in a now-deleted directory (e.g. a removed worktree) still
-// lists in the fleet view but its stored cwd is gone. Resolve to the launch cwd
-// so the daemon opens it instead of throwing MissingSessionCwdError.
 export function resolveAgentsViewOpenCwd(
 	summary: SessionSummary,
 	fallbackCwd: string | undefined,
@@ -1481,12 +1474,8 @@ class AgentsViewMode implements Component, Focusable {
 				}
 			}
 			if (pending.sessionFile) {
-				// The kill above normally persists the archived state, but it can be
-				// skipped or hit an unknown session (e.g. the daemon died after
-				// listing). Persist archived unless it already is — off-daemon sessions
-				// (and older ones) may carry no session_state entry at all, so a
-				// status===active check would skip them and the row would resurface on
-				// the next scan.
+				// Persist archived unless it already is: sessions with no prior
+				// session_state entry would otherwise resurface on the next scan.
 				const sessionManager = SessionManager.open(pending.sessionFile, this.options.config.sessionDir);
 				if (sessionManager.getSessionState()?.status !== "archived") {
 					sessionManager.appendSessionState({ status: "archived" });

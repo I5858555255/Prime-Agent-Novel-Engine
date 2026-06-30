@@ -9,8 +9,6 @@ import { createAgentsViewResumeConfig, resolveAgentsViewOpenCwd } from "../src/m
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { assistantMsg, userMsg } from "./utilities.js";
 
-// End-to-end check of the ENG-4369 open path: a session whose stored cwd was
-// deleted must still open instead of failing on the daemon's cwd assertion.
 describe("agents view open with a missing session cwd", () => {
 	it("repros the failure and proves the override opens the session", async () => {
 		const root = mkdtempSync(join(tmpdir(), "agents-view-missing-cwd-"));
@@ -19,22 +17,19 @@ describe("agents view open with a missing session cwd", () => {
 		const sessionDir = join(root, "sessions");
 		const agentDir = join(root, "agent");
 		try {
-			mkdirSync(launchCwd, { recursive: true }); // launch dir exists; the session's own dir won't
+			mkdirSync(launchCwd, { recursive: true });
 			const session = SessionManager.create(worktree, sessionDir);
 			session.appendMessage(userMsg("do the thing"));
 			session.appendMessage(assistantMsg("done"));
 			const sessionFile = session.getSessionFile()!;
 
-			// The worktree the session was created in is removed (the real scenario).
 			rmSync(worktree, { recursive: true, force: true });
 
 			const factory = async () => {
 				throw new Error("runtime factory should not be reached when the cwd is missing");
 			};
 
-			// Bug repro: with cwd stripped, the session resolves against its stored
-			// (now-deleted) cwd and throws before the runtime is ever built — exactly
-			// the flicker users saw.
+			// With cwd stripped, the session resolves against its deleted cwd and throws.
 			const stripped = await SessionManager.openAsync(sessionFile, sessionDir);
 			await expect(
 				createAgentSessionRuntime(factory, {
@@ -44,9 +39,6 @@ describe("agents view open with a missing session cwd", () => {
 				}),
 			).rejects.toThrowError(MissingSessionCwdError);
 
-			// Fix: resolveAgentsViewOpenCwd detects the missing dir and the resume
-			// config carries the launch cwd as an override, so the session opens
-			// against a real directory.
 			const summary: SessionSummary = {
 				id: session.getSessionId(),
 				lifecycle: "live",
@@ -68,9 +60,7 @@ describe("agents view open with a missing session cwd", () => {
 			const overridden = await SessionManager.openAsync(sessionFile, sessionDir, resumeConfig.cwd);
 			expect(overridden.getCwd()).toBe(launchCwd);
 
-			// With the override the session now resolves against the real launch dir,
-			// so the runtime build gets past the cwd guard and into the factory
-			// (which we stop at, having proven the guard no longer fires).
+			// The override gets the build past the cwd guard and into the factory.
 			let factoryCwd: string | undefined;
 			const okFactory = async (opts: { cwd: string }) => {
 				factoryCwd = opts.cwd;
