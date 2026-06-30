@@ -201,8 +201,17 @@ describe("kernel bootstrap", () => {
 			stderrWrite.mockRestore();
 		}
 
-		expect(progress).toEqual(expect.arrayContaining(["› setting up python kernel (one-time, ~30s)…", "✓ ready"]));
-		expect(stderrWrite).not.toHaveBeenCalledWith(expect.stringContaining("setting up python kernel"));
+		// Fake uv is on PATH, so the uv-install step is skipped; the rest describe real steps.
+		expect(progress).toEqual([
+			"installing Python 3.11 · 0%",
+			expect.stringMatching(/^creating virtual environment · \d+%$/),
+			expect.stringMatching(/^installing packages \(.+\) · \d+%$/),
+			"✓ ready · 100%",
+		]);
+
+		const percents = progress.map((line) => Number(line.match(/(\d+)%$/)?.[1] ?? "0"));
+		expect(percents).toEqual([...percents].sort((a, b) => a - b));
+		expect(percents.at(-1)).toBe(100);
 		expect(stderrWrite).not.toHaveBeenCalledWith(expect.stringContaining("ready"));
 	});
 
