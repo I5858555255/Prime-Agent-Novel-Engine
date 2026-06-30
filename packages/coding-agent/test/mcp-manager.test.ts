@@ -75,7 +75,7 @@ describe("McpManager", () => {
 	it("exposes only mcp.refresh when no interactive login is wired", async () => {
 		const manager = new McpManager({ authStorage });
 		const handlers = manager.hostHandlers();
-		expect(Object.keys(handlers)).toEqual(["mcp.refresh"]);
+		expect(Object.keys(handlers).sort()).toEqual(["mcp.config", "mcp.refresh"]);
 
 		// refresh with no credentials is a no-op that does not throw.
 		await expect(handlers["mcp.refresh"]({ server: "linear" })).resolves.toEqual({});
@@ -91,9 +91,19 @@ describe("McpManager", () => {
 			},
 		});
 		const handlers = manager.hostHandlers();
-		expect(Object.keys(handlers).sort()).toEqual(["mcp.begin_login", "mcp.refresh"]);
+		expect(Object.keys(handlers).sort()).toEqual(["mcp.begin_login", "mcp.config", "mcp.refresh"]);
 		await handlers["mcp.begin_login"]({ server: "linear" });
 		expect(called).toBe("linear");
+	});
+
+	it("mcp.config returns the resolved URL, honoring a user override of a catalog name", async () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({ linear: { type: "http", url: "https://proxy.test/mcp", oauth: true } }),
+		});
+		const handlers = manager.hostHandlers();
+		expect(await handlers["mcp.config"]({ server: "linear" })).toEqual({ url: "https://proxy.test/mcp" });
+		expect(await handlers["mcp.config"]({ server: "notion" })).toEqual({ url: "https://mcp.notion.com/mcp" });
 	});
 
 	it("honors a bearer-token env var for user-declared servers", () => {

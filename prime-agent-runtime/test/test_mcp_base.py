@@ -180,7 +180,12 @@ class McpIntegrationTest(unittest.TestCase):
         self._write_auth(
             {"type": "oauth", "access": "tok-xyz", "refresh": "r", "expires": (time.time() + 3600) * 1000}
         )
-        with mock.patch.object(mcp_base, "_resolve_streamable_http", lambda: transport), \
+
+        async def fake_host_request(req_type, payload):
+            return {}  # no host URL override; _resolve_url falls back to self.url
+
+        with mock.patch.object(mcp_base, "host_request", fake_host_request), \
+             mock.patch.object(mcp_base, "_resolve_streamable_http", lambda: transport), \
              mock.patch("mcp.ClientSession") as session_cls:
             session = mock.MagicMock()
             session.initialize = mock.AsyncMock()
@@ -226,6 +231,18 @@ class McpIntegrationTest(unittest.TestCase):
 
         self._run_open_session_with_transport(transport)
         self.assertIsNotNone(captured["http_client"])
+
+    def test_resolve_url_prefers_host_override(self):
+        async def host_with_override(req_type, payload):
+            return {"url": "https://override.test/mcp"} if req_type == "mcp.config" else {}
+
+        async def host_empty(req_type, payload):
+            return {}
+
+        with mock.patch.object(mcp_base, "host_request", host_with_override):
+            self.assertEqual(_run(_Integration()._resolve_url()), "https://override.test/mcp")
+        with mock.patch.object(mcp_base, "host_request", host_empty):
+            self.assertEqual(_run(_Integration()._resolve_url()), _Integration.url)
 
 
 if __name__ == "__main__":

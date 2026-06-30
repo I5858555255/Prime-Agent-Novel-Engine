@@ -169,17 +169,31 @@ class McpIntegration:
 
     # -- connection ---------------------------------------------------------
 
+    async def _resolve_url(self) -> str | None:
+        """Prefer the host's resolved URL (honors a user's mcpServers override),
+        falling back to the class default. Host errors fall back silently."""
+        try:
+            cfg = await host_request("mcp.config", {"server": self.server})
+            host_url = cfg.get("url") if isinstance(cfg, dict) else None
+            if isinstance(host_url, str) and host_url:
+                return host_url
+        except RuntimeError:
+            pass
+        return self.url
+
     async def _open_session(self, stack: AsyncExitStack):
         """Open an initialized MCP ClientSession bound to ``stack``.
 
-        Override for non-HTTP transports (e.g. stdio). The default connects to
-        ``self.url`` over streamable HTTP with a Bearer token from auth.json.
+        Override for non-HTTP transports (e.g. stdio). The default connects over
+        streamable HTTP with a Bearer token from auth.json. The URL comes from the
+        host (mcpServers override) when available, else ``self.url``.
         """
         import inspect  # noqa: PLC0415
 
         from mcp import ClientSession  # noqa: PLC0415
 
-        if not self.url:
+        url = await self._resolve_url()
+        if not url:
             raise ValueError(
                 f"{type(self).__name__} must set `url` or override `_open_session`"
             )
@@ -190,12 +204,12 @@ class McpIntegration:
         # SDK signatures vary: some take headers=, others only http_client=.
         params = inspect.signature(transport).parameters
         if "headers" in params:
-            cm = transport(self.url, headers=auth_header)
+            cm = transport(url, headers=auth_header)
         elif "http_client" in params:
             import httpx  # noqa: PLC0415
 
             client = await stack.enter_async_context(httpx.AsyncClient(headers=auth_header))
-            cm = transport(self.url, http_client=client)
+            cm = transport(url, http_client=client)
         else:
             raise RuntimeError(
                 f"unsupported mcp streamable-HTTP client signature: {tuple(params)}"
@@ -285,4 +299,10 @@ def _parse_result(result: Any) -> Any:
         return structured
     if texts:
         return "\n".join(texts)
+
+    # Non-text content (images, embedded resources): return them as plain dicts
+    # rather than the opaque SDK object so callers get usable data.
+    blocks = getattr(result, "content", None) or []
+    if blocks:
+        return [b.model_dump(mode="json") if hasattr(b, "model_dump") else b for b in blocks]
     return result

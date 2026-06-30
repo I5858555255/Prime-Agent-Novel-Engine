@@ -53,6 +53,16 @@ async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
 	return res.json();
 }
 
+/** Random, URL-safe CSRF `state` value, independent of the PKCE verifier. */
+function randomState(): string {
+	const bytes = new Uint8Array(32);
+	crypto.getRandomValues(bytes);
+	return btoa(String.fromCharCode(...bytes))
+		.replace(/\+/g, "-")
+		.replace(/\//g, "_")
+		.replace(/=/g, "");
+}
+
 /** Try the protected-resource and auth-server well-known docs at the URL's origin. */
 async function discover(url: string): Promise<AuthServerMetadata> {
 	const origin = new URL(url).origin;
@@ -257,6 +267,9 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 		}
 
 		const { verifier, challenge } = await generatePKCE();
+		// `state` must be independent of the PKCE verifier — the verifier is the
+		// secret used at token exchange, while `state` is echoed on the redirect URL.
+		const state = randomState();
 		const scope = config.scopes ?? meta.scopes_supported?.join(" ");
 		const cb = await startCallbackServer(label);
 		try {
@@ -266,7 +279,7 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 				redirect_uri: cb.redirectUri,
 				code_challenge: challenge,
 				code_challenge_method: "S256",
-				state: verifier,
+				state,
 			});
 			if (scope) authParams.set("scope", scope);
 
@@ -285,7 +298,7 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 				// later cancelled (rejects), it doesn't become an unhandled rejection.
 				const manual = callbacks
 					.onManualCodeInput()
-					.then((input) => parseRedirectInput(input, verifier))
+					.then((input) => parseRedirectInput(input, state))
 					.catch(() => null)
 					.finally(() => cb.cancel());
 				const fromCallback = await cb.waitForCode();
@@ -297,13 +310,13 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 						message: "Paste the authorization code or full redirect URL:",
 						placeholder: cb.redirectUri,
 					});
-					result = parseRedirectInput(input, verifier);
+					result = parseRedirectInput(input, state);
 				}
 			}
 			if (!result) {
 				throw new Error("Missing authorization code");
 			}
-			if (result.state !== verifier) {
+			if (result.state !== state) {
 				throw new Error("OAuth state mismatch");
 			}
 

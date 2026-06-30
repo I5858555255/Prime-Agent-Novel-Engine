@@ -136,6 +136,14 @@ export class McpManager {
 				await this.authStorage.getApiKey(this.providerId(server));
 				return {};
 			},
+			// Resolved config so the kernel skill connects to the same URL the host
+			// registered/authenticated (honors a user's mcpServers `url` override).
+			"mcp.config": async (payload) => {
+				const server = String(payload.server ?? "");
+				if (!server) throw new Error("mcp.config requires a server");
+				const url = this.integrations.get(server)?.url;
+				return url ? { url } : {};
+			},
 		};
 		// Only expose begin_login when an interactive login is actually wired, so the
 		// kernel doesn't get a handler whose only behavior is to throw.
