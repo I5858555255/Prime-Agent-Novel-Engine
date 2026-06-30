@@ -303,8 +303,10 @@ describe("daemon mode helpers", () => {
 		}
 		const internals = daemon as unknown as {
 			sessions: Map<string, ActiveSessionState>;
+			agentMessageRateLimiter: { clear: () => void };
 			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
 		};
+		internals.agentMessageRateLimiter.clear = vi.fn();
 		internals.sessions.set(firstState.activeSessionId, firstState);
 		internals.sessions.set(secondState.activeSessionId, secondState);
 
@@ -313,8 +315,62 @@ describe("daemon mode helpers", () => {
 			type: "agent_messages_pause",
 		});
 
+		expect(internals.agentMessageRateLimiter.clear).toHaveBeenCalledOnce();
 		expect(firstClear).toHaveBeenCalledOnce();
 		expect(secondClear).toHaveBeenCalledOnce();
+	});
+
+	it("pause clears queued agent messages concurrently across sessions", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const blockedState = makeState("blocked");
+		const readyState = makeState("ready");
+		let resolveBlockedClear: () => void = () => {};
+		const blockedClear = vi.fn(
+			() =>
+				new Promise<{ steering: string[]; followUp: string[] }>((resolve) => {
+					resolveBlockedClear = () => resolve({ steering: [], followUp: [] });
+				}),
+		);
+		const readyClear = vi.fn(() => ({ steering: [], followUp: ["agent message"] }));
+		for (const [state, clearQueuedUserMessagesMatching] of [
+			[blockedState, blockedClear],
+			[readyState, readyClear],
+		] as const) {
+			state.runtime = {
+				...state.runtime,
+				cwd: "/tmp",
+				session: {
+					sessionId: `session-${state.activeSessionId}`,
+					sessionName: state.activeSessionId,
+					isStreaming: false,
+					pendingMessageCount: 1,
+					clearQueuedUserMessagesMatching,
+				},
+			} as never;
+		}
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(blockedState.activeSessionId, blockedState);
+		internals.sessions.set(readyState.activeSessionId, readyState);
+
+		const pause = internals.handleCommand(makeClient("client-1", blockedState.activeSessionId), {
+			id: "command-1",
+			type: "agent_messages_pause",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(blockedClear).toHaveBeenCalledOnce();
+		expect(readyClear).toHaveBeenCalledOnce();
+		resolveBlockedClear();
+		await pause;
 	});
 
 	it("refunds agent message rate limit tokens when delivery fails", async () => {

@@ -1258,6 +1258,7 @@ export class AgentDaemon {
 
 			case "agent_messages_pause": {
 				this.agentMessagesPaused = true;
+				this.agentMessageRateLimiter.clear();
 				await this.clearQueuedAgentSessionMessagesForAllStates();
 				return success(command.id, "agent_messages_pause", this.getAgentMessageSafetyStatus());
 			}
@@ -1799,9 +1800,9 @@ export class AgentDaemon {
 	}
 
 	private async clearQueuedAgentSessionMessagesForAllStates(): Promise<void> {
-		for (const state of this.sessions.values()) {
-			await this.clearQueuedAgentSessionMessagesForState(state);
-		}
+		await Promise.all(
+			[...this.sessions.values()].map((state) => this.clearQueuedAgentSessionMessagesForState(state)),
+		);
 	}
 
 	private reserveAgentMessageQueueSlot(targetState: ActiveSessionState): () => void {
