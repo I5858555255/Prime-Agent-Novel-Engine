@@ -233,8 +233,10 @@ rather than assuming it's connected.
   package instead. Use the default managed kernel venv to avoid this.
 - **Overriding a built-in name.** Declaring an `mcpServers` entry whose key matches
   a built-in (e.g. `linear`) with a custom `url` points the integration at your
-  URL. A previously stored official credential is *not* reused for the override —
-  authenticate the override via `bearerTokenEnvVar`, or its own OAuth.
+  URL. A previously stored official credential is *not* reused for the override, to
+  avoid sending the official token to your endpoint. Authenticate such an override
+  via `bearerTokenEnvVar` only — OAuth credentials are not honored for a
+  catalog-name override. (Use a name that isn't a built-in to get OAuth.)
 - **Multi-session daemon.** OAuth provider registration is process-global; a
   user-declared server unique to one daemon session is re-registered on that
   session's next reload.
