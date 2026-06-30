@@ -15,7 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	Agent,
@@ -39,6 +39,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
+import { Semaphore } from "../utils/semaphore.js";
 import { sleep } from "../utils/sleep.js";
 import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import { flushAgentTraceUpload } from "./agent-traces.js";
@@ -386,6 +387,37 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
 
 function noopRlmChildAbort(): void {}
+
+/**
+ * Bounds how many subagent kernels boot at once. Each boot spawns a Python
+ * process and binds 5 ZeroMQ ports, so an unbounded fan-out (e.g. 100 rlm.run
+ * calls) starves the box and most kernels fail to start. The limiter is
+ * process-wide because kernels contend for the same OS resources regardless of
+ * which session in the tree spawned them. Excess runs sit in "queued" until a
+ * slot frees, rather than racing and dying.
+ */
+const DEFAULT_KERNEL_BOOT_CONCURRENCY = Math.max(2, (cpus().length || 4) - 2);
+
+function resolveKernelBootConcurrency(): number {
+	const raw = process.env.PRIME_AGENT_MAX_CONCURRENT_SUBAGENT_BOOTS;
+	if (raw === undefined || raw === "") {
+		return DEFAULT_KERNEL_BOOT_CONCURRENCY;
+	}
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed < 1) {
+		return DEFAULT_KERNEL_BOOT_CONCURRENCY;
+	}
+	return parsed;
+}
+
+let kernelBootSemaphore: Semaphore | undefined;
+
+function getKernelBootSemaphore(): Semaphore {
+	if (!kernelBootSemaphore) {
+		kernelBootSemaphore = new Semaphore(resolveKernelBootConcurrency());
+	}
+	return kernelBootSemaphore;
+}
 
 function isRlmChildRunCancelled(run: RlmChildRun): boolean {
 	return run.status === "cancelled";
@@ -4039,7 +4071,8 @@ export class AgentSession {
 			id: childNodeId,
 			prompt,
 			sessionDir: childSessionDir,
-			status: "running",
+			// Boots are gated; the run is "queued" until it acquires a kernel-boot slot.
+			status: "queued",
 			abort: noopRlmChildAbort,
 		};
 		this._activeRlmChildRuns.set(run.id, run);
@@ -4081,7 +4114,16 @@ export class AgentSession {
 				if (!(await ensureTool("rg", true))) {
 					throw new Error(MISSING_RIPGREP_MESSAGE);
 				}
-				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
+				// Gate the kernel boot so a large fan-out doesn't spawn every Python
+				// process at once. The permit covers only the boot, not the run.
+				childRuntime = await getKernelBootSemaphore().run(async () => {
+					if (isRlmChildRunCancelled(run)) {
+						throw new Error(run.error ?? "RLM child cancelled");
+					}
+					run.status = "running";
+					emitChildUpdate();
+					return this._createRlmSubagentRuntime(subagentOptions);
+				});
 				const child = childRuntime.session;
 				childSession = child;
 				run.session = child;
