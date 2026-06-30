@@ -272,11 +272,8 @@ describe("AgentSession rlm recursion", () => {
 		expect(dirname(result.session_dir!)).toBe(root.sessionManager.getSessionArtifactDir());
 		expect(existsSync(result.session_dir!)).toBe(true);
 		expect(readdirSync(result.session_dir!).some((name) => name.endsWith(".jsonl"))).toBe(true);
-		// Boots are gated: the run is emitted "queued" first, then flips to "running"
-		// once it acquires a kernel-boot slot.
-		expect(childUpdates[0]?.status).toBe("queued");
+		expect(childUpdates[0]?.status).toBe("running");
 		expect(childUpdates[0]?.label).toBe("summarize shard 1");
-		expect(childUpdates.some((update) => update.status === "running")).toBe(true);
 		const doneUpdate = [...childUpdates].reverse().find((update) => update.status === "done");
 		expect(doneUpdate?.answerPreview).toBe("child answer: summarize shard 1");
 		// Context tokens from the child's own assistant usage (input 7 + output 3); no tools ran.

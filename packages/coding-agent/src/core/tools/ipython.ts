@@ -5,6 +5,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
 import type { ToolDefinition } from "../extensions/types.js";
+import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import {
 	type HostRequestHandlers,
@@ -295,32 +296,38 @@ export class IpythonKernelProvisioner {
 				? { path: snapshotPathIn(snapshotDir), manifestPath: manifestPathIn(snapshotDir) }
 				: undefined,
 		});
+		// Emitted synchronously (before the permit await) so a listener attaching
+		// mid-flight can replay the current stage.
 		this.emitStartupProgress("Starting IPython kernel...");
-		await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
-		// Whether a snapshot existed decides if we notify the model on success.
+		// Hold a boot permit across the actual process spawn + restore + bootstrap so a
+		// large fan-out can't start every kernel at once. Acquired after readyGate above
+		// so a kernel waiting on a prior dispose never occupies a slot while idle.
 		let pendingRestore: RestoreResult | undefined;
-		try {
-			// Revive a prior session's namespace before the bootstrap, so the bootstrap
-			// then overwrites live handles (rlm, skills) on top of anything restored.
-			if (snapshotDir) {
-				const snapshotExisted = existsSync(snapshotPathIn(snapshotDir));
-				this.emitStartupProgress("Restoring IPython state...");
-				const restore = await m.restoreState();
-				if (snapshotExisted) {
-					pendingRestore = restore ?? { restored: [], failed: [], path: snapshotPathIn(snapshotDir) };
+		await withKernelBootPermit(async () => {
+			await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
+			try {
+				// Revive a prior session's namespace before the bootstrap, so the bootstrap
+				// then overwrites live handles (rlm, skills) on top of anything restored.
+				if (snapshotDir) {
+					const snapshotExisted = existsSync(snapshotPathIn(snapshotDir));
+					this.emitStartupProgress("Restoring IPython state...");
+					const restore = await m.restoreState();
+					if (snapshotExisted) {
+						pendingRestore = restore ?? { restored: [], failed: [], path: snapshotPathIn(snapshotDir) };
+					}
 				}
+				this.emitStartupProgress("Preparing IPython runtime...");
+				const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills));
+				if (bootstrap.status !== "ok") {
+					const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
+					throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+				}
+			} catch (error) {
+				// Never leak the kernel's ZMQ sockets / temp dir if startup fails after spawn.
+				void m.dispose();
+				throw error;
 			}
-			this.emitStartupProgress("Preparing IPython runtime...");
-			const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills));
-			if (bootstrap.status !== "ok") {
-				const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
-				throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
-			}
-		} catch (error) {
-			// Never leak the kernel's ZMQ sockets / temp dir if startup fails after spawn.
-			void m.dispose();
-			throw error;
-		}
+		});
 		// Only tell the model what was revived once the kernel is actually usable —
 		// a notice claiming restored state must never outlive a failed bootstrap.
 		if (pendingRestore) {
