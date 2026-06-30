@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AutocompleteItem, OverlayHandle, SlashCommand } from "@earendil-works/pi-tui";
 import {
@@ -137,9 +138,20 @@ export async function resolveAgentsViewSessionUiServices(
 	return options.createUiServicesForSession ? await options.createUiServicesForSession(summary) : options.uiServices;
 }
 
-export function createAgentsViewResumeConfig(config: AgentSessionRuntimeConfig): AgentSessionRuntimeConfig {
+// Stripping cwd lets a session open in its own stored directory rather than
+// wherever the fleet view was launched. When overrideCwd is given (the stored
+// cwd no longer exists), it is sent instead so the daemon resolves the runtime
+// against a real directory rather than throwing MissingSessionCwdError.
+export function createAgentsViewResumeConfig(
+	config: AgentSessionRuntimeConfig,
+	overrideCwd?: string,
+): AgentSessionRuntimeConfig {
 	const resumeConfig: AgentSessionRuntimeConfig = { ...config };
-	delete resumeConfig.cwd;
+	if (overrideCwd) {
+		resumeConfig.cwd = overrideCwd;
+	} else {
+		delete resumeConfig.cwd;
+	}
 	return resumeConfig;
 }
 
@@ -170,10 +182,34 @@ export function createAgentsViewReplyHeadline(text: string | undefined): string 
 		.find((line) => line.length > 0);
 }
 
+interface OpenedAgentsViewSession {
+	connection: DaemonAgentConnection;
+	summary: SessionSummary;
+	// Set when the session's stored cwd was missing and we opened it in a
+	// fallback directory; surfaced to the user as a startup notice.
+	cwdFallbackNotice?: string;
+}
+
+// A session created in a now-deleted directory (e.g. a removed worktree) still
+// lists in the fleet view but its stored cwd is gone. Resolve to the launch cwd
+// so the daemon opens it instead of throwing MissingSessionCwdError.
+export function resolveAgentsViewOpenCwd(
+	summary: SessionSummary,
+	fallbackCwd: string | undefined,
+): { overrideCwd?: string; notice?: string } {
+	if (!summary.cwd || existsSync(summary.cwd) || !fallbackCwd) {
+		return {};
+	}
+	return {
+		overrideCwd: fallbackCwd,
+		notice: `Original directory is missing (${summary.cwd}); opened in ${fallbackCwd} instead.`,
+	};
+}
+
 async function openAgentsViewSession(
 	options: AgentsViewModeOptions,
 	summary: SessionSummary,
-): Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> {
+): Promise<OpenedAgentsViewSession> {
 	let client = await connectAgentsViewDaemonClient(options.socketPath);
 	if (summary.activeSessionId) {
 		try {
@@ -195,10 +231,11 @@ async function openAgentsViewSession(
 		throw new Error("Cannot open agent without an active runtime or saved session file");
 	}
 
+	const { overrideCwd, notice } = resolveAgentsViewOpenCwd(summary, options.config.cwd);
 	try {
 		const response = await client.request({
 			type: "create",
-			config: createAgentsViewResumeConfig(options.config),
+			config: createAgentsViewResumeConfig(options.config, overrideCwd),
 			sessionPath: summary.sessionFile,
 		});
 		const createdSummary = expectSessionSummary(requireDaemonData(response));
@@ -206,7 +243,7 @@ async function openAgentsViewSession(
 		const connection = await DaemonAgentConnection.attach(client, activeSessionId, {
 			closeClientOnDispose: true,
 		});
-		return { connection, summary: createdSummary };
+		return { connection, summary: createdSummary, cwdFallbackNotice: notice };
 	} catch (error) {
 		client.close();
 		throw error;
@@ -256,9 +293,12 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			persistentState.pendingExpandedAncestorSessionIds = undefined;
 		}
 
-		let opened: { connection: DaemonAgentConnection; summary: SessionSummary } | undefined;
+		let opened: OpenedAgentsViewSession | undefined;
 		try {
 			opened = await openAgentsViewSession(options, result.summary);
+			if (opened.cwdFallbackNotice) {
+				persistentState.statusMessage = opened.cwdFallbackNotice;
+			}
 			const uiServices = await resolveAgentsViewSessionUiServices(options, opened.summary);
 			const interactiveMode = new InteractiveMode({
 				agentConnection: opened.connection,
@@ -266,6 +306,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				bindLocalSessionExtensions: false,
 				migratedProviders: options.migratedProviders,
 				modelFallbackMessage: resolveAttachModelFallbackMessage(opened.summary, options.modelFallbackMessage),
+				startupNotice: opened.cwdFallbackNotice,
 				verbose: options.verbose,
 				returnToAgentsView: true,
 				// The agents view renders the global notices itself, so suppress them in-session.
@@ -1442,10 +1483,12 @@ class AgentsViewMode implements Component, Focusable {
 			if (pending.sessionFile) {
 				// The kill above normally persists the archived state, but it can be
 				// skipped or hit an unknown session (e.g. the daemon died after
-				// listing). Make sure the file is not left marked active, or a
-				// restarted daemon would resurrect a deliberately deactivated agent.
+				// listing). Persist archived unless it already is — off-daemon sessions
+				// (and older ones) may carry no session_state entry at all, so a
+				// status===active check would skip them and the row would resurface on
+				// the next scan.
 				const sessionManager = SessionManager.open(pending.sessionFile, this.options.config.sessionDir);
-				if (sessionManager.getSessionState()?.status === "active") {
+				if (sessionManager.getSessionState()?.status !== "archived") {
 					sessionManager.appendSessionState({ status: "archived" });
 				}
 			}
