@@ -529,8 +529,12 @@ async function writeBootstrapVersion(
 
 function runtimeCandidateDirs(): string[] {
 	const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+	// dist/prime-agent-runtime is listed first deliberately: it is the only path stable
+	// across every shipped layout (dist/, dist/bundle/, bun), where import.meta.url-relative
+	// resolution breaks. `npm run build` rebuilds it from live source (copy-assets does
+	// rm -rf + cp), so the staleness hash still refreshes on every build. The relative
+	// paths below cover running from source (tsx) where dist/ hasn't been built.
 	return [
-		// Stable across layouts (dist/, dist/bundle/, tsx): <package>/dist/prime-agent-runtime
 		path.join(getPackageDir(), "dist", "prime-agent-runtime"),
 		path.resolve(moduleDir, "..", "..", "prime-agent-runtime"),
 		path.resolve(moduleDir, "..", "..", "..", "..", "..", "prime-agent-runtime"),
