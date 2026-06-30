@@ -94,16 +94,20 @@ Add it under `mcpServers` in `~/.prime/agent/settings.json` (or project
 }
 ```
 
-HTTP server fields:
+Currently only remote `"http"` servers are supported by `McpIntegration`. HTTP
+server fields:
 
 | Field | Meaning |
 |-------|---------|
-| `type` | `"http"` (remote) or `"stdio"` (local subprocess) |
-| `url` | The MCP endpoint (http) |
+| `type` | Must be `"http"` |
+| `url` | The MCP endpoint |
 | `oauth` | `true` to use the browser OAuth flow (requires the server to support dynamic client registration) |
 | `bearerTokenEnvVar` | Name of an env var holding a static bearer token, instead of OAuth |
 | `headers` | Extra static HTTP headers sent on every request |
 | `enabled` | Set `false` to force-disable even when credentials exist |
+
+> `stdio` (local-subprocess) servers are not yet wired through to the kernel —
+> the host drops non-HTTP entries — so an integration must target an HTTP endpoint.
 
 ### 2. Ship the skill package
 
@@ -199,8 +203,10 @@ Exceptions (both importable from `rlm`):
 
 ## Enable-by-login lifecycle
 
-1. The integration's skill ships installed but **disabled** — excluded from the
-   prompt and not imported into the kernel — because no credentials exist.
+This auth-gating applies to the **built-in** integrations (Linear, Notion):
+
+1. The built-in skill ships installed but **disabled** — excluded from the prompt
+   and not imported into the kernel — because no credentials exist.
 2. The user logs in; credentials land in `auth.json` under `mcp:<server>`.
 3. A resource reload (automatic after `/login`/`/mcp login`, or `/reload`) detects
    the credentials, enables the skill, and the kernel installs + imports the
@@ -209,6 +215,13 @@ Exceptions (both importable from `rlm`):
 
 If you log in mid-turn, the reload is deferred — run `/reload` after the turn to
 activate the integration.
+
+**User-authored integrations are not auth-gated this way.** A skill you drop into
+a skills directory is loaded like any other skill — visible to the model and
+imported into the kernel immediately, regardless of `auth.json`. It simply fails
+at call time with `NotEnabled` until credentials exist. So make the skill's
+`SKILL.md` tell the model to prompt the user to log in (e.g. via `/mcp login`)
+rather than assuming it's connected.
 
 ## Caveats
 
