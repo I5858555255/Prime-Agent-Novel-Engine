@@ -1260,12 +1260,11 @@ export class AgentDaemon {
 
 			case "agent_messages_clear": {
 				const state = this.getSessionState(command.activeSessionId);
-				this.agentMessageRateLimiter.clearMatching((key) => key.endsWith(`->${state.activeSessionId}`));
-				return success(
-					command.id,
-					"agent_messages_clear",
-					state.runtime.session.clearQueuedUserMessagesMatching(isAgentSessionMessagePrompt),
-				);
+				const cleared = await this.withAgentMessageTargetLock(state.activeSessionId, async () => {
+					this.agentMessageRateLimiter.clearMatching((key) => key.endsWith(`->${state.activeSessionId}`));
+					return state.runtime.session.clearQueuedUserMessagesMatching(isAgentSessionMessagePrompt);
+				});
+				return success(command.id, "agent_messages_clear", cleared);
 			}
 
 			case "abort": {

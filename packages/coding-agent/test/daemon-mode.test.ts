@@ -387,11 +387,13 @@ describe("daemon mode helpers", () => {
 		});
 		await Promise.resolve();
 
-		await internals.handleCommand(makeClient("client-1", targetState.activeSessionId), {
+		const clear = internals.handleCommand(makeClient("client-1", targetState.activeSessionId), {
 			id: "command-1",
 			type: "agent_messages_clear",
 			activeSessionId: targetState.activeSessionId,
 		});
+		await Promise.resolve();
+
 		await expect(
 			internals.sendAgentSessionMessage({
 				targetSelector: targetState.activeSessionId,
@@ -403,6 +405,7 @@ describe("daemon mode helpers", () => {
 
 		rejectFollowUp(new Error("release reservation"));
 		await expect(first).rejects.toThrow("release reservation");
+		await clear;
 	});
 
 	it("serializes concurrent agent messages to an idle target", async () => {
@@ -765,6 +768,69 @@ describe("daemon mode helpers", () => {
 				message: "over limit",
 			}),
 		).rejects.toThrow("Agent messaging rate limit exceeded");
+	});
+
+	it("holds the target lock while clearing queued agent messages", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		let resolvePrompt: () => void = () => {};
+		const acceptAgentMessagePrompt = vi.fn(
+			(_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+				options?.preflightResult?.(true);
+				return new Promise<void>((resolve) => {
+					resolvePrompt = resolve;
+				});
+			},
+		);
+		const clearQueuedUserMessagesMatching = vi.fn(() => ({ steering: [], followUp: [] }));
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 0,
+				acceptAgentMessagePrompt,
+				clearQueuedUserMessagesMatching,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		const send = internals.sendAgentSessionMessage({
+			targetSelector: targetState.activeSessionId,
+			message: "first",
+			origin: "agent",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const clear = internals.handleCommand(makeClient("client-1", targetState.activeSessionId), {
+			id: "command-1",
+			type: "agent_messages_clear",
+			activeSessionId: targetState.activeSessionId,
+		});
+		await Promise.resolve();
+		expect(clearQueuedUserMessagesMatching).not.toHaveBeenCalled();
+
+		resolvePrompt();
+		await send;
+		await clear;
+		expect(clearQueuedUserMessagesMatching).toHaveBeenCalledOnce();
 	});
 
 	it("rejects agent messages to the sending session", async () => {
