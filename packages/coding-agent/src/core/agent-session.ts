@@ -394,6 +394,8 @@ export interface PromptOptions {
 	preflightResult?: (success: boolean) => void;
 	/** Queue instead of starting immediately when the session is idle but already has queued work. */
 	queueIfBusy?: boolean;
+	/** Internal daemon fast path: start accepted message without compaction or before-start extension hooks. */
+	skipPrePromptWork?: boolean;
 }
 
 interface QueuedFollowUpMessage {
@@ -2176,6 +2178,13 @@ export class AgentSession {
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
+		let preflightSettled = false;
+		const reportPreflight = (success: boolean) => {
+			if (!preflightSettled) {
+				preflightSettled = true;
+				preflightResult?.(success);
+			}
+		};
 		let messages: AgentMessage[] | undefined;
 
 		try {
@@ -2185,7 +2194,7 @@ export class AgentSession {
 			if (expandPromptTemplates) {
 				const handledGoalCommand = await this._handleGoalSlashCommand(currentText, currentImages);
 				if (handledGoalCommand) {
-					preflightResult?.(true);
+					reportPreflight(true);
 					return;
 				}
 			}
@@ -2196,7 +2205,7 @@ export class AgentSession {
 				const handled = await this._tryExecuteExtensionCommand(currentText);
 				if (handled) {
 					// Extension command executed, no prompt to send
-					preflightResult?.(true);
+					reportPreflight(true);
 					return;
 				}
 			}
@@ -2209,7 +2218,7 @@ export class AgentSession {
 					options?.source ?? "interactive",
 				);
 				if (inputResult.action === "handled") {
-					preflightResult?.(true);
+					reportPreflight(true);
 					return;
 				}
 				if (inputResult.action === "transform") {
@@ -2238,7 +2247,7 @@ export class AgentSession {
 				} else {
 					await this._queueSteer(expandedText, currentImages);
 				}
-				preflightResult?.(true);
+				reportPreflight(true);
 				return;
 			}
 
@@ -2261,62 +2270,78 @@ export class AgentSession {
 				}
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
+			if (options?.skipPrePromptWork) {
+				messages = [];
+				for (const msg of this._pendingNextTurnMessages) {
+					messages.push(msg);
+				}
+				this._pendingNextTurnMessages = [];
+				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+				if (currentImages) {
+					userContent.push(...currentImages);
+				}
+				messages.push({
+					role: "user",
+					content: userContent,
+					timestamp: Date.now(),
+				});
+			} else {
+				// Check if we need to compact before sending (catches aborted responses)
+				const lastAssistant = this._findLastAssistantMessage();
+				if (lastAssistant) {
+					await this._checkCompaction(lastAssistant, false);
+				}
 
-			// Check if we need to compact before sending (catches aborted responses)
-			const lastAssistant = this._findLastAssistantMessage();
-			if (lastAssistant) {
-				await this._checkCompaction(lastAssistant, false);
-			}
+				// Build messages array (custom message if any, then user message)
+				messages = [];
 
-			// Build messages array (custom message if any, then user message)
-			messages = [];
+				// Inject any pending "nextTurn" messages as context before the user message.
+				for (const msg of this._pendingNextTurnMessages) {
+					messages.push(msg);
+				}
+				this._pendingNextTurnMessages = [];
 
-			// Inject any pending "nextTurn" messages as context before the user message.
-			for (const msg of this._pendingNextTurnMessages) {
-				messages.push(msg);
-			}
-			this._pendingNextTurnMessages = [];
+				// Add user message
+				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+				if (currentImages) {
+					userContent.push(...currentImages);
+				}
+				messages.push({
+					role: "user",
+					content: userContent,
+					timestamp: Date.now(),
+				});
 
-			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-			if (currentImages) {
-				userContent.push(...currentImages);
-			}
-			messages.push({
-				role: "user",
-				content: userContent,
-				timestamp: Date.now(),
-			});
-
-			// Emit before_agent_start extension event
-			const result = await this._extensionRunner.emitBeforeAgentStart(
-				expandedText,
-				currentImages,
-				this._baseSystemPrompt,
-				this._baseSystemPromptOptions,
-			);
-			// Add all custom messages from extensions
-			if (result?.messages) {
-				for (const msg of result.messages) {
-					messages.push({
-						role: "custom",
-						customType: msg.customType,
-						content: msg.content,
-						display: msg.display,
-						details: msg.details,
-						timestamp: Date.now(),
-					});
+				// Emit before_agent_start extension event
+				const result = await this._extensionRunner.emitBeforeAgentStart(
+					expandedText,
+					currentImages,
+					this._baseSystemPrompt,
+					this._baseSystemPromptOptions,
+				);
+				// Add all custom messages from extensions
+				if (result?.messages) {
+					for (const msg of result.messages) {
+						messages.push({
+							role: "custom",
+							customType: msg.customType,
+							content: msg.content,
+							display: msg.display,
+							details: msg.details,
+							timestamp: Date.now(),
+						});
+					}
+				}
+				// Apply extension-modified system prompt, or reset to base
+				if (result?.systemPrompt) {
+					this.agent.state.systemPrompt = result.systemPrompt;
+				} else {
+					// Ensure we're using the base prompt (in case previous turn had modifications)
+					this.agent.state.systemPrompt = this._baseSystemPrompt;
 				}
 			}
-			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt) {
-				this.agent.state.systemPrompt = result.systemPrompt;
-			} else {
-				// Ensure we're using the base prompt (in case previous turn had modifications)
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
-			}
 		} catch (error) {
-			preflightResult?.(false);
+			reportPreflight(false);
 			throw error;
 		}
 
@@ -2325,7 +2350,7 @@ export class AgentSession {
 		}
 
 		const promptPromise = this.agent.prompt(messages);
-		preflightResult?.(true);
+		reportPreflight(true);
 		await promptPromise;
 		await this.waitForRetry();
 	}

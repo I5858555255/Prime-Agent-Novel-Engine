@@ -1840,16 +1840,17 @@ export class AgentDaemon {
 					resolve();
 				}
 			};
-			const shouldQueue =
-				targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0;
 			const streamingBehavior =
-				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
-				(payload.deliveryMode === "steer" ? "steer" : "followUp");
+				resolveAgentSessionMessageStreamingBehavior(
+					targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0,
+					payload.deliveryMode,
+				) ?? (payload.deliveryMode === "steer" ? "steer" : "followUp");
 			void targetState.runtime.session
 				.prompt(createAgentSessionMessagePrompt(payload), {
 					expandPromptTemplates: false,
 					streamingBehavior,
 					queueIfBusy: true,
+					skipPrePromptWork: true,
 					source: "rpc",
 					preflightResult: (didSucceed) => {
 						if (didSucceed) {
@@ -1859,9 +1860,14 @@ export class AgentDaemon {
 				})
 				.then(settleAccepted)
 				.catch((error) => {
-					if (!accepted) {
-						reject(error);
+					if (accepted) {
+						this.broadcastToSession(
+							targetState,
+							failure(undefined, "send_message", error, serializeDaemonError(error)),
+						);
+						return;
 					}
+					reject(error);
 				});
 		});
 	}
