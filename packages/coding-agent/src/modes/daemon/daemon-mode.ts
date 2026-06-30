@@ -1853,7 +1853,7 @@ export class AgentDaemon {
 					source: "rpc",
 					preflightResult: (didSucceed) => {
 						if (didSucceed) {
-							settleAccepted();
+							queueMicrotask(settleAccepted);
 						}
 					},
 				})
