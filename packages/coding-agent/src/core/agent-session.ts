@@ -2324,8 +2324,9 @@ export class AgentSession {
 			return;
 		}
 
+		const promptPromise = this.agent.prompt(messages);
 		preflightResult?.(true);
-		await this.agent.prompt(messages);
+		await promptPromise;
 		await this.waitForRetry();
 	}
 

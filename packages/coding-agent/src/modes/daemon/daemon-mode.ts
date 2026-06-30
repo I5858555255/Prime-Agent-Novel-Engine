@@ -1840,11 +1840,11 @@ export class AgentDaemon {
 					resolve();
 				}
 			};
+			const shouldQueue =
+				targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0;
 			const streamingBehavior =
-				resolveAgentSessionMessageStreamingBehavior(
-					targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0,
-					payload.deliveryMode,
-				) ?? (payload.deliveryMode === "steer" ? "steer" : "followUp");
+				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
+				(payload.deliveryMode === "steer" ? "steer" : "followUp");
 			void targetState.runtime.session
 				.prompt(createAgentSessionMessagePrompt(payload), {
 					expandPromptTemplates: false,
@@ -1853,7 +1853,7 @@ export class AgentDaemon {
 					source: "rpc",
 					preflightResult: (didSucceed) => {
 						if (didSucceed) {
-							queueMicrotask(settleAccepted);
+							settleAccepted();
 						}
 					},
 				})
