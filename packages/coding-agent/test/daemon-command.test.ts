@@ -7,6 +7,10 @@ const daemonClientMock = vi.hoisted(() => {
 		type: string;
 		name?: string;
 		activeSessionId?: string;
+		targetActiveSessionId?: string;
+		fromActiveSessionId?: string;
+		deliveryMode?: string;
+		message?: string;
 		schedule?: string;
 		prompt?: string;
 		sessionPath?: string;
@@ -222,6 +226,57 @@ describe("daemon command", () => {
 		expect(client?.requests[0]).toMatchObject({
 			type: "create",
 			sessionPath: "abc123",
+		});
+	});
+
+	it("parses send options only before the target and keeps flag-like message text", async () => {
+		await expect(
+			handleDaemonCommand([
+				"daemon",
+				"--socket",
+				"/tmp/prime-agent.sock",
+				"send",
+				"--from",
+				"planner",
+				"--follow-up",
+				"worker",
+				"please",
+				"keep",
+				"--from",
+				"literal",
+				"--steer",
+			]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toEqual({
+			type: "send_message",
+			targetActiveSessionId: "worker",
+			fromActiveSessionId: "planner",
+			deliveryMode: "follow_up",
+			message: "please keep --from literal --steer",
+		});
+	});
+
+	it("supports send separator before a flag-like target or message", async () => {
+		await expect(
+			handleDaemonCommand([
+				"daemon",
+				"--socket",
+				"/tmp/prime-agent.sock",
+				"send",
+				"--",
+				"--target-like",
+				"--from",
+				"literal",
+			]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toMatchObject({
+			type: "send_message",
+			targetActiveSessionId: "--target-like",
+			message: "--from literal",
 		});
 	});
 

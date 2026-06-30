@@ -869,11 +869,17 @@ interface ParsedSendArgs {
 function parseSendArgs(args: string[]): ParsedSendArgs {
 	let fromActiveSessionId: string | undefined;
 	let deliveryMode: "auto" | "steer" | "follow_up" | undefined;
-	const positionals: string[] = [];
+	let targetActiveSessionId: string | undefined;
+	const messageParts: string[] = [];
+	let parseOptions = true;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
-		if (arg === "--from") {
+		if (parseOptions && !targetActiveSessionId && arg === "--") {
+			parseOptions = false;
+			continue;
+		}
+		if (parseOptions && !targetActiveSessionId && arg === "--from") {
 			const value = args[index + 1];
 			if (!value) {
 				throw new Error("--from requires a session id or name");
@@ -882,23 +888,26 @@ function parseSendArgs(args: string[]): ParsedSendArgs {
 			index++;
 			continue;
 		}
-		if (arg === "--steer") {
+		if (parseOptions && !targetActiveSessionId && arg === "--steer") {
 			deliveryMode = "steer";
 			continue;
 		}
-		if (arg === "--follow-up") {
+		if (parseOptions && !targetActiveSessionId && arg === "--follow-up") {
 			deliveryMode = "follow_up";
 			continue;
 		}
-		if (arg === "--auto") {
+		if (parseOptions && !targetActiveSessionId && arg === "--auto") {
 			deliveryMode = "auto";
 			continue;
 		}
-		positionals.push(arg);
+		if (!targetActiveSessionId) {
+			targetActiveSessionId = arg;
+			continue;
+		}
+		messageParts.push(arg);
 	}
 
-	const targetActiveSessionId = positionals[0];
-	const message = positionals.slice(1).join(" ").trim();
+	const message = messageParts.join(" ").trim();
 	if (!targetActiveSessionId || !message) {
 		throw new Error("Usage: daemon send [--from <session>] [--steer|--follow-up] <target-session> <message>");
 	}

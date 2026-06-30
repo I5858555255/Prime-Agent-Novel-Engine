@@ -70,7 +70,7 @@ describe("daemon mode helpers", () => {
 		expect(resolve).toHaveBeenCalledWith({ cancelled: true });
 	});
 
-	it("does not acknowledge agent messages until the target prompt completes", async () => {
+	it("acknowledges agent messages after target prompt preflight succeeds", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -132,19 +132,13 @@ describe("daemon mode helpers", () => {
 			fromState,
 			origin: "agent",
 		});
-		let settled = false;
-		void send.catch(() => {
-			settled = true;
-		});
 		await Promise.resolve();
 		await Promise.resolve();
 
 		expect(prompt).toHaveBeenCalledOnce();
-		expect(settled).toBe(false);
+		await expect(send).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
 
 		rejectPrompt(new Error("target turn failed"));
-
-		await expect(send).rejects.toThrow("target turn failed");
 	});
 
 	it("rate limits agent messages per sender and target pair", async () => {
@@ -239,7 +233,8 @@ describe("daemon mode helpers", () => {
 			},
 		});
 		const targetState = makeState("target");
-		const agentMessageText = "Agent-to-agent message received.\nSource: agent_message\n\nhello";
+		const agentMessageText =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_test\n\nhello";
 		const clearQueuedUserMessagesMatching = vi.fn((predicate: (text: string) => boolean) => ({
 			steering: [agentMessageText].filter(predicate),
 			followUp: [],
@@ -314,7 +309,7 @@ describe("daemon mode helpers", () => {
 		internals.sessions.set(fromState.activeSessionId, fromState);
 		internals.sessions.set(targetState.activeSessionId, targetState);
 
-		for (let i = 0; i < 4; i++) {
+		for (let i = 0; i < 3; i++) {
 			await expect(
 				internals.sendAgentSessionMessage({
 					targetSelector: targetState.activeSessionId,
@@ -324,6 +319,14 @@ describe("daemon mode helpers", () => {
 				}),
 			).rejects.toThrow("missing model");
 		}
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "over limit",
+				fromState,
+				origin: "agent",
+			}),
+		).rejects.toThrow("Agent messaging rate limit exceeded");
 	});
 
 	it("counts concurrent agent message queue reservations against the target queue cap", async () => {
@@ -463,7 +466,7 @@ describe("daemon mode helpers", () => {
 		await Promise.resolve();
 
 		expect(prompt).toHaveBeenCalledTimes(2);
-		expect(prompt.mock.calls[1]?.[1]).toMatchObject({ streamingBehavior: undefined });
+		expect(prompt.mock.calls[1]?.[1]).toMatchObject({ streamingBehavior: "followUp" });
 
 		promptResolves[1]?.();
 		await expect(second).resolves.toMatchObject({ message: "second" });

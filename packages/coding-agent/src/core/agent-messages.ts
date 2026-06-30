@@ -136,9 +136,10 @@ export function resolveAgentSessionMessageStreamingBehavior(
 }
 
 export function isAgentSessionMessagePrompt(text: string): boolean {
-	return text.startsWith(`Agent-to-agent message received.
-Source: ${AGENT_MESSAGE_SOURCE}
-`);
+	if (!text.startsWith(`Agent-to-agent message received.\nSource: ${AGENT_MESSAGE_SOURCE}\n`)) {
+		return false;
+	}
+	return text.includes("\nTo: ") && text.includes("\nMessage id: agentmsg_");
 }
 
 export function createAgentSessionMessagePrompt(payload: AgentSessionMessagePayload): string {

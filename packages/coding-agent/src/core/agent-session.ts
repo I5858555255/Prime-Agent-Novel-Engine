@@ -392,6 +392,8 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
+	/** Queue instead of starting immediately when the session is idle but already has queued work. */
+	queueIfBusy?: boolean;
 }
 
 interface QueuedFollowUpMessage {
@@ -2223,10 +2225,9 @@ export class AgentSession {
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
 
-			// If streaming or queued work already exists, enqueue according to the requested behavior.
-			// The pending-message case preserves FIFO order for daemon-delivered messages when a
-			// session is idle but still has queued steering/follow-up work.
-			if (this.isStreaming || this.pendingMessageCount > 0) {
+			// If streaming, or a caller explicitly asked to respect existing queued work,
+			// enqueue according to the requested behavior.
+			if (this.isStreaming || (options?.queueIfBusy === true && this.pendingMessageCount > 0)) {
 				if (!options?.streamingBehavior) {
 					throw new Error(
 						"Agent is already processing or has queued work. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",

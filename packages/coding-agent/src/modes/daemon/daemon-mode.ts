@@ -827,27 +827,6 @@ export class AgentDaemon {
 						return this.deleteRlmHeartbeatForState(stateRef, id);
 					},
 				},
-				agentMessageController: {
-					listAgents: () => {
-						if (!stateRef) {
-							throw new Error("Agent message state is not ready for this session yet");
-						}
-						return this.createAgentMessageListResult(stateRef);
-					},
-					sendAgentMessage: (input) => {
-						if (!stateRef) {
-							throw new Error("Agent message state is not ready for this session yet");
-						}
-						return this.sendAgentSessionMessage({
-							targetSelector: input.target,
-							message: input.message,
-							fromState: stateRef,
-							deliveryMode: input.deliveryMode,
-							origin: "agent",
-						});
-					},
-				},
-				agentObserveController: this.createAgentObserveController(() => stateRef),
 				rlmDepth: options.rlmDepth,
 				rlmMaxDepth: options.rlmMaxDepth,
 				rlmSessionDir: options.sessionDir,
@@ -1840,24 +1819,51 @@ export class AgentDaemon {
 			deliveryMode: options.deliveryMode ?? "auto",
 		};
 		try {
-			await this.withAgentMessageTargetLock(targetState.activeSessionId, () => {
-				const streamingBehavior = resolveAgentSessionMessageStreamingBehavior(
-					targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0,
-					payload.deliveryMode,
-				);
-				return targetState.runtime.session.prompt(createAgentSessionMessagePrompt(payload), {
-					expandPromptTemplates: false,
-					streamingBehavior,
-					source: "rpc",
-				});
-			});
+			await this.withAgentMessageTargetLock(targetState.activeSessionId, () =>
+				this.acceptAgentSessionMessage(targetState, payload),
+			);
 			return createAgentSessionMessageReceipt(payload);
-		} catch (error) {
-			this.agentMessageRateLimiter.refund(rateLimitKey);
-			throw error;
 		} finally {
 			releaseQueueSlot();
 		}
+	}
+
+	private acceptAgentSessionMessage(
+		targetState: ActiveSessionState,
+		payload: AgentSessionMessagePayload,
+	): Promise<void> {
+		return new Promise((resolve, reject) => {
+			let accepted = false;
+			const settleAccepted = () => {
+				if (!accepted) {
+					accepted = true;
+					resolve();
+				}
+			};
+			const streamingBehavior =
+				resolveAgentSessionMessageStreamingBehavior(
+					targetState.runtime.session.isStreaming || targetState.runtime.session.pendingMessageCount > 0,
+					payload.deliveryMode,
+				) ?? (payload.deliveryMode === "steer" ? "steer" : "followUp");
+			void targetState.runtime.session
+				.prompt(createAgentSessionMessagePrompt(payload), {
+					expandPromptTemplates: false,
+					streamingBehavior,
+					queueIfBusy: true,
+					source: "rpc",
+					preflightResult: (didSucceed) => {
+						if (didSucceed) {
+							settleAccepted();
+						}
+					},
+				})
+				.then(settleAccepted)
+				.catch((error) => {
+					if (!accepted) {
+						reject(error);
+					}
+				});
+		});
 	}
 
 	private detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void {
