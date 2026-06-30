@@ -9,9 +9,11 @@ const SWEEP_INTERVAL_MS = 25_000;
 // Collapse a tool-use loop's rapid turn_end bursts into one summarization.
 const SETTLE_DEBOUNCE_MS = 2_000;
 
-// Small self-hosted open-weight model, off the proxied frontier models.
+// Small self-hosted open-weight model, off the proxied frontier models. Must be
+// the instruct (non-thinking) variant: a reasoning model burns the token budget
+// on chain-of-thought and never closes the recap tag.
 const SUMMARY_MODEL_PROVIDER = "prime-inference";
-const SUMMARY_MODEL_ID = "nvidia/nemotron-3-nano-30b-a3b";
+const SUMMARY_MODEL_ID = "qwen/qwen3-30b-a3b-instruct-2507";
 
 const SUMMARY_CONTEXT_MESSAGES = 8;
 const SUMMARY_MAX_CHARS_PER_MESSAGE = 600;
