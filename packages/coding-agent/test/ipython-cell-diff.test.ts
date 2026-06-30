@@ -298,4 +298,33 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(stripped.join("\n")).toContain("55");
 		expect(expanded.some(hasBackground)).toBe(false);
 	});
+
+	it("does not show a 'no output' line under an edit-only diff", () => {
+		const out = renderCell({
+			code: 'await edit(path="a.ts", old_str="x", new_str="X")',
+			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+		});
+		expect(out).toContain("a.ts");
+		expect(out).not.toContain("no output");
+	});
+
+	it("never emits a line wider than the viewport, even in a very narrow pane", () => {
+		for (const width of [1, 2, 3, 5, 8]) {
+			const lines = new IPythonCellComponent({
+				code: "import numpy as np\nresult = np.linspace(0, 100, 50)",
+				content: [{ type: "text", text: "a fairly long line of output that must wrap" }],
+				details: { status: "ok", durationMs: 12, stdout: "a fairly long line of output that must wrap" },
+				executionStarted: true,
+				argsComplete: true,
+				expanded: true,
+			}).render(width);
+			expect(
+				lines.every((line) => visibleWidth(line) <= width),
+				`width=${width}`,
+			).toBe(true);
+		}
+	});
 });

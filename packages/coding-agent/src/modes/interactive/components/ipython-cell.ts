@@ -523,6 +523,7 @@ export class IPythonCellComponent implements Component {
 			!renderedTextOutput &&
 			!traceback &&
 			!details.error &&
+			diffs.length === 0 &&
 			this.state.executionStarted &&
 			imageCount === 0
 		) {
@@ -622,7 +623,8 @@ export class IPythonCellComponent implements Component {
 		const wrapped = wrapTextWithAnsi(text, available);
 		for (const [index, line] of (wrapped.length > 0 ? wrapped : [""]).entries()) {
 			const linePrefix = index === 0 ? prefix : " ".repeat(visibleWidth(prefix));
-			lines.push(` ${linePrefix}${closeOpenSgr(line)}`);
+			// Truncate the composed line so a narrow pane can't exceed width (fatal in the renderer).
+			lines.push(truncateToWidth(` ${linePrefix}${closeOpenSgr(line)}`, width, ""));
 		}
 	}
 
