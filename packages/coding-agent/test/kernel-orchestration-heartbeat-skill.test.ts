@@ -85,6 +85,13 @@ describe("orchestration heartbeat skill over bundled host bridges", () => {
 										instruction: "old instruction",
 										schedule: { kind: "interval", expression: scheduleExpression },
 									},
+									{
+										id: "job-paused",
+										status: "paused",
+										label: "paused-orchestrator",
+										instruction: "old instruction",
+										schedule: { kind: "interval", expression: scheduleExpression },
+									},
 								]
 							: [],
 					};
@@ -138,11 +145,13 @@ try:
     await orchestration_heartbeat.initialize(interval="10m", label="missing-on-update")
 except RuntimeError as error:
     missing_once_error = str(error)
+paused = await orchestration_heartbeat.initialize(interval="10m", label="paused-orchestrator")
 refreshed = await orchestration_heartbeat.initialize(interval="10m")
 print(json.dumps({
     "created_action": created["action"],
     "updated_action": updated["action"],
     "missing_once_error": missing_once_error,
+    "paused_action": paused["action"],
     "refreshed_action": refreshed["action"],
     "created_label": created["heartbeat"]["label"],
     "updated_label": updated["heartbeat"]["label"],
@@ -156,6 +165,7 @@ print(json.dumps({
 		expect(output).toMatchObject({
 			created_action: "created",
 			updated_action: "updated",
+			paused_action: "updated",
 			refreshed_action: "updated",
 			created_label: "orchestrator",
 			updated_label: "orchestrator",
@@ -174,6 +184,9 @@ print(json.dumps({
 			"agent_observe.list",
 			"rlm_heartbeat.list",
 			"rlm_heartbeat.create",
+			"agent_observe.list",
+			"rlm_heartbeat.list",
+			"rlm_heartbeat.update",
 			"agent_observe.list",
 			"rlm_heartbeat.list",
 			"rlm_heartbeat.update",
@@ -203,10 +216,16 @@ print(json.dumps({
 		});
 		expect(requests[11].payload).toMatchObject({
 			type: "rlm_heartbeat.update",
+			id: "job-paused",
+			label: "paused-orchestrator",
+			status: "resume",
+		});
+		expect(requests[14].payload).toMatchObject({
+			type: "rlm_heartbeat.update",
 			id: "job-orch",
 			label: "orchestrator",
 		});
-		expect(requests[11].payload).not.toHaveProperty("interval");
-		expect(requests[11].payload).not.toHaveProperty("status");
+		expect(requests[14].payload).not.toHaveProperty("interval");
+		expect(requests[14].payload).not.toHaveProperty("status");
 	});
 });

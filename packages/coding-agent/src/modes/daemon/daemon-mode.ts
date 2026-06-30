@@ -1852,7 +1852,12 @@ export class AgentDaemon {
 				}
 			};
 			const session = targetState.runtime.session;
-			assertAgentMessageQueueCapacity(session.pendingMessageCount, DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION);
+			const reserved = this.agentMessagePendingReservations.get(targetState.activeSessionId) ?? 0;
+			const otherReservations = Math.max(0, reserved - 1);
+			assertAgentMessageQueueCapacity(
+				session.pendingMessageCount + otherReservations,
+				DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
+			);
 			const shouldQueue =
 				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
 				session.isStreaming ||

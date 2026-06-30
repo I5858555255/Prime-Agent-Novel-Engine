@@ -135,6 +135,8 @@ async def initialize(
                 "instruction": instruction,
                 "label": label,
             }
+            if heartbeat.get("status") == "paused":
+                update_args["status"] = "resume"
             if not _interval_matches_schedule(interval, heartbeat.get("schedule")):
                 update_args["interval"] = interval
             updated = await rlm_heartbeat.update(heartbeat["id"], **update_args)
