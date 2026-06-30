@@ -1190,7 +1190,15 @@ export class AgentDaemon {
 									preflightResult: (didSucceed) => {
 										if (didSucceed) {
 											sendSuccessResponse();
-											releaseLock();
+											if (state.runtime.session.isStreaming) {
+												releaseLock();
+											} else {
+												setTimeout(() => {
+													if (state.runtime.session.isStreaming) {
+														releaseLock();
+													}
+												}, 0);
+											}
 										}
 									},
 								})
@@ -1250,6 +1258,7 @@ export class AgentDaemon {
 
 			case "agent_messages_pause": {
 				this.agentMessagesPaused = true;
+				await this.clearQueuedAgentSessionMessagesForAllStates();
 				return success(command.id, "agent_messages_pause", this.getAgentMessageSafetyStatus());
 			}
 
@@ -1781,6 +1790,18 @@ export class AgentDaemon {
 
 	private createCliAgentMessageSenderKey(): string {
 		return `cli:${this.socketPath}`;
+	}
+
+	private async clearQueuedAgentSessionMessagesForState(state: ActiveSessionState) {
+		return this.withAgentMessageTargetLock(state.activeSessionId, async () =>
+			state.runtime.session.clearQueuedUserMessagesMatching(isAgentSessionMessagePrompt),
+		);
+	}
+
+	private async clearQueuedAgentSessionMessagesForAllStates(): Promise<void> {
+		for (const state of this.sessions.values()) {
+			await this.clearQueuedAgentSessionMessagesForState(state);
+		}
 	}
 
 	private reserveAgentMessageQueueSlot(targetState: ActiveSessionState): () => void {

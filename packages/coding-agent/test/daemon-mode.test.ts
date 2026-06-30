@@ -274,6 +274,49 @@ describe("daemon mode helpers", () => {
 		expect(clearQueue).not.toHaveBeenCalled();
 	});
 
+	it("pause clears queued agent-message prompts from all sessions", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const firstState = makeState("target-1");
+		const secondState = makeState("target-2");
+		const firstClear = vi.fn(() => ({ steering: [], followUp: ["agent message"] }));
+		const secondClear = vi.fn(() => ({ steering: ["agent message"], followUp: [] }));
+		for (const [state, clearQueuedUserMessagesMatching] of [
+			[firstState, firstClear],
+			[secondState, secondClear],
+		] as const) {
+			state.runtime = {
+				...state.runtime,
+				cwd: "/tmp",
+				session: {
+					sessionId: `session-${state.activeSessionId}`,
+					sessionName: state.activeSessionId,
+					isStreaming: false,
+					pendingMessageCount: 1,
+					clearQueuedUserMessagesMatching,
+				},
+			} as never;
+		}
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(firstState.activeSessionId, firstState);
+		internals.sessions.set(secondState.activeSessionId, secondState);
+
+		await internals.handleCommand(makeClient("client-1", firstState.activeSessionId), {
+			id: "command-1",
+			type: "agent_messages_pause",
+		});
+
+		expect(firstClear).toHaveBeenCalledOnce();
+		expect(secondClear).toHaveBeenCalledOnce();
+	});
+
 	it("refunds agent message rate limit tokens when delivery fails", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
@@ -656,6 +699,69 @@ describe("daemon mode helpers", () => {
 		expect(prompt).toHaveBeenCalledTimes(1);
 		expect(followUp).toHaveBeenCalledOnce();
 		await expect(second).resolves.toMatchObject({ message: "second" });
+	});
+
+	it("holds the target lock for daemon prompts until the prompt settles", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		let resolvePrompt: () => void = () => {};
+		const prompt = vi.fn((_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+			options?.preflightResult?.(true);
+			return new Promise<void>((resolve) => {
+				resolvePrompt = resolve;
+			});
+		});
+		const acceptAgentMessagePrompt = vi.fn(async () => {});
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 0,
+				prompt,
+				acceptAgentMessagePrompt,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown> | undefined;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+		const promptClient = makeClient("client-1", targetState.activeSessionId);
+		(promptClient.socket as unknown as { write: ReturnType<typeof vi.fn> }).write = vi.fn();
+
+		internals.handleCommand(promptClient, {
+			id: "command-1",
+			type: "prompt",
+			activeSessionId: targetState.activeSessionId,
+			message: "normal prompt",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const send = internals.sendAgentSessionMessage({
+			targetSelector: targetState.activeSessionId,
+			message: "agent message",
+			origin: "agent",
+		});
+		await Promise.resolve();
+		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+
+		resolvePrompt();
+		await send;
+		expect(acceptAgentMessagePrompt).toHaveBeenCalledOnce();
 	});
 
 	it("re-checks agent message queue capacity after waiting for the target lock", async () => {
