@@ -556,6 +556,9 @@ export async function resolveRuntimeIdentity(): Promise<string> {
 	return hashRuntimeSource(sourceDir);
 }
 
+// Throws if the local source can't be read. A failure here must surface rather than
+// fall back to RUNTIME_REQUIREMENT: that constant is the registry-install identity, and
+// recording it for a local checkout would permanently mask later source changes.
 async function hashRuntimeSource(sourceDir: string): Promise<string> {
 	const rlmDir = path.join(sourceDir, "src", "rlm");
 	const files: string[] = [path.join(sourceDir, "pyproject.toml")];
@@ -570,11 +573,7 @@ async function hashRuntimeSource(sourceDir: string): Promise<string> {
 			}
 		}
 	}
-	try {
-		await collect(rlmDir);
-	} catch {
-		return RUNTIME_REQUIREMENT;
-	}
+	await collect(rlmDir);
 	files.sort();
 	const hash = createHash("sha256");
 	for (const file of files) {
