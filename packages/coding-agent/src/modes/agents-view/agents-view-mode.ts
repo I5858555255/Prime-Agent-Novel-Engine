@@ -1473,7 +1473,9 @@ class AgentsViewMode implements Component, Focusable {
 					}
 				}
 			}
-			if (pending.sessionFile) {
+			// Skip a file deleted between listing and now: SessionManager.open would
+			// recreate a stub at the old path instead of loading it.
+			if (pending.sessionFile && existsSync(pending.sessionFile)) {
 				// Persist archived unless it already is: sessions with no prior
 				// session_state entry would otherwise resurface on the next scan.
 				const sessionManager = SessionManager.open(pending.sessionFile, this.options.config.sessionDir);

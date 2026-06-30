@@ -92,6 +92,35 @@ describe("SessionManager session state", () => {
 		}
 	});
 
+	// Guards the agents-view deactivate path: opening a deleted file and appending
+	// would recreate a stub session at the old path, so the caller must skip it.
+	it("recreates a stub when archiving a deleted file, which the existsSync guard prevents", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "session-state-deleted-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			const session = SessionManager.create(cwd, sessionDir);
+			session.appendMessage(userMsg("hello"));
+			session.appendMessage(assistantMsg("hi")); // forces a flush to disk
+			const sessionFile = session.getSessionFile()!;
+			rmSync(sessionFile);
+			expect(existsSync(sessionFile)).toBe(false);
+
+			// Without the guard, the open+append recreates a fresh stub on disk.
+			SessionManager.open(sessionFile, sessionDir).appendSessionState({ status: "archived" });
+			expect(existsSync(sessionFile)).toBe(true);
+
+			// The guard the caller uses skips a missing file, leaving nothing behind.
+			rmSync(sessionFile);
+			if (existsSync(sessionFile)) {
+				SessionManager.open(sessionFile, sessionDir).appendSessionState({ status: "archived" });
+			}
+			expect(existsSync(sessionFile)).toBe(false);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("coerces legacy sleep and hidden lifecycle state to archived on read", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "session-state-hidden-"));
 		try {
