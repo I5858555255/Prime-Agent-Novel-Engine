@@ -143,7 +143,10 @@ export class McpManager {
 				const server = String(payload.server ?? "");
 				if (!server) throw new Error("mcp.refresh requires a server");
 				// getApiKey refreshes + rewrites auth.json under lock; Python re-reads.
-				await this.authStorage.getApiKey(this.providerId(server));
+				// Surface failure (throw) instead of a false success so the kernel can
+				// report a refresh error rather than a misleading "not enabled".
+				const key = await this.authStorage.getApiKey(this.providerId(server));
+				if (!key) throw new Error(`Could not refresh credentials for ${server}`);
 				return {};
 			},
 			// Resolved config so the kernel skill connects to the same URL the host

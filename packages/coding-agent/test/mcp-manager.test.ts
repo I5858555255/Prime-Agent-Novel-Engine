@@ -77,8 +77,9 @@ describe("McpManager", () => {
 		const handlers = manager.hostHandlers();
 		expect(Object.keys(handlers).sort()).toEqual(["mcp.config", "mcp.refresh"]);
 
-		// refresh with no credentials is a no-op that does not throw.
-		await expect(handlers["mcp.refresh"]({ server: "linear" })).resolves.toEqual({});
+		// refresh with no credentials fails (so the kernel reports a refresh error,
+		// not a false success), and a missing server arg is rejected.
+		await expect(handlers["mcp.refresh"]({ server: "linear" })).rejects.toThrow("Could not refresh");
 		await expect(handlers["mcp.refresh"]({})).rejects.toThrow("requires a server");
 	});
 
