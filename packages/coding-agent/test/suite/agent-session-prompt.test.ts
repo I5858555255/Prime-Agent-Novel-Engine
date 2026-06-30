@@ -305,6 +305,42 @@ describe("AgentSession prompt characterization", () => {
 		await promptPromise;
 	});
 
+	it("resets stale extension system prompt for accepted agent messages", async () => {
+		const harness = await createHarness({
+			systemPrompt: "base prompt",
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async (event) => ({
+						systemPrompt: `${event.systemPrompt}
+
+stale extension instructions`,
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const baseSystemPrompt = harness.session.systemPrompt;
+		const providerSystemPrompts: string[] = [];
+		harness.setResponses([
+			(context) => {
+				providerSystemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage("first");
+			},
+			(context) => {
+				providerSystemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage("second");
+			},
+		]);
+
+		await harness.session.prompt("normal prompt");
+		await harness.session.acceptAgentMessagePrompt("agent-to-agent payload", { expandPromptTemplates: false });
+		await harness.session.agent.waitForIdle();
+
+		expect(providerSystemPrompts[0]).toContain("stale extension instructions");
+		expect(providerSystemPrompts[1]).toBe(baseSystemPrompt);
+		expect(providerSystemPrompts[1]).not.toContain("stale extension instructions");
+	});
+
 	it("throws when prompting without a model", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

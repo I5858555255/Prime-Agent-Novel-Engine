@@ -280,6 +280,44 @@ describe("daemon command", () => {
 		});
 	});
 
+	it("rejects extra agent-messages status arguments", async () => {
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "agent-messages", "pause", "active-1"]),
+		).rejects.toThrow("exit 1");
+
+		expect(daemonClientMock.instances[0]?.requests).toEqual([]);
+		expect(
+			consoleErrorMessages.some(
+				(message) => typeof message === "string" && message.includes("Usage: daemon agent-messages pause"),
+			),
+		).toBe(true);
+	});
+
+	it("parses send message text from an explicit --message value", async () => {
+		await expect(
+			handleDaemonCommand([
+				"daemon",
+				"--socket",
+				"/tmp/prime-agent.sock",
+				"send",
+				"--from",
+				"planner",
+				"worker",
+				"--message",
+				"please keep --from literal --steer",
+			]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toEqual({
+			type: "send_message",
+			targetActiveSessionId: "worker",
+			fromActiveSessionId: "planner",
+			deliveryMode: undefined,
+			message: "please keep --from literal --steer",
+		});
+	});
+
 	it("preserves cron add separator before the scheduled prompt", async () => {
 		await expect(
 			handleDaemonCommand([

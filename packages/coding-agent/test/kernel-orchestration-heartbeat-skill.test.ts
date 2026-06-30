@@ -37,11 +37,7 @@ describe("orchestration heartbeat skill over bundled host bridges", () => {
 		let scheduleExpression = "every 5m";
 
 		provisioner = new IpythonKernelProvisioner(tempDir, {
-			pythonSkills: [
-				bundledPythonSkill("agent-observe", "agent_observe"),
-				bundledPythonSkill("rlm-heartbeat", "rlm_heartbeat"),
-				bundledPythonSkill("orchestration-heartbeat", "orchestration_heartbeat"),
-			],
+			pythonSkills: [bundledPythonSkill("orchestration-heartbeat", "orchestration_heartbeat")],
 			hostHandlers: {
 				"agent_observe.list": async (payload) => {
 					requests.push({ type: "agent_observe.list", payload });
