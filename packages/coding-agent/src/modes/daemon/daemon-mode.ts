@@ -1811,7 +1811,7 @@ export class AgentDaemon {
 		const message = normalizeAgentSessionMessage(options.message, DEFAULT_AGENT_MESSAGE_MAX_CHARS);
 		const releaseQueueSlot = this.reserveAgentMessageQueueSlot(targetState);
 		const senderKey =
-			options.fromState?.activeSessionId ?? options.senderKey ?? `client:${options.clientId ?? "unknown"}`;
+			options.senderKey ?? options.fromState?.activeSessionId ?? `client:${options.clientId ?? "unknown"}`;
 		const rateLimitKey = `${senderKey}->${targetState.activeSessionId}`;
 		const rateLimit = this.agentMessageRateLimiter.tryConsume(rateLimitKey);
 		if (!rateLimit.ok) {
@@ -1857,7 +1857,6 @@ export class AgentDaemon {
 				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
 				session.isStreaming ||
 				session.isRetrying ||
-				session.hasAcceptedPromptInFlight ||
 				session.pendingMessageCount > 0;
 			const streamingBehavior =
 				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??

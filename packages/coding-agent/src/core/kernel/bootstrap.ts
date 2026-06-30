@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, existsSync, readFileSync } from "node:fs";
+import { constants, existsSync, readdirSync, readFileSync } from "node:fs";
 import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -191,6 +191,36 @@ function parseDependencyPackageName(dependency: string): string | undefined {
 	return match?.[1]?.replaceAll("_", "-").toLowerCase();
 }
 
+function findTomlArrayEnd(text: string, startIndex: number): number {
+	let inQuote: '"' | "'" | undefined;
+	let escaped = false;
+	for (let index = startIndex; index < text.length; index++) {
+		const char = text[index];
+		if (inQuote) {
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (char === "\\") {
+				escaped = true;
+				continue;
+			}
+			if (char === inQuote) {
+				inQuote = undefined;
+			}
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			inQuote = char;
+			continue;
+		}
+		if (char === "]") {
+			return index;
+		}
+	}
+	return -1;
+}
+
 function readPythonSkillDependencyNames(skill: BootstrapPythonSkill): Set<string> {
 	const projectSection = readTomlProjectSection(skill.pyprojectPath);
 	if (!projectSection) {
@@ -200,12 +230,15 @@ function readPythonSkillDependencyNames(skill: BootstrapPythonSkill): Set<string
 	if (dependenciesStart < 0) {
 		return new Set();
 	}
-	const afterDependencies = projectSection.slice(dependenciesStart);
-	const dependenciesEnd = afterDependencies.indexOf("]");
-	if (dependenciesEnd < 0) {
+	const arrayStart = projectSection.indexOf("[", dependenciesStart);
+	if (arrayStart < 0) {
 		return new Set();
 	}
-	const dependenciesArray = afterDependencies.slice(0, dependenciesEnd + 1);
+	const arrayEnd = findTomlArrayEnd(projectSection, arrayStart + 1);
+	if (arrayEnd < 0) {
+		return new Set();
+	}
+	const dependenciesArray = projectSection.slice(arrayStart, arrayEnd + 1);
 	const dependencies = new Set<string>();
 	const dependencyPattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'/g;
 	for (const match of dependenciesArray.matchAll(dependencyPattern)) {
@@ -222,21 +255,27 @@ function resolveSiblingPythonSkillDependency(
 	skill: BootstrapPythonSkill,
 	dependencyName: string,
 ): BootstrapPythonSkill | undefined {
-	const packagePath = path.join(path.dirname(skill.packagePath), dependencyName);
-	const pyprojectPath = path.join(packagePath, "pyproject.toml");
-	if (!existsSync(pyprojectPath)) {
-		return undefined;
+	const siblingsDir = path.dirname(skill.packagePath);
+	for (const entry of readdirSync(siblingsDir, { withFileTypes: true })) {
+		if (!entry.isDirectory()) {
+			continue;
+		}
+		const packagePath = path.join(siblingsDir, entry.name);
+		const pyprojectPath = path.join(packagePath, "pyproject.toml");
+		if (!existsSync(pyprojectPath)) {
+			continue;
+		}
+		const dependency: BootstrapPythonSkill = {
+			importName: entry.name.replaceAll("-", "_"),
+			packagePath,
+			pyprojectPath,
+			pyprojectHash: fileContentHash(pyprojectPath),
+		};
+		if (readPythonSkillProjectName(dependency).replaceAll("_", "-").toLowerCase() === dependencyName) {
+			return dependency;
+		}
 	}
-	const dependency: BootstrapPythonSkill = {
-		importName: dependencyName.replaceAll("-", "_"),
-		packagePath,
-		pyprojectPath,
-		pyprojectHash: fileContentHash(pyprojectPath),
-	};
-	if (readPythonSkillProjectName(dependency).replaceAll("_", "-").toLowerCase() !== dependencyName) {
-		return undefined;
-	}
-	return dependency;
+	return undefined;
 }
 
 function sortPythonSkillsForInstall(pythonSkills: readonly BootstrapPythonSkill[]): BootstrapPythonSkill[] {

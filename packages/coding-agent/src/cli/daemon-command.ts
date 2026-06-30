@@ -911,6 +911,9 @@ function parseSendArgs(args: string[]): ParsedSendArgs {
 			continue;
 		}
 		if (parseOptions && arg === "--message") {
+			if (!targetActiveSessionId) {
+				throw new Error("--message must appear after the target session");
+			}
 			const value = args[index + 1];
 			if (!value) {
 				throw new Error("--message requires message text");

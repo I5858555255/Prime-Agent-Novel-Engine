@@ -134,12 +134,15 @@ describe("orchestration heartbeat skill over bundled host bridges", () => {
 import json
 created = await orchestration_heartbeat.initialize(focus="keep long-running sessions moving")
 updated = await orchestration_heartbeat.initialize(interval="10m")
-missing_once = await orchestration_heartbeat.initialize(interval="10m", label="missing-on-update")
+try:
+    await orchestration_heartbeat.initialize(interval="10m", label="missing-on-update")
+except RuntimeError as error:
+    missing_once_error = str(error)
 refreshed = await orchestration_heartbeat.initialize(interval="10m")
 print(json.dumps({
     "created_action": created["action"],
     "updated_action": updated["action"],
-    "missing_once_action": missing_once["action"],
+    "missing_once_error": missing_once_error,
     "refreshed_action": refreshed["action"],
     "created_label": created["heartbeat"]["label"],
     "updated_label": updated["heartbeat"]["label"],
@@ -153,12 +156,12 @@ print(json.dumps({
 		expect(output).toMatchObject({
 			created_action: "created",
 			updated_action: "updated",
-			missing_once_action: "created",
 			refreshed_action: "updated",
 			created_label: "orchestrator",
 			updated_label: "orchestrator",
 			session_names: ["autoenv", "emulatorBench"],
 		});
+		expect(output.missing_once_error).toContain("RLM heartbeat job-missing disappeared");
 		expect(output.instruction).toContain("Use agent_observe to inspect active Prime Agent sessions");
 		expect(output.instruction).toContain("recommend the exact action and draft the target message");
 		expect(output.instruction).toContain("Do not send cross-session messages until the user approves");
@@ -177,7 +180,6 @@ print(json.dumps({
 			"agent_observe.list",
 			"rlm_heartbeat.list",
 			"rlm_heartbeat.update",
-			"rlm_heartbeat.create",
 			"agent_observe.list",
 			"rlm_heartbeat.list",
 			"rlm_heartbeat.update",
@@ -199,17 +201,12 @@ print(json.dumps({
 			id: "job-missing",
 			label: "missing-on-update",
 		});
-		expect(requests[9].payload).toMatchObject({
-			type: "rlm_heartbeat.create",
-			interval: "10m",
-			label: "missing-on-update",
-		});
-		expect(requests[12].payload).toMatchObject({
+		expect(requests[11].payload).toMatchObject({
 			type: "rlm_heartbeat.update",
 			id: "job-orch",
 			label: "orchestrator",
 		});
-		expect(requests[12].payload).not.toHaveProperty("interval");
-		expect(requests[12].payload).not.toHaveProperty("status");
+		expect(requests[11].payload).not.toHaveProperty("interval");
+		expect(requests[11].payload).not.toHaveProperty("status");
 	});
 });

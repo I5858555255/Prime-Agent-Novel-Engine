@@ -734,7 +734,6 @@ export class AgentSession {
 	private _retryAttempt = 0;
 	private _retryPromise: Promise<void> | undefined = undefined;
 	private _retryResolve: (() => void) | undefined = undefined;
-	private _acceptedPromptCompletions = new Set<Promise<void>>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -2258,7 +2257,7 @@ export class AgentSession {
 			// enqueue according to the requested behavior.
 			const shouldQueueForStreaming = this.isStreaming;
 			const shouldQueueForPendingWork =
-				options?.queueIfBusy === true && (this.pendingMessageCount > 0 || this.hasAcceptedPromptInFlight);
+				options?.queueIfBusy === true && (this.pendingMessageCount > 0 || this.isRetrying);
 			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
 				if (!options?.streamingBehavior) {
 					const stateDescription = shouldQueueForStreaming
@@ -2390,23 +2389,12 @@ export class AgentSession {
 			throw firstOutcome;
 		}
 		reportPreflight(true);
-		const promptCompletion = promptPromise.then(async () => {
-			await this.waitForRetry();
-		});
 		if (options?.returnAfterAccepted) {
-			this._acceptedPromptCompletions.add(promptCompletion);
-			void promptCompletion.then(
-				() => {
-					this._acceptedPromptCompletions.delete(promptCompletion);
-				},
-				() => {
-					this._acceptedPromptCompletions.delete(promptCompletion);
-				},
-			);
-			void promptCompletion.catch(() => undefined);
+			void promptPromise.then(() => this.waitForRetry()).catch(() => undefined);
 			return;
 		}
-		await promptCompletion;
+		await promptPromise;
+		await this.waitForRetry();
 	}
 
 	/**
@@ -4771,11 +4759,6 @@ export class AgentSession {
 	/** Whether auto-retry is currently in progress */
 	get isRetrying(): boolean {
 		return this._retryPromise !== undefined;
-	}
-
-	/** Whether an accepted prompt is still running or waiting for retry completion. */
-	get hasAcceptedPromptInFlight(): boolean {
-		return this._acceptedPromptCompletions.size > 0;
 	}
 
 	/** Whether auto-retry is enabled */

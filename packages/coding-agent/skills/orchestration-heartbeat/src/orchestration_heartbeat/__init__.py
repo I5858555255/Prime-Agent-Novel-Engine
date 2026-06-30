@@ -139,14 +139,16 @@ async def initialize(
                 update_args["interval"] = interval
             updated = await rlm_heartbeat.update(heartbeat["id"], **update_args)
             updated_heartbeat = updated.get("heartbeat")
-            if updated_heartbeat is not None:
-                return {
-                    "action": "updated",
-                    "heartbeat": updated_heartbeat,
-                    "sessions": agents,
-                    "instruction": instruction,
-                }
-            break
+            if updated_heartbeat is None:
+                raise RuntimeError(
+                    f"RLM heartbeat {heartbeat['id']} disappeared before it could be updated"
+                )
+            return {
+                "action": "updated",
+                "heartbeat": updated_heartbeat,
+                "sessions": agents,
+                "instruction": instruction,
+            }
 
     created = await rlm_heartbeat.create(instruction, interval=interval, label=label)
     return {
