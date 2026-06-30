@@ -3793,6 +3793,9 @@ export class AgentSession {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 		await this.settingsManager.reload();
+		// Re-read auth.json: a login saved by the client process (daemon mode) must be
+		// visible here so MCP skill gating sees the new credentials.
+		this._modelRegistry.authStorage.reload();
 		resetApiProviders();
 		// Re-read mcpServers and re-register user MCP providers from the reloaded settings.
 		this._mcpManager?.refresh();

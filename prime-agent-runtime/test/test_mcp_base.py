@@ -120,6 +120,22 @@ class McpIntegrationTest(unittest.TestCase):
             with self.assertRaises(NotEnabled):
                 _run(_Integration()._resolve_token())
 
+    def test_refresh_failure_surfaces_as_error_not_not_enabled(self):
+        # Creds exist but the host refresh fails transiently → surface a refresh
+        # error, not a misleading NotEnabled (which implies re-login).
+        self._write_auth(
+            {"type": "oauth", "access": "stale", "refresh": "r", "expires": (time.time() - 10) * 1000}
+        )
+
+        async def failing_host_request(req_type, payload):
+            raise RuntimeError("network down")
+
+        with mock.patch.object(mcp_base, "host_request", failing_host_request):
+            with self.assertRaises(RuntimeError) as ctx:
+                _run(_Integration()._resolve_token())
+        self.assertNotIsInstance(ctx.exception, NotEnabled)
+        self.assertIn("refresh", str(ctx.exception).lower())
+
     def test_bearer_token_env_wins(self):
         class EnvIntegration(_Integration):
             bearer_token_env = "DEMO_MCP_TOKEN"

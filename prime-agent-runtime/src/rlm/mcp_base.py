@@ -171,13 +171,20 @@ class McpIntegration:
         # Expired or missing-access: ask the host to refresh, then re-validate via
         # _token() (which re-checks expiry) rather than trusting any access value.
         if _read_auth(self._provider_id) is not None:
+            refresh_error: Exception | None = None
             try:
                 await host_request("mcp.refresh", {"server": self.server})
-            except RuntimeError:
-                pass  # fall through; raise NotEnabled if still unusable
+            except RuntimeError as exc:
+                refresh_error = exc
             token = self._token()
             if token:
                 return token
+            # A refresh that failed (vs. genuinely-absent creds) is a recoverable
+            # error; don't mislabel it as "not enabled / re-login".
+            if refresh_error is not None:
+                raise RuntimeError(
+                    f"Failed to refresh credentials for '{self.server}': {refresh_error}"
+                ) from refresh_error
         raise NotEnabled(self.server)
 
     # -- connection ---------------------------------------------------------
