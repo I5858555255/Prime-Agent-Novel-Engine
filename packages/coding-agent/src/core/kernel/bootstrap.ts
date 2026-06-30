@@ -381,7 +381,7 @@ async function locateUv(): Promise<string | null> {
 	return (await isExecutable(localUv)) ? localUv : null;
 }
 
-async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
+async function ensureUv(options: EnsureKernelPythonOptions, onAboutToInstall?: () => void): Promise<string> {
 	const existing = await locateUv();
 	if (existing) return existing;
 
@@ -394,6 +394,10 @@ async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 				"or set PRIME_AGENT_INSTALL_UV=1 to let prime-agent run that installer.",
 		);
 	}
+
+	// Announce only once an install is actually committed, so a refusal here never
+	// leaves a phantom "installing uv" step on screen.
+	onAboutToInstall?.();
 
 	try {
 		await run("sh", ["-c", UV_INSTALL_COMMAND], { stdio: options.onProgress ? "ignore" : "inherit" });
@@ -556,10 +560,7 @@ async function bootstrapVenv(
 	];
 	const progress = new BootstrapProgress(options, steps);
 
-	if (needsUvInstall) {
-		progress.begin(BOOTSTRAP_STEP.uv);
-	}
-	const uv = await ensureUv(options);
+	const uv = await ensureUv(options, needsUvInstall ? () => progress.begin(BOOTSTRAP_STEP.uv) : undefined);
 
 	progress.begin(BOOTSTRAP_STEP.python);
 	await run(uv, ["python", "install", PYTHON_VERSION]);

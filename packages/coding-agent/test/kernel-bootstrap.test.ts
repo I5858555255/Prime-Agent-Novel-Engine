@@ -215,6 +215,21 @@ describe("kernel bootstrap", () => {
 		expect(stderrWrite).not.toHaveBeenCalledWith(expect.stringContaining("ready"));
 	});
 
+	it("does not show an installing-uv step when uv install is refused", async () => {
+		// uv absent from PATH and from the temp HOME, and install not permitted.
+		const emptyBin = join(tempDir, "empty-bin");
+		mkdirSync(emptyBin, { recursive: true });
+		process.env.PATH = emptyBin;
+		delete process.env.PRIME_AGENT_INSTALL_UV;
+		const venv = join(tempDir, "kernel-venv");
+		const progress: string[] = [];
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+
+		await expect(ensureKernelPython({ onProgress: (message) => progress.push(message) })).rejects.toThrow(/uv/);
+		expect(progress).not.toContain(expect.stringContaining("installing uv"));
+		expect(progress.some((line) => line.startsWith("installing uv"))).toBe(false);
+	});
+
 	it("installs Python skills into the bootstrapped venv", async () => {
 		const logPath = installFakeUv();
 		const venv = join(tempDir, "kernel-venv");
