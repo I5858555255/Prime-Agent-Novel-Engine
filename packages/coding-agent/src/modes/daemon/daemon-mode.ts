@@ -1841,15 +1841,24 @@ export class AgentDaemon {
 					resolve();
 				}
 			};
+			const session = targetState.runtime.session;
 			const shouldQueue =
 				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
-				targetState.runtime.session.isStreaming ||
-				targetState.runtime.session.pendingMessageCount > 0;
+				session.isStreaming ||
+				session.isRetrying ||
+				session.pendingMessageCount > 0;
 			const streamingBehavior =
 				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
 				(payload.deliveryMode === "steer" ? "steer" : "followUp");
+			if (shouldQueue) {
+				const queued =
+					streamingBehavior === "steer"
+						? session.steer(createAgentSessionMessagePrompt(payload))
+						: session.followUp(createAgentSessionMessagePrompt(payload));
+				Promise.resolve(queued).then(settleAccepted, reject);
+				return;
+			}
 			this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
-			const session = targetState.runtime.session;
 			const acceptPrompt =
 				typeof session.acceptAgentMessagePrompt === "function"
 					? session.acceptAgentMessagePrompt.bind(session)
@@ -1858,15 +1867,18 @@ export class AgentDaemon {
 				expandPromptTemplates: false,
 				streamingBehavior,
 				queueIfBusy: true,
-				source: "rpc",
 				preflightResult: (didSucceed) => {
 					if (didSucceed) {
 						settleAccepted();
 					}
 				},
 			})
-				.then(settleAccepted)
+				.then(() => {
+					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
+					settleAccepted();
+				})
 				.catch((error) => {
+					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 					if (accepted) {
 						this.broadcastToSession(
 							targetState,
@@ -1875,9 +1887,6 @@ export class AgentDaemon {
 						return;
 					}
 					reject(error);
-				})
-				.finally(() => {
-					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 				});
 		});
 	}

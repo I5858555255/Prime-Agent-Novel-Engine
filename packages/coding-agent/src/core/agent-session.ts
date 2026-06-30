@@ -398,6 +398,7 @@ export interface PromptOptions {
 
 interface InternalPromptOptions extends PromptOptions {
 	skipPrePromptWork?: boolean;
+	skipInputHandlers?: boolean;
 	returnAfterAccepted?: boolean;
 }
 
@@ -2183,7 +2184,12 @@ export class AgentSession {
 	}
 
 	async acceptAgentMessagePrompt(text: string, options?: PromptOptions): Promise<void> {
-		return this._prompt(text, { ...options, skipPrePromptWork: true, returnAfterAccepted: true });
+		return this._prompt(text, {
+			...options,
+			skipInputHandlers: true,
+			skipPrePromptWork: true,
+			returnAfterAccepted: true,
+		});
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
@@ -2221,8 +2227,10 @@ export class AgentSession {
 				}
 			}
 
-			// Emit input event for extension interception (before skill/template expansion)
-			if (this._extensionRunner.hasHandlers("input")) {
+			// Emit input event for extension interception (before skill/template expansion).
+			// Agent-to-agent messages use acceptAgentMessagePrompt(), which bypasses
+			// input handlers so extensions cannot rewrite or swallow direct delivery.
+			if (!options?.skipInputHandlers && this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
 					currentImages,

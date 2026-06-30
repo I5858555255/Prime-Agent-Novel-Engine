@@ -342,7 +342,13 @@ describe("daemon mode helpers", () => {
 			...fromState.runtime,
 			session: { sessionId: "session-source", sessionName: "Source" },
 		} as never;
-		let rejectPrompt: (error: Error) => void = () => {};
+		let rejectFollowUp: (error: Error) => void = () => {};
+		const followUp = vi.fn(
+			() =>
+				new Promise<boolean>((_resolve, reject) => {
+					rejectFollowUp = reject;
+				}),
+		);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -353,12 +359,8 @@ describe("daemon mode helpers", () => {
 				pendingMessageCount: 19,
 				clearQueue: vi.fn(() => ({ cleared: 0 })),
 				clearQueuedUserMessagesMatching: vi.fn(() => ({ steering: [], followUp: [] })),
-				prompt: vi.fn(
-					() =>
-						new Promise<void>((_resolve, reject) => {
-							rejectPrompt = reject;
-						}),
-				),
+				followUp,
+				prompt: vi.fn(async () => {}),
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -396,7 +398,7 @@ describe("daemon mode helpers", () => {
 			}),
 		).rejects.toThrow("Target session has too many pending messages");
 
-		rejectPrompt(new Error("release reservation"));
+		rejectFollowUp(new Error("release reservation"));
 		await expect(first).rejects.toThrow("release reservation");
 	});
 
@@ -420,6 +422,7 @@ describe("daemon mode helpers", () => {
 					promptResolves.push(resolve);
 				}),
 		);
+		const followUp = vi.fn(async () => true);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -429,6 +432,7 @@ describe("daemon mode helpers", () => {
 				isStreaming: false,
 				pendingMessageCount: 0,
 				prompt,
+				followUp,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -472,6 +476,59 @@ describe("daemon mode helpers", () => {
 		await expect(second).resolves.toMatchObject({ message: "second" });
 	});
 
+	it("queues agent messages behind an idle target with a pending retry", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const fromState = makeState("source");
+		const targetState = makeState("target");
+		fromState.runtime = {
+			...fromState.runtime,
+			session: { sessionId: "session-source", sessionName: "Source" },
+		} as never;
+		const prompt = vi.fn(async (_message: string, _options?: { streamingBehavior?: "steer" | "followUp" }) => {});
+		const followUp = vi.fn(async () => true);
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				isRetrying: true,
+				pendingMessageCount: 0,
+				prompt,
+				followUp,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(fromState.activeSessionId, fromState);
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "queued behind retry",
+				fromState,
+				origin: "agent",
+			}),
+		).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
+
+		expect(followUp).toHaveBeenCalledOnce();
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
 	it("queues agent messages behind existing pending work on an idle target", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
@@ -486,6 +543,7 @@ describe("daemon mode helpers", () => {
 			session: { sessionId: "session-source", sessionName: "Source" },
 		} as never;
 		const prompt = vi.fn(async (_message: string, _options?: { streamingBehavior?: "steer" | "followUp" }) => {});
+		const followUp = vi.fn(async () => true);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -495,6 +553,7 @@ describe("daemon mode helpers", () => {
 				isStreaming: false,
 				pendingMessageCount: 1,
 				prompt,
+				followUp,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -518,8 +577,8 @@ describe("daemon mode helpers", () => {
 			}),
 		).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
 
-		expect(prompt).toHaveBeenCalledOnce();
-		expect(prompt.mock.calls[0]?.[1]).toMatchObject({ streamingBehavior: "followUp" });
+		expect(followUp).toHaveBeenCalledOnce();
+		expect(prompt).not.toHaveBeenCalled();
 	});
 
 	it("recomputes agent message streaming behavior after waiting for the target lock", async () => {
@@ -542,6 +601,7 @@ describe("daemon mode helpers", () => {
 					promptResolves.push(resolve);
 				}),
 		);
+		const followUp = vi.fn(async () => true);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -551,6 +611,7 @@ describe("daemon mode helpers", () => {
 				isStreaming: false,
 				pendingMessageCount: 0,
 				prompt,
+				followUp,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -587,10 +648,8 @@ describe("daemon mode helpers", () => {
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(prompt).toHaveBeenCalledTimes(2);
-		expect(prompt.mock.calls[1]?.[1]).toMatchObject({ streamingBehavior: "followUp" });
-
-		promptResolves[1]?.();
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(followUp).toHaveBeenCalledOnce();
 		await expect(second).resolves.toMatchObject({ message: "second" });
 	});
 
