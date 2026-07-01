@@ -341,6 +341,24 @@ stale extension instructions`,
 		expect(providerSystemPrompts[1]).not.toContain("stale extension instructions");
 	});
 
+	it("queues accepted agent messages while compacting", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as {
+			_compactionAbortController?: AbortController;
+		};
+		sessionInternals._compactionAbortController = new AbortController();
+
+		await harness.session.acceptAgentMessagePrompt("agent-to-agent payload", {
+			expandPromptTemplates: false,
+			streamingBehavior: "followUp",
+			queueIfBusy: true,
+		});
+
+		expect(harness.session.getFollowUpMessages()).toEqual(["agent-to-agent payload"]);
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
 	it("queues accepted agent messages without expanding slash commands or prompt templates", async () => {
 		const template: PromptTemplate = {
 			name: "review",

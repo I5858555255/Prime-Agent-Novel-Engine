@@ -50,6 +50,7 @@ import {
 	createAgentMessageHostHandlers,
 	normalizeAgentSessionMessage,
 	normalizeAgentSessionMessageDeliveryMode,
+	parseAgentSessionMessagePromptId,
 } from "./agent-messages.js";
 import {
 	AGENT_OBSERVE_SKILL_NAME,
@@ -370,6 +371,7 @@ interface InternalPromptOptions extends PromptOptions {
 interface QueuedFollowUpMessage {
 	text: string;
 	queueKey?: string;
+	agentMessageId?: string;
 	message: AgentMessage;
 }
 
@@ -516,6 +518,7 @@ export class AgentSession {
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
+	private _steeringAgentMessageIds: Array<string | undefined> = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: QueuedFollowUpMessage[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -1500,6 +1503,7 @@ export class AgentSession {
 				const steeringIndex = this._steeringMessages.indexOf(messageText);
 				if (steeringIndex !== -1) {
 					this._steeringMessages.splice(steeringIndex, 1);
+					this._steeringAgentMessageIds.splice(steeringIndex, 1);
 					this._emitQueueUpdate();
 				} else {
 					// Check follow-up queue
@@ -2046,11 +2050,12 @@ export class AgentSession {
 	}
 
 	async queueAgentMessagePrompt(text: string, streamingBehavior: "steer" | "followUp"): Promise<boolean> {
+		const agentMessageId = parseAgentSessionMessagePromptId(text);
 		if (streamingBehavior === "steer") {
-			await this._queueSteer(text);
+			await this._queueSteer(text, undefined, { agentMessageId });
 			return true;
 		}
-		return this._queueFollowUp(text);
+		return this._queueFollowUp(text, undefined, { agentMessageId });
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
@@ -2119,7 +2124,7 @@ export class AgentSession {
 			const shouldQueueForStreaming = this.isStreaming;
 			const shouldQueueForPendingWork =
 				options?.queueIfBusy === true &&
-				(this.pendingMessageCount > 0 || this.isRetrying || this.hasAcceptedPromptInFlight);
+				(this.pendingMessageCount > 0 || this.isCompacting || this.isRetrying || this.hasAcceptedPromptInFlight);
 			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
 				if (!options?.streamingBehavior) {
 					const stateDescription = shouldQueueForStreaming
@@ -2376,8 +2381,13 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueSteer(
+		text: string,
+		images?: ImageContent[],
+		options: { agentMessageId?: string } = {},
+	): Promise<void> {
 		this._steeringMessages.push(text);
+		this._steeringAgentMessageIds.push(options.agentMessageId);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
@@ -2396,7 +2406,7 @@ export class AgentSession {
 	private async _queueFollowUp(
 		text: string,
 		images?: ImageContent[],
-		options: { queueKey?: string } = {},
+		options: { queueKey?: string; agentMessageId?: string } = {},
 	): Promise<boolean> {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
 			return false;
@@ -2410,7 +2420,12 @@ export class AgentSession {
 			content,
 			timestamp: Date.now(),
 		};
-		this._followUpMessages.push({ text, queueKey: options.queueKey, message });
+		this._followUpMessages.push({
+			text,
+			queueKey: options.queueKey,
+			agentMessageId: options.agentMessageId,
+			message,
+		});
 		this._emitQueueUpdate();
 		this.agent.followUp(message);
 		return true;
@@ -2527,6 +2542,7 @@ export class AgentSession {
 		const steering = [...this._steeringMessages];
 		const followUp = this._followUpMessages.map((message) => message.text);
 		this._steeringMessages = [];
+		this._steeringAgentMessageIds = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
@@ -2534,18 +2550,32 @@ export class AgentSession {
 	}
 
 	clearQueuedUserMessagesMatching(predicate: (text: string) => boolean): { steering: string[]; followUp: string[] } {
-		const steering = this._steeringMessages.filter(predicate);
-		const followUp = this._followUpMessages.filter((message) => predicate(message.text));
+		const steeringIndexesToRemove = new Set<number>();
+		const steering: string[] = [];
+		for (const [index, text] of this._steeringMessages.entries()) {
+			if (this._steeringAgentMessageIds[index] !== undefined && predicate(text)) {
+				steeringIndexesToRemove.add(index);
+				steering.push(text);
+			}
+		}
+		const followUp = this._followUpMessages.filter(
+			(message) => message.agentMessageId !== undefined && predicate(message.text),
+		);
 		if (steering.length === 0 && followUp.length === 0) {
 			return { steering: [], followUp: [] };
 		}
-		this._steeringMessages = this._steeringMessages.filter((text) => !predicate(text));
-		this._followUpMessages = this._followUpMessages.filter((message) => !predicate(message.text));
+		const steeringToRemove = new Set(steering);
+		const followUpToRemove = new Set(followUp.map((message) => message.message));
+		this._steeringMessages = this._steeringMessages.filter((_text, index) => !steeringIndexesToRemove.has(index));
+		this._steeringAgentMessageIds = this._steeringAgentMessageIds.filter(
+			(_id, index) => !steeringIndexesToRemove.has(index),
+		);
+		this._followUpMessages = this._followUpMessages.filter((message) => !followUpToRemove.has(message.message));
 		this.agent.removeQueuedMessages((message) => {
 			if (message.role !== "user") {
 				return false;
 			}
-			return predicate(readTextBlocks(message.content));
+			return steeringToRemove.has(readTextBlocks(message.content)) || followUpToRemove.has(message);
 		});
 		this._emitQueueUpdate();
 		return { steering, followUp: followUp.map((message) => message.text) };

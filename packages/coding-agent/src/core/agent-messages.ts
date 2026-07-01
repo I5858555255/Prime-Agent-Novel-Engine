@@ -135,11 +135,19 @@ export function resolveAgentSessionMessageStreamingBehavior(
 	return "followUp";
 }
 
-export function isAgentSessionMessagePrompt(text: string): boolean {
+export function parseAgentSessionMessagePromptId(text: string): string | undefined {
 	if (!text.startsWith(`Agent-to-agent message received.\nSource: ${AGENT_MESSAGE_SOURCE}\n`)) {
-		return false;
+		return undefined;
 	}
-	return text.includes("\nTo: ") && text.includes("\nMessage id: agentmsg_");
+	if (!text.includes("\nTo: ")) {
+		return undefined;
+	}
+	const match = /(?:^|\n)Message id: (agentmsg_[^\n]+)(?:\n|$)/.exec(text);
+	return match?.[1];
+}
+
+export function isAgentSessionMessagePrompt(text: string): boolean {
+	return parseAgentSessionMessagePromptId(text) !== undefined;
 }
 
 export function createAgentSessionMessagePrompt(payload: AgentSessionMessagePayload): string {
