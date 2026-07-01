@@ -613,8 +613,10 @@ export class KernelManager {
 		try {
 			process.kill(this.kernelPid, 0);
 			return false;
-		} catch {
-			return true;
+		} catch (error) {
+			// EPERM means the pid exists but isn't signalable by us — still alive.
+			// Only ESRCH (no such process) is genuine death.
+			return !(error instanceof Error && (error as NodeJS.ErrnoException).code === "EPERM");
 		}
 	}
 

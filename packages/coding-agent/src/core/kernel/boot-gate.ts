@@ -37,8 +37,14 @@ export function resolveKernelBootConcurrency(): number {
 	return Math.min(max, parsed);
 }
 
-const kernelBootSemaphore = new Semaphore(resolveKernelBootConcurrency());
+// Resolved lazily on first boot, not at module load, so the fork-server flag is
+// honored whenever it is set before the first kernel starts — not just if it
+// happened to be set at import time.
+let kernelBootSemaphore: Semaphore | undefined;
 
 export function withKernelBootPermit<T>(boot: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!kernelBootSemaphore) {
+		kernelBootSemaphore = new Semaphore(resolveKernelBootConcurrency());
+	}
 	return kernelBootSemaphore.run(boot, signal);
 }
