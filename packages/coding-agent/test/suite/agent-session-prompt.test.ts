@@ -391,7 +391,7 @@ stale extension instructions`,
 		expect(harness.session.getFollowUpMessages()).toEqual([]);
 	});
 
-	it("rejects normal prompts while an accepted agent message is in flight", async () => {
+	it("allows normal prompts while an accepted agent message is idle between retry attempts", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const acceptedMessage = {
@@ -408,10 +408,12 @@ stale extension instructions`,
 				stateMessageStartIndex: number;
 				accepted: Promise<void>;
 				resolveAccepted: () => void;
+				rejectAccepted: (error: Error) => void;
 				turnStarted: boolean;
 				cleared: boolean;
 			};
 		};
+		harness.setResponses([fauxAssistantMessage("ordinary response")]);
 
 		sessionInternals._acceptedAgentMessagePrompt = {
 			text: "accepted agent message",
@@ -421,11 +423,13 @@ stale extension instructions`,
 			stateMessageStartIndex: 0,
 			accepted: Promise.resolve(),
 			resolveAccepted: () => {},
-			turnStarted: false,
+			rejectAccepted: () => {},
+			turnStarted: true,
 			cleared: false,
 		};
-		await expect(harness.session.prompt("ordinary prompt")).rejects.toThrow("accepted prompt in flight");
+		await expect(harness.session.prompt("ordinary prompt")).resolves.toBeUndefined();
 		sessionInternals._acceptedAgentMessagePrompt = undefined;
+		expect(getUserTexts(harness)).toContain("ordinary prompt");
 	});
 
 	it("flushes pending bash messages before accepted agent messages", async () => {

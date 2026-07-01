@@ -1526,6 +1526,7 @@ export class AgentSession {
 		const clearedAcceptedPromptEnded = clearedPromptEnded?.cleared === true;
 		if (clearedAcceptedPromptEnded) {
 			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPromptEnded.stateMessageStartIndex);
+			(this.agent.state as { errorMessage?: string }).errorMessage = undefined;
 			if (!clearedPromptEnded.turnStarted) {
 				clearedPromptEnded.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
 			}
@@ -2191,11 +2192,6 @@ export class AgentSession {
 				}
 				reportPreflight(true);
 				return;
-			}
-
-			if (this.hasAcceptedPromptInFlight && !options?.queueIfBusy) {
-				reportPreflight(false);
-				throw new Error("Agent has an accepted prompt in flight. Specify queueIfBusy to queue the message.");
 			}
 
 			// Flush any pending bash messages before the new prompt, including accepted agent messages.
