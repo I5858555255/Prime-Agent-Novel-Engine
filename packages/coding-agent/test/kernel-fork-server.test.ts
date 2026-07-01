@@ -17,7 +17,7 @@ describe("fork-server gating", () => {
 
 	it("rejects with ForkServerUnavailable when disabled so callers fall back", async () => {
 		delete process.env[FORK_ENV];
-		await expect(forkKernel({ python: "python3" }, "/tmp/nope/connection.json")).rejects.toBeInstanceOf(
+		await expect(forkKernel("python3", { connectionPath: "/tmp/nope/connection.json" })).rejects.toBeInstanceOf(
 			ForkServerUnavailable,
 		);
 	});
@@ -28,7 +28,7 @@ describe("fork-server gating", () => {
 		// The spawn errors immediately (ENOENT), so markDead fails the ready promise
 		// fast rather than waiting out the ready timeout.
 		await expect(
-			forkKernel({ python: "/nonexistent/python-binary" }, "/tmp/nope/connection.json"),
+			forkKernel("/nonexistent/python-binary", { connectionPath: "/tmp/nope/connection.json" }),
 		).rejects.toBeInstanceOf(ForkServerUnavailable);
 	}, 15_000);
 });

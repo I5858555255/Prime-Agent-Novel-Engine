@@ -502,10 +502,11 @@ export class KernelManager {
 		let forked = false;
 		if (isForkServerEnabled()) {
 			try {
-				this.kernelPid = await forkKernel(
-					{ python, cwd: this.options.cwd, env: this.options.env },
-					connection.path,
-				);
+				this.kernelPid = await forkKernel(python, {
+					connectionPath: connection.path,
+					cwd: this.options.cwd,
+					env: this.options.env,
+				});
 				forked = true;
 			} catch (err) {
 				if (!(err instanceof ForkServerUnavailable)) throw err;

@@ -30,8 +30,15 @@ export function isForkServerEnabled(): boolean {
 	return process.platform === "linux" && process.env.PRIME_AGENT_KERNEL_FORKSERVER === "1";
 }
 
+// A forkserver template is defined solely by the interpreter — the imported
+// module graph doesn't depend on cwd/env. Those are per-kernel and applied in the
+// forked child, so every kernel for a given python shares ONE template.
 interface ForkServerParams {
 	python: string;
+}
+
+interface SpawnParams {
+	connectionPath: string;
 	cwd?: string;
 	env?: Record<string, string>;
 }
@@ -127,9 +134,10 @@ class ForkServer {
 			};
 
 			server.listen(socketPath, () => {
+				// The template only imports; its own cwd/env are irrelevant since each
+				// forked child applies the per-kernel cwd/env itself. Inherit the daemon's.
 				const proc = spawn(this.params.python, ["-c", FORK_SERVER_SCRIPT, socketPath], {
-					cwd: this.params.cwd,
-					env: this.params.env ? { ...process.env, ...this.params.env } : process.env,
+					env: process.env,
 					stdio: ["ignore", "ignore", "pipe"],
 				});
 				this.proc = proc;
@@ -182,7 +190,7 @@ class ForkServer {
 		}
 	}
 
-	async spawnKernel(connectionPath: string): Promise<number> {
+	async spawnKernel(spawn: SpawnParams): Promise<number> {
 		await this.ensureReady();
 		if (this.dead || !this.conn) throw new ForkServerUnavailable("forkserver connection unavailable");
 		const id = this.nextId++;
@@ -195,7 +203,9 @@ class ForkServer {
 				reject(new ForkServerUnavailable(`forkserver spawn timed out after ${SPAWN_TIMEOUT_MS}ms`));
 			}, SPAWN_TIMEOUT_MS);
 			this.pending.set(id, { resolve, reject, timer });
-			this.conn?.write(`${JSON.stringify({ id, connectionPath })}\n`);
+			this.conn?.write(
+				`${JSON.stringify({ id, connectionPath: spawn.connectionPath, cwd: spawn.cwd, env: spawn.env })}\n`,
+			);
 		});
 	}
 
@@ -243,12 +253,13 @@ class ForkServer {
 	}
 }
 
-// Keyed so kernels with different interpreters/cwd/env each get their own template.
+// Keyed by interpreter only: cwd/env are per-kernel (applied in the child), so all
+// kernels for a given python share ONE warm template.
 const servers = new Map<string, ForkServer>();
 let cleanupRegistered = false;
 
 function keyFor(params: ForkServerParams): string {
-	return JSON.stringify([params.python, params.cwd ?? "", params.env ?? null]);
+	return params.python;
 }
 
 function registerForkServerCleanupOnce(): void {
@@ -269,21 +280,22 @@ function registerForkServerCleanupOnce(): void {
 }
 
 /**
- * Fork a kernel onto `connectionPath` from the shared template for this profile.
- * Throws ForkServerUnavailable if forking is disabled or fails — callers fall back
- * to direct spawn. Returns the forked child's pid (owned/killed by the caller).
+ * Fork a kernel onto `spawn.connectionPath` from the shared template for this
+ * interpreter, applying `spawn.cwd`/`spawn.env` in the forked child. Throws
+ * ForkServerUnavailable if forking is disabled or fails — callers fall back to
+ * direct spawn. Returns the forked child's pid (owned/killed by the caller).
  */
-export async function forkKernel(params: ForkServerParams, connectionPath: string): Promise<number> {
+export async function forkKernel(python: string, spawn: SpawnParams): Promise<number> {
 	if (!isForkServerEnabled()) throw new ForkServerUnavailable("forkserver disabled");
 	registerForkServerCleanupOnce();
-	const key = keyFor(params);
+	const key = keyFor({ python });
 	let server = servers.get(key);
 	if (!server || server.isDead) {
-		server = new ForkServer(params);
+		server = new ForkServer({ python });
 		servers.set(key, server);
 	}
 	try {
-		return await server.spawnKernel(connectionPath);
+		return await server.spawnKernel(spawn);
 	} catch (err) {
 		// Only evict if the map still points at this dead instance: a concurrent
 		// caller may have already replaced it with a fresh live server under this key.

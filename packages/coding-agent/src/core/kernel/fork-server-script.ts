@@ -50,13 +50,23 @@ def _import_template():
         pass
 
 
-def _run_child(connection_path):
+def _run_child(connection_path, cwd, env):
     # We are the forked child; become the ipykernel server on the given connection.
     from ipykernel.kernelapp import IPKernelApp
 
     # Drop the inherited SIGCHLD reaper so it can't interfere with ipykernel's own
     # child/signal handling.
     signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
+    # cwd/env are per-kernel and applied here (not at template import), so all
+    # kernels can share one warm template regardless of their working dir / env.
+    if env:
+        os.environ.update(env)
+    if cwd:
+        try:
+            os.chdir(cwd)
+        except OSError:
+            pass
 
     # Drop any singleton the template happened to build so the child owns a fresh
     # instance (and, critically, a jupyter_client Session created in *this* pid;
@@ -101,6 +111,8 @@ def _serve(control_path):
             continue
         req_id = req.get("id")
         connection_path = req.get("connectionPath")
+        cwd = req.get("cwd")
+        env = req.get("env")
 
         try:
             pid = os.fork()
@@ -121,7 +133,7 @@ def _serve(control_path):
             except OSError:
                 pass
             try:
-                _run_child(connection_path)
+                _run_child(connection_path, cwd, env)
             except BaseException as exc:  # never return to the accept loop
                 sys.stderr.write("forked kernel failed: %r\n" % (exc,))
                 os._exit(1)
