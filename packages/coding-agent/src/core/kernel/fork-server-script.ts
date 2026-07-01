@@ -16,8 +16,22 @@ export const FORK_SERVER_SCRIPT = String.raw`
 import gc
 import json
 import os
+import signal
 import socket
 import sys
+
+
+def _reap_children(*_args):
+    # Reap every exited child so disposed kernels never linger as zombies. Wired to
+    # SIGCHLD so reaping happens on child exit, not only when the next request wakes
+    # the accept loop. Safe under PEP 475: the interrupted socket read auto-retries.
+    try:
+        while True:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break
+    except ChildProcessError:
+        pass
 
 
 def _import_template():
@@ -40,6 +54,10 @@ def _run_child(connection_path):
     # We are the forked child; become the ipykernel server on the given connection.
     from ipykernel.kernelapp import IPKernelApp
 
+    # Drop the inherited SIGCHLD reaper so it can't interfere with ipykernel's own
+    # child/signal handling.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
     # Drop any singleton the template happened to build so the child owns a fresh
     # instance (and, critically, a jupyter_client Session created in *this* pid;
     # a Session inherited from the template silently drops messages via check_pid).
@@ -57,6 +75,9 @@ def _serve(control_path):
     sock.connect(control_path)
     control_fd = sock.fileno()
 
+    # Reap forked kernels as they exit, independent of the request loop.
+    signal.signal(signal.SIGCHLD, _reap_children)
+
     _import_template()
     # Freeze the heap so the cyclic GC doesn't write to (and thus COW-copy) the
     # shared module pages, keeping memory genuinely shared across children.
@@ -67,14 +88,9 @@ def _serve(control_path):
     f.flush()
 
     while True:
-        # Reap any exited children each iteration so forked kernels don't zombie.
-        try:
-            while True:
-                reaped, _ = os.waitpid(-1, os.WNOHANG)
-                if reaped == 0:
-                    break
-        except ChildProcessError:
-            pass
+        # Belt-and-suspenders: the SIGCHLD handler is the primary reaper, but sweep
+        # again each turn in case a signal was missed (coalesced) while handling one.
+        _reap_children()
 
         line = f.readline()
         if not line:
