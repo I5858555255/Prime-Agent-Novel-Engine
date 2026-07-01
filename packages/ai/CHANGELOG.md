@@ -4,6 +4,7 @@
 
 ## [0.2.4] - 2026-07-01
 
+- Added Claude Fable 5 support on the Anthropic and Bedrock providers, handling its always-on adaptive thinking by never sending an explicit `thinking: disabled` or sampling params (which Fable rejects with a 400) ([#302](https://github.com/PrimeIntellect-ai/prime-agent/issues/302)).
 - Fixed the `openai-completions` and `openai-responses` providers serializing empty tool results as a literal "(see attached image)" placeholder; the placeholder is now gated on the result actually having images, matching the google-shared and mistral providers ([#290](https://github.com/PrimeIntellect-ai/prime-agent/issues/290)).
 
 ## [0.2.3] - 2026-06-30
