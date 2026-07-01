@@ -56,6 +56,17 @@ def _resolve_global_flag(global_: bool = False, extra: dict[str, Any] | None = N
     return bool(global_)
 
 
+def _strip_scope_prefix(id: str | None, global_: bool) -> tuple[str | None, bool]:
+    # overview() displays entries as [local:id]/[global:id]; accept those ids
+    # verbatim. A global: prefix routes to the global store unless the caller
+    # already forced a scope via global_.
+    if isinstance(id, str):
+        scope, sep, rest = id.partition(":")
+        if sep and rest and scope in ("local", "global"):
+            return rest, global_ or scope == "global"
+    return id, global_
+
+
 def _state_file(state_dir: str | Path | None = None, *, global_: bool = False) -> Path:
     root = state_dir
     if root is None:
@@ -282,6 +293,7 @@ class HarnessState:
         global_: bool = False,
         **kwargs: Any,
     ) -> HarnessEntry:
+        id, global_ = _strip_scope_prefix(id, global_)
         if target := self._global_target(global_, kwargs):
             return target.upsert(
                 kind,
@@ -366,6 +378,7 @@ class HarnessState:
         return entry
 
     def get(self, kind: HarnessKind, id: str, *, global_: bool = False, **kwargs: Any) -> HarnessEntry | None:
+        id, global_ = _strip_scope_prefix(id, global_)
         if target := self._global_target(global_, kwargs):
             return target.get(kind, id)
         self._sync_from_disk()
@@ -374,6 +387,7 @@ class HarnessState:
         return self.entries[kind].get(id)
 
     def delete(self, kind: HarnessKind, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
+        id, global_ = _strip_scope_prefix(id, global_)
         if target := self._global_target(global_, kwargs):
             return target.delete(kind, id)
         self._sync_from_disk()
@@ -412,6 +426,7 @@ class HarnessState:
         global_: bool = False,
         **kwargs: Any,
     ) -> HarnessEntry:
+        id, global_ = _strip_scope_prefix(id, global_)
         if target := self._global_target(global_, kwargs):
             return target.create(
                 kind,
@@ -457,6 +472,7 @@ class HarnessState:
         global_: bool = False,
         **kwargs: Any,
     ) -> HarnessEntry:
+        id, global_ = _strip_scope_prefix(id, global_)
         if target := self._global_target(global_, kwargs):
             return target.update(
                 kind,
@@ -747,9 +763,12 @@ def get_harness_state(
     state = _state_cache.get(cache_key)
     if state is None:
         state = HarnessState(file_path, scope=scope)
+        # Recorded at construction only: an instance created from env defaults must
+        # keep targeting RLM_GLOBAL_HARNESS_STATE_DIR even when a later explicit
+        # state_dir call aliases the same local file.
+        if state_dir is not None:
+            state._global_target_state_dir = Path(state_dir).expanduser().resolve()
         _state_cache[cache_key] = state
-    if state_dir is not None:
-        state._global_target_state_dir = Path(state_dir).expanduser().resolve()
     return state
 
 

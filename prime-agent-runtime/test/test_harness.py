@@ -493,21 +493,23 @@ class HarnessStateTest(unittest.TestCase):
             )
             self.assertFalse((env_global_dir / "harness_state.json").exists())
 
-    def test_cached_state_dir_global_flag_uses_later_explicit_state_file(self) -> None:
+    def test_env_default_state_keeps_env_global_target_after_explicit_dir_cache_hit(self) -> None:
         previous_local = os.environ.get("RLM_HARNESS_STATE_DIR")
         previous_global = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR")
         with tempfile.TemporaryDirectory() as temp_dir:
-            explicit_dir = Path(temp_dir) / "explicit"
+            local_dir = Path(temp_dir) / "local"
             env_global_dir = Path(temp_dir) / "env-global"
-            os.environ["RLM_HARNESS_STATE_DIR"] = str(explicit_dir)
+            os.environ["RLM_HARNESS_STATE_DIR"] = str(local_dir)
             os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = str(env_global_dir)
             try:
                 cached_from_env = get_harness_state()
-                cached_from_explicit = get_harness_state(explicit_dir)
-                global_entry = cached_from_explicit.create_memory(
-                    "Scoped global",
-                    "custom dir after cache hit",
-                    id="cached_scoped_global",
+                # An explicit state_dir that aliases the env local dir must not
+                # redirect the env-default singleton's global target.
+                cached_from_explicit = get_harness_state(local_dir)
+                global_entry = cached_from_env.create_memory(
+                    "Env global",
+                    "still targets the env global dir",
+                    id="env_global_after_hit",
                     global_=True,
                 )
             finally:
@@ -523,9 +525,13 @@ class HarnessStateTest(unittest.TestCase):
             self.assertIs(cached_from_env, cached_from_explicit)
             self.assertEqual(global_entry.scope, "global")
             self.assertIsNotNone(
-                HarnessState(explicit_dir / "harness_state.json", scope="global").get("memory", "cached_scoped_global")
+                HarnessState(env_global_dir / "harness_state.json", scope="global").get(
+                    "memory", "env_global_after_hit"
+                )
             )
-            self.assertFalse((env_global_dir / "harness_state.json").exists())
+            self.assertIsNone(
+                HarnessState(local_dir / "harness_state.json").get("memory", "env_global_after_hit")
+            )
 
     def test_local_state_requires_local_path(self) -> None:
         previous_local = os.environ.get("RLM_HARNESS_STATE_DIR")
@@ -660,6 +666,102 @@ class HarnessStateTest(unittest.TestCase):
             reloaded = HarnessState(Path(temp_dir) / "harness_state.json")
             self.assertEqual(reloaded.get("memory", "local_note").scope, "local")
             self.assertEqual(reloaded.get("memory", "global_note").scope, "global")
+
+    def test_scope_prefixed_ids_route_to_the_displayed_scope(self) -> None:
+        previous_local = os.environ.get("RLM_HARNESS_STATE_DIR")
+        previous_global = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_dir = Path(temp_dir) / "local"
+            global_dir = Path(temp_dir) / "global"
+            os.environ["RLM_HARNESS_STATE_DIR"] = str(local_dir)
+            os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = str(global_dir)
+            try:
+                state = get_harness_state()
+                state.create_memory("Global note", "v1", id="routed", global_=True)
+
+                # The overview displays [global:routed]; that id must be usable as-is
+                # and imply the global scope without passing global_.
+                updated = state.update_memory("global:routed", "Global note", "v2")
+                self.assertEqual(updated.scope, "global")
+                self.assertEqual(state.get("memory", "global:routed").content, "v2")
+                self.assertIsNone(state.get("memory", "routed"))
+
+                state.create_memory("Local note", "local", id="local_note")
+                self.assertEqual(state.get("memory", "local:local_note").content, "local")
+                self.assertTrue(state.delete_memory("local:local_note"))
+                self.assertIsNone(state.get("memory", "local_note"))
+            finally:
+                if previous_local is None:
+                    os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_HARNESS_STATE_DIR"] = previous_local
+                if previous_global is None:
+                    os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = previous_global
+
+            self.assertEqual(
+                HarnessState(global_dir / "harness_state.json", scope="global").get("memory", "routed").content,
+                "v2",
+            )
+
+    def test_create_with_prefixed_id_does_not_mint_literal_id(self) -> None:
+        previous_local = os.environ.get("RLM_HARNESS_STATE_DIR")
+        previous_global = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_dir = Path(temp_dir) / "local"
+            global_dir = Path(temp_dir) / "global"
+            os.environ["RLM_HARNESS_STATE_DIR"] = str(local_dir)
+            os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = str(global_dir)
+            try:
+                state = get_harness_state()
+                entry = state.create_memory("Validation", "content", id="global:validation")
+            finally:
+                if previous_local is None:
+                    os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_HARNESS_STATE_DIR"] = previous_local
+                if previous_global is None:
+                    os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = previous_global
+
+            self.assertEqual(entry.id, "validation")
+            self.assertEqual(entry.scope, "global")
+            global_store = HarnessState(global_dir / "harness_state.json", scope="global")
+            self.assertIsNotNone(global_store.get("memory", "validation"))
+            self.assertIsNone(global_store.get("memory", "global:validation"))
+            self.assertFalse((local_dir / "harness_state.json").exists())
+
+    def test_module_harness_binds_lazily_to_env_set_after_import(self) -> None:
+        # Forkserver scenario: rlm is imported in the template process without the
+        # per-session env; the child applies env after fork. rlm.harness must then
+        # resolve against the new env instead of a store frozen at import time.
+        previous_local = os.environ.get("RLM_HARNESS_STATE_DIR")
+        previous_session = os.environ.get("RLM_SESSION_DIR")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+                os.environ.pop("RLM_SESSION_DIR", None)
+                # Without local env, access degrades to a volatile store, not an error.
+                package_harness.create_memory("Volatile", "pre-env", id="pre_env")
+
+                os.environ["RLM_HARNESS_STATE_DIR"] = temp_dir
+                entry = package_harness.create_memory("Session note", "persisted", id="session_note")
+                self.assertIsNone(package_harness.get("memory", "pre_env"))
+            finally:
+                if previous_local is None:
+                    os.environ.pop("RLM_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_HARNESS_STATE_DIR"] = previous_local
+                if previous_session is None:
+                    os.environ.pop("RLM_SESSION_DIR", None)
+                else:
+                    os.environ["RLM_SESSION_DIR"] = previous_session
+
+            self.assertEqual(entry.scope, "local")
+            reloaded = HarnessState(Path(temp_dir) / "harness_state.json")
+            self.assertEqual(reloaded.get("memory", "session_note").content, "persisted")
 
     def test_callable_rlm_exposes_harness_state_helpers(self) -> None:
         self.assertIs(callable_rlm.harness, package_harness)

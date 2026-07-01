@@ -900,6 +900,7 @@ describe("AgentSession RLM session dir", () => {
 		agentDir?: string,
 		serperKey?: string,
 		loadWebsearchSkill = false,
+		rlmSessionDir?: string,
 	): AgentSession {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
@@ -933,6 +934,7 @@ describe("AgentSession RLM session dir", () => {
 			agentDir,
 			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
 			resourceLoader: createTestResourceLoader({ skills }),
+			rlmSessionDir,
 		});
 		return session;
 	}
@@ -965,6 +967,32 @@ describe("AgentSession RLM session dir", () => {
 		expect(inspectable._rlmKernelEnv().RLM_SESSION_DIR).toBe(artifactDir);
 		expect(inspectable._rlmKernelEnv().RLM_HARNESS_STATE_DIR).toBe(join(artifactDir!, "harness"));
 		expect(inspectable._rlmKernelEnv().RLM_GLOBAL_HARNESS_STATE_DIR).toBeDefined();
+	});
+
+	it("points RLM_HARNESS_STATE_DIR at the session's own artifact dir for subagent sessions", () => {
+		// Subagent layout: the parent assigns rlmSessionDir, but the child's own
+		// sessionManager persists artifacts (and reads local harness state) elsewhere.
+		const subDir = join(tempDir, "parent-artifact", "sub-abc12345");
+		mkdirSync(subDir, { recursive: true });
+		const sessionManager = SessionManager.create(tempDir, subDir);
+		const root = createSession(sessionManager, undefined, undefined, false, subDir);
+		const inspectable = root as unknown as InspectableRlmDirSession;
+
+		const artifactDir = sessionManager.getSessionArtifactDir();
+		expect(artifactDir).toBeDefined();
+		expect(artifactDir).not.toBe(subDir);
+		const env = inspectable._rlmKernelEnv();
+		expect(env.RLM_SESSION_DIR).toBe(subDir);
+		expect(env.RLM_HARNESS_STATE_DIR).toBe(join(artifactDir!, "harness"));
+	});
+
+	it("falls back to the rlm session dir for RLM_HARNESS_STATE_DIR without an artifact dir", () => {
+		const ephemeralDir = join(tempDir, "ephemeral-rlm");
+		mkdirSync(ephemeralDir, { recursive: true });
+		const root = createSession(SessionManager.inMemory(tempDir), undefined, undefined, false, ephemeralDir);
+		const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+		expect(env.RLM_SESSION_DIR).toBe(ephemeralDir);
+		expect(env.RLM_HARNESS_STATE_DIR).toBe(join(ephemeralDir, "harness"));
 	});
 
 	it("exports the configured agentDir to the kernel so skills find auth.json", () => {

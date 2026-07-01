@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -6,7 +8,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	applyRefinementProposal,
 	getGlobalHarnessStateDir,
+	getHarnessStatePath,
 	getLocalHarnessStateDir,
+	type HarnessEntry,
+	loadGlobalRefinementHistory,
 	loadHarnessState,
 	type RefinementResult,
 	saveHarnessState,
@@ -764,6 +769,187 @@ describe("AgentSession queue characterization", () => {
 			expect(loadHarnessState(branchedLocalDir, "local").entries.memory.remember_me.content).toBe(
 				"Branch content should survive rollback of copied history.",
 			);
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
+
+	it("persists a prompt started while a background refine is in flight", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			let releasePlan: (() => void) | undefined;
+			const planGate = new Promise<void>((resolve) => {
+				releasePlan = resolve;
+			});
+			let planStarted: (() => void) | undefined;
+			const planStartedPromise = new Promise<void>((resolve) => {
+				planStarted = resolve;
+			});
+			harness.setResponses([
+				async () => {
+					planStarted?.();
+					await planGate;
+					return fauxAssistantMessage(
+						JSON.stringify({
+							summary: "no-op",
+							rationale: "nothing to change",
+							expectedOutcome: "unchanged",
+							edits: [],
+						}),
+					);
+				},
+				fauxAssistantMessage("prompt reply"),
+			]);
+
+			const refinePromise = harness.session.refine({ instructions: "background refine" });
+			await planStartedPromise;
+
+			const promptPromise = harness.session.prompt("hello during refine");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			// The prompt must wait for the refine (its response is still queued);
+			// running now would drop its events while the session is detached.
+			expect(harness.getPendingResponseCount()).toBe(1);
+
+			releasePlan?.();
+			await refinePromise;
+			await promptPromise;
+
+			expect(
+				harness
+					.eventsOfType("message_end")
+					.some((event) => event.message.role === "assistant" && getMessageText(event.message) === "prompt reply"),
+			).toBe(true);
+			const persistedAssistants = harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+			expect(persistedAssistants).toHaveLength(1);
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
+
+	it("rolls back a local refinement in a non-persisted session via the recorded state path", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			const recordedDir = join(harness.tempDir, "recorded-local", "harness");
+			const recordedState = loadHarnessState(recordedDir, "local");
+			const seeded = applyRefinementProposal(
+				recordedState,
+				{
+					summary: "Seed local memory",
+					rationale: "seed",
+					expectedOutcome: "seeded",
+					edits: [
+						{
+							action: "create",
+							kind: "memory",
+							id: "remember_me",
+							title: "Remember",
+							content: "Content to roll back",
+						},
+					],
+				},
+				{ id: "refine_recorded", scope: "local" },
+			);
+			seeded.harnessStatePath = saveHarnessState(recordedDir, recordedState);
+			harness.sessionManager.appendCustomEntry("prime-agent.refinement", seeded);
+
+			const result = await harness.session.refine({ rollbackId: "refine_recorded" });
+
+			expect(result.rollbackOf).toBe("refine_recorded");
+			expect(loadHarnessState(recordedDir, "local").entries.memory.remember_me).toBeUndefined();
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
+
+	it("keeps a legacy scope-less rollback in the global store with global scope", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			const globalDir = getGlobalHarnessStateDir();
+			const timestamp = new Date().toISOString();
+			// Legacy (pre-scope) store: entries carry no scope fields.
+			const legacyEntry = (id: string, content: string): HarnessEntry => ({
+				id,
+				kind: "memory",
+				title: id,
+				content,
+				path: "general",
+				reference: {},
+				arguments: {},
+				metadata: {},
+				source: "refine",
+				created_at: timestamp,
+				updated_at: timestamp,
+				version: 1,
+			});
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(
+				getHarnessStatePath(globalDir),
+				JSON.stringify({
+					schema: 1,
+					entries: {
+						prompt: {},
+						memory: {
+							legacy_target: legacyEntry("legacy_target", "Rolled back"),
+							keep_me: legacyEntry("keep_me", "Untouched"),
+						},
+						skill: {},
+						subagent: {},
+					},
+					refinements: [],
+				}),
+			);
+			const legacyRefinement: RefinementResult = {
+				id: "refine_legacy",
+				summary: "legacy refinement",
+				rationale: "legacy",
+				expectedOutcome: "legacy",
+				appliedEdits: [
+					{
+						action: "create",
+						kind: "memory",
+						id: "legacy_target",
+						applied: true,
+						after: legacyEntry("legacy_target", "Rolled back"),
+					},
+				],
+				harnessStatePath: getHarnessStatePath(globalDir),
+			};
+			harness.sessionManager.appendCustomEntry("prime-agent.refinement", legacyRefinement);
+
+			const result = await harness.session.refine({ rollbackId: "refine_legacy" });
+
+			expect(result.scope).toBe("global");
+			const stored = JSON.parse(readFileSync(getHarnessStatePath(globalDir), "utf8"));
+			expect(stored.entries.memory.legacy_target).toBeUndefined();
+			expect(stored.entries.memory.keep_me.scope).toBe("global");
+			const rollbackRecord = loadGlobalRefinementHistory(globalDir).find(
+				(item) => item.rollbackOf === "refine_legacy",
+			);
+			expect(rollbackRecord).toBeDefined();
+			expect(rollbackRecord?.scope).toBe("global");
 		} finally {
 			if (previousAgentDir === undefined) {
 				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;

@@ -596,6 +596,8 @@ export class AgentSession {
 		| undefined;
 	private _autoRefineBranchVersion = 0;
 	private readonly _autoRefineReviewer?: AutoRefineReviewer;
+	/** Settles (never rejects) when the in-flight refine finishes; see _waitForRefineIdle. */
+	private _refineInFlight?: Promise<void>;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -1059,6 +1061,7 @@ export class AgentSession {
 			return;
 		}
 
+		await this._waitForRefineIdle();
 		await this._validateCanStartAgentRun();
 		await this.agent.prompt([message]);
 		await this.waitForRetry();
@@ -2031,6 +2034,8 @@ export class AgentSession {
 				return;
 			}
 
+			await this._waitForRefineIdle();
+
 			// Flush any pending bash messages before the new prompt
 			this._flushPendingBashMessages();
 
@@ -2310,6 +2315,7 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
+			await this._waitForRefineIdle();
 			await this.agent.prompt(appMessage);
 		} else {
 			this.agent.state.messages.push(appMessage);
@@ -2937,7 +2943,7 @@ export class AgentSession {
 		this._postCompactionContinuationScheduled = true;
 		setTimeout(() => {
 			this._postCompactionContinuationScheduled = false;
-			this.agent.continue().catch(() => {});
+			void this._waitForRefineIdle().then(() => this.agent.continue().catch(() => {}));
 		}, 100);
 	}
 
@@ -3088,6 +3094,37 @@ export class AgentSession {
 	async refine(
 		options: { instructions?: string; rollbackId?: string; global?: boolean } = {},
 	): Promise<RefinementResult> {
+		const run = this._refine(options);
+		// Refine detaches session event handling for its whole LLM pass; expose a
+		// settled promise so turn entry points can wait instead of losing events.
+		const settled = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		this._refineInFlight = settled;
+		try {
+			return await run;
+		} finally {
+			if (this._refineInFlight === settled) {
+				this._refineInFlight = undefined;
+			}
+		}
+	}
+
+	/**
+	 * Block a new agent turn until any in-flight refine has reattached event
+	 * handling; otherwise the turn's messages are never persisted or rendered.
+	 * Refine failures surface to the refine caller, not here.
+	 */
+	private async _waitForRefineIdle(): Promise<void> {
+		while (this._refineInFlight) {
+			await this._refineInFlight;
+		}
+	}
+
+	private async _refine(
+		options: { instructions?: string; rollbackId?: string; global?: boolean } = {},
+	): Promise<RefinementResult> {
 		this._disconnectFromAgent();
 
 		try {
@@ -3128,11 +3165,8 @@ export class AgentSession {
 				undefined,
 				this.thinkingLevel,
 			);
-			const targetScope = plan.rollbackScope ?? requestedScope;
-			if (targetScope === "local" && !localHarnessStateDir) {
-				throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
-			}
-			let targetHarnessStateDir = targetScope === "global" ? globalHarnessStateDir : localHarnessStateDir!;
+			let targetScope = plan.rollbackScope ?? requestedScope;
+			let targetHarnessStateDir = targetScope === "global" ? globalHarnessStateDir : localHarnessStateDir;
 			if (targetScope === "local" && rollbackTarget?.harnessStatePath) {
 				if (!existsSync(rollbackTarget.harnessStatePath)) {
 					throw new Error(
@@ -3140,6 +3174,14 @@ export class AgentSession {
 					);
 				}
 				targetHarnessStateDir = dirname(rollbackTarget.harnessStatePath);
+				// Legacy records predate scope fields and default to "local" but may point
+				// at the global store; honor the recorded path so its entries stay global.
+				if (resolve(targetHarnessStateDir) === resolve(globalHarnessStateDir)) {
+					targetScope = "global";
+				}
+			}
+			if (!targetHarnessStateDir) {
+				throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
 			}
 			// Re-read the target state immediately before applying so concurrent kernel
 			// (`rlm.harness`) writes during the LLM pass are not clobbered.
@@ -3950,7 +3992,11 @@ export class AgentSession {
 		const rlmSessionDir = this._ensureRlmSessionDir();
 		if (rlmSessionDir) {
 			env.RLM_SESSION_DIR = rlmSessionDir;
-			env.RLM_HARNESS_STATE_DIR = getLocalHarnessStateDir(rlmSessionDir)!;
+			// Prefer the dir the host reads (system prompt, refine); for subagents
+			// rlmSessionDir is the parent-assigned sub-dir, not this session's artifact dir.
+			env.RLM_HARNESS_STATE_DIR =
+				getLocalHarnessStateDir(this.sessionManager.getSessionArtifactDir()) ??
+				getLocalHarnessStateDir(rlmSessionDir)!;
 		}
 		this._addWebsearchKeyEnv(env);
 		return env;

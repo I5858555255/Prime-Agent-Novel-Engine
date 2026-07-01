@@ -164,13 +164,35 @@ async def run(prompt: str, **kwargs: Any) -> RLMResult:
     return _result_from_payload(payload)
 
 
-try:
-    _harness_state = get_harness_state()
-except Exception:  # pragma: no cover - harness state must never break `import rlm`
-    # Importing rlm runs inside the kernel; a failure here would take down the whole
-    # kernel. Fall back to a true in-memory store (no path resolution, no disk) so the
-    # failure cannot recur and refinement is merely degraded, not fatal.
-    _harness_state = HarnessState(in_memory=True)
+class _HarnessProxy:
+    """Resolve the harness state against the current environment on every access.
+
+    The kernel forkserver preimports rlm in a template process before per-session
+    env vars exist; a state bound at import time would freeze that (env-less)
+    resolution into every forked kernel. Resolving per access picks up the env
+    applied after fork. Resolution must never raise (a failure inside the kernel
+    namespace would take down the kernel), so it degrades to a shared in-memory
+    store until local resolution starts succeeding.
+    """
+
+    _fallback: HarnessState | None = None
+
+    def _resolve(self) -> HarnessState:
+        try:
+            return get_harness_state()
+        except Exception:  # pragma: no cover - harness access must never raise
+            if _HarnessProxy._fallback is None:
+                _HarnessProxy._fallback = HarnessState(in_memory=True)
+            return _HarnessProxy._fallback
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+    def __repr__(self) -> str:
+        return repr(self._resolve())
+
+
+_harness_state = _HarnessProxy()
 
 
 class _RLMCallable:
