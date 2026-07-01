@@ -564,6 +564,19 @@ describe("AgentSession queue characterization", () => {
 		);
 	});
 
+	it("rejects queued agent-message delivery waiters on dispose", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_dispose\n\ndispose me";
+		const delivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_dispose");
+
+		await harness.session.queueAgentMessagePrompt(agentPrompt, "followUp");
+		harness.session.dispose();
+
+		await expect(delivery).rejects.toThrow("cleared before delivery");
+	});
+
 	it("throws when queueing an extension command with steer", async () => {
 		const harness = await createHarness({
 			extensionFactories: [

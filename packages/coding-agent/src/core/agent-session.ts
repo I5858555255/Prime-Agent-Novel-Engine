@@ -1510,6 +1510,15 @@ export class AgentSession {
 		this._agentMessageDeliveryWaiters.get(agentMessageId)?.reject(error);
 	}
 
+	private _rejectQueuedAgentMessageDeliveries(error: Error): void {
+		for (const message of this._steeringMessages) {
+			this._rejectAgentMessageDelivery(message.agentMessageId, error);
+		}
+		for (const message of this._followUpMessages) {
+			this._rejectAgentMessageDelivery(message.agentMessageId, error);
+		}
+	}
+
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = (event: AgentEvent): void => {
 		// Create retry promise synchronously before queueing async processing.
@@ -1909,6 +1918,7 @@ export class AgentSession {
 		}
 		this._retainedRlmChildSessions.clear();
 		this._pendingNextTurnMessages = [];
+		this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
@@ -2698,18 +2708,7 @@ export class AgentSession {
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		const steering = this._steeringMessages.map((message) => message.text);
 		const followUp = this._followUpMessages.map((message) => message.text);
-		for (const message of this._steeringMessages) {
-			this._rejectAgentMessageDelivery(
-				message.agentMessageId,
-				new Error("Queued agent message was cleared before delivery."),
-			);
-		}
-		for (const message of this._followUpMessages) {
-			this._rejectAgentMessageDelivery(
-				message.agentMessageId,
-				new Error("Queued agent message was cleared before delivery."),
-			);
-		}
+		this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
