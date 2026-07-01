@@ -40,7 +40,9 @@ interface ForkServerParams {
 interface SpawnParams {
 	connectionPath: string;
 	cwd?: string;
-	env?: Record<string, string>;
+	// Mirrors process.env shape; undefined values are dropped when JSON-serialized
+	// to the child, matching how spawn() treats them on the direct path.
+	env?: Record<string, string | undefined>;
 }
 
 type PendingSpawn = {

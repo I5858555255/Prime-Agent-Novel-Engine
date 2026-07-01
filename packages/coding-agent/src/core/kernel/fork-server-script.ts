@@ -63,10 +63,9 @@ def _run_child(connection_path, cwd, env):
     if env:
         os.environ.update(env)
     if cwd:
-        try:
-            os.chdir(cwd)
-        except OSError:
-            pass
+        # Don't swallow a bad cwd: direct spawn fails fast on ENOENT, so match that
+        # (the OSError propagates, the child exits non-zero, Node falls back).
+        os.chdir(cwd)
 
     # Drop any singleton the template happened to build so the child owns a fresh
     # instance (and, critically, a jupyter_client Session created in *this* pid;

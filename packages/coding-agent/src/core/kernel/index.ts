@@ -505,7 +505,10 @@ export class KernelManager {
 				this.kernelPid = await forkKernel(python, {
 					connectionPath: connection.path,
 					cwd: this.options.cwd,
-					env: this.options.env,
+					// Match the direct-spawn env exactly: merge the current host env with
+					// the per-kernel overrides, applied fresh in the child (the template's
+					// inherited env snapshot may be stale by fork time).
+					env: this.options.env ? { ...process.env, ...this.options.env } : { ...process.env },
 				});
 				forked = true;
 			} catch (err) {
