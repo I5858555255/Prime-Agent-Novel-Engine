@@ -4907,7 +4907,9 @@ export class AgentSession {
 
 		const steeringMessages = [...this._steeringMessages];
 		const followUpMessages = [...this._followUpMessages];
-		const queuedMessages = [...steeringMessages, ...followUpMessages].map((message) => message.message);
+		const drainedSteeringMessages = steeringMessages.length > 0 ? steeringMessages : [];
+		const drainedFollowUpMessages = steeringMessages.length > 0 ? [] : followUpMessages;
+		const queuedMessages = [...drainedSteeringMessages, ...drainedFollowUpMessages].map((message) => message.message);
 		if (queuedMessages.length === 0) {
 			return;
 		}
@@ -4920,12 +4922,12 @@ export class AgentSession {
 		} catch {
 			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
 			const queuedFollowUps = new Set(this._followUpMessages.map((message) => message.message));
-			for (const queued of steeringMessages) {
+			for (const queued of drainedSteeringMessages) {
 				if (queuedSteering.has(queued.message)) {
 					this.agent.steer(queued.message);
 				}
 			}
-			for (const queued of followUpMessages) {
+			for (const queued of drainedFollowUpMessages) {
 				if (queuedFollowUps.has(queued.message)) {
 					this.agent.followUp(queued.message);
 				}

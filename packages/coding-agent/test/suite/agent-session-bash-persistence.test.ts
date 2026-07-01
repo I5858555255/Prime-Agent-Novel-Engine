@@ -4,7 +4,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BashOperations } from "../../src/core/tools/bash.js";
-import { createHarness, type Harness } from "./harness.js";
+import { createHarness, getMessageText, type Harness } from "./harness.js";
 
 function getEntryTypes(harness: Harness): string[] {
 	return harness.sessionManager.getEntries().map((entry) => entry.type);
@@ -377,6 +377,55 @@ describe("AgentSession bash and persistence characterization", () => {
 		}
 		await delivery;
 
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
+	it("drains steering before follow-up prompts after user bash finishes", async () => {
+		let releaseBash: (() => void) | undefined;
+		let bashStarted: (() => void) | undefined;
+		const bashStartedPromise = new Promise<void>((resolve) => {
+			bashStarted = resolve;
+		});
+		const operations: BashOperations = {
+			exec: async (_command, _cwd, options) => {
+				bashStarted?.();
+				options.onData(Buffer.from("bash output"));
+				await new Promise<void>((resolve) => {
+					releaseBash = resolve;
+				});
+				return { exitCode: 0 };
+			},
+		};
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("user_bash", async () => ({ operations }));
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("after steer"), fauxAssistantMessage("after follow-up")]);
+		const steerPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_bash_steer\n\nsteer after bash";
+		const followUpPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_bash_followup\n\nfollow-up after bash";
+		const steerDelivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_bash_steer");
+		const followUpDelivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_bash_followup");
+
+		const bashRun = harness.session.runUserBash("slow bash");
+		await bashStartedPromise;
+		await harness.session.queueAgentMessagePrompt(followUpPrompt, "followUp");
+		await harness.session.queueAgentMessagePrompt(steerPrompt, "steer");
+
+		releaseBash?.();
+		await bashRun;
+		await steerDelivery;
+		await followUpDelivery;
+
+		const userTexts = harness.session.messages.filter((message) => message.role === "user").map(getMessageText);
+		expect(userTexts.findIndex((text) => text.includes("steer after bash"))).toBeLessThan(
+			userTexts.findIndex((text) => text.includes("follow-up after bash")),
+		);
 		expect(harness.session.pendingMessageCount).toBe(0);
 	});
 
