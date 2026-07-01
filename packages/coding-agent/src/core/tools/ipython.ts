@@ -478,10 +478,14 @@ export function createIpythonToolDefinition(
 
 					const imageBlocks = imageBlocksFromAttachments(r.attachments);
 					const content: (TextContent | ImageContent)[] = [{ type: "text", text: text || "" }, ...imageBlocks];
-					backgroundTask?.complete();
+					if (r.status === "ok") {
+						backgroundTask?.complete();
+					} else {
+						backgroundTask?.fail(r.error?.evalue || `IPython cell ${r.status}`);
+					}
 
 					if (backgrounded) {
-						return makeBackgroundResult("IPython cell completed in the background.", r.durationMs);
+						return makeBackgroundResult("IPython cell finished in the background.", r.durationMs);
 					}
 
 					return {

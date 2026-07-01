@@ -1469,6 +1469,10 @@ export class AgentSession {
 			}
 		}
 
+		if (event.type === "agent_end") {
+			this._flushPendingBashMessages();
+		}
+
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end" && this._lastAssistantMessage) {
 			const msg = this._lastAssistantMessage;
@@ -1714,7 +1718,7 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
-		this._backgroundTasks.cancelAll("Session disposed");
+		this._backgroundTasks.dispose("Session disposed");
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);

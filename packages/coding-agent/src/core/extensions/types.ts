@@ -319,7 +319,7 @@ export interface ExtensionContext {
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
 	/** Create a log-backed background task owned by the current session. */
-	createBackgroundTask?(options: CreateBackgroundTaskOptions): BackgroundTaskHandle;
+	createBackgroundTask?(options: CreateBackgroundTaskOptions): BackgroundTaskHandle | undefined;
 	/** Register a long-running tool operation that can be detached with the background keybinding. */
 	registerBackgroundableTask?(task: BackgroundTaskHandle, requestBackground: () => boolean): () => void;
 }

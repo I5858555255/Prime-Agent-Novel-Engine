@@ -637,10 +637,7 @@ export class ExtensionRunner {
 			},
 			createBackgroundTask: (options) => {
 				runner.assertActive();
-				if (!runner.createBackgroundTaskFn) {
-					throw new Error("Background tasks are not available in this mode");
-				}
-				return runner.createBackgroundTaskFn(options);
+				return runner.createBackgroundTaskFn?.(options);
 			},
 			registerBackgroundableTask: (task, requestBackground) => {
 				runner.assertActive();

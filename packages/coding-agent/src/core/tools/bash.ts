@@ -364,7 +364,9 @@ export function createBashToolDefinition(
 			}
 
 			const handleData = (data: Buffer) => {
-				output.append(data);
+				if (!backgrounded) {
+					output.append(data);
+				}
 				backgroundTask?.appendBuffer(data);
 				if (!backgrounded) {
 					scheduleOutputUpdate();
@@ -480,7 +482,7 @@ export function createBashToolDefinition(
 					const { text: outputText, details } = formatOutput(snapshot);
 					backgroundTask?.complete({ exitCode });
 					if (backgrounded) {
-						return makeBackgroundResult("Bash command completed in the background.");
+						return makeBackgroundResult("Bash command finished in the background.");
 					}
 					if (exitCode !== 0 && exitCode !== null) {
 						throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));

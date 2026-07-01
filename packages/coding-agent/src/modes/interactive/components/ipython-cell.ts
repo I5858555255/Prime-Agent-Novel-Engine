@@ -128,6 +128,8 @@ function readDetails(details: unknown): IpythonDetails {
 	return {
 		durationMs: typeof record.durationMs === "number" ? record.durationMs : undefined,
 		status: typeof record.status === "string" ? record.status : undefined,
+		backgroundTaskId: typeof record.backgroundTaskId === "string" ? record.backgroundTaskId : undefined,
+		backgroundLogPath: typeof record.backgroundLogPath === "string" ? record.backgroundLogPath : undefined,
 		errorEname: error?.ename ?? (typeof record.errorEname === "string" ? record.errorEname : undefined),
 		stdout: typeof record.stdout === "string" ? record.stdout : undefined,
 		stderr: typeof record.stderr === "string" ? record.stderr : undefined,

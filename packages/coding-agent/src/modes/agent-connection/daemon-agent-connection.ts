@@ -473,40 +473,68 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async requestBackgroundTask(): Promise<BackgroundTaskSnapshot | undefined> {
-		const data = await this.requestData<{ task?: BackgroundTaskSnapshot }>({
-			type: "background_request",
-			activeSessionId: this.activeSessionId,
-		});
-		return data.task;
+		try {
+			const data = await this.requestData<{ task?: BackgroundTaskSnapshot }>({
+				type: "background_request",
+				activeSessionId: this.activeSessionId,
+			});
+			return data.task;
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "background_request")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
 	}
 
 	async listBackgroundTasks(): Promise<BackgroundTaskSnapshot[]> {
-		const data = await this.requestData<{ tasks: BackgroundTaskSnapshot[] }>({
-			type: "background_list",
-			activeSessionId: this.activeSessionId,
-		});
-		return data.tasks;
+		try {
+			const data = await this.requestData<{ tasks: BackgroundTaskSnapshot[] }>({
+				type: "background_list",
+				activeSessionId: this.activeSessionId,
+			});
+			return data.tasks;
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "background_list")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
 	}
 
 	async readBackgroundTask(
 		taskId: string,
 		maxBytes?: number,
 	): Promise<{ task: BackgroundTaskSnapshot; output: string } | undefined> {
-		return this.requestData<{ task: BackgroundTaskSnapshot; output: string } | undefined>({
-			type: "background_read",
-			activeSessionId: this.activeSessionId,
-			taskId,
-			maxBytes,
-		});
+		try {
+			return await this.requestData<{ task: BackgroundTaskSnapshot; output: string } | undefined>({
+				type: "background_read",
+				activeSessionId: this.activeSessionId,
+				taskId,
+				maxBytes,
+			});
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "background_read")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
 	}
 
 	async cancelBackgroundTask(taskId: string): Promise<boolean> {
-		const data = await this.requestData<{ cancelled: boolean }>({
-			type: "background_cancel",
-			activeSessionId: this.activeSessionId,
-			taskId,
-		});
-		return data.cancelled;
+		try {
+			const data = await this.requestData<{ cancelled: boolean }>({
+				type: "background_cancel",
+				activeSessionId: this.activeSessionId,
+				taskId,
+			});
+			return data.cancelled;
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "background_cancel")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
 	}
 
 	async setModel(provider: string, modelId: string): Promise<AgentConnectionModel> {

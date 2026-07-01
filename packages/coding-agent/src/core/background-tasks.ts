@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, type WriteStream } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export type BackgroundTaskKind = "bash" | "ipython" | "rlm";
 export type BackgroundTaskStatus = "running" | "done" | "error" | "cancelled";
@@ -88,8 +89,8 @@ export function formatBackgroundTaskReference(task: BackgroundTaskSnapshot): str
 }
 
 export class BackgroundTaskHandle {
-	private readonly stream: WriteStream | undefined;
 	private readonly cancelFn: (() => void) | undefined;
+	private readonly decoder = new StringDecoder("utf8");
 	private preview = "";
 	private bytes = 0;
 	private backgroundedAt: number | undefined;
@@ -111,7 +112,6 @@ export class BackgroundTaskHandle {
 		cancel: (() => void) | undefined,
 	) {
 		this.cancelFn = cancel;
-		this.stream = createWriteStream(logPath, { flags: "a" });
 		this.writeHeader();
 	}
 
@@ -123,11 +123,6 @@ export class BackgroundTaskHandle {
 		return this.status !== "running";
 	}
 
-	releaseStream(): void {
-		this.closed = true;
-		this.stream?.end();
-	}
-
 	append(text: string): void {
 		if (!text) {
 			return;
@@ -135,7 +130,7 @@ export class BackgroundTaskHandle {
 		this.bytes += Buffer.byteLength(text, "utf-8");
 		this.preview = tailAppend(this.preview, text, DEFAULT_PREVIEW_MAX_CHARS);
 		if (!this.closed) {
-			this.stream?.write(text);
+			appendFileSync(this.logPath, text);
 		}
 		this.scheduleUpdate();
 	}
@@ -144,7 +139,7 @@ export class BackgroundTaskHandle {
 		if (buffer.length === 0) {
 			return;
 		}
-		this.append(buffer.toString("utf-8"));
+		this.append(this.decoder.write(buffer));
 	}
 
 	markBackgrounded(): BackgroundTaskSnapshot {
@@ -159,9 +154,11 @@ export class BackgroundTaskHandle {
 		if (this.status !== "running") {
 			return;
 		}
-		this.status = "done";
+		const failed = options.exitCode !== undefined && options.exitCode !== null && options.exitCode !== 0;
+		this.status = failed ? "error" : "done";
 		this.exitCode = options.exitCode;
-		this.finish(options.errorMessage);
+		this.errorMessage = failed ? (options.errorMessage ?? `Exit code ${options.exitCode}`) : options.errorMessage;
+		this.finish(this.errorMessage);
 	}
 
 	fail(errorMessage: string, options: BackgroundCompletionOptions = {}): void {
@@ -231,7 +228,7 @@ export class BackgroundTaskHandle {
 			"## Output",
 			"",
 		].join("\n");
-		this.stream?.write(header);
+		appendFileSync(this.logPath, header);
 	}
 
 	private finish(message: string | undefined): void {
@@ -254,7 +251,6 @@ export class BackgroundTaskHandle {
 			clearTimeout(this.updateTimer);
 			this.updateTimer = undefined;
 		}
-		this.stream?.end();
 	}
 
 	private scheduleUpdate(): void {
@@ -279,17 +275,19 @@ export class BackgroundTaskHandle {
 
 export class BackgroundTaskManager {
 	private readonly logDir: string;
+	private readonly ownsLogDir: boolean;
 	private readonly onEvent: ((event: BackgroundTaskEvent) => void) | undefined;
 	private readonly tasks = new Map<string, BackgroundTaskHandle>();
 	private readonly active = new Map<string, ActiveBackgroundableTask>();
 
 	constructor(options: BackgroundTaskManagerOptions = {}) {
 		this.logDir = options.logDir ?? join(tmpdir(), `prime-agent-background-${randomUUID()}`);
+		this.ownsLogDir = options.logDir === undefined;
 		this.onEvent = options.onEvent;
-		mkdirSync(this.logDir, { recursive: true });
 	}
 
 	createTask(options: CreateBackgroundTaskOptions): BackgroundTaskHandle {
+		mkdirSync(this.logDir, { recursive: true });
 		const id = `bg_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 		const handle = new BackgroundTaskHandle(
 			this,
@@ -349,10 +347,23 @@ export class BackgroundTaskManager {
 			if (!existsSync(snapshot.logPath)) {
 				return { task: snapshot, output: "" };
 			}
-			const data = readFileSync(snapshot.logPath);
-			const tail = data.length > maxBytes ? data.subarray(data.length - maxBytes) : data;
-			const prefix = data.length > maxBytes ? `[showing last ${maxBytes} bytes of ${data.length}]\n` : "";
-			return { task: snapshot, output: prefix + tail.toString("utf-8") };
+			const size = statSync(snapshot.logPath).size;
+			const requestedBytes = Number.isFinite(maxBytes) ? Math.max(0, Math.floor(maxBytes)) : 64_000;
+			const bytesToRead = Math.min(requestedBytes, size);
+			const start = size - bytesToRead;
+			const buffer = Buffer.alloc(bytesToRead);
+			const fd = openSync(snapshot.logPath, "r");
+			try {
+				readSync(fd, buffer, 0, bytesToRead, start);
+			} finally {
+				closeSync(fd);
+			}
+			const prefix =
+				size > bytesToRead
+					? `[showing last ${bytesToRead} bytes of ${size}]
+`
+					: "";
+			return { task: snapshot, output: prefix + buffer.toString("utf-8") };
 		} catch (error) {
 			return {
 				task: snapshot,
@@ -375,6 +386,16 @@ export class BackgroundTaskManager {
 			if (!task.isFinished) {
 				task.cancel(reason);
 			}
+		}
+	}
+
+	dispose(reason = "Session disposed"): void {
+		this.cancelAll(reason);
+		this.active.clear();
+		if (this.ownsLogDir) {
+			try {
+				rmSync(this.logDir, { recursive: true, force: true });
+			} catch {}
 		}
 	}
 
