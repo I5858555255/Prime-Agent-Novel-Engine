@@ -769,7 +769,7 @@ describe("daemon mode helpers", () => {
 		await expect(second).resolves.toMatchObject({ message: "second" });
 	});
 
-	it("holds the target lock for daemon prompts until the prompt settles", async () => {
+	it("holds the target lock for daemon prompts until the prompt starts streaming", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -778,13 +778,15 @@ describe("daemon mode helpers", () => {
 		});
 		const targetState = makeState("target");
 		let resolvePrompt: () => void = () => {};
+		let reportPreflight: ((didSucceed: boolean) => void) | undefined;
 		const prompt = vi.fn((_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
-			options?.preflightResult?.(true);
+			reportPreflight = options?.preflightResult;
 			return new Promise<void>((resolve) => {
 				resolvePrompt = resolve;
 			});
 		});
 		const acceptAgentMessagePrompt = vi.fn(async () => {});
+		const queueAgentMessagePrompt = vi.fn(async (_message: string, _streamingBehavior: "steer" | "followUp") => true);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -795,6 +797,7 @@ describe("daemon mode helpers", () => {
 				pendingMessageCount: 0,
 				prompt,
 				acceptAgentMessagePrompt,
+				queueAgentMessagePrompt,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -818,6 +821,7 @@ describe("daemon mode helpers", () => {
 		});
 		await Promise.resolve();
 		await Promise.resolve();
+		reportPreflight?.(true);
 
 		const send = internals.sendAgentSessionMessage({
 			targetSelector: targetState.activeSessionId,
@@ -825,11 +829,15 @@ describe("daemon mode helpers", () => {
 			origin: "agent",
 		});
 		await Promise.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+		expect(queueAgentMessagePrompt).not.toHaveBeenCalled();
 
-		resolvePrompt();
+		(targetState.runtime.session as { isStreaming: boolean }).isStreaming = true;
 		await send;
-		expect(acceptAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		resolvePrompt();
 	});
 
 	it("re-checks agent message queue capacity after waiting for the target lock", async () => {

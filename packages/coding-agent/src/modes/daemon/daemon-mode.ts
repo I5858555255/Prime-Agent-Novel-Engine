@@ -1175,12 +1175,28 @@ export class AgentDaemon {
 					() =>
 						new Promise<void>((resolveLock) => {
 							let lockReleased = false;
+							let promptSettled = false;
+							let releaseCheckTimer: ReturnType<typeof setTimeout> | undefined;
 							const releaseLock = () => {
 								if (lockReleased) {
 									return;
 								}
+								if (releaseCheckTimer) {
+									clearTimeout(releaseCheckTimer);
+									releaseCheckTimer = undefined;
+								}
 								lockReleased = true;
 								resolveLock();
+							};
+							const releaseLockWhenStreamingStarts = () => {
+								if (lockReleased || promptSettled) {
+									return;
+								}
+								if (state.runtime.session.isStreaming) {
+									releaseLock();
+									return;
+								}
+								releaseCheckTimer = setTimeout(releaseLockWhenStreamingStarts, 10);
 							};
 							void state.runtime.session
 								.prompt(command.message, {
@@ -1190,23 +1206,17 @@ export class AgentDaemon {
 									preflightResult: (didSucceed) => {
 										if (didSucceed) {
 											sendSuccessResponse();
-											if (state.runtime.session.isStreaming) {
-												releaseLock();
-											} else {
-												setTimeout(() => {
-													if (state.runtime.session.isStreaming) {
-														releaseLock();
-													}
-												}, 0);
-											}
+											releaseLockWhenStreamingStarts();
 										}
 									},
 								})
 								.then(() => {
+									promptSettled = true;
 									sendSuccessResponse();
 									releaseLock();
 								})
 								.catch((error) => {
+									promptSettled = true;
 									if (responseSent) {
 										this.broadcastToSession(
 											state,
