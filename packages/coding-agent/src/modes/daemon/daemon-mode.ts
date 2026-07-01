@@ -1927,7 +1927,7 @@ export class AgentDaemon {
 			if (preflightFailed) {
 				throw new Error("Agent message was not accepted");
 			}
-			return { delivery: session.pendingMessageCount > 0 ? waitForDelivery(payload.id) : Promise.resolve() };
+			return { delivery: Promise.resolve() };
 		} finally {
 			this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 		}
