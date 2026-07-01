@@ -4897,6 +4897,40 @@ export class AgentSession {
 		// Emitted after the slot is released so clients never observe a bash_end
 		// while the session still rejects new commands as already running.
 		this._emit({ type: "bash_end", ...end });
+		void this._drainQueuedMessagesAfterBash().catch(() => undefined);
+	}
+
+	private async _drainQueuedMessagesAfterBash(): Promise<void> {
+		if (this.isStreaming || this.pendingMessageCount === 0) {
+			return;
+		}
+
+		const steeringMessages = [...this._steeringMessages];
+		const followUpMessages = [...this._followUpMessages];
+		const queuedMessages = [...steeringMessages, ...followUpMessages].map((message) => message.message);
+		if (queuedMessages.length === 0) {
+			return;
+		}
+
+		const queuedMessageSet = new Set<AgentMessage>(queuedMessages);
+		this.agent.removeQueuedMessages((message) => queuedMessageSet.has(message));
+		try {
+			await this.agent.prompt(queuedMessages);
+			await this.waitForRetry();
+		} catch {
+			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
+			const queuedFollowUps = new Set(this._followUpMessages.map((message) => message.message));
+			for (const queued of steeringMessages) {
+				if (queuedSteering.has(queued.message)) {
+					this.agent.steer(queued.message);
+				}
+			}
+			for (const queued of followUpMessages) {
+				if (queuedFollowUps.has(queued.message)) {
+					this.agent.followUp(queued.message);
+				}
+			}
+		}
 	}
 
 	private async runUserBashLocked(command: string, excludeFromContext: boolean): Promise<UserBashEndDetails> {
