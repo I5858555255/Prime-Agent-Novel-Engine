@@ -1933,6 +1933,8 @@ export class AgentSession {
 		const loadedSkills = this._modelVisibleSkills();
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
+		const localHarnessStateDir = this._localHarnessStateDir();
+
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			skills: loadedSkills,
@@ -1946,9 +1948,7 @@ export class AgentSession {
 			allowRecursion: this._rlmDepth < this._rlmMaxDepth,
 			harnessState: mergeHarnessStates(
 				loadHarnessState(getGlobalHarnessStateDir(), "global"),
-				this.sessionManager.getSessionArtifactDir()
-					? loadHarnessState(getLocalHarnessStateDir(this.sessionManager.getSessionArtifactDir())!, "local")
-					: undefined,
+				localHarnessStateDir ? loadHarnessState(localHarnessStateDir, "local") : undefined,
 			),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
@@ -2894,8 +2894,15 @@ export class AgentSession {
 		this._autoCompactionAbortController?.abort();
 	}
 
+	private _localHarnessStateDir(): string | undefined {
+		return (
+			getLocalHarnessStateDir(this.sessionManager.getSessionArtifactDir()) ??
+			(this._rlmSessionDir ? getLocalHarnessStateDir(this._rlmSessionDir) : undefined)
+		);
+	}
+
 	private _autoRefineAllowedForSession(): boolean {
-		return this._rlmDepth === 0 && getLocalHarnessStateDir(this.sessionManager.getSessionArtifactDir()) !== undefined;
+		return this._rlmDepth === 0 && this._localHarnessStateDir() !== undefined;
 	}
 
 	private _discardPendingAutoRefine(): void {
@@ -3114,7 +3121,7 @@ export class AgentSession {
 		}
 		const { apiKey, headers } = await this._getRequiredRequestAuth(model);
 		const harnessStateDir = getGlobalHarnessStateDir();
-		const localHarnessStateDir = getLocalHarnessStateDir(this.sessionManager.getSessionArtifactDir());
+		const localHarnessStateDir = this._localHarnessStateDir();
 		const state = mergeHarnessStates(
 			loadHarnessState(harnessStateDir, "global"),
 			localHarnessStateDir ? loadHarnessState(localHarnessStateDir, "local") : undefined,
@@ -3186,7 +3193,7 @@ export class AgentSession {
 			const model = this.model;
 			const { apiKey, headers } = await this._getRequiredRequestAuth(model);
 			const globalHarnessStateDir = getGlobalHarnessStateDir();
-			const localHarnessStateDir = getLocalHarnessStateDir(this.sessionManager.getSessionArtifactDir());
+			const localHarnessStateDir = this._localHarnessStateDir();
 			const requestedScope = options.global ? "global" : "local";
 			if (!options.rollbackId && requestedScope === "local" && !localHarnessStateDir) {
 				throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
@@ -4041,11 +4048,10 @@ export class AgentSession {
 		const rlmSessionDir = this._ensureRlmSessionDir();
 		if (rlmSessionDir) {
 			env.RLM_SESSION_DIR = rlmSessionDir;
-			// Prefer the dir the host reads (system prompt, refine); for subagents
-			// rlmSessionDir is the parent-assigned sub-dir, not this session's artifact dir.
-			env.RLM_HARNESS_STATE_DIR =
-				getLocalHarnessStateDir(this.sessionManager.getSessionArtifactDir()) ??
-				getLocalHarnessStateDir(rlmSessionDir)!;
+			// Keep kernel writes and host reads (system prompt, review, /refine) on
+			// the same local harness path. Subagents prefer their own artifact dir;
+			// ephemeral sessions fall back to the RLM session dir once it exists.
+			env.RLM_HARNESS_STATE_DIR = this._localHarnessStateDir() ?? getLocalHarnessStateDir(rlmSessionDir)!;
 		}
 		this._addWebsearchKeyEnv(env);
 		return env;

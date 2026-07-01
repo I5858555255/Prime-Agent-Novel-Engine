@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -993,6 +993,47 @@ describe("AgentSession RLM session dir", () => {
 		const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
 		expect(env.RLM_SESSION_DIR).toBe(ephemeralDir);
 		expect(env.RLM_HARNESS_STATE_DIR).toBe(join(ephemeralDir, "harness"));
+	});
+
+	it("loads the ephemeral RLM harness path into the host system prompt", () => {
+		const ephemeralDir = join(tempDir, "ephemeral-rlm");
+		mkdirSync(join(ephemeralDir, "harness"), { recursive: true });
+		writeFileSync(
+			join(ephemeralDir, "harness", "harness_state.json"),
+			JSON.stringify({
+				schema: 1,
+				entries: {
+					prompt: {},
+					memory: {
+						ephemeral_note: {
+							id: "ephemeral_note",
+							kind: "memory",
+							title: "Ephemeral note",
+							content: "Loaded from the RLM session harness path.",
+							path: "000",
+							scope: "local",
+							reference: {},
+							arguments: {},
+							metadata: {},
+							source: "test",
+							created_at: "2026-01-01T00:00:00.000Z",
+							updated_at: "2026-01-01T00:00:00.000Z",
+							version: 1,
+						},
+					},
+					skill: {},
+					subagent: {},
+				},
+				refinements: [],
+			}),
+			"utf8",
+		);
+		const root = createSession(SessionManager.inMemory(tempDir), undefined, undefined, false, ephemeralDir);
+
+		const prompt = root.systemPrompt;
+
+		expect(prompt).toContain("Ephemeral note");
+		expect(prompt).toContain("Loaded from the RLM session harness path.");
 	});
 
 	it("exports the configured agentDir to the kernel so skills find auth.json", () => {
