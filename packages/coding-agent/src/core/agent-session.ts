@@ -1523,6 +1523,11 @@ export class AgentSession {
 				return;
 			}
 		}
+		if (event.type === "agent_end" && this._acceptedAgentMessagePrompt?.cleared) {
+			const clearedPrompt = this._acceptedAgentMessagePrompt;
+			this.agent.state.messages = this.agent.state.messages.filter((message) => message !== clearedPrompt.message);
+			this._acceptedAgentMessagePrompt = undefined;
+		}
 
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
