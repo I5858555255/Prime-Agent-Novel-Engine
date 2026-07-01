@@ -4682,7 +4682,7 @@ export class AgentSession {
 
 	/** Whether an accepted prompt is still running or waiting for retry completion. */
 	get hasAcceptedPromptInFlight(): boolean {
-		return this._acceptedPromptCompletions.size > 0;
+		return this._acceptedPromptCompletions.size > 0 || this._acceptedAgentMessagePrompt !== undefined;
 	}
 
 	/** Whether auto-retry is enabled */

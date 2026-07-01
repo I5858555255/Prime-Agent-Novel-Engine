@@ -392,14 +392,34 @@ stale extension instructions`,
 	it("rejects normal prompts while an accepted agent message is in flight", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		const sessionInternals = harness.session as unknown as {
-			_acceptedPromptCompletions: Set<Promise<void>>;
+		const acceptedMessage = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "accepted agent message" }],
+			timestamp: Date.now(),
 		};
-		const acceptedPromptCompletion = new Promise<void>(() => {});
+		const sessionInternals = harness.session as unknown as {
+			_acceptedAgentMessagePrompt?: {
+				text: string;
+				agentMessageId: string;
+				message: typeof acceptedMessage;
+				messages: Set<typeof acceptedMessage>;
+				stateMessageStartIndex: number;
+				turnStarted: boolean;
+				cleared: boolean;
+			};
+		};
 
-		sessionInternals._acceptedPromptCompletions.add(acceptedPromptCompletion);
+		sessionInternals._acceptedAgentMessagePrompt = {
+			text: "accepted agent message",
+			agentMessageId: "agentmsg_in_flight",
+			message: acceptedMessage,
+			messages: new Set([acceptedMessage]),
+			stateMessageStartIndex: 0,
+			turnStarted: false,
+			cleared: false,
+		};
 		await expect(harness.session.prompt("ordinary prompt")).rejects.toThrow("accepted prompt in flight");
-		sessionInternals._acceptedPromptCompletions.delete(acceptedPromptCompletion);
+		sessionInternals._acceptedAgentMessagePrompt = undefined;
 	});
 
 	it("flushes pending bash messages before accepted agent messages", async () => {
