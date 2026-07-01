@@ -6,14 +6,18 @@ import { Semaphore } from "../../utils/semaphore.js";
 const DEFAULT_KERNEL_BOOT_CONCURRENCY = Math.min(16, Math.max(4, (cpus().length || 4) * 2));
 const MAX_KERNEL_BOOT_CONCURRENCY = 64;
 
-function resolveKernelBootConcurrency(): number {
+export function resolveKernelBootConcurrency(): number {
 	const raw = process.env.PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS;
-	// Only a clean positive integer overrides; anything malformed falls back to
-	// the default rather than silently mis-bounding the gate.
-	if (raw === undefined || !/^\d+$/.test(raw) || raw === "0") {
+	if (raw === undefined || !/^\d+$/.test(raw)) {
 		return DEFAULT_KERNEL_BOOT_CONCURRENCY;
 	}
-	return Math.min(MAX_KERNEL_BOOT_CONCURRENCY, Number.parseInt(raw, 10));
+	const parsed = Number.parseInt(raw, 10);
+	// A malformed or out-of-range value (incl. 0, e.g. "00") falls back to the
+	// default rather than mis-bounding the gate or throwing at module load.
+	if (parsed < 1) {
+		return DEFAULT_KERNEL_BOOT_CONCURRENCY;
+	}
+	return Math.min(MAX_KERNEL_BOOT_CONCURRENCY, parsed);
 }
 
 const kernelBootSemaphore = new Semaphore(resolveKernelBootConcurrency());
