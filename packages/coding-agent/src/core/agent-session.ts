@@ -2747,6 +2747,7 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		const hadPostCompactionContinue = this._postCompactionContinuationScheduled;
 		this._disconnectFromAgent();
 		await this.abort();
 		let didCompact = false;
@@ -2891,6 +2892,9 @@ export class AgentSession {
 			this._reconnectToAgent();
 			if (didCompact) {
 				this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
+				if (hadPostCompactionContinue) {
+					this._schedulePostCompactionContinue();
+				}
 				this._scheduleAutoRefine("compact");
 			}
 		}
