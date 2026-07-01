@@ -2,11 +2,24 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KernelManager } from "../src/core/kernel/index.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
 let tempDir = "";
+
+// These tests count spawns of a fake python to assert provisioner semantics
+// (memoization, retry, gating) and drive it with a stub interpreter. Pin the
+// direct-spawn path so the on-by-default forkserver's extra spawn/ready handshake
+// doesn't perturb the counts; the fork path has its own coverage.
+const savedForkFlag = process.env.PRIME_AGENT_KERNEL_FORKSERVER;
+beforeAll(() => {
+	process.env.PRIME_AGENT_KERNEL_FORKSERVER = "0";
+});
+afterAll(() => {
+	if (savedForkFlag === undefined) delete process.env.PRIME_AGENT_KERNEL_FORKSERVER;
+	else process.env.PRIME_AGENT_KERNEL_FORKSERVER = savedForkFlag;
+});
 
 function writeFakePython(opts: { sleepSeconds?: number } = {}): { python: string; countRuns: () => number } {
 	const python = join(tempDir, "python");
