@@ -73,4 +73,34 @@ describe("Semaphore", () => {
 		await Promise.all([holder, ...waiters]);
 		expect(order).toEqual([0, 1, 2]);
 	});
+
+	it("a queued waiter aborts out of the queue without consuming a permit", async () => {
+		const sem = new Semaphore(1);
+		const gate = deferred<void>();
+		const holder = sem.run(async () => {
+			await gate.promise;
+		});
+
+		const ac = new AbortController();
+		const queued = sem.run(async () => "ran", ac.signal);
+		expect(sem.queueLength).toBe(1);
+
+		ac.abort();
+		await expect(queued).rejects.toBeTruthy();
+		expect(sem.queueLength).toBe(0);
+
+		// The aborted waiter must not have stolen the permit: once the holder
+		// releases, a fresh acquire runs immediately.
+		gate.resolve();
+		await holder;
+		await expect(sem.run(async () => "ok")).resolves.toBe("ok");
+	});
+
+	it("rejects immediately if the signal is already aborted", async () => {
+		const sem = new Semaphore(1);
+		const ac = new AbortController();
+		ac.abort();
+		await expect(sem.run(async () => "ran", ac.signal)).rejects.toBeTruthy();
+		await expect(sem.run(async () => "ok")).resolves.toBe("ok");
+	});
 });
