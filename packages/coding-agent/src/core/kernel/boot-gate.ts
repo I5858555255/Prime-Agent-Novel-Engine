@@ -11,10 +11,13 @@ const MAX_KERNEL_BOOT_CONCURRENCY = 64;
 // kernel still starts a live ioloop + heartbeat thread + rlm bootstrap, and
 // letting all N do that at once trips the ready timeout (measured: 256 collapses
 // to ~28% boot at N=200; core*4 holds 100%). So the gate stays a real bound.
-const FORKSERVER_KERNEL_BOOT_CONCURRENCY = Math.max(32, (cpus().length || 4) * 4);
-// Explicit env overrides on the fork path may go higher than the auto default, but
-// not unbounded — past this the live-kernel startup storm regresses boot rate.
+// Explicit env overrides may go higher than the auto default, but not unbounded —
+// past this the live-kernel startup storm regresses boot rate.
 const FORKSERVER_KERNEL_BOOT_CONCURRENCY_MAX = 128;
+const FORKSERVER_KERNEL_BOOT_CONCURRENCY = Math.min(
+	FORKSERVER_KERNEL_BOOT_CONCURRENCY_MAX,
+	Math.max(32, (cpus().length || 4) * 4),
+);
 
 export function resolveKernelBootConcurrency(): number {
 	const raw = process.env.PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS;

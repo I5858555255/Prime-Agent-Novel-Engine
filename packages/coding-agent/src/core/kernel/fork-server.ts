@@ -16,6 +16,7 @@ import { FORK_SERVER_SCRIPT } from "./fork-server-script.js";
 
 const READY_TIMEOUT_MS = 30_000;
 const SPAWN_TIMEOUT_MS = 10_000;
+const STDERR_TAIL_MAX = 4096;
 
 export class ForkServerUnavailable extends Error {
 	constructor(message: string) {
@@ -50,6 +51,9 @@ class ForkServer {
 	private readyPromise?: Promise<void>;
 	private failReady?: (err: Error) => void;
 	private buffer = "";
+	// Rolling tail of forkserver stderr. Forked children inherit this fd, so a
+	// child's import/startup traceback lands here; surfaced in error messages.
+	private stderrTail = "";
 	private nextId = 1;
 	private readonly pending = new Map<number, PendingSpawn>();
 	private dead = false;
@@ -127,7 +131,9 @@ class ForkServer {
 					stdio: ["ignore", "ignore", "pipe"],
 				});
 				this.proc = proc;
-				proc.stderr?.on("data", () => {});
+				proc.stderr?.on("data", (buf: Buffer) => {
+					this.stderrTail = `${this.stderrTail}${buf.toString()}`.slice(-STDERR_TAIL_MAX);
+				});
 				proc.on("error", () => this.markDead());
 				proc.on("exit", () => this.markDead());
 			});
@@ -160,7 +166,7 @@ class ForkServer {
 			if (typeof msg.pid === "number") {
 				p.resolve(msg.pid);
 			} else {
-				p.reject(new ForkServerUnavailable(msg.error ?? "forkserver fork failed"));
+				p.reject(new ForkServerUnavailable(this.withStderr(msg.error ?? "forkserver fork failed")));
 			}
 		}
 	}
@@ -179,19 +185,35 @@ class ForkServer {
 		});
 	}
 
+	private withStderr(message: string): string {
+		const tail = this.stderrTail.trim();
+		return tail ? `${message}\nforkserver stderr:\n${tail}` : message;
+	}
+
 	private markDead(): void {
 		if (this.dead) return;
 		this.dead = true;
-		this.failReady?.(new ForkServerUnavailable("forkserver died before ready"));
+		this.failReady?.(new ForkServerUnavailable(this.withStderr("forkserver died before ready")));
 		for (const p of this.pending.values()) {
 			clearTimeout(p.timer);
-			p.reject(new ForkServerUnavailable("forkserver died"));
+			p.reject(new ForkServerUnavailable(this.withStderr("forkserver died")));
 		}
 		this.pending.clear();
 		this.dispose();
 	}
 
 	dispose(): void {
+		// Reject in-flight callers before flipping `dead`, so the close/exit events
+		// this triggers still reach markDead() instead of being short-circuited and
+		// leaving callers to wait out their full timeouts.
+		if (!this.dead) {
+			this.failReady?.(new ForkServerUnavailable("forkserver disposed"));
+			for (const p of this.pending.values()) {
+				clearTimeout(p.timer);
+				p.reject(new ForkServerUnavailable("forkserver disposed"));
+			}
+			this.pending.clear();
+		}
 		this.dead = true;
 		try {
 			this.conn?.destroy();
@@ -228,7 +250,12 @@ export async function forkKernel(params: ForkServerParams, connectionPath: strin
 	if (!isForkServerEnabled()) throw new ForkServerUnavailable("forkserver disabled");
 	if (!cleanupRegistered) {
 		cleanupRegistered = true;
-		registerSessionResourceCleanup(() => disposeAllForkServers());
+		// A forkserver is process-lived and shared across sessions, so only tear it
+		// down on full process shutdown (no sessionId). Per-session cleanup must not
+		// yank the warm template out from under other live sessions.
+		registerSessionResourceCleanup((sessionId) => {
+			if (!sessionId) disposeAllForkServers();
+		});
 	}
 	const key = keyFor(params);
 	let server = servers.get(key);
