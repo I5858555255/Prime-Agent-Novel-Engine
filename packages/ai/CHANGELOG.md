@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-01
+
+- Fixed the `openai-completions` and `openai-responses` providers serializing empty tool results as a literal "(see attached image)" placeholder; the placeholder is now gated on the result actually having images, matching the google-shared and mistral providers ([#290](https://github.com/PrimeIntellect-ai/prime-agent/issues/290)).
+
 ## [0.2.3] - 2026-06-30
 
 - Added a `./mcp` entry point with a built-in MCP server catalog (Linear, Notion) and generic OAuth 2.1 (PKCE + dynamic client registration) providers stored as `mcp:<server>` in `auth.json`; the local OAuth callback server tries a range of ports so a stale or concurrent login can't block sign-in ([#280](https://github.com/PrimeIntellect-ai/prime-agent/issues/280)).
