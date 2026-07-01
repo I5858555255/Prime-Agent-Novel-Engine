@@ -62,6 +62,7 @@ import {
 	uploadAgentTraceFile,
 } from "../../core/agent-traces.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
+import type { BackgroundTaskSnapshot } from "../../core/background-tasks.js";
 import { type AgentCronJob, parseHeartbeatCommand } from "../../core/cron-jobs.js";
 import type {
 	AutocompleteProviderFactory,
@@ -930,6 +931,7 @@ export class InteractiveMode {
 						hint("app.input.clear", "to clear input"),
 						hint("app.exit", "to exit (empty)"),
 						hint("app.suspend", "to suspend"),
+						hint("app.backgroundTask", "to background task"),
 						keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
 						rawKeyHint("/effort", "to set thinking level"),
 						hint("app.model.select", "to select model"),
@@ -3335,6 +3337,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.interrupt", () => this.handleInterruptKey());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
+		this.defaultEditor.onAction("app.backgroundTask", () => this.handleBackgroundTaskKey());
 
 		// Global debug handler on TUI (works regardless of focus)
 		this.ui.onDebug = () => {
@@ -3569,6 +3572,11 @@ export class InteractiveMode {
 			}
 			if (commandName === "heartbeat") {
 				await this.handleHeartbeatCommand(canonicalCommandText);
+				this.editor.setText("");
+				return;
+			}
+			if (commandName === "background") {
+				await this.handleBackgroundCommand(commandArgs);
 				this.editor.setText("");
 				return;
 			}
@@ -4030,6 +4038,10 @@ export class InteractiveMode {
 					this.showError(`Bash command failed: ${event.errorMessage}`);
 				}
 				this.ui.requestRender();
+				break;
+
+			case "background_task":
+				this.handleBackgroundTaskEvent(event.event);
 				break;
 
 			case "message_start":
@@ -4565,6 +4577,10 @@ export class InteractiveMode {
 		}
 		if (this.keybindings.matches(data, "app.thinking.toggle")) {
 			this.toggleThinkingBlockVisibility();
+			return;
+		}
+		if (this.keybindings.matches(data, "app.backgroundTask")) {
+			this.handleBackgroundTaskKey();
 		}
 	}
 
@@ -7356,6 +7372,82 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private formatBackgroundTaskLine(task: BackgroundTaskSnapshot): string {
+		const elapsedMs = (task.endedAt ?? Date.now()) - task.startedAt;
+		const elapsed = this.formatWorkingElapsed(Math.max(0, elapsedMs));
+		const suffix = task.errorMessage ? ` (${task.errorMessage})` : "";
+		return `${task.id} · ${task.kind} · ${task.status} · ${elapsed} · ${task.title}${suffix}
+${theme.fg("dim", task.logPath)}`;
+	}
+
+	private handleBackgroundTaskEvent(event: { type: string; task: BackgroundTaskSnapshot }): void {
+		if (event.type === "start") {
+			this.showStatus(`Backgrounded ${event.task.kind} task ${event.task.id}. Log: ${event.task.logPath}`);
+			return;
+		}
+		if (event.type === "end") {
+			this.showStatus(`Background task ${event.task.id} ${event.task.status}. Log: ${event.task.logPath}`);
+		}
+	}
+
+	private handleBackgroundTaskKey(): void {
+		void (async () => {
+			try {
+				const task = await this.agentConnection.requestBackgroundTask();
+				if (!task) {
+					this.showStatus("No running Bash or IPython task to background");
+					return;
+				}
+				this.showStatus(`Backgrounded ${task.kind} task ${task.id}. Log: ${task.logPath}`);
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+			}
+		})();
+	}
+
+	private async handleBackgroundCommand(args: string): Promise<void> {
+		const [action, taskId, maxBytesText] = args.trim().split(/\s+/).filter(Boolean);
+		try {
+			if (!action || action === "list") {
+				const tasks = await this.agentConnection.listBackgroundTasks();
+				const lines =
+					tasks.length === 0 ? ["No background tasks"] : tasks.map((task) => this.formatBackgroundTaskLine(task));
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+				this.ui.requestRender();
+				return;
+			}
+			if (action === "read" && taskId) {
+				const maxBytes = maxBytesText ? Number(maxBytesText) : undefined;
+				const result = await this.agentConnection.readBackgroundTask(
+					taskId,
+					Number.isFinite(maxBytes) ? maxBytes : undefined,
+				);
+				if (!result) {
+					this.showWarning(`Background task not found: ${taskId}`);
+					return;
+				}
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(
+					new Text(`${this.formatBackgroundTaskLine(result.task)}\n\n${result.output || "(no output)"}`, 1, 0),
+				);
+				this.ui.requestRender();
+				return;
+			}
+			if (action === "cancel" && taskId) {
+				const cancelled = await this.agentConnection.cancelBackgroundTask(taskId);
+				this.showStatus(
+					cancelled ? `Cancelled background task ${taskId}` : `Background task not running: ${taskId}`,
+				);
+				return;
+			}
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		this.showWarning("Usage: /background [list|read <id> [maxBytes]|cancel <id>]");
+	}
+
 	private async handleHeartbeatCommand(text: string): Promise<void> {
 		try {
 			const command = parseHeartbeatCommand(text);
@@ -7511,6 +7603,7 @@ export class InteractiveMode {
 		const interrupt = this.getAppKeyDisplay("app.interrupt");
 		const exit = this.getAppKeyDisplay("app.exit");
 		const suspend = this.getAppKeyDisplay("app.suspend");
+		const backgroundTask = this.getAppKeyDisplay("app.backgroundTask");
 		const selectModel = this.getAppKeyDisplay("app.model.select");
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
@@ -7553,6 +7646,7 @@ export class InteractiveMode {
 | \`${clear}\` | Interrupt current operation (first) / exit (second) |
 ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
+| \`${backgroundTask}\` | Background the current Bash/IPython task |
 | \`${selectModel}\` | Open model selector |
 | \`${expandTools}\` | Toggle tool output expansion |
 | \`${toggleThinking}\` | Toggle thinking block visibility |

@@ -43,6 +43,14 @@ import { sleep } from "../utils/sleep.js";
 import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import { flushAgentTraceUpload } from "./agent-traces.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
+import {
+	type BackgroundTaskEvent,
+	type BackgroundTaskHandle,
+	BackgroundTaskManager,
+	type BackgroundTaskSnapshot,
+	type CreateBackgroundTaskOptions,
+	formatBackgroundTaskReference,
+} from "./background-tasks.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
 	type CompactionResult,
@@ -225,7 +233,8 @@ export type AgentSessionEvent =
 			fullOutputPath?: string;
 			/** Set when execution failed before producing a result (e.g. spawn failure) */
 			errorMessage?: string;
-	  };
+	  }
+	| { type: "background_task"; event: BackgroundTaskEvent };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -503,6 +512,7 @@ export class AgentSession {
 	private _userBashRunning = false;
 	private _userBashAbortRequested = false;
 	private _pendingBashMessages: BashExecutionMessage[] = [];
+	private _backgroundTasks: BackgroundTaskManager;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -589,6 +599,10 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
+		this._backgroundTasks = new BackgroundTaskManager({
+			logDir: this._backgroundTaskLogDir(),
+			onEvent: (event) => this._emit({ type: "background_task", event }),
+		});
 		this._goalState = this._loadPersistedGoalState();
 		if (this._goalState.status === "active") {
 			this._goalAccountingStartedAt = Date.now();
@@ -1700,6 +1714,7 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
+		this._backgroundTasks.cancelAll("Session disposed");
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
@@ -3382,6 +3397,9 @@ export class AgentSession {
 					})();
 				},
 				getSystemPrompt: () => this.systemPrompt,
+				createBackgroundTask: (options) => this.createBackgroundTask(options),
+				registerBackgroundableTask: (task, requestBackground) =>
+					this._backgroundTasks.registerActive(task, requestBackground),
 			},
 			{
 				registerProvider: (name, config) => {
@@ -4196,9 +4214,20 @@ export class AgentSession {
 	}
 
 	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): Promise<RlmRunResult> {
-		const run = this._startRlmChildRun(prompt, kwargs, spawnCode);
+		const background = kwargs.background === true;
+		const remainingKwargs = { ...kwargs };
+		delete remainingKwargs.background;
+		const run = this._startRlmChildRun(prompt, remainingKwargs, spawnCode);
 		if (!run.task) {
 			throw new Error("RLM child failed to start");
+		}
+		if (background) {
+			return {
+				answer: `RLM child ${run.id} is running in the background. Inspect it in the subagent tree or session ${run.sessionDir}.`,
+				usage: { prompt_tokens: 0, completion_tokens: 0 },
+				turns: 0,
+				session_dir: run.sessionDir,
+			};
 		}
 		const result = await run.task;
 		return {
@@ -4351,6 +4380,49 @@ export class AgentSession {
 	}
 
 	// =========================================================================
+	// Background Tasks
+	// =========================================================================
+
+	private _backgroundTaskLogDir(): string | undefined {
+		const artifactDir = this.sessionManager.getSessionArtifactDir();
+		return artifactDir ? join(artifactDir, "background-tasks") : undefined;
+	}
+
+	createBackgroundTask(options: CreateBackgroundTaskOptions): BackgroundTaskHandle {
+		return this._backgroundTasks.createTask(options);
+	}
+
+	requestBackgroundActiveTask(): BackgroundTaskSnapshot | undefined {
+		return this._backgroundTasks.requestBackgroundActive();
+	}
+
+	listBackgroundTasks(): BackgroundTaskSnapshot[] {
+		return this._backgroundTasks.list();
+	}
+
+	getBackgroundTask(taskId: string): BackgroundTaskSnapshot | undefined {
+		return this._backgroundTasks.get(taskId);
+	}
+
+	readBackgroundTask(taskId: string, maxBytes?: number): { task: BackgroundTaskSnapshot; output: string } | undefined {
+		return this._backgroundTasks.read(taskId, maxBytes);
+	}
+
+	cancelBackgroundTask(taskId: string): boolean {
+		return this._backgroundTasks.cancel(taskId);
+	}
+
+	private createBackgroundBashResult(task: BackgroundTaskSnapshot): BashResult {
+		return {
+			output: formatBackgroundTaskReference(task),
+			exitCode: undefined,
+			cancelled: false,
+			truncated: false,
+			fullOutputPath: task.logPath,
+		};
+	}
+
+	// =========================================================================
 	// Bash Execution
 	// =========================================================================
 
@@ -4367,28 +4439,85 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; operations?: BashOperations },
 	): Promise<BashResult> {
-		this._bashAbortController = new AbortController();
+		const foregroundAbortController = new AbortController();
+		this._bashAbortController = foregroundAbortController;
 
 		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
 		const prefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
 		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 
-		try {
-			const result = await executeBashWithOperations(
-				resolvedCommand,
-				this.sessionManager.getCwd(),
-				options?.operations ?? createLocalBashOperations({ shellPath }),
-				{
-					onChunk,
-					signal: this._bashAbortController.signal,
-				},
-			);
-
+		const backgroundAbortController = new AbortController();
+		const task = this.createBackgroundTask({
+			kind: "bash",
+			title: `$ ${command.split("\n").find((line) => line.trim()) ?? command}`,
+			input: command,
+			cancel: () => backgroundAbortController.abort(),
+		});
+		let backgroundedTask: BackgroundTaskSnapshot | undefined;
+		let resolveBackground: ((result: BashResult) => void) | undefined;
+		const backgroundPromise = new Promise<BashResult>((resolve) => {
+			resolveBackground = resolve;
+		});
+		const unregisterTask = this._backgroundTasks.registerActive(task, () => {
+			if (backgroundedTask) {
+				return false;
+			}
+			backgroundedTask = task.markBackgrounded();
+			const result = this.createBackgroundBashResult(backgroundedTask);
 			this.recordBashResult(command, result, options);
+			resolveBackground?.(result);
+			return true;
+		});
+		const forwardAbort = () => backgroundAbortController.abort();
+		foregroundAbortController.signal.addEventListener("abort", forwardAbort, { once: true });
+
+		const executionPromise = (async (): Promise<BashResult> => {
+			try {
+				const result = await executeBashWithOperations(
+					resolvedCommand,
+					this.sessionManager.getCwd(),
+					options?.operations ?? createLocalBashOperations({ shellPath }),
+					{
+						onChunk: (chunk) => {
+							task.append(chunk);
+							if (!backgroundedTask) {
+								onChunk?.(chunk);
+							}
+						},
+						signal: backgroundAbortController.signal,
+					},
+				);
+
+				task.complete({ exitCode: result.exitCode });
+				if (!backgroundedTask) {
+					this.recordBashResult(command, result, options);
+					return result;
+				}
+				return this.createBackgroundBashResult(backgroundedTask);
+			} catch (error) {
+				if (backgroundedTask) {
+					task.fail(error instanceof Error ? error.message : String(error));
+					return this.createBackgroundBashResult(backgroundedTask);
+				}
+				task.discardIfForeground();
+				throw error;
+			}
+		})();
+		executionPromise.catch(() => undefined);
+
+		try {
+			const result = await Promise.race([executionPromise, backgroundPromise]);
+			if (!backgroundedTask) {
+				task.discardIfForeground();
+			}
 			return result;
 		} finally {
-			this._bashAbortController = undefined;
+			unregisterTask();
+			foregroundAbortController.signal.removeEventListener("abort", forwardAbort);
+			if (this._bashAbortController === foregroundAbortController) {
+				this._bashAbortController = undefined;
+			}
 		}
 	}
 

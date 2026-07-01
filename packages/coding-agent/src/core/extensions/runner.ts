@@ -6,6 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.js";
+import type { BackgroundTaskHandle, CreateBackgroundTaskOptions } from "../background-tasks.js";
 import type { ResourceDiagnostic } from "../diagnostics.js";
 import type { KeybindingsConfig } from "../keybindings.js";
 import type { ModelRegistry } from "../model-registry.js";
@@ -236,6 +237,10 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private createBackgroundTaskFn: ((options: CreateBackgroundTaskOptions) => BackgroundTaskHandle) | undefined;
+	private registerBackgroundableTaskFn:
+		| ((task: BackgroundTaskHandle, requestBackground: () => boolean) => () => void)
+		| undefined;
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -295,6 +300,8 @@ export class ExtensionRunner {
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
+		this.createBackgroundTaskFn = contextActions.createBackgroundTask;
+		this.registerBackgroundableTaskFn = contextActions.registerBackgroundableTask;
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
@@ -627,6 +634,17 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			createBackgroundTask: (options) => {
+				runner.assertActive();
+				if (!runner.createBackgroundTaskFn) {
+					throw new Error("Background tasks are not available in this mode");
+				}
+				return runner.createBackgroundTaskFn(options);
+			},
+			registerBackgroundableTask: (task, requestBackground) => {
+				runner.assertActive();
+				return runner.registerBackgroundableTaskFn?.(task, requestBackground) ?? (() => {});
 			},
 		};
 	}

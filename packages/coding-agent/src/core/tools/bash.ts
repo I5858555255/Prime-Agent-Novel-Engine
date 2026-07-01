@@ -14,6 +14,7 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.js";
+import type { BackgroundTaskHandle } from "../background-tasks.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { previewBashCommand } from "./code-preview.js";
 import { OutputAccumulator } from "./output-accumulator.js";
@@ -31,6 +32,9 @@ export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
+	backgroundTaskId?: string;
+	backgroundLogPath?: string;
+	backgrounded?: boolean;
 }
 
 /**
@@ -195,6 +199,12 @@ function formatBashCall(args: { command?: string; timeout?: number } | undefined
 	return theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix;
 }
 
+function formatBashPlainTitle(command: string): string {
+	const preview = previewBashCommand(command);
+	const label = preview.language === "bash" ? "" : `${preview.language}: `;
+	return `$ ${preview.text ? `${label}${preview.text}` : command}`;
+}
+
 function rebuildBashResultRenderComponent(
 	component: BashResultRenderComponent,
 	result: {
@@ -248,8 +258,16 @@ function rebuildBashResultRenderComponent(
 
 	const truncation = result.details?.truncation;
 	const fullOutputPath = result.details?.fullOutputPath;
-	if (truncation?.truncated || fullOutputPath) {
+	const backgroundTaskId = result.details?.backgroundTaskId;
+	const backgroundLogPath = result.details?.backgroundLogPath;
+	if (truncation?.truncated || fullOutputPath || backgroundTaskId || backgroundLogPath) {
 		const warnings: string[] = [];
+		if (backgroundTaskId) {
+			warnings.push(`Background task: ${backgroundTaskId}`);
+		}
+		if (backgroundLogPath) {
+			warnings.push(`Background log: ${backgroundLogPath}`);
+		}
 		if (fullOutputPath) {
 			warnings.push(`Full output: ${fullOutputPath}`);
 		}
@@ -282,7 +300,7 @@ export function createBashToolDefinition(
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds. Long-running commands can be detached with the background keybinding; detached commands keep running in this session and write their full log to a background task.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
 		async execute(
@@ -290,11 +308,17 @@ export function createBashToolDefinition(
 			{ command, timeout }: { command: string; timeout?: number },
 			signal?: AbortSignal,
 			onUpdate?,
-			_ctx?,
+			ctx?,
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+			let backgroundTask: BackgroundTaskHandle | undefined;
+			let unregisterBackgroundTask: (() => void) | undefined;
+			let backgrounded = false;
+			let backgroundResultResolved = false;
+			let backgroundAbortController: AbortController | undefined;
+			let abortBackground: (() => void) | undefined;
 			let updateTimer: NodeJS.Timeout | undefined;
 			let updateDirty = false;
 			let lastUpdateAt = 0;
@@ -341,7 +365,10 @@ export function createBashToolDefinition(
 
 			const handleData = (data: Buffer) => {
 				output.append(data);
-				scheduleOutputUpdate();
+				backgroundTask?.appendBuffer(data);
+				if (!backgrounded) {
+					scheduleOutputUpdate();
+				}
 			};
 
 			const finishOutput = async () => {
@@ -374,40 +401,106 @@ export function createBashToolDefinition(
 			};
 
 			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
+			const makeBackgroundResult = (message: string) => ({
+				content: [{ type: "text" as const, text: `${message} Log: ${backgroundTask?.logPath ?? "unknown"}` }],
+				details: {
+					backgrounded: true,
+					backgroundTaskId: backgroundTask?.id,
+					backgroundLogPath: backgroundTask?.logPath,
+				} satisfies BashToolDetails,
+			});
+			let resolveBackgroundResult: ((result: ReturnType<typeof makeBackgroundResult>) => void) | undefined;
+			const backgroundResultPromise = new Promise<ReturnType<typeof makeBackgroundResult>>((resolve) => {
+				resolveBackgroundResult = resolve;
+			});
+			const resolveBackgroundResultOnce = (message: string) => {
+				if (backgroundResultResolved) return;
+				backgroundResultResolved = true;
+				resolveBackgroundResult?.(makeBackgroundResult(message));
+			};
 
-			try {
-				let exitCode: number | null;
+			const executionPromise = (async () => {
 				try {
-					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
-						onData: handleData,
-						signal,
-						timeout,
-						env: spawnContext.env,
-					});
-					exitCode = result.exitCode;
-				} catch (err) {
-					const snapshot = await finishOutput();
-					const { text } = formatOutput(snapshot, "");
-					if (err instanceof Error && err.message === "aborted") {
-						throw new Error(appendStatus(text, "Command aborted"));
+					let exitCode: number | null;
+					try {
+						backgroundAbortController = new AbortController();
+						abortBackground = () => backgroundAbortController?.abort();
+						if (signal?.aborted) {
+							abortBackground();
+						} else {
+							signal?.addEventListener("abort", abortBackground, { once: true });
+						}
+						backgroundTask = ctx?.createBackgroundTask?.({
+							kind: "bash",
+							title: formatBashPlainTitle(command),
+							input: command,
+							cancel: () => backgroundAbortController?.abort(),
+						});
+						if (backgroundTask) {
+							unregisterBackgroundTask = ctx?.registerBackgroundableTask?.(backgroundTask, () => {
+								if (backgrounded || !backgroundTask) {
+									return false;
+								}
+								backgrounded = true;
+								if (abortBackground) {
+									signal?.removeEventListener("abort", abortBackground);
+								}
+								backgroundTask.markBackgrounded();
+								const result = makeBackgroundResult("Bash command is running in the background.");
+								onUpdate?.(result);
+								resolveBackgroundResultOnce("Bash command is running in the background.");
+								return true;
+							});
+						}
+						const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+							onData: handleData,
+							signal: backgroundAbortController.signal,
+							timeout,
+							env: spawnContext.env,
+						});
+						exitCode = result.exitCode;
+					} catch (err) {
+						const snapshot = await finishOutput();
+						const { text } = formatOutput(snapshot, "");
+						backgroundTask?.fail(err instanceof Error ? err.message : String(err));
+						if (backgrounded) {
+							return makeBackgroundResult("Bash command failed in the background.");
+						}
+						if (err instanceof Error && err.message === "aborted") {
+							throw new Error(appendStatus(text, "Command aborted"));
+						}
+						if (err instanceof Error && err.message.startsWith("timeout:")) {
+							const timeoutSecs = err.message.split(":")[1];
+							throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
+						}
+						throw err;
 					}
-					if (err instanceof Error && err.message.startsWith("timeout:")) {
-						const timeoutSecs = err.message.split(":")[1];
-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
-					}
-					throw err;
-				}
 
-				const snapshot = await finishOutput();
-				const { text: outputText, details } = formatOutput(snapshot);
-				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+					const snapshot = await finishOutput();
+					const { text: outputText, details } = formatOutput(snapshot);
+					backgroundTask?.complete({ exitCode });
+					if (backgrounded) {
+						return makeBackgroundResult("Bash command completed in the background.");
+					}
+					if (exitCode !== 0 && exitCode !== null) {
+						throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+					}
+					return { content: [{ type: "text" as const, text: outputText }], details };
+				} finally {
+					if (abortBackground) {
+						signal?.removeEventListener("abort", abortBackground);
+					}
+					unregisterBackgroundTask?.();
+					if (!backgrounded) {
+						backgroundTask?.discardIfForeground();
+					}
+					clearUpdateTimer();
 				}
-				return { content: [{ type: "text", text: outputText }], details };
-			} finally {
-				clearUpdateTimer();
-			}
+			})();
+			executionPromise.catch(() => undefined);
+			return await Promise.race([executionPromise, backgroundResultPromise]);
 		},
+
 		renderCall(args, _theme, context) {
 			const state = context.state;
 			if (context.executionStarted && state.startedAt === undefined) {

@@ -41,6 +41,7 @@ import type {
 } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
+import type { BackgroundTaskHandle, CreateBackgroundTaskOptions } from "../background-tasks.js";
 import type { BashResult } from "../bash-executor.js";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.js";
 import type { EventBus } from "../event-bus.js";
@@ -317,6 +318,10 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/** Create a log-backed background task owned by the current session. */
+	createBackgroundTask?(options: CreateBackgroundTaskOptions): BackgroundTaskHandle;
+	/** Register a long-running tool operation that can be detached with the background keybinding. */
+	registerBackgroundableTask?(task: BackgroundTaskHandle, requestBackground: () => boolean): () => void;
 }
 
 /**
@@ -1427,6 +1432,8 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
+	createBackgroundTask?: (options: CreateBackgroundTaskOptions) => BackgroundTaskHandle;
+	registerBackgroundableTask?: (task: BackgroundTaskHandle, requestBackground: () => boolean) => () => void;
 }
 
 /**

@@ -1015,7 +1015,7 @@ export class KernelManager {
 		await channel.send(encode(msg, this.connection.key));
 	}
 
-	private async interrupt(): Promise<void> {
+	async interrupt(): Promise<void> {
 		if (!this.control || !this.connection) return;
 		const msg = buildMessage("interrupt_request", {}, this.session, this.options.username);
 		await this.control.send(encode(msg, this.connection.key));

@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent, Transport, Usage } from "@earendil-works/pi-ai";
+import type { BackgroundTaskEvent, BackgroundTaskSnapshot } from "../../core/background-tasks.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
@@ -478,7 +479,8 @@ export type AgentConnectionSessionEvent =
 			fullOutputPath?: string;
 			/** Set when execution failed before producing a result (e.g. spawn failure) */
 			errorMessage?: string;
-	  };
+	  }
+	| { type: "background_task"; event: BackgroundTaskEvent };
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }
@@ -538,6 +540,13 @@ export interface AgentConnection {
 	 */
 	executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void>;
 	abortBash(): Promise<void>;
+	requestBackgroundTask(): Promise<BackgroundTaskSnapshot | undefined>;
+	listBackgroundTasks(): Promise<BackgroundTaskSnapshot[]>;
+	readBackgroundTask(
+		taskId: string,
+		maxBytes?: number,
+	): Promise<{ task: BackgroundTaskSnapshot; output: string } | undefined>;
+	cancelBackgroundTask(taskId: string): Promise<boolean>;
 
 	setModel(provider: string, modelId: string): Promise<AgentConnectionModel>;
 	cycleModel(direction?: "forward" | "backward"): Promise<AgentConnectionModelCycleResult | undefined>;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added backgroundable Bash and IPython execution with `Ctrl+B`, `/background` task inspection, preserved logs, and cancellation for detached work.
+
 ## [0.2.4] - 2026-07-01
 
 - Changed the agents view to list only sessions the daemon is actively holding, and stopped the daemon from auto-restoring on-disk sessions on startup, so a restarted daemon no longer surfaces a wall of weeks-old sessions; sessions come back via `/resume` or `--resume` ([#295](https://github.com/PrimeIntellect-ai/prime-agent/issues/295)).

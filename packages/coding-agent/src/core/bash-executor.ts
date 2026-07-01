@@ -24,6 +24,8 @@ export interface BashExecutorOptions {
 	onChunk?: (chunk: string) => void;
 	/** AbortSignal for cancellation */
 	signal?: AbortSignal;
+	/** Optional pre-created temp log file. When provided, full output is written here from the start. */
+	fullOutputPath?: string;
 }
 
 export interface BashResult {
@@ -57,8 +59,10 @@ export async function executeBashWithOperations(
 	let outputBytes = 0;
 	const maxOutputBytes = DEFAULT_MAX_BYTES * 2;
 
-	let tempFilePath: string | undefined;
-	let tempFileStream: WriteStream | undefined;
+	let tempFilePath: string | undefined = options?.fullOutputPath;
+	let tempFileStream: WriteStream | undefined = tempFilePath
+		? createWriteStream(tempFilePath, { flags: "a" })
+		: undefined;
 	let totalBytes = 0;
 
 	const ensureTempFile = () => {

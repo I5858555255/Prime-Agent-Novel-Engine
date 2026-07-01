@@ -236,6 +236,22 @@ export class InProcessAgentConnection implements AgentConnection {
 		this.session.abortBash();
 	}
 
+	async requestBackgroundTask() {
+		return this.session.requestBackgroundActiveTask();
+	}
+
+	async listBackgroundTasks() {
+		return this.session.listBackgroundTasks();
+	}
+
+	async readBackgroundTask(taskId: string, maxBytes?: number) {
+		return this.session.readBackgroundTask(taskId, maxBytes);
+	}
+
+	async cancelBackgroundTask(taskId: string): Promise<boolean> {
+		return this.session.cancelBackgroundTask(taskId);
+	}
+
 	async setModel(provider: string, modelId: string): Promise<AgentConnectionModel> {
 		this.session.modelRegistry.refresh();
 		const model = this.session.modelRegistry.getAvailable().find((candidate) => {

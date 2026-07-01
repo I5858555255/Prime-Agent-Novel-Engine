@@ -23,8 +23,8 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 | Path completion | Press Tab to complete paths |
 | Multi-line input | Shift+Enter, or Ctrl+Enter on Windows Terminal |
 | Images | Paste with Ctrl+V, Alt+V on Windows, or drag into the terminal |
-| Shell command | `!command` runs and sends output to the model |
-| Hidden shell command | `!!command` runs without sending output to the model |
+| Shell command | `!command` runs and sends output to the model; Ctrl+B detaches it while it keeps running |
+| Hidden shell command | `!!command` runs without sending output to the model; Ctrl+B can still detach it |
 | External editor | Ctrl+G opens `$VISUAL` or `$EDITOR` |
 
 See [Keybindings](keybindings.md) for all shortcuts and customization.
@@ -54,6 +54,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 | `/reload` | Reload keybindings, extensions, skills, prompts, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
+| `/background [list\|read <id>\|cancel <id>]` | Inspect or cancel detached Bash/IPython tasks |
 | `/changelog` | Display version history |
 | `/quit` | Quit pi |
 
@@ -64,6 +65,7 @@ You can submit messages while the agent is still working:
 - **Enter** queues a steering message, delivered after the current assistant turn finishes executing its tool calls.
 - **Alt+Enter** queues a follow-up message, delivered after the agent finishes all work.
 - **Ctrl+C** interrupts the current operation and briefly shows the exit hint; press it again while the hint is visible to exit.
+- **Ctrl+B** backgrounds a running Bash/IPython task. Detached work keeps running in the session, logs to a background task file, and can be inspected or cancelled with `/background`.
 - **Escape** clears the input bar without interrupting the agent.
 - **Alt+Up** retrieves queued messages back to the editor.
 

@@ -4,6 +4,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
+import type { BackgroundTaskHandle } from "../background-tasks.js";
 import type { ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
@@ -129,7 +130,9 @@ export type IpythonToolInput = Static<typeof ipythonSchema>;
 
 export interface IpythonToolDetails {
 	durationMs?: number;
-	status?: "ok" | "error" | "aborted" | "starting";
+	status?: "ok" | "error" | "aborted" | "starting" | "backgrounded";
+	backgroundTaskId?: string;
+	backgroundLogPath?: string;
 	errorEname?: string;
 	stdout?: string;
 	stderr?: string;
@@ -369,8 +372,9 @@ export function createIpythonToolDefinition(
 		name: "ipython",
 		label: "ipython",
 		description:
-			"Execute Python scratchpad code and `%%bash` shell cells in a persistent IPython kernel. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
-		promptSnippet: "ipython - persistent agent notebook for Python scratchpad code and %%bash orchestration",
+			"Execute Python scratchpad code and `%%bash` shell cells in a persistent IPython kernel. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment. Long-running cells can be detached with the background keybinding; detached work keeps running in this session and writes its full log to a background task.",
+		promptSnippet:
+			"ipython - persistent agent notebook for Python scratchpad code, backgroundable cells, and %%bash orchestration",
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
 		executionMode: "sequential",
 		parameters: ipythonSchema,
@@ -382,57 +386,138 @@ export function createIpythonToolDefinition(
 				} catch {}
 			};
 			let reportedStartupProgress = false;
+			let manager: KernelManager | undefined;
+			let backgroundTask: BackgroundTaskHandle | undefined;
+			let unregisterBackgroundTask: (() => void) | undefined;
+			let backgrounded = false;
+			let backgroundResultResolved = false;
+			const cellAbortController = new AbortController();
+			const forwardAbort = () => cellAbortController.abort();
+			if (signal?.aborted) {
+				forwardAbort();
+			} else {
+				signal?.addEventListener("abort", forwardAbort, { once: true });
+			}
+			const makeBackgroundResult = (message: string, durationMs?: number) => ({
+				content: [{ type: "text" as const, text: `${message} Log: ${backgroundTask?.logPath ?? "unknown"}` }],
+				details: {
+					durationMs,
+					status: "backgrounded" as const,
+					backgroundTaskId: backgroundTask?.id,
+					backgroundLogPath: backgroundTask?.logPath,
+				},
+			});
+			let resolveBackgroundResult: ((result: ReturnType<typeof makeBackgroundResult>) => void) | undefined;
+			const backgroundResultPromise = new Promise<ReturnType<typeof makeBackgroundResult>>((resolve) => {
+				resolveBackgroundResult = resolve;
+			});
+			const resolveBackgroundResultOnce = (message: string) => {
+				if (backgroundResultResolved) return;
+				backgroundResultResolved = true;
+				resolveBackgroundResult?.(makeBackgroundResult(message));
+			};
+			backgroundTask = ctx?.createBackgroundTask?.({
+				kind: "ipython",
+				title: "IPython cell",
+				input: params.code,
+				cancel: () => {
+					cellAbortController.abort();
+					void manager?.interrupt().catch(() => undefined);
+				},
+			});
+			if (backgroundTask) {
+				unregisterBackgroundTask = ctx?.registerBackgroundableTask?.(backgroundTask, () => {
+					if (backgrounded || !backgroundTask) {
+						return false;
+					}
+					backgrounded = true;
+					signal?.removeEventListener("abort", forwardAbort);
+					backgroundTask.markBackgrounded();
+					const result = makeBackgroundResult("IPython cell is running in the background.");
+					onUpdate?.(result);
+					resolveBackgroundResultOnce("IPython cell is running in the background.");
+					return true;
+				});
+			}
+
 			const reportStartupProgress: KernelBootstrapProgressHandler = (message) => {
 				reportedStartupProgress = true;
 				setWorkingMessage(message);
-				onUpdate?.({
-					content: [{ type: "text", text: message }],
-					details: { status: "starting" },
-				});
+				backgroundTask?.append(`${message}\n`);
+				if (!backgrounded) {
+					onUpdate?.({
+						content: [{ type: "text", text: message }],
+						details: { status: "starting" },
+					});
+				}
 			};
 
-			try {
-				const m = await provisioner.ensure(reportStartupProgress);
-				const r = await m.execute(params.code, {
-					signal,
-					onStream: (chunk) => {
-						onUpdate?.({
-							content: [{ type: "text", text: chunk }],
-							details: { status: "ok" },
-						});
-					},
-				});
+			const executionPromise = (async () => {
+				try {
+					manager = await provisioner.ensure(reportStartupProgress);
+					const r = await manager.execute(params.code, {
+						signal: cellAbortController.signal,
+						onStream: (chunk) => {
+							backgroundTask?.append(chunk);
+							if (backgrounded) {
+								return;
+							}
+							onUpdate?.({
+								content: [{ type: "text", text: chunk }],
+								details: { status: "ok" },
+							});
+						},
+					});
 
-				let text = r.stdout;
-				if (r.stderr) text += (text ? "\n" : "") + r.stderr;
-				if (r.result) text += (text ? "\n" : "") + r.result;
-				if (r.status === "error" && r.error) {
-					text += (text ? "\n" : "") + r.error.traceback.join("\n");
+					let text = r.stdout;
+					if (r.stderr) text += (text ? "\n" : "") + r.stderr;
+					if (r.result) text += (text ? "\n" : "") + r.result;
+					if (r.status === "error" && r.error) {
+						text += (text ? "\n" : "") + r.error.traceback.join("\n");
+					}
+
+					const imageBlocks = imageBlocksFromAttachments(r.attachments);
+					const content: (TextContent | ImageContent)[] = [{ type: "text", text: text || "" }, ...imageBlocks];
+					backgroundTask?.complete();
+
+					if (backgrounded) {
+						return makeBackgroundResult("IPython cell completed in the background.", r.durationMs);
+					}
+
+					return {
+						content,
+						details: {
+							durationMs: r.durationMs,
+							status: r.status,
+							errorEname: r.error?.ename,
+							stdout: r.stdout,
+							stderr: r.stderr,
+							result: r.result,
+							diffs: r.diffs,
+							attachments: r.attachments,
+							error: r.error,
+						},
+						isError: r.status === "error" || r.status === "aborted",
+					};
+				} catch (error) {
+					backgroundTask?.fail(error instanceof Error ? error.message : String(error));
+					if (backgrounded) {
+						return makeBackgroundResult("IPython cell failed in the background.");
+					}
+					throw error;
+				} finally {
+					signal?.removeEventListener("abort", forwardAbort);
+					unregisterBackgroundTask?.();
+					if (!backgrounded) {
+						backgroundTask?.discardIfForeground();
+					}
+					if (reportedStartupProgress) {
+						setWorkingMessage();
+					}
 				}
-
-				const imageBlocks = imageBlocksFromAttachments(r.attachments);
-				const content: (TextContent | ImageContent)[] = [{ type: "text", text: text || "" }, ...imageBlocks];
-
-				return {
-					content,
-					details: {
-						durationMs: r.durationMs,
-						status: r.status,
-						errorEname: r.error?.ename,
-						stdout: r.stdout,
-						stderr: r.stderr,
-						result: r.result,
-						diffs: r.diffs,
-						attachments: r.attachments,
-						error: r.error,
-					},
-					isError: r.status === "error" || r.status === "aborted",
-				};
-			} finally {
-				if (reportedStartupProgress) {
-					setWorkingMessage();
-				}
-			}
+			})();
+			executionPromise.catch(() => undefined);
+			return await Promise.race([executionPromise, backgroundResultPromise]);
 		},
 	};
 }

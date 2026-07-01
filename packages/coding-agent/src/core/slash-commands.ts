@@ -80,6 +80,11 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		description: "Set or view a persistent heartbeat; supports pause, resume, and clear",
 		argumentHint: "[--every <interval>] <instruction>",
 	},
+	{
+		name: "background",
+		description: "List, read, or cancel background Bash/IPython tasks",
+		argumentHint: "[list|read <id>|cancel <id>]",
+	},
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },

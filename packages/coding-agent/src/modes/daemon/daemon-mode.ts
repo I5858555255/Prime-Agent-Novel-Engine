@@ -106,6 +106,10 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"abort",
 	"execute_bash",
 	"abort_bash",
+	"background_request",
+	"background_list",
+	"background_read",
+	"background_cancel",
 	"cancel_rlm_child",
 	"wait_for_idle",
 	"get_state",
@@ -1031,6 +1035,36 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				state.runtime.session.abortBash();
 				return success(command.id, "abort_bash");
+			}
+
+			case "background_request": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "background_request", {
+					task: state.runtime.session.requestBackgroundActiveTask(),
+				});
+			}
+
+			case "background_list": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "background_list", {
+					tasks: state.runtime.session.listBackgroundTasks(),
+				});
+			}
+
+			case "background_read": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(
+					command.id,
+					"background_read",
+					state.runtime.session.readBackgroundTask(command.taskId, command.maxBytes),
+				);
+			}
+
+			case "background_cancel": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "background_cancel", {
+					cancelled: state.runtime.session.cancelBackgroundTask(command.taskId),
+				});
 			}
 
 			case "cancel_rlm_child": {

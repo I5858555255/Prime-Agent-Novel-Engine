@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
+import type { BackgroundTaskSnapshot } from "../../core/background-tasks.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
@@ -469,6 +470,43 @@ export class DaemonAgentConnection implements AgentConnection {
 			}
 			throw error;
 		}
+	}
+
+	async requestBackgroundTask(): Promise<BackgroundTaskSnapshot | undefined> {
+		const data = await this.requestData<{ task?: BackgroundTaskSnapshot }>({
+			type: "background_request",
+			activeSessionId: this.activeSessionId,
+		});
+		return data.task;
+	}
+
+	async listBackgroundTasks(): Promise<BackgroundTaskSnapshot[]> {
+		const data = await this.requestData<{ tasks: BackgroundTaskSnapshot[] }>({
+			type: "background_list",
+			activeSessionId: this.activeSessionId,
+		});
+		return data.tasks;
+	}
+
+	async readBackgroundTask(
+		taskId: string,
+		maxBytes?: number,
+	): Promise<{ task: BackgroundTaskSnapshot; output: string } | undefined> {
+		return this.requestData<{ task: BackgroundTaskSnapshot; output: string } | undefined>({
+			type: "background_read",
+			activeSessionId: this.activeSessionId,
+			taskId,
+			maxBytes,
+		});
+	}
+
+	async cancelBackgroundTask(taskId: string): Promise<boolean> {
+		const data = await this.requestData<{ cancelled: boolean }>({
+			type: "background_cancel",
+			activeSessionId: this.activeSessionId,
+			taskId,
+		});
+		return data.cancelled;
 	}
 
 	async setModel(provider: string, modelId: string): Promise<AgentConnectionModel> {

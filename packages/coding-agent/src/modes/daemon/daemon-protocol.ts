@@ -182,6 +182,10 @@ export type DaemonCommand =
 			excludeFromContext?: boolean;
 	  }
 	| { id?: string; type: "abort_bash"; activeSessionId: string }
+	| { id?: string; type: "background_request"; activeSessionId: string }
+	| { id?: string; type: "background_list"; activeSessionId: string }
+	| { id?: string; type: "background_read"; activeSessionId: string; taskId: string; maxBytes?: number }
+	| { id?: string; type: "background_cancel"; activeSessionId: string; taskId: string }
 	| { id?: string; type: "cancel_rlm_child"; activeSessionId: string; childId: string }
 	| { id?: string; type: "wait_for_idle"; activeSessionId: string }
 	| { id?: string; type: "get_state"; activeSessionId: string }

@@ -46,6 +46,8 @@ interface DiffDisplay {
 interface IpythonDetails {
 	durationMs?: number;
 	status?: string;
+	backgroundTaskId?: string;
+	backgroundLogPath?: string;
 	errorEname?: string;
 	stdout?: string;
 	stderr?: string;
@@ -348,6 +350,12 @@ export class IPythonCellComponent implements Component {
 			parts.push(theme.fg("error", errorName));
 		}
 
+		if (this.statusKind(details) === "running") {
+			parts.push(keyHint("app.backgroundTask", "to background"));
+		}
+		if (details.backgroundTaskId) {
+			parts.push(theme.fg("muted", `bg ${details.backgroundTaskId}`));
+		}
 		parts.push(keyHint("app.tools.expand", this.state.expanded ? "to collapse" : "to expand"));
 		return parts.join(theme.fg("dim", " · "));
 	}
@@ -529,6 +537,16 @@ export class IPythonCellComponent implements Component {
 		) {
 			startOutput();
 			this.addWrapped(lines, OUTPUT_INDENT, theme.fg("muted", "no output"), width);
+		}
+
+		if (details.backgroundLogPath) {
+			startOutput();
+			this.addWrapped(
+				lines,
+				OUTPUT_INDENT,
+				theme.fg("muted", `background log: ${details.backgroundLogPath}`),
+				width,
+			);
 		}
 
 		if (details.error) {

@@ -57,7 +57,7 @@ export class BashExecutionComponent extends Container {
 			ui,
 			(spinner) => theme.fg("muted", spinner),
 			(text) => theme.fg("muted", text),
-			`Running... (${keyText("tui.select.cancel")} to cancel)`, // Plain text for loader
+			`Running... (${keyHint("app.backgroundTask", "to background")}, ${keyText("app.clear")} to cancel)`,
 		);
 		this.contentContainer.addChild(this.loader);
 

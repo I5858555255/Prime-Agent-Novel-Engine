@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BashOperations } from "../../src/core/tools/bash.js";
 import { createHarness, type Harness } from "./harness.js";
 
@@ -366,5 +366,63 @@ describe("AgentSession bash and persistence characterization", () => {
 		await expect(harness.session.runUserBash("echo nope")).rejects.toThrow("already running");
 		releaseExec?.();
 		await first;
+	});
+	it("backgrounds a running direct bash command and keeps a readable task", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let releaseExec: (() => void) | undefined;
+		let started = false;
+		const operations: BashOperations = {
+			exec: async (_command, _cwd, options) => {
+				started = true;
+				options.onData(Buffer.from("before background\n"));
+				await new Promise<void>((resolve) => {
+					releaseExec = resolve;
+				});
+				options.onData(Buffer.from("after background\n"));
+				return { exitCode: 0 };
+			},
+		};
+
+		const bashPromise = harness.session.executeBash("long", undefined, { operations });
+		await vi.waitFor(() => expect(started).toBe(true));
+
+		const task = harness.session.requestBackgroundActiveTask();
+		expect(task).toMatchObject({ kind: "bash", status: "running" });
+
+		const result = await bashPromise;
+		expect(result.output).toContain("Background bash task");
+		expect(harness.session.isBashRunning).toBe(false);
+		expect(harness.session.listBackgroundTasks()[0]).toMatchObject({ id: task?.id, status: "running" });
+
+		releaseExec?.();
+		await vi.waitFor(() => expect(harness.session.listBackgroundTasks()[0]?.status).toBe("done"));
+		const read = harness.session.readBackgroundTask(task!.id);
+		expect(read?.output).toContain("before background");
+		expect(read?.output).toContain("after background");
+	});
+
+	it("cancels a backgrounded bash task without orphaning the operation", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let started = false;
+		const operations: BashOperations = {
+			exec: async (_command, _cwd, options) => {
+				started = true;
+				await new Promise<void>((_resolve, reject) => {
+					options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+				});
+				return { exitCode: 0 };
+			},
+		};
+
+		const bashPromise = harness.session.executeBash("cancel-me", undefined, { operations });
+		await vi.waitFor(() => expect(started).toBe(true));
+		const task = harness.session.requestBackgroundActiveTask();
+		expect(task?.status).toBe("running");
+		await bashPromise;
+
+		expect(harness.session.cancelBackgroundTask(task!.id)).toBe(true);
+		await vi.waitFor(() => expect(harness.session.listBackgroundTasks()[0]?.status).toBe("cancelled"));
 	});
 });
