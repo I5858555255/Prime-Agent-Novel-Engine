@@ -2,11 +2,22 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KernelManager } from "../src/core/kernel/index.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
 let tempDir = "";
+
+// These tests count spawns of a stub python; the default-on forkserver adds an
+// extra spawn + ready handshake the stub never answers, so pin direct-spawn.
+const savedForkFlag = process.env.PRIME_AGENT_KERNEL_FORKSERVER;
+beforeAll(() => {
+	process.env.PRIME_AGENT_KERNEL_FORKSERVER = "0";
+});
+afterAll(() => {
+	if (savedForkFlag === undefined) delete process.env.PRIME_AGENT_KERNEL_FORKSERVER;
+	else process.env.PRIME_AGENT_KERNEL_FORKSERVER = savedForkFlag;
+});
 
 function writeFakePython(opts: { sleepSeconds?: number } = {}): { python: string; countRuns: () => number } {
 	const python = join(tempDir, "python");
@@ -95,6 +106,21 @@ describe("IpythonKernelProvisioner", () => {
 		provisioner.prewarm();
 		await provisioner.dispose();
 		expect(provisioner.manager).toBeUndefined();
+	});
+
+	it("dispose() before the boot slot prevents the kernel from spawning", async () => {
+		const { python, countRuns } = writeFakePython();
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const provisioner = new IpythonKernelProvisioner(tempDir, { python, readyGate: gate });
+
+		const started = provisioner.ensure().catch(() => {});
+		const disposed = provisioner.dispose(); // aborts while the boot waits on readyGate
+		release();
+		await Promise.all([started, disposed]);
+		expect(countRuns()).toBe(0); // disposed boot must never spawn a kernel
 	});
 
 	it("waits for readyGate before starting the kernel", async () => {
