@@ -5,10 +5,11 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import type { BashResult } from "../../src/core/bash-executor.js";
 import type { PromptTemplate } from "../../src/core/prompt-templates.js";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.js";
 import { createTestResourceLoader } from "../utilities.js";
-import { createHarness, getMessageText, type Harness } from "./harness.js";
+import { createHarness, getMessageText, getUserTexts, type Harness } from "./harness.js";
 
 describe("AgentSession prompt characterization", () => {
 	const harnesses: Harness[] = [];
@@ -359,29 +360,68 @@ stale extension instructions`,
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
-	it("clears accepted agent messages queued after prompt preflight", async () => {
-		const harness = await createHarness();
+	it("clears accepted agent messages before they start streaming", async () => {
+		const harness = await createHarness({ models: [{ id: "slow-faux" }] });
 		harnesses.push(harness);
-		const sessionInternals = harness.session as unknown as {
-			_acceptedPromptCompletions: Set<Promise<void>>;
-		};
 		const agentPrompt =
 			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_after_preflight\n\nagent text";
-		const acceptedPromptCompletion = new Promise<void>(() => {});
-
-		sessionInternals._acceptedPromptCompletions.add(acceptedPromptCompletion);
-		await harness.session.acceptAgentMessagePrompt(agentPrompt, {
-			expandPromptTemplates: false,
-			streamingBehavior: "followUp",
-			queueIfBusy: true,
+		let releaseResponse: (() => void) | undefined;
+		const responseGate = new Promise<void>((resolve) => {
+			releaseResponse = resolve;
 		});
-		sessionInternals._acceptedPromptCompletions.delete(acceptedPromptCompletion);
+		harness.setResponses([
+			async () => {
+				await responseGate;
+				return fauxAssistantMessage("should not deliver");
+			},
+		]);
 
+		await harness.session.acceptAgentMessagePrompt(agentPrompt, { expandPromptTemplates: false });
 		expect(harness.session.clearQueuedUserMessagesMatching((text) => text.includes("agentmsg_"))).toEqual({
 			steering: [],
 			followUp: [agentPrompt],
 		});
+		releaseResponse?.();
+		await harness.session.agent.waitForIdle();
+
+		expect(getUserTexts(harness)).toEqual([]);
 		expect(harness.session.getFollowUpMessages()).toEqual([]);
+	});
+
+	it("flushes pending bash messages before accepted agent messages", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as {
+			recordBashResult(command: string, result: BashResult): void;
+			_flushPendingBashMessages(): void;
+		};
+		const contextRoles: string[][] = [];
+		const contextTexts: string[][] = [];
+		harness.setResponses([
+			fauxAssistantMessage("busy done"),
+			(context) => {
+				contextRoles.push(context.messages.map((message) => message.role));
+				contextTexts.push(context.messages.map((message) => getMessageText(message)));
+				return fauxAssistantMessage("agent message response");
+			},
+		]);
+
+		const busyPrompt = harness.session.agent.prompt("busy");
+		sessionInternals.recordBashResult("echo hi", {
+			output: "hi",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+		});
+		await busyPrompt;
+		await harness.session.acceptAgentMessagePrompt("agent-to-agent payload", { expandPromptTemplates: false });
+		await harness.session.agent.waitForIdle();
+
+		expect(contextRoles).toEqual([["user", "assistant", "user", "user"]]);
+		expect(contextTexts[0]?.[2]).toContain("Ran `echo hi`");
+		expect(contextTexts[0]?.[3]).toBe("agent-to-agent payload");
+		expect(harness.session.hasPendingBashMessages).toBe(false);
+		expect(typeof sessionInternals._flushPendingBashMessages).toBe("function");
 	});
 
 	it("queues accepted agent messages without expanding slash commands or prompt templates", async () => {

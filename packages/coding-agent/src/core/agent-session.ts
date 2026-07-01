@@ -382,6 +382,12 @@ interface QueuedFollowUpMessage {
 	message: AgentMessage;
 }
 
+interface AcceptedAgentMessagePrompt {
+	text: string;
+	agentMessageId: string;
+	message: AgentMessage;
+}
+
 /** Result from cycleModel() */
 export interface ModelCycleResult {
 	model: Model<any>;
@@ -540,6 +546,8 @@ export class AgentSession {
 	private _retryPromise: Promise<void> | undefined = undefined;
 	private _retryResolve: (() => void) | undefined = undefined;
 	private _acceptedPromptCompletions = new Set<Promise<void>>();
+	private _acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined = undefined;
+	private _clearedAcceptedAgentMessages = new WeakSet<AgentMessage>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -1448,7 +1456,6 @@ export class AgentSession {
 		// _processAgentEvent, slow earlier queued events can delay agent_end processing
 		// and waitForRetry() can miss the in-flight retry.
 		this._createRetryPromiseForAgentEnd(event);
-
 		this._agentEventQueue = this._agentEventQueue.then(
 			() => this._processAgentEvent(event),
 			() => this._processAgentEvent(event),
@@ -1489,6 +1496,15 @@ export class AgentSession {
 	}
 
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
+		if (
+			(event.type === "message_start" || event.type === "message_end") &&
+			event.message.role === "user" &&
+			this._clearedAcceptedAgentMessages.has(event.message)
+		) {
+			this.agent.state.messages = this.agent.state.messages.filter((message) => message !== event.message);
+			return;
+		}
+
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -2051,6 +2067,7 @@ export class AgentSession {
 			}
 		};
 		let messages: AgentMessage[] | undefined;
+		let acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined;
 
 		try {
 			let currentText = text;
@@ -2128,7 +2145,7 @@ export class AgentSession {
 				return;
 			}
 
-			// Flush any pending bash messages before the new prompt
+			// Flush any pending bash messages before the new prompt, including accepted agent messages.
 			this._flushPendingBashMessages();
 
 			// Validate model
@@ -2158,11 +2175,19 @@ export class AgentSession {
 				if (currentImages) {
 					userContent.push(...currentImages);
 				}
-				messages.push({
+				const userMessage: AgentMessage = {
 					role: "user",
 					content: userContent,
 					timestamp: Date.now(),
-				});
+				};
+				messages.push(userMessage);
+				if (options.agentMessageId !== undefined && options.returnAfterAccepted) {
+					acceptedAgentMessagePrompt = {
+						text: expandedText,
+						agentMessageId: options.agentMessageId,
+						message: userMessage,
+					};
+				}
 			} else {
 				// Check if we need to compact before sending (catches aborted responses)
 				const lastAssistant = this._findLastAssistantMessage();
@@ -2184,11 +2209,12 @@ export class AgentSession {
 				if (currentImages) {
 					userContent.push(...currentImages);
 				}
-				messages.push({
+				const userMessage: AgentMessage = {
 					role: "user",
 					content: userContent,
 					timestamp: Date.now(),
-				});
+				};
+				messages.push(userMessage);
 
 				// Emit before_agent_start extension event
 				const result = await this._extensionRunner.emitBeforeAgentStart(
@@ -2227,6 +2253,9 @@ export class AgentSession {
 			return;
 		}
 
+		if (acceptedAgentMessagePrompt) {
+			this._acceptedAgentMessagePrompt = acceptedAgentMessagePrompt;
+		}
 		const promptPromise = this.agent.prompt(messages);
 		const promptAccepted = Symbol("promptAccepted");
 		const firstOutcome = await Promise.race([
@@ -2239,6 +2268,9 @@ export class AgentSession {
 			}),
 		]);
 		if (firstOutcome !== undefined && firstOutcome !== promptAccepted) {
+			if (this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
+				this._acceptedAgentMessagePrompt = undefined;
+			}
 			reportPreflight(false);
 			throw firstOutcome;
 		}
@@ -2246,6 +2278,13 @@ export class AgentSession {
 		const promptCompletion = promptPromise.then(async () => {
 			await this.waitForRetry();
 		});
+		void promptCompletion
+			.finally(() => {
+				if (this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
+					this._acceptedAgentMessagePrompt = undefined;
+				}
+			})
+			.catch(() => undefined);
 		if (options?.returnAfterAccepted) {
 			this._acceptedPromptCompletions.add(promptCompletion);
 			void promptCompletion.then(
@@ -2544,7 +2583,9 @@ export class AgentSession {
 		const followUp = this._followUpMessages.filter(
 			(message) => message.agentMessageId !== undefined && predicate(message.text),
 		);
-		if (steering.length === 0 && followUp.length === 0) {
+		const accepted = this._acceptedAgentMessagePrompt;
+		const acceptedMatches = accepted !== undefined && predicate(accepted.text);
+		if (steering.length === 0 && followUp.length === 0 && !acceptedMatches) {
 			return { steering: [], followUp: [] };
 		}
 		const steeringToRemove = new Set(steering.map((message) => message.message));
@@ -2554,8 +2595,17 @@ export class AgentSession {
 		this.agent.removeQueuedMessages(
 			(message) => message.role === "user" && (steeringToRemove.has(message) || followUpToRemove.has(message)),
 		);
+		const removedSteering = steering.map((message) => message.text);
+		const removedFollowUp = followUp.map((message) => message.text);
+		if (acceptedMatches) {
+			this._acceptedAgentMessagePrompt = undefined;
+			this._clearedAcceptedAgentMessages.add(accepted.message);
+			this.agent.state.messages = this.agent.state.messages.filter((message) => message !== accepted.message);
+			this.agent.abort();
+			removedFollowUp.push(accepted.text);
+		}
 		this._emitQueueUpdate();
-		return { steering: steering.map((message) => message.text), followUp: followUp.map((message) => message.text) };
+		return { steering: removedSteering, followUp: removedFollowUp };
 	}
 
 	/** Number of pending messages (includes both steering and follow-up) */
