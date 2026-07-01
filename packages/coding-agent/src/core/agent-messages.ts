@@ -263,7 +263,7 @@ export function createAgentMessageHostHandlers(
 }
 
 function formatAgentSessionMessageMetadata(value: string): string {
-	return value.replace(/\s+/g, " ").trim();
+	return value.replace(/[\s,]+/g, " ").trim();
 }
 
 function formatAgentSessionMessageSender(sender: AgentSessionMessageSender): string {
