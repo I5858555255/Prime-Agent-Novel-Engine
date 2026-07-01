@@ -54,6 +54,7 @@ import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
+import { collectDaemonClientEnv } from "./modes/daemon/daemon-protocol.js";
 import {
 	type AgentConnection,
 	createInteractiveModeLocalSessionHost,
@@ -972,6 +973,7 @@ async function createDaemonInteractiveConnection(options: {
 			config: options.config,
 			sessionPath: options.sessionPath,
 			continueRecent: options.continueRecent,
+			env: collectDaemonClientEnv(),
 		});
 		if (!response.success) {
 			throw new Error(response.error);

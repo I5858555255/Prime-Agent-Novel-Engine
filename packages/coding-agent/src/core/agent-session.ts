@@ -506,6 +506,7 @@ export class AgentSession {
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
+	private _execEnvProvider?: () => Record<string, string> | undefined;
 	private _turnIndex = 0;
 
 	private _resourceLoader: ResourceLoader;
@@ -3193,6 +3194,17 @@ export class AgentSession {
 		return this.settingsManager.getCompactionEnabled();
 	}
 
+	/**
+	 * Set the provider for extra env vars merged over process.env in extension
+	 * pi.exec() subprocesses. The function is read at exec time, so a host (e.g.
+	 * the daemon) can update the underlying value per attach without rebinding.
+	 */
+	setExecEnvProvider(provider: (() => Record<string, string> | undefined) | undefined): void {
+		this._execEnvProvider = provider;
+		const extensions = this._resourceLoader.getExtensions();
+		extensions.runtime.getExecEnv = provider;
+	}
+
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
@@ -3541,6 +3553,9 @@ export class AgentSession {
 				extensionsResult.runtime.flagValues.set(name, value);
 			}
 		}
+		// Re-apply on every (re)build so the provider survives /reload, which
+		// recreates the shared extension runtime.
+		extensionsResult.runtime.getExecEnv = this._execEnvProvider;
 
 		this._extensionRunner = new ExtensionRunner(
 			extensionsResult.extensions,

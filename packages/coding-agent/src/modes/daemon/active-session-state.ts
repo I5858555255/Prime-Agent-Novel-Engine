@@ -23,6 +23,11 @@ export interface ActiveSessionState {
 	unsubscribe?: () => void;
 	/** Latest background status summary, surfaced in the agents view. */
 	summaryState?: AgentStatus;
+	/**
+	 * Client env (e.g. herdr pane identity), merged over process.env for this
+	 * session's pi.exec() subprocesses. Last env-carrying create/attach wins.
+	 */
+	clientEnv?: Record<string, string>;
 }
 
 export interface ActiveSessionExtensionUiRequest {

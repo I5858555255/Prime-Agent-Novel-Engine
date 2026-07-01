@@ -49,6 +49,7 @@ import {
 	type DaemonSocketClient,
 	resolveActiveSessionState,
 } from "./active-session-state.js";
+import { filterClientEnv, withClientEnv } from "./daemon-client-env.js";
 import { serializeDaemonError } from "./daemon-errors.js";
 import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
@@ -293,13 +294,18 @@ export class AgentDaemon {
 		cleanupDaemonSocketPath(this.socketPath);
 	}
 
-	private async addRuntime(runtime: AgentSessionRuntime, name?: string): Promise<ActiveSessionState> {
+	private async addRuntime(
+		runtime: AgentSessionRuntime,
+		name?: string,
+		clientEnv?: Record<string, string>,
+	): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
 			activeSessionId: createActiveSessionId(this.sessions),
 			runtime,
 			clients: new Set(),
 			extensionUiRequests: new Map(),
 			lastEventSequence: 0,
+			clientEnv,
 		};
 		try {
 			await bindActiveSessionState(state, {
@@ -335,6 +341,7 @@ export class AgentDaemon {
 
 		const cwd = resolve(config.cwd);
 		const agentDir = config.agentDir;
+		const clientEnv = filterClientEnv(command.env);
 		const cwdOverride = command.config?.cwd ? resolve(command.config.cwd) : undefined;
 		const sessionPath = command.sessionPath
 			? await resolveDaemonSessionPath(command.sessionPath, cwd, config.sessionDir)
@@ -352,55 +359,63 @@ export class AgentDaemon {
 				if (command.name) {
 					existing.runtime.session.setSessionName(command.name);
 				}
+				if (clientEnv) {
+					existing.clientEnv = clientEnv;
+				}
 				this.rebindCronJobsToState(existing);
 				return existing;
 			}
 			let stateRef: ActiveSessionState | undefined;
-			const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
-				cwd: sessionManager.getCwd(),
-				agentDir,
-				sessionManager,
-				sessionConfig: config,
-				sessionOptions: {
-					customTools: [
-						...createAgentHeartbeatToolDefinitions({
-							getHeartbeat: () => {
+			// Extensions capture client env (e.g. herdr pane identity) synchronously
+			// while the runtime loads them, so it must be in process.env for the
+			// duration; withClientEnv restores it after.
+			const runtime = await withClientEnv(clientEnv, () =>
+				createAgentSessionRuntime(this.options.createRuntime, {
+					cwd: sessionManager.getCwd(),
+					agentDir,
+					sessionManager,
+					sessionConfig: config,
+					sessionOptions: {
+						customTools: [
+							...createAgentHeartbeatToolDefinitions({
+								getHeartbeat: () => {
+									if (!stateRef) {
+										throw new Error("Heartbeat state is not ready for this session yet");
+									}
+									return this.cronStore.getHeartbeat(stateRef.activeSessionId);
+								},
+							}),
+						],
+						rlmHeartbeatController: {
+							listRlmHeartbeats: (listOptions) => {
 								if (!stateRef) {
-									throw new Error("Heartbeat state is not ready for this session yet");
+									throw new Error("RLM heartbeat state is not ready for this session yet");
 								}
-								return this.cronStore.getHeartbeat(stateRef.activeSessionId);
+								return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
 							},
-						}),
-					],
-					rlmHeartbeatController: {
-						listRlmHeartbeats: (listOptions) => {
-							if (!stateRef) {
-								throw new Error("RLM heartbeat state is not ready for this session yet");
-							}
-							return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
-						},
-						createRlmHeartbeat: (input) => {
-							if (!stateRef) {
-								throw new Error("RLM heartbeat state is not ready for this session yet");
-							}
-							return this.createRlmHeartbeatForState(stateRef, input);
-						},
-						updateRlmHeartbeat: (input) => {
-							if (!stateRef) {
-								throw new Error("RLM heartbeat state is not ready for this session yet");
-							}
-							return this.updateRlmHeartbeatForState(stateRef, input);
-						},
-						deleteRlmHeartbeat: (id) => {
-							if (!stateRef) {
-								throw new Error("RLM heartbeat state is not ready for this session yet");
-							}
-							return this.deleteRlmHeartbeatForState(stateRef, id);
+							createRlmHeartbeat: (input) => {
+								if (!stateRef) {
+									throw new Error("RLM heartbeat state is not ready for this session yet");
+								}
+								return this.createRlmHeartbeatForState(stateRef, input);
+							},
+							updateRlmHeartbeat: (input) => {
+								if (!stateRef) {
+									throw new Error("RLM heartbeat state is not ready for this session yet");
+								}
+								return this.updateRlmHeartbeatForState(stateRef, input);
+							},
+							deleteRlmHeartbeat: (id) => {
+								if (!stateRef) {
+									throw new Error("RLM heartbeat state is not ready for this session yet");
+								}
+								return this.deleteRlmHeartbeatForState(stateRef, id);
+							},
 						},
 					},
-				},
-			});
-			const state = await this.addRuntime(runtime, command.name);
+				}),
+			);
+			const state = await this.addRuntime(runtime, command.name, clientEnv);
 			stateRef = state;
 			return state;
 		};
@@ -415,6 +430,9 @@ export class AgentDaemon {
 			const state = await pending;
 			if (command.name) {
 				state.runtime.session.setSessionName(command.name);
+			}
+			if (clientEnv) {
+				state.clientEnv = clientEnv;
 			}
 			this.rebindCronJobsToState(state);
 			return state;
@@ -886,6 +904,9 @@ export class AgentDaemon {
 				}
 				client.capabilities = normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi);
 				client.supportsExtensionUi = client.capabilities.has("extension_ui");
+				// Most recent env-carrying client wins; env-less attaches (e.g. a
+				// plain REPL) keep the session's existing identity.
+				state.clientEnv = filterClientEnv(command.env) ?? state.clientEnv;
 				state.clients.add(client);
 				client.attachedActiveSessionIds.add(state.activeSessionId);
 				const result = this.createAttachResult(client, state, command);

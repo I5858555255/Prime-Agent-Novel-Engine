@@ -10,6 +10,7 @@ import type { SubagentRuntimeHost } from "../../core/rlm-runtime.js";
 import { createAgentConnectionState } from "../agent-connection/snapshot.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import type { ActiveSessionState } from "./active-session-state.js";
+import { withClientEnv } from "./daemon-client-env.js";
 import {
 	type DaemonExtensionUIResponse,
 	type DaemonOutbound,
@@ -47,6 +48,9 @@ export async function bindActiveSessionState(
 	callbacks: ActiveSessionBindingCallbacks,
 ): Promise<void> {
 	const session = state.runtime.session;
+
+	// Read live so attach updates to state.clientEnv apply without rebinding.
+	session.setExecEnvProvider(() => state.clientEnv);
 
 	state.unsubscribe?.();
 	state.runtime.setSubagentRuntimeHost(callbacks.subagentRuntimeHost);
@@ -103,7 +107,9 @@ function createCommandContextActions(state: ActiveSessionState): ExtensionComman
 		},
 		switchSession: async (sessionPath, options) => state.runtime.switchSession(sessionPath, options),
 		reload: async () => {
-			await state.runtime.session.reload();
+			// Reload re-evaluates extension modules, which capture client env
+			// (e.g. herdr pane identity) synchronously at load.
+			await withClientEnv(state.clientEnv, () => state.runtime.session.reload());
 		},
 	};
 }

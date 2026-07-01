@@ -536,6 +536,7 @@ function makeRuntimeSession(
 		setSubagentRuntimeHost: vi.fn(),
 		subscribe: vi.fn(() => vi.fn()),
 		bindExtensions: vi.fn(async () => {}),
+		setExecEnvProvider: vi.fn(),
 		setSessionName: vi.fn(),
 		dispose: vi.fn(),
 		abort: vi.fn(async () => {}),

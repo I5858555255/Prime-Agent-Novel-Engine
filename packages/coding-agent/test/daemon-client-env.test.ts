@@ -1,0 +1,69 @@
+import { describe, expect, it } from "vitest";
+import { filterClientEnv, withClientEnv } from "../src/modes/daemon/daemon-client-env.js";
+
+describe("filterClientEnv", () => {
+	it("keeps only allowlisted keys", () => {
+		expect(filterClientEnv({ HERDR_PANE_ID: "w1:p1", PATH: "/evil", HERDR_ENV: "1" })).toEqual({
+			HERDR_PANE_ID: "w1:p1",
+			HERDR_ENV: "1",
+		});
+	});
+
+	it("returns undefined for missing or empty env", () => {
+		expect(filterClientEnv(undefined)).toBeUndefined();
+		expect(filterClientEnv({})).toBeUndefined();
+		expect(filterClientEnv({ PATH: "/evil" })).toBeUndefined();
+	});
+});
+
+describe("withClientEnv", () => {
+	it("applies env during fn and restores afterwards", async () => {
+		process.env.HERDR_PANE_ID = "original";
+		delete process.env.HERDR_TAB_ID;
+		let seenPane: string | undefined;
+		let seenTab: string | undefined;
+		await withClientEnv({ HERDR_PANE_ID: "w2:p1", HERDR_TAB_ID: "t1" }, async () => {
+			seenPane = process.env.HERDR_PANE_ID;
+			seenTab = process.env.HERDR_TAB_ID;
+		});
+		expect(seenPane).toBe("w2:p1");
+		expect(seenTab).toBe("t1");
+		expect(process.env.HERDR_PANE_ID).toBe("original");
+		expect(process.env.HERDR_TAB_ID).toBeUndefined();
+		delete process.env.HERDR_PANE_ID;
+	});
+
+	it("restores even when fn throws", async () => {
+		process.env.HERDR_PANE_ID = "original";
+		await expect(
+			withClientEnv({ HERDR_PANE_ID: "w2:p1" }, async () => {
+				throw new Error("boom");
+			}),
+		).rejects.toThrow("boom");
+		expect(process.env.HERDR_PANE_ID).toBe("original");
+		delete process.env.HERDR_PANE_ID;
+	});
+
+	it("serializes overlapping windows so envs never mix", async () => {
+		delete process.env.HERDR_PANE_ID;
+		const seen: Array<string | undefined> = [];
+		const slow = withClientEnv({ HERDR_PANE_ID: "a" }, async () => {
+			await new Promise((r) => setTimeout(r, 20));
+			seen.push(process.env.HERDR_PANE_ID);
+		});
+		const fast = withClientEnv({ HERDR_PANE_ID: "b" }, async () => {
+			seen.push(process.env.HERDR_PANE_ID);
+		});
+		await Promise.all([slow, fast]);
+		expect(seen).toEqual(["a", "b"]);
+		expect(process.env.HERDR_PANE_ID).toBeUndefined();
+	});
+
+	it("runs fn directly without env", async () => {
+		let ran = false;
+		await withClientEnv(undefined, async () => {
+			ran = true;
+		});
+		expect(ran).toBe(true);
+	});
+});

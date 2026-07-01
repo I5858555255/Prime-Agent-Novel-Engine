@@ -15,6 +15,8 @@ export interface ExecOptions {
 	timeout?: number;
 	/** Working directory */
 	cwd?: string;
+	/** Extra env vars merged over the parent process env for this command. */
+	env?: Record<string, string>;
 }
 
 /**
@@ -42,6 +44,9 @@ export async function execCommand(
 			cwd,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
+			// Merge per-call env over the parent env so callers can scope vars
+			// (e.g. herdr pane identity) without mutating the shared process.env.
+			env: options?.env ? { ...process.env, ...options.env } : undefined,
 		});
 
 		let stdout = "";
