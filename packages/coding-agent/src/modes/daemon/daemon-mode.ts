@@ -1897,6 +1897,12 @@ export class AgentDaemon {
 				if (this.agentMessagesPaused) {
 					throw new Error("Agent messaging is paused");
 				}
+				if (
+					!this.sessions.has(targetState.activeSessionId) ||
+					this.closingSessions.has(targetState.activeSessionId)
+				) {
+					throw new Error("Target session is closing before agent message delivery");
+				}
 				if (targetState.runtime.session.sessionId !== payload.target.sessionId) {
 					throw new Error("Target session changed before agent message delivery");
 				}
@@ -2056,7 +2062,9 @@ export class AgentDaemon {
 			await existingClose;
 			return;
 		}
-		const closePromise = Promise.resolve().then(() => this.closeSessionOnce(state, reason));
+		const closePromise = Promise.resolve().then(() =>
+			this.withAgentMessageTargetLock(state.activeSessionId, () => this.closeSessionOnce(state, reason)),
+		);
 		this.closingSessions.set(state.activeSessionId, closePromise);
 		try {
 			await closePromise;

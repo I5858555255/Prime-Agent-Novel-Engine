@@ -1136,6 +1136,75 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
 	});
 
+	it("holds the target lock while closing a session", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		targetState.extensionUiRequests = new Map();
+		let resolvePrompt: () => void = () => {};
+		const acceptAgentMessagePrompt = vi.fn(
+			(_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+				options?.preflightResult?.(true);
+				return new Promise<void>((resolve) => {
+					resolvePrompt = resolve;
+				});
+			},
+		);
+		const dispose = vi.fn(async () => {});
+		targetState.runtime = {
+			...targetState.runtime,
+			dispose,
+			cwd: "/tmp",
+			metadata: { kind: "subagent", createdAt: 1 },
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 0,
+				messages: [],
+				acceptAgentMessagePrompt,
+				abort: vi.fn(async () => {}),
+				dispose: vi.fn(),
+				sessionManager: { appendSessionState: vi.fn(), hasUserContent: () => true },
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		const send = internals.sendAgentSessionMessage({
+			targetSelector: targetState.activeSessionId,
+			message: "in flight",
+			origin: "agent",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const close = internals.handleCommand(makeClient("client-1", targetState.activeSessionId), {
+			id: "command-1",
+			type: "kill",
+			activeSessionId: targetState.activeSessionId,
+		});
+		await Promise.resolve();
+		expect(dispose).not.toHaveBeenCalled();
+
+		resolvePrompt();
+		await send;
+		await close;
+		expect(dispose).toHaveBeenCalledOnce();
+	});
+
 	it("rejects agent messages to the sending session", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
