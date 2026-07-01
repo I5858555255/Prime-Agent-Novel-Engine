@@ -2828,8 +2828,6 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this._cancelPostCompactionContinue();
-
 			this.sessionManager.appendCompaction(
 				summary,
 				firstKeptEntryId,
