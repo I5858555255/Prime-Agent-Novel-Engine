@@ -26,7 +26,7 @@ type AutoRefineInternals = {
 	_scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void;
 	_scheduleAutoRefineAfterAgentEnd(): void;
 	_schedulePostCompactionContinue(): void;
-	_invalidatePendingAutoRefineForBranchChange(): void;
+	_invalidatePendingAutoRefineForBranchChange(): Promise<void>;
 	_cancelPostCompactionContinue(): void;
 	_assistantTurnsSinceAutoRefine: number;
 	_lastAutoRefineReviewAt: number;
@@ -298,7 +298,7 @@ describe("AgentSession queue characterization", () => {
 
 		try {
 			internals._schedulePostCompactionContinue();
-			internals._invalidatePendingAutoRefineForBranchChange();
+			await internals._invalidatePendingAutoRefineForBranchChange();
 			await vi.advanceTimersByTimeAsync(100);
 
 			expect(continueAgent).not.toHaveBeenCalled();
@@ -318,7 +318,7 @@ describe("AgentSession queue characterization", () => {
 		const maybeAutoRefine = vi.spyOn(internals, "_maybeAutoRefine").mockResolvedValue();
 		try {
 			internals._scheduleAutoRefine("compact");
-			internals._invalidatePendingAutoRefineForBranchChange();
+			await internals._invalidatePendingAutoRefineForBranchChange();
 			await vi.runAllTimersAsync();
 
 			expect(maybeAutoRefine).not.toHaveBeenCalled();
@@ -621,7 +621,7 @@ describe("AgentSession queue characterization", () => {
 
 		const autoRefinePromise = internals._maybeAutoRefine("turn_interval");
 		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 2 });
-		internals._invalidatePendingAutoRefineForBranchChange();
+		await internals._invalidatePendingAutoRefineForBranchChange();
 		finishReview?.();
 		await autoRefinePromise;
 
@@ -670,6 +670,20 @@ describe("AgentSession queue characterization", () => {
 
 		expect(reviewer).not.toHaveBeenCalled();
 		expect(scheduleAutoRefine).not.toHaveBeenCalled();
+	});
+
+	it("preserves compact auto-refine pending state when no model is selected", async () => {
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+		});
+		harnesses.push(harness);
+		const state = harness.session.agent.state as { model: typeof harness.session.agent.state.model | undefined };
+		state.model = undefined;
+		const internals = harness.session as unknown as AutoRefineInternals;
+
+		await internals._maybeAutoRefine("compact");
+
+		expect(internals._compactAutoRefinePending).toBe(true);
 	});
 
 	it("auto-refine review obeys the cooldown", async () => {

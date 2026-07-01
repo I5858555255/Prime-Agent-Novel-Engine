@@ -2745,6 +2745,7 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		this._cancelPostCompactionContinue();
 		this._disconnectFromAgent();
 		await this.abort();
 		let didCompact = false;
@@ -2886,7 +2887,7 @@ export class AgentSession {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
 			if (didCompact) {
-				this._discardPendingAutoRefine();
+				this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 				this._scheduleAutoRefine("compact");
 			}
 		}
@@ -2928,10 +2929,12 @@ export class AgentSession {
 		}
 	}
 
-	private _invalidatePendingAutoRefineForBranchChange(): void {
+	private async _invalidatePendingAutoRefineForBranchChange(): Promise<void> {
+		this._autoRefineReviewAbort?.abort();
 		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._assistantTurnsSinceAutoRefine = 0;
 		this._autoRefineBranchVersion++;
+		await this._waitForRefineIdle();
 	}
 
 	private _scheduleAutoRefineAfterAgentEnd(): void {
@@ -2981,7 +2984,7 @@ export class AgentSession {
 		if (!this._postCompactionContinuationScheduled) {
 			return;
 		}
-		if (this.isStreaming) {
+		if (this.isStreaming || this.isCompacting) {
 			this._postCompactionContinuationScheduled = false;
 			this._schedulePostCompactionContinue();
 			return;
@@ -3078,7 +3081,7 @@ export class AgentSession {
 		}
 		if (!this.model) {
 			if (reason === "compact") {
-				this._compactAutoRefinePending = false;
+				this._compactAutoRefinePending = true;
 			}
 			return;
 		}
@@ -5041,6 +5044,10 @@ export class AgentSession {
 			throw new Error(`Entry ${targetId} not found`);
 		}
 
+		// Do not switch branches while /refine has detached event handling and is
+		// about to persist harness/session entries for the current branch.
+		await this._invalidatePendingAutoRefineForBranchChange();
+
 		// Collect entries to summarize (from old leaf to common ancestor)
 		const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(
 			this.sessionManager,
@@ -5184,8 +5191,6 @@ export class AgentSession {
 			if (label && !summaryText) {
 				this.sessionManager.appendLabelChange(targetId, label);
 			}
-
-			this._invalidatePendingAutoRefineForBranchChange();
 
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
