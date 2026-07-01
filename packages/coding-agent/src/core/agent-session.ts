@@ -2771,7 +2771,9 @@ export class AgentSession {
 			// Restore drained nextTurn messages the model never saw. Clones, so the cleared
 			// run's late-event cleanup cannot strip the restored copies from a newer run.
 			this._pendingNextTurnMessages.unshift(...accepted.pendingNextTurnMessages.map((message) => ({ ...message })));
-			accepted.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
+			const error = new Error("Accepted agent message was cleared before delivery.");
+			this._rejectAgentMessageDelivery(accepted.agentMessageId, error);
+			accepted.rejectAccepted(error);
 			this.agent.abort();
 			removedFollowUp.push(accepted.text);
 		}
@@ -4925,7 +4927,14 @@ export class AgentSession {
 	}
 
 	private async _drainQueuedMessagesAfterBash(): Promise<void> {
-		if (this.isStreaming || this.pendingMessageCount === 0) {
+		await this.agent.waitForIdle();
+		if (
+			this.isStreaming ||
+			this.isCompacting ||
+			this.isRetrying ||
+			this.hasAcceptedPromptInFlight ||
+			this.pendingMessageCount === 0
+		) {
 			return;
 		}
 

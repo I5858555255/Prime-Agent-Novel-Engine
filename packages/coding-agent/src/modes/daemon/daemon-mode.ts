@@ -553,6 +553,7 @@ export class AgentDaemon {
 		options?: PromptOptions,
 	): Promise<void> {
 		const activeSessionId = state.activeSessionId;
+		const session = state.runtime.session;
 		this.agentMessagePreparingTargets.set(
 			activeSessionId,
 			(this.agentMessagePreparingTargets.get(activeSessionId) ?? 0) + 1,
@@ -579,14 +580,14 @@ export class AgentDaemon {
 			if (cleared) {
 				return;
 			}
-			if (state.runtime.session.isStreaming) {
+			if (session.isStreaming) {
 				clearPreparing();
 				return;
 			}
 			checkTimer = setTimeout(clearWhenStreamingStarts, 10);
 		};
 		try {
-			await state.runtime.session.prompt(message, {
+			await session.prompt(message, {
 				...options,
 				preflightResult: (didSucceed) => {
 					options?.preflightResult?.(didSucceed);
@@ -755,6 +756,9 @@ export class AgentDaemon {
 			return current;
 		}
 		if (job.source === "rlm_heartbeat" && job.runtimeKind === "subagent") {
+			if (current && this.bindingSessions.has(current.activeSessionId)) {
+				return undefined;
+			}
 			this.cronStore.cancel(job.id);
 			this.cronScheduler.wake();
 			return undefined;
