@@ -1015,6 +1015,66 @@ describe("daemon mode helpers", () => {
 		expect(clearQueuedUserMessagesMatching).toHaveBeenCalledOnce();
 	});
 
+	it("rejects agent messages when pause wins the target lock", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		let resolveBlockedClear: () => void = () => {};
+		const clearQueuedUserMessagesMatching = vi.fn(
+			() =>
+				new Promise<{ steering: string[]; followUp: string[] }>((resolve) => {
+					resolveBlockedClear = () => resolve({ steering: [], followUp: [] });
+				}),
+		);
+		const acceptAgentMessagePrompt = vi.fn(async () => {});
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 0,
+				acceptAgentMessagePrompt,
+				clearQueuedUserMessagesMatching,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		const pause = internals.handleCommand(makeClient("client-1", targetState.activeSessionId), {
+			id: "command-1",
+			type: "agent_messages_pause",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const send = internals.sendAgentSessionMessage({
+			targetSelector: targetState.activeSessionId,
+			message: "after pause requested",
+			origin: "agent",
+		});
+		await Promise.resolve();
+		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+
+		resolveBlockedClear();
+		await pause;
+		await expect(send).rejects.toThrow("Agent messaging is paused");
+		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+	});
+
 	it("rejects agent messages to the sending session", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },

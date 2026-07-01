@@ -1893,9 +1893,12 @@ export class AgentDaemon {
 			deliveryMode: options.deliveryMode ?? "auto",
 		};
 		try {
-			await this.withAgentMessageTargetLock(targetState.activeSessionId, () =>
-				this.acceptAgentSessionMessage(targetState, payload),
-			);
+			await this.withAgentMessageTargetLock(targetState.activeSessionId, () => {
+				if (this.agentMessagesPaused) {
+					throw new Error("Agent messaging is paused");
+				}
+				return this.acceptAgentSessionMessage(targetState, payload);
+			});
 			return createAgentSessionMessageReceipt(payload);
 		} catch (error) {
 			this.agentMessageRateLimiter.refund(rateLimitKey);
