@@ -39,9 +39,14 @@ export class ForkServerUnavailable extends Error {
 	}
 }
 
-/** Fork is a Linux-only, in-process fan-out optimization. */
+/**
+ * Fork is a Linux-only, in-process fan-out optimization, on by default there.
+ * Any failure auto-falls back to direct spawn, so enabling it can't regress
+ * correctness. Set PRIME_AGENT_KERNEL_FORKSERVER=0 to force the direct-spawn path.
+ */
 export function isForkServerEnabled(): boolean {
-	return process.platform === "linux" && process.env.PRIME_AGENT_KERNEL_FORKSERVER === "1";
+	if (process.platform !== "linux") return false;
+	return process.env.PRIME_AGENT_KERNEL_FORKSERVER !== "0";
 }
 
 // A forkserver template is defined solely by the interpreter — the imported
