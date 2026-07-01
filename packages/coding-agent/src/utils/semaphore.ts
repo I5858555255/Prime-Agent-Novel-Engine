@@ -13,7 +13,6 @@ export class Semaphore {
 		this.available = permits;
 	}
 
-	/** Number of callers currently waiting for a permit. */
 	get queueLength(): number {
 		return this.waiters.length;
 	}

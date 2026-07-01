@@ -299,9 +299,6 @@ export class IpythonKernelProvisioner {
 		// Emitted synchronously (before the permit await) so a listener attaching
 		// mid-flight can replay the current stage.
 		this.emitStartupProgress("Starting IPython kernel...");
-		// Hold a boot permit across the actual process spawn + restore + bootstrap so a
-		// large fan-out can't start every kernel at once. Acquired after readyGate above
-		// so a kernel waiting on a prior dispose never occupies a slot while idle.
 		let pendingRestore: RestoreResult | undefined;
 		await withKernelBootPermit(async () => {
 			await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
