@@ -342,10 +342,7 @@ class HarnessStateTest(unittest.TestCase):
                 self.assertIsNone(state.file_path)
                 self.assertEqual(created.content, "in memory only")
                 self.assertEqual(state.get("memory", "volatile").content, "in memory only")
-                state.create_memory("Volatile global", "still in memory only", id="volatile_global", global_=True)
-                state.record_refinement("global trigger", ["global change"], global_=True)
-                self.assertEqual(state.get("memory", "volatile_global").content, "still in memory only")
-                # No path was resolved, so nothing was persisted anywhere under the dir.
+                # Local in-memory operations do not resolve or persist a path.
                 self.assertEqual(list(Path(temp_dir).iterdir()), [])
             finally:
                 if previous is None:
@@ -377,6 +374,36 @@ class HarnessStateTest(unittest.TestCase):
             self.assertIsNone(state.get("memory", "global_note"))
             self.assertEqual(
                 HarnessState(global_dir / "harness_state.json", scope="global").get("memory", "global_note").content,
+                "persisted",
+            )
+
+    def test_in_memory_state_global_flag_uses_default_global_store(self) -> None:
+        previous_agent_dir = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
+        previous_global = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent_dir = Path(temp_dir) / "agent"
+            os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = str(agent_dir)
+            os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
+            try:
+                state = HarnessState(in_memory=True)
+                global_entry = state.create_memory("Default global", "persisted", id="default_global", global_=True)
+            finally:
+                if previous_agent_dir is None:
+                    os.environ.pop("PRIME_AGENT_CODING_AGENT_DIR", None)
+                else:
+                    os.environ["PRIME_AGENT_CODING_AGENT_DIR"] = previous_agent_dir
+                if previous_global is None:
+                    os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = previous_global
+
+            self.assertIsNone(state.file_path)
+            self.assertEqual(global_entry.scope, "global")
+            self.assertIsNone(state.get("memory", "default_global"))
+            self.assertEqual(
+                HarnessState(agent_dir / "harness" / "harness_state.json", scope="global")
+                .get("memory", "default_global")
+                .content,
                 "persisted",
             )
 
