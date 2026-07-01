@@ -395,6 +395,12 @@ interface AcceptedAgentMessagePrompt {
 	cleared: boolean;
 }
 
+interface AgentMessageDeliveryWaiter {
+	promise: Promise<void>;
+	resolve: () => void;
+	reject: (error: Error) => void;
+}
+
 /** Result from cycleModel() */
 export interface ModelCycleResult {
 	model: Model<any>;
@@ -554,6 +560,7 @@ export class AgentSession {
 	private _retryResolve: (() => void) | undefined = undefined;
 	private _acceptedPromptCompletions = new Set<Promise<void>>();
 	private _acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined = undefined;
+	private _agentMessageDeliveryWaiters = new Map<string, AgentMessageDeliveryWaiter>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -1454,6 +1461,43 @@ export class AgentSession {
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
+	waitForAgentMessagePromptDelivery(agentMessageId: string): Promise<void> {
+		let waiter = this._agentMessageDeliveryWaiters.get(agentMessageId);
+		if (waiter) {
+			return waiter.promise;
+		}
+		let resolveDelivery = () => {};
+		let rejectDelivery = (_error: Error) => {};
+		const promise = new Promise<void>((resolve, reject) => {
+			resolveDelivery = resolve;
+			rejectDelivery = reject;
+		});
+		waiter = { promise, resolve: resolveDelivery, reject: rejectDelivery };
+		this._agentMessageDeliveryWaiters.set(agentMessageId, waiter);
+		void promise
+			.finally(() => {
+				if (this._agentMessageDeliveryWaiters.get(agentMessageId) === waiter) {
+					this._agentMessageDeliveryWaiters.delete(agentMessageId);
+				}
+			})
+			.catch(() => undefined);
+		return promise;
+	}
+
+	private _resolveAgentMessageDelivery(agentMessageId: string | undefined): void {
+		if (agentMessageId === undefined) {
+			return;
+		}
+		this._agentMessageDeliveryWaiters.get(agentMessageId)?.resolve();
+	}
+
+	private _rejectAgentMessageDelivery(agentMessageId: string | undefined, error: Error): void {
+		if (agentMessageId === undefined) {
+			return;
+		}
+		this._agentMessageDeliveryWaiters.get(agentMessageId)?.reject(error);
+	}
+
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = (event: AgentEvent): void => {
 		// Create retry promise synchronously before queueing async processing.
@@ -1541,12 +1585,14 @@ export class AgentSession {
 			this._overflowRecoveryAttempted = false;
 			const steeringIndex = this._steeringMessages.findIndex((message) => message.message === event.message);
 			if (steeringIndex !== -1) {
-				this._steeringMessages.splice(steeringIndex, 1);
+				const [removed] = this._steeringMessages.splice(steeringIndex, 1);
+				this._resolveAgentMessageDelivery(removed?.agentMessageId);
 				this._emitQueueUpdate();
 			} else {
 				const followUpIndex = this._followUpMessages.findIndex((message) => message.message === event.message);
 				if (followUpIndex !== -1) {
-					this._followUpMessages.splice(followUpIndex, 1);
+					const [removed] = this._followUpMessages.splice(followUpIndex, 1);
+					this._resolveAgentMessageDelivery(removed?.agentMessageId);
 					this._emitQueueUpdate();
 				}
 			}
@@ -2640,6 +2686,18 @@ export class AgentSession {
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		const steering = this._steeringMessages.map((message) => message.text);
 		const followUp = this._followUpMessages.map((message) => message.text);
+		for (const message of this._steeringMessages) {
+			this._rejectAgentMessageDelivery(
+				message.agentMessageId,
+				new Error("Queued agent message was cleared before delivery."),
+			);
+		}
+		for (const message of this._followUpMessages) {
+			this._rejectAgentMessageDelivery(
+				message.agentMessageId,
+				new Error("Queued agent message was cleared before delivery."),
+			);
+		}
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
@@ -2668,6 +2726,18 @@ export class AgentSession {
 		);
 		const removedSteering = steering.map((message) => message.text);
 		const removedFollowUp = followUp.map((message) => message.text);
+		for (const message of steering) {
+			this._rejectAgentMessageDelivery(
+				message.agentMessageId,
+				new Error("Queued agent message was cleared before delivery."),
+			);
+		}
+		for (const message of followUp) {
+			this._rejectAgentMessageDelivery(
+				message.agentMessageId,
+				new Error("Queued agent message was cleared before delivery."),
+			);
+		}
 		if (acceptedMatches) {
 			accepted.cleared = true;
 			this.agent.state.messages = this.agent.state.messages.slice(0, accepted.stateMessageStartIndex);
@@ -2705,6 +2775,12 @@ export class AgentSession {
 		}
 		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
 		const removedMessages = new Set(removed.map((message) => message.message));
+		for (const message of removed) {
+			this._rejectAgentMessageDelivery(
+				message.agentMessageId,
+				new Error("Queued agent message was cleared before delivery."),
+			);
+		}
 		this.agent.removeQueuedMessages((message) => removedMessages.has(message));
 		this._emitQueueUpdate();
 		return true;

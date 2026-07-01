@@ -1848,7 +1848,7 @@ export class AgentDaemon {
 			deliveryMode: options.deliveryMode ?? "auto",
 		};
 		try {
-			await this.withAgentMessageTargetLock(targetState.activeSessionId, () => {
+			const { delivery } = await this.withAgentMessageTargetLock(targetState.activeSessionId, async () => {
 				if (this.agentMessagesPaused) {
 					throw new Error("Agent messaging is paused");
 				}
@@ -1863,6 +1863,7 @@ export class AgentDaemon {
 				}
 				return this.acceptAgentSessionMessage(targetState, payload);
 			});
+			await delivery;
 			return createAgentSessionMessageReceipt(payload);
 		} catch (error) {
 			this.agentMessageRateLimiter.refund(rateLimitKey);
@@ -1872,88 +1873,64 @@ export class AgentDaemon {
 		}
 	}
 
-	private acceptAgentSessionMessage(
+	private async acceptAgentSessionMessage(
 		targetState: ActiveSessionState,
 		payload: AgentSessionMessagePayload,
-	): Promise<void> {
-		return new Promise((resolve, reject) => {
-			let settled = false;
-			let accepted = false;
-			const settleAccepted = () => {
-				if (!settled) {
-					settled = true;
-					accepted = true;
-					resolve();
-				}
-			};
-			const settleRejected = (error: unknown) => {
-				if (!settled) {
-					settled = true;
-					reject(error);
-				}
-			};
-			const session = targetState.runtime.session;
-			const reserved = this.agentMessagePendingReservations.get(targetState.activeSessionId) ?? 0;
-			const otherReservations = Math.max(0, reserved - 1);
-			assertAgentMessageQueueCapacity(
-				session.pendingMessageCount + (session.hasAcceptedPromptInFlight ? 1 : 0) + otherReservations,
-				DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
-			);
-			const shouldQueue =
-				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
-				this.agentMessagePreparingTargets.has(targetState.activeSessionId) ||
-				session.isStreaming ||
-				session.isCompacting ||
-				session.isRetrying ||
-				session.hasAcceptedPromptInFlight ||
-				session.pendingMessageCount > 0;
-			const streamingBehavior =
-				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
-				(payload.deliveryMode === "steer" ? "steer" : "followUp");
-			if (shouldQueue) {
-				const queued = session.queueAgentMessagePrompt(createAgentSessionMessagePrompt(payload), streamingBehavior);
-				Promise.resolve(queued).then((didQueue) => {
-					if (didQueue) {
-						settleAccepted();
-						return;
-					}
-					settleRejected(new Error("Agent message was not queued"));
-				}, settleRejected);
-				return;
+	): Promise<{ delivery: Promise<void> }> {
+		const session = targetState.runtime.session;
+		const reserved = this.agentMessagePendingReservations.get(targetState.activeSessionId) ?? 0;
+		const otherReservations = Math.max(0, reserved - 1);
+		assertAgentMessageQueueCapacity(
+			session.pendingMessageCount + (session.hasAcceptedPromptInFlight ? 1 : 0) + otherReservations,
+			DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
+		);
+		const shouldQueue =
+			this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
+			this.agentMessagePreparingTargets.has(targetState.activeSessionId) ||
+			session.isStreaming ||
+			session.isCompacting ||
+			session.isRetrying ||
+			session.hasAcceptedPromptInFlight ||
+			session.pendingMessageCount > 0;
+		const streamingBehavior =
+			resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
+			(payload.deliveryMode === "steer" ? "steer" : "followUp");
+		const prompt = createAgentSessionMessagePrompt(payload);
+		const waitForDelivery =
+			typeof session.waitForAgentMessagePromptDelivery === "function"
+				? session.waitForAgentMessagePromptDelivery.bind(session)
+				: async () => undefined;
+
+		if (shouldQueue) {
+			const didQueue = await session.queueAgentMessagePrompt(prompt, streamingBehavior);
+			if (!didQueue) {
+				throw new Error("Agent message was not queued");
 			}
-			this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
+			return { delivery: waitForDelivery(payload.id) };
+		}
+
+		this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
+		let preflightFailed = false;
+		try {
 			const acceptPrompt =
 				typeof session.acceptAgentMessagePrompt === "function"
 					? session.acceptAgentMessagePrompt.bind(session)
 					: session.prompt.bind(session);
-			void acceptPrompt(createAgentSessionMessagePrompt(payload), {
+			await acceptPrompt(prompt, {
 				expandPromptTemplates: false,
 				streamingBehavior,
 				queueIfBusy: true,
 				preflightResult: (didSucceed) => {
-					if (didSucceed) {
-						settleAccepted();
-						return;
-					}
-					settleRejected(new Error("Agent message was not accepted"));
+					preflightFailed = !didSucceed;
 				},
-			})
-				.then(() => {
-					settleAccepted();
-					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
-				})
-				.catch((error) => {
-					this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
-					if (accepted) {
-						this.broadcastToSession(
-							targetState,
-							failure(undefined, "send_message", error, serializeDaemonError(error)),
-						);
-						return;
-					}
-					settleRejected(error);
-				});
-		});
+			});
+			if (preflightFailed) {
+				throw new Error("Agent message was not accepted");
+			}
+			return { delivery: session.pendingMessageCount > 0 ? waitForDelivery(payload.id) : Promise.resolve() };
+		} finally {
+			this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
+		}
 	}
 
 	private detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void {

@@ -138,9 +138,8 @@ describe("daemon mode helpers", () => {
 		await Promise.resolve();
 
 		expect(acceptAgentMessagePrompt).toHaveBeenCalledOnce();
-		await expect(send).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
-
 		resolvePrompt();
+		await expect(send).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
 	});
 
 	it("rate limits agent messages per sender and target pair", async () => {
