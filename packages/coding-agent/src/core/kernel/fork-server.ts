@@ -190,31 +190,27 @@ class ForkServer {
 		return tail ? `${message}\nforkserver stderr:\n${tail}` : message;
 	}
 
-	private markDead(): void {
-		if (this.dead) return;
-		this.dead = true;
-		this.failReady?.(new ForkServerUnavailable(this.withStderr("forkserver died before ready")));
+	/** Reject any in-flight ensureReady/spawnKernel callers so none wait out a timeout. */
+	private rejectPending(reason: string): void {
+		this.failReady?.(new ForkServerUnavailable(reason));
 		for (const p of this.pending.values()) {
 			clearTimeout(p.timer);
-			p.reject(new ForkServerUnavailable(this.withStderr("forkserver died")));
+			p.reject(new ForkServerUnavailable(reason));
 		}
 		this.pending.clear();
-		this.dispose();
 	}
 
-	dispose(): void {
-		// Reject in-flight callers before flipping `dead`, so the close/exit events
-		// this triggers still reach markDead() instead of being short-circuited and
-		// leaving callers to wait out their full timeouts.
-		if (!this.dead) {
-			this.failReady?.(new ForkServerUnavailable("forkserver disposed"));
-			for (const p of this.pending.values()) {
-				clearTimeout(p.timer);
-				p.reject(new ForkServerUnavailable("forkserver disposed"));
-			}
-			this.pending.clear();
-		}
+	private markDead(): void {
+		this.dispose(this.withStderr("forkserver died"));
+	}
+
+	dispose(reason = "forkserver disposed"): void {
+		if (this.dead) return;
+		// Flip `dead` at entry so the close/exit events our own teardown triggers
+		// don't re-enter. Pending callers are rejected directly here (not deferred to
+		// those events), so this early flag flip can't strand them on a timeout.
 		this.dead = true;
+		this.rejectPending(reason);
 		try {
 			this.conn?.destroy();
 		} catch {}
