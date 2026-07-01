@@ -27,6 +27,7 @@ type AutoRefineInternals = {
 	_scheduleAutoRefineAfterAgentEnd(): void;
 	_schedulePostCompactionContinue(): void;
 	_invalidatePendingAutoRefineForBranchChange(): void;
+	_cancelPostCompactionContinue(): void;
 	_assistantTurnsSinceAutoRefine: number;
 	_lastAutoRefineReviewAt: number;
 	_compactAutoRefinePending: boolean;
@@ -286,6 +287,27 @@ describe("AgentSession queue characterization", () => {
 		}
 	});
 
+	it("cancels scheduled post-compaction continuation on branch changes", async () => {
+		vi.useFakeTimers();
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 25, cooldownMs: 0 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		const continueAgent = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
+
+		try {
+			internals._schedulePostCompactionContinue();
+			internals._invalidatePendingAutoRefineForBranchChange();
+			await vi.advanceTimersByTimeAsync(100);
+
+			expect(continueAgent).not.toHaveBeenCalled();
+			expect(internals._postCompactionContinuationScheduled).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not run scheduled auto-refine after branch navigation", async () => {
 		vi.useFakeTimers();
 		const harness = await createAutoRefineHarness({
@@ -419,6 +441,54 @@ describe("AgentSession queue characterization", () => {
 		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 2 });
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(2);
 		expect(internals._lastAutoRefineReviewAt).toBe(beforeReviewAt);
+	});
+
+	it("serializes concurrent refine calls", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		let releaseFirstPlan: (() => void) | undefined;
+		const firstPlanGate = new Promise<void>((resolve) => {
+			releaseFirstPlan = resolve;
+		});
+		let firstPlanStarted: (() => void) | undefined;
+		const firstPlanStartedPromise = new Promise<void>((resolve) => {
+			firstPlanStarted = resolve;
+		});
+		harness.setResponses([
+			async () => {
+				firstPlanStarted?.();
+				await firstPlanGate;
+				return fauxAssistantMessage(
+					JSON.stringify({
+						summary: "first",
+						rationale: "first refine",
+						expectedOutcome: "first finished",
+						edits: [],
+					}),
+				);
+			},
+			fauxAssistantMessage(
+				JSON.stringify({
+					summary: "second",
+					rationale: "second refine",
+					expectedOutcome: "second finished",
+					edits: [],
+				}),
+			),
+		]);
+
+		const firstRefine = harness.session.refine({ instructions: "first refine" });
+		await firstPlanStartedPromise;
+		const secondRefine = harness.session.refine({ instructions: "second refine" });
+		await Promise.resolve();
+
+		expect(harness.getPendingResponseCount()).toBe(1);
+
+		releaseFirstPlan?.();
+		await firstRefine;
+		await secondRefine;
+
+		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
 	it("clears pending auto-refine state when navigating to another branch", async () => {

@@ -592,6 +592,7 @@ export class AgentSession {
 	private _compactAutoRefinePending = false;
 	private _turnIntervalAutoRefinePending = false;
 	private _postCompactionContinuationScheduled = false;
+	private _postCompactionContinuationTimer: ReturnType<typeof setTimeout> | undefined;
 	private _pendingAutoRefineReview:
 		| { reason: AutoRefineReason; review: AutoRefineReview; branchVersion: number }
 		| undefined;
@@ -2905,14 +2906,25 @@ export class AgentSession {
 		return this._rlmDepth === 0 && this._localHarnessStateDir() !== undefined;
 	}
 
-	private _discardPendingAutoRefine(): void {
+	private _cancelPostCompactionContinue(): void {
+		if (this._postCompactionContinuationTimer) {
+			clearTimeout(this._postCompactionContinuationTimer);
+			this._postCompactionContinuationTimer = undefined;
+		}
+		this._postCompactionContinuationScheduled = false;
+	}
+
+	private _discardPendingAutoRefine(options: { cancelPostCompactionContinue?: boolean } = {}): void {
 		this._compactAutoRefinePending = false;
 		this._turnIntervalAutoRefinePending = false;
 		this._pendingAutoRefineReview = undefined;
+		if (options.cancelPostCompactionContinue) {
+			this._cancelPostCompactionContinue();
+		}
 	}
 
 	private _invalidatePendingAutoRefineForBranchChange(): void {
-		this._discardPendingAutoRefine();
+		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._assistantTurnsSinceAutoRefine = 0;
 		this._autoRefineBranchVersion++;
 	}
@@ -2953,13 +2965,17 @@ export class AgentSession {
 			return;
 		}
 		this._postCompactionContinuationScheduled = true;
-		setTimeout(() => {
+		this._postCompactionContinuationTimer = setTimeout(() => {
+			this._postCompactionContinuationTimer = undefined;
 			void this._runScheduledPostCompactionContinue();
 		}, 100);
 	}
 
 	private async _runScheduledPostCompactionContinue(): Promise<void> {
 		await this._waitForRefineIdle();
+		if (!this._postCompactionContinuationScheduled) {
+			return;
+		}
 		if (this.isStreaming) {
 			this._postCompactionContinuationScheduled = false;
 			this._schedulePostCompactionContinue();
@@ -3150,6 +3166,10 @@ export class AgentSession {
 	async refine(
 		options: { instructions?: string; rollbackId?: string; global?: boolean } = {},
 	): Promise<RefinementResult> {
+		while (this._refineInFlight) {
+			await this._refineInFlight;
+		}
+
 		const run = this._refine(options);
 		// Refine detaches session event handling for its whole LLM pass; expose a
 		// settled promise so turn entry points can wait instead of losing events.
