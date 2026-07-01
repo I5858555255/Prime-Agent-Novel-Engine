@@ -2062,9 +2062,7 @@ export class AgentDaemon {
 			await existingClose;
 			return;
 		}
-		const closePromise = Promise.resolve().then(() =>
-			this.withAgentMessageTargetLock(state.activeSessionId, () => this.closeSessionOnce(state, reason)),
-		);
+		const closePromise = Promise.resolve().then(() => this.closeSessionOnce(state, reason));
 		this.closingSessions.set(state.activeSessionId, closePromise);
 		try {
 			await closePromise;
