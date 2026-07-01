@@ -4940,6 +4940,7 @@ export class AgentSession {
 
 		const queuedMessageSet = new Set<AgentMessage>(queuedMessages);
 		this.agent.removeQueuedMessages((message) => queuedMessageSet.has(message));
+		this._flushPendingBashMessages();
 		try {
 			await this.agent.prompt(queuedMessages);
 			await this.waitForRetry();

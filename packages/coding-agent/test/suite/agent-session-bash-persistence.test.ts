@@ -429,6 +429,37 @@ describe("AgentSession bash and persistence characterization", () => {
 		expect(harness.session.pendingMessageCount).toBe(0);
 	});
 
+	it("flushes pending bash output before draining queued prompts", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("after bash")]);
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_flush_bash\n\nqueued after bash";
+		const delivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_flush_bash");
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		harness.session.recordBashResult("echo flushed", {
+			output: "flushed output",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+		});
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+		await harness.session.queueAgentMessagePrompt(agentPrompt, "followUp");
+
+		await (
+			harness.session as unknown as { _drainQueuedMessagesAfterBash(): Promise<void> }
+		)._drainQueuedMessagesAfterBash();
+		await delivery;
+
+		const bashIndex = harness.session.messages.findIndex((message) => message.role === "bashExecution");
+		const userIndex = harness.session.messages.findIndex(
+			(message) => message.role === "user" && getMessageText(message).includes("queued after bash"),
+		);
+		expect(bashIndex).toBeGreaterThanOrEqual(0);
+		expect(userIndex).toBeGreaterThan(bashIndex);
+		expect(harness.session.hasPendingBashMessages).toBe(false);
+	});
+
 	it("rejects a second runUserBash issued before the first starts executing", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

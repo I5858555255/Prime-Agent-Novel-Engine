@@ -770,6 +770,51 @@ describe("daemon mode helpers", () => {
 		expect(internals.createAgentMessageListResult(targetState).agents[0]?.pendingMessageCount).toBe(3);
 	});
 
+	it("reports non-streaming busy sessions as active in agent-observe summaries", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			diagnostics: [],
+			modelFallbackMessage: undefined,
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				sessionFile: undefined,
+				sessionManager: { getCwd: () => "/tmp" },
+				model: undefined,
+				thinkingLevel: "off",
+				isStreaming: false,
+				isCompacting: false,
+				isBashRunning: false,
+				isRetrying: false,
+				hasAcceptedPromptInFlight: false,
+				pendingMessageCount: 1,
+				messages: [],
+				state: { pendingToolCalls: new Set(), streamingMessage: undefined },
+				hasRunningRlmChildren: () => false,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAgentObserveListResult(current: ActiveSessionState): { current: { status: string } };
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		expect(internals.createAgentObserveListResult(targetState).current.status).toBe("busy");
+
+		(targetState.runtime.session as { isCompacting: boolean; pendingMessageCount: number }).isCompacting = true;
+		(targetState.runtime.session as { isCompacting: boolean; pendingMessageCount: number }).pendingMessageCount = 0;
+
+		expect(internals.createAgentObserveListResult(targetState).current.status).toBe("compacting");
+	});
+
 	it("serializes concurrent agent messages to an idle target", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },

@@ -976,9 +976,17 @@ export class AgentDaemon {
 			? session.state.pendingToolCalls.size > 0
 				? "tool"
 				: "model"
-			: state.clients.size > 0
-				? "user"
-				: "idle";
+			: session.isCompacting
+				? "compacting"
+				: session.isRetrying ||
+						session.isBashRunning ||
+						session.hasAcceptedPromptInFlight ||
+						session.pendingMessageCount > 0 ||
+						session.hasRunningRlmChildren()
+					? "busy"
+					: state.clients.size > 0
+						? "user"
+						: "idle";
 		return {
 			activeSessionId: state.activeSessionId,
 			sessionId: summary.sessionId,
