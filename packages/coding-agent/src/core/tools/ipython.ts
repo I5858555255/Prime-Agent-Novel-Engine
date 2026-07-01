@@ -182,6 +182,7 @@ export class IpythonKernelProvisioner {
 	private readonly startupListeners = new Set<KernelBootstrapProgressHandler>();
 	private lastStartupMessage?: string;
 	private _lastRestore?: RestoreResult;
+	private readonly disposeController = new AbortController();
 
 	constructor(
 		private readonly cwd: string,
@@ -220,6 +221,10 @@ export class IpythonKernelProvisioner {
 
 	/** Dispose the kernel owned by this provisioner, including one still starting up. */
 	async dispose(): Promise<void> {
+		// Drops a still-queued boot out of the semaphore and short-circuits an
+		// in-flight startKernel before it spawns, so a disposed session's boot
+		// doesn't waste a slot during a fan-out.
+		this.disposeController.abort();
 		const pending = this.managerPromise;
 		this.managerPromise = undefined;
 		this.startedManager = undefined;
@@ -304,9 +309,12 @@ export class IpythonKernelProvisioner {
 		// covers only start(). Restore/bootstrap run per-kernel afterwards and are
 		// unbounded execute()s; holding the global permit across them could pin it
 		// forever on a wedged bootstrap and starve every other session's boot.
-		await withKernelBootPermit(() =>
-			m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) }),
-		);
+		const signal = this.disposeController.signal;
+		await withKernelBootPermit(() => {
+			// Disposed while queued for the permit — don't spawn a kernel nobody wants.
+			if (signal.aborted) throw new Error("Kernel provisioner disposed before start");
+			return m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
+		}, signal);
 		let pendingRestore: RestoreResult | undefined;
 		try {
 			// Revive a prior session's namespace before the bootstrap, so the bootstrap

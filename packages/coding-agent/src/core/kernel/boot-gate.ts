@@ -18,6 +18,6 @@ function resolveKernelBootConcurrency(): number {
 
 const kernelBootSemaphore = new Semaphore(resolveKernelBootConcurrency());
 
-export function withKernelBootPermit<T>(boot: () => Promise<T>): Promise<T> {
-	return kernelBootSemaphore.run(boot);
+export function withKernelBootPermit<T>(boot: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+	return kernelBootSemaphore.run(boot, signal);
 }
