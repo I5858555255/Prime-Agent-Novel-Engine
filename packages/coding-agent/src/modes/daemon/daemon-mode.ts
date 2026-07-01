@@ -1897,6 +1897,9 @@ export class AgentDaemon {
 				if (this.agentMessagesPaused) {
 					throw new Error("Agent messaging is paused");
 				}
+				if (targetState.runtime.session.sessionId !== payload.target.sessionId) {
+					throw new Error("Target session changed before agent message delivery");
+				}
 				return this.acceptAgentSessionMessage(targetState, payload);
 			});
 			return createAgentSessionMessageReceipt(payload);

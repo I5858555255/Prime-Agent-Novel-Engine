@@ -1075,6 +1075,67 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
 	});
 
+	it("rejects agent messages when the target session changes before delivery", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		let resolveBlockedClear: () => void = () => {};
+		const clearQueuedUserMessagesMatching = vi.fn(
+			() =>
+				new Promise<{ steering: string[]; followUp: string[] }>((resolve) => {
+					resolveBlockedClear = () => resolve({ steering: [], followUp: [] });
+				}),
+		);
+		const acceptAgentMessagePrompt = vi.fn(async () => {});
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 0,
+				acceptAgentMessagePrompt,
+				clearQueuedUserMessagesMatching,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		const clear = internals.handleCommand(makeClient("client-1", targetState.activeSessionId), {
+			id: "command-1",
+			type: "agent_messages_clear",
+			activeSessionId: targetState.activeSessionId,
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const send = internals.sendAgentSessionMessage({
+			targetSelector: targetState.activeSessionId,
+			message: "after session switch",
+			origin: "agent",
+		});
+		await Promise.resolve();
+		(targetState.runtime.session as { sessionId: string }).sessionId = "session-replacement";
+		resolveBlockedClear();
+		await clear;
+
+		await expect(send).rejects.toThrow("Target session changed before agent message delivery");
+		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+	});
+
 	it("rejects agent messages to the sending session", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
