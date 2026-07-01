@@ -503,6 +503,22 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.getFollowUpMessages()).toEqual([spoofed]);
 	});
 
+	it("clears internally queued agent-message steering prompts by message identity", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sharedText =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_shared\n\nshared text";
+
+		await harness.session.steer(sharedText);
+		await harness.session.queueAgentMessagePrompt(sharedText, "steer");
+
+		expect(harness.session.clearQueuedUserMessagesMatching((text) => text.includes("agentmsg_"))).toEqual({
+			steering: [sharedText],
+			followUp: [],
+		});
+		expect(harness.session.getSteeringMessages()).toEqual([sharedText]);
+	});
+
 	it("throws when queueing an extension command with steer", async () => {
 		const harness = await createHarness({
 			extensionFactories: [

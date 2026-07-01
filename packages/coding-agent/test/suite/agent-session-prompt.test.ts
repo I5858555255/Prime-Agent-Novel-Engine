@@ -359,6 +359,31 @@ stale extension instructions`,
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
+	it("clears accepted agent messages queued after prompt preflight", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as {
+			_acceptedPromptCompletions: Set<Promise<void>>;
+		};
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_after_preflight\n\nagent text";
+		const acceptedPromptCompletion = new Promise<void>(() => {});
+
+		sessionInternals._acceptedPromptCompletions.add(acceptedPromptCompletion);
+		await harness.session.acceptAgentMessagePrompt(agentPrompt, {
+			expandPromptTemplates: false,
+			streamingBehavior: "followUp",
+			queueIfBusy: true,
+		});
+		sessionInternals._acceptedPromptCompletions.delete(acceptedPromptCompletion);
+
+		expect(harness.session.clearQueuedUserMessagesMatching((text) => text.includes("agentmsg_"))).toEqual({
+			steering: [],
+			followUp: [agentPrompt],
+		});
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+	});
+
 	it("queues accepted agent messages without expanding slash commands or prompt templates", async () => {
 		const template: PromptTemplate = {
 			name: "review",
