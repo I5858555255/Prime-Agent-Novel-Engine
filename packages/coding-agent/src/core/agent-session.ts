@@ -388,6 +388,8 @@ interface AcceptedAgentMessagePrompt {
 	message: AgentMessage;
 	messages: Set<AgentMessage>;
 	stateMessageStartIndex: number;
+	accepted: Promise<void>;
+	resolveAccepted: () => void;
 	turnStarted: boolean;
 	cleared: boolean;
 }
@@ -1459,6 +1461,11 @@ export class AgentSession {
 		// _processAgentEvent, slow earlier queued events can delay agent_end processing
 		// and waitForRetry() can miss the in-flight retry.
 		this._createRetryPromiseForAgentEnd(event);
+		const acceptedPrompt = this._acceptedAgentMessagePrompt;
+		if (event.type === "message_start" && acceptedPrompt?.message === event.message) {
+			acceptedPrompt.turnStarted = true;
+			acceptedPrompt.resolveAccepted();
+		}
 		this._agentEventQueue = this._agentEventQueue.then(
 			() => this._processAgentEvent(event),
 			() => this._processAgentEvent(event),
@@ -1513,6 +1520,7 @@ export class AgentSession {
 		if (event.type === "agent_end" && this._acceptedAgentMessagePrompt?.cleared) {
 			const clearedPrompt = this._acceptedAgentMessagePrompt;
 			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPrompt.stateMessageStartIndex);
+			this._lastAssistantMessage = undefined;
 			this._acceptedAgentMessagePrompt = undefined;
 			this._resolveRetry();
 			return;
@@ -2211,12 +2219,18 @@ export class AgentSession {
 				};
 				messages.push(userMessage);
 				if (options.agentMessageId !== undefined && options.returnAfterAccepted) {
+					let resolveAccepted = () => {};
+					const accepted = new Promise<void>((resolve) => {
+						resolveAccepted = resolve;
+					});
 					acceptedAgentMessagePrompt = {
 						text: expandedText,
 						agentMessageId: options.agentMessageId,
 						message: userMessage,
 						messages: new Set([userMessage]),
 						stateMessageStartIndex: this.agent.state.messages.length,
+						accepted,
+						resolveAccepted,
 						turnStarted: false,
 						cleared: false,
 					};
@@ -2291,14 +2305,17 @@ export class AgentSession {
 		}
 		const promptPromise = this.agent.prompt(messages);
 		const promptAccepted = Symbol("promptAccepted");
+		const acceptance = acceptedAgentMessagePrompt
+			? acceptedAgentMessagePrompt.accepted.then(() => promptAccepted)
+			: new Promise<typeof promptAccepted>((resolve) => {
+					setTimeout(() => resolve(promptAccepted), 0);
+				});
 		const firstOutcome = await Promise.race([
 			promptPromise.then(
 				() => undefined,
 				(error: unknown) => error,
 			),
-			new Promise<typeof promptAccepted>((resolve) => {
-				setTimeout(() => resolve(promptAccepted), 0);
-			}),
+			acceptance,
 		]);
 		if (firstOutcome !== undefined && firstOutcome !== promptAccepted) {
 			if (this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
@@ -2620,7 +2637,7 @@ export class AgentSession {
 			(message) => message.agentMessageId !== undefined && predicate(message.text),
 		);
 		const accepted = this._acceptedAgentMessagePrompt;
-		const acceptedMatches = accepted !== undefined && predicate(accepted.text);
+		const acceptedMatches = accepted !== undefined && !accepted.turnStarted && predicate(accepted.text);
 		if (steering.length === 0 && followUp.length === 0 && !acceptedMatches) {
 			return { steering: [], followUp: [] };
 		}

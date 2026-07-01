@@ -360,7 +360,7 @@ stale extension instructions`,
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
-	it("clears accepted agent messages before they start streaming", async () => {
+	it("accepted agent messages return after delivery starts, before completion", async () => {
 		const harness = await createHarness({ models: [{ id: "slow-faux" }] });
 		harnesses.push(harness);
 		const agentPrompt =
@@ -372,20 +372,22 @@ stale extension instructions`,
 		harness.setResponses([
 			async () => {
 				await responseGate;
-				return fauxAssistantMessage("should not deliver");
+				return fauxAssistantMessage("delivered");
 			},
 		]);
 
 		await harness.session.acceptAgentMessagePrompt(agentPrompt, { expandPromptTemplates: false });
+		expect(getUserTexts(harness)).toEqual([agentPrompt]);
+		expect(getAssistantTexts(harness)).toEqual([]);
 		expect(harness.session.clearQueuedUserMessagesMatching((text) => text.includes("agentmsg_"))).toEqual({
 			steering: [],
-			followUp: [agentPrompt],
+			followUp: [],
 		});
 		releaseResponse?.();
 		await harness.session.agent.waitForIdle();
 
-		expect(getUserTexts(harness)).toEqual([]);
-		expect(getAssistantTexts(harness)).toEqual([]);
+		expect(getUserTexts(harness)).toEqual([agentPrompt]);
+		expect(getAssistantTexts(harness)).toEqual(["delivered"]);
 		expect(harness.session.getFollowUpMessages()).toEqual([]);
 	});
 
@@ -404,6 +406,8 @@ stale extension instructions`,
 				message: typeof acceptedMessage;
 				messages: Set<typeof acceptedMessage>;
 				stateMessageStartIndex: number;
+				accepted: Promise<void>;
+				resolveAccepted: () => void;
 				turnStarted: boolean;
 				cleared: boolean;
 			};
@@ -415,6 +419,8 @@ stale extension instructions`,
 			message: acceptedMessage,
 			messages: new Set([acceptedMessage]),
 			stateMessageStartIndex: 0,
+			accepted: Promise.resolve(),
+			resolveAccepted: () => {},
 			turnStarted: false,
 			cleared: false,
 		};
@@ -458,7 +464,7 @@ stale extension instructions`,
 		expect(typeof sessionInternals._flushPendingBashMessages).toBe("function");
 	});
 
-	it("drops assistant responses for cleared accepted agent messages", async () => {
+	it("does not clear accepted agent messages after delivery starts", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
@@ -471,18 +477,18 @@ stale extension instructions`,
 		harnesses.push(harness);
 		const agentPrompt =
 			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_after_assistant\n\nagent text";
-		harness.setResponses([fauxAssistantMessage("stale assistant response")]);
+		harness.setResponses([fauxAssistantMessage("delivered assistant response")]);
 
 		await harness.session.acceptAgentMessagePrompt(agentPrompt, { expandPromptTemplates: false });
 		await Promise.resolve();
 		expect(harness.session.clearQueuedUserMessagesMatching((text) => text.includes("agentmsg_"))).toEqual({
 			steering: [],
-			followUp: [agentPrompt],
+			followUp: [],
 		});
 		await harness.session.agent.waitForIdle();
 
-		expect(getUserTexts(harness)).toEqual([]);
-		expect(getAssistantTexts(harness)).toEqual([]);
+		expect(getUserTexts(harness)).toEqual([agentPrompt]);
+		expect(getAssistantTexts(harness)).toEqual(["delivered assistant response"]);
 	});
 
 	it("queues accepted agent messages without expanding slash commands or prompt templates", async () => {
