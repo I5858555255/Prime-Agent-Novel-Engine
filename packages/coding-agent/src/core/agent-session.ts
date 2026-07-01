@@ -386,6 +386,8 @@ interface AcceptedAgentMessagePrompt {
 	text: string;
 	agentMessageId: string;
 	message: AgentMessage;
+	turnStarted: boolean;
+	cleared: boolean;
 }
 
 /** Result from cycleModel() */
@@ -547,7 +549,6 @@ export class AgentSession {
 	private _retryResolve: (() => void) | undefined = undefined;
 	private _acceptedPromptCompletions = new Set<Promise<void>>();
 	private _acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined = undefined;
-	private _clearedAcceptedAgentMessages = new WeakSet<AgentMessage>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -1498,11 +1499,29 @@ export class AgentSession {
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
 		if (
 			(event.type === "message_start" || event.type === "message_end") &&
-			event.message.role === "user" &&
-			this._clearedAcceptedAgentMessages.has(event.message)
+			this._acceptedAgentMessagePrompt?.message === event.message
 		) {
-			this.agent.state.messages = this.agent.state.messages.filter((message) => message !== event.message);
-			return;
+			if (event.type === "message_start") {
+				this._acceptedAgentMessagePrompt.turnStarted = true;
+			}
+			if (this._acceptedAgentMessagePrompt.cleared) {
+				this.agent.state.messages = this.agent.state.messages.filter((message) => message !== event.message);
+				return;
+			}
+		}
+		if (
+			event.type === "message_end" &&
+			event.message.role === "assistant" &&
+			event.message.stopReason === "aborted"
+		) {
+			const clearedPrompt = this._acceptedAgentMessagePrompt;
+			if (clearedPrompt?.cleared) {
+				this.agent.state.messages = this.agent.state.messages.filter(
+					(message) => message !== clearedPrompt.message && message !== event.message,
+				);
+				this._acceptedAgentMessagePrompt = undefined;
+				return;
+			}
 		}
 
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
@@ -2145,6 +2164,11 @@ export class AgentSession {
 				return;
 			}
 
+			if (this.hasAcceptedPromptInFlight && !options?.queueIfBusy) {
+				reportPreflight(false);
+				throw new Error("Agent has an accepted prompt in flight. Specify queueIfBusy to queue the message.");
+			}
+
 			// Flush any pending bash messages before the new prompt, including accepted agent messages.
 			this._flushPendingBashMessages();
 
@@ -2186,6 +2210,8 @@ export class AgentSession {
 						text: expandedText,
 						agentMessageId: options.agentMessageId,
 						message: userMessage,
+						turnStarted: false,
+						cleared: false,
 					};
 				}
 			} else {
@@ -2280,7 +2306,10 @@ export class AgentSession {
 		});
 		void promptCompletion
 			.finally(() => {
-				if (this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
+				if (
+					this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt &&
+					!this._acceptedAgentMessagePrompt?.cleared
+				) {
 					this._acceptedAgentMessagePrompt = undefined;
 				}
 			})
@@ -2598,8 +2627,7 @@ export class AgentSession {
 		const removedSteering = steering.map((message) => message.text);
 		const removedFollowUp = followUp.map((message) => message.text);
 		if (acceptedMatches) {
-			this._acceptedAgentMessagePrompt = undefined;
-			this._clearedAcceptedAgentMessages.add(accepted.message);
+			accepted.cleared = true;
 			this.agent.state.messages = this.agent.state.messages.filter((message) => message !== accepted.message);
 			this.agent.abort();
 			removedFollowUp.push(accepted.text);

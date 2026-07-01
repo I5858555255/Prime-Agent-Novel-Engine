@@ -9,7 +9,7 @@ import type { BashResult } from "../../src/core/bash-executor.js";
 import type { PromptTemplate } from "../../src/core/prompt-templates.js";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.js";
 import { createTestResourceLoader } from "../utilities.js";
-import { createHarness, getMessageText, getUserTexts, type Harness } from "./harness.js";
+import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
 
 describe("AgentSession prompt characterization", () => {
 	const harnesses: Harness[] = [];
@@ -385,7 +385,21 @@ stale extension instructions`,
 		await harness.session.agent.waitForIdle();
 
 		expect(getUserTexts(harness)).toEqual([]);
+		expect(getAssistantTexts(harness)).toEqual([]);
 		expect(harness.session.getFollowUpMessages()).toEqual([]);
+	});
+
+	it("rejects normal prompts while an accepted agent message is in flight", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as {
+			_acceptedPromptCompletions: Set<Promise<void>>;
+		};
+		const acceptedPromptCompletion = new Promise<void>(() => {});
+
+		sessionInternals._acceptedPromptCompletions.add(acceptedPromptCompletion);
+		await expect(harness.session.prompt("ordinary prompt")).rejects.toThrow("accepted prompt in flight");
+		sessionInternals._acceptedPromptCompletions.delete(acceptedPromptCompletion);
 	});
 
 	it("flushes pending bash messages before accepted agent messages", async () => {
