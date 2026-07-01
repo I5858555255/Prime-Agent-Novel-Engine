@@ -229,19 +229,54 @@ describe("daemon command", () => {
 		});
 	});
 
-	it("parses send options only before the target and keeps flag-like message text", async () => {
+	it("honors send delivery-mode flags after the target", async () => {
 		await expect(
 			handleDaemonCommand([
 				"daemon",
 				"--socket",
 				"/tmp/prime-agent.sock",
 				"send",
-				"--from",
-				"planner",
+				"worker",
+				"--steer",
+				"stop",
+				"and",
+				"re-plan",
+			]),
+		).resolves.toBe(true);
+
+		const client = daemonClientMock.instances[0];
+		expect(client?.requests[0]).toEqual({
+			type: "send_message",
+			targetActiveSessionId: "worker",
+			fromActiveSessionId: undefined,
+			deliveryMode: "steer",
+			message: "stop and re-plan",
+		});
+	});
+
+	it("rejects unknown send options instead of folding them into the message", async () => {
+		await expect(
+			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "send", "worker", "--bogus", "hello"]),
+		).rejects.toThrow("exit 1");
+
+		expect(daemonClientMock.instances[0]?.requests).toEqual([]);
+		expect(
+			consoleErrorMessages.some(
+				(message) => typeof message === "string" && message.includes("Unknown option for daemon send: --bogus"),
+			),
+		).toBe(true);
+	});
+
+	it("supports send separator after the target for flag-like message text", async () => {
+		await expect(
+			handleDaemonCommand([
+				"daemon",
+				"--socket",
+				"/tmp/prime-agent.sock",
+				"send",
 				"--follow-up",
 				"worker",
-				"please",
-				"keep",
+				"--",
 				"--from",
 				"literal",
 				"--steer",
@@ -252,9 +287,9 @@ describe("daemon command", () => {
 		expect(client?.requests[0]).toEqual({
 			type: "send_message",
 			targetActiveSessionId: "worker",
-			fromActiveSessionId: "planner",
+			fromActiveSessionId: undefined,
 			deliveryMode: "follow_up",
-			message: "please keep --from literal --steer",
+			message: "--from literal --steer",
 		});
 	});
 

@@ -102,7 +102,8 @@ function parseDaemonClientCommand(args: string[]): ParsedDaemonClientCommand {
 			continue;
 		}
 
-		if (arg === "--" && command === "cron") {
+		// send/cron parse "--" themselves as an end-of-flags separator
+		if (arg === "--" && (command === "cron" || command === "send")) {
 			positionals.push(arg);
 			passthrough = true;
 			continue;
@@ -885,11 +886,11 @@ function parseSendArgs(args: string[]): ParsedSendArgs {
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
-		if (parseOptions && !targetActiveSessionId && arg === "--") {
+		if (parseOptions && arg === "--") {
 			parseOptions = false;
 			continue;
 		}
-		if (parseOptions && !targetActiveSessionId && arg === "--from") {
+		if (parseOptions && arg === "--from") {
 			const value = args[index + 1];
 			if (!value) {
 				throw new Error("--from requires a session id or name");
@@ -898,15 +899,15 @@ function parseSendArgs(args: string[]): ParsedSendArgs {
 			index++;
 			continue;
 		}
-		if (parseOptions && !targetActiveSessionId && arg === "--steer") {
+		if (parseOptions && arg === "--steer") {
 			deliveryMode = "steer";
 			continue;
 		}
-		if (parseOptions && !targetActiveSessionId && arg === "--follow-up") {
+		if (parseOptions && arg === "--follow-up") {
 			deliveryMode = "follow_up";
 			continue;
 		}
-		if (parseOptions && !targetActiveSessionId && arg === "--auto") {
+		if (parseOptions && arg === "--auto") {
 			deliveryMode = "auto";
 			continue;
 		}
@@ -922,6 +923,9 @@ function parseSendArgs(args: string[]): ParsedSendArgs {
 			index++;
 			parseOptions = false;
 			continue;
+		}
+		if (parseOptions && arg.startsWith("--")) {
+			throw new Error(`Unknown option for daemon send: ${arg} (use -- before message text starting with --)`);
 		}
 		if (!targetActiveSessionId) {
 			targetActiveSessionId = arg;

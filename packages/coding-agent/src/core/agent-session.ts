@@ -387,7 +387,8 @@ interface AcceptedAgentMessagePrompt {
 	agentMessageId: string;
 	message: AgentMessage;
 	messages: Set<AgentMessage>;
-	stateMessageStartIndex: number;
+	/** Pending nextTurn messages drained into this prompt; restored to the queue if the prompt is cleared. */
+	pendingNextTurnMessages: CustomMessage[];
 	accepted: Promise<void>;
 	resolveAccepted: () => void;
 	rejectAccepted: (error: Error) => void;
@@ -1583,14 +1584,22 @@ export class AgentSession {
 				acceptedPrompt.messages.add(event.message);
 			}
 			if (acceptedPrompt.cleared && acceptedPrompt.messages.has(event.message)) {
-				this.agent.state.messages = this.agent.state.messages.slice(0, acceptedPrompt.stateMessageStartIndex);
+				// Membership filter, not a positional slice: newer prompts or compaction may
+				// have rewritten state.messages since the clear.
+				this.agent.state.messages = this.agent.state.messages.filter(
+					(message) => !acceptedPrompt.messages.has(message),
+				);
 				return;
 			}
 		}
 		const clearedPromptEnded = event.type === "agent_end" ? this._acceptedAgentMessagePrompt : undefined;
 		const clearedAcceptedPromptEnded = clearedPromptEnded?.cleared === true;
 		if (clearedAcceptedPromptEnded) {
-			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPromptEnded.stateMessageStartIndex);
+			// Membership filter, not a positional slice: this runs asynchronously after the
+			// clear, and a newer prompt or compaction may have rewritten state.messages.
+			this.agent.state.messages = this.agent.state.messages.filter(
+				(message) => !clearedPromptEnded.messages.has(message),
+			);
 			(this.agent.state as { errorMessage?: string }).errorMessage = undefined;
 			if (!clearedPromptEnded.turnStarted) {
 				clearedPromptEnded.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
@@ -2284,7 +2293,8 @@ export class AgentSession {
 			if (options?.skipPrePromptWork) {
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 				messages = [];
-				for (const msg of this._pendingNextTurnMessages) {
+				const drainedNextTurnMessages = this._pendingNextTurnMessages;
+				for (const msg of drainedNextTurnMessages) {
 					messages.push(msg);
 				}
 				this._pendingNextTurnMessages = [];
@@ -2309,8 +2319,8 @@ export class AgentSession {
 						text: expandedText,
 						agentMessageId: options.agentMessageId,
 						message: userMessage,
-						messages: new Set([userMessage]),
-						stateMessageStartIndex: this.agent.state.messages.length,
+						messages: new Set<AgentMessage>([...drainedNextTurnMessages, userMessage]),
+						pendingNextTurnMessages: drainedNextTurnMessages,
 						accepted,
 						resolveAccepted,
 						rejectAccepted,
@@ -2404,7 +2414,12 @@ export class AgentSession {
 			acceptance,
 		]);
 		if (firstOutcome !== undefined && firstOutcome !== promptAccepted) {
-			if (this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
+			// A cleared prompt stays set until the aborted run's agent_end cleanup nulls it;
+			// nulling here would let the run's late events re-persist cleared messages.
+			if (
+				this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt &&
+				!this._acceptedAgentMessagePrompt?.cleared
+			) {
 				this._acceptedAgentMessagePrompt = undefined;
 			}
 			reportPreflight(false);
@@ -2751,7 +2766,10 @@ export class AgentSession {
 		}
 		if (acceptedMatches) {
 			accepted.cleared = true;
-			this.agent.state.messages = this.agent.state.messages.slice(0, accepted.stateMessageStartIndex);
+			this.agent.state.messages = this.agent.state.messages.filter((message) => !accepted.messages.has(message));
+			// Restore drained nextTurn messages the model never saw. Clones, so the cleared
+			// run's late-event cleanup cannot strip the restored copies from a newer run.
+			this._pendingNextTurnMessages.unshift(...accepted.pendingNextTurnMessages.map((message) => ({ ...message })));
 			accepted.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
 			this.agent.abort();
 			removedFollowUp.push(accepted.text);
