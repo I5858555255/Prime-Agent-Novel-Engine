@@ -10,11 +10,6 @@ import { wrapToolDefinition, wrapToolDefinitions } from "../tools/tool-definitio
 import type { ExtensionRunner } from "./runner.js";
 import type { RegisteredTool } from "./types.js";
 
-/**
- * A runner or a getter that resolves the current runner at execution time.
- * Built-in tools pass a getter so a session rebuild/reload rebinds them to the
- * live runner instead of leaving them wired to an invalidated one.
- */
 type RunnerSource = ExtensionRunner | (() => ExtensionRunner);
 
 function toRunnerGetter(source: RunnerSource): () => ExtensionRunner {

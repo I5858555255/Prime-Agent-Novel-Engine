@@ -3446,10 +3446,8 @@ export class AgentSession {
 		);
 		const runner = this._extensionRunner;
 		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
-		// Built-in tools belong to the session, not any single runner instance. Bind them
-		// to a getter that resolves the current runner at execution time so a rebuild/reload
-		// (which invalidates the old runner) rebinds them to the live one instead of wedging
-		// every subsequent call on the stale-ctx guard.
+		// Resolve the runner at call time so a rebuild/reload rebinds built-in tools to the
+		// live runner instead of wedging them on the invalidated one's stale-ctx guard.
 		const wrappedBuiltInTools = wrapRegisteredTools(
 			Array.from(this._baseToolDefinitions.values())
 				.filter((definition) => isAllowedTool(definition.name))
