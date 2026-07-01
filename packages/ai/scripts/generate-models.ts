@@ -126,7 +126,6 @@ interface PrimeInferenceModelMetadata {
 const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata> = {
 	// prime-inference proxies Anthropic models through OpenRouter without the
 	// context-1m beta header, so the enforced window is the standard 200k, not 1M.
-	"anthropic/claude-fable-5": { contextWindow: 200000, maxTokens: 128000, vision: true },
 	"anthropic/claude-haiku-4.5": { contextWindow: 200000, maxTokens: 64000, vision: true },
 	"anthropic/claude-opus-4.6": { contextWindow: 200000, maxTokens: 128000, vision: true },
 	"anthropic/claude-opus-4.7": { contextWindow: 200000, maxTokens: 128000, vision: true },
@@ -350,7 +349,7 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 		id.startsWith("x-ai/grok-4") ||
 		id.startsWith("z-ai/glm-") ||
 		(id.startsWith("openai/gpt-5") && !id.includes("-chat")) ||
-		/^anthropic\/claude-(?:opus-4|sonnet-4|fable-5|mythos-5)/.test(id)
+		/^anthropic\/claude-(?:opus-4|sonnet-4)/.test(id)
 	);
 }
 
