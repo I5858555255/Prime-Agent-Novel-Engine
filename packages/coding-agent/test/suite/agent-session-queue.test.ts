@@ -311,6 +311,25 @@ describe("AgentSession queue characterization", () => {
 		}
 	});
 
+	it("keeps scheduled post-compaction continuation when manual compaction is skipped", async () => {
+		vi.useFakeTimers();
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 25, cooldownMs: 0 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		try {
+			internals._schedulePostCompactionContinue();
+
+			await expect(harness.session.compact()).rejects.toThrow("Session is too short to compact");
+
+			expect(internals._postCompactionContinuationScheduled).toBe(true);
+		} finally {
+			internals._cancelPostCompactionContinue();
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not run scheduled auto-refine after branch navigation", async () => {
 		vi.useFakeTimers();
 		const harness = await createAutoRefineHarness({

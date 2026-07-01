@@ -2745,7 +2745,6 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		this._cancelPostCompactionContinue();
 		this._disconnectFromAgent();
 		await this.abort();
 		let didCompact = false;
@@ -2825,6 +2824,8 @@ export class AgentSession {
 			if (this._compactionAbortController.signal.aborted) {
 				throw new Error("Compaction cancelled");
 			}
+
+			this._cancelPostCompactionContinue();
 
 			this.sessionManager.appendCompaction(
 				summary,
