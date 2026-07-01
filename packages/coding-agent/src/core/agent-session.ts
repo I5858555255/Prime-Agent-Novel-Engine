@@ -2740,7 +2740,8 @@ export class AgentSession {
 			(message) => message.agentMessageId !== undefined && predicate(message.text),
 		);
 		const accepted = this._acceptedAgentMessagePrompt;
-		const acceptedMatches = accepted !== undefined && !accepted.turnStarted && predicate(accepted.text);
+		const acceptedMatches =
+			accepted !== undefined && !accepted.turnStarted && !accepted.cleared && predicate(accepted.text);
 		if (steering.length === 0 && followUp.length === 0 && !acceptedMatches) {
 			return { steering: [], followUp: [] };
 		}
@@ -4950,10 +4951,13 @@ export class AgentSession {
 		const queuedMessageSet = new Set<AgentMessage>(queuedMessages);
 		this.agent.removeQueuedMessages((message) => queuedMessageSet.has(message));
 		this._flushPendingBashMessages();
+		const nextTurnMessages = this._pendingNextTurnMessages;
+		this._pendingNextTurnMessages = [];
 		try {
-			await this.agent.prompt(queuedMessages);
+			await this.agent.prompt([...nextTurnMessages, ...queuedMessages]);
 			await this.waitForRetry();
 		} catch {
+			this._pendingNextTurnMessages.unshift(...nextTurnMessages.map((message) => ({ ...message })));
 			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
 			const queuedFollowUps = new Set(this._followUpMessages.map((message) => message.message));
 			for (const queued of drainedSteeringMessages) {

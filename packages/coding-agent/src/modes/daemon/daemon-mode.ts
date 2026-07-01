@@ -524,7 +524,7 @@ export class AgentDaemon {
 	private async runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> {
 		const state = await this.getOrCreateCronJobSession(job);
 		if (!state) {
-			return;
+			return "skipped";
 		}
 		if (shouldDeferHeartbeatCronJob(job, state.runtime.session)) {
 			return "skipped";
