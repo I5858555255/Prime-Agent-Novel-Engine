@@ -1508,11 +1508,15 @@ export class AgentSession {
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
 		const acceptedPrompt = this._acceptedAgentMessagePrompt;
 		if (acceptedPrompt && (event.type === "message_start" || event.type === "message_end")) {
-			acceptedPrompt.messages.add(event.message);
-			if (event.type === "message_start" && event.message === acceptedPrompt.message) {
-				acceptedPrompt.turnStarted = true;
+			if (event.message === acceptedPrompt.message) {
+				if (event.type === "message_start") {
+					acceptedPrompt.turnStarted = true;
+				}
+				acceptedPrompt.messages.add(event.message);
+			} else if (acceptedPrompt.turnStarted) {
+				acceptedPrompt.messages.add(event.message);
 			}
-			if (acceptedPrompt.cleared) {
+			if (acceptedPrompt.cleared && acceptedPrompt.messages.has(event.message)) {
 				this.agent.state.messages = this.agent.state.messages.slice(0, acceptedPrompt.stateMessageStartIndex);
 				return;
 			}
@@ -2166,10 +2170,14 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages, {
+					const queued = await this._queueFollowUp(expandedText, currentImages, {
 						queueKey: options.followUpQueueKey,
 						agentMessageId: options.agentMessageId,
 					});
+					if (!queued) {
+						reportPreflight(false);
+						return;
+					}
 				} else {
 					await this._queueSteer(expandedText, currentImages, { agentMessageId: options.agentMessageId });
 				}

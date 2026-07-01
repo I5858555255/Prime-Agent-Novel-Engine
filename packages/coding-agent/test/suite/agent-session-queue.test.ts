@@ -147,6 +147,33 @@ describe("AgentSession queue characterization", () => {
 		await promptPromise;
 	});
 
+	it("reports failed preflight when a duplicate follow-up queue key is not queued", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		const preflightResults: boolean[] = [];
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await waitForToolStart;
+		await harness.session.prompt("heartbeat", {
+			streamingBehavior: "followUp",
+			followUpQueueKey: "heartbeat:one",
+		});
+		await harness.session.prompt("heartbeat", {
+			streamingBehavior: "followUp",
+			followUpQueueKey: "heartbeat:one",
+			preflightResult: (didSucceed) => preflightResults.push(didSucceed),
+		});
+
+		expect(preflightResults).toEqual([false]);
+		expect(harness.session.getFollowUpMessages()).toEqual(["heartbeat"]);
+		releaseToolExecution();
+		await promptPromise;
+	});
+
 	it("keeps separate follow-up messages for different queue keys", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
