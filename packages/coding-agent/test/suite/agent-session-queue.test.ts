@@ -135,7 +135,10 @@ describe("AgentSession queue characterization", () => {
 
 		await internals._maybeAutoRefine("turn_interval");
 
-		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 2 });
+		expect(reviewer).toHaveBeenCalledWith(
+			{ reason: "turn_interval", turnsSinceLastReview: 2 },
+			expect.any(AbortSignal),
+		);
 		expect(refine).toHaveBeenCalledWith(
 			expect.objectContaining({ instructions: expect.stringContaining("capture the durable lesson") }),
 		);
@@ -161,7 +164,7 @@ describe("AgentSession queue characterization", () => {
 
 		await internals._maybeAutoRefine("compact");
 
-		expect(reviewer).toHaveBeenCalledWith({ reason: "compact", turnsSinceLastReview: 0 });
+		expect(reviewer).toHaveBeenCalledWith({ reason: "compact", turnsSinceLastReview: 0 }, expect.any(AbortSignal));
 		expect(refine).not.toHaveBeenCalled();
 	});
 
@@ -346,7 +349,7 @@ describe("AgentSession queue characterization", () => {
 		const refine = vi.spyOn(harness.session, "refine").mockResolvedValue(emptyRefinementResult());
 
 		const autoRefinePromise = internals._maybeAutoRefine("compact");
-		expect(reviewer).toHaveBeenCalledWith({ reason: "compact", turnsSinceLastReview: 0 });
+		expect(reviewer).toHaveBeenCalledWith({ reason: "compact", turnsSinceLastReview: 0 }, expect.any(AbortSignal));
 		finishReview?.();
 		await autoRefinePromise;
 
@@ -375,7 +378,10 @@ describe("AgentSession queue characterization", () => {
 		const refine = vi.spyOn(harness.session, "refine").mockResolvedValue(emptyRefinementResult());
 
 		const autoRefinePromise = internals._maybeAutoRefine("turn_interval");
-		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 2 });
+		expect(reviewer).toHaveBeenCalledWith(
+			{ reason: "turn_interval", turnsSinceLastReview: 2 },
+			expect.any(AbortSignal),
+		);
 		finishReview?.();
 		await autoRefinePromise;
 
@@ -445,7 +451,10 @@ describe("AgentSession queue characterization", () => {
 
 		await internals._maybeAutoRefine("turn_interval");
 
-		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 2 });
+		expect(reviewer).toHaveBeenCalledWith(
+			{ reason: "turn_interval", turnsSinceLastReview: 2 },
+			expect.any(AbortSignal),
+		);
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(2);
 		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
 	});
@@ -455,10 +464,14 @@ describe("AgentSession queue characterization", () => {
 		const reviewGate = new Promise<void>((resolve) => {
 			finishReview = resolve;
 		});
-		const reviewer = vi.fn(async () => {
-			await reviewGate;
-			return { shouldRefine: true, rationale: "durable lesson" };
-		});
+		const signals: Array<AbortSignal | undefined> = [];
+		const reviewer = vi.fn(
+			async (_context: { reason: AutoRefineReason; turnsSinceLastReview: number }, signal?: AbortSignal) => {
+				signals.push(signal);
+				await reviewGate;
+				return { shouldRefine: true, rationale: "durable lesson" };
+			},
+		);
 		const harness = await createAutoRefineHarness({
 			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
 			autoRefineReviewer: reviewer,
@@ -472,6 +485,7 @@ describe("AgentSession queue characterization", () => {
 		expect(reviewer).toHaveBeenCalledTimes(1);
 		const entriesBeforeDispose = harness.sessionManager.getEntries().length;
 		harness.session.dispose();
+		expect(signals[0]?.aborted).toBe(true);
 		finishReview?.();
 		await autoRefinePromise;
 
@@ -620,7 +634,10 @@ describe("AgentSession queue characterization", () => {
 		const beforeReviewAt = internals._lastAutoRefineReviewAt;
 
 		const autoRefinePromise = internals._maybeAutoRefine("turn_interval");
-		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 2 });
+		expect(reviewer).toHaveBeenCalledWith(
+			{ reason: "turn_interval", turnsSinceLastReview: 2 },
+			expect.any(AbortSignal),
+		);
 		await internals._invalidatePendingAutoRefineForBranchChange();
 		finishReview?.();
 		await autoRefinePromise;
@@ -702,6 +719,23 @@ describe("AgentSession queue characterization", () => {
 		expect(reviewer).not.toHaveBeenCalled();
 	});
 
+	it("auto-refine preserves a turn-interval checkpoint when cooldown is active", async () => {
+		const reviewer = vi.fn(async () => ({ shouldRefine: true, rationale: "durable lesson" }));
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 60_000 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		internals._assistantTurnsSinceAutoRefine = 1;
+		internals._lastAutoRefineReviewAt = Date.now();
+
+		await internals._maybeAutoRefine("turn_interval");
+
+		expect(reviewer).not.toHaveBeenCalled();
+		expect(internals._turnIntervalAutoRefinePending).toBe(true);
+	});
+
 	it("auto-refine preserves a compact checkpoint when cooldown is active", async () => {
 		const reviewer = vi.fn(async () => ({ shouldRefine: true, rationale: "durable lesson" }));
 		const harness = await createAutoRefineHarness({
@@ -736,7 +770,10 @@ describe("AgentSession queue characterization", () => {
 
 		await internals._maybeAutoRefine("turn_interval");
 
-		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 1 });
+		expect(reviewer).toHaveBeenCalledWith(
+			{ reason: "turn_interval", turnsSinceLastReview: 1 },
+			expect.any(AbortSignal),
+		);
 		expect(refine).toHaveBeenCalled();
 	});
 

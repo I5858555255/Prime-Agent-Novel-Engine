@@ -331,7 +331,7 @@ export interface AutoRefineReviewRequest {
 	turnsSinceLastReview: number;
 }
 
-export type AutoRefineReviewer = (request: AutoRefineReviewRequest) => Promise<AutoRefineReview>;
+export type AutoRefineReviewer = (request: AutoRefineReviewRequest, signal?: AbortSignal) => Promise<AutoRefineReview>;
 
 /** Options for AgentSession.prompt() */
 export interface PromptOptions {
@@ -3048,10 +3048,6 @@ export class AgentSession {
 			return;
 		}
 
-		if (reason === "turn_interval") {
-			this._turnIntervalAutoRefinePending = false;
-		}
-
 		const nowMs = Date.now();
 		const underCooldown =
 			this._lastAutoRefineReviewAt > 0 && nowMs - this._lastAutoRefineReviewAt < settings.cooldownMs;
@@ -3076,8 +3072,13 @@ export class AgentSession {
 		if (underCooldown) {
 			if (reason === "compact") {
 				this._compactAutoRefinePending = true;
+			} else {
+				this._turnIntervalAutoRefinePending = true;
 			}
 			return;
+		}
+		if (reason === "turn_interval") {
+			this._turnIntervalAutoRefinePending = false;
 		}
 		if (!this.model) {
 			if (reason === "compact") {
@@ -3160,7 +3161,7 @@ export class AgentSession {
 
 	private async _reviewAutoRefine(context: AutoRefineReviewRequest, signal?: AbortSignal): Promise<AutoRefineReview> {
 		if (this._autoRefineReviewer) {
-			return this._autoRefineReviewer(context);
+			return this._autoRefineReviewer(context, signal);
 		}
 		const model = this.model;
 		if (!model) {
