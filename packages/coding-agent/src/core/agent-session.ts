@@ -1514,6 +1514,7 @@ export class AgentSession {
 			const clearedPrompt = this._acceptedAgentMessagePrompt;
 			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPrompt.stateMessageStartIndex);
 			this._acceptedAgentMessagePrompt = undefined;
+			this._resolveRetry();
 			return;
 		}
 
@@ -2062,6 +2063,7 @@ export class AgentSession {
 	async acceptAgentMessagePrompt(text: string, options?: PromptOptions): Promise<void> {
 		return this._prompt(text, {
 			...options,
+			expandPromptTemplates: false,
 			skipInputHandlers: true,
 			skipPrePromptWork: true,
 			returnAfterAccepted: true,
