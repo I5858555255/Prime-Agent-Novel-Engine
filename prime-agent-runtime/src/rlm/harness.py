@@ -244,7 +244,11 @@ class HarnessState:
     def _global_target(self, global_: bool, extra: dict[str, Any] | None = None) -> "HarnessState | None":
         if not _resolve_global_flag(global_, extra):
             return None
-        if self.file_path is None:
+        if (
+            self.file_path is None
+            and self._global_target_state_dir is None
+            and os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR") is None
+        ):
             return None
         target = get_harness_state(state_dir=self._global_target_state_dir, global_=True)
         if self.file_path is not None and target.file_path == self.file_path and target.scope == self.scope:

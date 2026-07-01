@@ -329,27 +329,56 @@ class HarnessStateTest(unittest.TestCase):
             self.assertEqual(state.get("memory", "grouped").path, "repo/other")
 
     def test_in_memory_state_never_touches_disk(self) -> None:
+        previous = os.environ.get("RLM_HARNESS_STATE_DIR")
+        previous_global = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR")
         with tempfile.TemporaryDirectory() as temp_dir:
-            previous = os.environ.get("RLM_HARNESS_STATE_DIR")
             os.environ["RLM_HARNESS_STATE_DIR"] = temp_dir
+            os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
             try:
                 state = HarnessState(in_memory=True)
                 created = state.create_memory("Volatile", "in memory only", id="volatile")
                 state.record_refinement("trigger", ["change"])
+
+                self.assertIsNone(state.file_path)
+                self.assertEqual(created.content, "in memory only")
+                self.assertEqual(state.get("memory", "volatile").content, "in memory only")
+                state.create_memory("Volatile global", "still in memory only", id="volatile_global", global_=True)
+                state.record_refinement("global trigger", ["global change"], global_=True)
+                self.assertEqual(state.get("memory", "volatile_global").content, "still in memory only")
+                # No path was resolved, so nothing was persisted anywhere under the dir.
+                self.assertEqual(list(Path(temp_dir).iterdir()), [])
             finally:
                 if previous is None:
                     os.environ.pop("RLM_HARNESS_STATE_DIR", None)
                 else:
                     os.environ["RLM_HARNESS_STATE_DIR"] = previous
+                if previous_global is None:
+                    os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = previous_global
+
+    def test_in_memory_state_global_flag_uses_global_env_store(self) -> None:
+        previous_global = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            global_dir = Path(temp_dir) / "global"
+            os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = str(global_dir)
+            try:
+                state = HarnessState(in_memory=True)
+                global_entry = state.create_memory("Global note", "persisted", id="global_note", global_=True)
+            finally:
+                if previous_global is None:
+                    os.environ.pop("RLM_GLOBAL_HARNESS_STATE_DIR", None)
+                else:
+                    os.environ["RLM_GLOBAL_HARNESS_STATE_DIR"] = previous_global
 
             self.assertIsNone(state.file_path)
-            self.assertEqual(created.content, "in memory only")
-            self.assertEqual(state.get("memory", "volatile").content, "in memory only")
-            state.create_memory("Volatile global", "still in memory only", id="volatile_global", global_=True)
-            state.record_refinement("global trigger", ["global change"], global_=True)
-            self.assertEqual(state.get("memory", "volatile_global").content, "still in memory only")
-            # No path was resolved, so nothing was persisted anywhere under the dir.
-            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+            self.assertEqual(global_entry.scope, "global")
+            self.assertEqual(global_entry.content, "persisted")
+            self.assertIsNone(state.get("memory", "global_note"))
+            self.assertEqual(
+                HarnessState(global_dir / "harness_state.json", scope="global").get("memory", "global_note").content,
+                "persisted",
+            )
 
     def test_reloads_external_writes_before_mutating(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
