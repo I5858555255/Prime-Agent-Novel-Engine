@@ -1877,11 +1877,19 @@ export class AgentDaemon {
 		payload: AgentSessionMessagePayload,
 	): Promise<void> {
 		return new Promise((resolve, reject) => {
+			let settled = false;
 			let accepted = false;
 			const settleAccepted = () => {
-				if (!accepted) {
+				if (!settled) {
+					settled = true;
 					accepted = true;
 					resolve();
+				}
+			};
+			const settleRejected = (error: unknown) => {
+				if (!settled) {
+					settled = true;
+					reject(error);
 				}
 			};
 			const session = targetState.runtime.session;
@@ -1904,7 +1912,13 @@ export class AgentDaemon {
 				(payload.deliveryMode === "steer" ? "steer" : "followUp");
 			if (shouldQueue) {
 				const queued = session.queueAgentMessagePrompt(createAgentSessionMessagePrompt(payload), streamingBehavior);
-				Promise.resolve(queued).then(settleAccepted, reject);
+				Promise.resolve(queued).then((didQueue) => {
+					if (didQueue) {
+						settleAccepted();
+						return;
+					}
+					settleRejected(new Error("Agent message was not queued"));
+				}, settleRejected);
 				return;
 			}
 			this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
@@ -1919,7 +1933,9 @@ export class AgentDaemon {
 				preflightResult: (didSucceed) => {
 					if (didSucceed) {
 						settleAccepted();
+						return;
 					}
+					settleRejected(new Error("Agent message was not accepted"));
 				},
 			})
 				.then(() => {
@@ -1935,7 +1951,7 @@ export class AgentDaemon {
 						);
 						return;
 					}
-					reject(error);
+					settleRejected(error);
 				});
 		});
 	}

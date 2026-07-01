@@ -901,6 +901,106 @@ describe("daemon mode helpers", () => {
 		await expect(second).resolves.toMatchObject({ message: "second" });
 	});
 
+	it("rejects agent messages when queued delivery is coalesced", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const fromState = makeState("source");
+		const targetState = makeState("target");
+		fromState.runtime = {
+			...fromState.runtime,
+			session: { sessionId: "session-source", sessionName: "Source" },
+		} as never;
+		const queueAgentMessagePrompt = vi.fn(async () => false);
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: true,
+				pendingMessageCount: 1,
+				queueAgentMessagePrompt,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(fromState.activeSessionId, fromState);
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "coalesced",
+				fromState,
+				origin: "agent",
+			}),
+		).rejects.toThrow("Agent message was not queued");
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+	});
+
+	it("rejects agent messages when direct delivery preflight fails", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const fromState = makeState("source");
+		const targetState = makeState("target");
+		fromState.runtime = {
+			...fromState.runtime,
+			session: { sessionId: "session-source", sessionName: "Source" },
+		} as never;
+		const acceptAgentMessagePrompt = vi.fn(
+			(_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+				options?.preflightResult?.(false);
+				return Promise.resolve();
+			},
+		);
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 0,
+				acceptAgentMessagePrompt,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(fromState.activeSessionId, fromState);
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "not accepted",
+				fromState,
+				origin: "agent",
+			}),
+		).rejects.toThrow("Agent message was not accepted");
+	});
+
 	it("queues agent messages while daemon prompts prepare to stream", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
