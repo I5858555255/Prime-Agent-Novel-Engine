@@ -43,8 +43,17 @@ describe("orchestration heartbeat skill over bundled host bridges", () => {
 				"agent_observe.list": async (payload) => {
 					requests.push({ type: "agent_observe.list", payload });
 					return {
-						current: { sessionName: "orch" },
+						current: { sessionName: "orch", sessionId: "sess-orch", activeSessionId: "active-orch" },
 						agents: [
+							{
+								sessionName: "orch",
+								sessionId: "sess-orch",
+								activeSessionId: "active-orch",
+								cwd: "/repo/orch",
+								status: "idle",
+								isStreaming: false,
+								pendingMessageCount: 0,
+							},
 							{
 								sessionName: "autoenv",
 								sessionId: "sess-autoenv",
@@ -175,6 +184,7 @@ print(json.dumps({
 		expect(output.instruction).toContain("Use agent_observe to inspect active Prime Agent sessions");
 		expect(output.instruction).toContain("recommend the exact action and draft the target message");
 		expect(output.instruction).toContain("Do not send cross-session messages until the user approves");
+		expect(output.instruction).not.toContain("name=orch");
 		expect(output.instruction).toContain("name=autoenv");
 		expect(output.instruction).toContain("session_id=sess-autoenv");
 		expect(output.instruction).toContain("active_session_id=active-autoenv");

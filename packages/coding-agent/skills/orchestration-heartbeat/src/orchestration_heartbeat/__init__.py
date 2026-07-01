@@ -50,6 +50,28 @@ def _format_sessions(agents: list[dict[str, Any]]) -> str:
     return "\n".join(_session_label(agent) for agent in agents)
 
 
+def _same_session(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    for keys in (
+        ("activeSessionId", "active_session_id"),
+        ("sessionId", "session_id"),
+    ):
+        left_value = _first_value(left, *keys)
+        right_value = _first_value(right, *keys)
+        if left_value is not None and right_value is not None and left_value == right_value:
+            return True
+    return False
+
+
+def _other_agents(roster: dict[str, Any]) -> list[dict[str, Any]]:
+    agents = roster.get("agents", [])
+    if not isinstance(agents, list):
+        return []
+    current = roster.get("current")
+    if not isinstance(current, dict):
+        return agents
+    return [agent for agent in agents if not _same_session(agent, current)]
+
+
 def _interval_matches_schedule(interval: str, schedule: Any) -> bool:
     if not isinstance(schedule, dict):
         return False
@@ -120,9 +142,7 @@ async def initialize(
         raise TypeError(f"label must be str, got {type(label).__name__}")
 
     roster = await agent_observe.list_agents()
-    agents = roster.get("agents", [])
-    if not isinstance(agents, list):
-        agents = []
+    agents = _other_agents(roster)
     instruction = build_instruction(
         sessions=agents,
         focus=focus,

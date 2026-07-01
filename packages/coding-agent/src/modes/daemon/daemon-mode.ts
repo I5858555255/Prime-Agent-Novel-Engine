@@ -1905,6 +1905,7 @@ export class AgentDaemon {
 			const shouldQueue =
 				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
 				session.isStreaming ||
+				session.isCompacting ||
 				session.isRetrying ||
 				session.hasAcceptedPromptInFlight ||
 				session.pendingMessageCount > 0;
