@@ -1848,7 +1848,7 @@ export class AgentDaemon {
 			deliveryMode: options.deliveryMode ?? "auto",
 		};
 		try {
-			const { delivery } = await this.withAgentMessageTargetLock(targetState.activeSessionId, async () => {
+			await this.withAgentMessageTargetLock(targetState.activeSessionId, async () => {
 				if (this.agentMessagesPaused) {
 					throw new Error("Agent messaging is paused");
 				}
@@ -1861,9 +1861,8 @@ export class AgentDaemon {
 				if (targetState.runtime.session.sessionId !== payload.target.sessionId) {
 					throw new Error("Target session changed before agent message delivery");
 				}
-				return this.acceptAgentSessionMessage(targetState, payload);
+				await this.acceptAgentSessionMessage(targetState, payload);
 			});
-			await delivery;
 			return createAgentSessionMessageReceipt(payload);
 		} catch (error) {
 			this.agentMessageRateLimiter.refund(rateLimitKey);
@@ -1876,7 +1875,7 @@ export class AgentDaemon {
 	private async acceptAgentSessionMessage(
 		targetState: ActiveSessionState,
 		payload: AgentSessionMessagePayload,
-	): Promise<{ delivery: Promise<void> }> {
+	): Promise<void> {
 		const session = targetState.runtime.session;
 		const reserved = this.agentMessagePendingReservations.get(targetState.activeSessionId) ?? 0;
 		const otherReservations = Math.max(0, reserved - 1);
@@ -1890,23 +1889,20 @@ export class AgentDaemon {
 			session.isStreaming ||
 			session.isCompacting ||
 			session.isRetrying ||
+			session.isBashRunning ||
 			session.hasAcceptedPromptInFlight ||
 			session.pendingMessageCount > 0;
 		const streamingBehavior =
 			resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
 			(payload.deliveryMode === "steer" ? "steer" : "followUp");
 		const prompt = createAgentSessionMessagePrompt(payload);
-		const waitForDelivery =
-			typeof session.waitForAgentMessagePromptDelivery === "function"
-				? session.waitForAgentMessagePromptDelivery.bind(session)
-				: async () => undefined;
 
 		if (shouldQueue) {
 			const didQueue = await session.queueAgentMessagePrompt(prompt, streamingBehavior);
 			if (!didQueue) {
 				throw new Error("Agent message was not queued");
 			}
-			return { delivery: waitForDelivery(payload.id) };
+			return;
 		}
 
 		this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
@@ -1927,7 +1923,6 @@ export class AgentDaemon {
 			if (preflightFailed) {
 				throw new Error("Agent message was not accepted");
 			}
-			return { delivery: Promise.resolve() };
 		} finally {
 			this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 		}

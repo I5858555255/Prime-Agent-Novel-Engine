@@ -1530,6 +1530,7 @@ export class AgentSession {
 		const acceptedPrompt = this._acceptedAgentMessagePrompt;
 		if (event.type === "message_start" && acceptedPrompt?.message === event.message) {
 			acceptedPrompt.turnStarted = true;
+			this._resolveAgentMessageDelivery(acceptedPrompt.agentMessageId);
 			acceptedPrompt.resolveAccepted();
 		}
 		this._agentEventQueue = this._agentEventQueue.then(
