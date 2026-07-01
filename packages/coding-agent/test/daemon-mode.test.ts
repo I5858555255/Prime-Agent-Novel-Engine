@@ -823,7 +823,7 @@ describe("daemon mode helpers", () => {
 		await expect(second).resolves.toMatchObject({ message: "second" });
 	});
 
-	it("holds the target lock for daemon prompts until the prompt starts streaming", async () => {
+	it("queues agent messages while daemon prompts prepare to stream", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -883,14 +883,10 @@ describe("daemon mode helpers", () => {
 			origin: "agent",
 		});
 		await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
-		expect(queueAgentMessagePrompt).not.toHaveBeenCalled();
-
-		(targetState.runtime.session as { isStreaming: boolean }).isStreaming = true;
 		await send;
 		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
 		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt.mock.calls[0]?.[1]).toBe("followUp");
 		resolvePrompt();
 	});
 

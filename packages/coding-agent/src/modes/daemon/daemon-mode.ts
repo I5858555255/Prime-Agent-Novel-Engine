@@ -229,6 +229,7 @@ export class AgentDaemon {
 	private readonly agentMessagePendingReservations = new Map<string, number>();
 	private readonly agentMessageTargetLocks = new Map<string, Promise<void>>();
 	private readonly agentMessageAcceptingTargets = new Set<string>();
+	private readonly agentMessagePreparingTargets = new Set<string>();
 	private agentMessagesPaused = false;
 	private readonly summarizer = new DaemonSessionSummarizer(
 		() => [...this.sessions.values()],
@@ -1136,67 +1137,52 @@ export class AgentDaemon {
 					responseSent = true;
 					this.write(client, success(command.id, "prompt"));
 				};
-				void this.withAgentMessageTargetLock(
-					state.activeSessionId,
-					() =>
-						new Promise<void>((resolveLock) => {
-							let lockReleased = false;
-							let promptSettled = false;
-							let releaseCheckTimer: ReturnType<typeof setTimeout> | undefined;
-							const releaseLock = () => {
-								if (lockReleased) {
-									return;
-								}
-								if (releaseCheckTimer) {
-									clearTimeout(releaseCheckTimer);
-									releaseCheckTimer = undefined;
-								}
-								lockReleased = true;
-								resolveLock();
-							};
-							const releaseLockWhenStreamingStarts = () => {
-								if (lockReleased || promptSettled) {
-									return;
-								}
-								if (state.runtime.session.isStreaming) {
-									releaseLock();
-									return;
-								}
-								releaseCheckTimer = setTimeout(releaseLockWhenStreamingStarts, 10);
-							};
-							void state.runtime.session
-								.prompt(command.message, {
-									images: command.images,
-									streamingBehavior: command.streamingBehavior,
-									source: "rpc",
-									preflightResult: (didSucceed) => {
-										if (didSucceed) {
-											sendSuccessResponse();
-											releaseLockWhenStreamingStarts();
-										}
-									},
-								})
-								.then(() => {
-									promptSettled = true;
-									sendSuccessResponse();
-									releaseLock();
-								})
-								.catch((error) => {
-									promptSettled = true;
-									if (responseSent) {
-										this.broadcastToSession(
-											state,
-											failure(undefined, "prompt", error, serializeDaemonError(error)),
-										);
-									} else {
-										this.write(client, failure(command.id, "prompt", error, serializeDaemonError(error)));
-									}
-									releaseLock();
-								});
-						}),
-				).catch((error) => {
-					this.write(client, failure(command.id, "prompt", error, serializeDaemonError(error)));
-				});
+				this.agentMessagePreparingTargets.add(state.activeSessionId);
+				let promptSettled = false;
+				let preparingCheckTimer: ReturnType<typeof setTimeout> | undefined;
+				const clearPreparingTarget = () => {
+					if (preparingCheckTimer) {
+						clearTimeout(preparingCheckTimer);
+						preparingCheckTimer = undefined;
+					}
+					this.agentMessagePreparingTargets.delete(state.activeSessionId);
+				};
+				const clearPreparingWhenStreamingStarts = () => {
+					if (promptSettled || !this.agentMessagePreparingTargets.has(state.activeSessionId)) {
+						return;
+					}
+					if (state.runtime.session.isStreaming) {
+						clearPreparingTarget();
+						return;
+					}
+					preparingCheckTimer = setTimeout(clearPreparingWhenStreamingStarts, 10);
+				};
+				void state.runtime.session
+					.prompt(command.message, {
+						images: command.images,
+						streamingBehavior: command.streamingBehavior,
+						source: "rpc",
+						preflightResult: (didSucceed) => {
+							if (didSucceed) {
+								sendSuccessResponse();
+								clearPreparingWhenStreamingStarts();
+							}
+						},
+					})
+					.then(() => {
+						promptSettled = true;
+						sendSuccessResponse();
+						clearPreparingTarget();
+					})
+					.catch((error) => {
+						promptSettled = true;
+						clearPreparingTarget();
+						if (responseSent) {
+							this.broadcastToSession(state, failure(undefined, "prompt", error, serializeDaemonError(error)));
+						} else {
+							this.write(client, failure(command.id, "prompt", error, serializeDaemonError(error)));
+						}
+					});
 				return undefined;
 			}
 
@@ -1904,6 +1890,7 @@ export class AgentDaemon {
 			);
 			const shouldQueue =
 				this.agentMessageAcceptingTargets.has(targetState.activeSessionId) ||
+				this.agentMessagePreparingTargets.has(targetState.activeSessionId) ||
 				session.isStreaming ||
 				session.isCompacting ||
 				session.isRetrying ||
