@@ -561,6 +561,8 @@ export class AgentSession {
 	private _acceptedPromptCompletions = new Set<Promise<void>>();
 	private _acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined = undefined;
 	private _agentMessageDeliveryWaiters = new Map<string, AgentMessageDeliveryWaiter>();
+	private _deliveredAgentMessageIds = new Set<string>();
+	private _failedAgentMessageDeliveries = new Map<string, Error>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -1462,6 +1464,13 @@ export class AgentSession {
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	waitForAgentMessagePromptDelivery(agentMessageId: string): Promise<void> {
+		if (this._deliveredAgentMessageIds.has(agentMessageId)) {
+			return Promise.resolve();
+		}
+		const failedDelivery = this._failedAgentMessageDeliveries.get(agentMessageId);
+		if (failedDelivery) {
+			return Promise.reject(failedDelivery);
+		}
 		let waiter = this._agentMessageDeliveryWaiters.get(agentMessageId);
 		if (waiter) {
 			return waiter.promise;
@@ -1488,13 +1497,16 @@ export class AgentSession {
 		if (agentMessageId === undefined) {
 			return;
 		}
+		this._failedAgentMessageDeliveries.delete(agentMessageId);
+		this._deliveredAgentMessageIds.add(agentMessageId);
 		this._agentMessageDeliveryWaiters.get(agentMessageId)?.resolve();
 	}
 
 	private _rejectAgentMessageDelivery(agentMessageId: string | undefined, error: Error): void {
-		if (agentMessageId === undefined) {
+		if (agentMessageId === undefined || this._deliveredAgentMessageIds.has(agentMessageId)) {
 			return;
 		}
+		this._failedAgentMessageDeliveries.set(agentMessageId, error);
 		this._agentMessageDeliveryWaiters.get(agentMessageId)?.reject(error);
 	}
 

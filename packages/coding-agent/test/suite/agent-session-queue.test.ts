@@ -546,6 +546,24 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.getSteeringMessages()).toEqual([sharedText]);
 	});
 
+	it("settles late agent-message delivery waiters", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const deliveryInternals = harness.session as unknown as {
+			waitForAgentMessagePromptDelivery(agentMessageId: string): Promise<void>;
+			_resolveAgentMessageDelivery(agentMessageId: string): void;
+			_rejectAgentMessageDelivery(agentMessageId: string, error: Error): void;
+		};
+
+		deliveryInternals._resolveAgentMessageDelivery("agentmsg_delivered");
+		await expect(deliveryInternals.waitForAgentMessagePromptDelivery("agentmsg_delivered")).resolves.toBeUndefined();
+
+		deliveryInternals._rejectAgentMessageDelivery("agentmsg_failed", new Error("cleared before delivery"));
+		await expect(deliveryInternals.waitForAgentMessagePromptDelivery("agentmsg_failed")).rejects.toThrow(
+			"cleared before delivery",
+		);
+	});
+
 	it("throws when queueing an extension command with steer", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
