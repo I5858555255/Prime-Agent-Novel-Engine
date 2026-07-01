@@ -1522,16 +1522,16 @@ export class AgentSession {
 				return;
 			}
 		}
-		if (event.type === "agent_end" && this._acceptedAgentMessagePrompt?.cleared) {
-			const clearedPrompt = this._acceptedAgentMessagePrompt;
-			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPrompt.stateMessageStartIndex);
-			if (!clearedPrompt.turnStarted) {
-				clearedPrompt.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
+		const clearedPromptEnded = event.type === "agent_end" ? this._acceptedAgentMessagePrompt : undefined;
+		const clearedAcceptedPromptEnded = clearedPromptEnded?.cleared === true;
+		if (clearedAcceptedPromptEnded) {
+			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPromptEnded.stateMessageStartIndex);
+			if (!clearedPromptEnded.turnStarted) {
+				clearedPromptEnded.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
 			}
 			this._lastAssistantMessage = undefined;
 			this._acceptedAgentMessagePrompt = undefined;
 			this._resolveRetry();
-			return;
 		}
 
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
@@ -1611,6 +1611,10 @@ export class AgentSession {
 					this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
 				}
 			}
+		}
+
+		if (clearedAcceptedPromptEnded) {
+			return;
 		}
 
 		// Check auto-retry and auto-compaction after agent completes
