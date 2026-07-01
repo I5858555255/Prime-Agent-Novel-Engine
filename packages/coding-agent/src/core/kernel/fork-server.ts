@@ -31,6 +31,8 @@ const INTERPRETER_STARTUP_ENV = [
 	"PYTHONPLATLIBDIR",
 	"PYTHONSAFEPATH",
 	"VIRTUAL_ENV",
+	// Read by the site module at startup to locate user site-packages (sys.path).
+	"PYTHONUSERBASE",
 ];
 
 export class ForkServerUnavailable extends Error {
