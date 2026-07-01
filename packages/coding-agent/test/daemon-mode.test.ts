@@ -507,6 +507,56 @@ describe("daemon mode helpers", () => {
 		await clear;
 	});
 
+	it("counts accepted in-flight agent messages against the target queue cap", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const fromState = makeState("source");
+		const targetState = makeState("target");
+		fromState.runtime = {
+			...fromState.runtime,
+			session: { sessionId: "session-source", sessionName: "Source" },
+		} as never;
+		const acceptAgentMessagePrompt = vi.fn(async () => {});
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 19,
+				hasAcceptedPromptInFlight: true,
+				acceptAgentMessagePrompt,
+				queueAgentMessagePrompt: vi.fn(async () => true),
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(fromState.activeSessionId, fromState);
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "over cap",
+				fromState,
+				origin: "agent",
+			}),
+		).rejects.toThrow("Target session has too many pending messages");
+		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+	});
+
 	it("serializes concurrent agent messages to an idle target", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },

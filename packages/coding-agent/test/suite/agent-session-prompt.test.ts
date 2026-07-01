@@ -438,6 +438,33 @@ stale extension instructions`,
 		expect(typeof sessionInternals._flushPendingBashMessages).toBe("function");
 	});
 
+	it("drops assistant responses for cleared accepted agent messages", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("message_end", async () => {
+						await new Promise((resolve) => setTimeout(resolve, 0));
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_after_assistant\n\nagent text";
+		harness.setResponses([fauxAssistantMessage("stale assistant response")]);
+
+		await harness.session.acceptAgentMessagePrompt(agentPrompt, { expandPromptTemplates: false });
+		await Promise.resolve();
+		expect(harness.session.clearQueuedUserMessagesMatching((text) => text.includes("agentmsg_"))).toEqual({
+			steering: [],
+			followUp: [agentPrompt],
+		});
+		await harness.session.agent.waitForIdle();
+
+		expect(getUserTexts(harness)).toEqual([]);
+		expect(getAssistantTexts(harness)).toEqual([]);
+	});
+
 	it("queues accepted agent messages without expanding slash commands or prompt templates", async () => {
 		const template: PromptTemplate = {
 			name: "review",

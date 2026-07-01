@@ -1771,7 +1771,9 @@ export class AgentDaemon {
 		const activeSessionId = targetState.activeSessionId;
 		const reserved = this.agentMessagePendingReservations.get(activeSessionId) ?? 0;
 		assertAgentMessageQueueCapacity(
-			targetState.runtime.session.pendingMessageCount + reserved,
+			targetState.runtime.session.pendingMessageCount +
+				(targetState.runtime.session.hasAcceptedPromptInFlight ? 1 : 0) +
+				reserved,
 			DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
 		);
 		this.agentMessagePendingReservations.set(activeSessionId, reserved + 1);
@@ -1885,7 +1887,7 @@ export class AgentDaemon {
 			const reserved = this.agentMessagePendingReservations.get(targetState.activeSessionId) ?? 0;
 			const otherReservations = Math.max(0, reserved - 1);
 			assertAgentMessageQueueCapacity(
-				session.pendingMessageCount + otherReservations,
+				session.pendingMessageCount + (session.hasAcceptedPromptInFlight ? 1 : 0) + otherReservations,
 				DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
 			);
 			const shouldQueue =

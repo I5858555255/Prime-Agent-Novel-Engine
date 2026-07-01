@@ -386,6 +386,8 @@ interface AcceptedAgentMessagePrompt {
 	text: string;
 	agentMessageId: string;
 	message: AgentMessage;
+	messages: Set<AgentMessage>;
+	stateMessageStartIndex: number;
 	turnStarted: boolean;
 	cleared: boolean;
 }
@@ -1497,36 +1499,22 @@ export class AgentSession {
 	}
 
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
-		if (
-			(event.type === "message_start" || event.type === "message_end") &&
-			this._acceptedAgentMessagePrompt?.message === event.message
-		) {
-			if (event.type === "message_start") {
-				this._acceptedAgentMessagePrompt.turnStarted = true;
+		const acceptedPrompt = this._acceptedAgentMessagePrompt;
+		if (acceptedPrompt && (event.type === "message_start" || event.type === "message_end")) {
+			acceptedPrompt.messages.add(event.message);
+			if (event.type === "message_start" && event.message === acceptedPrompt.message) {
+				acceptedPrompt.turnStarted = true;
 			}
-			if (this._acceptedAgentMessagePrompt.cleared) {
-				this.agent.state.messages = this.agent.state.messages.filter((message) => message !== event.message);
-				return;
-			}
-		}
-		if (
-			event.type === "message_end" &&
-			event.message.role === "assistant" &&
-			event.message.stopReason === "aborted"
-		) {
-			const clearedPrompt = this._acceptedAgentMessagePrompt;
-			if (clearedPrompt?.cleared) {
-				this.agent.state.messages = this.agent.state.messages.filter(
-					(message) => message !== clearedPrompt.message && message !== event.message,
-				);
-				this._acceptedAgentMessagePrompt = undefined;
+			if (acceptedPrompt.cleared) {
+				this.agent.state.messages = this.agent.state.messages.slice(0, acceptedPrompt.stateMessageStartIndex);
 				return;
 			}
 		}
 		if (event.type === "agent_end" && this._acceptedAgentMessagePrompt?.cleared) {
 			const clearedPrompt = this._acceptedAgentMessagePrompt;
-			this.agent.state.messages = this.agent.state.messages.filter((message) => message !== clearedPrompt.message);
+			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPrompt.stateMessageStartIndex);
 			this._acceptedAgentMessagePrompt = undefined;
+			return;
 		}
 
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
@@ -1548,6 +1536,16 @@ export class AgentSession {
 
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
+		if (
+			(event.type === "message_start" || event.type === "message_end") &&
+			this._acceptedAgentMessagePrompt?.cleared &&
+			this._acceptedAgentMessagePrompt.messages.has(event.message)
+		) {
+			this.agent.state.messages = this.agent.state.messages.filter(
+				(message) => !this._acceptedAgentMessagePrompt?.messages.has(message),
+			);
+			return;
+		}
 
 		// Notify all listeners
 		this._emit(event);
@@ -2215,6 +2213,8 @@ export class AgentSession {
 						text: expandedText,
 						agentMessageId: options.agentMessageId,
 						message: userMessage,
+						messages: new Set([userMessage]),
+						stateMessageStartIndex: this.agent.state.messages.length,
 						turnStarted: false,
 						cleared: false,
 					};
@@ -2633,7 +2633,7 @@ export class AgentSession {
 		const removedFollowUp = followUp.map((message) => message.text);
 		if (acceptedMatches) {
 			accepted.cleared = true;
-			this.agent.state.messages = this.agent.state.messages.filter((message) => message !== accepted.message);
+			this.agent.state.messages = this.agent.state.messages.slice(0, accepted.stateMessageStartIndex);
 			this.agent.abort();
 			removedFollowUp.push(accepted.text);
 		}
