@@ -18,6 +18,21 @@ const READY_TIMEOUT_MS = 30_000;
 const SPAWN_TIMEOUT_MS = 10_000;
 const STDERR_TAIL_MAX = 4096;
 
+// Env vars the Python interpreter reads at startup (before any user code), so they
+// can't be honored post-fork via os.environ.update — the child inherits the
+// template's already-initialized sys.path/site config. A kernel overriding any of
+// these to a value the template didn't launch with must take the direct-spawn path.
+const INTERPRETER_STARTUP_ENV = [
+	"PYTHONPATH",
+	"PYTHONHOME",
+	"PYTHONNOUSERSITE",
+	"PYTHONSTARTUP",
+	"PYTHONEXECUTABLE",
+	"PYTHONPLATLIBDIR",
+	"PYTHONSAFEPATH",
+	"VIRTUAL_ENV",
+];
+
 export class ForkServerUnavailable extends Error {
 	constructor(message: string) {
 		super(message);
@@ -53,6 +68,11 @@ type PendingSpawn = {
 
 class ForkServer {
 	private readonly params: ForkServerParams;
+	// The env the template process was launched with, snapshotted at construction so
+	// it exactly matches what the template's interpreter imported with. The
+	// startup-env guard compares against THIS, not live process.env, so a later
+	// mutation of process.env can't make a stale template look compatible.
+	private readonly launchEnv: NodeJS.ProcessEnv;
 	private proc?: ChildProcess;
 	private server?: Server;
 	private conn?: Socket;
@@ -71,10 +91,23 @@ class ForkServer {
 
 	constructor(params: ForkServerParams) {
 		this.params = params;
+		// Snapshot now and launch the template with this same object, so the guard's
+		// comparison uses exactly the env the interpreter imported with.
+		this.launchEnv = { ...process.env };
 	}
 
 	get isDead(): boolean {
 		return this.dead;
+	}
+
+	/**
+	 * True if `env` overrides an interpreter-startup var to a value the template
+	 * didn't launch with — such a kernel can't be forked (sys.path is baked in at
+	 * import), so the caller must direct-spawn it.
+	 */
+	needsStartupEnvNotInTemplate(env: SpawnParams["env"]): boolean {
+		if (!env) return false;
+		return INTERPRETER_STARTUP_ENV.some((k) => k in env && env[k] !== this.launchEnv[k]);
 	}
 
 	private async ensureReady(): Promise<void> {
@@ -139,7 +172,7 @@ class ForkServer {
 				// The template only imports; its own cwd/env are irrelevant since each
 				// forked child applies the per-kernel cwd/env itself. Inherit the daemon's.
 				const proc = spawn(this.params.python, ["-c", FORK_SERVER_SCRIPT, socketPath], {
-					env: process.env,
+					env: this.launchEnv,
 					stdio: ["ignore", "ignore", "pipe"],
 				});
 				this.proc = proc;
@@ -287,40 +320,20 @@ function registerForkServerCleanupOnce(): void {
  * ForkServerUnavailable if forking is disabled or fails — callers fall back to
  * direct spawn. Returns the forked child's pid (owned/killed by the caller).
  */
-// Env vars the Python interpreter reads at startup (before any user code), so they
-// can't be honored post-fork via os.environ.update — the child inherits the
-// template's already-initialized sys.path/site config. A kernel overriding any of
-// these to a value differing from the template's env must take the direct-spawn
-// path, where env is set before the interpreter launches.
-const INTERPRETER_STARTUP_ENV = [
-	"PYTHONPATH",
-	"PYTHONHOME",
-	"PYTHONNOUSERSITE",
-	"PYTHONSTARTUP",
-	"PYTHONEXECUTABLE",
-	"PYTHONPLATLIBDIR",
-	"PYTHONSAFEPATH",
-	"VIRTUAL_ENV",
-];
-
-function requiresStartupEnvNotInTemplate(env: SpawnParams["env"]): boolean {
-	if (!env) return false;
-	return INTERPRETER_STARTUP_ENV.some((k) => k in env && env[k] !== process.env[k]);
-}
-
 export async function forkKernel(python: string, spawn: SpawnParams): Promise<number> {
 	if (!isForkServerEnabled()) throw new ForkServerUnavailable("forkserver disabled");
-	// These take effect only before interpreter startup; fork can't apply them, so
-	// defer to direct spawn rather than boot a kernel with the wrong sys.path.
-	if (requiresStartupEnvNotInTemplate(spawn.env)) {
-		throw new ForkServerUnavailable("kernel overrides interpreter-startup env; using direct spawn");
-	}
 	registerForkServerCleanupOnce();
 	const key = keyFor({ python });
 	let server = servers.get(key);
 	if (!server || server.isDead) {
 		server = new ForkServer({ python });
 		servers.set(key, server);
+	}
+	// Compare against the template's own launch env (not live process.env): a kernel
+	// overriding an interpreter-startup var to a value the template didn't import
+	// with can't be forked — defer to direct spawn rather than boot with wrong sys.path.
+	if (server.needsStartupEnvNotInTemplate(spawn.env)) {
+		throw new ForkServerUnavailable("kernel overrides interpreter-startup env; using direct spawn");
 	}
 	try {
 		return await server.spawnKernel(spawn);
