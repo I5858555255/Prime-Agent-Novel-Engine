@@ -375,10 +375,17 @@ export function createIpythonToolDefinition(
 		executionMode: "sequential",
 		parameters: ipythonSchema,
 		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
+			// The working-message update is cosmetic; accessing ctx.ui can throw if the ctx
+			// is stale (a rebind should prevent this, but never let a UI update fail the cell).
+			const setWorkingMessage = (message?: string) => {
+				try {
+					ctx?.ui.setWorkingMessage(message);
+				} catch {}
+			};
 			let reportedStartupProgress = false;
 			const reportStartupProgress: KernelBootstrapProgressHandler = (message) => {
 				reportedStartupProgress = true;
-				ctx?.ui.setWorkingMessage(message);
+				setWorkingMessage(message);
 				onUpdate?.({
 					content: [{ type: "text", text: message }],
 					details: { status: "starting" },
@@ -424,7 +431,7 @@ export function createIpythonToolDefinition(
 				};
 			} finally {
 				if (reportedStartupProgress) {
-					ctx?.ui.setWorkingMessage();
+					setWorkingMessage();
 				}
 			}
 		},
