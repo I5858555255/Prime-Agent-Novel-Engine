@@ -136,13 +136,15 @@ export function resolveAgentSessionMessageStreamingBehavior(
 }
 
 export function parseAgentSessionMessagePromptId(text: string): string | undefined {
-	if (!text.startsWith(`Agent-to-agent message received.\nSource: ${AGENT_MESSAGE_SOURCE}\n`)) {
+	const lines = text.split("\n");
+	if (lines[0] !== "Agent-to-agent message received." || lines[1] !== `Source: ${AGENT_MESSAGE_SOURCE}`) {
 		return undefined;
 	}
-	if (!text.includes("\nTo: ")) {
+	const toLineIndex = lines[2]?.startsWith("From: ") ? 3 : 2;
+	if (!lines[toLineIndex]?.startsWith("To: ")) {
 		return undefined;
 	}
-	const match = /(?:^|\n)Message id: (agentmsg_[^\n]+)(?:\n|$)/.exec(text);
+	const match = /^Message id: (agentmsg_[^\n]+)$/.exec(lines[toLineIndex + 1] ?? "");
 	return match?.[1];
 }
 
@@ -260,24 +262,31 @@ export function createAgentMessageHostHandlers(
 	};
 }
 
+function formatAgentSessionMessageMetadata(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
 function formatAgentSessionMessageSender(sender: AgentSessionMessageSender): string {
 	const parts: string[] = [];
 	if (sender.sessionName) {
-		parts.push(sender.sessionName);
+		const sessionName = formatAgentSessionMessageMetadata(sender.sessionName);
+		if (sessionName) {
+			parts.push(sessionName);
+		}
 	}
 	if (sender.activeSessionId) {
-		parts.push(`active ${sender.activeSessionId}`);
+		parts.push(`active ${formatAgentSessionMessageMetadata(sender.activeSessionId)}`);
 	}
 	if (sender.sessionId) {
-		parts.push(`session ${sender.sessionId}`);
+		parts.push(`session ${formatAgentSessionMessageMetadata(sender.sessionId)}`);
 	}
 	if (sender.clientId) {
-		parts.push(`client ${sender.clientId}`);
+		parts.push(`client ${formatAgentSessionMessageMetadata(sender.clientId)}`);
 	}
 	return parts.length > 0 ? parts.join(", ") : "unknown sender";
 }
 
 function formatAgentSessionMessageEndpoint(endpoint: AgentSessionMessageEndpoint): string {
-	const name = endpoint.sessionName ? `${endpoint.sessionName}, ` : "";
-	return `${name}active ${endpoint.activeSessionId}, session ${endpoint.sessionId}`;
+	const name = endpoint.sessionName ? `${formatAgentSessionMessageMetadata(endpoint.sessionName)}, ` : "";
+	return `${name}active ${formatAgentSessionMessageMetadata(endpoint.activeSessionId)}, session ${formatAgentSessionMessageMetadata(endpoint.sessionId)}`;
 }
