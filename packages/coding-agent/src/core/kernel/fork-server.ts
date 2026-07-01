@@ -251,6 +251,23 @@ function keyFor(params: ForkServerParams): string {
 	return JSON.stringify([params.python, params.cwd ?? "", params.env ?? null]);
 }
 
+function registerForkServerCleanupOnce(): void {
+	if (cleanupRegistered) return;
+	cleanupRegistered = true;
+	// A forkserver is process-lived and shared across sessions, so per-session
+	// cleanup must not yank the warm template from other live sessions — only a full
+	// process shutdown (no sessionId) disposes it here.
+	registerSessionResourceCleanup((sessionId) => {
+		if (!sessionId) disposeAllForkServers();
+	});
+	// cleanupSessionResources(undefined) is never called on exit, so also tear the
+	// forkserver down directly on process teardown or it leaks as an orphan.
+	process.once("exit", disposeAllForkServers);
+	for (const signal of ["SIGINT", "SIGTERM", "beforeExit"] as const) {
+		process.once(signal, () => disposeAllForkServers());
+	}
+}
+
 /**
  * Fork a kernel onto `connectionPath` from the shared template for this profile.
  * Throws ForkServerUnavailable if forking is disabled or fails — callers fall back
@@ -258,15 +275,7 @@ function keyFor(params: ForkServerParams): string {
  */
 export async function forkKernel(params: ForkServerParams, connectionPath: string): Promise<number> {
 	if (!isForkServerEnabled()) throw new ForkServerUnavailable("forkserver disabled");
-	if (!cleanupRegistered) {
-		cleanupRegistered = true;
-		// A forkserver is process-lived and shared across sessions, so only tear it
-		// down on full process shutdown (no sessionId). Per-session cleanup must not
-		// yank the warm template out from under other live sessions.
-		registerSessionResourceCleanup((sessionId) => {
-			if (!sessionId) disposeAllForkServers();
-		});
-	}
+	registerForkServerCleanupOnce();
 	const key = keyFor(params);
 	let server = servers.get(key);
 	if (!server || server.isDead) {
