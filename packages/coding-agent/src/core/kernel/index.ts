@@ -1030,8 +1030,13 @@ export class KernelManager {
 		this.control = undefined;
 		this.iopubPumpPromise = undefined;
 		try {
-			if (this.kernel) this.kernel.kill("SIGTERM");
-			else if (this.kernelPid !== undefined) process.kill(this.kernelPid, "SIGTERM");
+			if (this.kernel) {
+				this.kernel.kill("SIGTERM");
+			} else if (this.kernelPid !== undefined && !this.forkedKernelDied()) {
+				// Only signal a forked kernel confirmed still alive: a dead pid may have
+				// been recycled by the OS, and SIGTERM would then hit an unrelated process.
+				process.kill(this.kernelPid, "SIGTERM");
+			}
 		} catch {}
 		this.kernel = undefined;
 		this.kernelPid = undefined;

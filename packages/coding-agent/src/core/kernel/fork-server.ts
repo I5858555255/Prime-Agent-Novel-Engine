@@ -56,6 +56,8 @@ class ForkServer {
 	private stderrTail = "";
 	private nextId = 1;
 	private readonly pending = new Map<number, PendingSpawn>();
+	// Request ids whose caller timed out; a late pid reply for one is an orphan to kill.
+	private readonly abandoned = new Set<number>();
 	private dead = false;
 
 	constructor(params: ForkServerParams) {
@@ -160,7 +162,16 @@ class ForkServer {
 			}
 			if (typeof msg.id !== "number") continue;
 			const p = this.pending.get(msg.id);
-			if (!p) continue;
+			if (!p) {
+				// A pid for a request the caller already abandoned (timed out): the
+				// fork succeeded but nobody owns it, so kill the orphan here.
+				if (this.abandoned.delete(msg.id) && typeof msg.pid === "number") {
+					try {
+						process.kill(msg.pid, "SIGTERM");
+					} catch {}
+				}
+				continue;
+			}
 			this.pending.delete(msg.id);
 			clearTimeout(p.timer);
 			if (typeof msg.pid === "number") {
@@ -178,6 +189,9 @@ class ForkServer {
 		return new Promise<number>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
+				// The fork may still land after we give up; remember the id so its late
+				// pid reply gets the orphan killed instead of leaked.
+				this.abandoned.add(id);
 				reject(new ForkServerUnavailable(`forkserver spawn timed out after ${SPAWN_TIMEOUT_MS}ms`));
 			}, SPAWN_TIMEOUT_MS);
 			this.pending.set(id, { resolve, reject, timer });
