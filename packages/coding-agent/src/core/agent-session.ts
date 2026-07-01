@@ -390,6 +390,7 @@ interface AcceptedAgentMessagePrompt {
 	stateMessageStartIndex: number;
 	accepted: Promise<void>;
 	resolveAccepted: () => void;
+	rejectAccepted: (error: Error) => void;
 	turnStarted: boolean;
 	cleared: boolean;
 }
@@ -1524,6 +1525,9 @@ export class AgentSession {
 		if (event.type === "agent_end" && this._acceptedAgentMessagePrompt?.cleared) {
 			const clearedPrompt = this._acceptedAgentMessagePrompt;
 			this.agent.state.messages = this.agent.state.messages.slice(0, clearedPrompt.stateMessageStartIndex);
+			if (!clearedPrompt.turnStarted) {
+				clearedPrompt.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
+			}
 			this._lastAssistantMessage = undefined;
 			this._acceptedAgentMessagePrompt = undefined;
 			this._resolveRetry();
@@ -2228,8 +2232,10 @@ export class AgentSession {
 				messages.push(userMessage);
 				if (options.agentMessageId !== undefined && options.returnAfterAccepted) {
 					let resolveAccepted = () => {};
-					const accepted = new Promise<void>((resolve) => {
+					let rejectAccepted = (_error: Error) => {};
+					const accepted = new Promise<void>((resolve, reject) => {
 						resolveAccepted = resolve;
+						rejectAccepted = reject;
 					});
 					acceptedAgentMessagePrompt = {
 						text: expandedText,
@@ -2239,6 +2245,7 @@ export class AgentSession {
 						stateMessageStartIndex: this.agent.state.messages.length,
 						accepted,
 						resolveAccepted,
+						rejectAccepted,
 						turnStarted: false,
 						cleared: false,
 					};
@@ -2314,7 +2321,10 @@ export class AgentSession {
 		const promptPromise = this.agent.prompt(messages);
 		const promptAccepted = Symbol("promptAccepted");
 		const acceptance = acceptedAgentMessagePrompt
-			? acceptedAgentMessagePrompt.accepted.then(() => promptAccepted)
+			? acceptedAgentMessagePrompt.accepted.then(
+					() => promptAccepted,
+					(error: unknown) => error,
+				)
 			: new Promise<typeof promptAccepted>((resolve) => {
 					setTimeout(() => resolve(promptAccepted), 0);
 				});
@@ -2661,6 +2671,7 @@ export class AgentSession {
 		if (acceptedMatches) {
 			accepted.cleared = true;
 			this.agent.state.messages = this.agent.state.messages.slice(0, accepted.stateMessageStartIndex);
+			accepted.rejectAccepted(new Error("Accepted agent message was cleared before delivery."));
 			this.agent.abort();
 			removedFollowUp.push(accepted.text);
 		}
