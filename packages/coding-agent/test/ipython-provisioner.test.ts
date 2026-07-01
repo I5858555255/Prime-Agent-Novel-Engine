@@ -8,10 +8,8 @@ import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
 let tempDir = "";
 
-// These tests count spawns of a fake python to assert provisioner semantics
-// (memoization, retry, gating) and drive it with a stub interpreter. Pin the
-// direct-spawn path so the on-by-default forkserver's extra spawn/ready handshake
-// doesn't perturb the counts; the fork path has its own coverage.
+// These tests count spawns of a stub python; the default-on forkserver adds an
+// extra spawn + ready handshake the stub never answers, so pin direct-spawn.
 const savedForkFlag = process.env.PRIME_AGENT_KERNEL_FORKSERVER;
 beforeAll(() => {
 	process.env.PRIME_AGENT_KERNEL_FORKSERVER = "0";

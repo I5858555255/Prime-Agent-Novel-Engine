@@ -18,8 +18,7 @@ describe("resolveKernelBootConcurrency", () => {
 	});
 
 	it("honors a clean positive integer, clamped to the direct-spawn max", () => {
-		// Force the direct-spawn path (forkserver is on by default on linux now).
-		process.env[FORK_ENV] = "0";
+		process.env[FORK_ENV] = "0"; // direct-spawn path (forkserver is default-on)
 		process.env[ENV] = "8";
 		expect(resolveKernelBootConcurrency()).toBe(8);
 		process.env[ENV] = "999999";
@@ -28,11 +27,9 @@ describe("resolveKernelBootConcurrency", () => {
 
 	it("raises the ceiling on the forkserver path (linux, default on)", () => {
 		if (process.platform !== "linux") return;
-		// Default (flag unset) is now the forkserver path.
 		const auto = resolveKernelBootConcurrency();
 		expect(auto).toBeGreaterThanOrEqual(32);
 		expect(auto).toBeLessThanOrEqual(128);
-		// A huge override is clamped to the fork backstop, not the direct-spawn cap.
 		process.env[ENV] = "999999";
 		expect(resolveKernelBootConcurrency()).toBe(128);
 	});

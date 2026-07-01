@@ -32,8 +32,7 @@ function arg(name, def) {
 const mode = arg("mode", "gated");
 const n = Number(arg("n", 50)) || 50;
 
-// Forkserver is on by default now, so pin each mode explicitly: enable for the
-// forkserver mode, opt out for the direct-spawn comparison modes.
+// Pin per-mode so the default-on forkserver doesn't leak into the direct-spawn modes.
 process.env.PRIME_AGENT_KERNEL_FORKSERVER = mode === "forkserver" ? "1" : "0";
 
 const { KernelManager } = await import(kernelMod);

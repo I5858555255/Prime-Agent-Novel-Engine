@@ -39,11 +39,8 @@ export class ForkServerUnavailable extends Error {
 	}
 }
 
-/**
- * Fork is a Linux-only, in-process fan-out optimization, on by default there.
- * Any failure auto-falls back to direct spawn, so enabling it can't regress
- * correctness. Set PRIME_AGENT_KERNEL_FORKSERVER=0 to force the direct-spawn path.
- */
+// On by default on Linux (fork-without-exec is unsafe on macOS);
+// PRIME_AGENT_KERNEL_FORKSERVER=0 opts out.
 export function isForkServerEnabled(): boolean {
 	if (process.platform !== "linux") return false;
 	return process.env.PRIME_AGENT_KERNEL_FORKSERVER !== "0";
