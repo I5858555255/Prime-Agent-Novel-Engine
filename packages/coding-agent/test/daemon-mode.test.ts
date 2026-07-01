@@ -139,7 +139,10 @@ describe("daemon mode helpers", () => {
 
 		expect(acceptAgentMessagePrompt).toHaveBeenCalledOnce();
 		resolvePrompt();
-		await expect(send).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
+		await expect(send).resolves.toMatchObject({
+			deliveryStatus: "delivered",
+			target: { activeSessionId: targetState.activeSessionId },
+		});
 	});
 
 	it("rate limits agent messages per sender and target pair", async () => {
@@ -506,7 +509,7 @@ describe("daemon mode helpers", () => {
 		await clear;
 	});
 
-	it("releases queue reservations once messages are queued so blocked senders do not halve capacity", async () => {
+	it("releases queue reservations once messages are queued so concurrent senders do not halve capacity", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -519,8 +522,6 @@ describe("daemon mode helpers", () => {
 			pending += 1;
 			return true;
 		});
-		// Delivery never resolves: every sender stays blocked awaiting delivery.
-		const waitForAgentMessagePromptDelivery = vi.fn(() => new Promise<void>(() => {}));
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -532,7 +533,6 @@ describe("daemon mode helpers", () => {
 					return pending;
 				},
 				queueAgentMessagePrompt,
-				waitForAgentMessagePromptDelivery,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -573,10 +573,123 @@ describe("daemon mode helpers", () => {
 			await Promise.resolve();
 		}
 
-		// With the reservation held through the delivery wait, 12 blocked senders
-		// would count as 24 against the 20-slot cap and the tail would reject.
+		// With reservations held past queue time, 12 concurrent senders would
+		// count as 24 against the 20-slot cap and the tail would reject.
 		expect(errors).toEqual([]);
 		expect(queueAgentMessagePrompt).toHaveBeenCalledTimes(12);
+	});
+
+	it("resolves queued sends immediately with a queued receipt while the target is streaming", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const fromState = makeState("source");
+		const targetState = makeState("target");
+		fromState.runtime = {
+			...fromState.runtime,
+			session: { sessionId: "session-source", sessionName: "Source" },
+		} as never;
+		const queueAgentMessagePrompt = vi.fn(async (_message: string, _streamingBehavior: "steer" | "followUp") => true);
+		// A real streaming session only resolves this once its turn progresses;
+		// the send must not depend on it.
+		const waitForAgentMessagePromptDelivery = vi.fn(() => new Promise<void>(() => {}));
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: true,
+				pendingMessageCount: 0,
+				queueAgentMessagePrompt,
+				waitForAgentMessagePromptDelivery,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(fromState.activeSessionId, fromState);
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "queued while streaming",
+				fromState,
+				origin: "agent",
+			}),
+		).resolves.toMatchObject({
+			deliveryStatus: "queued",
+			target: { activeSessionId: targetState.activeSessionId },
+		});
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(waitForAgentMessagePromptDelivery).not.toHaveBeenCalled();
+	});
+
+	it("resolves mutual sends between two busy sessions without deadlocking", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const makeBusyState = (name: string) => {
+			const state = makeState(name);
+			state.runtime = {
+				...state.runtime,
+				cwd: "/tmp",
+				session: {
+					sessionId: `session-${name}`,
+					sessionName: name,
+					isStreaming: true,
+					pendingMessageCount: 0,
+					queueAgentMessagePrompt: vi.fn(async () => true),
+					// Neither turn ends while both sessions block inside their own send.
+					waitForAgentMessagePromptDelivery: vi.fn(() => new Promise<void>(() => {})),
+				},
+			} as never;
+			return state;
+		};
+		const stateA = makeBusyState("alpha");
+		const stateB = makeBusyState("beta");
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(stateA.activeSessionId, stateA);
+		internals.sessions.set(stateB.activeSessionId, stateB);
+
+		const [aToB, bToA] = await Promise.all([
+			internals.sendAgentSessionMessage({
+				targetSelector: stateB.activeSessionId,
+				message: "alpha to beta",
+				fromState: stateA,
+				origin: "agent",
+			}),
+			internals.sendAgentSessionMessage({
+				targetSelector: stateA.activeSessionId,
+				message: "beta to alpha",
+				fromState: stateB,
+				origin: "agent",
+			}),
+		]);
+
+		expect(aToB).toMatchObject({ deliveryStatus: "queued", target: { activeSessionId: stateB.activeSessionId } });
+		expect(bToA).toMatchObject({ deliveryStatus: "queued", target: { activeSessionId: stateA.activeSessionId } });
 	});
 
 	it("counts accepted in-flight agent messages against the target queue cap", async () => {

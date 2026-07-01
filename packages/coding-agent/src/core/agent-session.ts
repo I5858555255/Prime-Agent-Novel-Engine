@@ -2832,6 +2832,12 @@ export class AgentSession {
 			await this._agentEventQueue;
 		} finally {
 			this._goalAbortInProgress = false;
+			// Queued messages survive the abort and deliver on the next prompt (like
+			// queued user follow-ups), but the aborted run returns before the queue
+			// drain, so any delivery waiters would hang until then. Settle them now.
+			this._rejectQueuedAgentMessageDeliveries(
+				new Error("Queued agent message was not delivered before the run was aborted."),
+			);
 		}
 	}
 

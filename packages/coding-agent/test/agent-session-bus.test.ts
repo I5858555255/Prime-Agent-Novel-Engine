@@ -125,19 +125,17 @@ describe("agent session bus", () => {
 
 	it("normalizes messages and creates receipts", () => {
 		const message = normalizeAgentSessionMessage("  hello from another session  ");
-		const receipt = createAgentSessionMessageReceipt(
-			{
-				id: "agentmsg-3",
-				source: AGENT_MESSAGE_SOURCE,
-				message,
-				deliveryMode: "follow_up",
-				target: {
-					activeSessionId: "target",
-					sessionId: "session-target",
-				},
+		const payload = {
+			id: "agentmsg-3",
+			source: AGENT_MESSAGE_SOURCE,
+			message,
+			deliveryMode: "follow_up",
+			target: {
+				activeSessionId: "target",
+				sessionId: "session-target",
 			},
-			"2026-06-15T12:00:00.000Z",
-		);
+		} as const;
+		const receipt = createAgentSessionMessageReceipt(payload, "delivered", "2026-06-15T12:00:00.000Z");
 
 		expect(message).toBe("hello from another session");
 		expect(receipt).toEqual({
@@ -149,9 +147,15 @@ describe("agent session bus", () => {
 			},
 			from: undefined,
 			message: "hello from another session",
+			deliveryStatus: "delivered",
 			deliveredAt: "2026-06-15T12:00:00.000Z",
 			deliveryMode: "follow_up",
 		});
+		expect(createAgentSessionMessageReceipt(payload, "queued", "2026-06-15T12:00:00.000Z")).toMatchObject({
+			deliveryStatus: "queued",
+			queuedAt: "2026-06-15T12:00:00.000Z",
+		});
+		expect(createAgentSessionMessageReceipt(payload, "queued")).not.toHaveProperty("deliveredAt");
 		expect(() => normalizeAgentSessionMessage("  ")).toThrow("Agent session message cannot be empty");
 		expect(() => normalizeAgentSessionMessage("abcd", 3)).toThrow("Agent session message is too long");
 	});

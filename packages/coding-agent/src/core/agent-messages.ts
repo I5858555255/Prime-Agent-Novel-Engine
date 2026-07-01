@@ -10,6 +10,7 @@ export const DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY = 3;
 export const DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS = 1000;
 
 export type AgentSessionMessageDeliveryMode = "auto" | "steer" | "follow_up";
+export type AgentSessionMessageDeliveryStatus = "delivered" | "queued";
 export type AgentSessionMessageRuntimeKind = "top-level" | "subagent";
 
 export interface AgentSessionMessageEndpoint {
@@ -51,7 +52,12 @@ export interface AgentSessionMessageReceipt {
 	target: AgentSessionMessageEndpoint;
 	from?: AgentSessionMessageSender;
 	message: string;
-	deliveredAt: string;
+	// Not named "status": the kernel host bridge envelope reserves that key.
+	deliveryStatus: AgentSessionMessageDeliveryStatus;
+	/** Present when deliveryStatus is "delivered": the message reached the target's context. */
+	deliveredAt?: string;
+	/** Present when deliveryStatus is "queued": the message waits behind the target's current work. */
+	queuedAt?: string;
 	deliveryMode: AgentSessionMessageDeliveryMode;
 }
 
@@ -166,7 +172,8 @@ export function createAgentSessionMessagePrompt(payload: AgentSessionMessagePayl
 
 export function createAgentSessionMessageReceipt(
 	payload: AgentSessionMessagePayload,
-	deliveredAt = new Date().toISOString(),
+	status: AgentSessionMessageDeliveryStatus,
+	at = new Date().toISOString(),
 ): AgentSessionMessageReceipt {
 	return {
 		id: payload.id,
@@ -174,7 +181,8 @@ export function createAgentSessionMessageReceipt(
 		target: payload.target,
 		from: payload.from,
 		message: payload.message,
-		deliveredAt,
+		deliveryStatus: status,
+		...(status === "delivered" ? { deliveredAt: at } : { queuedAt: at }),
 		deliveryMode: payload.deliveryMode,
 	};
 }

@@ -12,6 +12,7 @@ import { appendRotatingLog, getCronJobsPath, getDaemonLogPath, VERSION } from ".
 import {
 	AGENT_MESSAGE_SOURCE,
 	type AgentSessionMessageAgentSummary,
+	type AgentSessionMessageDeliveryStatus,
 	type AgentSessionMessageEndpoint,
 	type AgentSessionMessageListResult,
 	type AgentSessionMessagePayload,
@@ -1911,7 +1912,7 @@ export class AgentDaemon {
 			deliveryMode: options.deliveryMode ?? "auto",
 		};
 		try {
-			const { delivery } = await this.withAgentMessageTargetLock(targetState.activeSessionId, async () => {
+			const { status } = await this.withAgentMessageTargetLock(targetState.activeSessionId, async () => {
 				if (this.agentMessagesPaused) {
 					throw new Error("Agent messaging is paused");
 				}
@@ -1926,8 +1927,7 @@ export class AgentDaemon {
 				}
 				return this.acceptAgentSessionMessage(targetState, payload, releaseQueueSlot);
 			});
-			await delivery;
-			return createAgentSessionMessageReceipt(payload);
+			return createAgentSessionMessageReceipt(payload, status);
 		} catch (error) {
 			this.agentMessageRateLimiter.refund(rateLimitKey);
 			throw error;
@@ -1941,7 +1941,7 @@ export class AgentDaemon {
 		targetState: ActiveSessionState,
 		payload: AgentSessionMessagePayload,
 		releaseReservation: () => void,
-	): Promise<{ delivery: Promise<void> }> {
+	): Promise<{ status: AgentSessionMessageDeliveryStatus }> {
 		const session = targetState.runtime.session;
 		const reserved = this.agentMessagePendingReservations.get(targetState.activeSessionId) ?? 0;
 		const otherReservations = Math.max(0, reserved - 1);
@@ -1961,20 +1961,18 @@ export class AgentDaemon {
 			resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
 			(payload.deliveryMode === "steer" ? "steer" : "followUp");
 		const prompt = createAgentSessionMessagePrompt(payload);
-		const waitForDelivery =
-			typeof session.waitForAgentMessagePromptDelivery === "function"
-				? session.waitForAgentMessagePromptDelivery.bind(session)
-				: async () => undefined;
 
 		if (shouldQueue) {
 			const didQueue = await session.queueAgentMessagePrompt(prompt, streamingBehavior);
 			if (!didQueue) {
 				throw new Error("Agent message was not queued");
 			}
-			// The queued message now counts in pendingMessageCount; holding the
-			// reservation through the delivery wait would double-count it.
+			// The queued message now counts in pendingMessageCount.
 			releaseReservation();
-			return { delivery: waitForDelivery(payload.id) };
+			// Do not await delivery: a queued message delivers only when the target's
+			// turn progresses, and the sender is blocked inside its own turn — awaiting
+			// here deadlocks mutual sends between busy sessions.
+			return { status: "queued" };
 		}
 
 		this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
@@ -1997,7 +1995,7 @@ export class AgentDaemon {
 			}
 			// Accepted prompts count via hasAcceptedPromptInFlight from here on.
 			releaseReservation();
-			return { delivery: Promise.resolve() };
+			return { status: "delivered" };
 		} finally {
 			this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 		}

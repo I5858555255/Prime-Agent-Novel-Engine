@@ -863,7 +863,7 @@ async function runSend(client: DaemonClient, args: string[], json: boolean): Pro
 	}
 	if (isAgentMessageReceipt(data)) {
 		const target = data.target.sessionName ?? data.target.activeSessionId;
-		console.log(`Sent to ${target}`);
+		console.log(data.deliveryStatus === "queued" ? `Queued for ${target}` : `Sent to ${target}`);
 		return;
 	}
 	console.log("ok");
@@ -1599,7 +1599,9 @@ function getCronJob(value: unknown): { id: string; nextRunAt?: string } | undefi
 	return { id: candidate.id, ...(typeof candidate.nextRunAt === "string" ? { nextRunAt: candidate.nextRunAt } : {}) };
 }
 
-function isAgentMessageReceipt(value: unknown): value is { target: { activeSessionId: string; sessionName?: string } } {
+function isAgentMessageReceipt(
+	value: unknown,
+): value is { target: { activeSessionId: string; sessionName?: string }; deliveryStatus?: string } {
 	if (!value || typeof value !== "object") {
 		return false;
 	}
