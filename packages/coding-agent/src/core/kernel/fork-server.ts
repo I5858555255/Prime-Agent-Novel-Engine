@@ -276,7 +276,9 @@ export async function forkKernel(params: ForkServerParams, connectionPath: strin
 	try {
 		return await server.spawnKernel(connectionPath);
 	} catch (err) {
-		if (server.isDead) servers.delete(key);
+		// Only evict if the map still points at this dead instance: a concurrent
+		// caller may have already replaced it with a fresh live server under this key.
+		if (server.isDead && servers.get(key) === server) servers.delete(key);
 		throw err instanceof ForkServerUnavailable ? err : new ForkServerUnavailable(String(err));
 	}
 }
