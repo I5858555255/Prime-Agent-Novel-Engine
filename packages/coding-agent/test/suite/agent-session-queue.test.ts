@@ -602,6 +602,19 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toContain(agentPrompt);
 	});
 
+	it("resolves direct agent-message delivery waiters when the accepted prompt starts", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_direct\n\ndirect delivery";
+		harness.setResponses([fauxAssistantMessage("direct reply")]);
+
+		const delivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_direct");
+		await harness.session.acceptAgentMessagePrompt(agentPrompt);
+
+		await expect(delivery).resolves.toBeUndefined();
+	});
+
 	it("rejects queued agent-message delivery waiters on dispose", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

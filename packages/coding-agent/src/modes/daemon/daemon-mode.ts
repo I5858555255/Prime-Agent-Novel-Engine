@@ -1955,6 +1955,7 @@ export class AgentDaemon {
 			session.isStreaming ||
 			session.isCompacting ||
 			session.isRetrying ||
+			session.isBashRunning ||
 			session.hasAcceptedPromptInFlight ||
 			session.pendingMessageCount > 0;
 		const streamingBehavior =

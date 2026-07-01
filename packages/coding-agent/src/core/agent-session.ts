@@ -1531,6 +1531,7 @@ export class AgentSession {
 		const acceptedPrompt = this._acceptedAgentMessagePrompt;
 		if (event.type === "message_start" && acceptedPrompt?.message === event.message) {
 			acceptedPrompt.turnStarted = true;
+			this._resolveAgentMessageDelivery(acceptedPrompt.agentMessageId);
 			acceptedPrompt.resolveAccepted();
 		}
 		this._agentEventQueue = this._agentEventQueue.then(
@@ -3897,6 +3898,8 @@ export class AgentSession {
 		);
 		const runner = this._extensionRunner;
 		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
+		// Resolve the runner at call time so a rebuild/reload rebinds built-in tools to the
+		// live runner instead of wedging them on the invalidated one's stale-ctx guard.
 		const wrappedBuiltInTools = wrapRegisteredTools(
 			Array.from(this._baseToolDefinitions.values())
 				.filter((definition) => isAllowedTool(definition.name))
@@ -3904,7 +3907,7 @@ export class AgentSession {
 					definition,
 					sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
 				})),
-			runner,
+			() => this._extensionRunner,
 		);
 
 		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
@@ -4577,6 +4580,9 @@ export class AgentSession {
 				if (!(await ensureTool("rg", true))) {
 					throw new Error(MISSING_RIPGREP_MESSAGE);
 				}
+				if (isRlmChildRunCancelled(run)) {
+					throw new Error(run.error ?? "RLM child cancelled");
+				}
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;
 				childSession = child;
@@ -4716,8 +4722,8 @@ export class AgentSession {
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
+		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded, transient content_filter finish_reason, provider policy-flag prose, and prose-form transient 5xx ("an error occurred while processing your request. you can retry")
+		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay|content.?filter|flagged .*(cybersecurity|usage polic|violat)|error occurred while processing|you can retry/i.test(
 			err,
 		);
 	}
@@ -4915,6 +4921,42 @@ export class AgentSession {
 		// Emitted after the slot is released so clients never observe a bash_end
 		// while the session still rejects new commands as already running.
 		this._emit({ type: "bash_end", ...end });
+		void this._drainQueuedMessagesAfterBash().catch(() => undefined);
+	}
+
+	private async _drainQueuedMessagesAfterBash(): Promise<void> {
+		if (this.isStreaming || this.pendingMessageCount === 0) {
+			return;
+		}
+
+		const steeringMessages = [...this._steeringMessages];
+		const followUpMessages = [...this._followUpMessages];
+		const drainedSteeringMessages = steeringMessages.length > 0 ? steeringMessages : [];
+		const drainedFollowUpMessages = steeringMessages.length > 0 ? [] : followUpMessages;
+		const queuedMessages = [...drainedSteeringMessages, ...drainedFollowUpMessages].map((message) => message.message);
+		if (queuedMessages.length === 0) {
+			return;
+		}
+
+		const queuedMessageSet = new Set<AgentMessage>(queuedMessages);
+		this.agent.removeQueuedMessages((message) => queuedMessageSet.has(message));
+		try {
+			await this.agent.prompt(queuedMessages);
+			await this.waitForRetry();
+		} catch {
+			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
+			const queuedFollowUps = new Set(this._followUpMessages.map((message) => message.message));
+			for (const queued of drainedSteeringMessages) {
+				if (queuedSteering.has(queued.message)) {
+					this.agent.steer(queued.message);
+				}
+			}
+			for (const queued of drainedFollowUpMessages) {
+				if (queuedFollowUps.has(queued.message)) {
+					this.agent.followUp(queued.message);
+				}
+			}
+		}
 	}
 
 	private async runUserBashLocked(command: string, excludeFromContext: boolean): Promise<UserBashEndDetails> {

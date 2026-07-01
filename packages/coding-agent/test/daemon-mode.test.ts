@@ -1010,6 +1010,119 @@ describe("daemon mode helpers", () => {
 		expect(prompt).not.toHaveBeenCalled();
 	});
 
+	it("queues agent messages while target bash is running", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const fromState = makeState("source");
+		const targetState = makeState("target");
+		fromState.runtime = {
+			...fromState.runtime,
+			session: { sessionId: "session-source", sessionName: "Source" },
+		} as never;
+		const acceptAgentMessagePrompt = vi.fn(async () => {});
+		const queueAgentMessagePrompt = vi.fn(async (_message: string, _streamingBehavior: "steer" | "followUp") => true);
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				isBashRunning: true,
+				pendingMessageCount: 0,
+				acceptAgentMessagePrompt,
+				queueAgentMessagePrompt,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(fromState.activeSessionId, fromState);
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "queued behind bash",
+				fromState,
+				origin: "agent",
+			}),
+		).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
+
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt.mock.calls[0]?.[1]).toBe("followUp");
+		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
+	});
+
+	it("acknowledges queued agent messages after queue insertion", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const fromState = makeState("source");
+		const targetState = makeState("target");
+		fromState.runtime = {
+			...fromState.runtime,
+			session: { sessionId: "session-source", sessionName: "Source" },
+		} as never;
+		let resolveQueuedDelivery: () => void = () => {};
+		const waitForAgentMessagePromptDelivery = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					resolveQueuedDelivery = resolve;
+				}),
+		);
+		const queueAgentMessagePrompt = vi.fn(async () => true);
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: true,
+				pendingMessageCount: 0,
+				queueAgentMessagePrompt,
+				waitForAgentMessagePromptDelivery,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState?: ActiveSessionState;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(fromState.activeSessionId, fromState);
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "queued",
+				fromState,
+				origin: "agent",
+			}),
+		).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
+
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(waitForAgentMessagePromptDelivery).not.toHaveBeenCalled();
+		resolveQueuedDelivery();
+	});
+
 	it("recomputes agent message streaming behavior after waiting for the target lock", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
