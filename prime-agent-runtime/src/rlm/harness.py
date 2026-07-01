@@ -67,12 +67,19 @@ def _strip_scope_prefix(id: str | None, global_: bool) -> tuple[str | None, bool
     return id, global_
 
 
+def _env_dir(name: str) -> str | None:
+    # Set-but-empty env values must behave as unset; a bare "" would skip the
+    # session-dir fallback and land local writes in the global agent-dir default.
+    value = (os.environ.get(name) or "").strip()
+    return value or None
+
+
 def _state_file(state_dir: str | Path | None = None, *, global_: bool = False) -> Path:
-    root = state_dir
+    root: str | Path | None = state_dir
     if root is None:
-        root = os.environ.get("RLM_GLOBAL_HARNESS_STATE_DIR") if global_ else os.environ.get("RLM_HARNESS_STATE_DIR")
-    if root is None and not global_ and os.environ.get("RLM_SESSION_DIR"):
-        root = Path(os.environ["RLM_SESSION_DIR"]) / _DEFAULT_HARNESS_DIR_NAME
+        root = _env_dir("RLM_GLOBAL_HARNESS_STATE_DIR") if global_ else _env_dir("RLM_HARNESS_STATE_DIR")
+    if root is None and not global_ and (session_dir := _env_dir("RLM_SESSION_DIR")):
+        root = Path(session_dir) / _DEFAULT_HARNESS_DIR_NAME
     if root is None and not global_:
         raise RuntimeError(
             "Local harness state requires RLM_HARNESS_STATE_DIR or RLM_SESSION_DIR. "
@@ -134,7 +141,14 @@ def _validate_python_skill_reference(reference: dict[str, Any] | None) -> dict[s
 class HarnessState:
     """CRUD store for reset-free harness refinement state."""
 
-    def __init__(self, file_path: str | Path | None = None, *, in_memory: bool = False, scope: HarnessScope = "local"):
+    def __init__(
+        self,
+        file_path: str | Path | None = None,
+        *,
+        in_memory: bool = False,
+        scope: HarnessScope = "local",
+        local_write_error: str | None = None,
+    ):
         # in_memory mode never resolves or touches a path. It is the safe fallback when
         # path resolution itself fails, so constructing it cannot re-raise that error.
         if in_memory:
@@ -146,6 +160,9 @@ class HarnessState:
                 else _state_file(global_=(scope == "global"))
             )
         self.scope: HarnessScope = scope
+        # When set, local mutations raise instead of vanishing into a volatile
+        # store; reads and global_=True delegation keep working.
+        self._local_write_error = local_write_error
         self.entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
         self.refinements: list[RefinementEvent] = []
         self._global_target_state_dir: Path | None = None
@@ -153,6 +170,10 @@ class HarnessState:
         # writes (e.g. the host `/refine` command) and avoid clobbering them.
         self._loaded_mtime: int | None = None
         self.load()
+
+    def _ensure_local_writable(self) -> None:
+        if self._local_write_error is not None:
+            raise RuntimeError(self._local_write_error)
 
     def _disk_mtime(self) -> int | None:
         if self.file_path is None:
@@ -306,6 +327,7 @@ class HarnessState:
                 metadata=metadata,
                 source=source,
             )
+        self._ensure_local_writable()
         self._sync_from_disk()
         return self._upsert(
             kind,
@@ -390,6 +412,7 @@ class HarnessState:
         id, global_ = _strip_scope_prefix(id, global_)
         if target := self._global_target(global_, kwargs):
             return target.delete(kind, id)
+        self._ensure_local_writable()
         self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
@@ -439,6 +462,7 @@ class HarnessState:
                 metadata=metadata,
                 source=source,
             )
+        self._ensure_local_writable()
         self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
@@ -485,6 +509,7 @@ class HarnessState:
                 metadata=metadata,
                 source=source,
             )
+        self._ensure_local_writable()
         self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
@@ -661,6 +686,7 @@ class HarnessState:
     ) -> RefinementEvent:
         if target := self._global_target(global_, kwargs):
             return target.record_refinement(trigger, changes, evidence=evidence, outcome=outcome, id=id)
+        self._ensure_local_writable()
         self._sync_from_disk()
         event_id = id or f"refine_{len(self.refinements) + 1:04d}"
         normalized_changes = [changes] if isinstance(changes, str) else list(changes)
@@ -765,9 +791,16 @@ def get_harness_state(
         state = HarnessState(file_path, scope=scope)
         # Recorded at construction only: an instance created from env defaults must
         # keep targeting RLM_GLOBAL_HARNESS_STATE_DIR even when a later explicit
-        # state_dir call aliases the same local file.
+        # state_dir call aliases the same local file. An explicit dir that merely
+        # aliases the env resolution must not sandbox later global_=True writes
+        # either, so pin only when the explicit dir actually diverges.
         if state_dir is not None:
-            state._global_target_state_dir = Path(state_dir).expanduser().resolve()
+            try:
+                env_file: Path | None = _state_file(global_=global_)
+            except RuntimeError:
+                env_file = None
+            if file_path != env_file:
+                state._global_target_state_dir = Path(state_dir).expanduser().resolve()
         _state_cache[cache_key] = state
     return state
 

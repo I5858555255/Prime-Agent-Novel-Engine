@@ -325,10 +325,9 @@ function isRefinementResult(data: unknown): data is RefinementResult {
 }
 
 /**
- * Append a refinement result to the global, cross-session history log. The harness
- * state itself is global, so rollback evidence must also be global; relying only on
- * per-session JSONL entries makes a refinement applied in one session impossible to
- * roll back from another.
+ * Append a global-scope refinement to the cross-session history log so it can be
+ * rolled back from any session. Local-scope refinements are recorded only in the
+ * session JSONL and roll back via their recorded harnessStatePath.
  */
 export function appendGlobalRefinement(harnessStateDir: string, result: RefinementResult): string {
 	const historyPath = getRefinementHistoryPath(harnessStateDir);

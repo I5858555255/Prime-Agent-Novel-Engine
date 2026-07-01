@@ -171,19 +171,39 @@ class _HarnessProxy:
     env vars exist; a state bound at import time would freeze that (env-less)
     resolution into every forked kernel. Resolving per access picks up the env
     applied after fork. Resolution must never raise (a failure inside the kernel
-    namespace would take down the kernel), so it degrades to a shared in-memory
-    store until local resolution starts succeeding.
+    namespace would take down the kernel). When the local store is genuinely
+    unconfigured (no session env, e.g. --no-session) reads see an empty view but
+    local writes raise instructively instead of vanishing on kernel exit; any
+    other resolution failure degrades to a shared in-memory store until local
+    resolution starts succeeding.
     """
 
     _fallback: HarnessState | None = None
+    _unpersisted: HarnessState | None = None
 
     def _resolve(self) -> HarnessState:
         try:
             return get_harness_state()
+        except RuntimeError as exc:
+            if "Local harness state requires" in str(exc):
+                if _HarnessProxy._unpersisted is None:
+                    _HarnessProxy._unpersisted = HarnessState(
+                        in_memory=True,
+                        local_write_error=(
+                            f"{exc} This session has no persistent local harness store; "
+                            "pass global_=True to persist across sessions."
+                        ),
+                    )
+                return _HarnessProxy._unpersisted
+            return self._degraded()
         except Exception:  # pragma: no cover - harness access must never raise
-            if _HarnessProxy._fallback is None:
-                _HarnessProxy._fallback = HarnessState(in_memory=True)
-            return _HarnessProxy._fallback
+            return self._degraded()
+
+    @staticmethod
+    def _degraded() -> HarnessState:
+        if _HarnessProxy._fallback is None:
+            _HarnessProxy._fallback = HarnessState(in_memory=True)
+        return _HarnessProxy._fallback
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._resolve(), name)

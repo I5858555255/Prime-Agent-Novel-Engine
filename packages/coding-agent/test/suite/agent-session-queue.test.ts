@@ -401,7 +401,6 @@ describe("AgentSession queue characterization", () => {
 		internals._pendingAutoRefineReview = {
 			reason: "turn_interval",
 			review: { shouldRefine: true, rationale: "durable lesson" },
-			branchVersion: internals._autoRefineBranchVersion,
 		};
 		let guardWasSetDuringRefine = false;
 		const refine = vi.spyOn(harness.session, "refine").mockImplementation(async () => {
@@ -417,14 +416,23 @@ describe("AgentSession queue characterization", () => {
 		expect(guardWasSetDuringRefine).toBe(true);
 		expect(internals._autoRefineInProgress).toBe(false);
 		expect(internals._pendingAutoRefineReview).toBeDefined();
+		// The failure stamps the cooldown so the retained pending review does not
+		// retry on every agent end.
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
 
 		refine.mockResolvedValueOnce(emptyRefinementResult());
+		await internals._maybeAutoRefine("turn_interval");
+
+		expect(refine).toHaveBeenCalledTimes(1);
+		expect(internals._pendingAutoRefineReview).toBeDefined();
+
+		internals._lastAutoRefineReviewAt = 0;
 		await internals._maybeAutoRefine("turn_interval");
 
 		expect(internals._pendingAutoRefineReview).toBeUndefined();
 	});
 
-	it("keeps auto-refine counters when an approved immediate refine fails", async () => {
+	it("keeps the turn counter and stamps the cooldown when an approved immediate refine fails", async () => {
 		const reviewer = vi.fn(async () => ({ shouldRefine: true, rationale: "durable lesson" }));
 		const harness = await createAutoRefineHarness({
 			settings: { autoRefine: { enabled: true, turnInterval: 2, cooldownMs: 60_000 } },
@@ -433,14 +441,88 @@ describe("AgentSession queue characterization", () => {
 		harnesses.push(harness);
 		const internals = harness.session as unknown as AutoRefineInternals;
 		internals._assistantTurnsSinceAutoRefine = 2;
-		const beforeReviewAt = internals._lastAutoRefineReviewAt;
 		vi.spyOn(harness.session, "refine").mockRejectedValueOnce(new Error("refine failed"));
 
 		await internals._maybeAutoRefine("turn_interval");
 
 		expect(reviewer).toHaveBeenCalledWith({ reason: "turn_interval", turnsSinceLastReview: 2 });
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(2);
-		expect(internals._lastAutoRefineReviewAt).toBe(beforeReviewAt);
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
+	});
+
+	it("does not refine when a review resolves after the session is disposed", async () => {
+		let finishReview: (() => void) | undefined;
+		const reviewGate = new Promise<void>((resolve) => {
+			finishReview = resolve;
+		});
+		const reviewer = vi.fn(async () => {
+			await reviewGate;
+			return { shouldRefine: true, rationale: "durable lesson" };
+		});
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		internals._assistantTurnsSinceAutoRefine = 1;
+		const refine = vi.spyOn(harness.session, "refine").mockResolvedValue(emptyRefinementResult());
+
+		const autoRefinePromise = internals._maybeAutoRefine("turn_interval");
+		expect(reviewer).toHaveBeenCalledTimes(1);
+		const entriesBeforeDispose = harness.sessionManager.getEntries().length;
+		harness.session.dispose();
+		finishReview?.();
+		await autoRefinePromise;
+
+		expect(refine).not.toHaveBeenCalled();
+		expect(internals._pendingAutoRefineReview).toBeUndefined();
+		expect(harness.sessionManager.getEntries().length).toBe(entriesBeforeDispose);
+
+		// Disposal also invalidates any newly scheduled auto-refine.
+		await internals._maybeAutoRefine("turn_interval");
+		expect(reviewer).toHaveBeenCalledTimes(1);
+	});
+
+	it("stamps the cooldown when the auto-refine review fails", async () => {
+		const reviewer = vi.fn(async () => {
+			throw new Error("review failed");
+		});
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 60_000 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		internals._assistantTurnsSinceAutoRefine = 1;
+
+		await internals._maybeAutoRefine("turn_interval");
+
+		expect(reviewer).toHaveBeenCalledTimes(1);
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
+
+		await internals._maybeAutoRefine("turn_interval");
+
+		expect(reviewer).toHaveBeenCalledTimes(1);
+	});
+
+	it("auto-refine pending review respects the cooldown", async () => {
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 60_000 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		internals._pendingAutoRefineReview = {
+			reason: "turn_interval",
+			review: { shouldRefine: true, rationale: "durable lesson" },
+		};
+		internals._lastAutoRefineReviewAt = Date.now();
+		const refine = vi.spyOn(harness.session, "refine").mockResolvedValue(emptyRefinementResult());
+
+		await internals._maybeAutoRefine("turn_interval");
+
+		expect(refine).not.toHaveBeenCalled();
+		expect(internals._pendingAutoRefineReview).toBeDefined();
 	});
 
 	it("serializes concurrent refine calls", async () => {
@@ -509,7 +591,6 @@ describe("AgentSession queue characterization", () => {
 		internals._pendingAutoRefineReview = {
 			reason: "compact",
 			review: { shouldRefine: true, rationale: "old branch" },
-			branchVersion: internals._autoRefineBranchVersion,
 		};
 
 		await harness.session.navigateTree(targetEntry!.id, { summarize: false });
