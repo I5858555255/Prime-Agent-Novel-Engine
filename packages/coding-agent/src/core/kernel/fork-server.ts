@@ -18,22 +18,19 @@ const READY_TIMEOUT_MS = 30_000;
 const SPAWN_TIMEOUT_MS = 10_000;
 const STDERR_TAIL_MAX = 4096;
 
-// Env vars the Python interpreter reads at startup (before any user code), so they
-// can't be honored post-fork via os.environ.update — the child inherits the
-// template's already-initialized sys.path/site config. A kernel overriding any of
-// these to a value the template didn't launch with must take the direct-spawn path.
-const INTERPRETER_STARTUP_ENV = [
-	"PYTHONPATH",
-	"PYTHONHOME",
-	"PYTHONNOUSERSITE",
-	"PYTHONSTARTUP",
-	"PYTHONEXECUTABLE",
-	"PYTHONPLATLIBDIR",
-	"PYTHONSAFEPATH",
-	"VIRTUAL_ENV",
-	// Read by the site module at startup to locate user site-packages (sys.path).
-	"PYTHONUSERBASE",
-];
+// Vars the Python interpreter consumes at startup (before any user code runs), so
+// they can't be honored post-fork via os.environ.update — the forked child inherits
+// the template's already-initialized sys.path / site config. A kernel overriding any
+// of these to a value the template didn't launch with must take the direct-spawn
+// path. We treat the entire PYTHON* family as startup-affecting rather than
+// enumerating individual vars: the set is large and version-dependent, and a false
+// positive merely (safely) routes a kernel to direct spawn. Plus the non-PYTHON*
+// startup vars that also steer interpreter/site resolution.
+const INTERPRETER_STARTUP_ENV_EXACT = ["VIRTUAL_ENV", "CONDA_PREFIX", "__PYVENV_LAUNCHER__"];
+
+function affectsInterpreterStartup(key: string): boolean {
+	return key.startsWith("PYTHON") || INTERPRETER_STARTUP_ENV_EXACT.includes(key);
+}
 
 export class ForkServerUnavailable extends Error {
 	constructor(message: string) {
@@ -109,7 +106,7 @@ class ForkServer {
 	 */
 	needsStartupEnvNotInTemplate(env: SpawnParams["env"]): boolean {
 		if (!env) return false;
-		return INTERPRETER_STARTUP_ENV.some((k) => k in env && env[k] !== this.launchEnv[k]);
+		return Object.keys(env).some((k) => affectsInterpreterStartup(k) && env[k] !== this.launchEnv[k]);
 	}
 
 	private async ensureReady(): Promise<void> {

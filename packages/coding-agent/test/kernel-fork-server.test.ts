@@ -32,16 +32,18 @@ describe("fork-server gating", () => {
 		).rejects.toBeInstanceOf(ForkServerUnavailable);
 	}, 15_000);
 
-	it("falls back to direct spawn when a kernel overrides interpreter-startup env", async () => {
+	it("falls back to direct spawn for any PYTHON* startup-env override", async () => {
 		if (process.platform !== "linux") return;
 		process.env[FORK_ENV] = "1";
-		// PYTHONPATH is read before interpreter startup, so fork can't honor it — the
-		// guard must divert to direct spawn without ever contacting the forkserver.
-		await expect(
-			forkKernel("python3", {
-				connectionPath: "/tmp/nope/connection.json",
-				env: { PYTHONPATH: "/some/custom/path" },
-			}),
-		).rejects.toBeInstanceOf(ForkServerUnavailable);
+		// The guard treats the whole PYTHON* family as startup-affecting, so even a var
+		// not explicitly enumerated diverts to direct spawn (no var can be "missed").
+		for (const key of ["PYTHONPATH", "PYTHONUSERBASE", "PYTHONDONTWRITEBYTECODE"]) {
+			await expect(
+				forkKernel("python3", {
+					connectionPath: "/tmp/nope/connection.json",
+					env: { [key]: "/some/custom/value" },
+				}),
+			).rejects.toBeInstanceOf(ForkServerUnavailable);
+		}
 	});
 });
