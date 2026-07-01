@@ -9,6 +9,7 @@ import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
 import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
+import { ForkServerUnavailable, forkKernel, isForkServerEnabled } from "./fork-server.js";
 import {
 	buildListNamesCode,
 	buildRestoreCode,
@@ -409,6 +410,9 @@ export class KernelManager {
 	private readonly commTargets = new Map<string, string>();
 	private readonly handledHostRequestCommIds = new Set<string>();
 	private kernel?: ChildProcess;
+	// Set instead of `kernel` when the kernel was forked from the forkserver: it is
+	// not a direct child, so it has no ChildProcess handle and is killed by pid.
+	private kernelPid?: number;
 	private shell?: Dealer;
 	private iopub?: Subscriber;
 	private control?: Dealer;
@@ -488,33 +492,50 @@ export class KernelManager {
 		const { path: connectionPath, tempDir } = makeConnection();
 		this.tempDir = tempDir;
 
-		const kernel = spawn(python, ["-m", "ipykernel_launcher", "-f", connectionPath], {
-			cwd: this.options.cwd,
-			env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		this.kernel = kernel;
-
-		kernel.stderr?.on("data", (buf: Buffer) => {
-			const s = buf.toString();
-			this.kernelStderr += s;
-		});
-
-		kernel.on("error", (err) => {
-			if (this.kernel !== kernel) return;
-			this.appendKernelDiagnostic(`spawn error: ${err.message}`);
-			this.state = "shutdown";
-			liveKernels.delete(this);
-		});
-
-		kernel.on("exit", (code, signal) => {
-			if (this.kernel !== kernel) return;
-			if (this.state !== "shutdown") {
-				this.appendKernelDiagnostic(`unexpected exit code=${code} signal=${signal}`);
+		// Fast path: fork a pre-imported kernel from the forkserver. Any failure
+		// (disabled, unavailable, fork error) degrades to the direct-spawn path so
+		// correctness never depends on fork.
+		let forked = false;
+		if (isForkServerEnabled()) {
+			try {
+				this.kernelPid = await forkKernel({ python, cwd: this.options.cwd, env: this.options.env }, connectionPath);
+				forked = true;
+			} catch (err) {
+				if (!(err instanceof ForkServerUnavailable)) throw err;
+				this.appendKernelDiagnostic(`forkserver unavailable, spawning directly: ${err.message}`);
+				this.kernelPid = undefined;
 			}
-			this.state = "shutdown";
-			liveKernels.delete(this);
-		});
+		}
+
+		if (!forked) {
+			const kernel = spawn(python, ["-m", "ipykernel_launcher", "-f", connectionPath], {
+				cwd: this.options.cwd,
+				env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			this.kernel = kernel;
+
+			kernel.stderr?.on("data", (buf: Buffer) => {
+				const s = buf.toString();
+				this.kernelStderr += s;
+			});
+
+			kernel.on("error", (err) => {
+				if (this.kernel !== kernel) return;
+				this.appendKernelDiagnostic(`spawn error: ${err.message}`);
+				this.state = "shutdown";
+				liveKernels.delete(this);
+			});
+
+			kernel.on("exit", (code, signal) => {
+				if (this.kernel !== kernel) return;
+				if (this.state !== "shutdown") {
+					this.appendKernelDiagnostic(`unexpected exit code=${code} signal=${signal}`);
+				}
+				this.state = "shutdown";
+				liveKernels.delete(this);
+			});
+		}
 
 		let conn: ConnectionInfo;
 		try {
@@ -551,10 +572,22 @@ export class KernelManager {
 		this.state = "running";
 	}
 
+	// A forked kernel is not a direct child, so it emits no "exit" event; poll its
+	// pid so a dead child fails fast instead of burning the full resolve timeout.
+	private forkedKernelDied(): boolean {
+		if (this.kernelPid === undefined) return false;
+		try {
+			process.kill(this.kernelPid, 0);
+			return false;
+		} catch {
+			return true;
+		}
+	}
+
 	private async waitForResolvedConnection(connectionPath: string): Promise<ConnectionInfo> {
 		const startedAt = Date.now();
 		while (Date.now() - startedAt < PORTS_RESOLVE_TIMEOUT_MS) {
-			if ((this.state as string) === "shutdown") {
+			if ((this.state as string) === "shutdown" || this.forkedKernelDied()) {
 				const tail = this.kernelStderr.slice(-1024);
 				throw new Error(`Kernel exited before resolving ports. stderr:\n${tail || "(empty)"}`);
 			}
@@ -583,7 +616,7 @@ export class KernelManager {
 
 		const startedAt = Date.now();
 		while (Date.now() - startedAt < READY_TIMEOUT_MS) {
-			if ((this.state as string) === "shutdown") {
+			if ((this.state as string) === "shutdown" || this.forkedKernelDied()) {
 				const tail = this.kernelStderr.slice(-1024);
 				throw new Error(`Kernel exited during startup. stderr:\n${tail || "(empty)"}`);
 			}
@@ -959,9 +992,11 @@ export class KernelManager {
 		this.control = undefined;
 		this.iopubPumpPromise = undefined;
 		try {
-			this.kernel?.kill("SIGTERM");
+			if (this.kernel) this.kernel.kill("SIGTERM");
+			else if (this.kernelPid !== undefined) process.kill(this.kernelPid, "SIGTERM");
 		} catch {}
 		this.kernel = undefined;
+		this.kernelPid = undefined;
 		this.connection = undefined;
 		if (this.tempDir) {
 			try {
