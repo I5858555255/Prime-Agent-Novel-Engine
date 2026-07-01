@@ -168,6 +168,23 @@ describe("AgentSession queue characterization", () => {
 		expect(refine).not.toHaveBeenCalled();
 	});
 
+	it("declined compact review preserves an already-due turn interval", async () => {
+		const reviewer = vi.fn(async () => ({ shouldRefine: false, rationale: "nothing compact-specific" }));
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, turnInterval: 2, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		internals._assistantTurnsSinceAutoRefine = 2;
+		const scheduleAutoRefine = vi.spyOn(internals, "_scheduleAutoRefine").mockImplementation(() => {});
+
+		await internals._maybeAutoRefine("compact");
+
+		expect(internals._assistantTurnsSinceAutoRefine).toBe(2);
+		expect(scheduleAutoRefine).toHaveBeenCalledWith("turn_interval");
+	});
+
 	it("auto-refine compact hook waits for planned post-compaction continuation", async () => {
 		const harness = await createAutoRefineHarness({
 			settings: { autoRefine: { enabled: true, turnInterval: 25, cooldownMs: 0 } },
@@ -604,6 +621,53 @@ describe("AgentSession queue characterization", () => {
 		await secondRefine;
 
 		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("does not persist or reconnect an in-flight refine after dispose", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		let releasePlan: (() => void) | undefined;
+		const planGate = new Promise<void>((resolve) => {
+			releasePlan = resolve;
+		});
+		let planStarted: (() => void) | undefined;
+		const planStartedPromise = new Promise<void>((resolve) => {
+			planStarted = resolve;
+		});
+		harness.setResponses([
+			async () => {
+				planStarted?.();
+				await planGate;
+				return fauxAssistantMessage(
+					JSON.stringify({
+						summary: "stale refine",
+						rationale: "the session was disposed before apply",
+						expectedOutcome: "nothing is persisted",
+						edits: [
+							{
+								action: "create",
+								kind: "memory",
+								id: "stale_after_dispose",
+								title: "Stale after dispose",
+								content: "This must not be saved.",
+							},
+						],
+					}),
+				);
+			},
+		]);
+		const internals = harness.session as unknown as { _reconnectToAgent(): void };
+		const reconnect = vi.spyOn(internals, "_reconnectToAgent");
+		const entriesBeforeDispose = harness.sessionManager.getEntries().length;
+
+		const refine = harness.session.refine({ instructions: "write stale state" });
+		await planStartedPromise;
+		harness.session.dispose();
+		releasePlan?.();
+
+		await expect(refine).rejects.toThrow();
+		expect(reconnect).not.toHaveBeenCalled();
+		expect(harness.sessionManager.getEntries()).toHaveLength(entriesBeforeDispose);
 	});
 
 	it("clears pending auto-refine state when navigating to another branch", async () => {

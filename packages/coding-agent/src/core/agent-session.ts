@@ -597,6 +597,7 @@ export class AgentSession {
 	private _pendingAutoRefineReview: { reason: AutoRefineReason; review: AutoRefineReview } | undefined;
 	private _autoRefineBranchVersion = 0;
 	private _autoRefineReviewAbort?: AbortController;
+	private _refineAbortController?: AbortController;
 	private readonly _autoRefineReviewer?: AutoRefineReviewer;
 	/** Settles (never rejects) when the in-flight refine finishes; see _waitForRefineIdle. */
 	private _refineInFlight?: Promise<void>;
@@ -1732,6 +1733,7 @@ export class AgentSession {
 		// Invalidate scheduled timers and abort any in-flight review so a late
 		// resolution cannot write harness state or re-subscribe handlers.
 		this._autoRefineReviewAbort?.abort();
+		this._refineAbortController?.abort();
 		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._autoRefineBranchVersion++;
 		this._cancelActiveRlmChildRuns("Parent session disposed");
@@ -3100,10 +3102,10 @@ export class AgentSession {
 			}
 			if (!review.shouldRefine) {
 				const preserveTurnIntervalReview =
-					reason === "compact" &&
-					this._turnIntervalAutoRefinePending &&
-					this._assistantTurnsSinceAutoRefine >= settings.turnInterval;
-				if (!preserveTurnIntervalReview) {
+					reason === "compact" && this._assistantTurnsSinceAutoRefine >= settings.turnInterval;
+				if (preserveTurnIntervalReview) {
+					this._turnIntervalAutoRefinePending = true;
+				} else {
 					this._lastAutoRefineReviewAt = nowMs;
 					this._assistantTurnsSinceAutoRefine = 0;
 				}
@@ -3240,6 +3242,11 @@ export class AgentSession {
 	private async _refine(
 		options: { instructions?: string; rollbackId?: string; global?: boolean } = {},
 	): Promise<RefinementResult> {
+		if (this._disposed) {
+			throw new Error("Cannot refine a disposed session.");
+		}
+		const refineAbort = new AbortController();
+		this._refineAbortController = refineAbort;
 		this._disconnectFromAgent();
 
 		try {
@@ -3271,9 +3278,12 @@ export class AgentSession {
 				apiKey,
 				options,
 				headers,
-				undefined,
+				refineAbort.signal,
 				this.thinkingLevel,
 			);
+			if (this._disposed || refineAbort.signal.aborted) {
+				throw new Error("Refinement cancelled because the session was disposed.");
+			}
 			let targetScope = plan.rollbackScope ?? requestedScope;
 			let targetHarnessStateDir = targetScope === "global" ? globalHarnessStateDir : localHarnessStateDir;
 			if (targetScope === "local" && rollbackTarget?.harnessStatePath) {
@@ -3310,6 +3320,9 @@ export class AgentSession {
 					};
 				}),
 			};
+			if (this._disposed || refineAbort.signal.aborted) {
+				throw new Error("Refinement cancelled because the session was disposed.");
+			}
 			const result = applyRefinementProposal(state, proposal, {
 				id: plan.id,
 				rollbackOf: plan.rollbackOf,
@@ -3324,7 +3337,12 @@ export class AgentSession {
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 			return result;
 		} finally {
-			this._reconnectToAgent();
+			if (this._refineAbortController === refineAbort) {
+				this._refineAbortController = undefined;
+			}
+			if (!this._disposed) {
+				this._reconnectToAgent();
+			}
 		}
 	}
 
