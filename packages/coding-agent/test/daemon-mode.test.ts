@@ -444,11 +444,11 @@ describe("daemon mode helpers", () => {
 			...fromState.runtime,
 			session: { sessionId: "session-source", sessionName: "Source" },
 		} as never;
-		let rejectFollowUp: (error: Error) => void = () => {};
-		const followUp = vi.fn(
-			() =>
+		let rejectQueuedMessage: (error: Error) => void = () => {};
+		const queueAgentMessagePrompt = vi.fn(
+			(_message: string, _streamingBehavior: "steer" | "followUp") =>
 				new Promise<boolean>((_resolve, reject) => {
-					rejectFollowUp = reject;
+					rejectQueuedMessage = reject;
 				}),
 		);
 		targetState.runtime = {
@@ -461,7 +461,7 @@ describe("daemon mode helpers", () => {
 				pendingMessageCount: 19,
 				clearQueue: vi.fn(() => ({ cleared: 0 })),
 				clearQueuedUserMessagesMatching: vi.fn(() => ({ steering: [], followUp: [] })),
-				followUp,
+				queueAgentMessagePrompt,
 				prompt: vi.fn(async () => {}),
 			},
 		} as never;
@@ -502,7 +502,7 @@ describe("daemon mode helpers", () => {
 			}),
 		).rejects.toThrow("Target session has too many pending messages");
 
-		rejectFollowUp(new Error("release reservation"));
+		rejectQueuedMessage(new Error("release reservation"));
 		await expect(first).rejects.toThrow("release reservation");
 		await clear;
 	});
@@ -595,6 +595,7 @@ describe("daemon mode helpers", () => {
 		} as never;
 		const prompt = vi.fn(async (_message: string, _options?: { streamingBehavior?: "steer" | "followUp" }) => {});
 		const followUp = vi.fn(async () => true);
+		const queueAgentMessagePrompt = vi.fn(async (_message: string, _streamingBehavior: "steer" | "followUp") => true);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -606,6 +607,7 @@ describe("daemon mode helpers", () => {
 				pendingMessageCount: 0,
 				prompt,
 				followUp,
+				queueAgentMessagePrompt,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -629,7 +631,9 @@ describe("daemon mode helpers", () => {
 			}),
 		).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
 
-		expect(followUp).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt.mock.calls[0]?.[1]).toBe("followUp");
+		expect(followUp).not.toHaveBeenCalled();
 		expect(prompt).not.toHaveBeenCalled();
 	});
 
@@ -648,6 +652,7 @@ describe("daemon mode helpers", () => {
 		} as never;
 		const prompt = vi.fn(async (_message: string, _options?: { streamingBehavior?: "steer" | "followUp" }) => {});
 		const followUp = vi.fn(async () => true);
+		const queueAgentMessagePrompt = vi.fn(async (_message: string, _streamingBehavior: "steer" | "followUp") => true);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -658,6 +663,7 @@ describe("daemon mode helpers", () => {
 				pendingMessageCount: 1,
 				prompt,
 				followUp,
+				queueAgentMessagePrompt,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -681,7 +687,9 @@ describe("daemon mode helpers", () => {
 			}),
 		).resolves.toMatchObject({ target: { activeSessionId: targetState.activeSessionId } });
 
-		expect(followUp).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt.mock.calls[0]?.[1]).toBe("followUp");
+		expect(followUp).not.toHaveBeenCalled();
 		expect(prompt).not.toHaveBeenCalled();
 	});
 
@@ -706,6 +714,7 @@ describe("daemon mode helpers", () => {
 				}),
 		);
 		const followUp = vi.fn(async () => true);
+		const queueAgentMessagePrompt = vi.fn(async (_message: string, _streamingBehavior: "steer" | "followUp") => true);
 		targetState.runtime = {
 			...targetState.runtime,
 			cwd: "/tmp",
@@ -716,6 +725,7 @@ describe("daemon mode helpers", () => {
 				pendingMessageCount: 0,
 				prompt,
 				followUp,
+				queueAgentMessagePrompt,
 			},
 		} as never;
 		const internals = daemon as unknown as {
@@ -753,7 +763,9 @@ describe("daemon mode helpers", () => {
 		await Promise.resolve();
 
 		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(followUp).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(queueAgentMessagePrompt.mock.calls[0]?.[1]).toBe("followUp");
+		expect(followUp).not.toHaveBeenCalled();
 		await expect(second).resolves.toMatchObject({ message: "second" });
 	});
 

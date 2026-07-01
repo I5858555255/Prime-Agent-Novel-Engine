@@ -2045,6 +2045,14 @@ export class AgentSession {
 		});
 	}
 
+	async queueAgentMessagePrompt(text: string, streamingBehavior: "steer" | "followUp"): Promise<boolean> {
+		if (streamingBehavior === "steer") {
+			await this._queueSteer(text);
+			return true;
+		}
+		return this._queueFollowUp(text);
+	}
+
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;

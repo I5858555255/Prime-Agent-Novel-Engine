@@ -341,6 +341,46 @@ stale extension instructions`,
 		expect(providerSystemPrompts[1]).not.toContain("stale extension instructions");
 	});
 
+	it("queues accepted agent messages without expanding slash commands or prompt templates", async () => {
+		const template: PromptTemplate = {
+			name: "review",
+			description: "Review template",
+			content: "expanded template: $1",
+			filePath: "/virtual/review.md",
+			sourceInfo: createSyntheticSourceInfo("/virtual/review.md", {
+				source: "local",
+				scope: "temporary",
+				origin: "top-level",
+			}),
+		};
+		const resourceLoader = {
+			...createTestResourceLoader(),
+			getPrompts: () => ({ prompts: [template], diagnostics: [] }),
+		};
+		const commandRuns: string[] = [];
+		const harness = await createHarness({
+			resourceLoader,
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("testcmd", {
+						description: "Test command",
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await expect(harness.session.queueAgentMessagePrompt("/review keep literal", "followUp")).resolves.toBe(true);
+		await expect(harness.session.queueAgentMessagePrompt("/testcmd keep literal", "followUp")).resolves.toBe(true);
+
+		expect(harness.session.getFollowUpMessages()).toEqual(["/review keep literal", "/testcmd keep literal"]);
+		expect(commandRuns).toEqual([]);
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
 	it("throws when prompting without a model", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

@@ -1924,10 +1924,7 @@ export class AgentDaemon {
 				resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
 				(payload.deliveryMode === "steer" ? "steer" : "followUp");
 			if (shouldQueue) {
-				const queued =
-					streamingBehavior === "steer"
-						? session.steer(createAgentSessionMessagePrompt(payload))
-						: session.followUp(createAgentSessionMessagePrompt(payload));
+				const queued = session.queueAgentMessagePrompt(createAgentSessionMessagePrompt(payload), streamingBehavior);
 				Promise.resolve(queued).then(settleAccepted, reject);
 				return;
 			}
