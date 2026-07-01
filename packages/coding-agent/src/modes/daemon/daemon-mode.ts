@@ -1728,7 +1728,8 @@ export class AgentDaemon {
 			...this.createAgentSessionMessageEndpoint(state),
 			cwd: state.runtime.cwd,
 			isStreaming: state.runtime.session.isStreaming,
-			pendingMessageCount: state.runtime.session.pendingMessageCount,
+			pendingMessageCount:
+				state.runtime.session.pendingMessageCount + (state.runtime.session.hasAcceptedPromptInFlight ? 1 : 0),
 			...(metadata.parentActiveSessionId ? { parentActiveSessionId: metadata.parentActiveSessionId } : {}),
 			...(metadata.rlmChildId ? { rlmChildId: metadata.rlmChildId } : {}),
 		};

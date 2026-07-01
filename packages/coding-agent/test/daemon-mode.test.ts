@@ -557,6 +557,34 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt).not.toHaveBeenCalled();
 	});
 
+	it("reports accepted in-flight agent messages in agent-message lists", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 2,
+				hasAcceptedPromptInFlight: true,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAgentMessageListResult(current: ActiveSessionState): { agents: Array<{ pendingMessageCount: number }> };
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		expect(internals.createAgentMessageListResult(targetState).agents[0]?.pendingMessageCount).toBe(3);
+	});
+
 	it("serializes concurrent agent messages to an idle target", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
