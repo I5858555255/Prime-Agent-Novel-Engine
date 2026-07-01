@@ -590,6 +590,7 @@ export class AgentSession {
 	private _lastAutoRefineReviewAt = 0;
 	private _autoRefineInProgress = false;
 	private _compactAutoRefinePending = false;
+	private _turnIntervalAutoRefinePending = false;
 	private _postCompactionContinuationScheduled = false;
 	private _pendingAutoRefineReview:
 		| { reason: AutoRefineReason; review: AutoRefineReview; branchVersion: number }
@@ -2899,6 +2900,7 @@ export class AgentSession {
 
 	private _discardPendingAutoRefine(): void {
 		this._compactAutoRefinePending = false;
+		this._turnIntervalAutoRefinePending = false;
 		this._pendingAutoRefineReview = undefined;
 	}
 
@@ -2940,15 +2942,46 @@ export class AgentSession {
 	}
 
 	private _schedulePostCompactionContinue(): void {
+		if (this._postCompactionContinuationScheduled) {
+			return;
+		}
 		this._postCompactionContinuationScheduled = true;
 		setTimeout(() => {
-			this._postCompactionContinuationScheduled = false;
-			void this._waitForRefineIdle().then(() => this.agent.continue().catch(() => {}));
+			void this._runScheduledPostCompactionContinue();
 		}, 100);
+	}
+
+	private async _runScheduledPostCompactionContinue(): Promise<void> {
+		await this._waitForRefineIdle();
+		if (this.isStreaming) {
+			this._postCompactionContinuationScheduled = false;
+			this._schedulePostCompactionContinue();
+			return;
+		}
+
+		this._postCompactionContinuationScheduled = false;
+		try {
+			await this.agent.continue();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (message.includes("already processing")) {
+				this._schedulePostCompactionContinue();
+			}
+		}
 	}
 
 	private _shouldSkipAutoRefineForActiveAgent(): boolean {
 		return this.isStreaming || this.isCompacting;
+	}
+
+	private _scheduleDeferredAutoRefineIfIdle(): void {
+		if (this._autoRefineInProgress || this._shouldSkipAutoRefineForActiveAgent() || this._pendingAutoRefineReview) {
+			return;
+		}
+		if (this._turnIntervalAutoRefinePending) {
+			this._turnIntervalAutoRefinePending = false;
+			this._scheduleAutoRefine("turn_interval");
+		}
 	}
 
 	private _scheduleAutoRefine(reason: AutoRefineReason, branchVersion = this._autoRefineBranchVersion): void {
@@ -2974,8 +3007,14 @@ export class AgentSession {
 		if (this._autoRefineInProgress || this._shouldSkipAutoRefineForActiveAgent()) {
 			if (reason === "compact") {
 				this._compactAutoRefinePending = true;
+			} else {
+				this._turnIntervalAutoRefinePending = true;
 			}
 			return;
+		}
+
+		if (reason === "turn_interval") {
+			this._turnIntervalAutoRefinePending = false;
 		}
 
 		const pendingReview = this._pendingAutoRefineReview;
@@ -2989,6 +3028,7 @@ export class AgentSession {
 			try {
 				await this.refine({ instructions: autoRefineInstructions(pendingReview.reason, pendingReview.review) });
 				this._pendingAutoRefineReview = undefined;
+				this._turnIntervalAutoRefinePending = false;
 				this._lastAutoRefineReviewAt = Date.now();
 				this._assistantTurnsSinceAutoRefine = 0;
 				if (pendingReview.reason === "compact") {
@@ -2998,6 +3038,7 @@ export class AgentSession {
 				// Auto-refine is opportunistic; manual /refine remains available.
 			} finally {
 				this._autoRefineInProgress = false;
+				this._scheduleDeferredAutoRefineIfIdle();
 			}
 			return;
 		}
@@ -3031,8 +3072,14 @@ export class AgentSession {
 				return;
 			}
 			if (!review.shouldRefine) {
-				this._lastAutoRefineReviewAt = nowMs;
-				this._assistantTurnsSinceAutoRefine = 0;
+				const preserveTurnIntervalReview =
+					reason === "compact" &&
+					this._turnIntervalAutoRefinePending &&
+					this._assistantTurnsSinceAutoRefine >= settings.turnInterval;
+				if (!preserveTurnIntervalReview) {
+					this._lastAutoRefineReviewAt = nowMs;
+					this._assistantTurnsSinceAutoRefine = 0;
+				}
 				if (reason === "compact") {
 					this._compactAutoRefinePending = false;
 				}
@@ -3043,6 +3090,7 @@ export class AgentSession {
 				return;
 			}
 			await this.refine({ instructions: autoRefineInstructions(reason, review) });
+			this._turnIntervalAutoRefinePending = false;
 			this._lastAutoRefineReviewAt = nowMs;
 			this._assistantTurnsSinceAutoRefine = 0;
 			if (reason === "compact") {
@@ -3052,6 +3100,7 @@ export class AgentSession {
 			// Auto-refine is opportunistic; manual /refine remains available.
 		} finally {
 			this._autoRefineInProgress = false;
+			this._scheduleDeferredAutoRefineIfIdle();
 		}
 	}
 
