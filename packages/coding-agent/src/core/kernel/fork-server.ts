@@ -287,8 +287,34 @@ function registerForkServerCleanupOnce(): void {
  * ForkServerUnavailable if forking is disabled or fails — callers fall back to
  * direct spawn. Returns the forked child's pid (owned/killed by the caller).
  */
+// Env vars the Python interpreter reads at startup (before any user code), so they
+// can't be honored post-fork via os.environ.update — the child inherits the
+// template's already-initialized sys.path/site config. A kernel overriding any of
+// these to a value differing from the template's env must take the direct-spawn
+// path, where env is set before the interpreter launches.
+const INTERPRETER_STARTUP_ENV = [
+	"PYTHONPATH",
+	"PYTHONHOME",
+	"PYTHONNOUSERSITE",
+	"PYTHONSTARTUP",
+	"PYTHONEXECUTABLE",
+	"PYTHONPLATLIBDIR",
+	"PYTHONSAFEPATH",
+	"VIRTUAL_ENV",
+];
+
+function requiresStartupEnvNotInTemplate(env: SpawnParams["env"]): boolean {
+	if (!env) return false;
+	return INTERPRETER_STARTUP_ENV.some((k) => k in env && env[k] !== process.env[k]);
+}
+
 export async function forkKernel(python: string, spawn: SpawnParams): Promise<number> {
 	if (!isForkServerEnabled()) throw new ForkServerUnavailable("forkserver disabled");
+	// These take effect only before interpreter startup; fork can't apply them, so
+	// defer to direct spawn rather than boot a kernel with the wrong sys.path.
+	if (requiresStartupEnvNotInTemplate(spawn.env)) {
+		throw new ForkServerUnavailable("kernel overrides interpreter-startup env; using direct spawn");
+	}
 	registerForkServerCleanupOnce();
 	const key = keyFor({ python });
 	let server = servers.get(key);

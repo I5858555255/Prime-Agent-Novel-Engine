@@ -31,4 +31,17 @@ describe("fork-server gating", () => {
 			forkKernel("/nonexistent/python-binary", { connectionPath: "/tmp/nope/connection.json" }),
 		).rejects.toBeInstanceOf(ForkServerUnavailable);
 	}, 15_000);
+
+	it("falls back to direct spawn when a kernel overrides interpreter-startup env", async () => {
+		if (process.platform !== "linux") return;
+		process.env[FORK_ENV] = "1";
+		// PYTHONPATH is read before interpreter startup, so fork can't honor it — the
+		// guard must divert to direct spawn without ever contacting the forkserver.
+		await expect(
+			forkKernel("python3", {
+				connectionPath: "/tmp/nope/connection.json",
+				env: { PYTHONPATH: "/some/custom/path" },
+			}),
+		).rejects.toBeInstanceOf(ForkServerUnavailable);
+	});
 });
