@@ -1,9 +1,8 @@
 /**
  * SGR mouse event parsing (CSI < button ; x ; y M/m).
  *
- * Only SGR encoding (?1006) is supported — tracking is only ever enabled
- * after a DECRQM probe confirms the terminal supports it, so the legacy
- * X10 encoding never applies.
+ * Only SGR encoding is parsed — ?1006 is always requested alongside ?1000,
+ * and terminals modern enough to report mouse at all support it.
  */
 
 export interface MouseEvent {

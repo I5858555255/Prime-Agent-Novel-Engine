@@ -570,9 +570,11 @@ export class TUI extends Container {
 	 * on the alternate screen with `dock` pinned to the bottom rows. The
 	 * primary screen and its scrollback are left untouched until exit.
 	 *
-	 * Mouse wheel tracking is enabled only if the terminal answers the SGR
-	 * mouse capability probe (and `mouse` is not false). Motion/drag tracking
-	 * is never enabled, so native drag-selection keeps working.
+	 * Mouse wheel tracking is enabled unless `mouse` is false. Terminals that
+	 * do not support mouse reporting ignore the mode-set sequences, and probing
+	 * support first is not viable — tmux, among others, never answers DECRQM.
+	 * Motion/drag tracking is never enabled, so native drag-selection keeps
+	 * working.
 	 */
 	enterFullscreen(options: { scroll: Component[]; dock: Component; mouse?: boolean }): void {
 		if (this.fullscreen) return;
@@ -594,11 +596,7 @@ export class TUI extends Container {
 		this.terminal.enterAltScreen();
 		this.terminal.hideCursor();
 		if (options.mouse !== false) {
-			void this.terminal.probeSgrMouseSupport().then((supported) => {
-				if (supported && this.fullscreen && !this.stopped) {
-					this.terminal.setMouseTracking(true);
-				}
-			});
+			this.terminal.setMouseTracking(true);
 		}
 		this.requestRender();
 	}

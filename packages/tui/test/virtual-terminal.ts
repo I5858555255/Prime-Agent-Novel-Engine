@@ -119,10 +119,6 @@ export class VirtualTerminal implements Terminal {
 		return this._mouseTrackingActive;
 	}
 
-	probeSgrMouseSupport(): Promise<boolean> {
-		return Promise.resolve(true);
-	}
-
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
 		this.xterm.write(`\x1b]0;${title}\x07`);

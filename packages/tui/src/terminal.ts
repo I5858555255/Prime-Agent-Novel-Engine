@@ -66,11 +66,10 @@ export interface Terminal {
 
 	// SGR mouse tracking (?1000 + ?1006). Wheel arrives as \x1b[<64;x;yM /
 	// \x1b[<65;x;yM. Motion tracking is deliberately never enabled so native
-	// drag-selection keeps working.
+	// drag-selection keeps working. Terminals without mouse support ignore
+	// the sequences.
 	setMouseTracking(enabled: boolean): void;
 	get mouseTrackingActive(): boolean;
-	// Probe DECRQM for SGR mouse support; resolves false on timeout or non-TTY.
-	probeSgrMouseSupport(): Promise<boolean>;
 
 	// Title operations
 	setTitle(title: string): void; // Set terminal window title
@@ -90,10 +89,6 @@ export class ProcessTerminal implements Terminal {
 	private _modifyOtherKeysActive = false;
 	private _altScreenActive = false;
 	private _mouseTrackingActive = false;
-	private sgrMouseProbe?: {
-		resolve: (supported: boolean) => void;
-		timeout: ReturnType<typeof setTimeout>;
-	};
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
 	private progressInterval?: ReturnType<typeof setInterval>;
@@ -174,10 +169,6 @@ export class ProcessTerminal implements Terminal {
 		// Forward individual sequences to the input handler
 		this.stdinBuffer.on("data", (sequence) => {
 			if (this.handleDefaultColorProbeResponse(sequence)) {
-				return;
-			}
-
-			if (this.handleSgrMouseProbeResponse(sequence)) {
 				return;
 			}
 
@@ -354,7 +345,6 @@ export class ProcessTerminal implements Terminal {
 
 	stop(): void {
 		this.finishDefaultColorProbe();
-		this.finishSgrMouseProbe(false);
 
 		if (this.clearProgressInterval()) {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
@@ -487,37 +477,6 @@ export class ProcessTerminal implements Terminal {
 
 	get mouseTrackingActive(): boolean {
 		return this._mouseTrackingActive;
-	}
-
-	probeSgrMouseSupport(): Promise<boolean> {
-		if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
-			return Promise.resolve(false);
-		}
-		this.finishSgrMouseProbe(false);
-		return new Promise((resolve) => {
-			this.sgrMouseProbe = {
-				resolve,
-				timeout: setTimeout(() => this.finishSgrMouseProbe(false), 150),
-			};
-			this.write("\x1b[?1006$p");
-		});
-	}
-
-	private handleSgrMouseProbeResponse(sequence: string): boolean {
-		const match = sequence.match(/^\x1b\[\?1006;(\d)\$y$/);
-		if (!match) return false;
-		// DECRPM: 1=set, 2=reset, 3=permanently set → supported; 0/4 → not.
-		const value = Number(match[1]);
-		this.finishSgrMouseProbe(value === 1 || value === 2 || value === 3);
-		return true;
-	}
-
-	private finishSgrMouseProbe(supported: boolean): void {
-		if (!this.sgrMouseProbe) return;
-		clearTimeout(this.sgrMouseProbe.timeout);
-		const { resolve } = this.sgrMouseProbe;
-		this.sgrMouseProbe = undefined;
-		resolve(supported);
 	}
 
 	setTitle(title: string): void {

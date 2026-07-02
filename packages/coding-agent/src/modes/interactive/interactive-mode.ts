@@ -5604,6 +5604,10 @@ export class InteractiveMode {
 
 			// Restart TUI
 			this.ui.start();
+			// ui.stop() left fullscreen so the editor got a clean terminal
+			if (this.fullscreenEnabled) {
+				this.applyFullscreen(true);
+			}
 			// Force full re-render since external editor uses alternate screen
 			this.ui.requestRender(true);
 		}
