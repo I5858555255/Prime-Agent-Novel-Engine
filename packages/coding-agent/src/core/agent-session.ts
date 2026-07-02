@@ -2311,17 +2311,18 @@ export class AgentSession {
 						`${stateDescription}. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`,
 					);
 				}
-				if (options.streamingBehavior === "followUp") {
-					const queued = await this._queueFollowUp(expandedText, currentImages, {
+				const queued = await this._queuePromptWithPendingNextTurnMessages(
+					expandedText,
+					currentImages,
+					options.streamingBehavior,
+					{
 						queueKey: options.followUpQueueKey,
 						agentMessageId: options.agentMessageId,
-					});
-					if (!queued) {
-						reportPreflight(false);
-						return;
-					}
-				} else {
-					await this._queueSteer(expandedText, currentImages, { agentMessageId: options.agentMessageId });
+					},
+				);
+				if (!queued) {
+					reportPreflight(false);
+					return;
 				}
 				reportPreflight(true, true);
 				return;
@@ -2486,17 +2487,18 @@ export class AgentSession {
 				this._acceptedAgentMessagePrompt = undefined;
 			}
 			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((message) => ({ ...message })));
-			if (options.streamingBehavior === "followUp") {
-				const queued = await this._queueFollowUp(expandedText, currentImages, {
+			const queued = await this._queuePromptWithPendingNextTurnMessages(
+				expandedText,
+				currentImages,
+				options.streamingBehavior,
+				{
 					queueKey: options.followUpQueueKey,
 					agentMessageId: options.agentMessageId,
-				});
-				if (!queued) {
-					reportPreflight(false);
-					return;
-				}
-			} else {
-				await this._queueSteer(expandedText, currentImages, { agentMessageId: options.agentMessageId });
+				},
+			);
+			if (!queued) {
+				reportPreflight(false);
+				return;
 			}
 			reportPreflight(true, true);
 			return;
@@ -2668,18 +2670,60 @@ export class AgentSession {
 		return this._queueFollowUp(expandedText, images, { queueKey: options.queueKey });
 	}
 
+	private _buildPromptContent(
+		text: string,
+		images?: ImageContent[],
+		prefixMessages: readonly CustomMessage[] = [],
+	): (TextContent | ImageContent)[] {
+		const content: (TextContent | ImageContent)[] = [];
+		for (const message of prefixMessages) {
+			if (typeof message.content === "string") {
+				content.push({ type: "text", text: message.content });
+			} else {
+				content.push(...message.content);
+			}
+		}
+		content.push({ type: "text", text });
+		if (images) {
+			content.push(...images);
+		}
+		return content;
+	}
+
+	private async _queuePromptWithPendingNextTurnMessages(
+		text: string,
+		images: ImageContent[] | undefined,
+		streamingBehavior: "steer" | "followUp",
+		options: { queueKey?: string; agentMessageId?: string } = {},
+	): Promise<boolean> {
+		const pendingNextTurnMessages = this._pendingNextTurnMessages;
+		this._pendingNextTurnMessages = [];
+		const content = this._buildPromptContent(text, images, pendingNextTurnMessages);
+		try {
+			if (streamingBehavior === "followUp") {
+				const queued = await this._queueFollowUp(text, undefined, { ...options, content });
+				if (!queued) {
+					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+				}
+				return queued;
+			}
+			await this._queueSteer(text, undefined, { agentMessageId: options.agentMessageId, content });
+			return true;
+		} catch (error) {
+			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+			throw error;
+		}
+	}
+
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(
 		text: string,
 		images?: ImageContent[],
-		options: { agentMessageId?: string } = {},
+		options: { agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
 	): Promise<void> {
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
-		}
+		const content = options.content ?? this._buildPromptContent(text, images);
 		const message: AgentMessage = {
 			role: "user",
 			content,
@@ -2700,15 +2744,12 @@ export class AgentSession {
 	private async _queueFollowUp(
 		text: string,
 		images?: ImageContent[],
-		options: { queueKey?: string; agentMessageId?: string } = {},
+		options: { queueKey?: string; agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
 	): Promise<boolean> {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
 			return false;
 		}
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
-		}
+		const content = options.content ?? this._buildPromptContent(text, images);
 		const message: AgentMessage = {
 			role: "user",
 			content,

@@ -360,6 +360,46 @@ stale extension instructions`,
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
+	it("folds pending nextTurn context into accepted agent messages queued while busy", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_next_turn_queued\n\nagent text";
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "queued context", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		const sessionInternals = harness.session as unknown as {
+			_compactionAbortController?: AbortController;
+		};
+		sessionInternals._compactionAbortController = new AbortController();
+
+		await harness.session.acceptAgentMessagePrompt(agentPrompt, {
+			expandPromptTemplates: false,
+			streamingBehavior: "followUp",
+			queueIfBusy: true,
+		});
+		expect(harness.session.getFollowUpMessages()).toEqual([agentPrompt]);
+
+		sessionInternals._compactionAbortController = undefined;
+		let queuedTurnSawNextTurnContext = false;
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			(context) => {
+				const queuedUser = context.messages.find(
+					(message) => message.role === "user" && getMessageText(message).includes("agentmsg_next_turn_queued"),
+				);
+				queuedTurnSawNextTurnContext = queuedUser ? getMessageText(queuedUser).includes("queued context") : false;
+				return fauxAssistantMessage("queued turn");
+			},
+		]);
+
+		await harness.session.prompt("normal prompt");
+
+		expect(queuedTurnSawNextTurnContext).toBe(true);
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
 	it("queues accepted agent messages if the session becomes busy before handoff", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
