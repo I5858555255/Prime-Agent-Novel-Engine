@@ -17,20 +17,27 @@ describe("filterClientEnv", () => {
 });
 
 describe("withClientEnv", () => {
-	it("applies env during fn and restores afterwards", async () => {
+	it("applies env during fn, unsetting omitted allowlisted keys, and restores afterwards", async () => {
 		process.env.HERDR_PANE_ID = "original";
+		process.env.HERDR_WORKSPACE_ID = "ambient";
 		delete process.env.HERDR_TAB_ID;
 		let seenPane: string | undefined;
 		let seenTab: string | undefined;
+		let seenWorkspace: string | undefined = "unset";
 		await withClientEnv({ HERDR_PANE_ID: "w2:p1", HERDR_TAB_ID: "t1" }, async () => {
 			seenPane = process.env.HERDR_PANE_ID;
 			seenTab = process.env.HERDR_TAB_ID;
+			seenWorkspace = process.env.HERDR_WORKSPACE_ID;
 		});
 		expect(seenPane).toBe("w2:p1");
 		expect(seenTab).toBe("t1");
+		// The daemon's ambient value must not mix into a partial client env.
+		expect(seenWorkspace).toBeUndefined();
 		expect(process.env.HERDR_PANE_ID).toBe("original");
 		expect(process.env.HERDR_TAB_ID).toBeUndefined();
+		expect(process.env.HERDR_WORKSPACE_ID).toBe("ambient");
 		delete process.env.HERDR_PANE_ID;
+		delete process.env.HERDR_WORKSPACE_ID;
 	});
 
 	it("restores even when fn throws", async () => {

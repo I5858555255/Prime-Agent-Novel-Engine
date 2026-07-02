@@ -68,9 +68,17 @@ export async function withClientEnv<T>(env: Record<string, string> | undefined, 
 		await prior.catch(() => undefined);
 		await Promise.all(sharedAtRequest);
 		const previous = new Map<string, string | undefined>();
-		for (const [key, value] of Object.entries(env)) {
+		// Pin the full allowlist (unsetting keys the client didn't send) so a
+		// partially-forwarded env can't mix with the daemon's ambient values —
+		// mirroring execEnvForSession.
+		for (const key of DAEMON_CLIENT_ENV_KEYS) {
 			previous.set(key, process.env[key]);
-			process.env[key] = value;
+			const value = env[key];
+			if (value === undefined) {
+				delete process.env[key];
+			} else {
+				process.env[key] = value;
+			}
 		}
 		try {
 			return await fn();
