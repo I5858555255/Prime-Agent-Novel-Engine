@@ -168,6 +168,25 @@ describe("AgentSession queue characterization", () => {
 		expect(refine).not.toHaveBeenCalled();
 	});
 
+	it("falls back to turn-interval review when compact auto-refine is disabled", async () => {
+		const reviewer = vi.fn(async () => ({ shouldRefine: false, rationale: "nothing durable" }));
+		const harness = await createAutoRefineHarness({
+			settings: { autoRefine: { enabled: true, compact: false, turnInterval: 2, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as AutoRefineInternals;
+		internals._assistantTurnsSinceAutoRefine = 2;
+
+		await internals._maybeAutoRefine("compact");
+
+		expect(reviewer).toHaveBeenCalledWith(
+			{ reason: "turn_interval", turnsSinceLastReview: 2 },
+			expect.any(AbortSignal),
+		);
+		expect(internals._compactAutoRefinePending).toBe(false);
+	});
+
 	it("declined compact review preserves an already-due turn interval", async () => {
 		const reviewer = vi.fn(async () => ({ shouldRefine: false, rationale: "nothing compact-specific" }));
 		const harness = await createAutoRefineHarness({

@@ -3069,7 +3069,7 @@ export class AgentSession {
 
 		if (reason === "compact" && !settings.compact) {
 			this._compactAutoRefinePending = false;
-			return;
+			reason = "turn_interval";
 		}
 		if (reason === "turn_interval" && this._assistantTurnsSinceAutoRefine < settings.turnInterval) {
 			return;
