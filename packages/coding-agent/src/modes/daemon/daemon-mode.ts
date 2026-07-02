@@ -705,65 +705,68 @@ export class AgentDaemon {
 			sessionManager.newSession({ parentSession: options.parentSession.sessionFile });
 		}
 		let stateRef: ActiveSessionState | undefined;
-		const runtime = await createAgentSessionRuntime(this.options.createRuntime, {
-			cwd: sessionManager.getCwd(),
-			agentDir: parentState.runtime.services.agentDir,
-			sessionManager,
-			sessionStartEvent: { type: "session_start", reason: "startup" },
-			sessionConfig: parentState.runtime.runtimeConfig,
-			sessionOptions: {
-				model: options.model,
-				thinkingLevel: options.thinkingLevel,
-				scopedModels: options.scopedModels,
-				initialActiveToolNames: options.activeToolNames,
-				allowedToolNames: options.allowedToolNames,
-				customTools: options.customTools,
-				includeGoals: options.includeGoals,
-				rlmHeartbeatController: {
-					listRlmHeartbeats: (listOptions) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
+		// Subagents inherit the parent's client env (e.g. herdr pane identity).
+		const runtime = await withClientEnv(parentState.clientEnv, () =>
+			createAgentSessionRuntime(this.options.createRuntime, {
+				cwd: sessionManager.getCwd(),
+				agentDir: parentState.runtime.services.agentDir,
+				sessionManager,
+				sessionStartEvent: { type: "session_start", reason: "startup" },
+				sessionConfig: parentState.runtime.runtimeConfig,
+				sessionOptions: {
+					model: options.model,
+					thinkingLevel: options.thinkingLevel,
+					scopedModels: options.scopedModels,
+					initialActiveToolNames: options.activeToolNames,
+					allowedToolNames: options.allowedToolNames,
+					customTools: options.customTools,
+					includeGoals: options.includeGoals,
+					rlmHeartbeatController: {
+						listRlmHeartbeats: (listOptions) => {
+							if (!stateRef) {
+								throw new Error("RLM heartbeat state is not ready for this session yet");
+							}
+							return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
+						},
+						createRlmHeartbeat: (input) => {
+							if (!stateRef) {
+								throw new Error("RLM heartbeat state is not ready for this session yet");
+							}
+							return this.createRlmHeartbeatForState(stateRef, input);
+						},
+						updateRlmHeartbeat: (input) => {
+							if (!stateRef) {
+								throw new Error("RLM heartbeat state is not ready for this session yet");
+							}
+							return this.updateRlmHeartbeatForState(stateRef, input);
+						},
+						deleteRlmHeartbeat: (id) => {
+							if (!stateRef) {
+								throw new Error("RLM heartbeat state is not ready for this session yet");
+							}
+							return this.deleteRlmHeartbeatForState(stateRef, id);
+						},
 					},
-					createRlmHeartbeat: (input) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.createRlmHeartbeatForState(stateRef, input);
-					},
-					updateRlmHeartbeat: (input) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.updateRlmHeartbeatForState(stateRef, input);
-					},
-					deleteRlmHeartbeat: (id) => {
-						if (!stateRef) {
-							throw new Error("RLM heartbeat state is not ready for this session yet");
-						}
-						return this.deleteRlmHeartbeatForState(stateRef, id);
-					},
+					rlmDepth: options.rlmDepth,
+					rlmMaxDepth: options.rlmMaxDepth,
+					rlmSessionDir: options.sessionDir,
+					rlmParentNodeId: options.rlmParentNodeId,
 				},
-				rlmDepth: options.rlmDepth,
-				rlmMaxDepth: options.rlmMaxDepth,
-				rlmSessionDir: options.sessionDir,
-				rlmParentNodeId: options.rlmParentNodeId,
-			},
-			runtimeMetadata: {
-				kind: "subagent",
-				createdAt: Date.now(),
-				parentActiveSessionId: parentState.activeSessionId,
-				parentSessionId: options.parentSession.sessionId,
-				parentSessionFile: options.parentSession.sessionFile,
-				rlmChildId: options.id,
-				rlmParentNodeId: options.rlmParentNodeId,
-				prompt: options.prompt,
-				spawnCode: options.spawnCode,
-				sessionDir: options.sessionDir,
-			},
-		});
-		const state = await this.addRuntime(runtime);
+				runtimeMetadata: {
+					kind: "subagent",
+					createdAt: Date.now(),
+					parentActiveSessionId: parentState.activeSessionId,
+					parentSessionId: options.parentSession.sessionId,
+					parentSessionFile: options.parentSession.sessionFile,
+					rlmChildId: options.id,
+					rlmParentNodeId: options.rlmParentNodeId,
+					prompt: options.prompt,
+					spawnCode: options.spawnCode,
+					sessionDir: options.sessionDir,
+				},
+			}),
+		);
+		const state = await this.addRuntime(runtime, undefined, parentState.clientEnv);
 		stateRef = state;
 		return runtime;
 	}
@@ -904,9 +907,6 @@ export class AgentDaemon {
 				}
 				client.capabilities = normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi);
 				client.supportsExtensionUi = client.capabilities.has("extension_ui");
-				// Most recent env-carrying client wins; env-less attaches (e.g. a
-				// plain REPL) keep the session's existing identity.
-				state.clientEnv = filterClientEnv(command.env) ?? state.clientEnv;
 				state.clients.add(client);
 				client.attachedActiveSessionIds.add(state.activeSessionId);
 				const result = this.createAttachResult(client, state, command);

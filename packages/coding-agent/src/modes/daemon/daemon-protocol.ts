@@ -68,8 +68,10 @@ export interface DaemonAttachClientMetadata {
 /**
  * Client-side env vars forwarded to the daemon so extensions can reach them
  * (e.g. HERDR_PANE_ID/HERDR_SOCKET_PATH that herdr sets per pane). The daemon
- * scopes these to the target session and merges them over process.env for that
- * session's pi.exec() subprocesses — it does not mutate the daemon's own env.
+ * scopes these to the created session and merges them over process.env for
+ * that session's pi.exec() subprocesses — it does not mutate the daemon's own
+ * env. Carried on create only: attach must not rebind a session's identity,
+ * since watchers (agents view, subagent viewers) also attach.
  */
 export interface DaemonClientEnv {
 	env?: Record<string, string>;
@@ -194,8 +196,7 @@ export type DaemonCommand =
 			type: "attach";
 			activeSessionId: string;
 			supportsExtensionUi?: boolean;
-	  } & DaemonAttachClientMetadata &
-			DaemonClientEnv)
+	  } & DaemonAttachClientMetadata)
 	| { id?: string; type: "detach"; activeSessionId?: string }
 	| { id?: string; type: "kill"; activeSessionId: string }
 	| { id?: string; type: "rename"; activeSessionId: string; name: string }

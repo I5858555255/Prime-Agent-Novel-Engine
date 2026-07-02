@@ -66,4 +66,32 @@ describe("withClientEnv", () => {
 		});
 		expect(ran).toBe(true);
 	});
+
+	it("env-less loads never run inside an env window", async () => {
+		delete process.env.HERDR_PANE_ID;
+		let seenByEnvless: string | undefined = "unset";
+		const windowed = withClientEnv({ HERDR_PANE_ID: "a" }, async () => {
+			await new Promise((r) => setTimeout(r, 20));
+		});
+		const envless = withClientEnv(undefined, async () => {
+			seenByEnvless = process.env.HERDR_PANE_ID;
+		});
+		await Promise.all([windowed, envless]);
+		expect(seenByEnvless).toBeUndefined();
+	});
+
+	it("env windows wait for in-flight env-less loads", async () => {
+		delete process.env.HERDR_PANE_ID;
+		const order: string[] = [];
+		const envless = withClientEnv(undefined, async () => {
+			await new Promise((r) => setTimeout(r, 20));
+			order.push(`envless:${process.env.HERDR_PANE_ID}`);
+		});
+		const windowed = withClientEnv({ HERDR_PANE_ID: "b" }, async () => {
+			order.push(`windowed:${process.env.HERDR_PANE_ID}`);
+		});
+		await Promise.all([envless, windowed]);
+		expect(order).toEqual(["envless:undefined", "windowed:b"]);
+		expect(process.env.HERDR_PANE_ID).toBeUndefined();
+	});
 });

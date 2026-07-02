@@ -3553,9 +3553,12 @@ export class AgentSession {
 				extensionsResult.runtime.flagValues.set(name, value);
 			}
 		}
-		// Re-apply on every (re)build so the provider survives /reload, which
-		// recreates the shared extension runtime.
-		extensionsResult.runtime.getExecEnv = this._execEnvProvider;
+		// Re-apply on (re)build so the provider survives /reload. Guarded: the
+		// runtime object can be shared across sessions from one ResourceLoader
+		// (RLM children), so a provider-less session must not wipe the owner's.
+		if (this._execEnvProvider) {
+			extensionsResult.runtime.getExecEnv = this._execEnvProvider;
+		}
 
 		this._extensionRunner = new ExtensionRunner(
 			extensionsResult.extensions,

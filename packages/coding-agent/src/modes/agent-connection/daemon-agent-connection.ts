@@ -10,7 +10,6 @@ import type { SessionStats } from "../../core/session-stats.js";
 import type { DaemonClient } from "../daemon/daemon-client.js";
 import { deserializeDaemonError } from "../daemon/daemon-errors.js";
 import {
-	collectDaemonClientEnv,
 	type DaemonAttachResult,
 	type DaemonCommand,
 	type DaemonDeleteSavedSessionResult,
@@ -112,7 +111,6 @@ export class DaemonAgentConnection implements AgentConnection {
 			supportsExtensionUi: true,
 			clientId: this.clientId,
 			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach"],
-			env: collectDaemonClientEnv(),
 			resumeCursor:
 				this.lastEventSequence === undefined
 					? undefined

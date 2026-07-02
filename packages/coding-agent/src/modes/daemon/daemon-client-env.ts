@@ -14,9 +14,11 @@ export function filterClientEnv(env?: Record<string, string>): Record<string, st
 	return Object.keys(filtered).length > 0 ? filtered : undefined;
 }
 
-// Serializes env windows so overlapping creates can't cross-restore each
-// other's values. Only env-carrying operations queue here.
-let envWindow: Promise<unknown> = Promise.resolve();
+// Shared/exclusive lock: env windows are exclusive (they mutate process.env),
+// env-less loads are shared — they run concurrently with each other but never
+// inside an env window, so they can't capture another session's identity.
+let lastExclusive: Promise<unknown> = Promise.resolve();
+const activeShared = new Set<Promise<unknown>>();
 
 /**
  * Run fn with the client's env applied to process.env, restoring afterwards.
@@ -26,9 +28,23 @@ let envWindow: Promise<unknown> = Promise.resolve();
  */
 export async function withClientEnv<T>(env: Record<string, string> | undefined, fn: () => Promise<T>): Promise<T> {
 	if (!env) {
-		return fn();
+		const gate = lastExclusive;
+		const run = (async () => {
+			await gate.catch(() => undefined);
+			return fn();
+		})();
+		const tracked = run.catch(() => undefined);
+		activeShared.add(tracked);
+		void tracked.then(() => activeShared.delete(tracked));
+		return run;
 	}
-	const run = envWindow.then(async () => {
+	const prior = lastExclusive;
+	// Snapshot synchronously: shareds arriving later gate on this window via
+	// lastExclusive, so waiting for them here would deadlock.
+	const sharedAtRequest = [...activeShared];
+	const run = (async () => {
+		await prior.catch(() => undefined);
+		await Promise.all(sharedAtRequest);
 		const previous = new Map<string, string | undefined>();
 		for (const [key, value] of Object.entries(env)) {
 			previous.set(key, process.env[key]);
@@ -45,7 +61,7 @@ export async function withClientEnv<T>(env: Record<string, string> | undefined, 
 				}
 			}
 		}
-	});
-	envWindow = run.catch(() => undefined);
+	})();
+	lastExclusive = run.catch(() => undefined);
 	return run;
 }
