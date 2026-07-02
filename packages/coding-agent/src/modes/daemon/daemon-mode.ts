@@ -527,10 +527,17 @@ export class AgentDaemon {
 			return "skipped";
 		}
 		const session = state.runtime.session;
+		const isAgentMessagePromptInProgress =
+			this.agentMessageAcceptingTargets.has(state.activeSessionId) ||
+			this.agentMessagePreparingTargets.has(state.activeSessionId);
+		if (isHeartbeatCronJob(job) && isAgentMessagePromptInProgress) {
+			return "skipped";
+		}
 		if (shouldDeferHeartbeatCronJob(job, session)) {
 			return "skipped";
 		}
 		const shouldQueueCronPrompt =
+			isAgentMessagePromptInProgress ||
 			session.isStreaming ||
 			session.isCompacting ||
 			session.isRetrying ||
