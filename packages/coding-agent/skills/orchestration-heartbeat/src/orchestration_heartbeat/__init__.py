@@ -72,19 +72,20 @@ def _other_agents(roster: dict[str, Any]) -> list[dict[str, Any]]:
     return [agent for agent in agents if not _same_session(agent, current)]
 
 
+def _normalize_interval_expression(value: str) -> str:
+    normalized = " ".join(value.strip().lower().split())
+    if normalized.startswith("every "):
+        return normalized[6:].strip()
+    return normalized
+
+
 def _interval_matches_schedule(interval: str, schedule: Any) -> bool:
     if not isinstance(schedule, dict):
         return False
     expression = schedule.get("expression")
     if not isinstance(expression, str):
         return False
-    normalized_interval = " ".join(interval.strip().lower().split())
-    normalized_expression = " ".join(expression.strip().lower().split())
-    if normalized_expression == normalized_interval:
-        return True
-    if not normalized_interval.startswith("every "):
-        return normalized_expression == f"every {normalized_interval}"
-    return False
+    return _normalize_interval_expression(expression) == _normalize_interval_expression(interval)
 
 
 def build_instruction(

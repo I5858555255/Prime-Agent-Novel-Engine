@@ -101,6 +101,13 @@ describe("orchestration heartbeat skill over bundled host bridges", () => {
 										instruction: "old instruction",
 										schedule: { kind: "interval", expression: scheduleExpression },
 									},
+									{
+										id: "job-plain",
+										status: "active",
+										label: "plain-schedule",
+										instruction: "old instruction",
+										schedule: { kind: "interval", expression: "10m" },
+									},
 								]
 							: [],
 					};
@@ -156,12 +163,14 @@ except RuntimeError as error:
     missing_once_error = str(error)
 paused = await orchestration_heartbeat.initialize(interval="10m", label="paused-orchestrator")
 refreshed = await orchestration_heartbeat.initialize(interval="10m")
+plain = await orchestration_heartbeat.initialize(interval="every 10m", label="plain-schedule")
 print(json.dumps({
     "created_action": created["action"],
     "updated_action": updated["action"],
     "missing_once_error": missing_once_error,
     "paused_action": paused["action"],
     "refreshed_action": refreshed["action"],
+    "plain_action": plain["action"],
     "created_label": created["heartbeat"]["label"],
     "updated_label": updated["heartbeat"]["label"],
     "session_names": [agent.get("sessionName") for agent in updated["sessions"]],
@@ -176,6 +185,7 @@ print(json.dumps({
 			updated_action: "updated",
 			paused_action: "updated",
 			refreshed_action: "updated",
+			plain_action: "updated",
 			created_label: "orchestrator",
 			updated_label: "orchestrator",
 			session_names: ["autoenv", "emulatorBench"],
@@ -194,6 +204,9 @@ print(json.dumps({
 			"agent_observe.list",
 			"rlm_heartbeat.list",
 			"rlm_heartbeat.create",
+			"agent_observe.list",
+			"rlm_heartbeat.list",
+			"rlm_heartbeat.update",
 			"agent_observe.list",
 			"rlm_heartbeat.list",
 			"rlm_heartbeat.update",
@@ -237,5 +250,11 @@ print(json.dumps({
 		});
 		expect(requests[14].payload).not.toHaveProperty("interval");
 		expect(requests[14].payload).not.toHaveProperty("status");
+		expect(requests[17].payload).toMatchObject({
+			type: "rlm_heartbeat.update",
+			id: "job-plain",
+			label: "plain-schedule",
+		});
+		expect(requests[17].payload).not.toHaveProperty("interval");
 	});
 });
