@@ -1533,6 +1533,7 @@ export class AgentDaemon {
 				const result = await state.runtime.session.refine({
 					instructions: command.instructions,
 					rollbackId: command.rollbackId,
+					global: command.global,
 				});
 				return success(command.id, "refine", result);
 			}
