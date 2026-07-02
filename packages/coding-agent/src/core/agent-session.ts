@@ -2747,20 +2747,29 @@ export class AgentSession {
 		}
 		const steeringToRemove = new Set(steering.map((message) => message.message));
 		const followUpToRemove = new Set(followUp.map((message) => message.message));
-		this._steeringMessages = this._steeringMessages.filter((message) => !steeringToRemove.has(message.message));
-		this._followUpMessages = this._followUpMessages.filter((message) => !followUpToRemove.has(message.message));
-		this.agent.removeQueuedMessages(
-			(message) => message.role === "user" && (steeringToRemove.has(message) || followUpToRemove.has(message)),
+		const removedQueuedMessages = new Set(
+			this.agent.removeQueuedMessages(
+				(message) => message.role === "user" && (steeringToRemove.has(message) || followUpToRemove.has(message)),
+			),
 		);
-		const removedSteering = steering.map((message) => message.text);
-		const removedFollowUp = followUp.map((message) => message.text);
-		for (const message of steering) {
+		const removedSteeringMessages = steering.filter((message) => removedQueuedMessages.has(message.message));
+		const removedFollowUpMessages = followUp.filter((message) => removedQueuedMessages.has(message.message));
+		if (removedSteeringMessages.length === 0 && removedFollowUpMessages.length === 0 && !acceptedMatches) {
+			return { steering: [], followUp: [] };
+		}
+		const removedSteeringSet = new Set(removedSteeringMessages.map((message) => message.message));
+		const removedFollowUpSet = new Set(removedFollowUpMessages.map((message) => message.message));
+		this._steeringMessages = this._steeringMessages.filter((message) => !removedSteeringSet.has(message.message));
+		this._followUpMessages = this._followUpMessages.filter((message) => !removedFollowUpSet.has(message.message));
+		const removedSteering = removedSteeringMessages.map((message) => message.text);
+		const removedFollowUp = removedFollowUpMessages.map((message) => message.text);
+		for (const message of removedSteeringMessages) {
 			this._rejectAgentMessageDelivery(
 				message.agentMessageId,
 				new Error("Queued agent message was cleared before delivery."),
 			);
 		}
-		for (const message of followUp) {
+		for (const message of removedFollowUpMessages) {
 			this._rejectAgentMessageDelivery(
 				message.agentMessageId,
 				new Error("Queued agent message was cleared before delivery."),

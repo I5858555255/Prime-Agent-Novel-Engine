@@ -559,16 +559,11 @@ export class AgentDaemon {
 			(this.agentMessagePreparingTargets.get(activeSessionId) ?? 0) + 1,
 		);
 		let cleared = false;
-		let checkTimer: ReturnType<typeof setTimeout> | undefined;
 		const clearPreparing = () => {
 			if (cleared) {
 				return;
 			}
 			cleared = true;
-			if (checkTimer) {
-				clearTimeout(checkTimer);
-				checkTimer = undefined;
-			}
 			const next = (this.agentMessagePreparingTargets.get(activeSessionId) ?? 1) - 1;
 			if (next <= 0) {
 				this.agentMessagePreparingTargets.delete(activeSessionId);
@@ -576,24 +571,11 @@ export class AgentDaemon {
 				this.agentMessagePreparingTargets.set(activeSessionId, next);
 			}
 		};
-		const clearWhenStreamingStarts = () => {
-			if (cleared) {
-				return;
-			}
-			if (session.isStreaming) {
-				clearPreparing();
-				return;
-			}
-			checkTimer = setTimeout(clearWhenStreamingStarts, 10);
-		};
 		try {
 			await session.prompt(message, {
 				...options,
 				preflightResult: (didSucceed) => {
 					options?.preflightResult?.(didSucceed);
-					if (didSucceed) {
-						clearWhenStreamingStarts();
-					}
 				},
 			});
 		} finally {
