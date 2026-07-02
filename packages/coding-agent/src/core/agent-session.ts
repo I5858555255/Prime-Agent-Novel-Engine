@@ -45,6 +45,7 @@ import { flushAgentTraceUpload } from "./agent-traces.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
+	COMPACT_SKILL_NAME,
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -188,6 +189,12 @@ export interface RlmChildAgentSnapshot {
 	error?: string;
 }
 
+/**
+ * Why a compaction ran: user /compact, context threshold, overflow recovery,
+ * or requested by the model via the compact skill.
+ */
+export type CompactionReason = "manual" | "threshold" | "overflow" | "requested";
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
@@ -196,12 +203,12 @@ export type AgentSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow"; customInstructions?: string }
+	| { type: "compaction_start"; reason: CompactionReason; customInstructions?: string }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
-			reason: "manual" | "threshold" | "overflow";
+			reason: CompactionReason;
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
@@ -271,6 +278,13 @@ export interface AgentSessionConfig {
 	 * Default: true.
 	 */
 	includeGoals?: boolean;
+	/**
+	 * Whether the bundled compact skill is available to the model: the skill in
+	 * the IPython kernel and its compact.* host handlers. Auto-compaction is
+	 * controlled separately by settings. Default: the compaction.agentCallable
+	 * setting (true).
+	 */
+	includeCompactSkill?: boolean;
 	/**
 	 * Optional host-side controller for the bundled rlm-heartbeat Python skill.
 	 * When omitted, rlm_heartbeat.* host requests are unavailable.
@@ -488,6 +502,8 @@ export class AgentSession {
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
 	private _continueAfterThresholdCompaction = false;
+	/** Set by compact.run from the kernel; consumed at the next turn boundary. */
+	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -517,6 +533,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _includeGoals: boolean;
+	private _includeCompactSkill: boolean;
 	private _rlmHeartbeatController?: AgentRlmHeartbeatController;
 	private _mcpManager?: McpManager;
 	private _baseToolsOverride?: Record<string, AgentTool>;
@@ -579,6 +596,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._includeGoals = config.includeGoals ?? true;
+		this._includeCompactSkill = config.includeCompactSkill ?? this.settingsManager.getCompactionAgentCallable();
 		this._rlmHeartbeatController = config.rlmHeartbeatController;
 		this._mcpManager = config.mcpManager;
 		this._baseToolsOverride = config.baseToolsOverride;
@@ -1127,6 +1145,16 @@ export class AgentSession {
 
 	private _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): boolean {
 		this._continueAfterThresholdCompaction = false;
+		if (this._pendingRequestedCompaction === undefined && !this._thresholdCompactionNeeded(context)) {
+			return false;
+		}
+
+		const lastMessage = this.agent.state.messages[this.agent.state.messages.length - 1];
+		this._continueAfterThresholdCompaction = lastMessage !== undefined && lastMessage.role !== "assistant";
+		return true;
+	}
+
+	private _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): boolean {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 
@@ -1138,13 +1166,7 @@ export class AgentSession {
 		}
 
 		const contextTokens = this._getThresholdContextTokens(context.message, compactionTimestamp);
-		if (contextTokens === undefined || !shouldCompact(contextTokens, contextWindow, settings)) {
-			return false;
-		}
-
-		const lastMessage = this.agent.state.messages[this.agent.state.messages.length - 1];
-		this._continueAfterThresholdCompaction = lastMessage !== undefined && lastMessage.role !== "assistant";
-		return true;
+		return contextTokens !== undefined && shouldCompact(contextTokens, contextWindow, settings);
 	}
 
 	/**
@@ -1172,6 +1194,55 @@ export class AgentSession {
 				return goalHostResponse(this._completeGoalFromHost(), true);
 			default:
 				throw new Error(`unknown goal request type "${type}"`);
+		}
+	}
+
+	/**
+	 * Handle a compact.* request from the IPython kernel host bridge (the
+	 * bundled compact skill). Compaction aborts the agent run that is executing
+	 * the requesting cell, so compact.run only schedules it; the pending request
+	 * is consumed at the next turn boundary (_checkCompaction) and the loop
+	 * resumes afterwards.
+	 */
+	handleCompactHostRequest(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
+		if (!this._includeCompactSkill) {
+			throw new Error("the compact skill is disabled in this session");
+		}
+		switch (type) {
+			case "compact.status": {
+				const usage = this.getContextUsage();
+				return {
+					tokens: usage?.tokens ?? null,
+					context_window: usage?.contextWindow ?? null,
+					percent: usage?.percent ?? null,
+					scheduled: this._pendingRequestedCompaction !== undefined,
+				};
+			}
+			case "compact.run": {
+				const instructions = payload.instructions;
+				if (instructions !== undefined && typeof instructions !== "string") {
+					throw new Error("compact.run instructions must be a string when provided");
+				}
+				// "status" is reserved by the host-request reply protocol; don't use it as a key.
+				const preparation = prepareCompaction(
+					this.sessionManager.getBranch(),
+					this.settingsManager.getCompactionSettings(),
+				);
+				if (!preparation) {
+					const lastEntry = this.sessionManager.getBranch().at(-1);
+					return {
+						scheduled: false,
+						reason: lastEntry?.type === "compaction" ? "already compacted" : "session is too short to compact",
+					};
+				}
+				this._pendingRequestedCompaction = { customInstructions: instructions };
+				return {
+					scheduled: true,
+					note: "Compaction runs when the current turn ends; you resume automatically afterwards. Continue working normally.",
+				};
+			}
+			default:
+				throw new Error(`unknown compact request type "${type}"`);
 		}
 	}
 
@@ -2695,6 +2766,7 @@ export class AgentSession {
 		this._disconnectFromAgent();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
+		this._pendingRequestedCompaction = undefined;
 		this._emit({ type: "compaction_start", reason: "manual", customInstructions });
 
 		try {
@@ -2703,115 +2775,23 @@ export class AgentSession {
 			}
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
-
-			const pathEntries = this.sessionManager.getBranch();
-			const settings = this.settingsManager.getCompactionSettings();
-
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
-				// Check why we can't compact
-				const lastEntry = pathEntries[pathEntries.length - 1];
-				if (lastEntry?.type === "compaction") {
-					throw new CompactionSkippedError("Already compacted");
-				}
-				throw new CompactionSkippedError("Session is too short to compact — try again once it grows");
-			}
-
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
-
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const result = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions,
-					signal: this._compactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (result?.cancel) {
-					throw new Error("Compaction cancelled");
-				}
-
-				if (result?.compaction) {
-					extensionCompaction = result.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const result = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					customInstructions,
-					this._compactionAbortController.signal,
-					this.thinkingLevel,
-				);
-				summary = result.summary;
-				firstKeptEntryId = result.firstKeptEntryId;
-				tokensBefore = result.tokensBefore;
-				details = result.details;
-			}
-
-			if (this._compactionAbortController.signal.aborted) {
-				throw new Error("Compaction cancelled");
-			}
-
-			this.sessionManager.appendCompaction(
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-				fromExtension,
+			const result = await this._performCompaction({
+				model: this.model,
+				apiKey,
+				headers,
 				customInstructions,
-			);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
+				signal: this._compactionAbortController.signal,
+			});
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-			await this._notifyKernelStateAfterCompaction();
-
-			const compactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
 			this._emit({
 				type: "compaction_end",
 				reason: "manual",
-				result: compactionResult,
+				result,
 				aborted: false,
 				willRetry: false,
 				customInstructions,
 			});
-			return compactionResult;
+			return result;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
@@ -2831,6 +2811,91 @@ export class AgentSession {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
 		}
+	}
+
+	/**
+	 * Shared compaction core behind /compact, auto-compaction, and the compact
+	 * skill: prepare, summarize, persist the compaction entry, rebuild agent
+	 * context, and notify extensions and the kernel.
+	 *
+	 * @throws CompactionSkippedError when there is nothing to compact, and
+	 *         Error("Compaction cancelled") on abort or extension cancel.
+	 */
+	private async _performCompaction(options: {
+		model: Model<any>;
+		apiKey: string;
+		headers?: Record<string, string>;
+		customInstructions?: string;
+		signal: AbortSignal;
+	}): Promise<CompactionResult> {
+		const { model, apiKey, headers, customInstructions, signal } = options;
+		const pathEntries = this.sessionManager.getBranch();
+		const settings = this.settingsManager.getCompactionSettings();
+
+		const preparation = prepareCompaction(pathEntries, settings);
+		if (!preparation) {
+			const lastEntry = pathEntries[pathEntries.length - 1];
+			if (lastEntry?.type === "compaction") {
+				throw new CompactionSkippedError("Already compacted");
+			}
+			throw new CompactionSkippedError("Session is too short to compact — try again once it grows");
+		}
+
+		let extensionCompaction: CompactionResult | undefined;
+		let fromExtension = false;
+
+		if (this._extensionRunner.hasHandlers("session_before_compact")) {
+			const result = (await this._extensionRunner.emit({
+				type: "session_before_compact",
+				preparation,
+				branchEntries: pathEntries,
+				customInstructions,
+				signal,
+			})) as SessionBeforeCompactResult | undefined;
+
+			if (result?.cancel) {
+				throw new Error("Compaction cancelled");
+			}
+
+			if (result?.compaction) {
+				extensionCompaction = result.compaction;
+				fromExtension = true;
+			}
+		}
+
+		const { summary, firstKeptEntryId, tokensBefore, details } =
+			extensionCompaction ??
+			(await compact(preparation, model, apiKey, headers, customInstructions, signal, this.thinkingLevel));
+
+		if (signal.aborted) {
+			throw new Error("Compaction cancelled");
+		}
+
+		this.sessionManager.appendCompaction(
+			summary,
+			firstKeptEntryId,
+			tokensBefore,
+			details,
+			fromExtension,
+			customInstructions,
+		);
+		const newEntries = this.sessionManager.getEntries();
+		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+
+		// Get the saved compaction entry for the extension event
+		const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
+			| CompactionEntry
+			| undefined;
+		if (savedCompactionEntry) {
+			await this._extensionRunner.emit({
+				type: "session_compact",
+				compactionEntry: savedCompactionEntry,
+				fromExtension,
+			});
+		}
+		await this._notifyKernelStateAfterCompaction();
+
+		return { summary, firstKeptEntryId, tokensBefore, details };
 	}
 
 	/**
@@ -2934,11 +2999,21 @@ export class AgentSession {
 	}
 
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false.
+		// A user abort also drops any compaction the model requested this turn.
+		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") {
+			this._pendingRequestedCompaction = undefined;
+			return false;
+		}
+
+		// Model-requested compaction (compact skill) runs regardless of the
+		// auto-compaction setting.
+		if (this._pendingRequestedCompaction !== undefined) {
+			return await this._runAutoCompaction("requested", false);
+		}
+
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
-
-		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
 
 		const contextWindow = this.model?.contextWindow ?? 0;
 
@@ -2997,14 +3072,21 @@ export class AgentSession {
 	}
 
 	/**
-	 * Internal: Run auto-compaction with events.
+	 * Internal: Run automatic (threshold/overflow) or model-requested compaction
+	 * with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
-		const settings = this.settingsManager.getCompactionSettings();
-		const shouldContinueAfterThreshold = reason === "threshold" && this._continueAfterThresholdCompaction;
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold" | "requested",
+		willRetry: boolean,
+	): Promise<boolean> {
+		const pending = this._pendingRequestedCompaction;
+		this._pendingRequestedCompaction = undefined;
+		const customInstructions = reason === "requested" ? pending?.customInstructions : undefined;
+		const shouldContinueAfterCompaction =
+			(reason === "threshold" || reason === "requested") && this._continueAfterThresholdCompaction;
 		this._continueAfterThresholdCompaction = false;
 
-		this._emit({ type: "compaction_start", reason });
+		this._emit({ type: "compaction_start", reason, customInstructions });
 		this._autoCompactionAbortController = new AbortController();
 
 		try {
@@ -3030,118 +3112,16 @@ export class AgentSession {
 				});
 				return false;
 			}
-			const { apiKey, headers } = authResult;
 
-			const pathEntries = this.sessionManager.getBranch();
+			const result = await this._performCompaction({
+				model: this.model,
+				apiKey: authResult.apiKey,
+				headers: authResult.headers,
+				customInstructions,
+				signal: this._autoCompactionAbortController.signal,
+			});
 
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
-				this._emit({
-					type: "compaction_end",
-					reason,
-					result: undefined,
-					aborted: false,
-					willRetry: false,
-					errorMessage: "Auto-compaction skipped: nothing to summarize outside the recent-context window",
-					errorSeverity: "warning",
-				});
-				return false;
-			}
-
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
-
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const extensionResult = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions: undefined,
-					signal: this._autoCompactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (extensionResult?.cancel) {
-					this._emit({
-						type: "compaction_end",
-						reason,
-						result: undefined,
-						aborted: true,
-						willRetry: false,
-					});
-					return false;
-				}
-
-				if (extensionResult?.compaction) {
-					extensionCompaction = extensionResult.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const compactResult = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					undefined,
-					this._autoCompactionAbortController.signal,
-					this.thinkingLevel,
-				);
-				summary = compactResult.summary;
-				firstKeptEntryId = compactResult.firstKeptEntryId;
-				tokensBefore = compactResult.tokensBefore;
-				details = compactResult.details;
-			}
-
-			if (this._autoCompactionAbortController.signal.aborted) {
-				this._emit({
-					type: "compaction_end",
-					reason,
-					result: undefined,
-					aborted: true,
-					willRetry: false,
-				});
-				return false;
-			}
-
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-			await this._notifyKernelStateAfterCompaction();
-
-			const result: CompactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
-			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry, customInstructions });
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;
@@ -3154,8 +3134,8 @@ export class AgentSession {
 					this.agent.continue().catch(() => {});
 				}, 100);
 				return true;
-			} else if (shouldContinueAfterThreshold || this.agent.hasQueuedMessages()) {
-				// Threshold compaction can intentionally stop a tool loop between turns.
+			} else if (shouldContinueAfterCompaction || this.agent.hasQueuedMessages()) {
+				// Compaction can intentionally stop a tool loop between turns.
 				// Queued follow-up/steering/custom messages can also be waiting.
 				setTimeout(() => {
 					this.agent.continue().catch(() => {});
@@ -3164,6 +3144,35 @@ export class AgentSession {
 			return false;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+			const aborted =
+				errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+			if (aborted) {
+				this._emit({
+					type: "compaction_end",
+					reason,
+					result: undefined,
+					aborted: true,
+					willRetry: false,
+					customInstructions,
+				});
+				return false;
+			}
+			if (error instanceof CompactionSkippedError) {
+				this._emit({
+					type: "compaction_end",
+					reason,
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						reason === "requested"
+							? `Requested compaction skipped: ${errorMessage}`
+							: `Auto-compaction skipped: ${errorMessage}`,
+					errorSeverity: "warning",
+					customInstructions,
+				});
+				return false;
+			}
 			this._emit({
 				type: "compaction_end",
 				reason,
@@ -3173,7 +3182,10 @@ export class AgentSession {
 				errorMessage:
 					reason === "overflow"
 						? `Context overflow recovery failed: ${errorMessage}`
-						: `Auto-compaction failed: ${errorMessage}`,
+						: reason === "requested"
+							? `Requested compaction failed: ${errorMessage}`
+							: `Auto-compaction failed: ${errorMessage}`,
+				customInstructions,
 			});
 			return false;
 		} finally {
@@ -3582,14 +3594,14 @@ export class AgentSession {
 
 	/**
 	 * Skills exposed to the model (system prompt + kernel). The bundled goal
-	 * skill is withheld when goals are disabled for this session.
+	 * and compact skills are withheld when disabled for this session.
 	 */
 	private _modelVisibleSkills(): Skill[] {
-		const skills = this._resourceLoader.getSkills().skills;
-		if (this._includeGoals) {
-			return skills;
-		}
-		return skills.filter((skill) => skill.name !== GOAL_SKILL_NAME);
+		return this._resourceLoader.getSkills().skills.filter((skill) => {
+			if (!this._includeGoals && skill.name === GOAL_SKILL_NAME) return false;
+			if (!this._includeCompactSkill && skill.name === COMPACT_SKILL_NAME) return false;
+			return true;
+		});
 	}
 
 	/** Typed handlers for host requests arriving from the IPython kernel comm bridge. */
@@ -3607,6 +3619,11 @@ export class AgentSession {
 		if (this._includeGoals) {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
 				handlers[type] = async (payload) => this.handleGoalHostRequest(type, payload);
+			}
+		}
+		if (this._includeCompactSkill) {
+			for (const type of ["compact.run", "compact.status"]) {
+				handlers[type] = async (payload) => this.handleCompactHostRequest(type, payload);
 			}
 		}
 		if (this._rlmHeartbeatController) {
@@ -3813,6 +3830,7 @@ export class AgentSession {
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
 			customTools: [...this._customTools],
 			includeGoals: this._includeGoals,
+			includeCompactSkill: this._includeCompactSkill,
 			rlmDepth: this._rlmDepth + 1,
 			rlmMaxDepth: this._rlmMaxDepth,
 			rlmParentNodeId: options.id,
@@ -3893,6 +3911,7 @@ export class AgentSession {
 			initialActiveToolNames: options.activeToolNames,
 			allowedToolNames: options.allowedToolNames,
 			includeGoals: options.includeGoals,
+			includeCompactSkill: options.includeCompactSkill,
 			rlmDepth: options.rlmDepth,
 			rlmMaxDepth: options.rlmMaxDepth,
 			rlmSessionDir: options.sessionDir,

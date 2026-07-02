@@ -53,6 +53,7 @@ export interface AgentSessionCreationOptions {
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
 	includeGoals?: boolean;
+	includeCompactSkill?: boolean;
 	rlmDepth?: number;
 	rlmMaxDepth?: number;
 	rlmSessionDir?: string;
@@ -231,6 +232,7 @@ export async function createAgentSessionFromServices(
 		initialActiveToolNames: options.initialActiveToolNames,
 		allowedToolNames: options.allowedToolNames,
 		includeGoals: options.includeGoals,
+		includeCompactSkill: options.includeCompactSkill,
 		rlmDepth: options.rlmDepth,
 		rlmMaxDepth: options.rlmMaxDepth,
 		rlmSessionDir: options.rlmSessionDir,
