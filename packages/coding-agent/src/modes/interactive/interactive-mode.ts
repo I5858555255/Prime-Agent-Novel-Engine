@@ -507,8 +507,7 @@ export class InteractiveMode {
 	private fdPath: string | undefined;
 	private mainContainer: Container;
 	private mainViewContainer: Container;
-	// Everything below the transcript (widgets, editor, footer) — pinned to the
-	// bottom rows in fullscreen mode, plain inline flow otherwise.
+	// widgets/editor/footer — pinned to the bottom rows in fullscreen mode
 	private bottomDock: Container;
 	private fullscreenEnabled = false;
 	private editorContainer: Container;
@@ -981,7 +980,6 @@ export class InteractiveMode {
 
 		this.setupKeyHandlers();
 		this.setupEditorSubmitHandler();
-		this.footer.setScrollInfoProvider(() => this.ui.getScrollInfo(), this.getEditorKeyDisplay("tui.viewport.follow"));
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
@@ -5525,8 +5523,7 @@ export class InteractiveMode {
 		// Expanding/collapsing changes blocks above the viewport, which would
 		// otherwise force a full redraw that scrolls to the top and replays the
 		// whole transcript. Keep the user anchored at their current position.
-		// Fullscreen frames have no scrollback to preserve — a plain render
-		// suffices there.
+		// Fullscreen frames have no scrollback to preserve.
 		if (this.ui.isFullscreen()) {
 			this.ui.requestRender();
 		} else {

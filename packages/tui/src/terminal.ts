@@ -64,10 +64,8 @@ export interface Terminal {
 	leaveAltScreen(): void;
 	get altScreenActive(): boolean;
 
-	// SGR mouse tracking (?1000 + ?1006). Wheel arrives as \x1b[<64;x;yM /
-	// \x1b[<65;x;yM. Motion tracking is deliberately never enabled so native
-	// drag-selection keeps working. Terminals without mouse support ignore
-	// the sequences.
+	// SGR mouse tracking (?1000 + ?1006); motion tracking is deliberately never
+	// enabled so native drag-selection keeps working.
 	setMouseTracking(enabled: boolean): void;
 	get mouseTrackingActive(): boolean;
 
@@ -350,8 +348,7 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 
-		// Never strand the user with mouse tracking on or the alt screen active,
-		// regardless of how shutdown was reached.
+		// never strand the user on the alt screen or with mouse tracking on
 		if (this._mouseTrackingActive) {
 			process.stdout.write("\x1b[?1006l\x1b[?1000l");
 			this._mouseTrackingActive = false;

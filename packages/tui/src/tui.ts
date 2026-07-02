@@ -266,9 +266,8 @@ export class TUI extends Container {
 	private preserveViewportOnNextRender = false; // One-shot: repaint visible viewport in place instead of replaying scrollback
 	private stopped = false;
 
-	// Fullscreen (alternate-screen) mode. While set, doRender paints a fixed
-	// frame via the viewport and the inline differ's bookkeeping stays frozen
-	// in `inlineState`, to be restored when the mode is left.
+	// While set, doRender paints fixed frames via the viewport; the inline
+	// differ's bookkeeping stays frozen in `inlineState` until exit.
 	private fullscreen: {
 		viewport: FullscreenViewport;
 		scroll: Component[];
@@ -497,8 +496,7 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
-		// Leave the alt screen and flush anything rendered while fullscreen into
-		// the primary screen before the exit bookkeeping below runs against it.
+		// before the exit bookkeeping below, which assumes the primary screen
 		this.exitFullscreen();
 		this.stopped = true;
 		if (this.renderTimer) {
@@ -566,15 +564,10 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Enter fullscreen mode: render an app-owned scrollable transcript window
-	 * on the alternate screen with `dock` pinned to the bottom rows. The
-	 * primary screen and its scrollback are left untouched until exit.
-	 *
-	 * Mouse wheel tracking is enabled unless `mouse` is false. Terminals that
-	 * do not support mouse reporting ignore the mode-set sequences, and probing
-	 * support first is not viable — tmux, among others, never answers DECRQM.
-	 * Motion/drag tracking is never enabled, so native drag-selection keeps
-	 * working.
+	 * Render a scrollable transcript window on the alternate screen with `dock`
+	 * pinned to the bottom rows; the primary screen stays untouched until exit.
+	 * Wheel tracking is enabled blind — probing is not viable (tmux never
+	 * answers DECRQM) and unsupporting terminals ignore the mode-sets.
 	 */
 	enterFullscreen(options: { scroll: Component[]; dock: Component; mouse?: boolean }): void {
 		if (this.fullscreen) return;
@@ -602,10 +595,8 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Leave fullscreen mode. Restoring the alt screen brings the primary screen
-	 * back exactly as it was on entry; the restored inline differ then diffs
-	 * the current tree against that snapshot, so content produced while
-	 * fullscreen flows into native scrollback through the normal append path.
+	 * Leave fullscreen. The inline differ resumes against the entry snapshot,
+	 * so content produced while fullscreen flows into native scrollback.
 	 */
 	exitFullscreen(): void {
 		if (!this.fullscreen) return;
@@ -621,8 +612,7 @@ export class TUI extends Container {
 		this.hardwareCursorRow = inlineState.hardwareCursorRow;
 		this.maxLinesRendered = inlineState.maxLinesRendered;
 		this.previousViewportTop = inlineState.previousViewportTop;
-		// Synchronous render so the flush also happens on shutdown paths, where
-		// a scheduled render would never fire.
+		// synchronous so the flush also happens on shutdown, where a scheduled render never fires
 		if (!this.stopped) {
 			this.doRender();
 		}
@@ -735,12 +725,9 @@ export class TUI extends Container {
 		}
 	}
 
-	/**
-	 * Fullscreen scroll input: wheel events and viewport keys. Mouse reports
-	 * are always consumed (nothing downstream understands them); viewport keys
-	 * are only intercepted while the editor has focus, so overlay selectors
-	 * keep their own pageUp/pageDown handling.
-	 */
+	// Mouse reports are always consumed (nothing downstream understands them);
+	// viewport keys are skipped while an overlay has focus so selectors keep
+	// their own pageUp/pageDown.
 	private handleFullscreenInput(data: string): boolean {
 		const fullscreen = this.fullscreen;
 		if (!fullscreen) return false;
@@ -1134,9 +1121,6 @@ export class TUI extends Container {
 		return null;
 	}
 
-	// Paint one fullscreen frame: scrolled transcript window + bottom dock,
-	// composited with overlays, row-diffed against the previous frame. The
-	// inline differ below is bypassed entirely while fullscreen is active.
 	private renderFullscreen(): void {
 		const fullscreen = this.fullscreen;
 		if (!fullscreen) return;
@@ -1152,6 +1136,19 @@ export class TUI extends Container {
 		const dock = fullscreen.dock.render(width);
 
 		let frame = fullscreen.viewport.composeFrame(transcript, dock, height);
+		const scrollInfo = fullscreen.viewport.scrollInfo();
+		if (!scrollInfo.following) {
+			// Follow hint composited over the bottom of the transcript window,
+			// just above the dock. Overlays still paint on top of it.
+			const followKey = getKeybindings().getKeys("tui.viewport.follow")[0] ?? "ctrl+end";
+			const label = ` ${followKey} to follow `;
+			const labelWidth = visibleWidth(label);
+			const row = fullscreen.viewport.windowHeight() - 1;
+			if (row >= 0 && row < frame.length && labelWidth <= width) {
+				const col = Math.floor((width - labelWidth) / 2);
+				frame[row] = this.compositeLineAt(frame[row], `\x1b[7m${label}\x1b[27m`, col, labelWidth, width);
+			}
+		}
 		if (this.overlayStack.length > 0) {
 			frame = this.compositeOverlays(frame, width, height);
 		}
@@ -1168,7 +1165,6 @@ export class TUI extends Container {
 	private doRender(): void {
 		if (this.stopped) return;
 		if (this.fullscreen) {
-			// The one-shot preserve flag is meaningless on a fixed frame; consume it.
 			this.preserveViewportOnNextRender = false;
 			this.renderFullscreen();
 			return;

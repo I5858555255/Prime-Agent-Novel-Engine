@@ -1,26 +1,21 @@
 /**
- * Fullscreen (alternate-screen) viewport: an app-owned scrollable window over
- * the transcript with a dock (editor/footer) pinned to the bottom rows.
- *
- * Unlike the inline renderer, frames are a fixed `rows`-line grid painted with
- * absolute cursor addressing and diffed row-by-row against the previous frame.
- * There is no scrollback bookkeeping: scroll position is application state.
+ * Fullscreen (alternate-screen) viewport: a scrollable window over the
+ * transcript with a dock (editor/footer) pinned to the bottom rows. Frames
+ * are a fixed grid painted with absolute addressing and diffed row-by-row;
+ * scroll position is application state, not terminal scrollback.
  */
 
 import { isImageLine } from "./terminal-image.js";
 import { sliceByColumn, visibleWidth } from "./utils.js";
 
-/** Rows always reserved for the transcript when the dock wants the screen. */
 const MIN_TRANSCRIPT_ROWS = 3;
 
-/** Kitty images span multiple physical rows and cannot be clipped to a window. */
+// Kitty images span multiple physical rows and cannot be clipped to a window.
 const IMAGE_PLACEHOLDER = "\x1b[2m[image — view in inline mode]\x1b[0m";
 
 export interface ScrollInfo {
 	following: boolean;
-	/** Transcript lines below the visible window. */
 	linesBelow: number;
-	/** Transcript lines above the visible window. */
 	linesAbove: number;
 }
 
@@ -30,21 +25,19 @@ export class FullscreenViewport {
 	private prevFrame: string[] = [];
 	private prevWidth = 0;
 	private prevHeight = 0;
-	// Layout of the most recent frame, used to clamp scroll requests.
 	private lastMaxScroll = 0;
 	private lastWindowHeight = 0;
 
 	/**
-	 * Compose a frame of exactly `height` lines: the scrolled transcript window
-	 * on top, the dock pinned to the bottom. While following, the window stays
-	 * pinned to the transcript end; otherwise it stays frozen where the user
-	 * scrolled, regardless of appended content.
+	 * Compose a frame of exactly `height` lines: scrolled transcript window on
+	 * top, dock pinned to the bottom. Following pins the window to the
+	 * transcript end; otherwise it stays frozen while content appends.
 	 */
 	composeFrame(transcript: string[], dock: string[], height: number): string[] {
 		let dockLines = dock;
 		const maxDock = Math.max(0, height - MIN_TRANSCRIPT_ROWS);
 		if (dockLines.length > maxDock) {
-			// The bottom of the dock (editor + footer) wins over widgets above it.
+			// bottom of the dock (editor + footer) wins over widgets above it
 			dockLines = dockLines.slice(dockLines.length - maxDock);
 		}
 		const windowHeight = height - dockLines.length;
@@ -68,10 +61,7 @@ export class FullscreenViewport {
 		return [...window, ...dockLines];
 	}
 
-	/**
-	 * Paint a composed frame, diffing row-by-row against the previous frame with
-	 * absolute cursor addressing. Full clear only on first paint or resize.
-	 */
+	/** Row-diff a composed frame against the previous one with absolute addressing. */
 	paint(
 		write: (data: string) => void,
 		frame: string[],
@@ -79,13 +69,12 @@ export class FullscreenViewport {
 		height: number,
 		cursorPos: { row: number; col: number } | null,
 	): void {
-		// Overlays taller than the screen can overflow the frame; the visible
-		// viewport is the bottom `height` lines (matching compositeOverlays).
+		// over-tall frames (overlay overflow) show their bottom `height` lines
 		if (frame.length > height) {
 			frame = frame.slice(frame.length - height);
 		}
 
-		let buffer = "\x1b[?2026h"; // Begin synchronized output
+		let buffer = "\x1b[?2026h";
 		if (width !== this.prevWidth || height !== this.prevHeight || this.prevFrame.length === 0) {
 			buffer += "\x1b[2J\x1b[H";
 			this.prevFrame = [];
@@ -94,14 +83,13 @@ export class FullscreenViewport {
 			const line = frame[row] ?? "";
 			if (this.prevFrame[row] === line) continue;
 			buffer += `\x1b[${row + 1};1H\x1b[2K`;
-			// A line wider than the terminal would wrap and shear every row below
-			// it off the grid, so clamp defensively rather than crash.
+			// an overwide line would wrap and shear the grid; clamp instead of crash
 			buffer += visibleWidth(line) > width ? sliceByColumn(line, 0, width, true) : line;
 		}
 		if (cursorPos) {
 			buffer += `\x1b[${Math.min(cursorPos.row, height - 1) + 1};${cursorPos.col + 1}H`;
 		}
-		buffer += "\x1b[?2026l"; // End synchronized output
+		buffer += "\x1b[?2026l";
 		write(buffer);
 
 		this.prevFrame = frame;
@@ -114,10 +102,7 @@ export class FullscreenViewport {
 		this.prevFrame = [];
 	}
 
-	/**
-	 * Scroll by a number of lines (negative = up). Scrolling up pauses
-	 * following; reaching the bottom resumes it.
-	 */
+	/** Scrolling up pauses following; reaching the bottom resumes it. */
 	scrollBy(delta: number): void {
 		const base = this.following ? this.lastMaxScroll : this.scrollTop;
 		this.scrollTop = Math.max(0, Math.min(base + delta, this.lastMaxScroll));
@@ -136,6 +121,10 @@ export class FullscreenViewport {
 
 	pageSize(): number {
 		return Math.max(1, this.lastWindowHeight - 1);
+	}
+
+	windowHeight(): number {
+		return this.lastWindowHeight;
 	}
 
 	isFollowing(): boolean {

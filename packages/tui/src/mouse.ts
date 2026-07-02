@@ -1,9 +1,4 @@
-/**
- * SGR mouse event parsing (CSI < button ; x ; y M/m).
- *
- * Only SGR encoding is parsed — ?1006 is always requested alongside ?1000,
- * and terminals modern enough to report mouse at all support it.
- */
+/** SGR mouse event parsing (CSI < button ; x ; y M/m). */
 
 export interface MouseEvent {
 	/** Base button code with modifier bits stripped (wheel: 64 up, 65 down). */
