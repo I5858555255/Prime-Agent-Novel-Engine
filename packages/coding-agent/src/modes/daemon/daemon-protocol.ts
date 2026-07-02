@@ -1,5 +1,10 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
+import type {
+	AgentSessionMessageDeliveryMode,
+	AgentSessionMessageReceipt,
+	AgentSessionMessageSafetyStatus,
+} from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
@@ -214,6 +219,18 @@ export type DaemonCommand =
 	  }
 	| { id?: string; type: "steer"; activeSessionId: string; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; activeSessionId: string; message: string; images?: ImageContent[] }
+	| {
+			id?: string;
+			type: "send_message";
+			targetActiveSessionId: string;
+			message: string;
+			fromActiveSessionId?: string;
+			deliveryMode?: AgentSessionMessageDeliveryMode;
+	  }
+	| { id?: string; type: "agent_messages_status" }
+	| { id?: string; type: "agent_messages_pause" }
+	| { id?: string; type: "agent_messages_resume" }
+	| { id?: string; type: "agent_messages_clear"; activeSessionId: string }
 	| { id?: string; type: "abort"; activeSessionId: string }
 	| {
 			id?: string;
@@ -251,7 +268,14 @@ export type DaemonCommand =
 	| { id?: string; type: "set_follow_up_mode"; activeSessionId: string; mode: AgentConnectionQueueMode }
 	| { id?: string; type: "set_auto_compaction"; activeSessionId: string; enabled: boolean }
 	| { id?: string; type: "compact"; activeSessionId: string; customInstructions?: string }
-	| { id?: string; type: "refine"; activeSessionId: string; instructions?: string; rollbackId?: string }
+	| {
+			id?: string;
+			type: "refine";
+			activeSessionId: string;
+			instructions?: string;
+			rollbackId?: string;
+			global?: boolean;
+	  }
 	| { id?: string; type: "abort_compaction"; activeSessionId: string }
 	| { id?: string; type: "abort_branch_summary"; activeSessionId: string }
 	| { id?: string; type: "abort_retry"; activeSessionId: string }
@@ -352,6 +376,8 @@ export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;
 export type DaemonResourceSnapshot = AgentConnectionResourceSnapshot;
 
 export type DaemonCronJob = AgentCronJob;
+export type DaemonAgentSessionMessageReceipt = AgentSessionMessageReceipt;
+export type DaemonAgentSessionMessageSafetyStatus = AgentSessionMessageSafetyStatus;
 
 export type DaemonOutbound =
 	| DaemonResponse
