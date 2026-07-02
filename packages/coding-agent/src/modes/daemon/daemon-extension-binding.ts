@@ -50,6 +50,9 @@ export async function bindActiveSessionState(
 	const session = state.runtime.session;
 
 	session.setExecEnvProvider(() => state.clientEnv);
+	// Every runtime rebuild (new/switch/fork/import, subagent spawn) re-loads
+	// extensions, which capture client env synchronously at that moment.
+	state.runtime.setRuntimeEnvScope((fn) => withClientEnv(state.clientEnv, fn));
 
 	state.unsubscribe?.();
 	state.runtime.setSubagentRuntimeHost(callbacks.subagentRuntimeHost);
