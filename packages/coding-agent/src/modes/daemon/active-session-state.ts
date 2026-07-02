@@ -25,9 +25,10 @@ export interface ActiveSessionState {
 	summaryState?: AgentStatus;
 	/**
 	 * Client env (e.g. herdr pane identity), merged over process.env for this
-	 * session's pi.exec() subprocesses. Bound once when the runtime is created;
-	 * attach and session reuse never rebind it (watchers also attach, and
-	 * extensions capture identity at load). Subagents inherit the parent's.
+	 * session's pi.exec() subprocesses. Bound when the runtime is created (or
+	 * adopted from the first env-carrying create that reuses an env-less
+	 * session); never overwritten after that — watchers also attach, and
+	 * extensions capture identity at load. Subagents inherit the parent's.
 	 */
 	clientEnv?: Record<string, string>;
 }

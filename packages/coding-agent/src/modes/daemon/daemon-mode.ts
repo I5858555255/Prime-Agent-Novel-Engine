@@ -356,12 +356,14 @@ export class AgentDaemon {
 			if (existing) {
 				// A live runtime already owns this session file; reuse it instead of
 				// starting a second runtime that would interleave writes to one file.
-				// clientEnv is deliberately NOT rebound: extensions captured the
-				// creator's identity at load, and mutating it here would only make
+				// clientEnv adopts the first offered identity (e.g. a pane opening a
+				// cron-created session) but never overwrites one: extensions captured
+				// the creator's identity at load, and swapping it would only make
 				// pi.exec disagree with those captures.
 				if (command.name) {
 					existing.runtime.session.setSessionName(command.name);
 				}
+				existing.clientEnv ??= clientEnv;
 				this.rebindCronJobsToState(existing);
 				return existing;
 			}
@@ -427,12 +429,13 @@ export class AgentDaemon {
 		const sessionKey = resolve(sessionFile);
 		const pending = this.openingSessions.get(sessionKey);
 		if (pending) {
-			// Same as the reuse path above: the racing creator's env won; don't
-			// rebind identity the extensions have already captured.
+			// Same as the reuse path above: adopt-if-absent, never overwrite the
+			// identity the racing creator's extensions already captured.
 			const state = await pending;
 			if (command.name) {
 				state.runtime.session.setSessionName(command.name);
 			}
+			state.clientEnv ??= clientEnv;
 			this.rebindCronJobsToState(state);
 			return state;
 		}
@@ -1280,7 +1283,9 @@ export class AgentDaemon {
 
 			case "reload": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.reload();
+				// Reload re-evaluates extension modules, which capture client env
+				// (e.g. herdr pane identity) synchronously at load.
+				await withClientEnv(state.clientEnv, () => state.runtime.session.reload());
 				return success(command.id, "reload");
 			}
 
