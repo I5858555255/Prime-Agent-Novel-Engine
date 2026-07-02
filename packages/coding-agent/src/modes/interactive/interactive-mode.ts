@@ -714,6 +714,8 @@ export class InteractiveMode {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
 			isArgumentCommand: builtinSlashCommandTakesArgument,
+			placeholder: "Type a message, / for commands",
+			placeholderColor: (text) => theme.fg("dim", text),
 		});
 		this.editor = this.defaultEditor;
 		this.mainContainer = new Container();
