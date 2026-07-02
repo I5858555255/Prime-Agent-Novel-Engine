@@ -2423,6 +2423,13 @@ export class AgentSession {
 			) {
 				this._acceptedAgentMessagePrompt = undefined;
 			}
+			if (acceptedAgentMessagePrompt && !acceptedAgentMessagePrompt.cleared) {
+				// The prompt was never accepted, so next-turn context drained for it
+				// was not consumed by the model and must remain available to retry.
+				this._pendingNextTurnMessages.unshift(
+					...acceptedAgentMessagePrompt.pendingNextTurnMessages.map((message) => ({ ...message })),
+				);
+			}
 			reportPreflight(false);
 			throw firstOutcome;
 		}

@@ -577,6 +577,44 @@ stale extension instructions`,
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["custom", "user", "assistant"]);
 	});
 
+	it("restores drained nextTurn messages when direct agent message acceptance fails before delivery", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "retry me", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		const agent = harness.session.agent as unknown as { prompt(messages: unknown): Promise<void> };
+		const originalPrompt = agent.prompt;
+		agent.prompt = async () => {
+			throw new Error("prompt failed before delivery");
+		};
+
+		await expect(
+			harness.session.acceptAgentMessagePrompt(
+				"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_context_fail\n\nagent text",
+				{ expandPromptTemplates: false },
+			),
+		).rejects.toThrow("prompt failed before delivery");
+		agent.prompt = originalPrompt;
+
+		let sawCustomMessage = false;
+		harness.setResponses([
+			(context) => {
+				sawCustomMessage = context.messages.some(
+					(message) =>
+						message.role === "user" &&
+						typeof message.content !== "string" &&
+						message.content.some((part) => part.type === "text" && part.text === "retry me"),
+				);
+				return fauxAssistantMessage("done");
+			},
+		]);
+		await harness.session.prompt("normal prompt");
+
+		expect(sawCustomMessage).toBe(true);
+	});
+
 	it("cleans up the aborted run's late events after clearing an accepted agent message", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
