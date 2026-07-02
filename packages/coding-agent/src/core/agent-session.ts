@@ -2993,11 +2993,11 @@ export class AgentSession {
 	}
 
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
-		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false.
-		// A user abort also drops any compaction the model requested this turn.
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") {
+		// An abort drops any compaction the model requested this turn, even on the
+		// pre-prompt path (skipAbortedCheck=false) which continues to threshold checks.
+		if (assistantMessage.stopReason === "aborted") {
 			this._pendingRequestedCompaction = undefined;
-			return false;
+			if (skipAbortedCheck) return false;
 		}
 
 		const settings = this.settingsManager.getCompactionSettings();

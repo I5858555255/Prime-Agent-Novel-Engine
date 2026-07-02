@@ -138,6 +138,26 @@ describe("AgentSession compact skill host requests", () => {
 		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 
+	it("drops a pending requested compaction on the pre-prompt path after an abort", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [extensionCompaction()],
+		});
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+
+		setStreaming(harness, true);
+		expect(harness.session.handleCompactHostRequest("compact.run").scheduled).toBe(true);
+		setStreaming(harness, false);
+
+		const internals = harness.session as unknown as SessionInternals;
+		const compacted = await internals._checkCompaction(createAssistant(harness, { stopReason: "aborted" }), false);
+		expect(compacted).toBe(false);
+		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(false);
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+	});
+
 	it("rejects compact.run while no turn is active", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
