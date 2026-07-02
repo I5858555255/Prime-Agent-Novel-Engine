@@ -294,6 +294,24 @@ export class AgentDaemon {
 		cleanupDaemonSocketPath(this.socketPath);
 	}
 
+	/**
+	 * Adopt env for a session that has none, propagating to subagents spawned
+	 * before adoption (their exec-env providers read state.clientEnv live).
+	 * Never overwrites an existing identity.
+	 */
+	private adoptClientEnv(state: ActiveSessionState, env?: Record<string, string>): void {
+		if (!env || state.clientEnv) {
+			return;
+		}
+		state.clientEnv = env;
+		for (const child of this.sessions.values()) {
+			const metadata = child.runtime.metadata;
+			if (metadata.kind === "subagent" && metadata.parentActiveSessionId === state.activeSessionId) {
+				this.adoptClientEnv(child, env);
+			}
+		}
+	}
+
 	private async addRuntime(
 		runtime: AgentSessionRuntime,
 		name?: string,
@@ -363,7 +381,7 @@ export class AgentDaemon {
 				if (command.name) {
 					existing.runtime.session.setSessionName(command.name);
 				}
-				existing.clientEnv ??= clientEnv;
+				this.adoptClientEnv(existing, clientEnv);
 				this.rebindCronJobsToState(existing);
 				return existing;
 			}
@@ -435,7 +453,7 @@ export class AgentDaemon {
 			if (command.name) {
 				state.runtime.session.setSessionName(command.name);
 			}
-			state.clientEnv ??= clientEnv;
+			this.adoptClientEnv(state, clientEnv);
 			this.rebindCronJobsToState(state);
 			return state;
 		}
