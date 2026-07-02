@@ -227,6 +227,44 @@ describe("AgentSession compact skill host requests", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps a pending requested compaction when manual compaction fails", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi: any) => {
+					pi.on("session_before_compact", async () => ({ cancel: true }));
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+
+		setStreaming(harness, true);
+		expect(harness.session.handleCompactHostRequest("compact.run").scheduled).toBe(true);
+		setStreaming(harness, false);
+
+		await expect(harness.session.compact()).rejects.toThrow("Compaction cancelled");
+		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(true);
+	});
+
+	it("clears a pending requested compaction when manual compaction succeeds", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [extensionCompaction()],
+		});
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+
+		setStreaming(harness, true);
+		expect(harness.session.handleCompactHostRequest("compact.run").scheduled).toBe(true);
+		setStreaming(harness, false);
+
+		await harness.session.compact();
+		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(false);
+	});
+
 	it("reports context usage via compact.status", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

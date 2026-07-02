@@ -3382,7 +3382,6 @@ export class AgentSession {
 		await this.abort();
 		let didCompact = false;
 		this._compactionAbortController = new AbortController();
-		this._pendingRequestedCompaction = undefined;
 		this._emit({ type: "compaction_start", reason: "manual", customInstructions });
 
 		try {
@@ -3408,6 +3407,9 @@ export class AgentSession {
 				customInstructions,
 			});
 			didCompact = true;
+			// A manual compaction satisfies any pending model request; on failure the
+			// request stays scheduled for the next turn boundary.
+			this._pendingRequestedCompaction = undefined;
 			return result;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
