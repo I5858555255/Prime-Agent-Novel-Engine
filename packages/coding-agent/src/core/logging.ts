@@ -1,4 +1,4 @@
-import { type LogEntry, setLogSink } from "@earendil-works/pi-ai";
+import { type LogEntry, setLogSink, stringifyLogEntry } from "@earendil-works/pi-ai";
 import { appendRotatingLog, getAgentLogPath } from "../config.js";
 
 const AGENT_LOG_MAX_BYTES = 20 * 1024 * 1024;
@@ -20,6 +20,6 @@ export function setLogContext(fields: Record<string, unknown>): void {
 export function installFileLogSink(fields?: Record<string, unknown>): void {
 	context = { pid: process.pid, ...fields };
 	setLogSink((entry: LogEntry) => {
-		appendRotatingLog(getAgentLogPath(), JSON.stringify({ ...entry, ...context }), AGENT_LOG_MAX_BYTES);
+		appendRotatingLog(getAgentLogPath(), stringifyLogEntry({ ...entry, ...context }), AGENT_LOG_MAX_BYTES);
 	});
 }

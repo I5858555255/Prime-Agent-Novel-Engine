@@ -34,6 +34,33 @@ export function setLogSink(next: LogSink | undefined): void {
 	sink = next;
 }
 
+function jsonReplacer(): (key: string, value: unknown) => unknown {
+	const seen = new WeakSet<object>();
+	return (_key, value) => {
+		if (typeof value === "bigint") return value.toString();
+		if (typeof value === "object" && value !== null) {
+			if (seen.has(value)) return "[Circular]";
+			seen.add(value);
+		}
+		return value;
+	};
+}
+
+/** JSON.stringify that never throws: circular refs and BigInts degrade instead of dropping the entry. */
+export function stringifyLogEntry(entry: LogEntry): string {
+	try {
+		return JSON.stringify(entry, jsonReplacer());
+	} catch {
+		return JSON.stringify({
+			ts: entry.ts,
+			level: entry.level,
+			component: entry.component,
+			msg: String(entry.msg),
+			fieldsError: "unserializable fields dropped",
+		});
+	}
+}
+
 function emit(level: LogLevel, component: string, msg: string, fields?: Record<string, unknown>): void {
 	try {
 		// Reserved keys win over caller fields so entries can't be misclassified.
@@ -47,7 +74,7 @@ function emit(level: LogLevel, component: string, msg: string, fields?: Record<s
 			// Broken sink: fall through to the console fallback below.
 		}
 		if (level === "warn" || level === "error") {
-			console.error(JSON.stringify(entry));
+			console.error(stringifyLogEntry(entry));
 		}
 	} catch {
 		// Diagnostics must never break the operation being logged.

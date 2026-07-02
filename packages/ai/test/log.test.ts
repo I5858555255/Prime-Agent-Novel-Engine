@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { getLogger, type LogEntry, setLogSink } from "../src/log.js";
+import { getLogger, type LogEntry, setLogSink, stringifyLogEntry } from "../src/log.js";
 
 afterEach(() => {
 	setLogSink(undefined);
@@ -36,6 +36,14 @@ describe("structured logger", () => {
 		setLogSink((entry) => entries.push(entry));
 		getLogger("test").error("boom", { level: "info", msg: "spoofed", detail: "kept" });
 		expect(entries[0]).toMatchObject({ level: "error", msg: "boom", detail: "kept" });
+	});
+
+	test("stringifyLogEntry survives circular refs and BigInt fields", () => {
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+		const entry: LogEntry = { ts: "t", level: "error", component: "c", msg: "m", circular, big: 1n };
+		const line = stringifyLogEntry(entry);
+		expect(JSON.parse(line)).toMatchObject({ msg: "m", circular: { self: "[Circular]" }, big: "1" });
 	});
 
 	test("a throwing sink never propagates and warn/error fall back to console.error", () => {
