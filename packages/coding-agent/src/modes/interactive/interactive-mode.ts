@@ -507,8 +507,10 @@ export class InteractiveMode {
 	private fdPath: string | undefined;
 	private mainContainer: Container;
 	private mainViewContainer: Container;
-	// widgets/editor/footer — pinned to the bottom rows in fullscreen mode
-	private bottomDock: Container;
+	// prompt bar (editor + footer slot) — the only thing pinned to the bottom in fullscreen
+	private promptDock: Container;
+	// wraps the active footer so custom-footer swaps reflect in both layouts
+	private footerSlot: Container;
 	private fullscreenEnabled = false;
 	private editorContainer: Container;
 	private footer: FooterComponent;
@@ -716,7 +718,8 @@ export class InteractiveMode {
 		this.editor = this.defaultEditor;
 		this.mainContainer = new Container();
 		this.mainViewContainer = new Container();
-		this.bottomDock = new Container();
+		this.promptDock = new Container();
+		this.footerSlot = new Container();
 		this.restoreMainAgentView();
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
@@ -966,15 +969,18 @@ export class InteractiveMode {
 
 		this.mainContainer.addChild(this.mainViewContainer);
 		this.renderWidgets(); // Initialize with default spacer
-		this.bottomDock.addChild(this.widgetContainerAbove);
+		this.mainContainer.addChild(this.widgetContainerAbove);
 		this.renderRecap();
-		this.bottomDock.addChild(this.recapContainer);
-		this.bottomDock.addChild(this.queuedMessagesContainer);
-		this.bottomDock.addChild(this.editorContainer);
-		this.bottomDock.addChild(this.childAgentSummary);
-		this.bottomDock.addChild(this.widgetContainerBelow);
-		this.bottomDock.addChild(this.footer);
-		this.mainContainer.addChild(this.bottomDock);
+		this.mainContainer.addChild(this.recapContainer);
+		this.mainContainer.addChild(this.queuedMessagesContainer);
+		this.mainContainer.addChild(this.editorContainer);
+		this.mainContainer.addChild(this.childAgentSummary);
+		this.mainContainer.addChild(this.widgetContainerBelow);
+		this.footerSlot.addChild(this.footer);
+		this.mainContainer.addChild(this.footerSlot);
+		this.promptDock.addChild(this.editorContainer);
+		this.promptDock.addChild(this.childAgentSummary);
+		this.promptDock.addChild(this.footerSlot);
 		this.ui.addChild(this.mainContainer);
 		this.ui.setFocus(this.editor);
 
@@ -2818,21 +2824,18 @@ export class InteractiveMode {
 			this.customFooter.dispose();
 		}
 
-		// Remove current footer from the bottom dock (the footer lives there, not on the root UI)
 		if (this.customFooter) {
-			this.bottomDock.removeChild(this.customFooter);
+			this.footerSlot.removeChild(this.customFooter);
 		} else {
-			this.bottomDock.removeChild(this.footer);
+			this.footerSlot.removeChild(this.footer);
 		}
 
 		if (factory) {
-			// Create and add custom footer, passing the data provider
 			this.customFooter = factory(this.ui, theme, this.footerDataProvider);
-			this.bottomDock.addChild(this.customFooter);
+			this.footerSlot.addChild(this.customFooter);
 		} else {
-			// Restore built-in footer
 			this.customFooter = undefined;
-			this.bottomDock.addChild(this.footer);
+			this.footerSlot.addChild(this.footer);
 		}
 
 		this.ui.requestRender();
@@ -5484,8 +5487,15 @@ export class InteractiveMode {
 		if (enabled) {
 			if (!process.stdout.isTTY) return;
 			this.ui.enterFullscreen({
-				scroll: [this.headerContainer, this.mainViewContainer],
-				dock: this.bottomDock,
+				scroll: [
+					this.headerContainer,
+					this.mainViewContainer,
+					this.widgetContainerAbove,
+					this.recapContainer,
+					this.queuedMessagesContainer,
+					this.widgetContainerBelow,
+				],
+				dock: this.promptDock,
 				mouse: this.settingsManager.getFullscreenMouse(),
 			});
 		} else {
