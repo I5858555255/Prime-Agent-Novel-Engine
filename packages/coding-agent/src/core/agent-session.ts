@@ -4096,9 +4096,11 @@ export class AgentSession {
 		reason: "overflow" | "threshold" | "requested",
 		willRetry: boolean,
 	): Promise<boolean> {
+		// Any compaction consumes a pending model request and honors its instructions
+		// (overflow recovery can fire first and take the request with it).
 		const pending = this._pendingRequestedCompaction;
 		this._pendingRequestedCompaction = undefined;
-		const customInstructions = reason === "requested" ? pending?.customInstructions : undefined;
+		const customInstructions = pending?.customInstructions;
 		const shouldContinueAfterCompaction =
 			(reason === "threshold" || reason === "requested") && this._continueAfterThresholdCompaction;
 		this._continueAfterThresholdCompaction = false;

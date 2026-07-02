@@ -185,7 +185,9 @@ describe("AgentSession compact skill host requests", () => {
 		await harness.session.prompt("two");
 
 		setStreaming(harness, true);
-		expect(harness.session.handleCompactHostRequest("compact.run").scheduled).toBe(true);
+		expect(
+			harness.session.handleCompactHostRequest("compact.run", { instructions: "keep the todo list" }).scheduled,
+		).toBe(true);
 		setStreaming(harness, false);
 
 		const continueSpy = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
@@ -196,7 +198,10 @@ describe("AgentSession compact skill host requests", () => {
 		vi.useRealTimers();
 
 		expect(compacted).toBe(true); // willRetry
-		expect(harness.eventsOfType("compaction_start").at(-1)).toMatchObject({ reason: "overflow" });
+		expect(harness.eventsOfType("compaction_start").at(-1)).toMatchObject({
+			reason: "overflow",
+			customInstructions: "keep the todo list",
+		});
 		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(false);
 		expect(continueSpy).toHaveBeenCalled();
 	});
