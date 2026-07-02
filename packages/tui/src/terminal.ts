@@ -57,6 +57,21 @@ export interface Terminal {
 	clearFromCursor(): void; // Clear from cursor to end of screen
 	clearScreen(): void; // Clear entire screen and move cursor to (0,0)
 
+	// Alternate screen buffer. The primary screen (and its scrollback) is left
+	// untouched while the alt screen is active, so a full-screen view can be
+	// shown and dismissed without disturbing the transcript history.
+	enterAltScreen(): void;
+	leaveAltScreen(): void;
+	get altScreenActive(): boolean;
+
+	// SGR mouse tracking (?1000 + ?1006). Wheel arrives as \x1b[<64;x;yM /
+	// \x1b[<65;x;yM. Motion tracking is deliberately never enabled so native
+	// drag-selection keeps working.
+	setMouseTracking(enabled: boolean): void;
+	get mouseTrackingActive(): boolean;
+	// Probe DECRQM for SGR mouse support; resolves false on timeout or non-TTY.
+	probeSgrMouseSupport(): Promise<boolean>;
+
 	// Title operations
 	setTitle(title: string): void; // Set terminal window title
 
@@ -73,6 +88,12 @@ export class ProcessTerminal implements Terminal {
 	private resizeHandler?: () => void;
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
+	private _altScreenActive = false;
+	private _mouseTrackingActive = false;
+	private sgrMouseProbe?: {
+		resolve: (supported: boolean) => void;
+		timeout: ReturnType<typeof setTimeout>;
+	};
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
 	private progressInterval?: ReturnType<typeof setInterval>;
@@ -153,6 +174,10 @@ export class ProcessTerminal implements Terminal {
 		// Forward individual sequences to the input handler
 		this.stdinBuffer.on("data", (sequence) => {
 			if (this.handleDefaultColorProbeResponse(sequence)) {
+				return;
+			}
+
+			if (this.handleSgrMouseProbeResponse(sequence)) {
 				return;
 			}
 
@@ -329,9 +354,21 @@ export class ProcessTerminal implements Terminal {
 
 	stop(): void {
 		this.finishDefaultColorProbe();
+		this.finishSgrMouseProbe(false);
 
 		if (this.clearProgressInterval()) {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+		}
+
+		// Never strand the user with mouse tracking on or the alt screen active,
+		// regardless of how shutdown was reached.
+		if (this._mouseTrackingActive) {
+			process.stdout.write("\x1b[?1006l\x1b[?1000l");
+			this._mouseTrackingActive = false;
+		}
+		if (this._altScreenActive) {
+			process.stdout.write("\x1b[?1049l");
+			this._altScreenActive = false;
 		}
 
 		// Disable bracketed paste mode
@@ -424,6 +461,63 @@ export class ProcessTerminal implements Terminal {
 
 	clearScreen(): void {
 		process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
+	}
+
+	enterAltScreen(): void {
+		if (this._altScreenActive) return;
+		this._altScreenActive = true;
+		this.write("\x1b[?1049h");
+	}
+
+	leaveAltScreen(): void {
+		if (!this._altScreenActive) return;
+		this._altScreenActive = false;
+		this.write("\x1b[?1049l");
+	}
+
+	get altScreenActive(): boolean {
+		return this._altScreenActive;
+	}
+
+	setMouseTracking(enabled: boolean): void {
+		if (enabled === this._mouseTrackingActive) return;
+		this._mouseTrackingActive = enabled;
+		this.write(enabled ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1006l\x1b[?1000l");
+	}
+
+	get mouseTrackingActive(): boolean {
+		return this._mouseTrackingActive;
+	}
+
+	probeSgrMouseSupport(): Promise<boolean> {
+		if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+			return Promise.resolve(false);
+		}
+		this.finishSgrMouseProbe(false);
+		return new Promise((resolve) => {
+			this.sgrMouseProbe = {
+				resolve,
+				timeout: setTimeout(() => this.finishSgrMouseProbe(false), 150),
+			};
+			this.write("\x1b[?1006$p");
+		});
+	}
+
+	private handleSgrMouseProbeResponse(sequence: string): boolean {
+		const match = sequence.match(/^\x1b\[\?1006;(\d)\$y$/);
+		if (!match) return false;
+		// DECRPM: 1=set, 2=reset, 3=permanently set → supported; 0/4 → not.
+		const value = Number(match[1]);
+		this.finishSgrMouseProbe(value === 1 || value === 2 || value === 3);
+		return true;
+	}
+
+	private finishSgrMouseProbe(supported: boolean): void {
+		if (!this.sgrMouseProbe) return;
+		clearTimeout(this.sgrMouseProbe.timeout);
+		const { resolve } = this.sgrMouseProbe;
+		this.sgrMouseProbe = undefined;
+		resolve(supported);
 	}
 
 	setTitle(title: string): void {

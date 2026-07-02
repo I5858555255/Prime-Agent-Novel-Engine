@@ -6,7 +6,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
+import { FullscreenViewport, type ScrollInfo } from "./fullscreen.js";
+import { getKeybindings } from "./keybindings.js";
 import { isKeyRelease, matchesKey } from "./keys.js";
+import { isMouseSequence, isWheelDown, isWheelUp, parseSgrMouseEvent } from "./mouse.js";
 import type { Terminal } from "./terminal.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.js";
@@ -263,6 +266,26 @@ export class TUI extends Container {
 	private preserveViewportOnNextRender = false; // One-shot: repaint visible viewport in place instead of replaying scrollback
 	private stopped = false;
 
+	// Fullscreen (alternate-screen) mode. While set, doRender paints a fixed
+	// frame via the viewport and the inline differ's bookkeeping stays frozen
+	// in `inlineState`, to be restored when the mode is left.
+	private fullscreen: {
+		viewport: FullscreenViewport;
+		scroll: Component[];
+		dock: Component;
+		inlineState: {
+			previousLines: string[];
+			previousKittyImageIds: Set<number>;
+			previousWidth: number;
+			previousHeight: number;
+			cursorRow: number;
+			hardwareCursorRow: number;
+			maxLinesRendered: number;
+			previousViewportTop: number;
+		};
+	} | null = null;
+	private static readonly WHEEL_SCROLL_LINES = 3;
+
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
 	private overlayStack: {
@@ -474,6 +497,9 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		// Leave the alt screen and flush anything rendered while fullscreen into
+		// the primary screen before the exit bookkeeping below runs against it.
+		this.exitFullscreen();
 		this.stopped = true;
 		if (this.renderTimer) {
 			clearTimeout(this.renderTimer);
@@ -497,6 +523,7 @@ export class TUI extends Container {
 
 	requestRender(force = false): void {
 		if (force) {
+			this.fullscreen?.viewport.reset();
 			this.previousLines = [];
 			this.previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
 			this.previousHeight = -1; // -1 triggers heightChanged, forcing a full clear
@@ -536,6 +563,99 @@ export class TUI extends Container {
 	requestRenderPreservingViewport(): void {
 		this.preserveViewportOnNextRender = true;
 		this.requestRender();
+	}
+
+	/**
+	 * Enter fullscreen mode: render an app-owned scrollable transcript window
+	 * on the alternate screen with `dock` pinned to the bottom rows. The
+	 * primary screen and its scrollback are left untouched until exit.
+	 *
+	 * Mouse wheel tracking is enabled only if the terminal answers the SGR
+	 * mouse capability probe (and `mouse` is not false). Motion/drag tracking
+	 * is never enabled, so native drag-selection keeps working.
+	 */
+	enterFullscreen(options: { scroll: Component[]; dock: Component; mouse?: boolean }): void {
+		if (this.fullscreen) return;
+		this.fullscreen = {
+			viewport: new FullscreenViewport(),
+			scroll: options.scroll,
+			dock: options.dock,
+			inlineState: {
+				previousLines: this.previousLines,
+				previousKittyImageIds: this.previousKittyImageIds,
+				previousWidth: this.previousWidth,
+				previousHeight: this.previousHeight,
+				cursorRow: this.cursorRow,
+				hardwareCursorRow: this.hardwareCursorRow,
+				maxLinesRendered: this.maxLinesRendered,
+				previousViewportTop: this.previousViewportTop,
+			},
+		};
+		this.terminal.enterAltScreen();
+		this.terminal.hideCursor();
+		if (options.mouse !== false) {
+			void this.terminal.probeSgrMouseSupport().then((supported) => {
+				if (supported && this.fullscreen && !this.stopped) {
+					this.terminal.setMouseTracking(true);
+				}
+			});
+		}
+		this.requestRender();
+	}
+
+	/**
+	 * Leave fullscreen mode. Restoring the alt screen brings the primary screen
+	 * back exactly as it was on entry; the restored inline differ then diffs
+	 * the current tree against that snapshot, so content produced while
+	 * fullscreen flows into native scrollback through the normal append path.
+	 */
+	exitFullscreen(): void {
+		if (!this.fullscreen) return;
+		const { inlineState } = this.fullscreen;
+		this.fullscreen = null;
+		this.terminal.setMouseTracking(false);
+		this.terminal.leaveAltScreen();
+		this.previousLines = inlineState.previousLines;
+		this.previousKittyImageIds = inlineState.previousKittyImageIds;
+		this.previousWidth = inlineState.previousWidth;
+		this.previousHeight = inlineState.previousHeight;
+		this.cursorRow = inlineState.cursorRow;
+		this.hardwareCursorRow = inlineState.hardwareCursorRow;
+		this.maxLinesRendered = inlineState.maxLinesRendered;
+		this.previousViewportTop = inlineState.previousViewportTop;
+		// Synchronous render so the flush also happens on shutdown paths, where
+		// a scheduled render would never fire.
+		if (!this.stopped) {
+			this.doRender();
+		}
+	}
+
+	isFullscreen(): boolean {
+		return this.fullscreen !== null;
+	}
+
+	/** Scroll the fullscreen transcript window (negative = up). */
+	scrollBy(lines: number): void {
+		if (!this.fullscreen) return;
+		this.fullscreen.viewport.scrollBy(lines);
+		this.requestRender();
+	}
+
+	scrollToTop(): void {
+		if (!this.fullscreen) return;
+		this.fullscreen.viewport.scrollToTop();
+		this.requestRender();
+	}
+
+	scrollToBottom(): void {
+		if (!this.fullscreen) return;
+		this.fullscreen.viewport.scrollToBottom();
+		this.requestRender();
+	}
+
+	/** Scroll state of the fullscreen window, or null when not fullscreen. */
+	getScrollInfo(): ScrollInfo | null {
+		return this.fullscreen?.viewport.scrollInfo() ?? null;
 	}
 
 	private scheduleRender(): void {
@@ -587,6 +707,10 @@ export class TUI extends Container {
 			return;
 		}
 
+		if (this.fullscreen && this.handleFullscreenInput(data)) {
+			return;
+		}
+
 		// If focused component is an overlay, verify it's still visible
 		// (visibility can change due to terminal resize or visible() callback)
 		const focusedOverlay = this.overlayStack.find((o) => o.component === this.focusedComponent);
@@ -611,6 +735,49 @@ export class TUI extends Container {
 			this.focusedComponent.handleInput(data);
 			this.requestRender();
 		}
+	}
+
+	/**
+	 * Fullscreen scroll input: wheel events and viewport keys. Mouse reports
+	 * are always consumed (nothing downstream understands them); viewport keys
+	 * are only intercepted while the editor has focus, so overlay selectors
+	 * keep their own pageUp/pageDown handling.
+	 */
+	private handleFullscreenInput(data: string): boolean {
+		const fullscreen = this.fullscreen;
+		if (!fullscreen) return false;
+
+		const overlayFocused = this.overlayStack.some((o) => o.component === this.focusedComponent);
+
+		if (isMouseSequence(data)) {
+			const event = parseSgrMouseEvent(data);
+			if (event && !overlayFocused) {
+				if (isWheelUp(event)) this.scrollBy(-TUI.WHEEL_SCROLL_LINES);
+				else if (isWheelDown(event)) this.scrollBy(TUI.WHEEL_SCROLL_LINES);
+			}
+			return true;
+		}
+
+		if (overlayFocused) return false;
+
+		const keybindings = getKeybindings();
+		if (keybindings.matches(data, "tui.viewport.pageUp")) {
+			this.scrollBy(-fullscreen.viewport.pageSize());
+			return true;
+		}
+		if (keybindings.matches(data, "tui.viewport.pageDown")) {
+			this.scrollBy(fullscreen.viewport.pageSize());
+			return true;
+		}
+		if (keybindings.matches(data, "tui.viewport.top")) {
+			this.scrollToTop();
+			return true;
+		}
+		if (keybindings.matches(data, "tui.viewport.follow")) {
+			this.scrollToBottom();
+			return true;
+		}
+		return false;
 	}
 
 	private consumeCellSizeResponse(data: string): boolean {
@@ -969,8 +1136,45 @@ export class TUI extends Container {
 		return null;
 	}
 
+	// Paint one fullscreen frame: scrolled transcript window + bottom dock,
+	// composited with overlays, row-diffed against the previous frame. The
+	// inline differ below is bypassed entirely while fullscreen is active.
+	private renderFullscreen(): void {
+		const fullscreen = this.fullscreen;
+		if (!fullscreen) return;
+		const width = this.terminal.columns;
+		const height = this.terminal.rows;
+
+		const transcript: string[] = [];
+		for (const component of fullscreen.scroll) {
+			for (const line of component.render(width)) {
+				transcript.push(line);
+			}
+		}
+		const dock = fullscreen.dock.render(width);
+
+		let frame = fullscreen.viewport.composeFrame(transcript, dock, height);
+		if (this.overlayStack.length > 0) {
+			frame = this.compositeOverlays(frame, width, height);
+		}
+		const cursorPos = this.extractCursorPosition(frame, height);
+		this.applyLineResets(frame);
+		fullscreen.viewport.paint((data) => this.terminal.write(data), frame, width, height, cursorPos);
+		if (cursorPos && this.showHardwareCursor) {
+			this.terminal.showCursor();
+		} else {
+			this.terminal.hideCursor();
+		}
+	}
+
 	private doRender(): void {
 		if (this.stopped) return;
+		if (this.fullscreen) {
+			// The one-shot preserve flag is meaningless on a fixed frame; consume it.
+			this.preserveViewportOnNextRender = false;
+			this.renderFullscreen();
+			return;
+		}
 		// One-shot: consume here so it never leaks into a later render.
 		const preserveViewport = this.preserveViewportOnNextRender;
 		this.preserveViewportOnNextRender = false;
