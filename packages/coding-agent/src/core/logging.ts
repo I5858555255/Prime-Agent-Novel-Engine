@@ -1,0 +1,25 @@
+import { type LogEntry, setLogSink } from "@earendil-works/pi-ai";
+import { appendRotatingLog, getAgentLogPath } from "../config.js";
+
+const AGENT_LOG_MAX_BYTES = 20 * 1024 * 1024;
+
+let context: Record<string, unknown> = {};
+
+/** Merge late-bound fields (e.g. mode, sessionId) into every subsequent log entry. */
+export function setLogContext(fields: Record<string, unknown>): void {
+	Object.assign(context, fields);
+}
+
+/**
+ * Route all structured logging (coding-agent and pi-ai) to the shared JSONL
+ * log at ~/.prime/agent/logs/agent.jsonl. One master file keeps failures
+ * scannable across processes; entries carry pid (+ context fields) so a
+ * single process or session is one grep away. Writes are best-effort and
+ * size-bounded via appendRotatingLog.
+ */
+export function installFileLogSink(fields?: Record<string, unknown>): void {
+	context = { pid: process.pid, ...fields };
+	setLogSink((entry: LogEntry) => {
+		appendRotatingLog(getAgentLogPath(), JSON.stringify({ ...entry, ...context }), AGENT_LOG_MAX_BYTES);
+	});
+}
