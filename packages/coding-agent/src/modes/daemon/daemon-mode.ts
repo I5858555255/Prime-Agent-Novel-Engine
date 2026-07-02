@@ -927,6 +927,7 @@ export class AgentDaemon {
 				}
 				client.capabilities = normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi);
 				client.supportsExtensionUi = client.capabilities.has("extension_ui");
+				this.adoptClientEnv(state, filterClientEnv(command.env));
 				state.clients.add(client);
 				client.attachedActiveSessionIds.add(state.activeSessionId);
 				const result = this.createAttachResult(client, state, command);

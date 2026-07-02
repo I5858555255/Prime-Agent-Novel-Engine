@@ -191,12 +191,16 @@ export type DaemonCommand =
 			name?: string;
 			config?: AgentSessionRuntimeConfig;
 	  } & DaemonClientEnv)
+	// Attach env is adopt-if-absent only: it fills identity for env-less
+	// sessions (e.g. cron-created) but never rebinds one, since watchers
+	// (agents view, subagent viewers) also attach.
 	| ({
 			id?: string;
 			type: "attach";
 			activeSessionId: string;
 			supportsExtensionUi?: boolean;
-	  } & DaemonAttachClientMetadata)
+	  } & DaemonAttachClientMetadata &
+			DaemonClientEnv)
 	| { id?: string; type: "detach"; activeSessionId?: string }
 	| { id?: string; type: "kill"; activeSessionId: string }
 	| { id?: string; type: "rename"; activeSessionId: string; name: string }

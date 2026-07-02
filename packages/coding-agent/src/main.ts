@@ -949,6 +949,7 @@ async function createDaemonInteractiveConnection(options: {
 		const attach = async (summary: SessionSummary) => {
 			const connection = await DaemonAgentConnection.attach(client, getDaemonSummaryActiveSessionId(summary), {
 				closeClientOnDispose: true,
+				sendClientEnv: true,
 			});
 			return { connection, summary };
 		};
