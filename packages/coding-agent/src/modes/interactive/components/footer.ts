@@ -1,5 +1,7 @@
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, ScrollInfo } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.js";
+import { theme } from "../theme/theme.js";
 
 /**
  * Footer component for the prime brand TUI.
@@ -10,8 +12,17 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
  * `/usage` can expose telemetry without re-plumbing.
  */
 export class FooterComponent implements Component {
+	// Supplies fullscreen scroll state; null/undefined when not in fullscreen.
+	private scrollInfoProvider?: () => ScrollInfo | null;
+	private followKeyDisplay = "ctrl+end";
+
 	constructor(private footerData: ReadonlyFooterDataProvider) {
 		void this.footerData;
+	}
+
+	setScrollInfoProvider(provider: () => ScrollInfo | null, followKeyDisplay?: string): void {
+		this.scrollInfoProvider = provider;
+		if (followKeyDisplay) this.followKeyDisplay = followKeyDisplay;
 	}
 
 	setAutoCompactEnabled(_enabled: boolean): void {
@@ -34,9 +45,16 @@ export class FooterComponent implements Component {
 		// Git watcher cleanup handled by provider
 	}
 
-	render(_width: number): string[] {
-		// Footer is intentionally empty in the prime brand TUI. Telemetry (cost, tokens, model,
-		// cwd, context %) is hidden by default; bring it back via /usage when needed.
+	render(width: number): string[] {
+		// While the fullscreen transcript is scrolled up, show how far behind the
+		// live output the window is and how to resume following.
+		const scrollInfo = this.scrollInfoProvider?.();
+		if (scrollInfo && !scrollInfo.following) {
+			const line = ` ${scrollInfo.linesBelow} line${scrollInfo.linesBelow === 1 ? "" : "s"} below · ${this.followKeyDisplay} to follow`;
+			return [truncateToWidth(theme.fg("dim", line), width)];
+		}
+		// Footer is otherwise intentionally empty in the prime brand TUI. Telemetry (cost,
+		// tokens, model, cwd, context %) is hidden by default; bring it back via /usage when needed.
 		return [];
 	}
 }
