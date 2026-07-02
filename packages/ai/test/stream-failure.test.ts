@@ -4,6 +4,7 @@ import type { AssistantMessage } from "../src/types.js";
 import {
 	classifyStreamFailure,
 	extractStreamFailureInfo,
+	formatStreamFailureMessage,
 	recordStreamFailure,
 	StreamFailureError,
 	streamFailureFromStopReason,
@@ -104,6 +105,32 @@ describe("extractStreamFailureInfo", () => {
 	test("falls back to classifying the message text", () => {
 		expect(extractStreamFailureInfo(new Error("provider overloaded, retry later")).kind).toBe("overloaded");
 		expect(extractStreamFailureInfo("not an error").kind).toBe("unknown");
+	});
+});
+
+describe("formatStreamFailureMessage", () => {
+	test("condenses a classified SDK error to a one-liner instead of the raw payload", () => {
+		const sdkError = Object.assign(
+			new Error('401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'),
+			{
+				status: 401,
+				error: { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } },
+				requestID: "req_1",
+			},
+		);
+		expect(formatStreamFailureMessage(sdkError)).toBe(
+			"Provider authentication failed (authentication_error, 401): invalid x-api-key [request_id: req_1]",
+		);
+	});
+
+	test("passes unrecognized errors through verbatim", () => {
+		expect(formatStreamFailureMessage(new Error("fetch failed"))).toBe("fetch failed");
+		expect(formatStreamFailureMessage(new Error("Request was aborted"))).toBe("Request was aborted");
+	});
+
+	test("uses the StreamFailureError message as-is", () => {
+		const error = streamFailureFromStopReason("refusal");
+		expect(formatStreamFailureMessage(error)).toBe(error.message);
 	});
 });
 

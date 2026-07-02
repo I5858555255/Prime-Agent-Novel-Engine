@@ -33,6 +33,7 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.js"
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import {
 	classifyStreamFailure,
+	formatStreamFailureMessage,
 	recordStreamFailure,
 	StreamFailureError,
 	streamFailureFromStopReason,
@@ -705,7 +706,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				delete (block as { partialJson?: string }).partialJson;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			output.errorMessage = formatStreamFailureMessage(error);
 			recordStreamFailure(model, output, error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

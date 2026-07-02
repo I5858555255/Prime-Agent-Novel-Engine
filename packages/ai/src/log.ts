@@ -1,11 +1,8 @@
 /**
- * Minimal structured logger shared by pi-ai and its consumers.
- *
- * The library itself never writes files: entries go to an injectable sink
- * (see setLogSink). Without a sink, warn/error fall back to console.error as
- * single JSON lines and debug/info are dropped, so standalone library use
- * stays quiet but never loses failures. Logging must never throw into the
- * caller.
+ * Minimal structured logger shared by pi-ai and its consumers. The library
+ * never writes files: entries go to an injectable sink (setLogSink). Without
+ * a sink, warn/error fall back to console.error and debug/info are dropped.
+ * Logging must never throw into the caller.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -71,7 +68,7 @@ function emit(level: LogLevel, component: string, msg: string, fields?: Record<s
 				return;
 			}
 		} catch {
-			// Broken sink: fall through to the console fallback below.
+			// Broken sink: fall through to the console fallback.
 		}
 		if (level === "warn" || level === "error") {
 			console.error(stringifyLogEntry(entry));

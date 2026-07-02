@@ -12,10 +12,8 @@ export function setLogContext(fields: Record<string, unknown>): void {
 
 /**
  * Route all structured logging (coding-agent and pi-ai) to the shared JSONL
- * log at ~/.prime/agent/logs/agent.jsonl. One master file keeps failures
- * scannable across processes; entries carry pid (+ context fields) so a
- * single process or session is one grep away. Writes are best-effort and
- * size-bounded via appendRotatingLog.
+ * log at ~/.prime/agent/logs/agent.jsonl. One master file, filterable by the
+ * pid/context fields; writes are best-effort and size-bounded.
  */
 export function installFileLogSink(fields?: Record<string, unknown>): void {
 	context = { pid: process.pid, ...fields };

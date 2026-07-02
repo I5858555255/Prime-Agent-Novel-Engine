@@ -114,14 +114,9 @@ export function truncateRawPayload(raw: string): string {
 	return raw.length > MAX_RAW_LENGTH ? `${raw.slice(0, MAX_RAW_LENGTH)}…` : raw;
 }
 
-/**
- * Best-effort extraction of structured failure info from any thrown value:
- * StreamFailureError, provider SDK errors (Anthropic/OpenAI APIError, AWS SDK
- * exceptions, Google ApiError), or plain errors.
- */
-export function extractStreamFailureInfo(error: unknown): StreamFailureInfo {
-	if (error instanceof StreamFailureError) return error.info;
-	if (!(error instanceof Error)) return { kind: "unknown" };
+function extractStreamFailureParts(error: unknown): { info: StreamFailureInfo; detail?: string } {
+	if (error instanceof StreamFailureError) return { info: error.info };
+	if (!(error instanceof Error)) return { info: { kind: "unknown" } };
 
 	const err = error as Error & {
 		status?: unknown;
@@ -139,11 +134,12 @@ export function extractStreamFailureInfo(error: unknown): StreamFailureInfo {
 
 	// Error bodies come nested differently per SDK: Anthropic/OpenAI expose
 	// `error.error = {type|code, message}` (sometimes doubly nested).
-	let body = err.error as { type?: unknown; code?: unknown; error?: unknown } | undefined;
+	let body = err.error as { type?: unknown; code?: unknown; message?: unknown; error?: unknown } | undefined;
 	if (body && typeof body === "object" && body.error && typeof body.error === "object") {
-		body = body.error as { type?: unknown; code?: unknown };
+		body = body.error as { type?: unknown; code?: unknown; message?: unknown };
 	}
 	const bodyType = body && typeof body === "object" ? (body.type ?? body.code) : undefined;
+	const bodyMessage = body && typeof body === "object" ? body.message : undefined;
 	const providerErrorType =
 		typeof bodyType === "string"
 			? bodyType
@@ -165,11 +161,38 @@ export function extractStreamFailureInfo(error: unknown): StreamFailureInfo {
 	const requestId = typeof rawRequestId === "string" ? rawRequestId : undefined;
 
 	return {
-		kind: classifyStreamFailure(providerErrorType ?? error.message, status),
-		providerErrorType,
-		status,
-		requestId,
+		info: {
+			kind: classifyStreamFailure(providerErrorType ?? error.message, status),
+			providerErrorType,
+			status,
+			requestId,
+		},
+		detail: typeof bodyMessage === "string" ? bodyMessage : undefined,
 	};
+}
+
+/**
+ * Best-effort extraction of structured failure info from any thrown value:
+ * StreamFailureError, provider SDK errors (Anthropic/OpenAI APIError, AWS SDK
+ * exceptions, Google ApiError), or plain errors.
+ */
+export function extractStreamFailureInfo(error: unknown): StreamFailureInfo {
+	return extractStreamFailureParts(error).info;
+}
+
+/**
+ * User-facing message for a thrown stream error: a classified one-liner with
+ * the provider's own short message, never the raw payload/trace. Unrecognized
+ * errors pass through verbatim so their text (which downstream retry matching
+ * may depend on) is preserved.
+ */
+export function formatStreamFailureMessage(error: unknown): string {
+	if (error instanceof StreamFailureError) return error.message;
+	const { info, detail } = extractStreamFailureParts(error);
+	if (info.kind === "unknown") {
+		return error instanceof Error ? error.message : JSON.stringify(error);
+	}
+	return streamFailureMessage(info, detail);
 }
 
 const log = getLogger("ai.provider");
@@ -193,6 +216,7 @@ export function recordStreamFailure(
 		error: extractDiagnosticError(error),
 		details: { ...info },
 	});
+	const rawMessage = error instanceof Error ? error.message : String(error);
 	log.error("provider stream failure", {
 		provider: model.provider,
 		model: model.id,
@@ -202,5 +226,7 @@ export function recordStreamFailure(
 		status: info.status,
 		requestId: info.requestId,
 		message: output.errorMessage,
+		// errorMessage is user-facing and concise; keep the raw cause for debugging.
+		cause: rawMessage === output.errorMessage ? undefined : truncateRawPayload(rawMessage),
 	});
 }
