@@ -1,5 +1,10 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
+import type {
+	AgentSessionMessageDeliveryMode,
+	AgentSessionMessageReceipt,
+	AgentSessionMessageSafetyStatus,
+} from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
@@ -63,6 +68,43 @@ export interface DaemonAttachClientMetadata {
 	clientId?: DaemonClientId;
 	capabilities?: readonly DaemonClientCapability[];
 	resumeCursor?: DaemonResumeCursor;
+}
+
+/**
+ * Client-side env vars forwarded to the daemon so extensions can reach them
+ * (e.g. HERDR_PANE_ID/HERDR_SOCKET_PATH that herdr sets per pane). The daemon
+ * scopes these to the created session and merges them over process.env for
+ * that session's pi.exec() subprocesses — it does not mutate the daemon's own
+ * env. Carried on create only: attach must not rebind a session's identity,
+ * since watchers (agents view, subagent viewers) also attach.
+ */
+export interface DaemonClientEnv {
+	env?: Record<string, string>;
+}
+
+/**
+ * The allowlist of env vars a client may forward. One shared list because it
+ * is the wire contract: clients filter before sending and the daemon
+ * re-filters on receipt (the socket peer is untrusted).
+ */
+export const DAEMON_CLIENT_ENV_KEYS = [
+	"HERDR_ENV",
+	"HERDR_PANE_ID",
+	"HERDR_SOCKET_PATH",
+	"HERDR_TAB_ID",
+	"HERDR_WORKSPACE_ID",
+] as const;
+
+/** Collect the allowlisted env vars from the client process for the create command. */
+export function collectDaemonClientEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> | undefined {
+	const env: Record<string, string> = {};
+	for (const key of DAEMON_CLIENT_ENV_KEYS) {
+		const value = source[key];
+		if (value !== undefined) {
+			env[key] = value;
+		}
+	}
+	return Object.keys(env).length > 0 ? env : undefined;
 }
 
 export interface DaemonReplayInfo {
@@ -146,20 +188,24 @@ export interface DaemonAttachResult {
 export type DaemonCommand =
 	| { id?: string; type: "list"; all?: boolean; cwd?: string; sessionDir?: string }
 	| { id?: string; type: "list_saved_sessions"; activeSessionId: string; scope: AgentConnectionSavedSessionScope }
-	| {
+	| ({
 			id?: string;
 			type: "create";
 			sessionPath?: string;
 			continueRecent?: boolean;
 			name?: string;
 			config?: AgentSessionRuntimeConfig;
-	  }
+	  } & DaemonClientEnv)
+	// Attach env is adopt-if-absent only: it fills identity for env-less
+	// sessions (e.g. cron-created) but never rebinds one, since watchers
+	// (agents view, subagent viewers) also attach.
 	| ({
 			id?: string;
 			type: "attach";
 			activeSessionId: string;
 			supportsExtensionUi?: boolean;
-	  } & DaemonAttachClientMetadata)
+	  } & DaemonAttachClientMetadata &
+			DaemonClientEnv)
 	| { id?: string; type: "detach"; activeSessionId?: string }
 	| { id?: string; type: "kill"; activeSessionId: string }
 	| { id?: string; type: "rename"; activeSessionId: string; name: string }
@@ -173,6 +219,18 @@ export type DaemonCommand =
 	  }
 	| { id?: string; type: "steer"; activeSessionId: string; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; activeSessionId: string; message: string; images?: ImageContent[] }
+	| {
+			id?: string;
+			type: "send_message";
+			targetActiveSessionId: string;
+			message: string;
+			fromActiveSessionId?: string;
+			deliveryMode?: AgentSessionMessageDeliveryMode;
+	  }
+	| { id?: string; type: "agent_messages_status" }
+	| { id?: string; type: "agent_messages_pause" }
+	| { id?: string; type: "agent_messages_resume" }
+	| { id?: string; type: "agent_messages_clear"; activeSessionId: string }
 	| { id?: string; type: "abort"; activeSessionId: string }
 	| {
 			id?: string;
@@ -210,7 +268,14 @@ export type DaemonCommand =
 	| { id?: string; type: "set_follow_up_mode"; activeSessionId: string; mode: AgentConnectionQueueMode }
 	| { id?: string; type: "set_auto_compaction"; activeSessionId: string; enabled: boolean }
 	| { id?: string; type: "compact"; activeSessionId: string; customInstructions?: string }
-	| { id?: string; type: "refine"; activeSessionId: string; instructions?: string; rollbackId?: string }
+	| {
+			id?: string;
+			type: "refine";
+			activeSessionId: string;
+			instructions?: string;
+			rollbackId?: string;
+			global?: boolean;
+	  }
 	| { id?: string; type: "abort_compaction"; activeSessionId: string }
 	| { id?: string; type: "abort_branch_summary"; activeSessionId: string }
 	| { id?: string; type: "abort_retry"; activeSessionId: string }
@@ -311,6 +376,8 @@ export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;
 export type DaemonResourceSnapshot = AgentConnectionResourceSnapshot;
 
 export type DaemonCronJob = AgentCronJob;
+export type DaemonAgentSessionMessageReceipt = AgentSessionMessageReceipt;
+export type DaemonAgentSessionMessageSafetyStatus = AgentSessionMessageSafetyStatus;
 
 export type DaemonOutbound =
 	| DaemonResponse

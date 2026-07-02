@@ -54,6 +54,7 @@ import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
+import { collectDaemonClientEnv } from "./modes/daemon/daemon-protocol.js";
 import {
 	type AgentConnection,
 	createInteractiveModeLocalSessionHost,
@@ -688,6 +689,8 @@ export function resolveRuntimeSessionOptions(
 		includeGoals: runtimeSessionOptions?.includeGoals,
 		includeCompactSkill: runtimeSessionOptions?.includeCompactSkill,
 		rlmHeartbeatController: runtimeSessionOptions?.rlmHeartbeatController,
+		agentMessageController: runtimeSessionOptions?.agentMessageController,
+		agentObserveController: runtimeSessionOptions?.agentObserveController,
 		rlmDepth: runtimeSessionOptions?.rlmDepth,
 		rlmMaxDepth: runtimeSessionOptions?.rlmMaxDepth,
 		rlmSessionDir: runtimeSessionOptions?.rlmSessionDir,
@@ -949,6 +952,7 @@ async function createDaemonInteractiveConnection(options: {
 		const attach = async (summary: SessionSummary) => {
 			const connection = await DaemonAgentConnection.attach(client, getDaemonSummaryActiveSessionId(summary), {
 				closeClientOnDispose: true,
+				sendClientEnv: true,
 			});
 			return { connection, summary };
 		};
@@ -973,6 +977,7 @@ async function createDaemonInteractiveConnection(options: {
 			config: options.config,
 			sessionPath: options.sessionPath,
 			continueRecent: options.continueRecent,
+			env: collectDaemonClientEnv(),
 		});
 		if (!response.success) {
 			throw new Error(response.error);
