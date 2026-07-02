@@ -6,7 +6,7 @@
  */
 
 import { isImageLine } from "./terminal-image.js";
-import { sliceByColumn, visibleWidth } from "./utils.js";
+import { sliceByColumn, stripAnsi, visibleWidth } from "./utils.js";
 
 const MIN_TRANSCRIPT_ROWS = 3;
 
@@ -19,6 +19,13 @@ export interface ScrollInfo {
 	linesAbove: number;
 }
 
+// Transcript-anchored selection endpoint (line index + visible column), so
+// streaming appends and scrolling never shift what is selected.
+interface SelectionPoint {
+	line: number;
+	col: number;
+}
+
 export class FullscreenViewport {
 	private scrollTop = 0;
 	private following = true;
@@ -27,6 +34,9 @@ export class FullscreenViewport {
 	private prevHeight = 0;
 	private lastMaxScroll = 0;
 	private lastWindowHeight = 0;
+	private lastTranscript: string[] = [];
+	private selectionAnchor: SelectionPoint | null = null;
+	private selectionHead: SelectionPoint | null = null;
 
 	/**
 	 * Compose a frame of exactly `height` lines: scrolled transcript window on
@@ -50,15 +60,102 @@ export class FullscreenViewport {
 		}
 		this.lastMaxScroll = maxScroll;
 		this.lastWindowHeight = windowHeight;
+		this.lastTranscript = transcript;
 
 		const window = transcript.slice(this.scrollTop, this.scrollTop + windowHeight);
 		for (let i = 0; i < window.length; i++) {
 			if (isImageLine(window[i])) window[i] = IMAGE_PLACEHOLDER;
 		}
+		this.highlightSelection(window);
 		while (window.length < windowHeight) {
 			window.push("");
 		}
 		return [...window, ...dockLines];
+	}
+
+	private orderedSelection(): { start: SelectionPoint; end: SelectionPoint } | null {
+		const a = this.selectionAnchor;
+		const b = this.selectionHead;
+		if (!a || !b || (a.line === b.line && a.col === b.col)) return null;
+		const flipped = a.line > b.line || (a.line === b.line && a.col > b.col);
+		return flipped ? { start: b, end: a } : { start: a, end: b };
+	}
+
+	// Per-line selected column span, or null when the line is outside the selection.
+	private selectionSpan(
+		lineIndex: number,
+		sel: { start: SelectionPoint; end: SelectionPoint },
+	): { from: number; to: number } | null {
+		if (lineIndex < sel.start.line || lineIndex > sel.end.line) return null;
+		return {
+			from: lineIndex === sel.start.line ? sel.start.col : 0,
+			to: lineIndex === sel.end.line ? sel.end.col : Number.MAX_SAFE_INTEGER,
+		};
+	}
+
+	private highlightSelection(window: string[]): void {
+		const sel = this.orderedSelection();
+		if (!sel) return;
+		for (let i = 0; i < window.length; i++) {
+			const span = this.selectionSpan(this.scrollTop + i, sel);
+			if (!span) continue;
+			const width = visibleWidth(window[i]);
+			const from = Math.min(span.from, width);
+			const to = Math.min(span.to, width);
+			if (to <= from) continue;
+			const before = sliceByColumn(window[i], 0, from);
+			// selected span is rendered plain-inverse: SGR codes inside it could
+			// cancel the inverse attribute mid-span
+			const selected = stripAnsi(sliceByColumn(window[i], from, to - from));
+			const after = sliceByColumn(window[i], to, Math.max(0, width - to));
+			window[i] = `${before}\x1b[0m\x1b[7m${selected}\x1b[27m${after}`;
+		}
+	}
+
+	/** Begin a selection at a screen position; false when outside the transcript window. */
+	beginSelection(screenRow: number, screenCol: number): boolean {
+		if (screenRow < 0 || screenRow >= this.lastWindowHeight) {
+			this.clearSelection();
+			return false;
+		}
+		const point = { line: this.scrollTop + screenRow, col: Math.max(0, screenCol) };
+		this.selectionAnchor = point;
+		this.selectionHead = { ...point };
+		return true;
+	}
+
+	extendSelection(screenRow: number, screenCol: number): void {
+		if (!this.selectionAnchor) return;
+		const row = Math.max(0, Math.min(screenRow, this.lastWindowHeight - 1));
+		this.selectionHead = { line: this.scrollTop + row, col: Math.max(0, screenCol) };
+	}
+
+	/** Finish the selection and return its plain text (null when empty). */
+	endSelection(): string | null {
+		const sel = this.orderedSelection();
+		this.clearSelection();
+		if (!sel) return null;
+		const lines: string[] = [];
+		for (let lineIndex = sel.start.line; lineIndex <= sel.end.line; lineIndex++) {
+			const line = this.lastTranscript[lineIndex] ?? "";
+			const span = this.selectionSpan(lineIndex, sel);
+			if (!span) continue;
+			const width = visibleWidth(line);
+			const from = Math.min(span.from, width);
+			const to = Math.min(span.to, width);
+			lines.push(stripAnsi(sliceByColumn(line, from, Math.max(0, to - from))).trimEnd());
+		}
+		const text = lines.join("\n");
+		return text.trim().length > 0 ? text : null;
+	}
+
+	clearSelection(): void {
+		this.selectionAnchor = null;
+		this.selectionHead = null;
+	}
+
+	hasSelection(): boolean {
+		return this.orderedSelection() !== null;
 	}
 
 	/** Row-diff a composed frame against the previous one with absolute addressing. */

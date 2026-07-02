@@ -9,7 +9,7 @@ import { performance } from "node:perf_hooks";
 import { FullscreenViewport, type ScrollInfo } from "./fullscreen.js";
 import { getKeybindings } from "./keybindings.js";
 import { isKeyRelease, matchesKey } from "./keys.js";
-import { isMouseSequence, isWheelDown, isWheelUp, parseSgrMouseEvent } from "./mouse.js";
+import { isMouseSequence, isWheelDown, isWheelUp, MOUSE_BUTTON_LEFT, parseSgrMouseEvent } from "./mouse.js";
 import type { Terminal } from "./terminal.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.js";
@@ -252,6 +252,8 @@ export class TUI extends Container {
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
+	/** Copies fullscreen mouse selections; when unset, OSC 52 is written directly. */
+	public onCopy?: (text: string) => void;
 	private renderRequested = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
@@ -646,6 +648,16 @@ export class TUI extends Container {
 		return this.fullscreen?.viewport.scrollInfo() ?? null;
 	}
 
+	private copySelection(text: string): void {
+		if (this.onCopy) {
+			this.onCopy(text);
+			return;
+		}
+		// fallback: OSC 52 works locally, over SSH, and through tmux (set-clipboard)
+		const base64 = Buffer.from(text, "utf8").toString("base64");
+		this.terminal.write(`\x1b]52;c;${base64}\x07`);
+	}
+
 	private scheduleRender(): void {
 		if (this.stopped || this.renderTimer || !this.renderRequested) {
 			return;
@@ -737,8 +749,24 @@ export class TUI extends Container {
 		if (isMouseSequence(data)) {
 			const event = parseSgrMouseEvent(data);
 			if (event && !overlayFocused) {
-				if (isWheelUp(event)) this.scrollBy(-TUI.WHEEL_SCROLL_LINES);
-				else if (isWheelDown(event)) this.scrollBy(TUI.WHEEL_SCROLL_LINES);
+				const viewport = fullscreen.viewport;
+				if (isWheelUp(event)) {
+					this.scrollBy(-TUI.WHEEL_SCROLL_LINES);
+				} else if (isWheelDown(event)) {
+					this.scrollBy(TUI.WHEEL_SCROLL_LINES);
+				} else if (event.button === MOUSE_BUTTON_LEFT && event.press && !event.motion) {
+					viewport.beginSelection(event.y - 1, event.x - 1);
+					this.requestRender();
+				} else if (event.button === MOUSE_BUTTON_LEFT && event.press && event.motion) {
+					viewport.extendSelection(event.y - 1, event.x - 1);
+					this.requestRender();
+				} else if (!event.press && viewport.hasSelection()) {
+					const text = viewport.endSelection();
+					if (text) this.copySelection(text);
+					this.requestRender();
+				} else if (!event.press) {
+					viewport.clearSelection();
+				}
 			}
 			return true;
 		}

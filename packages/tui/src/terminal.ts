@@ -469,7 +469,9 @@ export class ProcessTerminal implements Terminal {
 	setMouseTracking(enabled: boolean): void {
 		if (enabled === this._mouseTrackingActive) return;
 		this._mouseTrackingActive = enabled;
-		this.write(enabled ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1006l\x1b[?1000l");
+		// ?1002 (button-event tracking) reports drag motion for in-app selection
+		// but not hover, keeping passive mouse movement unreported.
+		this.write(enabled ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1006l\x1b[?1002l");
 	}
 
 	get mouseTrackingActive(): boolean {

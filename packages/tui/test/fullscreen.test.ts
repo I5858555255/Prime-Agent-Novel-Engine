@@ -286,6 +286,59 @@ describe("TUI fullscreen mode", () => {
 		assert.strictEqual(terminal.mouseTrackingActive, false);
 	});
 
+	it("drag-selecting copies the selected text on release", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20));
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// window shows lines 12-19; press on row 1 col 1, drag to row 2 col 6
+		terminal.sendInput("\x1b[<0;1;1M");
+		terminal.sendInput("\x1b[<32;6;2M");
+		await terminal.waitForRender();
+		assert.ok(terminal.getWrites().includes("\x1b[7m"), "selection highlighted while dragging");
+
+		terminal.sendInput("\x1b[<0;6;2m");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(copies, ["Line 12\nLine"]);
+
+		tui.stop();
+	});
+
+	it("writes OSC 52 when no copy handler is set", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20));
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		terminal.sendInput("\x1b[<0;1;1M");
+		terminal.sendInput("\x1b[<32;8;1M");
+		terminal.sendInput("\x1b[<0;8;1m");
+		await terminal.waitForRender();
+
+		const expected = Buffer.from("Line 12", "utf8").toString("base64");
+		assert.ok(terminal.getWrites().includes(`\x1b]52;c;${expected}\x07`));
+
+		tui.stop();
+	});
+
+	it("a plain click copies nothing and clears any selection", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20));
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;5;3M");
+		terminal.sendInput("\x1b[<0;5;3m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, []);
+
+		tui.stop();
+	});
+
 	it("mouse reports are consumed and never reach the focused component", async () => {
 		const { terminal, tui, chat, dock } = setup(lines(20));
 		const received: string[] = [];

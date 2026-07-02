@@ -11,6 +11,7 @@ describe("parseSgrMouseEvent", () => {
 			x: 10,
 			y: 5,
 			press: true,
+			motion: false,
 			shift: false,
 			alt: false,
 			ctrl: false,
@@ -36,6 +37,13 @@ describe("parseSgrMouseEvent", () => {
 	it("distinguishes press from release", () => {
 		assert.strictEqual(parseSgrMouseEvent("\x1b[<0;5;5M")?.press, true);
 		assert.strictEqual(parseSgrMouseEvent("\x1b[<0;5;5m")?.press, false);
+	});
+
+	it("flags drag motion and strips the motion bit from the button", () => {
+		const drag = parseSgrMouseEvent("\x1b[<32;5;5M");
+		assert.strictEqual(drag?.motion, true);
+		assert.strictEqual(drag?.button, 0);
+		assert.strictEqual(parseSgrMouseEvent("\x1b[<0;5;5M")?.motion, false);
 	});
 
 	it("returns null for non-mouse input", () => {
