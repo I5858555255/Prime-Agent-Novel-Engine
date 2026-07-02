@@ -1812,6 +1812,40 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.getSteeringMessages()).toEqual([sharedText]);
 	});
 
+	it("clears the agent queue when a queue update listener clears a newly queued steering prompt", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_queue_update_clear\n\nclear during update";
+		const delivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_queue_update_clear");
+		let cleared = false;
+		const unsubscribe = harness.session.subscribe((event) => {
+			if (event.type === "queue_update" && !cleared) {
+				cleared = true;
+				harness.session.clearQueue();
+			}
+		});
+
+		await harness.session.queueAgentMessagePrompt(agentPrompt, "steer");
+		unsubscribe();
+		await expect(delivery).rejects.toThrow("cleared before delivery");
+		expect(harness.session.getSteeringMessages()).toEqual([]);
+
+		let sawClearedPrompt = false;
+		harness.setResponses([
+			(context) => {
+				sawClearedPrompt = context.messages.some(
+					(message) => message.role === "user" && getMessageText(message).includes("agentmsg_queue_update_clear"),
+				);
+				return fauxAssistantMessage("normal response");
+			},
+		]);
+		await harness.session.prompt("normal");
+
+		expect(sawClearedPrompt).toBe(false);
+		expect(getUserTexts(harness)).toEqual(["normal"]);
+	});
+
 	it("settles late agent-message delivery waiters", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

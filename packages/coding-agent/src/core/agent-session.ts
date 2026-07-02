@@ -2479,6 +2479,11 @@ export class AgentSession {
 					this._acceptedAgentMessagePrompt !== acceptedAgentMessagePrompt));
 		if (shouldQueueAtHandoff) {
 			if (!options?.streamingBehavior) {
+				if (acceptedAgentMessagePrompt && this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
+					this._acceptedAgentMessagePrompt = undefined;
+				}
+				this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((message) => ({ ...message })));
+				reportPreflight(false);
 				throw new Error(
 					"Agent became busy before prompt delivery. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
@@ -2734,8 +2739,8 @@ export class AgentSession {
 			agentMessageId: options.agentMessageId,
 			message,
 		});
-		this._emitQueueUpdate();
 		this.agent.steer(message);
+		this._emitQueueUpdate();
 	}
 
 	/**
@@ -2761,8 +2766,8 @@ export class AgentSession {
 			agentMessageId: options.agentMessageId,
 			message,
 		});
-		this._emitQueueUpdate();
 		this.agent.followUp(message);
+		this._emitQueueUpdate();
 		return true;
 	}
 

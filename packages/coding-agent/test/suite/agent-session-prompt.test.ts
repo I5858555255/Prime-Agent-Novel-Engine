@@ -432,6 +432,50 @@ stale extension instructions`,
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
+	it("restores nextTurn context when handoff busy rejection cannot queue", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "restore after handoff failure", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		let releaseRefine: (() => void) | undefined;
+		const refineGate = new Promise<void>((resolve) => {
+			releaseRefine = resolve;
+		});
+		const sessionInternals = harness.session as unknown as {
+			_refineInFlight?: Promise<void>;
+			_userBashRunning?: boolean;
+		};
+		sessionInternals._refineInFlight = refineGate;
+
+		const accepted = harness.session.acceptAgentMessagePrompt(
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_handoff_reject\n\nagent text",
+			{ expandPromptTemplates: false, queueIfBusy: true },
+		);
+		await Promise.resolve();
+		sessionInternals._userBashRunning = true;
+		sessionInternals._refineInFlight = undefined;
+		releaseRefine?.();
+
+		await expect(accepted).rejects.toThrow("Agent became busy before prompt delivery");
+		sessionInternals._userBashRunning = false;
+
+		let sawRestoredContext = false;
+		harness.setResponses([
+			(context) => {
+				sawRestoredContext = context.messages.some(
+					(message) =>
+						message.role === "user" && getMessageText(message).includes("restore after handoff failure"),
+				);
+				return fauxAssistantMessage("done");
+			},
+		]);
+		await harness.session.prompt("normal prompt");
+
+		expect(sawRestoredContext).toBe(true);
+	});
+
 	it("accepted agent messages return after delivery starts, before completion", async () => {
 		const harness = await createHarness({ models: [{ id: "slow-faux" }] });
 		harnesses.push(harness);
