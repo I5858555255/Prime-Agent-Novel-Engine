@@ -360,6 +360,38 @@ stale extension instructions`,
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
+	it("queues accepted agent messages if the session becomes busy before handoff", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const agentPrompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_handoff_busy\n\nqueue at handoff";
+		let releaseRefine: (() => void) | undefined;
+		const refineGate = new Promise<void>((resolve) => {
+			releaseRefine = resolve;
+		});
+		const sessionInternals = harness.session as unknown as {
+			_refineInFlight?: Promise<void>;
+			_userBashRunning?: boolean;
+		};
+		sessionInternals._refineInFlight = refineGate;
+
+		const accepted = harness.session.acceptAgentMessagePrompt(agentPrompt, {
+			expandPromptTemplates: false,
+			streamingBehavior: "followUp",
+			queueIfBusy: true,
+		});
+		await Promise.resolve();
+		sessionInternals._userBashRunning = true;
+		sessionInternals._refineInFlight = undefined;
+		releaseRefine?.();
+
+		await accepted;
+		sessionInternals._userBashRunning = false;
+
+		expect(harness.session.getFollowUpMessages()).toEqual([agentPrompt]);
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
 	it("accepted agent messages return after delivery starts, before completion", async () => {
 		const harness = await createHarness({ models: [{ id: "slow-faux" }] });
 		harnesses.push(harness);

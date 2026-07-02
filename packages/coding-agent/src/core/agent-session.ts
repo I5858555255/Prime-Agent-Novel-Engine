@@ -2240,10 +2240,12 @@ export class AgentSession {
 		};
 		let messages: AgentMessage[] | undefined;
 		let acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined;
+		let drainedNextTurnMessages: CustomMessage[] = [];
+		let expandedText = text;
+		let currentImages = options?.images;
 
 		try {
 			let currentText = text;
-			let currentImages = options?.images;
 
 			if (expandPromptTemplates) {
 				const handledGoalCommand = await this._handleGoalSlashCommand(currentText, currentImages);
@@ -2284,7 +2286,7 @@ export class AgentSession {
 			}
 
 			// Expand skill commands (/skill:name args) and prompt templates (/template args)
-			let expandedText = currentText;
+			expandedText = currentText;
 			if (expandPromptTemplates) {
 				expandedText = this._expandSkillCommand(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
@@ -2295,7 +2297,11 @@ export class AgentSession {
 			const shouldQueueForStreaming = this.isStreaming;
 			const shouldQueueForPendingWork =
 				options?.queueIfBusy === true &&
-				(this.pendingMessageCount > 0 || this.isCompacting || this.isRetrying || this.hasAcceptedPromptInFlight);
+				(this.pendingMessageCount > 0 ||
+					this.isCompacting ||
+					this.isRetrying ||
+					this.isBashRunning ||
+					this.hasAcceptedPromptInFlight);
 			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
 				if (!options?.streamingBehavior) {
 					const stateDescription = shouldQueueForStreaming
@@ -2347,7 +2353,7 @@ export class AgentSession {
 			if (options?.skipPrePromptWork) {
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 				messages = [];
-				const drainedNextTurnMessages = this._pendingNextTurnMessages;
+				drainedNextTurnMessages = this._pendingNextTurnMessages;
 				for (const msg of drainedNextTurnMessages) {
 					messages.push(msg);
 				}
@@ -2393,7 +2399,8 @@ export class AgentSession {
 				messages = [];
 
 				// Inject any pending "nextTurn" messages as context before the user message.
-				for (const msg of this._pendingNextTurnMessages) {
+				drainedNextTurnMessages = this._pendingNextTurnMessages;
+				for (const msg of drainedNextTurnMessages) {
 					messages.push(msg);
 				}
 				this._pendingNextTurnMessages = [];
@@ -2458,6 +2465,41 @@ export class AgentSession {
 		if (acceptedAgentMessagePrompt?.cleared) {
 			reportPreflight(false);
 			throw new Error("Accepted agent message was cleared before delivery.");
+		}
+		const shouldQueueAtHandoff =
+			options?.queueIfBusy === true &&
+			(this.isStreaming ||
+				this.pendingMessageCount > 0 ||
+				this.isCompacting ||
+				this.isRetrying ||
+				this.isBashRunning ||
+				this._acceptedPromptCompletions.size > 0 ||
+				(this._acceptedAgentMessagePrompt !== undefined &&
+					this._acceptedAgentMessagePrompt !== acceptedAgentMessagePrompt));
+		if (shouldQueueAtHandoff) {
+			if (!options?.streamingBehavior) {
+				throw new Error(
+					"Agent became busy before prompt delivery. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+				);
+			}
+			if (acceptedAgentMessagePrompt && this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
+				this._acceptedAgentMessagePrompt = undefined;
+			}
+			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((message) => ({ ...message })));
+			if (options.streamingBehavior === "followUp") {
+				const queued = await this._queueFollowUp(expandedText, currentImages, {
+					queueKey: options.followUpQueueKey,
+					agentMessageId: options.agentMessageId,
+				});
+				if (!queued) {
+					reportPreflight(false);
+					return;
+				}
+			} else {
+				await this._queueSteer(expandedText, currentImages, { agentMessageId: options.agentMessageId });
+			}
+			reportPreflight(true, true);
+			return;
 		}
 		const promptPromise = this.agent.prompt(messages);
 		const promptAccepted = Symbol("promptAccepted");
