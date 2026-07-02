@@ -564,7 +564,7 @@ describe("AgentSession queue characterization", () => {
 		);
 	});
 
-	it("rejects queued agent-message delivery waiters on abort but keeps the message queued", async () => {
+	it("keeps queued agent-message delivery waiters pending on abort until the message is delivered", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const agentPrompt =
@@ -584,20 +584,30 @@ describe("AgentSession queue characterization", () => {
 
 		await harness.session.queueAgentMessagePrompt(agentPrompt, "followUp");
 		const delivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_abort");
+		let deliverySettled = false;
+		void delivery.then(
+			() => {
+				deliverySettled = true;
+			},
+			() => {
+				deliverySettled = true;
+			},
+		);
 		expect(harness.session.pendingMessageCount).toBe(1);
 
 		await harness.session.abort();
 		await promptPromise;
+		await Promise.resolve();
 
-		// The waiter settles instead of hanging until a future prompt...
-		await expect(delivery).rejects.toThrow("not delivered before the run was aborted");
-		// ...while the message itself survives, like queued user follow-ups.
+		// The waiter still represents actual delivery, and the surviving queued message has not delivered yet.
+		expect(deliverySettled).toBe(false);
 		expect(harness.session.pendingMessageCount).toBe(1);
 		expect(harness.session.getFollowUpMessages()).toEqual([agentPrompt]);
 
 		harness.setResponses([fauxAssistantMessage("answer"), fauxAssistantMessage("handled follow-up")]);
 		await harness.session.prompt("again");
 
+		await expect(delivery).resolves.toBeUndefined();
 		expect(harness.session.pendingMessageCount).toBe(0);
 		expect(getUserTexts(harness)).toContain(agentPrompt);
 	});

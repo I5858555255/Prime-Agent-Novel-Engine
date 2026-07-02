@@ -586,15 +586,20 @@ stale extension instructions`,
 		await harness.session.prompt("seed");
 		harness.setResponses([fauxAssistantMessage("never delivered")]);
 
+		const delivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_late_events");
 		const accepted = harness.session.acceptAgentMessagePrompt(agentPrompt, { expandPromptTemplates: false });
 		expect(harness.session.clearQueuedUserMessagesMatching((text) => text.includes("agentmsg_"))).toEqual({
 			steering: [],
 			followUp: [agentPrompt],
 		});
 		await expect(accepted).rejects.toThrow("cleared before delivery");
+		await expect(delivery).rejects.toThrow("cleared before delivery");
 		await harness.session.agent.waitForIdle();
 		await (harness.session as unknown as { _agentEventQueue: Promise<void> })._agentEventQueue;
 
+		await expect(harness.session.waitForAgentMessagePromptDelivery("agentmsg_late_events")).rejects.toThrow(
+			"cleared before delivery",
+		);
 		// The aborted run's late message events must not re-persist the cleared message.
 		const persistedRoles = harness.sessionManager
 			.getEntries()
