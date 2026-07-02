@@ -49,7 +49,6 @@ export async function bindActiveSessionState(
 ): Promise<void> {
 	const session = state.runtime.session;
 
-	// Read live so attach updates to state.clientEnv apply without rebinding.
 	session.setExecEnvProvider(() => state.clientEnv);
 
 	state.unsubscribe?.();

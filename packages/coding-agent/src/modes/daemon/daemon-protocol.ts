@@ -90,7 +90,7 @@ export const DAEMON_CLIENT_ENV_KEYS = [
 	"HERDR_WORKSPACE_ID",
 ] as const;
 
-/** Collect the allowlisted env vars from the client process for create/attach commands. */
+/** Collect the allowlisted env vars from the client process for the create command. */
 export function collectDaemonClientEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> | undefined {
 	const env: Record<string, string> = {};
 	for (const key of DAEMON_CLIENT_ENV_KEYS) {

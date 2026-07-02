@@ -356,11 +356,11 @@ export class AgentDaemon {
 			if (existing) {
 				// A live runtime already owns this session file; reuse it instead of
 				// starting a second runtime that would interleave writes to one file.
+				// clientEnv is deliberately NOT rebound: extensions captured the
+				// creator's identity at load, and mutating it here would only make
+				// pi.exec disagree with those captures.
 				if (command.name) {
 					existing.runtime.session.setSessionName(command.name);
-				}
-				if (clientEnv) {
-					existing.clientEnv = clientEnv;
 				}
 				this.rebindCronJobsToState(existing);
 				return existing;
@@ -427,12 +427,11 @@ export class AgentDaemon {
 		const sessionKey = resolve(sessionFile);
 		const pending = this.openingSessions.get(sessionKey);
 		if (pending) {
+			// Same as the reuse path above: the racing creator's env won; don't
+			// rebind identity the extensions have already captured.
 			const state = await pending;
 			if (command.name) {
 				state.runtime.session.setSessionName(command.name);
-			}
-			if (clientEnv) {
-				state.clientEnv = clientEnv;
 			}
 			this.rebindCronJobsToState(state);
 			return state;
