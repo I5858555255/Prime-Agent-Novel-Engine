@@ -357,7 +357,7 @@ export interface PromptOptions {
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
-	preflightResult?: (success: boolean) => void;
+	preflightResult?: (success: boolean, queued?: boolean) => void;
 	/** Queue instead of starting immediately when the session is idle but already has queued work. */
 	queueIfBusy?: boolean;
 }
@@ -2183,10 +2183,10 @@ export class AgentSession {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let preflightSettled = false;
-		const reportPreflight = (success: boolean) => {
+		const reportPreflight = (success: boolean, queued = false) => {
 			if (!preflightSettled) {
 				preflightSettled = true;
-				preflightResult?.(success);
+				preflightResult?.(success, queued);
 			}
 		};
 		let messages: AgentMessage[] | undefined;
@@ -2268,7 +2268,7 @@ export class AgentSession {
 				} else {
 					await this._queueSteer(expandedText, currentImages, { agentMessageId: options.agentMessageId });
 				}
-				reportPreflight(true);
+				reportPreflight(true, true);
 				return;
 			}
 

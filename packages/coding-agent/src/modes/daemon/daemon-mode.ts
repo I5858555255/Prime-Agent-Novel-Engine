@@ -1972,6 +1972,7 @@ export class AgentDaemon {
 
 		this.agentMessageAcceptingTargets.add(targetState.activeSessionId);
 		let preflightFailed = false;
+		let preflightQueued = false;
 		try {
 			const acceptPrompt =
 				typeof session.acceptAgentMessagePrompt === "function"
@@ -1981,16 +1982,16 @@ export class AgentDaemon {
 				expandPromptTemplates: false,
 				streamingBehavior,
 				queueIfBusy: true,
-				preflightResult: (didSucceed) => {
+				preflightResult: (didSucceed, didQueue) => {
 					preflightFailed = !didSucceed;
+					preflightQueued = didSucceed && didQueue === true;
 				},
 			});
 			if (preflightFailed) {
 				throw new Error("Agent message was not accepted");
 			}
-			// Accepted prompts count via hasAcceptedPromptInFlight from here on.
 			releaseReservation();
-			return { status: "delivered" };
+			return { status: preflightQueued ? "queued" : "delivered" };
 		} finally {
 			this.agentMessageAcceptingTargets.delete(targetState.activeSessionId);
 		}
