@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterClientEnv, withClientEnv } from "../src/modes/daemon/daemon-client-env.js";
+import { execEnvForSession, filterClientEnv, withClientEnv } from "../src/modes/daemon/daemon-client-env.js";
 
 describe("filterClientEnv", () => {
 	it("keeps only allowlisted keys", () => {
@@ -78,6 +78,23 @@ describe("withClientEnv", () => {
 		});
 		await Promise.all([windowed, envless]);
 		expect(seenByEnvless).toBeUndefined();
+	});
+
+	it("execEnvForSession pins keys independent of active env windows", async () => {
+		const baseline = execEnvForSession();
+		await withClientEnv({ HERDR_PANE_ID: "window-only" }, async () => {
+			// An env-less session's exec env is the daemon's startup base, not
+			// whatever another session's window put in process.env.
+			expect(execEnvForSession()).toStrictEqual(baseline);
+			// A session with env gets exactly its values; missing keys are unset.
+			expect(execEnvForSession({ HERDR_PANE_ID: "w9:p9" })).toStrictEqual({
+				HERDR_ENV: undefined,
+				HERDR_PANE_ID: "w9:p9",
+				HERDR_SOCKET_PATH: undefined,
+				HERDR_TAB_ID: undefined,
+				HERDR_WORKSPACE_ID: undefined,
+			});
+		});
 	});
 
 	it("env windows wait for in-flight env-less loads", async () => {

@@ -14,6 +14,28 @@ export function filterClientEnv(env?: Record<string, string>): Record<string, st
 	return Object.keys(filtered).length > 0 ? filtered : undefined;
 }
 
+// The daemon's own allowlisted env, captured at startup before any env window
+// can mutate process.env.
+const baseClientEnv: Record<string, string | undefined> = {};
+for (const key of DAEMON_CLIENT_ENV_KEYS) {
+	baseClientEnv[key] = process.env[key];
+}
+
+/**
+ * Exec env for a session's subprocesses: pins every allowlisted key to the
+ * session's value (unset when the client didn't send it), or to the daemon's
+ * startup value for env-less sessions. Pinning makes subprocess env
+ * independent of any env window another session has open at spawn time.
+ */
+export function execEnvForSession(clientEnv?: Record<string, string>): Record<string, string | undefined> {
+	const source = clientEnv ?? baseClientEnv;
+	const env: Record<string, string | undefined> = {};
+	for (const key of DAEMON_CLIENT_ENV_KEYS) {
+		env[key] = source[key];
+	}
+	return env;
+}
+
 // Shared/exclusive lock: env windows are exclusive (they mutate process.env),
 // env-less loads are shared — they run concurrently with each other but never
 // inside an env window, so they can't capture another session's identity.

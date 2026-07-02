@@ -506,7 +506,7 @@ export class AgentSession {
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
-	private _execEnvProvider?: () => Record<string, string> | undefined;
+	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
 
 	private _resourceLoader: ResourceLoader;
@@ -3199,7 +3199,7 @@ export class AgentSession {
 	 * pi.exec() subprocesses. The function is read at exec time, so a host (e.g.
 	 * the daemon) can update the underlying value per attach without rebinding.
 	 */
-	setExecEnvProvider(provider: (() => Record<string, string> | undefined) | undefined): void {
+	setExecEnvProvider(provider: (() => Record<string, string | undefined> | undefined) | undefined): void {
 		this._execEnvProvider = provider;
 		const extensions = this._resourceLoader.getExtensions();
 		extensions.runtime.getExecEnv = provider;

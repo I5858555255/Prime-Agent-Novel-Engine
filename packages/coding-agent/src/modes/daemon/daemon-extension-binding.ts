@@ -10,7 +10,7 @@ import type { SubagentRuntimeHost } from "../../core/rlm-runtime.js";
 import { createAgentConnectionState } from "../agent-connection/snapshot.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import type { ActiveSessionState } from "./active-session-state.js";
-import { withClientEnv } from "./daemon-client-env.js";
+import { execEnvForSession, withClientEnv } from "./daemon-client-env.js";
 import {
 	type DaemonExtensionUIResponse,
 	type DaemonOutbound,
@@ -49,7 +49,7 @@ export async function bindActiveSessionState(
 ): Promise<void> {
 	const session = state.runtime.session;
 
-	session.setExecEnvProvider(() => state.clientEnv);
+	session.setExecEnvProvider(() => execEnvForSession(state.clientEnv));
 	// Every runtime rebuild (new/switch/fork/import, subagent spawn) re-loads
 	// extensions, which capture client env synchronously at that moment.
 	state.runtime.setRuntimeEnvScope((fn) => withClientEnv(state.clientEnv, fn));
