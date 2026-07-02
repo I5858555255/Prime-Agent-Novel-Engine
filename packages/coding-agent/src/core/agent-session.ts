@@ -189,10 +189,6 @@ export interface RlmChildAgentSnapshot {
 	error?: string;
 }
 
-/**
- * Why a compaction ran: user /compact, context threshold, overflow recovery,
- * or requested by the model via the compact skill.
- */
 export type CompactionReason = "manual" | "threshold" | "overflow" | "requested";
 
 /** Session-specific events that extend the core AgentEvent */
@@ -279,10 +275,8 @@ export interface AgentSessionConfig {
 	 */
 	includeGoals?: boolean;
 	/**
-	 * Whether the bundled compact skill is available to the model: the skill in
-	 * the IPython kernel and its compact.* host handlers. Auto-compaction is
-	 * controlled separately by settings. Default: the compaction.agentCallable
-	 * setting (true).
+	 * Whether the bundled compact skill and its compact.* host handlers are
+	 * available to the model. Default: the compaction.agentCallable setting.
 	 */
 	includeCompactSkill?: boolean;
 	/**
@@ -502,7 +496,6 @@ export class AgentSession {
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
 	private _continueAfterThresholdCompaction = false;
-	/** Set by compact.run from the kernel; consumed at the next turn boundary. */
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 
 	// Branch summarization state
@@ -1198,11 +1191,9 @@ export class AgentSession {
 	}
 
 	/**
-	 * Handle a compact.* request from the IPython kernel host bridge (the
-	 * bundled compact skill). Compaction aborts the agent run that is executing
-	 * the requesting cell, so compact.run only schedules it; the pending request
-	 * is consumed at the next turn boundary (_checkCompaction) and the loop
-	 * resumes afterwards.
+	 * Handle a compact.* request from the kernel host bridge. Compaction would
+	 * abort the run executing the requesting cell, so compact.run only schedules
+	 * it; _checkCompaction consumes the request at the turn boundary.
 	 */
 	handleCompactHostRequest(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
 		if (!this._includeCompactSkill) {
@@ -1224,6 +1215,12 @@ export class AgentSession {
 					throw new Error("compact.run instructions must be a string when provided");
 				}
 				// "status" is reserved by the host-request reply protocol; don't use it as a key.
+				if (!this.isStreaming) {
+					return {
+						scheduled: false,
+						reason: "no active turn; compaction can only be requested while a turn is running",
+					};
+				}
 				const preparation = prepareCompaction(
 					this.sessionManager.getBranch(),
 					this.settingsManager.getCompactionSettings(),
@@ -2815,11 +2812,8 @@ export class AgentSession {
 
 	/**
 	 * Shared compaction core behind /compact, auto-compaction, and the compact
-	 * skill: prepare, summarize, persist the compaction entry, rebuild agent
-	 * context, and notify extensions and the kernel.
-	 *
-	 * @throws CompactionSkippedError when there is nothing to compact, and
-	 *         Error("Compaction cancelled") on abort or extension cancel.
+	 * skill. Throws CompactionSkippedError when there is nothing to compact and
+	 * Error("Compaction cancelled") on abort or extension cancel.
 	 */
 	private async _performCompaction(options: {
 		model: Model<any>;
@@ -3006,15 +3000,7 @@ export class AgentSession {
 			return false;
 		}
 
-		// Model-requested compaction (compact skill) runs regardless of the
-		// auto-compaction setting.
-		if (this._pendingRequestedCompaction !== undefined) {
-			return await this._runAutoCompaction("requested", false);
-		}
-
 		const settings = this.settingsManager.getCompactionSettings();
-		if (!settings.enabled) return false;
-
 		const contextWindow = this.model?.contextWindow ?? 0;
 
 		// Skip overflow check if the message came from a different model.
@@ -3024,19 +3010,22 @@ export class AgentSession {
 		const sameModel =
 			this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
 
-		// Skip compaction checks if this assistant message is older than the latest
-		// compaction boundary. This prevents a stale pre-compaction usage/error
+		// Skip overflow/threshold checks if this assistant message is older than the
+		// latest compaction boundary. This prevents a stale pre-compaction usage/error
 		// from retriggering compaction on the first prompt after compaction.
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const compactionTimestamp = compactionEntry ? new Date(compactionEntry.timestamp).getTime() : undefined;
 		const assistantIsFromBeforeCompaction =
 			compactionTimestamp !== undefined && assistantMessage.timestamp <= compactionTimestamp;
-		if (assistantIsFromBeforeCompaction) {
-			return false;
-		}
 
-		// Case 1: Overflow - LLM returned context overflow error
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
+		// Case 1: Overflow - takes priority over a pending model request so the error
+		// strip + retry still happen; the compaction it runs consumes the request.
+		if (
+			!assistantIsFromBeforeCompaction &&
+			(settings.enabled || this._pendingRequestedCompaction !== undefined) &&
+			sameModel &&
+			isContextOverflow(assistantMessage, contextWindow)
+		) {
 			if (this._overflowRecoveryAttempted) {
 				this._emit({
 					type: "compaction_end",
@@ -3060,7 +3049,14 @@ export class AgentSession {
 			return await this._runAutoCompaction("overflow", true);
 		}
 
-		// Case 2: Threshold - context is getting large.
+		// Case 2: Model-requested (compact skill); runs even with auto-compaction off.
+		if (this._pendingRequestedCompaction !== undefined) {
+			return await this._runAutoCompaction("requested", false);
+		}
+
+		if (!settings.enabled || assistantIsFromBeforeCompaction) return false;
+
+		// Case 3: Threshold - context is getting large.
 		// Use the full-session estimate so messages appended after the last successful
 		// assistant usage are included, matching the /usage context display.
 		const contextTokens = this._getThresholdContextTokens(assistantMessage, compactionTimestamp);
@@ -3086,6 +3082,18 @@ export class AgentSession {
 			(reason === "threshold" || reason === "requested") && this._continueAfterThresholdCompaction;
 		this._continueAfterThresholdCompaction = false;
 
+		const scheduleContinue = () => {
+			setTimeout(() => {
+				this.agent.continue().catch(() => {});
+			}, 100);
+		};
+		// A requested compaction stopped the loop on purpose; don't stall if it fails.
+		const resumeAfterFailure = () => {
+			if (reason === "requested" && (shouldContinueAfterCompaction || this.agent.hasQueuedMessages())) {
+				scheduleContinue();
+			}
+		};
+
 		this._emit({ type: "compaction_start", reason, customInstructions });
 		this._autoCompactionAbortController = new AbortController();
 
@@ -3098,6 +3106,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
+				resumeAfterFailure();
 				return false;
 			}
 
@@ -3110,6 +3119,7 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
+				resumeAfterFailure();
 				return false;
 			}
 
@@ -3130,16 +3140,12 @@ export class AgentSession {
 					this.agent.state.messages = messages.slice(0, -1);
 				}
 
-				setTimeout(() => {
-					this.agent.continue().catch(() => {});
-				}, 100);
+				scheduleContinue();
 				return true;
 			} else if (shouldContinueAfterCompaction || this.agent.hasQueuedMessages()) {
 				// Compaction can intentionally stop a tool loop between turns.
 				// Queued follow-up/steering/custom messages can also be waiting.
-				setTimeout(() => {
-					this.agent.continue().catch(() => {});
-				}, 100);
+				scheduleContinue();
 			}
 			return false;
 		} catch (error) {
@@ -3171,6 +3177,7 @@ export class AgentSession {
 					errorSeverity: "warning",
 					customInstructions,
 				});
+				resumeAfterFailure();
 				return false;
 			}
 			this._emit({
@@ -3187,6 +3194,7 @@ export class AgentSession {
 							: `Auto-compaction failed: ${errorMessage}`,
 				customInstructions,
 			});
+			resumeAfterFailure();
 			return false;
 		} finally {
 			this._autoCompactionAbortController = undefined;

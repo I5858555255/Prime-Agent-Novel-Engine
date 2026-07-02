@@ -117,7 +117,6 @@ export interface CompactionResult<T = unknown> {
 // Types
 // ============================================================================
 
-/** Name of the bundled kernel-side compact skill (skills/compact). */
 export const COMPACT_SKILL_NAME = "compact";
 
 export interface CompactionSettings {

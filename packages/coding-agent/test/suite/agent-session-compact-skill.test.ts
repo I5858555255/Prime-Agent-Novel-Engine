@@ -9,14 +9,25 @@ type SessionInternals = {
 	_createKernelHostHandlers: () => Record<string, unknown>;
 };
 
-function createAssistant(harness: Harness, options: { stopReason?: AssistantMessage["stopReason"] } = {}) {
+function createAssistant(
+	harness: Harness,
+	options: { stopReason?: AssistantMessage["stopReason"]; errorMessage?: string } = {},
+) {
 	const model = harness.getModel();
 	return {
-		...fauxAssistantMessage("", { stopReason: options.stopReason, timestamp: Date.now() }),
+		...fauxAssistantMessage("", {
+			stopReason: options.stopReason,
+			errorMessage: options.errorMessage,
+			timestamp: Date.now(),
+		}),
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
 	};
+}
+
+function setStreaming(harness: Harness, streaming: boolean) {
+	(harness.session.agent.state as { isStreaming: boolean }).isStreaming = streaming;
 }
 
 /** Extension that supplies compaction content so no provider call is needed. */
@@ -52,7 +63,9 @@ describe("AgentSession compact skill host requests", () => {
 		await harness.session.prompt("one");
 		await harness.session.prompt("two");
 
+		setStreaming(harness, true);
 		const runResult = harness.session.handleCompactHostRequest("compact.run", { instructions: "keep the plan" });
+		setStreaming(harness, false);
 		expect(runResult.scheduled).toBe(true);
 		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(true);
 
@@ -75,7 +88,9 @@ describe("AgentSession compact skill host requests", () => {
 		harnesses.push(harness);
 		await harness.session.prompt("one");
 
+		setStreaming(harness, true);
 		const result = harness.session.handleCompactHostRequest("compact.run");
+		setStreaming(harness, false);
 		expect(result).toEqual({ scheduled: false, reason: "session is too short to compact" });
 		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(false);
 	});
@@ -89,7 +104,9 @@ describe("AgentSession compact skill host requests", () => {
 		await harness.session.prompt("one");
 		await harness.session.prompt("two");
 
+		setStreaming(harness, true);
 		expect(harness.session.handleCompactHostRequest("compact.run").scheduled).toBe(true);
+		setStreaming(harness, false);
 
 		const internals = harness.session as unknown as SessionInternals;
 		expect(internals._shouldStopAfterTurn({ message: createAssistant(harness) } as ShouldStopAfterTurnContext)).toBe(
@@ -110,13 +127,84 @@ describe("AgentSession compact skill host requests", () => {
 		await harness.session.prompt("one");
 		await harness.session.prompt("two");
 
+		setStreaming(harness, true);
 		expect(harness.session.handleCompactHostRequest("compact.run").scheduled).toBe(true);
+		setStreaming(harness, false);
 
 		const internals = harness.session as unknown as SessionInternals;
 		const compacted = await internals._checkCompaction(createAssistant(harness, { stopReason: "aborted" }));
 		expect(compacted).toBe(false);
 		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(false);
 		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+	});
+
+	it("rejects compact.run while no turn is active", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [extensionCompaction()],
+		});
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+
+		const result = harness.session.handleCompactHostRequest("compact.run");
+		expect(result.scheduled).toBe(false);
+		expect(result.reason).toContain("no active turn");
+		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(false);
+	});
+
+	it("prioritizes overflow recovery over a pending requested compaction", async () => {
+		vi.useFakeTimers();
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [extensionCompaction()],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+
+		setStreaming(harness, true);
+		expect(harness.session.handleCompactHostRequest("compact.run").scheduled).toBe(true);
+		setStreaming(harness, false);
+
+		const continueSpy = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
+		const internals = harness.session as unknown as SessionInternals;
+		const overflow = createAssistant(harness, { stopReason: "error", errorMessage: "prompt is too long" });
+		const compacted = await internals._checkCompaction(overflow);
+		await vi.advanceTimersByTimeAsync(100);
+		vi.useRealTimers();
+
+		expect(compacted).toBe(true); // willRetry
+		expect(harness.eventsOfType("compaction_start").at(-1)).toMatchObject({ reason: "overflow" });
+		expect(harness.session.handleCompactHostRequest("compact.status").scheduled).toBe(false);
+		expect(continueSpy).toHaveBeenCalled();
+	});
+
+	it("resumes the loop when a requested compaction is skipped", async () => {
+		vi.useFakeTimers();
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		(harness.session as unknown as { _pendingRequestedCompaction?: object })._pendingRequestedCompaction = {};
+		harness.session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "queued" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+		const continueSpy = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
+
+		const internals = harness.session as unknown as SessionInternals;
+		const compacted = await internals._checkCompaction(createAssistant(harness));
+		await vi.advanceTimersByTimeAsync(100);
+		vi.useRealTimers();
+
+		expect(compacted).toBe(false);
+		expect(harness.eventsOfType("compaction_end").at(-1)?.errorMessage).toContain("Requested compaction skipped");
+		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("reports context usage via compact.status", async () => {
