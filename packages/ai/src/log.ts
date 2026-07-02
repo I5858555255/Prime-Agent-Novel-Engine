@@ -36,10 +36,17 @@ export function setLogSink(next: LogSink | undefined): void {
 
 function emit(level: LogLevel, component: string, msg: string, fields?: Record<string, unknown>): void {
 	try {
-		const entry: LogEntry = { ts: new Date().toISOString(), level, component, msg, ...fields };
-		if (sink) {
-			sink(entry);
-		} else if (level === "warn" || level === "error") {
+		// Reserved keys win over caller fields so entries can't be misclassified.
+		const entry: LogEntry = { ...fields, ts: new Date().toISOString(), level, component, msg };
+		try {
+			if (sink) {
+				sink(entry);
+				return;
+			}
+		} catch {
+			// Broken sink: fall through to the console fallback below.
+		}
+		if (level === "warn" || level === "error") {
 			console.error(JSON.stringify(entry));
 		}
 	} catch {

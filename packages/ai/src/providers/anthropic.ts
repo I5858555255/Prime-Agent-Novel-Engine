@@ -390,9 +390,11 @@ function anthropicSseError(data: string, requestId?: string): StreamFailureError
 	let errorType: string | undefined;
 	let detail: string | undefined;
 	try {
-		const parsed = parseJsonWithRepair<{ error?: { type?: string; message?: string } }>(data);
+		const parsed = parseJsonWithRepair<{ error?: { type?: string; message?: string }; request_id?: string }>(data);
 		errorType = parsed.error?.type;
 		detail = parsed.error?.message;
+		// Proxies may strip the request-id header; the error body carries it too.
+		requestId ??= typeof parsed.request_id === "string" ? parsed.request_id : undefined;
 	} catch {
 		detail = data;
 	}

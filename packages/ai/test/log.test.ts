@@ -31,10 +31,21 @@ describe("structured logger", () => {
 		expect(consoleError).toHaveBeenCalledTimes(2);
 	});
 
-	test("a throwing sink never propagates into the caller", () => {
+	test("caller fields cannot overwrite reserved entry keys", () => {
+		const entries: LogEntry[] = [];
+		setLogSink((entry) => entries.push(entry));
+		getLogger("test").error("boom", { level: "info", msg: "spoofed", detail: "kept" });
+		expect(entries[0]).toMatchObject({ level: "error", msg: "boom", detail: "kept" });
+	});
+
+	test("a throwing sink never propagates and warn/error fall back to console.error", () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 		setLogSink(() => {
 			throw new Error("sink is broken");
 		});
-		expect(() => getLogger("test").error("boom")).not.toThrow();
+		const log = getLogger("test");
+		expect(() => log.error("boom")).not.toThrow();
+		expect(() => log.debug("quiet")).not.toThrow();
+		expect(consoleError).toHaveBeenCalledTimes(1);
 	});
 });
