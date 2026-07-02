@@ -1466,6 +1466,79 @@ describe("daemon mode helpers", () => {
 		resolvePrompt();
 	});
 
+	it("waits for an in-flight agent-message accept before starting daemon prompts", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		let resolveAccept: () => void = () => {};
+		const acceptAgentMessagePrompt = vi.fn(
+			(_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+				options?.preflightResult?.(true);
+				return new Promise<void>((resolve) => {
+					resolveAccept = resolve;
+				});
+			},
+		);
+		const prompt = vi.fn(async (_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+			options?.preflightResult?.(true);
+		});
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				isStreaming: false,
+				pendingMessageCount: 0,
+				prompt,
+				acceptAgentMessagePrompt,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown> | undefined;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				origin: "agent" | "cli";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		const send = internals.sendAgentSessionMessage({
+			targetSelector: targetState.activeSessionId,
+			message: "agent message",
+			origin: "agent",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(acceptAgentMessagePrompt).toHaveBeenCalledOnce();
+
+		const promptClient = makeClient("client-1", targetState.activeSessionId);
+		(promptClient.socket as unknown as { write: ReturnType<typeof vi.fn> }).write = vi.fn();
+		internals.handleCommand(promptClient, {
+			id: "command-1",
+			type: "prompt",
+			activeSessionId: targetState.activeSessionId,
+			message: "normal prompt",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(prompt).not.toHaveBeenCalled();
+
+		resolveAccept();
+		await send;
+		for (let attempt = 0; attempt < 10 && prompt.mock.calls.length === 0; attempt++) {
+			await Promise.resolve();
+		}
+
+		expect(prompt).toHaveBeenCalledOnce();
+	});
+
 	it("queues agent messages while a cron prompt prepares to stream", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },

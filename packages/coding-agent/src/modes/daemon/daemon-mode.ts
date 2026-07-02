@@ -584,6 +584,7 @@ export class AgentDaemon {
 			}
 		};
 		try {
+			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
 			await session.prompt(message, {
 				...options,
 				preflightResult: (didSucceed) => {
