@@ -1140,7 +1140,7 @@ export class TUI extends Container {
 		if (!scrollInfo.following) {
 			// Follow hint composited over the bottom of the transcript window,
 			// just above the dock. Overlays still paint on top of it.
-			const followKey = getKeybindings().getKeys("tui.viewport.follow")[0] ?? "ctrl+end";
+			const followKey = getKeybindings().getKeys("tui.viewport.follow")[0] ?? "alt+down";
 			const label = ` ${followKey} to follow `;
 			const labelWidth = visibleWidth(label);
 			const row = fullscreen.viewport.windowHeight() - 1;

@@ -133,11 +133,11 @@ export const TUI_KEYBINDINGS = {
 		description: "Scroll transcript down a page (fullscreen)",
 	},
 	"tui.viewport.top": {
-		defaultKeys: "ctrl+home",
+		defaultKeys: "shift+alt+up",
 		description: "Scroll transcript to top (fullscreen)",
 	},
 	"tui.viewport.follow": {
-		defaultKeys: "ctrl+end",
+		defaultKeys: "alt+down",
 		description: "Scroll to bottom and follow output (fullscreen)",
 	},
 	"tui.select.up": { defaultKeys: "up", description: "Move selection up" },

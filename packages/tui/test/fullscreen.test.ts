@@ -31,8 +31,8 @@ class LoggingVirtualTerminal extends VirtualTerminal {
 const WHEEL_UP = "\x1b[<64;5;5M";
 const WHEEL_DOWN = "\x1b[<65;5;5M";
 const PAGE_UP = "\x1b[5~";
-const CTRL_HOME = "\x1b[1;5H";
-const CTRL_END = "\x1b[1;5F";
+const VIEWPORT_TOP = "\x1b[1;4A"; // shift+alt+up
+const FOLLOW = "\x1b[1;3B"; // alt+down
 
 interface Setup {
 	terminal: LoggingVirtualTerminal;
@@ -134,7 +134,7 @@ describe("TUI fullscreen mode", () => {
 		await terminal.waitForRender();
 		assert.ok(terminal.getViewport().join("\n").includes("to follow"));
 
-		terminal.sendInput(CTRL_END);
+		terminal.sendInput(FOLLOW);
 		await terminal.waitForRender();
 		assert.ok(!terminal.getViewport().join("\n").includes("to follow"));
 
@@ -174,12 +174,12 @@ describe("TUI fullscreen mode", () => {
 		// window height 8 → page size 7; top was 22, now 15
 		assert.strictEqual(terminal.getViewport()[0], "Line 15");
 
-		terminal.sendInput(CTRL_HOME);
+		terminal.sendInput(VIEWPORT_TOP);
 		await terminal.waitForRender();
 		assert.strictEqual(terminal.getViewport()[0], "Line 0");
 		assert.strictEqual(tui.getScrollInfo()?.following, false);
 
-		terminal.sendInput(CTRL_END);
+		terminal.sendInput(FOLLOW);
 		await terminal.waitForRender();
 		assert.strictEqual(terminal.getViewport()[7], "Line 29");
 		assert.strictEqual(tui.getScrollInfo()?.following, true);
@@ -212,7 +212,7 @@ describe("TUI fullscreen mode", () => {
 		tui.enterFullscreen({ scroll: [chat], dock });
 		await terminal.waitForRender();
 
-		terminal.sendInput(CTRL_HOME);
+		terminal.sendInput(VIEWPORT_TOP);
 		await terminal.waitForRender();
 		terminal.clearWrites();
 
