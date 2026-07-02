@@ -2398,6 +2398,83 @@ describe("daemon mode helpers", () => {
 		expect(removeQueuedFollowUp).not.toHaveBeenCalled();
 	});
 
+	it("defers heartbeat cron jobs while an accepted agent message prompt is in flight", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const prompt = vi.fn(async () => {});
+		const followUp = vi.fn(async () => true);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isBashRunning: boolean;
+					hasAcceptedPromptInFlight: boolean;
+					pendingMessageCount: number;
+					prompt: typeof prompt;
+					followUp: typeof followUp;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			isBashRunning: false,
+			hasAcceptedPromptInFlight: true,
+			pendingMessageCount: 0,
+			prompt,
+			followUp,
+		} as never;
+		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
+
+		const result = await (
+			daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }
+		).runCronJob(makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }));
+
+		expect(result).toBe("skipped");
+		expect(prompt).not.toHaveBeenCalled();
+		expect(followUp).not.toHaveBeenCalled();
+	});
+
+	it("queues generic cron jobs behind accepted agent message prompts", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const prompt = vi.fn(async () => {});
+		const followUp = vi.fn(async () => true);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					hasAcceptedPromptInFlight: boolean;
+					pendingMessageCount: number;
+					prompt: typeof prompt;
+					followUp: typeof followUp;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			hasAcceptedPromptInFlight: true,
+			pendingMessageCount: 0,
+			prompt,
+			followUp,
+		} as never;
+		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
+
+		await (daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }).runCronJob(
+			makeCronJob({ id: "cron-1", source: "cron", activeSessionId: state.activeSessionId }),
+		);
+
+		expect(followUp).toHaveBeenCalledWith("heartbeat prompt");
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
 	it("queues generic cron jobs behind pending messages", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },

@@ -526,14 +526,19 @@ export class AgentDaemon {
 		if (!state) {
 			return "skipped";
 		}
-		if (shouldDeferHeartbeatCronJob(job, state.runtime.session)) {
+		const session = state.runtime.session;
+		if (shouldDeferHeartbeatCronJob(job, session)) {
 			return "skipped";
 		}
-		if (
-			!isHeartbeatCronJob(job) &&
-			(state.runtime.session.isStreaming || state.runtime.session.pendingMessageCount > 0)
-		) {
-			await state.runtime.session.followUp(job.prompt);
+		const shouldQueueCronPrompt =
+			session.isStreaming ||
+			session.isCompacting ||
+			session.isRetrying ||
+			session.isBashRunning ||
+			session.hasAcceptedPromptInFlight ||
+			session.pendingMessageCount > 0;
+		if (!isHeartbeatCronJob(job) && shouldQueueCronPrompt) {
+			await session.followUp(job.prompt);
 			return;
 		}
 		await this.promptWithAgentMessagePreparingGuard(state, job.prompt, {
