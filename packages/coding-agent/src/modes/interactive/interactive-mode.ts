@@ -688,7 +688,6 @@ export class InteractiveMode {
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.ui.onCopy = (text) => {
 			void copyToClipboard(text).catch(() => undefined);
-			this.showStatus("Copied selection");
 		};
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
