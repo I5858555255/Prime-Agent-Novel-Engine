@@ -350,7 +350,7 @@ export class ProcessTerminal implements Terminal {
 
 		// never strand the user on the alt screen or with mouse tracking on
 		if (this._mouseTrackingActive) {
-			process.stdout.write("\x1b[?1006l\x1b[?1000l");
+			process.stdout.write("\x1b[?1006l\x1b[?1002l");
 			this._mouseTrackingActive = false;
 		}
 		if (this._altScreenActive) {

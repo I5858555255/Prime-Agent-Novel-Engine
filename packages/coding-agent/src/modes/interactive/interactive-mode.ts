@@ -994,7 +994,7 @@ export class InteractiveMode {
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
-		this.fullscreenEnabled = this.settingsManager.getFullscreen();
+		this.fullscreenEnabled = this.settingsManager.getFullscreen() && process.stdout.isTTY === true;
 		if (this.fullscreenEnabled) {
 			this.applyFullscreen(true);
 		}
@@ -5509,12 +5509,18 @@ export class InteractiveMode {
 	}
 
 	private setFullscreenMode(enabled: boolean): void {
-		this.fullscreenEnabled = enabled;
 		this.settingsManager.setFullscreen(enabled);
+		if (enabled && !process.stdout.isTTY) {
+			this.fullscreenEnabled = false;
+			this.showStatus("Fullscreen rendering requires an interactive terminal");
+			return;
+		}
+		this.fullscreenEnabled = enabled;
 		this.applyFullscreen(enabled);
+		const followKey = this.getEditorKeyDisplay("tui.viewport.follow");
 		this.showStatus(
 			enabled
-				? "Fullscreen rendering on — wheel/pageUp scroll, ctrl+end follows output"
+				? `Fullscreen rendering on — wheel/pageUp scroll, ${followKey} follows output`
 				: "Fullscreen rendering off",
 		);
 	}

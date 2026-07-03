@@ -274,6 +274,7 @@ export class TUI extends Container {
 		viewport: FullscreenViewport;
 		scroll: Component[];
 		dock: Component;
+		mouse: boolean;
 		inlineState: {
 			previousLines: string[];
 			previousKittyImageIds: Set<number>;
@@ -577,6 +578,7 @@ export class TUI extends Container {
 			viewport: new FullscreenViewport(),
 			scroll: options.scroll,
 			dock: options.dock,
+			mouse: options.mouse !== false,
 			inlineState: {
 				previousLines: this.previousLines,
 				previousKittyImageIds: this.previousKittyImageIds,
@@ -747,7 +749,8 @@ export class TUI extends Container {
 		const overlayFocused = this.overlayStack.some((o) => o.component === this.focusedComponent);
 
 		if (isMouseSequence(data)) {
-			const event = parseSgrMouseEvent(data);
+			// consumed even when disabled — mouse reports are garbage downstream
+			const event = fullscreen.mouse ? parseSgrMouseEvent(data) : null;
 			if (event && !overlayFocused) {
 				const viewport = fullscreen.viewport;
 				if (isWheelUp(event)) {
