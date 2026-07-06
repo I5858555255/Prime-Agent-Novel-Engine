@@ -59,6 +59,10 @@ function canonicalizePath(path: string | undefined): string | undefined {
 	return _canonicalizePath(path);
 }
 
+function formatMutationError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 class SessionSelectorHeader implements Component {
 	private scope: SessionScope;
 	private sortMode: SortMode;
@@ -129,6 +133,7 @@ class SessionSelectorHeader implements Component {
 			this.statusTimeout = null;
 			this.requestRender();
 		}, autoHideMs);
+		this.statusTimeout.unref?.();
 	}
 
 	invalidate(): void {}
@@ -814,26 +819,33 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Handle session deletion
 		this.sessionList.onDeleteSession = async (sessionPath: string) => {
-			const result = await this.deleteSession(sessionPath);
+			try {
+				const result = await this.deleteSession(sessionPath);
 
-			if (result.ok) {
-				if (this.currentSessions) {
-					this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+				if (result.ok) {
+					if (this.currentSessions) {
+						this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+					}
+					if (this.allSessions) {
+						this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
+					}
+
+					const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
+					const showCwd = this.scope === "all";
+					this.sessionList.setSessions(sessions, showCwd);
+
+					const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
+					this.header.setStatusMessage({ type: "info", message: msg }, 2000);
+					await this.refreshSessionsAfterMutation();
+				} else {
+					const errorMessage = result.error ?? "Unknown error";
+					this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);
 				}
-				if (this.allSessions) {
-					this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
-				}
-
-				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
-				const showCwd = this.scope === "all";
-				this.sessionList.setSessions(sessions, showCwd);
-
-				const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
-				this.header.setStatusMessage({ type: "info", message: msg }, 2000);
-				await this.refreshSessionsAfterMutation();
-			} else {
-				const errorMessage = result.error ?? "Unknown error";
-				this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);
+			} catch (error) {
+				this.header.setStatusMessage(
+					{ type: "error", message: `Failed to delete: ${formatMutationError(error)}` },
+					3000,
+				);
 			}
 
 			this.requestRender();
@@ -898,8 +910,14 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		try {
 			await renameSession(target, next);
 			await this.refreshSessionsAfterMutation();
-		} finally {
 			this.exitRenameMode();
+		} catch (error) {
+			this.exitRenameMode();
+			this.header.setStatusMessage(
+				{ type: "error", message: `Failed to rename: ${formatMutationError(error)}` },
+				4000,
+			);
+			this.requestRender();
 		}
 	}
 
