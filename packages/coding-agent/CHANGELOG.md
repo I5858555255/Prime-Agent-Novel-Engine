@@ -5,6 +5,8 @@
 - Added daemon-backed user orchestration with agent-to-agent messaging and read-only observation of active sessions.
 - Added an orchestration heartbeat skill for compact multi-session progress, blocker, and action summaries.
 - Added an opt-in auto-refine review hook that can ask whether `/refine` should run after turn intervals or compaction checkpoints.
+- Added prompt stashing so a draft can be temporarily saved, a separate prompt or command can run, and the draft is restored afterward.
+- Changed fullscreen TUI rendering to be enabled by default.
 - Removed the legacy pi-mono `bash` and `edit` built-in tools; use IPython `%%bash` cells and the Python `edit` skill instead.
 
 ## [0.2.4] - 2026-07-01
