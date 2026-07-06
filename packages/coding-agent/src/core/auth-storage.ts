@@ -601,7 +601,11 @@ export class AuthStorage {
 	setPrimeInferenceApiKey(apiKey: string): void {
 		if (this.isPrimeCliConfigEnabled()) {
 			try {
-				savePrimeCliApiKey(apiKey, this.getEnabledPrimeCliConfigPath());
+				const configPath = this.getEnabledPrimeCliConfigPath();
+				const config = loadPrimeCliConfig(configPath);
+				if (config.apiKey !== apiKey) {
+					savePrimeCliApiKey(apiKey, configPath);
+				}
 			} catch (error) {
 				this.recordError(error);
 				throw error;
