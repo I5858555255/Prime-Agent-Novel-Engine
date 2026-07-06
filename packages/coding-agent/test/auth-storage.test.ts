@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
@@ -302,8 +302,125 @@ describe("AuthStorage", () => {
 
 			const config = JSON.parse(readFileSync(primeConfigPath, "utf-8")) as Record<string, unknown>;
 			expect(config.api_key).toBe("new-prime-key");
+			expect(statSync(primeConfigPath).mode & 0o777).toBe(0o600);
 			expect(authStorage.has("prime-inference")).toBe(false);
 			await expect(authStorage.getApiKey("prime-inference")).resolves.toBe("new-prime-key");
+		});
+
+		test("setPrimeInferenceApiKey clears stale Prime CLI team selection", () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeFileSync(
+				primeConfigPath,
+				JSON.stringify({
+					api_key: "old-prime-key",
+					team_id: "old-team",
+					team_name: "Old Team",
+					team_role: "admin",
+				}),
+			);
+			writeAuthJson({});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+
+			authStorage.setPrimeInferenceApiKey("new-prime-key");
+
+			const config = JSON.parse(readFileSync(primeConfigPath, "utf-8")) as Record<string, unknown>;
+			expect(config.api_key).toBe("new-prime-key");
+			expect(config.team_id).toBeUndefined();
+			expect(config.team_name).toBeUndefined();
+			expect(config.team_role).toBeUndefined();
+		});
+
+		test("setPrimeInferenceApiKey removes legacy Prime Agent credential after Prime CLI save", () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeAuthJson({
+				"prime-inference": {
+					type: "api_key",
+					key: "agent-key",
+					primeTeam: { teamId: "team-1", name: "Research" },
+				},
+			});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+
+			authStorage.setPrimeInferenceApiKey("new-prime-key");
+
+			const agentAuth = JSON.parse(readFileSync(authJsonPath, "utf-8")) as Record<string, unknown>;
+			expect(agentAuth["prime-inference"]).toBeUndefined();
+			expect(authStorage.has("prime-inference")).toBe(false);
+		});
+
+		test("setPrimeInferenceApiKey throws when Prime CLI config cannot be written", () => {
+			const primeConfigPath = join(tempDir, "prime-config-dir");
+			mkdirSync(primeConfigPath);
+			writeAuthJson({});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+
+			expect(() => authStorage.setPrimeInferenceApiKey("new-prime-key")).toThrow();
+			expect(authStorage.drainErrors()).toHaveLength(1);
+		});
+
+		test("setPrimeInferenceApiKey preserves team selection when Prime CLI config is disabled", () => {
+			writeAuthJson({
+				"prime-inference": {
+					type: "api_key",
+					key: "agent-key",
+					primeTeam: { teamId: "team-1", name: "Research" },
+				},
+			});
+
+			authStorage = AuthStorage.create(authJsonPath, { usePrimeCliConfig: false });
+
+			authStorage.setPrimeInferenceApiKey("new-prime-key");
+
+			expect(authStorage.get("prime-inference")).toEqual({
+				type: "api_key",
+				key: "new-prime-key",
+				primeTeam: { teamId: "team-1", name: "Research" },
+			});
+		});
+
+		test("logout clears Prime CLI credentials when enabled", async () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeFileSync(
+				primeConfigPath,
+				JSON.stringify({
+					api_key: "prime-cli-key",
+					team_id: "team-1",
+					team_name: "Research",
+				}),
+			);
+			writeAuthJson({
+				"prime-inference": {
+					type: "api_key",
+					key: "agent-key",
+					primeTeam: { teamId: "team-1", name: "Research" },
+				},
+			});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+
+			authStorage.logout("prime-inference");
+
+			const config = JSON.parse(readFileSync(primeConfigPath, "utf-8")) as Record<string, unknown>;
+			expect(config.api_key).toBeUndefined();
+			expect(config.team_id).toBeUndefined();
+			expect(config.team_name).toBeUndefined();
+			expect(authStorage.has("prime-inference")).toBe(false);
+			await expect(authStorage.getApiKey("prime-inference")).resolves.toBeUndefined();
 		});
 
 		test("setPrimeInferenceTeamSelection writes Prime CLI config", () => {

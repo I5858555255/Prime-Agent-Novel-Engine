@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OAuthAuthInfo } from "@earendil-works/pi-ai";
@@ -131,8 +131,19 @@ function writePrimeCliConfigData(configPath: string, data: Record<string, unknow
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 	}
-	writeFileSync(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
+	const fd = openSync(configPath, "w", 0o600);
+	try {
+		writeFileSync(fd, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
+	} finally {
+		closeSync(fd);
+	}
 	chmodSync(configPath, 0o600);
+}
+
+function clearPrimeTeamFields(data: Record<string, unknown>): void {
+	delete data.team_id;
+	delete data.team_name;
+	delete data.team_role;
 }
 
 export function loadPrimeCliConfig(configPath: string = defaultPrimeCliConfigPath()): PrimeCliConfig {
@@ -170,6 +181,15 @@ export function loadPrimeCliConfig(configPath: string = defaultPrimeCliConfigPat
 export function savePrimeCliApiKey(apiKey: string, configPath: string = defaultPrimeCliConfigPath()): PrimeCliConfig {
 	const data = readPrimeCliConfigData(configPath);
 	data.api_key = apiKey;
+	clearPrimeTeamFields(data);
+	writePrimeCliConfigData(configPath, data);
+	return loadPrimeCliConfig(configPath);
+}
+
+export function clearPrimeCliCredentials(configPath: string = defaultPrimeCliConfigPath()): PrimeCliConfig {
+	const data = readPrimeCliConfigData(configPath);
+	delete data.api_key;
+	clearPrimeTeamFields(data);
 	writePrimeCliConfigData(configPath, data);
 	return loadPrimeCliConfig(configPath);
 }
@@ -188,9 +208,7 @@ export function savePrimeCliTeamSelection(
 			delete data.team_role;
 		}
 	} else {
-		delete data.team_id;
-		delete data.team_name;
-		delete data.team_role;
+		clearPrimeTeamFields(data);
 	}
 	writePrimeCliConfigData(configPath, data);
 	return loadPrimeCliConfig(configPath);

@@ -19,6 +19,7 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.js";
 import {
+	clearPrimeCliCredentials,
 	getPrimeCliConfigPath,
 	loadPrimeCliConfig,
 	PRIME_INFERENCE_PROVIDER_ID,
@@ -428,6 +429,14 @@ export class AuthStorage {
 	 * Logout from a provider.
 	 */
 	logout(provider: string): void {
+		if (provider === PRIME_INFERENCE_PROVIDER_ID && this.isPrimeCliConfigEnabled()) {
+			try {
+				clearPrimeCliCredentials(this.getEnabledPrimeCliConfigPath());
+			} catch (error) {
+				this.recordError(error);
+				throw error;
+			}
+		}
 		this.remove(provider);
 	}
 
@@ -574,9 +583,10 @@ export class AuthStorage {
 	setPrimeInferenceTeamSelection(team: PrimeTeam | null): void {
 		if (this.isPrimeCliConfigEnabled()) {
 			try {
-				savePrimeCliTeamSelection(team, this.getPrimeCliConfigPath());
+				savePrimeCliTeamSelection(team, this.getEnabledPrimeCliConfigPath());
 			} catch (error) {
 				this.recordError(error);
+				throw error;
 			}
 			return;
 		}
@@ -594,14 +604,24 @@ export class AuthStorage {
 	setPrimeInferenceApiKey(apiKey: string): void {
 		if (this.isPrimeCliConfigEnabled()) {
 			try {
-				savePrimeCliApiKey(apiKey, this.getPrimeCliConfigPath());
+				savePrimeCliApiKey(apiKey, this.getEnabledPrimeCliConfigPath());
 			} catch (error) {
 				this.recordError(error);
+				throw error;
+			}
+			if (this.data[PRIME_INFERENCE_PROVIDER_ID]) {
+				this.remove(PRIME_INFERENCE_PROVIDER_ID);
 			}
 			return;
 		}
 
-		this.set(PRIME_INFERENCE_PROVIDER_ID, { type: "api_key", key: apiKey });
+		const existingCredential = this.data[PRIME_INFERENCE_PROVIDER_ID];
+		const existingPrimeTeam = existingCredential?.type === "api_key" ? existingCredential.primeTeam : undefined;
+		this.set(PRIME_INFERENCE_PROVIDER_ID, {
+			type: "api_key",
+			key: apiKey,
+			...(existingPrimeTeam !== undefined ? { primeTeam: existingPrimeTeam } : {}),
+		});
 	}
 
 	getPrimeInferenceTeamSelection(): PrimeTeamCredential | null | undefined {
@@ -694,6 +714,14 @@ export class AuthStorage {
 
 	private getPrimeCliApiKey(providerId: string): string | undefined {
 		return this.getPrimeCliConfig(providerId)?.apiKey;
+	}
+
+	private getEnabledPrimeCliConfigPath(): string {
+		const configPath = this.getPrimeCliConfigPath();
+		if (!configPath) {
+			throw new Error("Prime CLI config is not enabled");
+		}
+		return configPath;
 	}
 
 	private getPrimeInferenceAuthStatus(): AuthStatus {

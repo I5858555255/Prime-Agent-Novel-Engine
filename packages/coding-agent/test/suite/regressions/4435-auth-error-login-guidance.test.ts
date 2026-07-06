@@ -1,3 +1,4 @@
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.js";
@@ -28,5 +29,22 @@ describe("issue #4435 auth error login guidance", () => {
 		);
 		expect(assistantMessages[0]?.errorMessage).toContain("Run /login to update credentials.");
 		expect(assistantMessages[0]?.errorMessage).not.toContain("/login faux");
+	});
+
+	it("adds /login guidance to authentication errors surfaced only on agent_end", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const message = fauxAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "401 Unauthorized: invalid API key",
+		});
+		const event = { type: "agent_end", messages: [message] } as AgentEvent;
+		const session = harness.session as unknown as {
+			_addLoginGuidanceToAuthError(event: AgentEvent): void;
+		};
+
+		session._addLoginGuidanceToAuthError(event);
+
+		expect(message.errorMessage).toContain("Run /login to update credentials.");
 	});
 });

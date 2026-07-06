@@ -1614,11 +1614,13 @@ export class AgentSession {
 	}
 
 	private _addLoginGuidanceToAuthError(event: AgentEvent): void {
-		if (event.type !== "message_end" || event.message.role !== "assistant") {
-			return;
-		}
-		const message = event.message as AssistantMessage;
-		if (message.stopReason !== "error" || !message.errorMessage) {
+		const message =
+			event.type === "message_end" && event.message.role === "assistant"
+				? (event.message as AssistantMessage)
+				: event.type === "agent_end"
+					? this._findLastAssistantInMessages(event.messages)
+					: undefined;
+		if (!message || message.stopReason !== "error" || !message.errorMessage) {
 			return;
 		}
 		if (!isLikelyAuthenticationError(message.errorMessage)) {
