@@ -1,9 +1,9 @@
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.js";
 import type { CustomMessage } from "../../../src/core/messages.js";
 import type { BashOperations } from "../../../src/core/tools/bash.js";
-import type { ActiveSessionState } from "../../../src/modes/daemon/active-session-state.js";
+import type { ActiveSessionState, DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
 import { AgentDaemon } from "../../../src/modes/daemon/daemon-mode.js";
 import type { DaemonUpdateRestartManifest } from "../../../src/modes/daemon/daemon-protocol.js";
 import { createHarness, type Harness } from "../harness.js";
@@ -11,6 +11,7 @@ import { createHarness, type Harness } from "../harness.js";
 type AgentDaemonUpdateInternals = {
 	sessions: Map<string, ActiveSessionState>;
 	prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest>;
+	handleLine(client: DaemonSocketClient, line: string): Promise<void>;
 };
 
 type QueueInternals = {
@@ -259,5 +260,57 @@ describe("issue #4257 update restart resume", () => {
 			message: "accepted work",
 			nextTurn: [acceptedNextTurn],
 		});
+	});
+
+	it("accepts restore_next_turn through daemon command parsing", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		const writes: string[] = [];
+		const client: DaemonSocketClient = {
+			id: "client-1",
+			socket: {
+				destroyed: false,
+				write: vi.fn((chunk: string) => {
+					writes.push(chunk);
+					return true;
+				}),
+			} as unknown as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set(["active-1"]),
+			detachInput: vi.fn(),
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		};
+		const restoredMessage = createCustomMessage("restored next turn");
+
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "restore-1",
+				type: "restore_next_turn",
+				activeSessionId: "active-1",
+				messages: [restoredMessage],
+			}),
+		);
+
+		expect(JSON.parse(writes.join("").trim())).toMatchObject({
+			id: "restore-1",
+			type: "response",
+			command: "restore_next_turn",
+			success: true,
+		});
+		expect(harness.session.getPendingNextTurnMessageSnapshots()).toEqual([restoredMessage]);
 	});
 });

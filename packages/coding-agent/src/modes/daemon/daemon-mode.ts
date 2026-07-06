@@ -144,6 +144,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"prompt",
 	"steer",
 	"follow_up",
+	"restore_next_turn",
 	"send_message",
 	"agent_messages_status",
 	"agent_messages_pause",
