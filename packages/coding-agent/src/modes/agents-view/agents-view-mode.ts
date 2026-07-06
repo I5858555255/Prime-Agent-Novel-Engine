@@ -167,16 +167,8 @@ export function createAgentsViewListCommand(): Extract<DaemonCommand, { type: "l
 	return { type: "list" };
 }
 
-export function createAgentsViewDeleteSavedSessionCommand(
-	sessionPath: string,
-	summaries: readonly SessionSummary[],
-): DeleteSavedSessionCommand {
-	const activeSummary = resolveAgentsViewActiveSummaryForPath(sessionPath, summaries);
-	const command: DeleteSavedSessionCommand = { type: "delete_saved_session", sessionPath };
-	if (activeSummary?.activeSessionId) {
-		command.activeSessionId = activeSummary.activeSessionId;
-	}
-	return command;
+export function createAgentsViewDeleteSavedSessionCommand(sessionPath: string): DeleteSavedSessionCommand {
+	return { type: "delete_saved_session", sessionPath };
 }
 
 export function resolveAgentsViewResumeSummary(
@@ -1122,9 +1114,7 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private async deleteSavedSessionFromSelector(sessionPath: string): Promise<DeleteSessionFileResult> {
-		const response = await this.requireClient().request(
-			createAgentsViewDeleteSavedSessionCommand(sessionPath, this.lastListedSummaries),
-		);
+		const response = await this.requireClient().request(createAgentsViewDeleteSavedSessionCommand(sessionPath));
 		return expectDeleteSessionFileResult(requireDaemonData(response));
 	}
 

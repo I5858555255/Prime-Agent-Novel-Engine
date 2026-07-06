@@ -574,21 +574,12 @@ describe("agents view state", () => {
 		expect(resolveAgentsViewActiveSummaryForPath("/tmp/sessions/inactive.jsonl", [inactiveSummary])).toBeUndefined();
 	});
 
-	test("routes saved session deletes through the active daemon session when present", () => {
-		const activeSummary = makeSummary({
-			id: "active-runtime",
-			activeSessionId: "active-runtime",
-			sessionId: "saved-active",
-			sessionFile: "/tmp/sessions/active.jsonl",
-			sessionName: "Running",
-		});
-
-		expect(createAgentsViewDeleteSavedSessionCommand("/tmp/sessions/active.jsonl", [activeSummary])).toEqual({
+	test("routes saved session deletes through the daemon file guard", () => {
+		expect(createAgentsViewDeleteSavedSessionCommand("/tmp/sessions/active.jsonl")).toEqual({
 			type: "delete_saved_session",
-			activeSessionId: "active-runtime",
 			sessionPath: "/tmp/sessions/active.jsonl",
 		});
-		expect(createAgentsViewDeleteSavedSessionCommand("/tmp/sessions/inactive.jsonl", [activeSummary])).toEqual({
+		expect(createAgentsViewDeleteSavedSessionCommand("/tmp/sessions/inactive.jsonl")).toEqual({
 			type: "delete_saved_session",
 			sessionPath: "/tmp/sessions/inactive.jsonl",
 		});
