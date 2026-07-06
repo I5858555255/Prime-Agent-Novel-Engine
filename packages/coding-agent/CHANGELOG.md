@@ -6,7 +6,9 @@
 - Added an orchestration heartbeat skill for compact multi-session progress, blocker, and action summaries.
 - Added an opt-in auto-refine review hook that can ask whether `/refine` should run after turn intervals or compaction checkpoints.
 - Added prompt stashing so a draft can be temporarily saved, a separate prompt or command can run, and the draft is restored afterward.
+- Changed `--resume` to accept an optional session path or ID.
 - Changed fullscreen TUI rendering to be enabled by default.
+- Changed the installer onboarding splash to show ordered setup phases with a percentage instead of cycling detail text ([ENG-4376](https://linear.app/primeintellect/issue/ENG-4376/onboarding-instructions-should-be-accurate-to-whats-happening)).
 - Fixed Prime Inference auth syncing with Prime CLI login and team selection.
 - Fixed provider auth failures showing provider-specific `/login` commands instead of the `/login` selector.
 
