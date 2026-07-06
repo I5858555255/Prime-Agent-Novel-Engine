@@ -435,11 +435,16 @@ interface AcceptedAgentMessagePrompt {
 	messages: Set<AgentMessage>;
 	/** Pending nextTurn messages drained into this prompt; restored to the queue if the prompt is cleared. */
 	pendingNextTurnMessages: CustomMessage[];
+	deliveredPendingNextTurnMessages: Set<CustomMessage>;
 	accepted: Promise<void>;
 	resolveAccepted: () => void;
 	rejectAccepted: (error: Error) => void;
 	turnStarted: boolean;
 	cleared: boolean;
+}
+
+function undeliveredPendingNextTurnMessages(accepted: AcceptedAgentMessagePrompt): CustomMessage[] {
+	return accepted.pendingNextTurnMessages.filter((message) => !accepted.deliveredPendingNextTurnMessages.has(message));
 }
 
 interface AgentMessageDeliveryWaiter {
@@ -1657,6 +1662,13 @@ export class AgentSession {
 			} else if (acceptedPrompt.turnStarted) {
 				acceptedPrompt.messages.add(event.message);
 			}
+			if (
+				event.type === "message_end" &&
+				event.message.role === "custom" &&
+				acceptedPrompt.pendingNextTurnMessages.includes(event.message)
+			) {
+				acceptedPrompt.deliveredPendingNextTurnMessages.add(event.message);
+			}
 			if (acceptedPrompt.cleared && acceptedPrompt.messages.has(event.message)) {
 				// Membership filter, not a positional slice: newer prompts or compaction may
 				// have rewritten state.messages since the clear.
@@ -2414,6 +2426,7 @@ export class AgentSession {
 						message: userMessage,
 						messages: new Set<AgentMessage>([...drainedNextTurnMessages, userMessage]),
 						pendingNextTurnMessages: drainedNextTurnMessages,
+						deliveredPendingNextTurnMessages: new Set(),
 						accepted,
 						resolveAccepted,
 						rejectAccepted,
@@ -2570,7 +2583,9 @@ export class AgentSession {
 				// The prompt was never accepted, so next-turn context drained for it
 				// was not consumed by the model and must remain available to retry.
 				this._pendingNextTurnMessages.unshift(
-					...acceptedAgentMessagePrompt.pendingNextTurnMessages.map((message) => ({ ...message })),
+					...undeliveredPendingNextTurnMessages(acceptedAgentMessagePrompt).map((message) => ({
+						...message,
+					})),
 				);
 			}
 			reportPreflight(false);
@@ -2970,7 +2985,9 @@ export class AgentSession {
 			this.agent.state.messages = this.agent.state.messages.filter((message) => !accepted.messages.has(message));
 			// Restore drained nextTurn messages the model never saw. Clones, so the cleared
 			// run's late-event cleanup cannot strip the restored copies from a newer run.
-			this._pendingNextTurnMessages.unshift(...accepted.pendingNextTurnMessages.map((message) => ({ ...message })));
+			this._pendingNextTurnMessages.unshift(
+				...undeliveredPendingNextTurnMessages(accepted).map((message) => ({ ...message })),
+			);
 			const error = new Error("Accepted agent message was cleared before delivery.");
 			this._rejectAgentMessageDelivery(accepted.agentMessageId, error);
 			accepted.rejectAccepted(error);
@@ -3015,7 +3032,7 @@ export class AgentSession {
 		}
 		return {
 			...createQueuedAgentInputSnapshotFromUserMessage(accepted.text, accepted.message),
-			nextTurn: accepted.pendingNextTurnMessages.map((message) => cloneCustomMessage(message)),
+			nextTurn: undeliveredPendingNextTurnMessages(accepted).map((message) => cloneCustomMessage(message)),
 		};
 	}
 

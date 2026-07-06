@@ -481,7 +481,14 @@ function updateArgsIncludeSelf(args: readonly string[]): boolean {
 
 function argsIncludeSessionSelection(args: readonly string[]): boolean {
 	for (const arg of args) {
-		if (arg === "--session" || arg === "--resume" || arg === "-r" || arg === "--continue" || arg === "--fork") {
+		if (
+			arg === "--session" ||
+			arg === "--resume" ||
+			arg === "-r" ||
+			arg === "--continue" ||
+			arg === "-c" ||
+			arg === "--fork"
+		) {
 			return true;
 		}
 	}

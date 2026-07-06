@@ -622,20 +622,29 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			const followUpQueue = [...session.queue.followUp];
 			let resumedSession = false;
 			if (acceptedPrompt) {
-				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, acceptedPrompt.nextTurn);
-				const promptResponse = await client.request(
-					{
-						type: "prompt",
-						activeSessionId,
-						message: acceptedPrompt.message,
-						images: acceptedPrompt.images,
-					},
-					120000,
+				const acceptedContextRestored = await restoreNextTurnMessages(
+					client,
+					activeSessionId,
+					session.sessionFile,
+					acceptedPrompt.nextTurn,
 				);
-				if (!promptResponse.success) {
-					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
-				} else {
-					resumedSession = true;
+				if (acceptedContextRestored) {
+					const promptResponse = await client.request(
+						{
+							type: "prompt",
+							activeSessionId,
+							message: acceptedPrompt.message,
+							images: acceptedPrompt.images,
+						},
+						120000,
+					);
+					if (!promptResponse.success) {
+						console.error(
+							chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`),
+						);
+					} else {
+						resumedSession = true;
+					}
 				}
 				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
 			} else {

@@ -22,6 +22,7 @@ type QueueInternals = {
 		message: UserMessage;
 		messages: Set<unknown>;
 		pendingNextTurnMessages: CustomMessage[];
+		deliveredPendingNextTurnMessages: Set<CustomMessage>;
 		accepted: Promise<void>;
 		resolveAccepted: () => void;
 		rejectAccepted: (error: Error) => void;
@@ -211,6 +212,7 @@ describe("issue #4257 update restart resume", () => {
 
 		const pendingNextTurn = createCustomMessage("pending next turn");
 		const acceptedNextTurn = createCustomMessage("accepted prompt context");
+		const deliveredAcceptedNextTurn = createCustomMessage("already delivered context");
 		const acceptedMessage: UserMessage = {
 			role: "user",
 			content: [{ type: "text", text: "accepted work" }],
@@ -222,8 +224,9 @@ describe("issue #4257 update restart resume", () => {
 			text: "accepted work",
 			agentMessageId: "agent-message-1",
 			message: acceptedMessage,
-			messages: new Set([acceptedNextTurn, acceptedMessage]),
-			pendingNextTurnMessages: [acceptedNextTurn],
+			messages: new Set([acceptedNextTurn, deliveredAcceptedNextTurn, acceptedMessage]),
+			pendingNextTurnMessages: [acceptedNextTurn, deliveredAcceptedNextTurn],
+			deliveredPendingNextTurnMessages: new Set([deliveredAcceptedNextTurn]),
 			accepted: Promise.resolve(),
 			resolveAccepted: () => undefined,
 			rejectAccepted: () => undefined,
