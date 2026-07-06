@@ -9,6 +9,7 @@ type FakePasteSnapshot = {
 
 type PromptStash = {
 	text: string;
+	expandedText?: string;
 	pasteSnapshot?: FakePasteSnapshot;
 };
 
@@ -23,7 +24,7 @@ type FakeEditor = {
 	getText: () => string;
 	getExpandedText: () => string;
 	getPasteSnapshot: () => FakePasteSnapshot | undefined;
-	restorePasteSnapshot: (snapshot: FakePasteSnapshot) => void;
+	restorePasteSnapshot?: (snapshot: FakePasteSnapshot) => void;
 	setText: (text: string) => void;
 	addToHistory: Mock;
 	getHistory: () => readonly string[];
@@ -150,7 +151,11 @@ describe("InteractiveMode prompt stash", () => {
 
 		interactiveModeMethods.handlePromptStash.call(mode);
 
-		expect(mode.promptStash).toEqual({ text: "[paste #1 +12 lines]", pasteSnapshot });
+		expect(mode.promptStash).toEqual({
+			text: "[paste #1 +12 lines]",
+			expandedText: "line one\nline two",
+			pasteSnapshot,
+		});
 		expect(mode.editor.getText()).toBe("");
 		expect(mode.showStatus).toHaveBeenCalledWith("Stashed prompt");
 
@@ -158,6 +163,27 @@ describe("InteractiveMode prompt stash", () => {
 
 		expect(mode.editor.getText()).toBe("[paste #1 +12 lines]");
 		expect(mode.editor.restoredPasteSnapshot).toBe(pasteSnapshot);
+	});
+
+	it("restores expanded paste text when paste snapshots are unsupported", () => {
+		const pasteSnapshot: FakePasteSnapshot = {
+			pastes: [[1, "line one\nline two"]],
+			pasteCounter: 1,
+		};
+		const mode = createPromptStashHarness({
+			text: "[paste #1 +12 lines]",
+			expandedText: "line one\nline two",
+			pasteSnapshot,
+		});
+
+		interactiveModeMethods.handlePromptStash.call(mode);
+		mode.editor.restorePasteSnapshot = undefined;
+
+		const restored = interactiveModeMethods.restorePromptStashIfEditorEmpty.call(mode);
+
+		expect(restored).toBe(true);
+		expect(mode.editor.getText()).toBe("line one\nline two");
+		expect(mode.editor.restoredPasteSnapshot).toBeUndefined();
 	});
 
 	it("restores a stashed prompt when the editor is empty", () => {

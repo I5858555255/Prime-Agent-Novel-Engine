@@ -203,6 +203,7 @@ interface Expandable {
 
 type PromptStash = {
 	text: string;
+	expandedText?: string;
 	pasteSnapshot?: EditorPasteSnapshot;
 };
 
@@ -3423,9 +3424,11 @@ export class InteractiveMode {
 			this.showStatus("Prompt stash already has a draft");
 			return;
 		}
+		const pasteSnapshot = this.editor.getPasteSnapshot?.();
 		this.promptStash = {
 			text,
-			pasteSnapshot: this.editor.getPasteSnapshot?.(),
+			expandedText: pasteSnapshot ? (this.editor.getExpandedText?.() ?? text) : undefined,
+			pasteSnapshot,
 		};
 		this.editor.setText("");
 		this.showStatus("Stashed prompt");
@@ -3439,9 +3442,11 @@ export class InteractiveMode {
 			return false;
 		}
 		this.promptStash = undefined;
-		this.editor.setText(stash.text);
-		if (stash.pasteSnapshot) {
-			this.editor.restorePasteSnapshot?.(stash.pasteSnapshot);
+		const canRestorePasteSnapshot =
+			stash.pasteSnapshot === undefined || this.editor.restorePasteSnapshot !== undefined;
+		this.editor.setText(canRestorePasteSnapshot ? stash.text : (stash.expandedText ?? stash.text));
+		if (stash.pasteSnapshot && this.editor.restorePasteSnapshot) {
+			this.editor.restorePasteSnapshot(stash.pasteSnapshot);
 		}
 		this.showStatus("Restored stashed prompt");
 		return true;

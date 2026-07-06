@@ -216,6 +216,11 @@ interface EditorState {
 	cursorCol: number;
 }
 
+interface EditorUndoSnapshot extends EditorState {
+	pastes: readonly (readonly [number, string])[];
+	pasteCounter: number;
+}
+
 interface LayoutLine {
 	text: string;
 	hasCursor: boolean;
@@ -310,7 +315,7 @@ export class Editor implements Component, Focusable {
 	private snappedFromCursorCol: number | null = null;
 
 	// Undo support
-	private undoStack = new UndoStack<EditorState>();
+	private undoStack = new UndoStack<EditorUndoSnapshot>();
 
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
@@ -2101,14 +2106,26 @@ export class Editor implements Component, Focusable {
 	}
 
 	private pushUndoSnapshot(): void {
-		this.undoStack.push(this.state);
+		this.undoStack.push({
+			lines: [...this.state.lines],
+			cursorLine: this.state.cursorLine,
+			cursorCol: this.state.cursorCol,
+			pastes: [...this.pastes],
+			pasteCounter: this.pasteCounter,
+		});
 	}
 
 	private undo(): void {
 		this.historyIndex = -1; // Exit history browsing mode
 		const snapshot = this.undoStack.pop();
 		if (!snapshot) return;
-		Object.assign(this.state, snapshot);
+		this.state = {
+			lines: snapshot.lines,
+			cursorLine: snapshot.cursorLine,
+			cursorCol: snapshot.cursorCol,
+		};
+		this.pastes = new Map(snapshot.pastes);
+		this.pasteCounter = snapshot.pasteCounter;
 		this.lastAction = null;
 		this.preferredVisualCol = null;
 		if (this.onChange) {
