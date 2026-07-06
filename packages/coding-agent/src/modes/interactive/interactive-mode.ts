@@ -3435,6 +3435,9 @@ export class InteractiveMode {
 		if (stash === undefined || this.editor.getText().trim()) {
 			return false;
 		}
+		if (this.promptStash !== stash) {
+			return false;
+		}
 		this.promptStash = undefined;
 		this.editor.setText(stash.text);
 		if (stash.pasteSnapshot) {

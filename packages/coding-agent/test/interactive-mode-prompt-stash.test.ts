@@ -170,6 +170,20 @@ describe("InteractiveMode prompt stash", () => {
 		expect(mode.showStatus).toHaveBeenCalledWith("Restored stashed prompt");
 	});
 
+	it("does not restore an older captured stash after a newer stash is created", () => {
+		const mode = createPromptStashHarness({ stash: "older draft" });
+		const olderStash = mode.promptStash;
+		const newerStash = { text: "newer draft" };
+		mode.promptStash = newerStash;
+
+		const restored = interactiveModeMethods.restorePromptStashIfEditorEmpty.call(mode, olderStash);
+
+		expect(restored).toBe(false);
+		expect(mode.promptStash).toBe(newerStash);
+		expect(mode.editor.getText()).toBe("");
+		expect(mode.showStatus).not.toHaveBeenCalledWith("Restored stashed prompt");
+	});
+
 	it("does not overwrite an existing stash", () => {
 		const mode = createPromptStashHarness({ text: "second draft", stash: "first draft" });
 
@@ -210,7 +224,6 @@ describe("InteractiveMode prompt stash", () => {
 			flushPendingBashComponents: vi.fn(),
 			onInputCallback: vi.fn(),
 			handleClearCommand: vi.fn(async () => {
-				mode.promptStash = undefined;
 				mode.editor.setText("");
 			}),
 		};
@@ -239,7 +252,6 @@ describe("InteractiveMode prompt stash", () => {
 			onInputCallback: vi.fn(),
 			showUserMessageSelector: vi.fn(async () => {
 				await selectorDone;
-				mode.promptStash = undefined;
 				mode.editor.setText("");
 			}),
 		};
