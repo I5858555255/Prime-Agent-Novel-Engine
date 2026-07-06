@@ -740,10 +740,9 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 							const message = error instanceof Error ? error.message : String(error);
 							console.error(
 								chalk.yellow(
-									`Warning: updated, but could not prepare daemon sessions for restart (${message}); the running daemon was left in place.`,
+									`Warning: updated, but could not prepare daemon sessions for automatic resume (${message}); restarting the daemon without restored sessions.`,
 								),
 							);
-							return true;
 						}
 					}
 					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable, restartManifest);

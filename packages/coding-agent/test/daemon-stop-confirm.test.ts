@@ -82,6 +82,7 @@ describe("confirmDaemonSessionLoss", () => {
 			{ pendingMessageCount: 1 },
 			{ isStreaming: true },
 			{ isBashRunning: true },
+			{ hasRunningRlmChildren: true },
 		]) {
 			vi.mocked(console.error).mockClear();
 			const probe: RunningDaemonProbe = { reachable: true, activeSessions: [session(overrides)] };
