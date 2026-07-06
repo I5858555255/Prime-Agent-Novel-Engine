@@ -992,7 +992,14 @@ export class TUI extends Container {
 		const overlaySelectionRegions: FrameSelectionRegion[] = [];
 
 		// Pre-render all visible overlays and calculate positions
-		const rendered: { overlayLines: string[]; row: number; col: number; w: number; scrollback: boolean }[] = [];
+		const rendered: {
+			component: Component;
+			overlayLines: string[];
+			row: number;
+			col: number;
+			w: number;
+			scrollback: boolean;
+		}[] = [];
 		let minLinesNeeded = result.length;
 
 		const visibleEntries = this.overlayStack.filter((e) => this.isOverlayVisible(e));
@@ -1016,7 +1023,7 @@ export class TUI extends Container {
 			// Get final row/col with actual overlay height
 			const { row, col } = this.resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
 
-			rendered.push({ overlayLines, row, col, w: width, scrollback });
+			rendered.push({ component, overlayLines, row, col, w: width, scrollback });
 			minLinesNeeded = Math.max(minLinesNeeded, row + overlayLines.length);
 		}
 
@@ -1033,7 +1040,7 @@ export class TUI extends Container {
 		const viewportStart = Math.max(0, workingHeight - termHeight);
 
 		// Composite each overlay
-		for (const { overlayLines, row, col, w, scrollback } of rendered) {
+		for (const { component, overlayLines, row, col, w, scrollback } of rendered) {
 			const overlayStart = scrollback ? Math.max(0, workingHeight - (row + overlayLines.length)) : viewportStart;
 			for (let i = 0; i < overlayLines.length; i++) {
 				const idx = overlayStart + row + i;
@@ -1044,7 +1051,7 @@ export class TUI extends Container {
 						visibleWidth(overlayLines[i]) > w ? sliceByColumn(overlayLines[i], 0, w, true) : overlayLines[i];
 					result[idx] = this.compositeLineAt(result[idx], truncatedOverlayLine, col, w, termWidth);
 					this.subtractSelectionCoverage(overlaySelectionRegions, idx, col, col + w);
-					const span = this.selectableSpan(truncatedOverlayLine, w);
+					const span = component === this.focusedComponent ? this.selectableSpan(truncatedOverlayLine, w) : null;
 					if (span) {
 						overlaySelectionRegions.push({ line: idx, col: col + span.from, width: span.to - span.from });
 					}

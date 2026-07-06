@@ -419,6 +419,68 @@ describe("TUI fullscreen mode", () => {
 		tui.stop();
 	});
 
+	it("maps focused overlay transcript fallback to the painted viewport slice", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 40, 5);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const overlay = new InputComponent();
+		overlay.lines = ["", "", "", "", "", ""];
+		tui.showOverlay(overlay, { anchor: "top-left", width: 1 });
+		await terminal.waitForRender();
+
+		const viewport = terminal.getViewport();
+		assert.ok(viewport[0]?.includes("18"), "top painted row is shifted by the over-tall overlay");
+		const col = viewport[0]!.indexOf("18");
+		const startX = col + 1;
+		const endX = startX + 2;
+
+		terminal.sendInput(`\x1b[<0;${startX};1M`);
+		terminal.sendInput(`\x1b[<32;${endX};1M`);
+		terminal.sendInput(`\x1b[<0;${endX};1m`);
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, ["18"]);
+
+		tui.stop();
+	});
+
+	it("does not select text from an unfocused visible overlay", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 80, 10);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const lowerUrl = "https://lower.example/login";
+		const lower = new InputComponent();
+		lower.lines = [lowerUrl];
+		tui.showOverlay(lower, { anchor: "bottom-left", width: 32 });
+
+		const upper = new InputComponent();
+		upper.lines = ["Focused dialog"];
+		tui.showOverlay(upper, { anchor: "top-right", width: 24 });
+		await terminal.waitForRender();
+
+		const row = terminal.getViewport().findIndex((line) => line.includes(lowerUrl));
+		assert.notStrictEqual(row, -1, "unfocused lower overlay is visible");
+		const col = terminal.getViewport()[row]!.indexOf(lowerUrl);
+		const startX = col + 1;
+		const endX = startX + lowerUrl.length;
+		const y = row + 1;
+
+		terminal.sendInput(`\x1b[<0;${startX};${y}M`);
+		terminal.sendInput(`\x1b[<32;${endX};${y}M`);
+		terminal.sendInput(`\x1b[<0;${endX};${y}m`);
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, []);
+
+		tui.stop();
+	});
+
 	it("exit restores the primary screen and flushes fullscreen-era content into scrollback", async () => {
 		const { terminal, tui, chat, dock } = setup(lines(5));
 		await terminal.waitForRender();
