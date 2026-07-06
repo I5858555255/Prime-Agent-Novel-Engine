@@ -160,6 +160,38 @@ describe("InteractiveMode prompt stash", () => {
 		expect(mode.editor.getText()).toBe("half-written draft");
 	});
 
+	it("waits for async session selectors before restoring a stashed prompt", async () => {
+		let resolveSelector: () => void = () => {};
+		const selectorDone = new Promise<void>((resolve) => {
+			resolveSelector = resolve;
+		});
+		let mode: SubmitHarness & { showUserMessageSelector: Mock<() => Promise<void>> };
+		mode = {
+			...createPromptStashHarness({ stash: "half-written draft" }),
+			defaultEditor: {},
+			isAgentCompacting: () => false,
+			isAgentStreaming: () => false,
+			flushPendingBashComponents: vi.fn(),
+			onInputCallback: vi.fn(),
+			showUserMessageSelector: vi.fn(async () => {
+				await selectorDone;
+				mode.promptStash = undefined;
+				mode.editor.setText("");
+			}),
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+		interactiveModeMethods.setupEditorSubmitHandler.call(mode);
+
+		const submit = mode.defaultEditor.onSubmit?.("/fork");
+		await Promise.resolve();
+		resolveSelector();
+		await submit;
+
+		expect(mode.showUserMessageSelector).toHaveBeenCalled();
+		expect(mode.promptStash).toBeUndefined();
+		expect(mode.editor.getText()).toBe("half-written draft");
+	});
+
 	it("restores a stashed prompt after idle follow-up slash commands clear the editor", async () => {
 		let resolveSettings: () => void = () => {};
 		const settingsDone = new Promise<void>((resolve) => {

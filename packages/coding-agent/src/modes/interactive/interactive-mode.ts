@@ -3638,8 +3638,8 @@ export class InteractiveMode {
 					return;
 				}
 				if (commandName === "fork" && !commandArgs) {
-					void this.showUserMessageSelector();
 					this.editor.setText("");
+					await this.showUserMessageSelector();
 					return;
 				}
 				if (commandName === "clone" && !commandArgs) {
@@ -3648,8 +3648,8 @@ export class InteractiveMode {
 					return;
 				}
 				if (commandName === "tree" && !commandArgs) {
-					void this.showTreeSelector();
 					this.editor.setText("");
+					await this.showTreeSelector();
 					return;
 				}
 				if (commandName === "login" && !commandArgs) {
@@ -3716,8 +3716,8 @@ export class InteractiveMode {
 					return;
 				}
 				if (text === "/resume") {
-					void this.showSessionSelector();
 					this.editor.setText("");
+					await this.showSessionSelector();
 					return;
 				}
 				if (text === "/quit") {
