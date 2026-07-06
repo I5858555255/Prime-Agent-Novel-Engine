@@ -2276,12 +2276,15 @@ export class InteractiveMode {
 		process.exit(1);
 	}
 
-	private resetCurrentSessionRenderState(): void {
+	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean }): void {
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.queuedMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
 		this.connectionQueue = { steering: [], followUp: [] };
+		if (options?.clearPromptStash) {
+			this.promptStash = undefined;
+		}
 		// Clear every editor's prompt history, draft text, and queues, then prune
 		// any pasted images no longer referenced by the remaining stashed draft.
 		this.defaultEditor.clearHistory?.();
@@ -3815,7 +3818,7 @@ export class InteractiveMode {
 				} else if (event.type === "session_replaced") {
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
-					this.resetCurrentSessionRenderState();
+					this.resetCurrentSessionRenderState({ clearPromptStash: true });
 					await this.rebindCurrentSession();
 					await this.renderInitialMessages();
 					this.ui.requestRender();

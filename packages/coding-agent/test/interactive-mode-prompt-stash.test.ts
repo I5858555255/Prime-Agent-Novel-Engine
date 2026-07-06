@@ -56,7 +56,7 @@ type SubmitHarness = PromptStashHarness & {
 type PromptStashMethods = {
 	handleFollowUp: (this: SubmitHarness) => Promise<void>;
 	handlePromptStash: (this: PromptStashHarness) => void;
-	resetCurrentSessionRenderState: (this: ResetHarness) => void;
+	resetCurrentSessionRenderState: (this: ResetHarness, options?: { clearPromptStash?: boolean }) => void;
 	restorePromptStashIfEditorEmpty: (this: PromptStashHarness, text?: string) => boolean;
 	liveImageMarkerIds: (this: PromptStashLiveMarkerHarness) => Set<number>;
 	setupEditorSubmitHandler: (this: SubmitHarness) => void;
@@ -272,8 +272,37 @@ describe("InteractiveMode prompt stash", () => {
 		interactiveModeMethods.resetCurrentSessionRenderState.call(mode);
 
 		expect(mode.connectionQueue).toEqual({ steering: [], followUp: [] });
+		expect(mode.promptStash).toBe("keep [image #1]");
 		expect(mode.pastedImages.has(1)).toBe(true);
 		expect(mode.pastedImages.has(2)).toBe(false);
+	});
+
+	it("clears stashed prompt state on external session replacement resets", () => {
+		const base = createPromptStashHarness({ stash: "drop [image #1]" });
+		const mode: ResetHarness = {
+			...base,
+			defaultEditor: base.editor,
+			compactionQueuedMessages: [],
+			connectionQueue: { steering: [], followUp: [] },
+			chatContainer: { clear: vi.fn() },
+			pendingMessagesContainer: { clear: vi.fn() },
+			queuedMessagesContainer: { clear: vi.fn() },
+			pastedImages: new Map<number, unknown>([[1, {}]]),
+			pendingBashComponents: [],
+			activityTracker: { reset: vi.fn() },
+			contextUsageTokenBaseline: 1,
+			resetPendingToolState: vi.fn(),
+			resetChildAgentInspector: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			getGoalState: vi.fn(() => undefined),
+			syncGoalTray: vi.fn(),
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+
+		interactiveModeMethods.resetCurrentSessionRenderState.call(mode, { clearPromptStash: true });
+
+		expect(mode.promptStash).toBeUndefined();
+		expect(mode.pastedImages.has(1)).toBe(false);
 	});
 
 	it("restores failed follow-up text without dropping the stashed prompt", async () => {
