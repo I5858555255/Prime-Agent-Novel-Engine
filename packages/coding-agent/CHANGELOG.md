@@ -5,6 +5,8 @@
 - Added daemon-backed user orchestration with agent-to-agent messaging and read-only observation of active sessions.
 - Added an orchestration heartbeat skill for compact multi-session progress, blocker, and action summaries.
 - Added an opt-in auto-refine review hook that can ask whether `/refine` should run after turn intervals or compaction checkpoints.
+- Fixed Prime Inference auth syncing with Prime CLI login and team selection.
+- Fixed provider auth failures showing provider-specific `/login` commands instead of the `/login` selector.
 
 ## [0.2.4] - 2026-07-01
 

@@ -1,8 +1,8 @@
 import { Buffer } from "node:buffer";
 import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { OAuthAuthInfo } from "@earendil-works/pi-ai";
 
 export const PRIME_INFERENCE_PROVIDER_ID = "prime-inference";
@@ -80,6 +80,10 @@ function defaultPrimeCliConfigPath(): string {
 	return join(homedir(), ".prime", "config.json");
 }
 
+export function getPrimeCliConfigPath(configPath?: string): string {
+	return configPath ?? defaultPrimeCliConfigPath();
+}
+
 function normalizeBaseUrl(value: string | undefined): string {
 	return (value?.trim() || DEFAULT_PRIME_API_BASE_URL).replace(/\/+$/, "").replace(/\/api\/v1$/, "");
 }
@@ -122,6 +126,15 @@ function readPrimeCliConfigData(configPath: string): Record<string, unknown> {
 	return data;
 }
 
+function writePrimeCliConfigData(configPath: string, data: Record<string, unknown>): void {
+	const dir = dirname(configPath);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+	}
+	writeFileSync(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
+	chmodSync(configPath, 0o600);
+}
+
 export function loadPrimeCliConfig(configPath: string = defaultPrimeCliConfigPath()): PrimeCliConfig {
 	const data = readPrimeCliConfigData(configPath);
 	const teamIdFromEnv = stringEnv("PRIME_TEAM_ID");
@@ -152,6 +165,35 @@ export function loadPrimeCliConfig(configPath: string = defaultPrimeCliConfigPat
 		}
 	}
 	return config;
+}
+
+export function savePrimeCliApiKey(apiKey: string, configPath: string = defaultPrimeCliConfigPath()): PrimeCliConfig {
+	const data = readPrimeCliConfigData(configPath);
+	data.api_key = apiKey;
+	writePrimeCliConfigData(configPath, data);
+	return loadPrimeCliConfig(configPath);
+}
+
+export function savePrimeCliTeamSelection(
+	team: PrimeTeam | null,
+	configPath: string = defaultPrimeCliConfigPath(),
+): PrimeCliConfig {
+	const data = readPrimeCliConfigData(configPath);
+	if (team) {
+		data.team_id = team.teamId;
+		data.team_name = team.name;
+		if (team.role) {
+			data.team_role = team.role;
+		} else {
+			delete data.team_role;
+		}
+	} else {
+		delete data.team_id;
+		delete data.team_name;
+		delete data.team_role;
+	}
+	writePrimeCliConfigData(configPath, data);
+	return loadPrimeCliConfig(configPath);
 }
 
 export function resolvePrimeAgentTracesBaseUrl(baseUrl?: string): string {
