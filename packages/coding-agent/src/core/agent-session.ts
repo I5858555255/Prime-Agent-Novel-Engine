@@ -4526,8 +4526,6 @@ export class AgentSession {
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
 	}): void {
-		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
-		const shellPath = this.settingsManager.getShellPath();
 		const pythonSkills = getPythonSkillRuntimeInfo(this._modelVisibleSkills());
 		let configuredBaseToolDefinitions: Record<string, ToolDefinition>;
 		if (this._baseToolsOverride) {
@@ -4559,7 +4557,6 @@ export class AgentSession {
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: { provisioner: this._ipythonKernelProvisioner },
-				bash: { commandPrefix: shellCommandPrefix, shellPath },
 			});
 		}
 
