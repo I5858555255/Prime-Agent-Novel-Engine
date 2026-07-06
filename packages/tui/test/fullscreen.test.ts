@@ -11,6 +11,13 @@ class TestComponent implements Component {
 	invalidate(): void {}
 }
 
+class InputComponent extends TestComponent {
+	inputs: string[] = [];
+	handleInput(data: string): void {
+		this.inputs.push(data);
+	}
+}
+
 class LoggingVirtualTerminal extends VirtualTerminal {
 	private writes: string[] = [];
 
@@ -245,6 +252,41 @@ describe("TUI fullscreen mode", () => {
 		handle.hide();
 		await terminal.waitForRender();
 		assert.ok(!terminal.getViewport().some((line) => line.includes("OVERLAY CONTENT")));
+
+		tui.stop();
+	});
+
+	it("drag-selecting focused overlay text copies from the fullscreen frame", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 80, 10);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const url = "https://example.com/login";
+		const overlay = new InputComponent();
+		overlay.lines = ["Sign-in link", url];
+		tui.showOverlay(overlay, { anchor: "center", width: 40 });
+		await terminal.waitForRender();
+
+		const viewport = terminal.getViewport();
+		const row = viewport.findIndex((line) => line.includes(url));
+		assert.notStrictEqual(row, -1, "URL is visible in the focused overlay");
+		const col = viewport[row]!.indexOf(url);
+		const startX = col + 1;
+		const endX = startX + url.length;
+		const y = row + 1;
+
+		terminal.sendInput(`\x1b[<0;${startX};${y}M`);
+		terminal.sendInput(`\x1b[<32;${endX};${y}M`);
+		await terminal.waitForRender();
+		assert.ok(terminal.getWrites().includes("\x1b[7m"), "overlay selection is highlighted while dragging");
+
+		terminal.sendInput(`\x1b[<0;${endX};${y}m`);
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, [url]);
+		assert.deepStrictEqual(overlay.inputs, [], "mouse reports are consumed before overlay input handlers");
 
 		tui.stop();
 	});

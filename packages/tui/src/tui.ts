@@ -770,6 +770,21 @@ export class TUI extends Container {
 				} else if (!event.press) {
 					viewport.clearSelection();
 				}
+			} else if (event && overlayFocused) {
+				const viewport = fullscreen.viewport;
+				if (event.button === MOUSE_BUTTON_LEFT && event.press && !event.motion) {
+					viewport.beginFrameSelection(event.y - 1, event.x - 1);
+					this.requestRender();
+				} else if (event.button === MOUSE_BUTTON_LEFT && event.press && event.motion) {
+					viewport.extendFrameSelection(event.y - 1, event.x - 1);
+					this.requestRender();
+				} else if (!event.press && viewport.hasSelection()) {
+					const text = viewport.endFrameSelection();
+					if (text) this.copySelection(text);
+					this.requestRender();
+				} else if (!event.press) {
+					viewport.clearSelection();
+				}
 			}
 			return true;
 		}
@@ -1184,6 +1199,7 @@ export class TUI extends Container {
 			frame = this.compositeOverlays(frame, width, height);
 		}
 		const cursorPos = this.extractCursorPosition(frame, height);
+		fullscreen.viewport.applyFrameSelection(frame);
 		this.applyLineResets(frame);
 		fullscreen.viewport.paint((data) => this.terminal.write(data), frame, width, height, cursorPos);
 		if (cursorPos && this.showHardwareCursor) {

@@ -26,6 +26,8 @@ interface SelectionPoint {
 	col: number;
 }
 
+type SelectionMode = "transcript" | "frame";
+
 export class FullscreenViewport {
 	private scrollTop = 0;
 	private following = true;
@@ -35,8 +37,10 @@ export class FullscreenViewport {
 	private lastMaxScroll = 0;
 	private lastWindowHeight = 0;
 	private lastTranscript: string[] = [];
+	private lastFrame: string[] = [];
 	private selectionAnchor: SelectionPoint | null = null;
 	private selectionHead: SelectionPoint | null = null;
+	private selectionMode: SelectionMode | null = null;
 
 	/**
 	 * Compose a frame of exactly `height` lines: scrolled transcript window on
@@ -94,21 +98,13 @@ export class FullscreenViewport {
 	}
 
 	private highlightSelection(window: string[]): void {
+		if (this.selectionMode !== "transcript") return;
 		const sel = this.orderedSelection();
 		if (!sel) return;
 		for (let i = 0; i < window.length; i++) {
 			const span = this.selectionSpan(this.scrollTop + i, sel);
 			if (!span) continue;
-			const width = visibleWidth(window[i]);
-			const from = Math.min(span.from, width);
-			const to = Math.min(span.to, width);
-			if (to <= from) continue;
-			const before = sliceByColumn(window[i], 0, from);
-			// selected span is rendered plain-inverse: SGR codes inside it could
-			// cancel the inverse attribute mid-span
-			const selected = stripAnsi(sliceByColumn(window[i], from, to - from));
-			const after = sliceByColumn(window[i], to, Math.max(0, width - to));
-			window[i] = `${before}\x1b[0m\x1b[7m${selected}\x1b[27m${after}`;
+			window[i] = this.highlightLine(window[i], span);
 		}
 	}
 
@@ -121,23 +117,90 @@ export class FullscreenViewport {
 		const point = { line: this.scrollTop + screenRow, col: Math.max(0, screenCol) };
 		this.selectionAnchor = point;
 		this.selectionHead = { ...point };
+		this.selectionMode = "transcript";
 		return true;
 	}
 
 	extendSelection(screenRow: number, screenCol: number): void {
-		if (!this.selectionAnchor) return;
+		if (!this.selectionAnchor || this.selectionMode !== "transcript") return;
 		const row = Math.max(0, Math.min(screenRow, this.lastWindowHeight - 1));
 		this.selectionHead = { line: this.scrollTop + row, col: Math.max(0, screenCol) };
 	}
 
 	/** Finish the selection and return its plain text (null when empty). */
 	endSelection(): string | null {
+		if (this.selectionMode !== "transcript") {
+			this.clearSelection();
+			return null;
+		}
 		const sel = this.orderedSelection();
 		this.clearSelection();
 		if (!sel) return null;
+		return this.extractSelectionText(this.lastTranscript, sel);
+	}
+
+	/** Snapshot and highlight the final screen frame for overlay/dock selection. */
+	applyFrameSelection(frame: string[]): void {
+		this.lastFrame = frame;
+		if (this.selectionMode !== "frame") return;
+		const sel = this.orderedSelection();
+		if (!sel) return;
+		for (let lineIndex = sel.start.line; lineIndex <= sel.end.line; lineIndex++) {
+			const line = frame[lineIndex];
+			if (line === undefined) continue;
+			const span = this.selectionSpan(lineIndex, sel);
+			if (!span) continue;
+			frame[lineIndex] = this.highlightLine(line, span);
+		}
+	}
+
+	beginFrameSelection(screenRow: number, screenCol: number): boolean {
+		if (screenRow < 0 || screenRow >= this.lastFrame.length) {
+			this.clearSelection();
+			return false;
+		}
+		const point = { line: screenRow, col: Math.max(0, screenCol) };
+		this.selectionAnchor = point;
+		this.selectionHead = { ...point };
+		this.selectionMode = "frame";
+		return true;
+	}
+
+	extendFrameSelection(screenRow: number, screenCol: number): void {
+		if (!this.selectionAnchor || this.selectionMode !== "frame" || this.lastFrame.length === 0) return;
+		const row = Math.max(0, Math.min(screenRow, this.lastFrame.length - 1));
+		this.selectionHead = { line: row, col: Math.max(0, screenCol) };
+	}
+
+	endFrameSelection(): string | null {
+		if (this.selectionMode !== "frame") {
+			this.clearSelection();
+			return null;
+		}
+		const sel = this.orderedSelection();
+		this.clearSelection();
+		if (!sel) return null;
+		return this.extractSelectionText(this.lastFrame, sel);
+	}
+
+	private highlightLine(line: string, span: { from: number; to: number }): string {
+		const width = visibleWidth(line);
+		const from = Math.min(span.from, width);
+		const to = Math.min(span.to, width);
+		if (to <= from) return line;
+		const before = sliceByColumn(line, 0, from);
+		const selected = stripAnsi(sliceByColumn(line, from, to - from));
+		const after = sliceByColumn(line, to, Math.max(0, width - to));
+		return `${before}\x1b[0m\x1b[7m${selected}\x1b[27m${after}`;
+	}
+
+	private extractSelectionText(
+		sourceLines: string[],
+		sel: { start: SelectionPoint; end: SelectionPoint },
+	): string | null {
 		const lines: string[] = [];
 		for (let lineIndex = sel.start.line; lineIndex <= sel.end.line; lineIndex++) {
-			const line = this.lastTranscript[lineIndex] ?? "";
+			const line = sourceLines[lineIndex] ?? "";
 			const span = this.selectionSpan(lineIndex, sel);
 			if (!span) continue;
 			const width = visibleWidth(line);
@@ -152,6 +215,7 @@ export class FullscreenViewport {
 	clearSelection(): void {
 		this.selectionAnchor = null;
 		this.selectionHead = null;
+		this.selectionMode = null;
 	}
 
 	hasSelection(): boolean {
