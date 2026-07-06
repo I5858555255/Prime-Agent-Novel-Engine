@@ -256,12 +256,17 @@ describe("ToolExecutionComponent parity", () => {
 		bashComponent.updateResult({ content: [{ type: "text", text: "hello" }], isError: false }, false);
 		expect(stripAnsi(bashComponent.render(120).join("\n"))).toContain("$ echo hello");
 
+		const legacyEditMetadata = {
+			...createMetadataOnlyToolDefinition(createEditToolDefinition(process.cwd())),
+			description: "Legacy edit metadata from an older session.",
+			promptSnippet: "Legacy edit prompt.",
+		};
 		const editComponent = new ToolExecutionComponent(
 			"edit",
 			"tool-3c",
 			{ path: "README.md", oldText: "before", newText: "after" },
 			{},
-			createMetadataOnlyToolDefinition(createEditToolDefinition(process.cwd())),
+			legacyEditMetadata,
 			createFakeTui(),
 			process.cwd(),
 		);

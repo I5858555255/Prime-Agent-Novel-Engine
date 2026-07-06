@@ -39,17 +39,33 @@ function hasToolRenderer(toolDefinition: ToolExecutionDefinition | undefined): b
 	return toolDefinition?.renderCall !== undefined || toolDefinition?.renderResult !== undefined;
 }
 
-function hasSamePromptGuidelines(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
-	if (left === undefined || right === undefined) {
-		return left === right;
+function getParameterProperties(parameters: unknown): Record<string, unknown> | undefined {
+	if (!parameters || typeof parameters !== "object" || !("properties" in parameters)) {
+		return undefined;
 	}
-	if (left.length !== right.length) {
+	const properties = (parameters as { properties?: unknown }).properties;
+	if (!properties || typeof properties !== "object") {
+		return undefined;
+	}
+	return properties as Record<string, unknown>;
+}
+
+function hasCompatibleReplayParameters(toolName: string, toolDefinition: ToolExecutionDefinition | undefined): boolean {
+	if (!toolDefinition) {
+		return true;
+	}
+	const properties = getParameterProperties(toolDefinition.parameters);
+	if (!properties) {
 		return false;
 	}
-	return left.every((value, index) => value === right[index]);
+	if (toolName === "bash") {
+		return "command" in properties;
+	}
+	return "path" in properties || "file_path" in properties;
 }
 
 function matchesBuiltInReplayMetadata(
+	toolName: string,
 	toolDefinition: ToolExecutionDefinition | undefined,
 	builtInDefinition: ToolDefinition<any, any>,
 ): boolean {
@@ -59,14 +75,7 @@ function matchesBuiltInReplayMetadata(
 	if (hasToolRenderer(toolDefinition)) {
 		return false;
 	}
-	return (
-		toolDefinition.name === builtInDefinition.name &&
-		toolDefinition.label === builtInDefinition.label &&
-		toolDefinition.description === builtInDefinition.description &&
-		toolDefinition.promptSnippet === builtInDefinition.promptSnippet &&
-		hasSamePromptGuidelines(toolDefinition.promptGuidelines, builtInDefinition.promptGuidelines) &&
-		toolDefinition.renderShell === builtInDefinition.renderShell
-	);
+	return toolDefinition.name === builtInDefinition.name && hasCompatibleReplayParameters(toolName, toolDefinition);
 }
 
 function createReplayBuiltInToolDefinition(
@@ -80,11 +89,15 @@ function createReplayBuiltInToolDefinition(
 	switch (toolName) {
 		case "bash": {
 			const builtInDefinition = createBashToolDefinition(cwd);
-			return matchesBuiltInReplayMetadata(toolDefinition, builtInDefinition) ? builtInDefinition : undefined;
+			return matchesBuiltInReplayMetadata(toolName, toolDefinition, builtInDefinition)
+				? builtInDefinition
+				: undefined;
 		}
 		case "edit": {
 			const builtInDefinition = createEditToolDefinition(cwd);
-			return matchesBuiltInReplayMetadata(toolDefinition, builtInDefinition) ? builtInDefinition : undefined;
+			return matchesBuiltInReplayMetadata(toolName, toolDefinition, builtInDefinition)
+				? builtInDefinition
+				: undefined;
 		}
 		default:
 			return undefined;
