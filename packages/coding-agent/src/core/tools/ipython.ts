@@ -175,11 +175,11 @@ export interface IpythonToolOptions {
 	provisioner?: IpythonKernelProvisioner;
 }
 
-function quoteScriptArgument(value: string): string {
+function quoteScriptMagicArgument(value: string): string {
 	return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
-function applyBashCellSettings(
+function applyShellSettingsToBashMagicCell(
 	code: string,
 	options: Pick<IpythonToolOptions, "commandPrefix" | "shellPath"> | undefined,
 ): string {
@@ -194,7 +194,7 @@ function applyBashCellSettings(
 	const body = code.slice(match[0].length);
 	const firstLine =
 		shellPath && rest.trim().length === 0
-			? `${indent}%%script ${quoteScriptArgument(shellPath)}`
+			? `${indent}%%script ${quoteScriptMagicArgument(shellPath)}`
 			: `${indent}%%bash${rest}`;
 	const nextBody = commandPrefix ? `${commandPrefix}${body ? `\n${body}` : ""}` : body;
 	return `${firstLine}${lineBreak || "\n"}${nextBody}`;
@@ -426,7 +426,7 @@ export function createIpythonToolDefinition(
 
 			try {
 				const m = await provisioner.ensure(reportStartupProgress);
-				const code = applyBashCellSettings(params.code, options);
+				const code = applyShellSettingsToBashMagicCell(params.code, options);
 				const r = await m.execute(code, {
 					signal,
 					onStream: (chunk) => {

@@ -189,11 +189,6 @@ export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
 export { type ParsedSkillBlock, parseSkillBlock } from "./skill-blocks.js";
 
-const LEGACY_BUILT_IN_TOOL_REPLACEMENTS = new Map<string, string>([
-	["bash", "ipython"],
-	["edit", "ipython"],
-]);
-
 export type RlmChildAgentStatus = "queued" | "running" | "done" | "error" | "cancelled";
 
 export interface RlmChildAgentActivity {
@@ -2053,14 +2048,6 @@ export class AgentSession {
 		return this._toolDefinitions.get(name)?.definition;
 	}
 
-	private _resolveActiveToolName(name: string): string {
-		if (this._toolRegistry.has(name)) {
-			return name;
-		}
-		const replacement = LEGACY_BUILT_IN_TOOL_REPLACEMENTS.get(name);
-		return replacement && this._toolRegistry.has(replacement) ? replacement : name;
-	}
-
 	/**
 	 * Set active tools by name.
 	 * Only tools in the registry can be enabled. Unknown tool names are ignored.
@@ -2072,15 +2059,14 @@ export class AgentSession {
 		const validToolNames: string[] = [];
 		const seenToolNames = new Set<string>();
 		for (const name of toolNames) {
-			const resolvedName = this._resolveActiveToolName(name);
-			if (seenToolNames.has(resolvedName)) {
+			if (seenToolNames.has(name)) {
 				continue;
 			}
-			const tool = this._toolRegistry.get(resolvedName);
+			const tool = this._toolRegistry.get(name);
 			if (tool) {
-				seenToolNames.add(resolvedName);
+				seenToolNames.add(name);
 				tools.push(tool);
-				validToolNames.push(resolvedName);
+				validToolNames.push(name);
 			}
 		}
 		this.agent.state.tools = tools;
@@ -4459,17 +4445,7 @@ export class AgentSession {
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
 		];
-		const registeredCustomToolNames = new Set(allCustomTools.map((tool) => tool.definition.name));
-		const effectiveAllowedToolNames = allowedToolNames
-			? new Set(
-					[...allowedToolNames].flatMap((name) => {
-						const replacement = LEGACY_BUILT_IN_TOOL_REPLACEMENTS.get(name);
-						return replacement && !registeredCustomToolNames.has(name) ? [name, replacement] : [name];
-					}),
-				)
-			: undefined;
-		const isAllowedTool = (name: string): boolean =>
-			!effectiveAllowedToolNames || effectiveAllowedToolNames.has(name);
+		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
 		const allowedCustomTools = allCustomTools.filter((tool) => isAllowedTool(tool.definition.name));
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 			Array.from(this._baseToolDefinitions.entries())
@@ -4529,9 +4505,9 @@ export class AgentSession {
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
 
-		if (effectiveAllowedToolNames) {
+		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (effectiveAllowedToolNames.has(toolName)) {
+				if (allowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
 			}

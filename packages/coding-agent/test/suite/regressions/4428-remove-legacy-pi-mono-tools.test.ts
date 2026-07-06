@@ -39,7 +39,7 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		expect(result.diagnostics).toEqual([]);
 	});
 
-	it("falls back to ipython when only removed built-in tool names are requested", async () => {
+	it("does not expose removed built-in tool names when only they are requested", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory(tempDir);
 		const resourceLoader = new DefaultResourceLoader({
@@ -60,8 +60,8 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		});
 		await session.bindExtensions({});
 
-		expect(session.getAllTools().map((tool) => tool.name)).toEqual(["ipython"]);
-		expect(session.getActiveToolNames()).toEqual(["ipython"]);
+		expect(session.getAllTools().map((tool) => tool.name)).toEqual([]);
+		expect(session.getActiveToolNames()).toEqual([]);
 		session.dispose();
 	});
 
@@ -108,7 +108,7 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		session.dispose();
 	});
 
-	it("applies shell settings when legacy bash requests activate ipython", async () => {
+	it("applies shell settings to ipython bash cells", async () => {
 		const shellPath = join(tempDir, "custom-shell.sh");
 		writeFileSync(shellPath, "#!/bin/sh\nprintf 'custom-shell\\n'\nexec /bin/sh \"$@\"\n");
 		chmodSync(shellPath, 0o755);
@@ -131,7 +131,7 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader,
-			tools: ["bash"],
+			tools: ["ipython"],
 		});
 
 		try {

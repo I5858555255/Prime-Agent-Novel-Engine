@@ -34,17 +34,9 @@ export interface ToolExecutionRendererDefinition {
 	) => Component;
 }
 export type ToolExecutionDefinition = AgentConnectionToolDefinition & Partial<ToolExecutionRendererDefinition>;
-type ReplayBuiltInToolName = "bash" | "edit";
 
 function hasToolRenderer(toolDefinition: ToolExecutionDefinition | undefined): boolean {
 	return toolDefinition?.renderCall !== undefined || toolDefinition?.renderResult !== undefined;
-}
-
-function getReplayBuiltInToolName(
-	toolDefinition: ToolExecutionDefinition | undefined,
-): ReplayBuiltInToolName | undefined {
-	const value = (toolDefinition as { replayBuiltInToolName?: unknown } | undefined)?.replayBuiltInToolName;
-	return value === "bash" || value === "edit" ? value : undefined;
 }
 
 function matchesBuiltInReplayMetadata(toolName: string, toolDefinition: ToolExecutionDefinition | undefined): boolean {
@@ -54,7 +46,7 @@ function matchesBuiltInReplayMetadata(toolName: string, toolDefinition: ToolExec
 	if (hasToolRenderer(toolDefinition)) {
 		return false;
 	}
-	return getReplayBuiltInToolName(toolDefinition) === toolName;
+	return toolDefinition.replayBuiltInToolName === toolName;
 }
 
 function createReplayBuiltInToolDefinition(
