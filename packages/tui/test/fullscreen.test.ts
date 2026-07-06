@@ -354,6 +354,71 @@ describe("TUI fullscreen mode", () => {
 		tui.stop();
 	});
 
+	it("keeps focused overlay selection within visible overlay text", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 80, 10);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const url = "https://example.com/clamped";
+		const overlay = new InputComponent();
+		overlay.lines = ["Sign-in link", url];
+		tui.showOverlay(overlay, { anchor: "center", width: 44 });
+		await terminal.waitForRender();
+
+		const viewport = terminal.getViewport();
+		const row = viewport.findIndex((line) => line.includes(url));
+		assert.notStrictEqual(row, -1, "URL is visible in the focused overlay");
+		const outsideRow = viewport.findIndex((line, index) => index !== row && line.includes("Line "));
+		assert.notStrictEqual(outsideRow, -1, "transcript row is visible outside the overlay");
+		const col = viewport[row]!.indexOf(url);
+		const startX = col + 1;
+		const paddedEndX = startX + url.length + 6;
+		const y = row + 1;
+
+		terminal.sendInput(`\x1b[<0;${startX};${y}M`);
+		terminal.sendInput(`\x1b[<32;${paddedEndX};${y}M`);
+		terminal.sendInput(`\x1b[<32;1;${outsideRow + 1}M`);
+		terminal.sendInput(`\x1b[<0;1;${outsideRow + 1}m`);
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, [url]);
+
+		tui.stop();
+	});
+
+	it("does not select lower overlay text covered by a higher overlay", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 80, 10);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const lower = new InputComponent();
+		lower.lines = ["https://lower.example/login"];
+		tui.showOverlay(lower, { anchor: "bottom-left", width: 32 });
+
+		const upper = new InputComponent();
+		upper.lines = ["TOP"];
+		tui.showOverlay(upper, { anchor: "bottom-left", width: 32 });
+		await terminal.waitForRender();
+
+		const row = terminal.getViewport().findIndex((line) => line.startsWith("TOP"));
+		assert.notStrictEqual(row, -1, "higher overlay is visible");
+		const hiddenLowerTextX = 11;
+		const y = row + 1;
+
+		terminal.sendInput(`\x1b[<0;${hiddenLowerTextX};${y}M`);
+		terminal.sendInput(`\x1b[<32;1;${y}M`);
+		terminal.sendInput(`\x1b[<0;1;${y}m`);
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, []);
+
+		tui.stop();
+	});
+
 	it("exit restores the primary screen and flushes fullscreen-era content into scrollback", async () => {
 		const { terminal, tui, chat, dock } = setup(lines(5));
 		await terminal.waitForRender();

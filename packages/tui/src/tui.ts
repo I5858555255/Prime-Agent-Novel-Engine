@@ -1043,6 +1043,7 @@ export class TUI extends Container {
 					const truncatedOverlayLine =
 						visibleWidth(overlayLines[i]) > w ? sliceByColumn(overlayLines[i], 0, w, true) : overlayLines[i];
 					result[idx] = this.compositeLineAt(result[idx], truncatedOverlayLine, col, w, termWidth);
+					this.subtractSelectionCoverage(overlaySelectionRegions, idx, col, col + w);
 					const span = this.selectableSpan(truncatedOverlayLine, w);
 					if (span) {
 						overlaySelectionRegions.push({ line: idx, col: col + span.from, width: span.to - span.from });
@@ -1066,6 +1067,30 @@ export class TUI extends Container {
 			to = col + 1;
 		}
 		return from === -1 ? null : { from, to };
+	}
+
+	private subtractSelectionCoverage(
+		regions: FrameSelectionRegion[],
+		line: number,
+		coverStart: number,
+		coverEnd: number,
+	): void {
+		for (let i = regions.length - 1; i >= 0; i--) {
+			const region = regions[i];
+			if (region.line !== line) continue;
+			const regionStart = region.col;
+			const regionEnd = region.col + region.width;
+			if (coverEnd <= regionStart || coverStart >= regionEnd) continue;
+
+			const replacements: FrameSelectionRegion[] = [];
+			if (regionStart < coverStart) {
+				replacements.push({ line, col: regionStart, width: coverStart - regionStart });
+			}
+			if (coverEnd < regionEnd) {
+				replacements.push({ line, col: coverEnd, width: regionEnd - coverEnd });
+			}
+			regions.splice(i, 1, ...replacements);
+		}
 	}
 
 	private static readonly SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";

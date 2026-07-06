@@ -26,6 +26,17 @@ interface SelectionPoint {
 	col: number;
 }
 
+interface FrameSelectionRegion {
+	line: number;
+	col: number;
+	width: number;
+}
+
+interface ColumnSpan {
+	from: number;
+	to: number;
+}
+
 type SelectionMode = "transcript" | "frame";
 
 export class FullscreenViewport {
@@ -40,7 +51,7 @@ export class FullscreenViewport {
 	private lastFrame: string[] = [];
 	private lastFrameVisibleStart = 0;
 	private lastFrameVisibleHeight = 0;
-	private frameSelectionRegions: ReadonlyArray<{ line: number; col: number; width: number }> = [];
+	private frameSelectionRegions: ReadonlyArray<FrameSelectionRegion> = [];
 	private selectionAnchor: SelectionPoint | null = null;
 	private selectionHead: SelectionPoint | null = null;
 	private selectionMode: SelectionMode | null = null;
@@ -89,10 +100,7 @@ export class FullscreenViewport {
 	}
 
 	// Per-line selected column span, or null when the line is outside the selection.
-	private selectionSpan(
-		lineIndex: number,
-		sel: { start: SelectionPoint; end: SelectionPoint },
-	): { from: number; to: number } | null {
+	private selectionSpan(lineIndex: number, sel: { start: SelectionPoint; end: SelectionPoint }): ColumnSpan | null {
 		if (lineIndex < sel.start.line || lineIndex > sel.end.line) return null;
 		return {
 			from: lineIndex === sel.start.line ? sel.start.col : 0,
@@ -162,11 +170,7 @@ export class FullscreenViewport {
 	}
 
 	/** Snapshot and highlight the final screen frame for overlay/dock selection. */
-	applyFrameSelection(
-		frame: string[],
-		height: number,
-		selectableRegions: ReadonlyArray<{ line: number; col: number; width: number }>,
-	): void {
+	applyFrameSelection(frame: string[], height: number, selectableRegions: ReadonlyArray<FrameSelectionRegion>): void {
 		this.lastFrame = frame;
 		this.lastFrameVisibleHeight = Math.min(Math.max(0, height), frame.length);
 		this.lastFrameVisibleStart = Math.max(0, frame.length - this.lastFrameVisibleHeight);
@@ -175,11 +179,13 @@ export class FullscreenViewport {
 		const sel = this.orderedSelection();
 		if (!sel) return;
 		for (let lineIndex = sel.start.line; lineIndex <= sel.end.line; lineIndex++) {
-			const line = frame[lineIndex];
+			let line = frame[lineIndex];
 			if (line === undefined) continue;
-			const span = this.selectionSpan(lineIndex, sel);
-			if (!span) continue;
-			frame[lineIndex] = this.highlightLine(line, span);
+			const spans = this.selectedFrameSpans(lineIndex, sel);
+			for (let i = spans.length - 1; i >= 0; i--) {
+				line = this.highlightLine(line, spans[i]);
+			}
+			frame[lineIndex] = line;
 		}
 	}
 
@@ -199,7 +205,9 @@ export class FullscreenViewport {
 		if (!this.selectionAnchor || this.selectionMode !== "frame") return;
 		const point = this.framePoint(screenRow, screenCol);
 		if (!point) return;
-		this.selectionHead = point;
+		const clamped = this.clampFrameSelectionPoint(point);
+		if (!clamped) return;
+		this.selectionHead = clamped;
 	}
 
 	endFrameSelection(): string | null {
@@ -210,10 +218,10 @@ export class FullscreenViewport {
 		const sel = this.orderedSelection();
 		this.clearSelection();
 		if (!sel) return null;
-		return this.extractSelectionText(this.lastFrame, sel);
+		return this.extractFrameSelectionText(sel);
 	}
 
-	private highlightLine(line: string, span: { from: number; to: number }): string {
+	private highlightLine(line: string, span: ColumnSpan): string {
 		const width = visibleWidth(line);
 		const from = Math.min(span.from, width);
 		const to = Math.min(span.to, width);
@@ -236,6 +244,62 @@ export class FullscreenViewport {
 		return this.frameSelectionRegions.some(
 			(region) => region.line === point.line && point.col >= region.col && point.col < region.col + region.width,
 		);
+	}
+
+	private frameRegionsForLine(line: number): FrameSelectionRegion[] {
+		return this.frameSelectionRegions
+			.filter((region) => region.line === line && region.width > 0)
+			.sort((a, b) => a.col - b.col);
+	}
+
+	private clampFrameSelectionPoint(point: SelectionPoint): SelectionPoint | null {
+		const regions = this.frameRegionsForLine(point.line);
+		if (regions.length === 0) return null;
+		let closest = regions[0].col;
+		let distance = Number.POSITIVE_INFINITY;
+		for (const region of regions) {
+			const start = region.col;
+			const end = region.col + region.width;
+			if (point.col >= start && point.col <= end) {
+				return { line: point.line, col: Math.max(start, Math.min(point.col, end)) };
+			}
+			for (const col of [start, end]) {
+				const nextDistance = Math.abs(point.col - col);
+				if (nextDistance < distance) {
+					closest = col;
+					distance = nextDistance;
+				}
+			}
+		}
+		return { line: point.line, col: closest };
+	}
+
+	private selectedFrameSpans(lineIndex: number, sel: { start: SelectionPoint; end: SelectionPoint }): ColumnSpan[] {
+		const span = this.selectionSpan(lineIndex, sel);
+		if (!span) return [];
+		const spans: ColumnSpan[] = [];
+		for (const region of this.frameRegionsForLine(lineIndex)) {
+			const from = Math.max(span.from, region.col);
+			const to = Math.min(span.to, region.col + region.width);
+			if (to > from) spans.push({ from, to });
+		}
+		return spans;
+	}
+
+	private extractFrameSelectionText(sel: { start: SelectionPoint; end: SelectionPoint }): string | null {
+		const lines: string[] = [];
+		for (let lineIndex = sel.start.line; lineIndex <= sel.end.line; lineIndex++) {
+			const line = this.lastFrame[lineIndex] ?? "";
+			const spans = this.selectedFrameSpans(lineIndex, sel);
+			if (spans.length === 0) continue;
+			const parts: string[] = [];
+			for (const span of spans) {
+				parts.push(stripAnsi(sliceByColumn(line, span.from, Math.max(0, span.to - span.from))));
+			}
+			lines.push(parts.join("").trimEnd());
+		}
+		const text = lines.join("\n");
+		return text.trim().length > 0 ? text : null;
 	}
 
 	private extractSelectionText(
