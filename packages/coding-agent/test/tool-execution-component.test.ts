@@ -198,7 +198,7 @@ describe("ToolExecutionComponent parity", () => {
 		}
 	});
 
-	test("uses built-in rendering for built-in overrides without custom renderers", () => {
+	test("does not apply legacy replay renderers to custom overrides without renderers", () => {
 		const overrideDefinition: ToolDefinition = {
 			...createBaseToolDefinition("edit"),
 		};
@@ -214,9 +214,9 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("edit");
-		expect(rendered).toContain("README.md");
-		expect(rendered).not.toContain(":1");
+		expect(rendered).toContain("edit · done");
+		expect(rendered).not.toContain("README.md");
+		expect(rendered).not.toContain("+1 after");
 	});
 
 	test("preserves legacy file_path rendering compatibility for built-in tools", () => {
@@ -272,7 +272,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered.match(/\bedit\b/g)?.length ?? 0).toBe(1);
 	});
 
-	test("inherits missing built-in result renderer slot from the built-in tool", () => {
+	test("uses the generic result fallback for legacy-named custom tools", () => {
 		const overrideDefinition: ToolDefinition = {
 			...createBaseToolDefinition("bash"),
 			renderCall: () => new Text("override call", 0, 0),
@@ -293,7 +293,7 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("hello");
 	});
 
-	test("inherits missing built-in call renderer slot from the built-in tool", () => {
+	test("does not apply legacy replay call renderers to custom result renderers", () => {
 		const overrideDefinition: ToolDefinition = {
 			...createBaseToolDefinition("bash"),
 			renderResult: () => new Text("override result", 0, 0),
@@ -310,8 +310,8 @@ describe("ToolExecutionComponent parity", () => {
 		);
 		component.updateResult({ content: [{ type: "text", text: "hello" }], details: undefined, isError: false }, false);
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("echo hello");
 		expect(rendered).toContain("override result");
+		expect(rendered).not.toContain("echo hello");
 	});
 
 	test("uses custom renderers for built-in overrides that reuse built-in definition parameters", () => {

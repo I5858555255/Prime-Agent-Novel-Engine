@@ -1,7 +1,9 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.js";
-import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.js";
+import { createBashToolDefinition } from "../../../core/tools/bash.js";
+import { createEditToolDefinition } from "../../../core/tools/edit.js";
+import { createAllToolDefinitions } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.js";
 import { convertToPng } from "../../../utils/image-convert.js";
 import type { AgentConnectionToolDefinition } from "../../agent-connection/index.js";
@@ -32,6 +34,27 @@ export interface ToolExecutionRendererDefinition {
 	) => Component;
 }
 export type ToolExecutionDefinition = AgentConnectionToolDefinition & Partial<ToolExecutionRendererDefinition>;
+
+function createReplayBuiltInToolDefinition(
+	toolName: string,
+	cwd: string,
+	toolDefinition: ToolExecutionDefinition | undefined,
+): ToolDefinition<any, any> | undefined {
+	if (toolName === "ipython") {
+		return createAllToolDefinitions(cwd).ipython;
+	}
+	if (toolDefinition) {
+		return undefined;
+	}
+	switch (toolName) {
+		case "bash":
+			return createBashToolDefinition(cwd);
+		case "edit":
+			return createEditToolDefinition(cwd);
+		default:
+			return undefined;
+	}
+}
 
 export class ToolExecutionComponent extends Container {
 	private contentPanel: ToolPanel;
@@ -78,7 +101,7 @@ export class ToolExecutionComponent extends Container {
 		this.toolCallId = toolCallId;
 		this.args = args;
 		this.toolDefinition = toolDefinition;
-		this.builtInToolDefinition = createAllToolDefinitions(cwd)[toolName as ToolName];
+		this.builtInToolDefinition = createReplayBuiltInToolDefinition(toolName, cwd, toolDefinition);
 		this.showImages = options.showImages ?? true;
 		this.allowInlineImages = options.allowInlineImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
