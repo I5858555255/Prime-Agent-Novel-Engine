@@ -603,6 +603,10 @@ function tryReadPreparedDaemonUpdateRestartManifest(agentDir: string): DaemonUpd
 	}
 }
 
+function hasRestorableDaemonUpdateRestart(manifest: DaemonUpdateRestartManifest | undefined): boolean {
+	return manifest !== undefined && manifest.sessions.length > 0;
+}
+
 function responseHasActiveDaemonSessions(data: unknown): boolean {
 	if (!isRecord(data) || !Array.isArray(data.sessions)) {
 		return true;
@@ -867,7 +871,7 @@ async function restartDaemonAfterSelfUpdate(
 	manifest?: DaemonUpdateRestartManifest,
 	oldDaemonAlreadyStopped = false,
 ): Promise<void> {
-	if (!daemonWasRunning) {
+	if (!daemonWasRunning && !hasRestorableDaemonUpdateRestart(manifest)) {
 		return;
 	}
 	const stopped = oldDaemonAlreadyStopped || (await shutdownDaemonAndWait(socketPath));
@@ -1120,6 +1124,9 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 								),
 							);
 						}
+					} else {
+						restartManifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
+						daemonStoppedBeforeUpdate = hasRestorableDaemonUpdateRestart(restartManifest);
 					}
 					try {
 						await runSelfUpdate(selfUpdateCommand);
