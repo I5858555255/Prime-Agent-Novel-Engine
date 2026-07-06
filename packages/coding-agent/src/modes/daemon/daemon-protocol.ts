@@ -280,6 +280,7 @@ export type DaemonCommand =
 			agentMessageId?: string;
 	  }
 	| { id?: string; type: "restore_next_turn"; activeSessionId: string; messages: CustomMessage[] }
+	| { id?: string; type: "resume_queue"; activeSessionId: string }
 	| {
 			id?: string;
 			type: "send_message";

@@ -152,6 +152,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"steer",
 	"follow_up",
 	"restore_next_turn",
+	"resume_queue",
 	"send_message",
 	"agent_messages_status",
 	"agent_messages_pause",
@@ -1352,6 +1353,14 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				state.runtime.session.restorePendingNextTurnMessages(command.messages);
 				return success(command.id, "restore_next_turn");
+			}
+
+			case "resume_queue": {
+				const state = this.getSessionState(command.activeSessionId);
+				void state.runtime.session.agent.continue().catch((error) => {
+					this.broadcastToSession(state, failure(undefined, "resume_queue", error, serializeDaemonError(error)));
+				});
+				return success(command.id, "resume_queue");
 			}
 
 			case "send_message": {
