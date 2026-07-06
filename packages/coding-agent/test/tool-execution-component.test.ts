@@ -274,6 +274,30 @@ describe("ToolExecutionComponent parity", () => {
 		expect(stripAnsi(editComponent.render(120).join("\n"))).toContain("README.md");
 	});
 
+	test("does not use legacy replay renderers for metadata-only custom collisions", () => {
+		const customEditDefinition: ToolDefinition = {
+			...createBaseToolDefinition("edit"),
+			parameters: Type.Object({
+				path: Type.String(),
+			}),
+		};
+
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-3d",
+			{ path: "README.md", oldText: "before", newText: "after" },
+			{},
+			createMetadataOnlyToolDefinition(customEditDefinition),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("edit · done");
+		expect(rendered).not.toContain("README.md");
+		expect(rendered).not.toContain("+1 after");
+	});
+
 	test("bash execute emits an initial empty partial update before output arrives", async () => {
 		const updates: Array<{ content: Array<{ type: string; text?: string }>; details?: unknown }> = [];
 		const operations: BashOperations = {
