@@ -4,6 +4,7 @@ import { selectConfig } from "./cli/config-selector.js";
 import {
 	ensureInteractiveDaemonRunning,
 	isDaemonSessionSummary,
+	isSessionBusy,
 	probeRunningDaemonSessions,
 	type RunningDaemonProbe,
 	shutdownDaemonAndWait,
@@ -379,6 +380,10 @@ const UPDATE_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
 // Returns false when the update should be aborted to avoid terminating live sessions.
 function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, force: boolean): Promise<boolean> {
 	return confirmDaemonSessionLoss(probe, { force, copy: UPDATE_SESSION_LOSS_COPY });
+}
+
+function daemonProbeMayHaveBusySessions(probe: RunningDaemonProbe): boolean {
+	return probe.reachable && (probe.activeSessions === undefined || probe.activeSessions.some(isSessionBusy));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -976,29 +981,39 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						process.exitCode = 1;
 						return true;
 					}
-					try {
-						await runSelfUpdate(selfUpdateCommand);
-					} catch (error: unknown) {
-						const message = error instanceof Error ? error.message : "Unknown package command error";
-						console.error(chalk.red(`Error: ${message}`));
-						printSelfUpdateFallback(selfUpdateCommand);
-						process.exitCode = 1;
-						return true;
-					}
-					console.log(chalk.green(`Updated ${APP_NAME}`));
 					let restartManifest: DaemonUpdateRestartManifest | undefined;
 					if (daemonProbe.reachable) {
 						try {
 							restartManifest = await prepareDaemonUpdateRestart(daemonSocketPath);
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : String(error);
+							if (daemonProbeMayHaveBusySessions(daemonProbe)) {
+								console.error(
+									chalk.yellow(
+										`Warning: could not prepare daemon sessions for automatic resume (${message}); update cancelled.`,
+									),
+								);
+								process.exitCode = 1;
+								return true;
+							}
 							console.error(
 								chalk.yellow(
-									`Warning: updated, but could not prepare daemon sessions for automatic resume (${message}); restarting the daemon without restored sessions.`,
+									`Warning: could not prepare idle daemon sessions for automatic resume (${message}); restarting the daemon without restored sessions.`,
 								),
 							);
 						}
 					}
+					try {
+						await runSelfUpdate(selfUpdateCommand);
+					} catch (error: unknown) {
+						const message = error instanceof Error ? error.message : "Unknown package command error";
+						console.error(chalk.red(`Error: ${message}`));
+						await tryRestoreDaemonUpdateRestart(daemonSocketPath, restartManifest, "after update failed");
+						printSelfUpdateFallback(selfUpdateCommand);
+						process.exitCode = 1;
+						return true;
+					}
+					console.log(chalk.green(`Updated ${APP_NAME}`));
 					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable, restartManifest);
 				}
 				return true;
