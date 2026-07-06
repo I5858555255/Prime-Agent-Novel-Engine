@@ -165,6 +165,7 @@ console.log("Installer render check passed.");
 
 function runCase(name, initialCols, initialRows, resizedCols, resizedRows) {
 	const result = spawnSync("sh", [harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)], {
+		detached: true,
 		encoding: "utf-8",
 	});
 	if (result.status !== 0) {
