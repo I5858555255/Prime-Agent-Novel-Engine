@@ -35,6 +35,40 @@ export interface ToolExecutionRendererDefinition {
 }
 export type ToolExecutionDefinition = AgentConnectionToolDefinition & Partial<ToolExecutionRendererDefinition>;
 
+function hasToolRenderer(toolDefinition: ToolExecutionDefinition | undefined): boolean {
+	return toolDefinition?.renderCall !== undefined || toolDefinition?.renderResult !== undefined;
+}
+
+function hasSamePromptGuidelines(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+	if (left === undefined || right === undefined) {
+		return left === right;
+	}
+	if (left.length !== right.length) {
+		return false;
+	}
+	return left.every((value, index) => value === right[index]);
+}
+
+function matchesBuiltInReplayMetadata(
+	toolDefinition: ToolExecutionDefinition | undefined,
+	builtInDefinition: ToolDefinition<any, any>,
+): boolean {
+	if (!toolDefinition) {
+		return true;
+	}
+	if (hasToolRenderer(toolDefinition)) {
+		return false;
+	}
+	return (
+		toolDefinition.name === builtInDefinition.name &&
+		toolDefinition.label === builtInDefinition.label &&
+		toolDefinition.description === builtInDefinition.description &&
+		toolDefinition.promptSnippet === builtInDefinition.promptSnippet &&
+		hasSamePromptGuidelines(toolDefinition.promptGuidelines, builtInDefinition.promptGuidelines) &&
+		toolDefinition.renderShell === builtInDefinition.renderShell
+	);
+}
+
 function createReplayBuiltInToolDefinition(
 	toolName: string,
 	cwd: string,
@@ -43,14 +77,15 @@ function createReplayBuiltInToolDefinition(
 	if (toolName === "ipython") {
 		return createAllToolDefinitions(cwd).ipython;
 	}
-	if (toolDefinition) {
-		return undefined;
-	}
 	switch (toolName) {
-		case "bash":
-			return createBashToolDefinition(cwd);
-		case "edit":
-			return createEditToolDefinition(cwd);
+		case "bash": {
+			const builtInDefinition = createBashToolDefinition(cwd);
+			return matchesBuiltInReplayMetadata(toolDefinition, builtInDefinition) ? builtInDefinition : undefined;
+		}
+		case "edit": {
+			const builtInDefinition = createEditToolDefinition(cwd);
+			return matchesBuiltInReplayMetadata(toolDefinition, builtInDefinition) ? builtInDefinition : undefined;
+		}
 		default:
 			return undefined;
 	}

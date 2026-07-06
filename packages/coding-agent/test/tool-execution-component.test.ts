@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import type { ToolDefinition } from "../src/core/extensions/types.js";
 import { type BashOperations, createBashTool, createBashToolDefinition } from "../src/core/tools/bash.js";
 import { createEditToolDefinition } from "../src/core/tools/edit.js";
+import { createAgentConnectionToolDefinition } from "../src/modes/agent-connection/tool-definition.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../src/modes/interactive/theme/working-icon.js";
@@ -26,6 +27,14 @@ function createFakeTui(): TUI {
 	return {
 		requestRender: () => {},
 	} as unknown as TUI;
+}
+
+function createMetadataOnlyToolDefinition(definition: ToolDefinition<any, any>) {
+	const metadata = createAgentConnectionToolDefinition(definition);
+	if (!metadata) {
+		throw new Error("expected tool metadata");
+	}
+	return metadata;
 }
 
 async function waitForCondition(condition: () => boolean): Promise<void> {
@@ -232,6 +241,32 @@ describe("ToolExecutionComponent parity", () => {
 		const rendered = stripAnsi(component.render(120).join("\n"));
 		expect(rendered).toContain("edit");
 		expect(rendered).toContain("README.md");
+	});
+
+	test("uses legacy replay renderers for metadata-only built-in definitions", () => {
+		const bashComponent = new ToolExecutionComponent(
+			"bash",
+			"tool-3b",
+			{ command: "echo hello" },
+			{},
+			createMetadataOnlyToolDefinition(createBashToolDefinition(process.cwd())),
+			createFakeTui(),
+			process.cwd(),
+		);
+		bashComponent.updateResult({ content: [{ type: "text", text: "hello" }], isError: false }, false);
+		expect(stripAnsi(bashComponent.render(120).join("\n"))).toContain("$ echo hello");
+
+		const editComponent = new ToolExecutionComponent(
+			"edit",
+			"tool-3c",
+			{ path: "README.md", oldText: "before", newText: "after" },
+			{},
+			createMetadataOnlyToolDefinition(createEditToolDefinition(process.cwd())),
+			createFakeTui(),
+			process.cwd(),
+		);
+		editComponent.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
+		expect(stripAnsi(editComponent.render(120).join("\n"))).toContain("README.md");
 	});
 
 	test("bash execute emits an initial empty partial update before output arrives", async () => {
