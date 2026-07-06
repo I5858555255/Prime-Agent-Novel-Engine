@@ -54,9 +54,21 @@ export interface Args {
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
 const BUILTIN_TOOL_NAMES = ["ipython", "bash", "edit"];
+const SESSION_ID_PREFIX_PATTERN = /^[0-9a-f]{4,}(?:-[0-9a-f]*)*$/i;
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
+}
+
+function looksLikeResumeSelector(value: string): boolean {
+	return (
+		value.endsWith(".jsonl") ||
+		value.startsWith("~/") ||
+		value.startsWith("./") ||
+		value.startsWith("../") ||
+		value.startsWith("/") ||
+		SESSION_ID_PREFIX_PATTERN.test(value)
+	);
 }
 
 export function parseArgs(args: string[]): Args {
@@ -98,7 +110,7 @@ export function parseArgs(args: string[]): Args {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
 			const next = args[i + 1];
-			if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+			if (next !== undefined && !next.startsWith("-") && !next.startsWith("@") && looksLikeResumeSelector(next)) {
 				result.resume = next;
 				i++;
 			} else {

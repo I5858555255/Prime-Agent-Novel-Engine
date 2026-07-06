@@ -100,6 +100,12 @@ describe("parseArgs", () => {
 			expect(result.resume).toBe("1234abcd");
 		});
 
+		test("keeps non-selector text after --resume as positional messages", () => {
+			const result = parseArgs(["--resume", "fix", "the", "bug"]);
+			expect(result.resume).toBe(true);
+			expect(result.messages).toEqual(["fix", "the", "bug"]);
+		});
+
 		test("rejects --session", () => {
 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
 			expect(result.diagnostics).toContainEqual({
