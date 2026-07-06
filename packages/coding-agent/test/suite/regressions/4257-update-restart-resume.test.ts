@@ -17,8 +17,8 @@ type AgentDaemonUpdateInternals = {
 };
 
 type QueueInternals = {
-	_steeringMessages: Array<{ text: string; message: UserMessage }>;
-	_followUpMessages: Array<{ text: string; queueKey?: string; message: UserMessage }>;
+	_steeringMessages: Array<{ text: string; agentMessageId?: string; message: UserMessage }>;
+	_followUpMessages: Array<{ text: string; queueKey?: string; agentMessageId?: string; message: UserMessage }>;
 	_pendingNextTurnMessages: CustomMessage[];
 	_acceptedAgentMessagePrompt?: {
 		text: string;
@@ -170,8 +170,15 @@ describe("issue #4257 update restart resume", () => {
 			timestamp: Date.now(),
 		};
 		const queueInternals = parentHarness.session as unknown as QueueInternals;
-		queueInternals._steeringMessages = [{ text: "queued work", message }];
-		queueInternals._followUpMessages = [{ text: "heartbeat", queueKey: "heartbeat:job-1", message: followUpMessage }];
+		queueInternals._steeringMessages = [{ text: "queued work", agentMessageId: "agentmsg_steer", message }];
+		queueInternals._followUpMessages = [
+			{
+				text: "heartbeat",
+				queueKey: "heartbeat:job-1",
+				agentMessageId: "agentmsg_followup",
+				message: followUpMessage,
+			},
+		];
 		childHarness.session.recordBashResult("echo child", {
 			output: "child",
 			exitCode: 0,
@@ -215,8 +222,8 @@ describe("issue #4257 update restart resume", () => {
 			activeSessionId: "parent-active",
 			clientEnv: { PRIME_SESSION: "pane-1" },
 			queue: {
-				steering: [{ message: "queued work", images: [image] }],
-				followUp: [{ message: "heartbeat", queueKey: "heartbeat:job-1" }],
+				steering: [{ message: "queued work", images: [image], agentMessageId: "agentmsg_steer" }],
+				followUp: [{ message: "heartbeat", queueKey: "heartbeat:job-1", agentMessageId: "agentmsg_followup" }],
 			},
 			shouldResume: true,
 		});
@@ -240,7 +247,7 @@ describe("issue #4257 update restart resume", () => {
 		queueInternals._pendingNextTurnMessages = [pendingNextTurn];
 		queueInternals._acceptedAgentMessagePrompt = {
 			text: "accepted work",
-			agentMessageId: "agent-message-1",
+			agentMessageId: "agentmsg_accepted",
 			message: acceptedMessage,
 			messages: new Set([acceptedNextTurn, deliveredAcceptedNextTurn, acceptedMessage]),
 			pendingNextTurnMessages: [acceptedNextTurn, deliveredAcceptedNextTurn],
@@ -275,6 +282,7 @@ describe("issue #4257 update restart resume", () => {
 		expect(manifest.sessions[0]?.queue.nextTurn).toEqual([pendingNextTurn]);
 		expect(manifest.sessions[0]?.queue.acceptedPrompt).toEqual({
 			message: "accepted work",
+			agentMessageId: "agentmsg_accepted",
 			nextTurn: [acceptedNextTurn],
 		});
 	});
@@ -329,5 +337,101 @@ describe("issue #4257 update restart resume", () => {
 			success: true,
 		});
 		expect(harness.session.getPendingNextTurnMessageSnapshots()).toEqual([restoredMessage]);
+	});
+
+	it("restores agent-message ids and reports deduped follow-ups", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		const queueInternals = harness.session as unknown as QueueInternals;
+		queueInternals._followUpMessages = [
+			{
+				text: "existing",
+				queueKey: "heartbeat:job-1",
+				agentMessageId: "agentmsg_existing",
+				message: { role: "user", content: [{ type: "text", text: "existing" }], timestamp: Date.now() },
+			},
+		];
+		const writes: string[] = [];
+		const client: DaemonSocketClient = {
+			id: "client-1",
+			socket: {
+				destroyed: false,
+				write: vi.fn((chunk: string) => {
+					writes.push(chunk);
+					return true;
+				}),
+			} as unknown as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set(["active-1"]),
+			detachInput: vi.fn(),
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		};
+
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "steer-1",
+				type: "steer",
+				activeSessionId: "active-1",
+				message: "restored steer",
+				expandPromptTemplates: false,
+				agentMessageId: "agentmsg_restored_steer",
+			}),
+		);
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "follow-up-1",
+				type: "follow_up",
+				activeSessionId: "active-1",
+				message: "duplicate",
+				queueKey: "heartbeat:job-1",
+				expandPromptTemplates: false,
+				agentMessageId: "agentmsg_duplicate",
+			}),
+		);
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "follow-up-2",
+				type: "follow_up",
+				activeSessionId: "active-1",
+				message: "restored follow-up",
+				queueKey: "heartbeat:job-2",
+				expandPromptTemplates: false,
+				agentMessageId: "agentmsg_restored_followup",
+			}),
+		);
+
+		const responses = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(responses).toEqual([
+			expect.objectContaining({ id: "steer-1", command: "steer", success: true }),
+			expect.objectContaining({ id: "follow-up-1", command: "follow_up", success: true, data: { queued: false } }),
+			expect.objectContaining({ id: "follow-up-2", command: "follow_up", success: true, data: { queued: true } }),
+		]);
+		expect(harness.session.getSteeringQueueSnapshots()).toEqual([
+			expect.objectContaining({ text: "restored steer", agentMessageId: "agentmsg_restored_steer" }),
+		]);
+		expect(harness.session.getFollowUpQueueSnapshots()).toEqual([
+			expect.objectContaining({ text: "existing", agentMessageId: "agentmsg_existing" }),
+			expect.objectContaining({ text: "restored follow-up", agentMessageId: "agentmsg_restored_followup" }),
+		]);
 	});
 });

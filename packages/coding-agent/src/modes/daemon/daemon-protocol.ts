@@ -190,6 +190,7 @@ export interface DaemonUpdateRestartQueuedMessage {
 	message: string;
 	images?: ImageContent[];
 	queueKey?: string;
+	agentMessageId?: string;
 }
 
 export interface DaemonUpdateRestartAcceptedPrompt extends DaemonUpdateRestartQueuedMessage {
@@ -257,6 +258,7 @@ export type DaemonCommand =
 			images?: ImageContent[];
 			streamingBehavior?: "steer" | "followUp";
 			expandPromptTemplates?: boolean;
+			agentMessageId?: string;
 	  }
 	| {
 			id?: string;
@@ -265,6 +267,7 @@ export type DaemonCommand =
 			message: string;
 			images?: ImageContent[];
 			expandPromptTemplates?: boolean;
+			agentMessageId?: string;
 	  }
 	| {
 			id?: string;
@@ -274,6 +277,7 @@ export type DaemonCommand =
 			images?: ImageContent[];
 			queueKey?: string;
 			expandPromptTemplates?: boolean;
+			agentMessageId?: string;
 	  }
 	| { id?: string; type: "restore_next_turn"; activeSessionId: string; messages: CustomMessage[] }
 	| {

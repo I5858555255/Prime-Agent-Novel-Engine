@@ -22,6 +22,7 @@ import {
 	type SelfUpdateCommand,
 	VERSION,
 } from "./config.js";
+import { parseAgentSessionMessagePromptId } from "./core/agent-messages.js";
 import type { CustomMessage } from "./core/messages.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
@@ -473,12 +474,16 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 	if (!isRecord(value)) {
 		throw new Error("Daemon update restart response contains an invalid queued message");
 	}
+	const message = readString(value.message, "queue.message");
 	const images = readOptionalImages(value.images, "queue.images");
 	const queueKey = readOptionalString(value.queueKey, "queue.queueKey");
+	const agentMessageId =
+		readOptionalString(value.agentMessageId, "queue.agentMessageId") ?? parseAgentSessionMessagePromptId(message);
 	return {
-		message: readString(value.message, "queue.message"),
+		message,
 		...(images ? { images } : {}),
 		...(queueKey ? { queueKey } : {}),
+		...(agentMessageId ? { agentMessageId } : {}),
 	};
 }
 
@@ -506,6 +511,10 @@ function readQueuedMessages(value: unknown, fieldName: string): DaemonUpdateRest
 		throw new Error(`Daemon update restart response is missing ${fieldName}`);
 	}
 	return value.map(parseDaemonUpdateRestartQueuedMessage);
+}
+
+function wasFollowUpQueued(response: { success: true; data?: unknown }): boolean {
+	return !isRecord(response.data) || response.data.queued !== false;
 }
 
 function parseDaemonUpdateRestartSession(value: unknown): DaemonUpdateRestartSession {
@@ -690,6 +699,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 							message: acceptedPrompt.message,
 							images: acceptedPrompt.images,
 							expandPromptTemplates: false,
+							agentMessageId: acceptedPrompt.agentMessageId,
 						},
 						120000,
 					);
@@ -735,6 +745,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 							message: firstQueued.value.message,
 							images: firstQueued.value.images,
 							expandPromptTemplates: false,
+							agentMessageId: firstQueued.value.agentMessageId,
 						},
 						120000,
 					);
@@ -760,6 +771,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 						message: queued.message,
 						images: queued.images,
 						expandPromptTemplates: false,
+						agentMessageId: queued.agentMessageId,
 					},
 					30000,
 				);
@@ -782,12 +794,13 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 						images: queued.images,
 						queueKey: queued.queueKey,
 						expandPromptTemplates: false,
+						agentMessageId: queued.agentMessageId,
 					},
 					30000,
 				);
-				if (response.success) {
+				if (response.success && wasFollowUpQueued(response)) {
 					resumedSession = true;
-				} else {
+				} else if (!response.success) {
 					console.error(
 						chalk.yellow(
 							`Warning: could not restore queued follow-up message for ${session.sessionFile}: ${response.error}`,

@@ -383,6 +383,7 @@ export interface PromptOptions {
 	queueIfBusy?: boolean;
 	/** Skip extension input handlers for replaying already-accepted input. */
 	skipInputHandlers?: boolean;
+	agentMessageId?: string;
 }
 
 interface InternalPromptOptions extends PromptOptions {
@@ -408,6 +409,7 @@ export interface QueuedAgentInputSnapshot {
 	text: string;
 	images?: ImageContent[];
 	queueKey?: string;
+	agentMessageId?: string;
 }
 
 export interface AcceptedAgentInputSnapshot extends QueuedAgentInputSnapshot {
@@ -434,10 +436,11 @@ function createQueuedAgentInputSnapshot(
 	message: QueuedSteeringMessage | QueuedFollowUpMessage,
 ): QueuedAgentInputSnapshot {
 	const snapshot = createQueuedAgentInputSnapshotFromUserMessage(message.text, message.message);
-	if ("queueKey" in message && message.queueKey) {
-		return { ...snapshot, queueKey: message.queueKey };
-	}
-	return snapshot;
+	return {
+		...snapshot,
+		...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
+		...("queueKey" in message && message.queueKey ? { queueKey: message.queueKey } : {}),
+	};
 }
 
 interface AcceptedAgentMessagePrompt {
@@ -2286,7 +2289,7 @@ export class AgentSession {
 			skipInputHandlers: true,
 			skipPrePromptWork: true,
 			returnAfterAccepted: true,
-			agentMessageId: parseAgentSessionMessagePromptId(text),
+			agentMessageId: options?.agentMessageId ?? parseAgentSessionMessagePromptId(text),
 		});
 	}
 
@@ -2732,7 +2735,11 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[], options: { queueKey?: string } = {}): Promise<boolean> {
+	async followUp(
+		text: string,
+		images?: ImageContent[],
+		options: { queueKey?: string; agentMessageId?: string } = {},
+	): Promise<boolean> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2742,19 +2749,29 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		return this._queueFollowUp(expandedText, images, { queueKey: options.queueKey });
+		return this._queueFollowUp(expandedText, images, {
+			queueKey: options.queueKey,
+			agentMessageId: options.agentMessageId,
+		});
 	}
 
-	async restoreSteeringMessage(text: string, images?: ImageContent[]): Promise<void> {
-		await this._queueSteer(text, images);
+	async restoreSteeringMessage(
+		text: string,
+		images?: ImageContent[],
+		options: { agentMessageId?: string } = {},
+	): Promise<void> {
+		await this._queueSteer(text, images, { agentMessageId: options.agentMessageId });
 	}
 
 	async restoreFollowUpMessage(
 		text: string,
 		images?: ImageContent[],
-		options: { queueKey?: string } = {},
+		options: { queueKey?: string; agentMessageId?: string } = {},
 	): Promise<boolean> {
-		return this._queueFollowUp(text, images, { queueKey: options.queueKey });
+		return this._queueFollowUp(text, images, {
+			queueKey: options.queueKey,
+			agentMessageId: options.agentMessageId,
+		});
 	}
 
 	private _buildPromptContent(
@@ -3067,6 +3084,7 @@ export class AgentSession {
 		}
 		return {
 			...createQueuedAgentInputSnapshotFromUserMessage(accepted.text, accepted.message),
+			agentMessageId: accepted.agentMessageId,
 			nextTurn: undeliveredPendingNextTurnMessages(accepted).map((message) => cloneCustomMessage(message)),
 		};
 	}

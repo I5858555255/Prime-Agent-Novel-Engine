@@ -645,7 +645,11 @@ export class AgentDaemon {
 		};
 		try {
 			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
-			await session.prompt(message, {
+			const prompt =
+				options?.agentMessageId === undefined
+					? session.prompt.bind(session)
+					: session.acceptAgentMessagePrompt.bind(session);
+			await prompt(message, {
 				...options,
 				preflightResult: (didSucceed) => {
 					options?.preflightResult?.(didSucceed);
@@ -1293,6 +1297,7 @@ export class AgentDaemon {
 					images: command.images,
 					streamingBehavior: command.streamingBehavior,
 					expandPromptTemplates: command.expandPromptTemplates,
+					agentMessageId: command.agentMessageId,
 					skipInputHandlers: command.expandPromptTemplates === false ? true : undefined,
 					source: "rpc",
 					preflightResult: (didSucceed) => {
@@ -1317,7 +1322,9 @@ export class AgentDaemon {
 			case "steer": {
 				const state = this.getSessionState(command.activeSessionId);
 				if (command.expandPromptTemplates === false) {
-					await state.runtime.session.restoreSteeringMessage(command.message, command.images);
+					await state.runtime.session.restoreSteeringMessage(command.message, command.images, {
+						agentMessageId: command.agentMessageId,
+					});
 				} else {
 					await state.runtime.session.steer(command.message, command.images);
 				}
@@ -1326,14 +1333,19 @@ export class AgentDaemon {
 
 			case "follow_up": {
 				const state = this.getSessionState(command.activeSessionId);
+				let queued: boolean;
 				if (command.expandPromptTemplates === false) {
-					await state.runtime.session.restoreFollowUpMessage(command.message, command.images, {
+					queued = await state.runtime.session.restoreFollowUpMessage(command.message, command.images, {
 						queueKey: command.queueKey,
+						agentMessageId: command.agentMessageId,
 					});
 				} else {
-					await state.runtime.session.followUp(command.message, command.images, { queueKey: command.queueKey });
+					queued = await state.runtime.session.followUp(command.message, command.images, {
+						queueKey: command.queueKey,
+						agentMessageId: command.agentMessageId,
+					});
 				}
-				return success(command.id, "follow_up");
+				return success(command.id, "follow_up", { queued });
 			}
 
 			case "restore_next_turn": {
@@ -2155,11 +2167,13 @@ export class AgentDaemon {
 			steering: [...session.getSteeringQueueSnapshots()].map((message) => ({
 				message: message.text,
 				...(message.images ? { images: message.images } : {}),
+				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 			})),
 			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
 				message: message.text,
 				...(message.images ? { images: message.images } : {}),
 				...(message.queueKey ? { queueKey: message.queueKey } : {}),
+				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 			})),
 			nextTurn: [...session.getPendingNextTurnMessageSnapshots()],
 		};
@@ -2171,6 +2185,7 @@ export class AgentDaemon {
 						acceptedPrompt: {
 							message: acceptedPrompt.text,
 							...(acceptedPrompt.images ? { images: acceptedPrompt.images } : {}),
+							agentMessageId: acceptedPrompt.agentMessageId,
 							nextTurn: acceptedPrompt.nextTurn,
 						},
 					}
