@@ -3658,6 +3658,40 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.getExpandedText(), pastedText);
 		});
 
+		it("restores expanded pasted content from a paste snapshot", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const pastedText = [
+				"line 1",
+				"line 2",
+				"line 3",
+				"line 4",
+				"line 5",
+				"line 6",
+				"line 7",
+				"line 8",
+				"line 9",
+				"line 10",
+				"line 11",
+			].join("\n");
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+
+			editor.handleInput(`\x1b[200~${pastedText}\x1b[201~`);
+			const markerText = editor.getText();
+			const snapshot = editor.getPasteSnapshot();
+			editor.handleInput("\r");
+
+			const restored = new Editor(createTestTUI(), defaultEditorTheme);
+			restored.setText(markerText);
+			restored.restorePasteSnapshot(snapshot);
+
+			assert.match(markerText, /\[paste #\d+ \+\d+ lines\]/);
+			assert.strictEqual(submitted, pastedText);
+			assert.strictEqual(restored.getExpandedText(), pastedText);
+		});
+
 		it("snaps to the paste marker start when navigating down into it", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 

@@ -1,4 +1,5 @@
 import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocomplete.js";
+import type { EditorPasteSnapshot } from "../editor-component.js";
 import { getKeybindings } from "../keybindings.js";
 import { decodePrintableKey, matchesKey } from "../keys.js";
 import { KillRing } from "../kill-ring.js";
@@ -1063,6 +1064,18 @@ export class Editor implements Component, Focusable {
 	 */
 	getExpandedText(): string {
 		return this.expandPasteMarkers(this.state.lines.join("\n"));
+	}
+
+	getPasteSnapshot(): EditorPasteSnapshot {
+		return {
+			pastes: [...this.pastes],
+			pasteCounter: this.pasteCounter,
+		};
+	}
+
+	restorePasteSnapshot(snapshot: EditorPasteSnapshot): void {
+		this.pastes = new Map(snapshot.pastes);
+		this.pasteCounter = snapshot.pasteCounter;
 	}
 
 	getLines(): string[] {

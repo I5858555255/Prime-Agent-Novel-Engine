@@ -21,6 +21,7 @@ import type {
 	AutocompleteItem,
 	AutocompleteProvider,
 	EditorComponent,
+	EditorPasteSnapshot,
 	Keybinding,
 	KeyId,
 	MarkdownTheme,
@@ -199,6 +200,11 @@ import { setWorkingPulseFrame, WORKING_ICON_INTERVAL_MS } from "./theme/working-
 interface Expandable {
 	setExpanded(expanded: boolean): void;
 }
+
+type PromptStash = {
+	text: string;
+	pasteSnapshot?: EditorPasteSnapshot;
+};
 
 interface PendingToolCallRenderInput {
 	id: string;
@@ -501,7 +507,7 @@ export class InteractiveMode {
 	private queuedMessagesContainer: Container;
 	private defaultEditor: CustomEditor;
 	private editor: EditorComponent;
-	private promptStash: string | undefined;
+	private promptStash: PromptStash | undefined;
 	private editorComponentFactory: EditorFactory | undefined;
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
@@ -3417,17 +3423,23 @@ export class InteractiveMode {
 			this.showStatus("Prompt stash already has a draft");
 			return;
 		}
-		this.promptStash = text;
+		this.promptStash = {
+			text,
+			pasteSnapshot: this.editor.getPasteSnapshot?.(),
+		};
 		this.editor.setText("");
 		this.showStatus("Stashed prompt");
 	}
 
-	private restorePromptStashIfEditorEmpty(text = this.promptStash): boolean {
-		if (text === undefined || this.editor.getText().trim()) {
+	private restorePromptStashIfEditorEmpty(stash = this.promptStash): boolean {
+		if (stash === undefined || this.editor.getText().trim()) {
 			return false;
 		}
 		this.promptStash = undefined;
-		this.editor.setText(text);
+		this.editor.setText(stash.text);
+		if (stash.pasteSnapshot) {
+			this.editor.restorePasteSnapshot?.(stash.pasteSnapshot);
+		}
 		this.showStatus("Restored stashed prompt");
 		return true;
 	}
@@ -3496,7 +3508,7 @@ export class InteractiveMode {
 		};
 		add(this.editor.getText());
 		if (this.promptStash !== undefined) {
-			add(this.promptStash);
+			add(this.promptStash.text);
 		}
 		for (const entry of this.editor.getHistory?.() ?? []) {
 			add(entry);

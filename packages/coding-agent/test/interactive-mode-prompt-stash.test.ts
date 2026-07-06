@@ -2,21 +2,35 @@ import { describe, expect, it, type Mock, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
+type FakePasteSnapshot = {
+	pastes: readonly (readonly [number, string])[];
+	pasteCounter: number;
+};
+
+type PromptStash = {
+	text: string;
+	pasteSnapshot?: FakePasteSnapshot;
+};
+
 type FakeEditor = {
 	text: string;
 	expandedText: string;
 	history: string[];
+	pasteSnapshot?: FakePasteSnapshot;
+	restoredPasteSnapshot?: FakePasteSnapshot;
 	onSubmit?: (text: string) => void | Promise<void>;
 	clearHistory?: Mock;
 	getText: () => string;
 	getExpandedText: () => string;
+	getPasteSnapshot: () => FakePasteSnapshot | undefined;
+	restorePasteSnapshot: (snapshot: FakePasteSnapshot) => void;
 	setText: (text: string) => void;
 	addToHistory: Mock;
 	getHistory: () => readonly string[];
 };
 
 type PromptStashHarness = {
-	promptStash?: string;
+	promptStash?: PromptStash;
 	editor: FakeEditor;
 	showStatus: Mock;
 };
@@ -57,23 +71,33 @@ type PromptStashMethods = {
 	handleFollowUp: (this: SubmitHarness) => Promise<void>;
 	handlePromptStash: (this: PromptStashHarness) => void;
 	resetCurrentSessionRenderState: (this: ResetHarness, options?: { clearPromptStash?: boolean }) => void;
-	restorePromptStashIfEditorEmpty: (this: PromptStashHarness, text?: string) => boolean;
+	restorePromptStashIfEditorEmpty: (this: PromptStashHarness, stash?: PromptStash) => boolean;
 	liveImageMarkerIds: (this: PromptStashLiveMarkerHarness) => Set<number>;
 	setupEditorSubmitHandler: (this: SubmitHarness) => void;
 };
 
 const interactiveModeMethods = InteractiveMode.prototype as unknown as PromptStashMethods;
 
-function createEditor(options: { text?: string; expandedText?: string; history?: string[] } = {}): FakeEditor {
+function createEditor(
+	options: { text?: string; expandedText?: string; history?: string[]; pasteSnapshot?: FakePasteSnapshot } = {},
+): FakeEditor {
 	const editor: FakeEditor = {
 		text: options.text ?? "",
 		expandedText: options.expandedText ?? options.text ?? "",
 		history: options.history ?? [],
+		pasteSnapshot: options.pasteSnapshot,
 		getText() {
 			return this.text;
 		},
 		getExpandedText() {
 			return this.expandedText;
+		},
+		getPasteSnapshot() {
+			return this.pasteSnapshot;
+		},
+		restorePasteSnapshot(snapshot: FakePasteSnapshot) {
+			this.restoredPasteSnapshot = snapshot;
+			this.pasteSnapshot = snapshot;
 		},
 		setText(nextText: string) {
 			this.text = nextText;
@@ -90,10 +114,16 @@ function createEditor(options: { text?: string; expandedText?: string; history?:
 	return editor;
 }
 
-function createPromptStashHarness(options: { text?: string; expandedText?: string; stash?: string } = {}) {
+function createPromptStashHarness(
+	options: { text?: string; expandedText?: string; stash?: string; pasteSnapshot?: FakePasteSnapshot } = {},
+) {
 	const harness: PromptStashHarness = {
-		promptStash: options.stash,
-		editor: createEditor({ text: options.text, expandedText: options.expandedText }),
+		promptStash: options.stash ? { text: options.stash, pasteSnapshot: options.pasteSnapshot } : undefined,
+		editor: createEditor({
+			text: options.text,
+			expandedText: options.expandedText,
+			pasteSnapshot: options.pasteSnapshot,
+		}),
 		showStatus: vi.fn(),
 	};
 	Object.setPrototypeOf(harness, InteractiveMode.prototype);
@@ -108,16 +138,26 @@ describe("InteractiveMode prompt stash", () => {
 	});
 
 	it("stashes editor text without expanding paste markers", () => {
+		const pasteSnapshot: FakePasteSnapshot = {
+			pastes: [[1, "line one\nline two"]],
+			pasteCounter: 1,
+		};
 		const mode = createPromptStashHarness({
 			text: "[paste #1 +12 lines]",
 			expandedText: "line one\nline two",
+			pasteSnapshot,
 		});
 
 		interactiveModeMethods.handlePromptStash.call(mode);
 
-		expect(mode.promptStash).toBe("[paste #1 +12 lines]");
+		expect(mode.promptStash).toEqual({ text: "[paste #1 +12 lines]", pasteSnapshot });
 		expect(mode.editor.getText()).toBe("");
 		expect(mode.showStatus).toHaveBeenCalledWith("Stashed prompt");
+
+		interactiveModeMethods.restorePromptStashIfEditorEmpty.call(mode);
+
+		expect(mode.editor.getText()).toBe("[paste #1 +12 lines]");
+		expect(mode.editor.restoredPasteSnapshot).toBe(pasteSnapshot);
 	});
 
 	it("restores a stashed prompt when the editor is empty", () => {
@@ -135,7 +175,7 @@ describe("InteractiveMode prompt stash", () => {
 
 		interactiveModeMethods.handlePromptStash.call(mode);
 
-		expect(mode.promptStash).toBe("first draft");
+		expect(mode.promptStash?.text).toBe("first draft");
 		expect(mode.editor.getText()).toBe("second draft");
 		expect(mode.showStatus).toHaveBeenCalledWith("Prompt stash already has a draft");
 	});
@@ -272,7 +312,7 @@ describe("InteractiveMode prompt stash", () => {
 		interactiveModeMethods.resetCurrentSessionRenderState.call(mode);
 
 		expect(mode.connectionQueue).toEqual({ steering: [], followUp: [] });
-		expect(mode.promptStash).toBe("keep [image #1]");
+		expect(mode.promptStash?.text).toBe("keep [image #1]");
 		expect(mode.pastedImages.has(1)).toBe(true);
 		expect(mode.pastedImages.has(2)).toBe(false);
 	});
@@ -333,7 +373,7 @@ describe("InteractiveMode prompt stash", () => {
 		await expect(interactiveModeMethods.handleFollowUp.call(mode)).rejects.toThrow(error);
 
 		expect(mode.editor.getText()).toBe("quick follow-up");
-		expect(mode.promptStash).toBe("half-written draft");
+		expect(mode.promptStash?.text).toBe("half-written draft");
 	});
 
 	it("keeps image markers in a stashed prompt live", () => {
