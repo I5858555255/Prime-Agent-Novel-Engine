@@ -24,10 +24,11 @@ import type { CustomMessage } from "./core/messages.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { DaemonClient } from "./modes/daemon/daemon-client.js";
-import type {
-	DaemonUpdateRestartManifest,
-	DaemonUpdateRestartQueuedMessage,
-	DaemonUpdateRestartSession,
+import {
+	type DaemonUpdateRestartManifest,
+	type DaemonUpdateRestartQueuedMessage,
+	type DaemonUpdateRestartSession,
+	isUnknownDaemonCommandError,
 } from "./modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "./modes/daemon/daemon-socket.js";
 import { shouldUseWindowsShell } from "./utils/child-process.js";
@@ -987,7 +988,8 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 							restartManifest = await prepareDaemonUpdateRestart(daemonSocketPath);
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : String(error);
-							if (daemonProbeMayHaveBusySessions(daemonProbe)) {
+							const daemonLacksPrepareCommand = isUnknownDaemonCommandError(error, "prepare_update_restart");
+							if (daemonProbeMayHaveBusySessions(daemonProbe) || !daemonLacksPrepareCommand) {
 								console.error(
 									chalk.yellow(
 										`Warning: could not prepare daemon sessions for automatic resume (${message}); update cancelled.`,
@@ -998,7 +1000,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 							}
 							console.error(
 								chalk.yellow(
-									`Warning: could not prepare idle daemon sessions for automatic resume (${message}); restarting the daemon without restored sessions.`,
+									`Warning: the old daemon cannot prepare idle sessions for automatic resume (${message}); restarting the daemon without restored sessions.`,
 								),
 							);
 						}
