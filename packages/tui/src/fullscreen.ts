@@ -38,6 +38,9 @@ export class FullscreenViewport {
 	private lastWindowHeight = 0;
 	private lastTranscript: string[] = [];
 	private lastFrame: string[] = [];
+	private lastFrameVisibleStart = 0;
+	private lastFrameVisibleHeight = 0;
+	private frameSelectionRegions: ReadonlyArray<{ line: number; col: number; width: number }> = [];
 	private selectionAnchor: SelectionPoint | null = null;
 	private selectionHead: SelectionPoint | null = null;
 	private selectionMode: SelectionMode | null = null;
@@ -139,9 +142,35 @@ export class FullscreenViewport {
 		return this.extractSelectionText(this.lastTranscript, sel);
 	}
 
+	extendActiveSelection(screenRow: number, screenCol: number): void {
+		if (this.selectionMode === "frame") {
+			this.extendFrameSelection(screenRow, screenCol);
+		} else if (this.selectionMode === "transcript") {
+			this.extendSelection(screenRow, screenCol);
+		}
+	}
+
+	endActiveSelection(): string | null {
+		if (this.selectionMode === "frame") {
+			return this.endFrameSelection();
+		}
+		if (this.selectionMode === "transcript") {
+			return this.endSelection();
+		}
+		this.clearSelection();
+		return null;
+	}
+
 	/** Snapshot and highlight the final screen frame for overlay/dock selection. */
-	applyFrameSelection(frame: string[]): void {
+	applyFrameSelection(
+		frame: string[],
+		height: number,
+		selectableRegions: ReadonlyArray<{ line: number; col: number; width: number }>,
+	): void {
 		this.lastFrame = frame;
+		this.lastFrameVisibleHeight = Math.min(Math.max(0, height), frame.length);
+		this.lastFrameVisibleStart = Math.max(0, frame.length - this.lastFrameVisibleHeight);
+		this.frameSelectionRegions = selectableRegions;
 		if (this.selectionMode !== "frame") return;
 		const sel = this.orderedSelection();
 		if (!sel) return;
@@ -155,11 +184,11 @@ export class FullscreenViewport {
 	}
 
 	beginFrameSelection(screenRow: number, screenCol: number): boolean {
-		if (screenRow < 0 || screenRow >= this.lastFrame.length) {
+		const point = this.framePoint(screenRow, screenCol);
+		if (!point || !this.isFrameSelectable(point)) {
 			this.clearSelection();
 			return false;
 		}
-		const point = { line: screenRow, col: Math.max(0, screenCol) };
 		this.selectionAnchor = point;
 		this.selectionHead = { ...point };
 		this.selectionMode = "frame";
@@ -167,9 +196,10 @@ export class FullscreenViewport {
 	}
 
 	extendFrameSelection(screenRow: number, screenCol: number): void {
-		if (!this.selectionAnchor || this.selectionMode !== "frame" || this.lastFrame.length === 0) return;
-		const row = Math.max(0, Math.min(screenRow, this.lastFrame.length - 1));
-		this.selectionHead = { line: row, col: Math.max(0, screenCol) };
+		if (!this.selectionAnchor || this.selectionMode !== "frame") return;
+		const point = this.framePoint(screenRow, screenCol);
+		if (!point) return;
+		this.selectionHead = point;
 	}
 
 	endFrameSelection(): string | null {
@@ -192,6 +222,20 @@ export class FullscreenViewport {
 		const selected = stripAnsi(sliceByColumn(line, from, to - from));
 		const after = sliceByColumn(line, to, Math.max(0, width - to));
 		return `${before}\x1b[0m\x1b[7m${selected}\x1b[27m${after}`;
+	}
+
+	private framePoint(screenRow: number, screenCol: number): SelectionPoint | null {
+		if (this.lastFrameVisibleHeight === 0) return null;
+		const row = Math.max(0, Math.min(screenRow, this.lastFrameVisibleHeight - 1));
+		const line = this.lastFrameVisibleStart + row;
+		if (line < 0 || line >= this.lastFrame.length) return null;
+		return { line, col: Math.max(0, screenCol) };
+	}
+
+	private isFrameSelectable(point: SelectionPoint): boolean {
+		return this.frameSelectionRegions.some(
+			(region) => region.line === point.line && point.col >= region.col && point.col < region.col + region.width,
+		);
 	}
 
 	private extractSelectionText(

@@ -291,6 +291,69 @@ describe("TUI fullscreen mode", () => {
 		tui.stop();
 	});
 
+	it("maps focused overlay selection to the painted viewport slice", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 80, 5);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const url = "https://example.com/visible";
+		const overlay = new InputComponent();
+		overlay.lines = [url, "overlay row 1", "overlay row 2", "overlay row 3", "overlay row 4", "overlay row 5"];
+		tui.showOverlay(overlay, { anchor: "top-left", width: 40 });
+		await terminal.waitForRender();
+
+		const viewport = terminal.getViewport();
+		const row = viewport.findIndex((line) => line.includes(url));
+		assert.notStrictEqual(row, -1, "URL is visible after the over-tall frame is sliced");
+		const col = viewport[row]!.indexOf(url);
+		const startX = col + 1;
+		const endX = startX + url.length;
+		const y = row + 1;
+
+		terminal.sendInput(`\x1b[<0;${startX};${y}M`);
+		terminal.sendInput(`\x1b[<32;${endX};${y}M`);
+		terminal.sendInput(`\x1b[<0;${endX};${y}m`);
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, [url]);
+
+		tui.stop();
+	});
+
+	it("copies an active frame selection if focus changes before release", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 80, 10);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const url = "https://example.com/focus-change";
+		const overlay = new InputComponent();
+		overlay.lines = ["Sign-in link", url];
+		tui.showOverlay(overlay, { anchor: "center", width: 44 });
+		await terminal.waitForRender();
+
+		const viewport = terminal.getViewport();
+		const row = viewport.findIndex((line) => line.includes(url));
+		assert.notStrictEqual(row, -1, "URL is visible in the focused overlay");
+		const col = viewport[row]!.indexOf(url);
+		const startX = col + 1;
+		const endX = startX + url.length;
+		const y = row + 1;
+
+		terminal.sendInput(`\x1b[<0;${startX};${y}M`);
+		terminal.sendInput(`\x1b[<32;${endX};${y}M`);
+		tui.setFocus(chat);
+		terminal.sendInput(`\x1b[<0;${endX};${y}m`);
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, [url]);
+
+		tui.stop();
+	});
+
 	it("exit restores the primary screen and flushes fullscreen-era content into scrollback", async () => {
 		const { terminal, tui, chat, dock } = setup(lines(5));
 		await terminal.waitForRender();
