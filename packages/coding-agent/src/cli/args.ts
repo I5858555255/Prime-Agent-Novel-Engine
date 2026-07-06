@@ -66,7 +66,7 @@ function looksLikeResumeSelector(value: string): boolean {
 		value.startsWith("~/") ||
 		value.startsWith("./") ||
 		value.startsWith("../") ||
-		value.startsWith("/") ||
+		value.includes("/") ||
 		value.includes("\\") ||
 		SESSION_ID_PREFIX_PATTERN.test(value)
 	);

@@ -107,6 +107,12 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual([]);
 		});
 
+		test("parses --resume with a slash-containing relative session path", () => {
+			const result = parseArgs(["--resume", "sessions/current"]);
+			expect(result.resume).toBe("sessions/current");
+			expect(result.messages).toEqual([]);
+		});
+
 		test("keeps non-selector text after --resume as positional messages", () => {
 			const result = parseArgs(["--resume", "fix", "the", "bug"]);
 			expect(result.resume).toBe(true);
