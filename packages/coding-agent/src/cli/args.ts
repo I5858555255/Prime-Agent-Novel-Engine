@@ -110,9 +110,16 @@ export function parseArgs(args: string[]): Args {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
 			const next = args[i + 1];
-			if (next !== undefined && !next.startsWith("-") && !next.startsWith("@") && looksLikeResumeSelector(next)) {
-				result.resume = next;
-				i++;
+			if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+				if (next === "") {
+					result.resume = true;
+					i++;
+				} else if (looksLikeResumeSelector(next)) {
+					result.resume = next;
+					i++;
+				} else {
+					result.resume = true;
+				}
 			} else {
 				result.resume = true;
 			}

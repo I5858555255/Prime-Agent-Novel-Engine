@@ -106,6 +106,16 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual(["fix", "the", "bug"]);
 		});
 
+		test("treats empty --resume values as the bare resume picker flag", () => {
+			const separated = parseArgs(["--resume", ""]);
+			expect(separated.resume).toBe(true);
+			expect(separated.messages).toEqual([]);
+
+			const equals = parseArgs(["--resume="]);
+			expect(equals.resume).toBe(true);
+			expect(equals.messages).toEqual([]);
+		});
+
 		test("rejects --session", () => {
 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
 			expect(result.diagnostics).toContainEqual({
