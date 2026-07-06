@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed the installer splash flickering during animation and resize by stabilizing full-screen redraws and removing misleading synthetic percentages ([ENG-4481](https://linear.app/primeintellect/issue/ENG-4481/installer-screen-is-unstable-and-flickery)).
 - Removed the legacy pi-mono `bash` and `edit` built-in tools; use IPython `%%bash` cells and the Python `edit` skill instead.
 
 ## [0.2.5] - 2026-07-06
