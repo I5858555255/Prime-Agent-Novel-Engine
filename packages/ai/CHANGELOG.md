@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-06
+
 - Added Claude Fable 5 to the Prime Inference model catalog and refreshed generated model metadata ([#317](https://github.com/PrimeIntellect-ai/prime-agent/pull/317)).
 - Changed provider stream failures to preserve classified causes, raw stop reasons, and request IDs instead of collapsing them into generic unknown errors ([#313](https://github.com/PrimeIntellect-ai/prime-agent/pull/313)).
 

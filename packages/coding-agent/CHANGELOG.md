@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-06
+
 - Added daemon-backed user orchestration with agent-to-agent messaging and read-only observation of active sessions ([#207](https://github.com/PrimeIntellect-ai/prime-agent/pull/207) by [@sethkarten](https://github.com/sethkarten)).
 - Added an orchestration heartbeat skill for compact multi-session progress, blocker, and action summaries ([#207](https://github.com/PrimeIntellect-ai/prime-agent/pull/207) by [@sethkarten](https://github.com/sethkarten)).
 - Added an opt-in auto-refine review hook that can ask whether `/refine` should run after turn intervals or compaction checkpoints ([#201](https://github.com/PrimeIntellect-ai/prime-agent/pull/201) by [@sethkarten](https://github.com/sethkarten)).
