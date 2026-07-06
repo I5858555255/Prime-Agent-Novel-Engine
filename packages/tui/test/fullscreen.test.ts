@@ -346,6 +346,8 @@ describe("TUI fullscreen mode", () => {
 		terminal.sendInput(`\x1b[<0;${startX};${y}M`);
 		terminal.sendInput(`\x1b[<32;${endX};${y}M`);
 		tui.setFocus(chat);
+		tui.requestRender();
+		await terminal.waitForRender();
 		terminal.sendInput(`\x1b[<0;${endX};${y}m`);
 		await terminal.waitForRender();
 
