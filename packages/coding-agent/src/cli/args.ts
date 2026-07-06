@@ -67,6 +67,7 @@ function looksLikeResumeSelector(value: string): boolean {
 		value.startsWith("./") ||
 		value.startsWith("../") ||
 		value.startsWith("/") ||
+		value.includes("\\") ||
 		SESSION_ID_PREFIX_PATTERN.test(value)
 	);
 }
@@ -124,7 +125,15 @@ export function parseArgs(args: string[]): Args {
 				result.resume = true;
 			}
 		} else if (arg.startsWith("--resume=")) {
-			result.resume = arg.slice("--resume=".length) || true;
+			const value = arg.slice("--resume=".length);
+			if (!value) {
+				result.resume = true;
+			} else if (looksLikeResumeSelector(value)) {
+				result.resume = value;
+			} else {
+				result.resume = true;
+				result.messages.push(value);
+			}
 		} else if (arg === "--provider" && i + 1 < args.length) {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {

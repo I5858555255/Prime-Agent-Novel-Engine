@@ -100,10 +100,23 @@ describe("parseArgs", () => {
 			expect(result.resume).toBe("1234abcd");
 		});
 
+		test("parses --resume with a windows session path", () => {
+			const sessionPath = "C:\\Users\\me\\session.jsonl";
+			const result = parseArgs(["--resume", sessionPath]);
+			expect(result.resume).toBe(sessionPath);
+			expect(result.messages).toEqual([]);
+		});
+
 		test("keeps non-selector text after --resume as positional messages", () => {
 			const result = parseArgs(["--resume", "fix", "the", "bug"]);
 			expect(result.resume).toBe(true);
 			expect(result.messages).toEqual(["fix", "the", "bug"]);
+		});
+
+		test("keeps non-selector text after --resume= as a positional message", () => {
+			const result = parseArgs(["--resume=fix"]);
+			expect(result.resume).toBe(true);
+			expect(result.messages).toEqual(["fix"]);
 		});
 
 		test("treats empty --resume values as the bare resume picker flag", () => {
