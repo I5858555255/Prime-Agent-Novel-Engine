@@ -381,11 +381,12 @@ export interface PromptOptions {
 	preflightResult?: (success: boolean, queued?: boolean) => void;
 	/** Queue instead of starting immediately when the session is idle but already has queued work. */
 	queueIfBusy?: boolean;
+	/** Skip extension input handlers for replaying already-accepted input. */
+	skipInputHandlers?: boolean;
 }
 
 interface InternalPromptOptions extends PromptOptions {
 	skipPrePromptWork?: boolean;
-	skipInputHandlers?: boolean;
 	returnAfterAccepted?: boolean;
 	agentMessageId?: string;
 }
@@ -406,6 +407,7 @@ interface QueuedFollowUpMessage {
 export interface QueuedAgentInputSnapshot {
 	text: string;
 	images?: ImageContent[];
+	queueKey?: string;
 }
 
 export interface AcceptedAgentInputSnapshot extends QueuedAgentInputSnapshot {
@@ -431,7 +433,11 @@ function createQueuedAgentInputSnapshotFromUserMessage(text: string, message: Us
 function createQueuedAgentInputSnapshot(
 	message: QueuedSteeringMessage | QueuedFollowUpMessage,
 ): QueuedAgentInputSnapshot {
-	return createQueuedAgentInputSnapshotFromUserMessage(message.text, message.message);
+	const snapshot = createQueuedAgentInputSnapshotFromUserMessage(message.text, message.message);
+	if ("queueKey" in message && message.queueKey) {
+		return { ...snapshot, queueKey: message.queueKey };
+	}
+	return snapshot;
 }
 
 interface AcceptedAgentMessagePrompt {
@@ -2737,6 +2743,18 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		return this._queueFollowUp(expandedText, images, { queueKey: options.queueKey });
+	}
+
+	async restoreSteeringMessage(text: string, images?: ImageContent[]): Promise<void> {
+		await this._queueSteer(text, images);
+	}
+
+	async restoreFollowUpMessage(
+		text: string,
+		images?: ImageContent[],
+		options: { queueKey?: string } = {},
+	): Promise<boolean> {
+		return this._queueFollowUp(text, images, { queueKey: options.queueKey });
 	}
 
 	private _buildPromptContent(

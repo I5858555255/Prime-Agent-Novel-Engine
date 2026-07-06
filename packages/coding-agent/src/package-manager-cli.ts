@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { spawn } from "child_process";
+import { readFileSync, rmSync, statSync } from "fs";
 import { selectConfig } from "./cli/config-selector.js";
 import {
 	ensureInteractiveDaemonRunning,
@@ -14,6 +15,7 @@ import {
 	APP_NAME,
 	CONFIG_DIR_NAME,
 	getAgentDir,
+	getDaemonUpdateRestartManifestPath,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	PACKAGE_NAME,
@@ -398,6 +400,16 @@ function readString(value: unknown, fieldName: string): string {
 	return value;
 }
 
+function readOptionalString(value: unknown, fieldName: string): string | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
 function readBoolean(value: unknown, fieldName: string): boolean {
 	if (typeof value !== "boolean") {
 		throw new Error(`Daemon update restart response is missing ${fieldName}`);
@@ -462,9 +474,11 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 		throw new Error("Daemon update restart response contains an invalid queued message");
 	}
 	const images = readOptionalImages(value.images, "queue.images");
+	const queueKey = readOptionalString(value.queueKey, "queue.queueKey");
 	return {
 		message: readString(value.message, "queue.message"),
 		...(images ? { images } : {}),
+		...(queueKey ? { queueKey } : {}),
 	};
 }
 
@@ -546,7 +560,35 @@ function parseDaemonUpdateRestartManifest(value: unknown): DaemonUpdateRestartMa
 	};
 }
 
-async function prepareDaemonUpdateRestart(socketPath: string): Promise<DaemonUpdateRestartManifest> {
+function clearPreparedDaemonUpdateRestartManifest(agentDir: string): void {
+	try {
+		rmSync(getDaemonUpdateRestartManifestPath(agentDir), { force: true });
+	} catch {
+		// Best effort only; the mtime guard below prevents stale fallback use.
+	}
+}
+
+function readPreparedDaemonUpdateRestartManifest(
+	agentDir: string,
+	notBeforeMs: number,
+): DaemonUpdateRestartManifest | undefined {
+	const manifestPath = getDaemonUpdateRestartManifestPath(agentDir);
+	let modifiedAt: number;
+	try {
+		modifiedAt = statSync(manifestPath).mtimeMs;
+	} catch {
+		return undefined;
+	}
+	if (modifiedAt < notBeforeMs - 1000) {
+		return undefined;
+	}
+	const parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as unknown;
+	return parseDaemonUpdateRestartManifest(parsed);
+}
+
+async function prepareDaemonUpdateRestart(socketPath: string, agentDir: string): Promise<DaemonUpdateRestartManifest> {
+	clearPreparedDaemonUpdateRestartManifest(agentDir);
+	const startedAt = Date.now();
 	const client = new DaemonClient(socketPath);
 	try {
 		await client.connect(1000);
@@ -555,6 +597,12 @@ async function prepareDaemonUpdateRestart(socketPath: string): Promise<DaemonUpd
 			throw new Error(response.error);
 		}
 		return parseDaemonUpdateRestartManifest(response.data);
+	} catch (error) {
+		const fallback = readPreparedDaemonUpdateRestartManifest(agentDir, startedAt);
+		if (fallback) {
+			return fallback;
+		}
+		throw error;
 	} finally {
 		client.close();
 	}
@@ -641,6 +689,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 							activeSessionId,
 							message: acceptedPrompt.message,
 							images: acceptedPrompt.images,
+							expandPromptTemplates: false,
 						},
 						120000,
 					);
@@ -658,7 +707,12 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			}
 			if (!acceptedPrompt && needsContinuationPrompt) {
 				const promptResponse = await client.request(
-					{ type: "prompt", activeSessionId, message: UPDATE_RESTART_CONTINUATION_PROMPT },
+					{
+						type: "prompt",
+						activeSessionId,
+						message: UPDATE_RESTART_CONTINUATION_PROMPT,
+						expandPromptTemplates: false,
+					},
 					120000,
 				);
 				if (!promptResponse.success) {
@@ -680,6 +734,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 							activeSessionId,
 							message: firstQueued.value.message,
 							images: firstQueued.value.images,
+							expandPromptTemplates: false,
 						},
 						120000,
 					);
@@ -699,7 +754,13 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			}
 			for (const queued of steeringQueue) {
 				const response = await client.request(
-					{ type: "steer", activeSessionId, message: queued.message, images: queued.images },
+					{
+						type: "steer",
+						activeSessionId,
+						message: queued.message,
+						images: queued.images,
+						expandPromptTemplates: false,
+					},
 					30000,
 				);
 				if (response.success) {
@@ -714,7 +775,14 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			}
 			for (const queued of followUpQueue) {
 				const response = await client.request(
-					{ type: "follow_up", activeSessionId, message: queued.message, images: queued.images },
+					{
+						type: "follow_up",
+						activeSessionId,
+						message: queued.message,
+						images: queued.images,
+						queueKey: queued.queueKey,
+						expandPromptTemplates: false,
+					},
 					30000,
 				);
 				if (response.success) {
@@ -746,6 +814,7 @@ function formatUnknownError(error: unknown): string {
 
 async function tryRestoreDaemonUpdateRestart(
 	socketPath: string,
+	agentDir: string,
 	manifest: DaemonUpdateRestartManifest | undefined,
 	failureContext: string,
 ): Promise<boolean> {
@@ -754,6 +823,7 @@ async function tryRestoreDaemonUpdateRestart(
 	}
 	try {
 		await restoreDaemonUpdateRestart(socketPath, manifest);
+		clearPreparedDaemonUpdateRestartManifest(agentDir);
 		return true;
 	} catch (error: unknown) {
 		console.error(
@@ -766,6 +836,7 @@ async function tryRestoreDaemonUpdateRestart(
 async function restartDaemonAfterSelfUpdate(
 	socketPath: string,
 	daemonWasRunning: boolean,
+	agentDir: string,
 	manifest?: DaemonUpdateRestartManifest,
 ): Promise<void> {
 	if (!daemonWasRunning) {
@@ -784,7 +855,7 @@ async function restartDaemonAfterSelfUpdate(
 		console.error(
 			chalk.yellow(`Warning: could not stop the old daemon on ${socketPath}; trying to restore sessions there.`),
 		);
-		await tryRestoreDaemonUpdateRestart(socketPath, manifest, "on the old daemon");
+		await tryRestoreDaemonUpdateRestart(socketPath, agentDir, manifest, "on the old daemon");
 		return;
 	}
 	try {
@@ -796,11 +867,11 @@ async function restartDaemonAfterSelfUpdate(
 				`Warning: updated, but could not relaunch the daemon (${message}); it will start on next launch.`,
 			),
 		);
-		await tryRestoreDaemonUpdateRestart(socketPath, manifest, "after relaunch failed");
+		await tryRestoreDaemonUpdateRestart(socketPath, agentDir, manifest, "after relaunch failed");
 		return;
 	}
 	if (manifest) {
-		await tryRestoreDaemonUpdateRestart(socketPath, manifest, "after relaunch");
+		await tryRestoreDaemonUpdateRestart(socketPath, agentDir, manifest, "after relaunch");
 	}
 }
 
@@ -985,7 +1056,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 					let restartManifest: DaemonUpdateRestartManifest | undefined;
 					if (daemonProbe.reachable) {
 						try {
-							restartManifest = await prepareDaemonUpdateRestart(daemonSocketPath);
+							restartManifest = await prepareDaemonUpdateRestart(daemonSocketPath, agentDir);
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : String(error);
 							const daemonLacksPrepareCommand = isUnknownDaemonCommandError(error, "prepare_update_restart");
@@ -1010,13 +1081,18 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${message}`));
-						await tryRestoreDaemonUpdateRestart(daemonSocketPath, restartManifest, "after update failed");
+						await tryRestoreDaemonUpdateRestart(
+							daemonSocketPath,
+							agentDir,
+							restartManifest,
+							"after update failed",
+						);
 						printSelfUpdateFallback(selfUpdateCommand);
 						process.exitCode = 1;
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME}`));
-					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable, restartManifest);
+					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable, agentDir, restartManifest);
 				}
 				return true;
 			}

@@ -6,10 +6,17 @@
  * disposing the underlying agent loop.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { getLogger } from "@earendil-works/pi-ai";
-import { appendRotatingLog, getCronJobsPath, getDaemonLogPath, VERSION } from "../../config.js";
+import {
+	appendRotatingLog,
+	getCronJobsPath,
+	getDaemonLogPath,
+	getDaemonUpdateRestartManifestPath,
+	VERSION,
+} from "../../config.js";
 import {
 	AGENT_MESSAGE_SOURCE,
 	type AgentSessionMessageAgentSummary,
@@ -1285,6 +1292,8 @@ export class AgentDaemon {
 				void this.promptWithAgentMessagePreparingGuard(state, command.message, {
 					images: command.images,
 					streamingBehavior: command.streamingBehavior,
+					expandPromptTemplates: command.expandPromptTemplates,
+					skipInputHandlers: command.expandPromptTemplates === false ? true : undefined,
 					source: "rpc",
 					preflightResult: (didSucceed) => {
 						if (didSucceed) {
@@ -1307,13 +1316,23 @@ export class AgentDaemon {
 
 			case "steer": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.steer(command.message, command.images);
+				if (command.expandPromptTemplates === false) {
+					await state.runtime.session.restoreSteeringMessage(command.message, command.images);
+				} else {
+					await state.runtime.session.steer(command.message, command.images);
+				}
 				return success(command.id, "steer");
 			}
 
 			case "follow_up": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.followUp(command.message, command.images);
+				if (command.expandPromptTemplates === false) {
+					await state.runtime.session.restoreFollowUpMessage(command.message, command.images, {
+						queueKey: command.queueKey,
+					});
+				} else {
+					await state.runtime.session.followUp(command.message, command.images, { queueKey: command.queueKey });
+				}
 				return success(command.id, "follow_up");
 			}
 
@@ -2140,6 +2159,7 @@ export class AgentDaemon {
 			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
 				message: message.text,
 				...(message.images ? { images: message.images } : {}),
+				...(message.queueKey ? { queueKey: message.queueKey } : {}),
 			})),
 			nextTurn: [...session.getPendingNextTurnMessageSnapshots()],
 		};
@@ -2221,11 +2241,23 @@ export class AgentDaemon {
 		);
 	}
 
+	private writeUpdateRestartManifest(manifest: DaemonUpdateRestartManifest): void {
+		const path = getDaemonUpdateRestartManifestPath(this.options.defaultSessionConfig.agentDir);
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify(manifest)}\n`);
+	}
+
 	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
 		const topLevelStates = [...this.sessions.values()].filter((state) => state.runtime.metadata.kind !== "subagent");
 		const restartSessions = topLevelStates
 			.map((state) => [state, this.createUpdateRestartSession(state)] as const)
 			.filter((entry): entry is readonly [ActiveSessionState, DaemonUpdateRestartSession] => entry[1] !== undefined);
+		const manifest = {
+			createdAt: new Date().toISOString(),
+			sessions: restartSessions.map(([, restartSession]) => restartSession),
+		};
+
+		this.writeUpdateRestartManifest(manifest);
 
 		for (const [state, restartSession] of restartSessions) {
 			this.appendUpdateRestartMarker(state, restartSession);
@@ -2240,10 +2272,7 @@ export class AgentDaemon {
 			await this.closeSession(state, "killed");
 		}
 
-		return {
-			createdAt: new Date().toISOString(),
-			sessions: restartSessions.map(([, restartSession]) => restartSession),
-		};
+		return manifest;
 	}
 
 	private hasScheduledJobsForSession(activeSessionId: string): boolean {

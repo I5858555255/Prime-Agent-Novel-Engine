@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getDaemonUpdateRestartManifestPath } from "../../../src/config.js";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.js";
 import type { CustomMessage } from "../../../src/core/messages.js";
 import type { BashOperations } from "../../../src/core/tools/bash.js";
@@ -16,6 +18,7 @@ type AgentDaemonUpdateInternals = {
 
 type QueueInternals = {
 	_steeringMessages: Array<{ text: string; message: UserMessage }>;
+	_followUpMessages: Array<{ text: string; queueKey?: string; message: UserMessage }>;
 	_pendingNextTurnMessages: CustomMessage[];
 	_acceptedAgentMessagePrompt?: {
 		text: string;
@@ -141,6 +144,10 @@ describe("issue #4257 update restart resume", () => {
 			shouldResume: true,
 			wasBashRunning: true,
 		});
+		const persistedManifest = JSON.parse(
+			readFileSync(getDaemonUpdateRestartManifestPath(harness.tempDir), "utf-8"),
+		) as DaemonUpdateRestartManifest;
+		expect(persistedManifest).toEqual(manifest);
 		expect(hasArchivedState(harness)).toBe(false);
 		expect(
 			harness.sessionManager
@@ -157,7 +164,14 @@ describe("issue #4257 update restart resume", () => {
 		const image: ImageContent = { type: "image", data: "ZmFrZQ==", mimeType: "image/png" };
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text: "queued work" }, image];
 		const message: UserMessage = { role: "user", content, timestamp: Date.now() };
-		(parentHarness.session as unknown as QueueInternals)._steeringMessages = [{ text: "queued work", message }];
+		const followUpMessage: UserMessage = {
+			role: "user",
+			content: [{ type: "text", text: "heartbeat" }],
+			timestamp: Date.now(),
+		};
+		const queueInternals = parentHarness.session as unknown as QueueInternals;
+		queueInternals._steeringMessages = [{ text: "queued work", message }];
+		queueInternals._followUpMessages = [{ text: "heartbeat", queueKey: "heartbeat:job-1", message: followUpMessage }];
 		childHarness.session.recordBashResult("echo child", {
 			output: "child",
 			exitCode: 0,
@@ -200,7 +214,10 @@ describe("issue #4257 update restart resume", () => {
 		expect(manifest.sessions[0]).toMatchObject({
 			activeSessionId: "parent-active",
 			clientEnv: { PRIME_SESSION: "pane-1" },
-			queue: { steering: [{ message: "queued work", images: [image] }], followUp: [] },
+			queue: {
+				steering: [{ message: "queued work", images: [image] }],
+				followUp: [{ message: "heartbeat", queueKey: "heartbeat:job-1" }],
+			},
 			shouldResume: true,
 		});
 		expect(hasArchivedState(parentHarness)).toBe(false);

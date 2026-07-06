@@ -189,6 +189,7 @@ export interface DaemonAttachResult {
 export interface DaemonUpdateRestartQueuedMessage {
 	message: string;
 	images?: ImageContent[];
+	queueKey?: string;
 }
 
 export interface DaemonUpdateRestartAcceptedPrompt extends DaemonUpdateRestartQueuedMessage {
@@ -255,9 +256,25 @@ export type DaemonCommand =
 			message: string;
 			images?: ImageContent[];
 			streamingBehavior?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
 	  }
-	| { id?: string; type: "steer"; activeSessionId: string; message: string; images?: ImageContent[] }
-	| { id?: string; type: "follow_up"; activeSessionId: string; message: string; images?: ImageContent[] }
+	| {
+			id?: string;
+			type: "steer";
+			activeSessionId: string;
+			message: string;
+			images?: ImageContent[];
+			expandPromptTemplates?: boolean;
+	  }
+	| {
+			id?: string;
+			type: "follow_up";
+			activeSessionId: string;
+			message: string;
+			images?: ImageContent[];
+			queueKey?: string;
+			expandPromptTemplates?: boolean;
+	  }
 	| { id?: string; type: "restore_next_turn"; activeSessionId: string; messages: CustomMessage[] }
 	| {
 			id?: string;
