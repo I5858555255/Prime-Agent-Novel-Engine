@@ -23,6 +23,7 @@ import {
 	PRIME_AGENT_TRACES_PROVIDER_NAME,
 	PRIME_INFERENCE_PROVIDER_ID,
 	PRIME_INFERENCE_PROVIDER_NAME,
+	type PrimeInferenceAuthSource,
 	type PrimeTeam,
 	resolvePrimeAgentTracesBaseUrl,
 } from "../../core/prime-inference-auth.js";
@@ -55,6 +56,8 @@ export const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 
 export const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
 	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage.";
+
+type PrimeInferenceLoginSource = PrimeInferenceAuthSource | "manual";
 
 function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
@@ -472,10 +475,13 @@ export class ProviderAuthFlows {
 
 	private async completePrimeInferenceLogin(
 		apiKey: string,
+		source: PrimeInferenceLoginSource,
 		dialog: LoginDialogComponent,
 		closeDialog: () => void,
 	): Promise<AuthenticationResult> {
-		this.host.modelRegistry.authStorage.setPrimeInferenceApiKey(apiKey);
+		if (source !== "prime-cli") {
+			this.host.modelRegistry.authStorage.setPrimeInferenceApiKey(apiKey);
+		}
 		const teamStatus = await this.selectPrimeInferenceTeam(apiKey, dialog);
 
 		closeDialog();
@@ -605,7 +611,7 @@ export class ProviderAuthFlows {
 				}
 			}
 
-			return await this.completePrimeInferenceLogin(result.apiKey, dialog, closeDialog);
+			return await this.completePrimeInferenceLogin(result.apiKey, result.source, dialog, closeDialog);
 		} catch (error: unknown) {
 			closeDialog();
 			const errorMsg = error instanceof Error ? error.message : String(error);
