@@ -501,6 +501,7 @@ export class InteractiveMode {
 	private queuedMessagesContainer: Container;
 	private defaultEditor: CustomEditor;
 	private editor: EditorComponent;
+	private promptStash: string | undefined;
 	private editorComponentFactory: EditorFactory | undefined;
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
@@ -949,6 +950,7 @@ export class InteractiveMode {
 						hint("app.thinking.toggle", "to expand thinking"),
 						hint("app.subagents.focus", "to inspect subagents"),
 						hint("app.editor.external", "for external editor"),
+						hint("app.prompt.stash", "to stash prompt"),
 						rawKeyHint("/", "for commands"),
 						hint("app.message.followUp", "to queue follow-up"),
 						hint("app.message.dequeue", "to edit all queued messages"),
@@ -2286,6 +2288,7 @@ export class InteractiveMode {
 		// stays monotonic so a new paste never reuses an id that may still appear in
 		// restored text.
 		this.pastedImages.clear();
+		this.promptStash = undefined;
 		this.defaultEditor.clearHistory?.();
 		this.defaultEditor.setText("");
 		if (this.editor !== this.defaultEditor) {
@@ -3362,6 +3365,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
 		this.defaultEditor.onAction("app.subagents.focus", () => this.focusChildAgentSummary());
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
+		this.defaultEditor.onAction("app.prompt.stash", () => this.handlePromptStash());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => {
 			void this.handleDequeue();
@@ -3395,6 +3399,34 @@ export class InteractiveMode {
 		this.defaultEditor.onPasteImage = () => {
 			this.handleClipboardImagePaste();
 		};
+	}
+
+	private handlePromptStash(): void {
+		const text = this.editor.getExpandedText?.() ?? this.editor.getText();
+		if (!text.trim()) {
+			if (!this.restorePromptStashIfEditorEmpty()) {
+				this.showStatus("No prompt to stash");
+			}
+			return;
+		}
+		if (this.promptStash !== undefined) {
+			this.showStatus("Prompt stash already has a draft");
+			return;
+		}
+		this.promptStash = text;
+		this.editor.setText("");
+		this.showStatus("Stashed prompt");
+	}
+
+	private restorePromptStashIfEditorEmpty(): boolean {
+		if (this.promptStash === undefined || this.editor.getText().trim()) {
+			return false;
+		}
+		const text = this.promptStash;
+		this.promptStash = undefined;
+		this.editor.setText(text);
+		this.showStatus("Restored stashed prompt");
+		return true;
 	}
 
 	private async handleClipboardImagePaste(): Promise<void> {
@@ -3460,6 +3492,9 @@ export class InteractiveMode {
 			}
 		};
 		add(this.editor.getText());
+		if (this.promptStash !== undefined) {
+			add(this.promptStash);
+		}
 		for (const entry of this.editor.getHistory?.() ?? []) {
 			add(entry);
 		}
@@ -3496,265 +3531,274 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
 			if (!text) return;
+			const shouldRestorePromptStash = this.promptStash !== undefined;
 
-			const slashCommand = parseSlashCommand(text);
-			const commandName = slashCommand ? resolveBuiltinSlashCommandName(slashCommand.name) : undefined;
-			const commandArgs = slashCommand?.args ?? "";
-			const canonicalCommandText = commandName ? `/${commandName}${commandArgs ? ` ${commandArgs}` : ""}` : text;
+			try {
+				const slashCommand = parseSlashCommand(text);
+				const commandName = slashCommand ? resolveBuiltinSlashCommandName(slashCommand.name) : undefined;
+				const commandArgs = slashCommand?.args ?? "";
+				const canonicalCommandText = commandName ? `/${commandName}${commandArgs ? ` ${commandArgs}` : ""}` : text;
 
-			// Handle commands
-			if (commandName === "settings" && !commandArgs) {
-				await this.showSettingsSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "scoped-models" && !commandArgs) {
-				this.editor.setText("");
-				await this.showModelsSelector();
-				return;
-			}
-			if (commandName === "model") {
-				const searchTerm = commandArgs || undefined;
-				this.editor.setText("");
-				await this.handleModelCommand(searchTerm);
-				return;
-			}
-			if (commandName === "effort") {
-				this.editor.setText("");
-				this.handleEffortCommand(commandArgs);
-				return;
-			}
-			if (commandName === "export") {
-				await this.handleExportCommand(canonicalCommandText);
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "import") {
-				await this.handleImportCommand(canonicalCommandText);
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "share" && !commandArgs) {
-				await this.handleShareCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "copy" && !commandArgs) {
-				await this.handleCopyCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "name") {
-				await this.handleNameCommand(canonicalCommandText);
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "session" && !commandArgs) {
-				this.echoLocalCommand(text);
-				await this.handleSessionCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "system-prompt" && !commandArgs) {
-				this.echoLocalCommand(text);
-				await this.handleSystemPromptCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "traces") {
-				await this.handleTracesCommand(canonicalCommandText);
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "context" && !commandArgs) {
-				this.echoLocalCommand(text);
-				await this.handleContextCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "logs" && !commandArgs) {
-				this.echoLocalCommand(text);
-				this.handleLogsCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "goal" && (!commandArgs || commandArgs === "status")) {
-				this.echoLocalCommand(text);
-				this.handleGoalStatusCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "heartbeat") {
-				await this.handleHeartbeatCommand(canonicalCommandText);
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "changelog" && !commandArgs) {
-				this.echoLocalCommand(text);
-				this.handleChangelogCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "hotkeys" && !commandArgs) {
-				this.echoLocalCommand(text);
-				this.handleHotkeysCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "fork" && !commandArgs) {
-				void this.showUserMessageSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "clone" && !commandArgs) {
-				this.editor.setText("");
-				await this.handleCloneCommand();
-				return;
-			}
-			if (commandName === "tree" && !commandArgs) {
-				void this.showTreeSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (commandName === "login" && !commandArgs) {
-				this.editor.setText("");
-				await this.showOAuthSelector("login");
-				return;
-			}
-			if (commandName === "logout" && !commandArgs) {
-				this.editor.setText("");
-				await this.showOAuthSelector("logout");
-				return;
-			}
-			if (commandName === "mcp") {
-				this.editor.setText("");
-				await this.handleMcpCommand(commandArgs);
-				return;
-			}
-			if (commandName === "new" && !commandArgs) {
-				this.editor.setText("");
-				await this.handleClearCommand();
-				return;
-			}
-			if (commandName === "compact") {
-				const customInstructions = commandArgs || undefined;
-				this.editor.setText("");
-				await this.handleCompactCommand(customInstructions);
-				return;
-			}
-			if (commandName === "refine") {
-				const refineArgs = commandArgs || undefined;
-				this.editor.setText("");
-				await this.handleRefineCommand(refineArgs);
-				return;
-			}
-			if (commandName === "reload" && !commandArgs) {
-				this.editor.setText("");
-				await this.handleReloadCommand();
-				return;
-			}
-			if (commandName === "fullscreen") {
-				this.editor.setText("");
-				const arg = commandArgs?.trim().toLowerCase();
-				if (arg && arg !== "on" && arg !== "off") {
-					this.showError("Usage: /fullscreen [on|off]");
+				// Handle commands
+				if (commandName === "settings" && !commandArgs) {
+					await this.showSettingsSelector();
+					this.editor.setText("");
 					return;
 				}
-				const enable = arg === "on" ? true : arg === "off" ? false : !this.fullscreenEnabled;
-				this.setFullscreenMode(enable);
-				return;
-			}
-			if (commandName === "debug" && !commandArgs) {
-				await this.handleDebugCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/arminsayshi") {
-				this.handleArminSaysHi();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/dementedelves") {
-				this.handleDementedDelves();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/resume") {
-				void this.showSessionSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/quit") {
-				this.editor.setText("");
-				await this.shutdown();
-				return;
-			}
-
-			// Handle bash command (! for normal, !! for excluded from context)
-			if (text.startsWith("!")) {
-				const isExcluded = text.startsWith("!!");
-				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
-				if (!command) {
-					// Bare ! / !! is bash mode with nothing to run; don't send it as a prompt
+				if (commandName === "scoped-models" && !commandArgs) {
+					this.editor.setText("");
+					await this.showModelsSelector();
 					return;
 				}
-				if (this.isBashRunning()) {
-					this.showWarning(`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`);
+				if (commandName === "model") {
+					const searchTerm = commandArgs || undefined;
+					this.editor.setText("");
+					await this.handleModelCommand(searchTerm);
 					return;
 				}
-				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				// Optimistic: bash_start only fires after extension dispatch, and the
-				// clear key must already route to abortBash in that window.
-				this.patchConnectionState({ isBashRunning: true });
-				try {
-					await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
-				} catch (error) {
-					// Re-sync rather than assume idle: the rejection may mean another
-					// client's bash run already holds the slot.
-					try {
-						const state = await this.agentConnection.getState();
-						this.patchConnectionState({ isBashRunning: state.isBashRunning });
-					} catch {
-						this.patchConnectionState({ isBashRunning: false });
+				if (commandName === "effort") {
+					this.editor.setText("");
+					this.handleEffortCommand(commandArgs);
+					return;
+				}
+				if (commandName === "export") {
+					await this.handleExportCommand(canonicalCommandText);
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "import") {
+					await this.handleImportCommand(canonicalCommandText);
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "share" && !commandArgs) {
+					await this.handleShareCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "copy" && !commandArgs) {
+					await this.handleCopyCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "name") {
+					await this.handleNameCommand(canonicalCommandText);
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "session" && !commandArgs) {
+					this.echoLocalCommand(text);
+					await this.handleSessionCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "system-prompt" && !commandArgs) {
+					this.echoLocalCommand(text);
+					await this.handleSystemPromptCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "traces") {
+					await this.handleTracesCommand(canonicalCommandText);
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "context" && !commandArgs) {
+					this.echoLocalCommand(text);
+					await this.handleContextCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "logs" && !commandArgs) {
+					this.echoLocalCommand(text);
+					this.handleLogsCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "goal" && (!commandArgs || commandArgs === "status")) {
+					this.echoLocalCommand(text);
+					this.handleGoalStatusCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "heartbeat") {
+					await this.handleHeartbeatCommand(canonicalCommandText);
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "changelog" && !commandArgs) {
+					this.echoLocalCommand(text);
+					this.handleChangelogCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "hotkeys" && !commandArgs) {
+					this.echoLocalCommand(text);
+					this.handleHotkeysCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "fork" && !commandArgs) {
+					void this.showUserMessageSelector();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "clone" && !commandArgs) {
+					this.editor.setText("");
+					await this.handleCloneCommand();
+					return;
+				}
+				if (commandName === "tree" && !commandArgs) {
+					void this.showTreeSelector();
+					this.editor.setText("");
+					return;
+				}
+				if (commandName === "login" && !commandArgs) {
+					this.editor.setText("");
+					await this.showOAuthSelector("login");
+					return;
+				}
+				if (commandName === "logout" && !commandArgs) {
+					this.editor.setText("");
+					await this.showOAuthSelector("logout");
+					return;
+				}
+				if (commandName === "mcp") {
+					this.editor.setText("");
+					await this.handleMcpCommand(commandArgs);
+					return;
+				}
+				if (commandName === "new" && !commandArgs) {
+					this.editor.setText("");
+					await this.handleClearCommand();
+					return;
+				}
+				if (commandName === "compact") {
+					const customInstructions = commandArgs || undefined;
+					this.editor.setText("");
+					await this.handleCompactCommand(customInstructions);
+					return;
+				}
+				if (commandName === "refine") {
+					const refineArgs = commandArgs || undefined;
+					this.editor.setText("");
+					await this.handleRefineCommand(refineArgs);
+					return;
+				}
+				if (commandName === "reload" && !commandArgs) {
+					this.editor.setText("");
+					await this.handleReloadCommand();
+					return;
+				}
+				if (commandName === "fullscreen") {
+					this.editor.setText("");
+					const arg = commandArgs?.trim().toLowerCase();
+					if (arg && arg !== "on" && arg !== "off") {
+						this.showError("Usage: /fullscreen [on|off]");
+						return;
 					}
-					this.showError(error instanceof Error ? error.message : String(error));
+					const enable = arg === "on" ? true : arg === "off" ? false : !this.fullscreenEnabled;
+					this.setFullscreenMode(enable);
+					return;
 				}
-				return;
-			}
+				if (commandName === "debug" && !commandArgs) {
+					await this.handleDebugCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/arminsayshi") {
+					this.handleArminSaysHi();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/dementedelves") {
+					this.handleDementedDelves();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/resume") {
+					void this.showSessionSelector();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/quit") {
+					this.editor.setText("");
+					await this.shutdown();
+					return;
+				}
 
-			// Queue input during compaction (extension commands execute immediately)
-			if (this.isAgentCompacting()) {
-				if (this.isExtensionCommand(text)) {
+				// Handle bash command (! for normal, !! for excluded from context)
+				if (text.startsWith("!")) {
+					const isExcluded = text.startsWith("!!");
+					const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+					if (!command) {
+						// Bare ! / !! is bash mode with nothing to run; don't send it as a prompt
+						return;
+					}
+					if (this.isBashRunning()) {
+						this.showWarning(
+							`A bash command is already running. Press ${keyText("app.clear")} to cancel it first.`,
+						);
+						return;
+					}
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
-					await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
-				} else {
-					this.queueCompactionMessage(text, "steer");
+					// Optimistic: bash_start only fires after extension dispatch, and the
+					// clear key must already route to abortBash in that window.
+					this.patchConnectionState({ isBashRunning: true });
+					try {
+						await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
+					} catch (error) {
+						// Re-sync rather than assume idle: the rejection may mean another
+						// client's bash run already holds the slot.
+						try {
+							const state = await this.agentConnection.getState();
+							this.patchConnectionState({ isBashRunning: state.isBashRunning });
+						} catch {
+							this.patchConnectionState({ isBashRunning: false });
+						}
+						this.showError(error instanceof Error ? error.message : String(error));
+					}
+					return;
 				}
-				return;
-			}
 
-			// If streaming, use prompt() with steer behavior
-			// This handles extension commands (execute immediately), prompt template expansion, and queueing
-			if (this.isAgentStreaming()) {
-				const images = this.collectImagesFor(text);
+				// Queue input during compaction (extension commands execute immediately)
+				if (this.isAgentCompacting()) {
+					if (this.isExtensionCommand(text)) {
+						this.editor.addToHistory?.(text);
+						this.editor.setText("");
+						await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
+					} else {
+						this.queueCompactionMessage(text, "steer");
+					}
+					return;
+				}
+
+				// If streaming, use prompt() with steer behavior
+				// This handles extension commands (execute immediately), prompt template expansion, and queueing
+				if (this.isAgentStreaming()) {
+					const images = this.collectImagesFor(text);
+					this.editor.addToHistory?.(text);
+					this.editor.setText("");
+					await this.agentConnection.prompt(text, { streamingBehavior: "steer", images });
+					this.updatePendingMessagesDisplay();
+					this.ui.requestRender();
+					return;
+				}
+
+				// Normal message submission
+				// First, move any pending bash components to chat
+				this.flushPendingBashComponents();
+
+				if (this.onInputCallback) {
+					this.onInputCallback(text);
+				}
 				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				await this.agentConnection.prompt(text, { streamingBehavior: "steer", images });
-				this.updatePendingMessagesDisplay();
-				this.ui.requestRender();
-				return;
+			} finally {
+				if (shouldRestorePromptStash) {
+					this.restorePromptStashIfEditorEmpty();
+				}
 			}
-
-			// Normal message submission
-			// First, move any pending bash components to chat
-			this.flushPendingBashComponents();
-
-			if (this.onInputCallback) {
-				this.onInputCallback(text);
-			}
-			this.editor.addToHistory?.(text);
 		};
 	}
 
@@ -5441,33 +5485,40 @@ export class InteractiveMode {
 	private async handleFollowUp(): Promise<void> {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!text) return;
+		const shouldRestorePromptStash = this.promptStash !== undefined;
 
-		// Queue input during compaction (extension commands execute immediately)
-		if (this.isAgentCompacting()) {
-			if (this.isExtensionCommand(text)) {
+		try {
+			// Queue input during compaction (extension commands execute immediately)
+			if (this.isAgentCompacting()) {
+				if (this.isExtensionCommand(text)) {
+					this.editor.addToHistory?.(text);
+					this.editor.setText("");
+					await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
+				} else {
+					this.queueCompactionMessage(text, "followUp");
+				}
+				return;
+			}
+
+			// Alt+Enter queues a follow-up message (waits until agent finishes)
+			// This handles extension commands (execute immediately), prompt template expansion, and queueing
+			if (this.isAgentStreaming()) {
+				const images = this.collectImagesFor(text);
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
-			} else {
-				this.queueCompactionMessage(text, "followUp");
+				await this.agentConnection.prompt(text, { streamingBehavior: "followUp", images });
+				this.updatePendingMessagesDisplay();
+				this.ui.requestRender();
 			}
-			return;
-		}
-
-		// Alt+Enter queues a follow-up message (waits until agent finishes)
-		// This handles extension commands (execute immediately), prompt template expansion, and queueing
-		if (this.isAgentStreaming()) {
-			const images = this.collectImagesFor(text);
-			this.editor.addToHistory?.(text);
-			this.editor.setText("");
-			await this.agentConnection.prompt(text, { streamingBehavior: "followUp", images });
-			this.updatePendingMessagesDisplay();
-			this.ui.requestRender();
-		}
-		// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit)
-		else if (this.editor.onSubmit) {
-			this.editor.setText("");
-			this.editor.onSubmit(text);
+			// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit)
+			else if (this.editor.onSubmit) {
+				this.editor.setText("");
+				this.editor.onSubmit(text);
+			}
+		} finally {
+			if (shouldRestorePromptStash) {
+				this.restorePromptStashIfEditorEmpty();
+			}
 		}
 	}
 
@@ -7599,6 +7650,7 @@ export class InteractiveMode {
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
 		const focusSubagents = this.getAppKeyDisplay("app.subagents.focus");
 		const externalEditor = this.getAppKeyDisplay("app.editor.external");
+		const promptStash = this.getAppKeyDisplay("app.prompt.stash");
 		const followUp = this.getAppKeyDisplay("app.message.followUp");
 		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
 		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
@@ -7647,6 +7699,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 | \`${toggleThinking}\` | Toggle thinking block visibility |
 | \`${focusSubagents}\` | Open subagent inspector |
 | \`${externalEditor}\` | Edit message in external editor |
+| \`${promptStash}\` | Stash or restore draft prompt |
 | \`${followUp}\` | Queue follow-up message |
 | \`${dequeue}\` | Restore queued messages |
 | \`${pasteImage}\` | Paste image from clipboard |
