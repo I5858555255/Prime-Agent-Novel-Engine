@@ -139,7 +139,11 @@ export function isSessionBusy(summary: SessionSummary): boolean {
 	// pendingMessageCount covers queued steering/follow-ups, which live only in
 	// memory and would be lost if the daemon were stopped.
 	return (
-		summary.isStreaming || summary.isCompacting || summary.isBashRunning === true || summary.pendingMessageCount > 0
+		summary.isStreaming ||
+		summary.isCompacting ||
+		summary.isBashRunning === true ||
+		summary.hasRunningRlmChildren === true ||
+		summary.pendingMessageCount > 0
 	);
 }
 
