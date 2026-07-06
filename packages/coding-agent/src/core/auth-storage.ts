@@ -603,8 +603,12 @@ export class AuthStorage {
 			try {
 				const configPath = this.getEnabledPrimeCliConfigPath();
 				const config = loadPrimeCliConfig(configPath);
+				const existingCredential = this.data[PRIME_INFERENCE_PROVIDER_ID];
+				const legacyPrimeTeam = existingCredential?.type === "api_key" ? existingCredential.primeTeam : undefined;
 				if (config.apiKey !== apiKey) {
 					savePrimeCliApiKey(apiKey, configPath);
+				} else if (!config.teamId && legacyPrimeTeam) {
+					savePrimeCliTeamSelection(legacyPrimeTeam, configPath);
 				}
 			} catch (error) {
 				this.recordError(error);

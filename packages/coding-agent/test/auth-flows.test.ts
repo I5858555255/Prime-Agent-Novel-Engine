@@ -120,6 +120,15 @@ describe("ProviderAuthFlows", () => {
 				team_role: "admin",
 			}),
 		);
+		writeFileSync(
+			authJsonPath,
+			JSON.stringify({
+				[PRIME_INFERENCE_PROVIDER_ID]: {
+					type: "api_key",
+					key: "legacy-agent-key",
+				},
+			}),
+		);
 		const authStorage = AuthStorage.create(authJsonPath, {
 			primeCliConfigPath: primeConfigPath,
 			usePrimeCliConfig: true,
@@ -143,6 +152,7 @@ describe("ProviderAuthFlows", () => {
 		expect(config.team_id).toBe("cli-team");
 		expect(config.team_name).toBe("CLI Research");
 		expect(config.team_role).toBe("admin");
+		expect(authStorage.has(PRIME_INFERENCE_PROVIDER_ID)).toBe(false);
 	});
 
 	it("stores a reused Prime CLI key when Prime CLI config sync is disabled", async () => {
