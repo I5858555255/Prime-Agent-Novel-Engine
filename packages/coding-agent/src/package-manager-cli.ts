@@ -725,6 +725,29 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 	}
 }
 
+function formatUnknownError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+async function tryRestoreDaemonUpdateRestart(
+	socketPath: string,
+	manifest: DaemonUpdateRestartManifest | undefined,
+	failureContext: string,
+): Promise<boolean> {
+	if (!manifest) {
+		return false;
+	}
+	try {
+		await restoreDaemonUpdateRestart(socketPath, manifest);
+		return true;
+	} catch (error: unknown) {
+		console.error(
+			chalk.yellow(`Warning: could not restore daemon sessions ${failureContext}: ${formatUnknownError(error)}`),
+		);
+		return false;
+	}
+}
+
 async function restartDaemonAfterSelfUpdate(
 	socketPath: string,
 	daemonWasRunning: boolean,
@@ -735,23 +758,34 @@ async function restartDaemonAfterSelfUpdate(
 	}
 	const stopped = await shutdownDaemonAndWait(socketPath);
 	if (!stopped) {
+		if (!manifest) {
+			console.error(
+				chalk.yellow(
+					`Warning: could not stop the old daemon on ${socketPath}; it will be replaced on next launch.`,
+				),
+			);
+			return;
+		}
 		console.error(
-			chalk.yellow(`Warning: could not stop the old daemon on ${socketPath}; it will be replaced on next launch.`),
+			chalk.yellow(`Warning: could not stop the old daemon on ${socketPath}; trying to restore sessions there.`),
 		);
+		await tryRestoreDaemonUpdateRestart(socketPath, manifest, "on the old daemon");
 		return;
 	}
 	try {
 		await ensureInteractiveDaemonRunning(socketPath);
-		if (manifest) {
-			await restoreDaemonUpdateRestart(socketPath, manifest);
-		}
 	} catch (error: unknown) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = formatUnknownError(error);
 		console.error(
 			chalk.yellow(
 				`Warning: updated, but could not relaunch the daemon (${message}); it will start on next launch.`,
 			),
 		);
+		await tryRestoreDaemonUpdateRestart(socketPath, manifest, "after relaunch failed");
+		return;
+	}
+	if (manifest) {
+		await tryRestoreDaemonUpdateRestart(socketPath, manifest, "after relaunch");
 	}
 }
 
