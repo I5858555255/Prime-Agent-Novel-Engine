@@ -717,6 +717,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			const steeringQueue = [...session.queue.steering];
 			const followUpQueue = [...session.queue.followUp];
 			let resumedSession = false;
+			let acceptedPromptResumed = false;
 			if (acceptedPrompt) {
 				const acceptedContextRestored = await restoreNextTurnMessages(
 					client,
@@ -741,6 +742,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 							chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`),
 						);
 					} else {
+						acceptedPromptResumed = true;
 						resumedSession = true;
 					}
 				}
@@ -748,7 +750,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			} else {
 				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
 			}
-			if (!acceptedPrompt && needsContinuationPrompt) {
+			if (!acceptedPromptResumed && needsContinuationPrompt) {
 				const promptResponse = await client.request(
 					{
 						type: "prompt",
@@ -763,7 +765,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 				} else {
 					resumedSession = true;
 				}
-			} else if (!acceptedPrompt) {
+			} else if (!acceptedPromptResumed) {
 				const firstQueued =
 					steeringQueue.length > 0
 						? { kind: "steer" as const, value: steeringQueue.shift()! }
@@ -884,11 +886,12 @@ async function restartDaemonAfterSelfUpdate(
 	daemonWasRunning: boolean,
 	agentDir: string,
 	manifest?: DaemonUpdateRestartManifest,
+	oldDaemonAlreadyStopped = false,
 ): Promise<void> {
 	if (!daemonWasRunning) {
 		return;
 	}
-	const stopped = await shutdownDaemonAndWait(socketPath);
+	const stopped = oldDaemonAlreadyStopped || (await shutdownDaemonAndWait(socketPath));
 	if (!stopped) {
 		if (!manifest) {
 			console.error(
@@ -1100,9 +1103,26 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						return true;
 					}
 					let restartManifest: DaemonUpdateRestartManifest | undefined;
+					let daemonStoppedBeforeUpdate = false;
 					if (daemonProbe.reachable) {
 						try {
 							restartManifest = await prepareDaemonUpdateRestart(daemonSocketPath, agentDir);
+							daemonStoppedBeforeUpdate = await shutdownDaemonAndWait(daemonSocketPath);
+							if (!daemonStoppedBeforeUpdate) {
+								console.error(
+									chalk.yellow(
+										"Warning: could not stop the prepared daemon before updating; update cancelled.",
+									),
+								);
+								await tryRestoreDaemonUpdateRestart(
+									daemonSocketPath,
+									agentDir,
+									restartManifest,
+									"after daemon stop failed",
+								);
+								process.exitCode = 1;
+								return true;
+							}
 						} catch (error: unknown) {
 							const message = error instanceof Error ? error.message : String(error);
 							const daemonLacksPrepareCommand = isUnknownDaemonCommandError(error, "prepare_update_restart");
@@ -1127,6 +1147,19 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${message}`));
+						if (daemonStoppedBeforeUpdate && restartManifest) {
+							try {
+								await ensureInteractiveDaemonRunning(daemonSocketPath);
+							} catch (daemonError: unknown) {
+								console.error(
+									chalk.yellow(
+										`Warning: could not relaunch the daemon after update failed (${formatUnknownError(
+											daemonError,
+										)}).`,
+									),
+								);
+							}
+						}
 						await tryRestoreDaemonUpdateRestart(
 							daemonSocketPath,
 							agentDir,
@@ -1138,7 +1171,13 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME}`));
-					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable, agentDir, restartManifest);
+					await restartDaemonAfterSelfUpdate(
+						daemonSocketPath,
+						daemonProbe.reachable,
+						agentDir,
+						restartManifest,
+						daemonStoppedBeforeUpdate,
+					);
 				}
 				return true;
 			}
