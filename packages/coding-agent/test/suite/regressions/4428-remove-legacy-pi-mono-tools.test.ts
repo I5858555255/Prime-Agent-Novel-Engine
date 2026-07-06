@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai";
@@ -106,5 +106,48 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		expect(session.getAllTools().map((tool) => tool.name)).toEqual(["bash"]);
 		expect(session.getActiveToolNames()).toEqual(["bash"]);
 		session.dispose();
+	});
+
+	it("applies shell settings when legacy bash requests activate ipython", async () => {
+		const shellPath = join(tempDir, "custom-shell.sh");
+		writeFileSync(shellPath, "#!/bin/sh\nprintf 'custom-shell\\n'\nexec /bin/sh \"$@\"\n");
+		chmodSync(shellPath, 0o755);
+
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		settingsManager.setShellCommandPrefix("echo prefix-from-settings");
+		settingsManager.setShellPath(shellPath);
+		const sessionManager = SessionManager.inMemory(tempDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-5")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+			tools: ["bash"],
+		});
+
+		try {
+			expect(session.getActiveToolNames()).toEqual(["ipython"]);
+			const ipythonTool = session.agent.state.tools.find((tool) => tool.name === "ipython");
+			expect(ipythonTool).toBeTruthy();
+
+			const result = await ipythonTool!.execute("tool-1", { code: "%%bash\necho body" });
+			const output = result.content
+				.filter((item): item is { type: "text"; text: string } => item.type === "text")
+				.map((item) => item.text)
+				.join("");
+
+			expect(output).toContain("custom-shell\nprefix-from-settings\nbody");
+		} finally {
+			await session.disposeAsync();
+		}
 	});
 });

@@ -4585,7 +4585,11 @@ export class AgentSession {
 				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
-				ipython: { provisioner: this._ipythonKernelProvisioner },
+				ipython: {
+					provisioner: this._ipythonKernelProvisioner,
+					commandPrefix: this.settingsManager.getShellCommandPrefix(),
+					shellPath: this.settingsManager.getShellPath(),
+				},
 			});
 		}
 
