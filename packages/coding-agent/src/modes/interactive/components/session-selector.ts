@@ -919,8 +919,6 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		try {
 			await renameSession(target, next);
-			await this.refreshSessionsAfterMutation();
-			this.exitRenameMode();
 		} catch (error) {
 			this.exitRenameMode();
 			this.header.setStatusMessage(
@@ -928,7 +926,22 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				4000,
 			);
 			this.requestRender();
+			return;
 		}
+
+		try {
+			await this.refreshSessionsAfterMutation();
+		} catch (error) {
+			this.exitRenameMode();
+			this.header.setStatusMessage(
+				{ type: "error", message: `Session renamed; refresh failed: ${formatMutationError(error)}` },
+				4000,
+			);
+			this.requestRender();
+			return;
+		}
+
+		this.exitRenameMode();
 	}
 
 	private async loadScope(scope: SessionScope, reason: "initial" | "refresh" | "toggle"): Promise<void> {

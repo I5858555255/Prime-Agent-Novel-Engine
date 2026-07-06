@@ -141,4 +141,39 @@ describe("session selector rename", () => {
 		expect(output).toContain("Resume Session");
 		expect(output).toContain("Failed to rename: daemon unavailable");
 	});
+
+	it("does not report rename failure when refresh after rename fails", async () => {
+		const sessions = [makeSession({ id: "a", name: "Old" })];
+		const renameSession = vi.fn(async () => {});
+		let loadCalls = 0;
+
+		const keybindings = new KeybindingsManager();
+		const selector = new SessionSelectorComponent(
+			async () => {
+				loadCalls++;
+				if (loadCalls > 1) {
+					throw new Error("refresh unavailable");
+				}
+				return sessions;
+			},
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ renameSession, showRenameHint: true, keybindings },
+		);
+		await flushPromises();
+
+		selector.getSessionList().handleInput(CTRL_R);
+		await flushPromises();
+
+		selector.handleInput("\r");
+		await flushPromises();
+
+		const output = selector.render(120).join("\n");
+		expect(renameSession).toHaveBeenCalledTimes(1);
+		expect(output).toContain("Resume Session");
+		expect(output).not.toContain("Failed to rename");
+	});
 });
