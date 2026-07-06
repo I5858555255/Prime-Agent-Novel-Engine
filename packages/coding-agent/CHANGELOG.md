@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed self-updates interrupting and automatically resuming daemon sessions instead of waiting for long-running work to finish ([ENG-4257](https://linear.app/primeintellect/issue/ENG-4257)).
+- Removed the legacy pi-mono `bash` and `edit` built-in tools; use IPython `%%bash` cells and the Python `edit` skill instead.
 
 ## [0.2.5] - 2026-07-06
 
