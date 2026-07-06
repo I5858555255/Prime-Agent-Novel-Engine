@@ -185,9 +185,14 @@ export interface DaemonAttachResult {
 	};
 }
 
+export interface DaemonUpdateRestartQueuedMessage {
+	message: string;
+	images?: ImageContent[];
+}
+
 export interface DaemonUpdateRestartQueue {
-	steering: string[];
-	followUp: string[];
+	steering: DaemonUpdateRestartQueuedMessage[];
+	followUp: DaemonUpdateRestartQueuedMessage[];
 }
 
 export interface DaemonUpdateRestartSession {
@@ -196,6 +201,7 @@ export interface DaemonUpdateRestartSession {
 	sessionFile: string;
 	cwd: string;
 	config: AgentSessionRuntimeConfig;
+	clientEnv?: Record<string, string>;
 	queue: DaemonUpdateRestartQueue;
 	shouldResume: boolean;
 	wasStreaming: boolean;

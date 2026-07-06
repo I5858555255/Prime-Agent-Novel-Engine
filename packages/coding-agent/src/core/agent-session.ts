@@ -28,7 +28,7 @@ import {
 	type ShouldStopAfterTurnContext,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Model, TextContent, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, Model, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -387,14 +387,30 @@ interface InternalPromptOptions extends PromptOptions {
 interface QueuedSteeringMessage {
 	text: string;
 	agentMessageId?: string;
-	message: AgentMessage;
+	message: UserMessage;
 }
 
 interface QueuedFollowUpMessage {
 	text: string;
 	queueKey?: string;
 	agentMessageId?: string;
-	message: AgentMessage;
+	message: UserMessage;
+}
+
+export interface QueuedAgentInputSnapshot {
+	text: string;
+	images?: ImageContent[];
+}
+
+function createQueuedAgentInputSnapshot(
+	message: QueuedSteeringMessage | QueuedFollowUpMessage,
+): QueuedAgentInputSnapshot {
+	const content = message.message.content;
+	if (!Array.isArray(content)) {
+		return { text: message.text };
+	}
+	const images = content.filter((block): block is ImageContent => block.type === "image");
+	return images.length > 0 ? { text: message.text, images } : { text: message.text };
 }
 
 interface AcceptedAgentMessagePrompt {
@@ -2965,6 +2981,14 @@ export class AgentSession {
 		return this._followUpMessages.map((message) => message.text);
 	}
 
+	getSteeringQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
+		return this._steeringMessages.map((message) => createQueuedAgentInputSnapshot(message));
+	}
+
+	getFollowUpQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
+		return this._followUpMessages.map((message) => createQueuedAgentInputSnapshot(message));
+	}
+
 	hasQueuedFollowUp(queueKey: string): boolean {
 		return this._followUpMessages.some((message) => message.queueKey === queueKey);
 	}
@@ -2975,7 +2999,7 @@ export class AgentSession {
 			return false;
 		}
 		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
-		const removedMessages = new Set(removed.map((message) => message.message));
+		const removedMessages = new Set<AgentMessage>(removed.map((message) => message.message));
 		for (const message of removed) {
 			this._rejectAgentMessageDelivery(
 				message.agentMessageId,

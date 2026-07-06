@@ -3745,6 +3745,10 @@ export class InteractiveMode {
 				}
 				if (commandName === "update") {
 					this.editor.setText("");
+					if (this.isAgentCompacting() || this.isAgentStreaming() || this.isBashRunning()) {
+						this.showWarning("Wait for the current work to finish before updating.");
+						return;
+					}
 					await this.handleUpdateCommand(commandArgs);
 					return;
 				}
@@ -7051,11 +7055,15 @@ export class InteractiveMode {
 			} catch {
 				// The update already completed; do not block relaunch on local teardown.
 			}
-			const relaunchResult = spawnSync(process.execPath, [...process.execArgv, entrypoint], {
-				stdio: "inherit",
-				cwd,
-				env: process.env,
-			});
+			const relaunchResult = spawnSync(
+				process.execPath,
+				[...process.execArgv, entrypoint, ...process.argv.slice(2)],
+				{
+					stdio: "inherit",
+					cwd,
+					env: process.env,
+				},
+			);
 			if (relaunchResult.error) {
 				console.error(`Failed to relaunch ${APP_NAME}: ${relaunchResult.error.message}`);
 				process.exit(1);

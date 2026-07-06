@@ -2125,13 +2125,20 @@ export class AgentDaemon {
 		}
 		const session = state.runtime.session;
 		const sessionFile = session.sessionFile;
-		if (!sessionFile || this.isEmptyDraftContent(state)) {
+		const queue = {
+			steering: [...session.getSteeringQueueSnapshots()].map((message) => ({
+				message: message.text,
+				...(message.images ? { images: message.images } : {}),
+			})),
+			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
+				message: message.text,
+				...(message.images ? { images: message.images } : {}),
+			})),
+		};
+		const hasQueuedMessages = queue.steering.length > 0 || queue.followUp.length > 0;
+		if (!sessionFile || (this.isEmptyDraftContent(state) && !hasQueuedMessages)) {
 			return undefined;
 		}
-		const queue = {
-			steering: [...session.getSteeringMessages()],
-			followUp: [...session.getFollowUpMessages()],
-		};
 		const wasStreaming = session.isStreaming;
 		const wasCompacting = session.isCompacting;
 		const wasBashRunning = session.isBashRunning;
@@ -2152,6 +2159,7 @@ export class AgentDaemon {
 				...state.runtime.runtimeConfig,
 				cwd: session.sessionManager.getCwd(),
 			},
+			...(state.clientEnv ? { clientEnv: { ...state.clientEnv } } : {}),
 			queue,
 			shouldResume,
 			wasStreaming,
@@ -2188,13 +2196,14 @@ export class AgentDaemon {
 		for (const [state, restartSession] of restartSessions) {
 			this.appendUpdateRestartMarker(state, restartSession);
 		}
+		const restoredActiveSessionIds = new Set(restartSessions.map(([state]) => state.activeSessionId));
 		for (const state of topLevelStates) {
 			if (this.sessions.has(state.activeSessionId)) {
-				await this.closeSession(state, "update");
+				await this.closeSession(state, restoredActiveSessionIds.has(state.activeSessionId) ? "update" : "killed");
 			}
 		}
 		for (const state of [...this.sessions.values()]) {
-			await this.closeSession(state, "update");
+			await this.closeSession(state, "killed");
 		}
 
 		return {
@@ -2270,7 +2279,8 @@ export class AgentDaemon {
 		// Empty draft (no messages, config, or jobs): discard rather than persist an
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
-		const keepsResumeEntry = reason === "shutdown" || reason === "update";
+		const keepsResumeEntry =
+			reason === "shutdown" || (reason === "update" && state.runtime.metadata.kind !== "subagent");
 		const isEmptyDraftSession = !keepsResumeEntry && this.isEmptyDraftContent(state);
 		let persistError: unknown;
 		// Clean shutdown leaves the session un-archived so it stays in the resume list.

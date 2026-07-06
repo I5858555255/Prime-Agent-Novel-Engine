@@ -22,7 +22,11 @@ import {
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { DaemonClient } from "./modes/daemon/daemon-client.js";
-import type { DaemonUpdateRestartManifest, DaemonUpdateRestartSession } from "./modes/daemon/daemon-protocol.js";
+import type {
+	DaemonUpdateRestartManifest,
+	DaemonUpdateRestartQueuedMessage,
+	DaemonUpdateRestartSession,
+} from "./modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "./modes/daemon/daemon-socket.js";
 import { shouldUseWindowsShell } from "./utils/child-process.js";
 import { getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.js";
@@ -387,18 +391,55 @@ function readString(value: unknown, fieldName: string): string {
 	return value;
 }
 
-function readStringArray(value: unknown, fieldName: string): string[] {
-	if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string")) {
-		throw new Error(`Daemon update restart response is missing ${fieldName}`);
-	}
-	return value;
-}
-
 function readBoolean(value: unknown, fieldName: string): boolean {
 	if (typeof value !== "boolean") {
 		throw new Error(`Daemon update restart response is missing ${fieldName}`);
 	}
 	return value;
+}
+
+function readOptionalStringRecord(value: unknown, fieldName: string): Record<string, string> | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!isRecord(value) || !Object.values(value).every((entry): entry is string => typeof entry === "string")) {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value as Record<string, string>;
+}
+
+function readOptionalImages(value: unknown, fieldName: string): DaemonUpdateRestartQueuedMessage["images"] {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!Array.isArray(value) || !value.every(isImageContent)) {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
+function isImageContent(value: unknown): value is NonNullable<DaemonUpdateRestartQueuedMessage["images"]>[number] {
+	return (
+		isRecord(value) && value.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string"
+	);
+}
+
+function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRestartQueuedMessage {
+	if (!isRecord(value)) {
+		throw new Error("Daemon update restart response contains an invalid queued message");
+	}
+	const images = readOptionalImages(value.images, "queue.images");
+	return {
+		message: readString(value.message, "queue.message"),
+		...(images ? { images } : {}),
+	};
+}
+
+function readQueuedMessages(value: unknown, fieldName: string): DaemonUpdateRestartQueuedMessage[] {
+	if (!Array.isArray(value)) {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value.map(parseDaemonUpdateRestartQueuedMessage);
 }
 
 function parseDaemonUpdateRestartSession(value: unknown): DaemonUpdateRestartSession {
@@ -413,15 +454,17 @@ function parseDaemonUpdateRestartSession(value: unknown): DaemonUpdateRestartSes
 	if (!isRecord(config)) {
 		throw new Error("Daemon update restart response contains an invalid session config");
 	}
+	const clientEnv = readOptionalStringRecord(value.clientEnv, "clientEnv");
 	return {
 		activeSessionId: readString(value.activeSessionId, "activeSessionId"),
 		sessionId: readString(value.sessionId, "sessionId"),
 		sessionFile: readString(value.sessionFile, "sessionFile"),
 		cwd: readString(value.cwd, "cwd"),
 		config: config as DaemonUpdateRestartSession["config"],
+		...(clientEnv ? { clientEnv } : {}),
 		queue: {
-			steering: readStringArray(queue.steering, "queue.steering"),
-			followUp: readStringArray(queue.followUp, "queue.followUp"),
+			steering: readQueuedMessages(queue.steering, "queue.steering"),
+			followUp: readQueuedMessages(queue.followUp, "queue.followUp"),
 		},
 		shouldResume: readBoolean(value.shouldResume, "shouldResume"),
 		wasStreaming: readBoolean(value.wasStreaming, "wasStreaming"),
@@ -477,7 +520,12 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 		await client.connect(10000);
 		for (const session of manifest.sessions) {
 			const createResponse = await client.request(
-				{ type: "create", sessionPath: session.sessionFile, config: session.config },
+				{
+					type: "create",
+					sessionPath: session.sessionFile,
+					config: session.config,
+					...(session.clientEnv ? { env: session.clientEnv } : {}),
+				},
 				120000,
 			);
 			if (!createResponse.success) {
@@ -489,20 +537,44 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			if (!session.shouldResume) {
 				continue;
 			}
-			const promptResponse = await client.request(
-				{ type: "prompt", activeSessionId, message: UPDATE_RESTART_CONTINUATION_PROMPT },
-				120000,
-			);
-			if (!promptResponse.success) {
-				console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
-				continue;
+			const needsContinuationPrompt =
+				session.wasStreaming || session.wasCompacting || session.wasBashRunning || session.hadRunningRlmChildren;
+			const steeringQueue = [...session.queue.steering];
+			const followUpQueue = [...session.queue.followUp];
+			if (needsContinuationPrompt) {
+				const promptResponse = await client.request(
+					{ type: "prompt", activeSessionId, message: UPDATE_RESTART_CONTINUATION_PROMPT },
+					120000,
+				);
+				if (!promptResponse.success) {
+					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
+					continue;
+				}
+			} else {
+				const firstQueued = steeringQueue.shift() ?? followUpQueue.shift();
+				if (firstQueued) {
+					const promptResponse = await client.request(
+						{ type: "prompt", activeSessionId, message: firstQueued.message, images: firstQueued.images },
+						120000,
+					);
+					if (!promptResponse.success) {
+						console.error(
+							chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`),
+						);
+						continue;
+					}
+				}
 			}
 			resumed++;
-			for (const message of session.queue.steering) {
-				await client.request({ type: "steer", activeSessionId, message }, 30000).catch(() => undefined);
+			for (const queued of steeringQueue) {
+				await client
+					.request({ type: "steer", activeSessionId, message: queued.message, images: queued.images }, 30000)
+					.catch(() => undefined);
 			}
-			for (const message of session.queue.followUp) {
-				await client.request({ type: "follow_up", activeSessionId, message }, 30000).catch(() => undefined);
+			for (const queued of followUpQueue) {
+				await client
+					.request({ type: "follow_up", activeSessionId, message: queued.message, images: queued.images }, 30000)
+					.catch(() => undefined);
 			}
 		}
 	} finally {
