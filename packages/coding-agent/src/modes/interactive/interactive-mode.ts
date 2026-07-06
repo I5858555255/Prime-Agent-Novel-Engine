@@ -2281,19 +2281,19 @@ export class InteractiveMode {
 		this.pendingMessagesContainer.clear();
 		this.queuedMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
-		// Pasted images belong to the session being torn down; drop them so markers
-		// in a newly loaded session can't resolve to the previous session's bytes.
-		// Clear every editor's prompt history and draft text alongside them so no
-		// `[image #N]` marker survives without a backing image. nextImageMarkerId
-		// stays monotonic so a new paste never reuses an id that may still appear in
-		// restored text.
-		this.pastedImages.clear();
-		this.promptStash = undefined;
+		// Clear every editor's prompt history and draft text, then prune any pasted
+		// images no longer referenced by the remaining stashed draft.
 		this.defaultEditor.clearHistory?.();
 		this.defaultEditor.setText("");
 		if (this.editor !== this.defaultEditor) {
 			this.editor.clearHistory?.();
 			this.editor.setText("");
+		}
+		const keepImageIds = this.liveImageMarkerIds();
+		for (const markerId of this.pastedImages.keys()) {
+			if (!keepImageIds.has(markerId)) {
+				this.pastedImages.delete(markerId);
+			}
 		}
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
@@ -3402,7 +3402,7 @@ export class InteractiveMode {
 	}
 
 	private handlePromptStash(): void {
-		const text = this.editor.getExpandedText?.() ?? this.editor.getText();
+		const text = this.editor.getText();
 		if (!text.trim()) {
 			if (!this.restorePromptStashIfEditorEmpty()) {
 				this.showStatus("No prompt to stash");
@@ -3418,11 +3418,10 @@ export class InteractiveMode {
 		this.showStatus("Stashed prompt");
 	}
 
-	private restorePromptStashIfEditorEmpty(): boolean {
-		if (this.promptStash === undefined || this.editor.getText().trim()) {
+	private restorePromptStashIfEditorEmpty(text = this.promptStash): boolean {
+		if (text === undefined || this.editor.getText().trim()) {
 			return false;
 		}
-		const text = this.promptStash;
 		this.promptStash = undefined;
 		this.editor.setText(text);
 		this.showStatus("Restored stashed prompt");
@@ -3531,7 +3530,7 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
 			if (!text) return;
-			const shouldRestorePromptStash = this.promptStash !== undefined;
+			const promptStashToRestore = this.promptStash;
 
 			try {
 				const slashCommand = parseSlashCommand(text);
@@ -3795,8 +3794,8 @@ export class InteractiveMode {
 				}
 				this.editor.addToHistory?.(text);
 			} finally {
-				if (shouldRestorePromptStash) {
-					this.restorePromptStashIfEditorEmpty();
+				if (promptStashToRestore !== undefined) {
+					this.restorePromptStashIfEditorEmpty(promptStashToRestore);
 				}
 			}
 		};
@@ -5485,15 +5484,18 @@ export class InteractiveMode {
 	private async handleFollowUp(): Promise<void> {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!text) return;
-		const shouldRestorePromptStash = this.promptStash !== undefined;
+		const promptStashToRestore = this.promptStash;
+		let clearedSubmittedText: string | undefined;
 
 		try {
 			// Queue input during compaction (extension commands execute immediately)
 			if (this.isAgentCompacting()) {
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
+					clearedSubmittedText = text;
 					this.editor.setText("");
 					await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
+					clearedSubmittedText = undefined;
 				} else {
 					this.queueCompactionMessage(text, "followUp");
 				}
@@ -5505,19 +5507,29 @@ export class InteractiveMode {
 			if (this.isAgentStreaming()) {
 				const images = this.collectImagesFor(text);
 				this.editor.addToHistory?.(text);
+				clearedSubmittedText = text;
 				this.editor.setText("");
 				await this.agentConnection.prompt(text, { streamingBehavior: "followUp", images });
+				clearedSubmittedText = undefined;
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 			}
 			// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit)
 			else if (this.editor.onSubmit) {
+				clearedSubmittedText = text;
 				this.editor.setText("");
 				await this.editor.onSubmit(text);
+				clearedSubmittedText = undefined;
 			}
+		} catch (error) {
+			if (clearedSubmittedText !== undefined) {
+				this.editor.setText(clearedSubmittedText);
+				this.promptStash = promptStashToRestore;
+			}
+			throw error;
 		} finally {
-			if (shouldRestorePromptStash) {
-				this.restorePromptStashIfEditorEmpty();
+			if (promptStashToRestore !== undefined && clearedSubmittedText === undefined) {
+				this.restorePromptStashIfEditorEmpty(promptStashToRestore);
 			}
 		}
 	}

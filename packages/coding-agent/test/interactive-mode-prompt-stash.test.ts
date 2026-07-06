@@ -36,7 +36,7 @@ type SubmitHarness = PromptStashHarness & {
 type PromptStashMethods = {
 	handleFollowUp: (this: SubmitHarness) => Promise<void>;
 	handlePromptStash: (this: PromptStashHarness) => void;
-	restorePromptStashIfEditorEmpty: (this: PromptStashHarness) => boolean;
+	restorePromptStashIfEditorEmpty: (this: PromptStashHarness, text?: string) => boolean;
 	liveImageMarkerIds: (this: PromptStashLiveMarkerHarness) => Set<number>;
 	setupEditorSubmitHandler: (this: SubmitHarness) => void;
 };
@@ -83,7 +83,7 @@ describe("InteractiveMode prompt stash", () => {
 		expect(keybindings.getKeys("app.prompt.stash")).toEqual(["ctrl+s"]);
 	});
 
-	it("stashes expanded editor text and clears the editor", () => {
+	it("stashes editor text without expanding paste markers", () => {
 		const mode = createPromptStashHarness({
 			text: "[paste #1 +12 lines]",
 			expandedText: "line one\nline two",
@@ -91,7 +91,7 @@ describe("InteractiveMode prompt stash", () => {
 
 		interactiveModeMethods.handlePromptStash.call(mode);
 
-		expect(mode.promptStash).toBe("line one\nline two");
+		expect(mode.promptStash).toBe("[paste #1 +12 lines]");
 		expect(mode.editor.getText()).toBe("");
 		expect(mode.showStatus).toHaveBeenCalledWith("Stashed prompt");
 	});
@@ -136,6 +136,30 @@ describe("InteractiveMode prompt stash", () => {
 		expect(mode.editor.getText()).toBe("half-written draft");
 	});
 
+	it("restores a stashed prompt after a session reset clears prompt state", async () => {
+		let mode: SubmitHarness & { handleClearCommand: Mock<() => Promise<void>> };
+		mode = {
+			...createPromptStashHarness({ stash: "half-written draft" }),
+			defaultEditor: {},
+			isAgentCompacting: () => false,
+			isAgentStreaming: () => false,
+			flushPendingBashComponents: vi.fn(),
+			onInputCallback: vi.fn(),
+			handleClearCommand: vi.fn(async () => {
+				mode.promptStash = undefined;
+				mode.editor.setText("");
+			}),
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+		interactiveModeMethods.setupEditorSubmitHandler.call(mode);
+
+		await mode.defaultEditor.onSubmit?.("/new");
+
+		expect(mode.handleClearCommand).toHaveBeenCalled();
+		expect(mode.promptStash).toBeUndefined();
+		expect(mode.editor.getText()).toBe("half-written draft");
+	});
+
 	it("restores a stashed prompt after idle follow-up slash commands clear the editor", async () => {
 		let resolveSettings: () => void = () => {};
 		const settingsDone = new Promise<void>((resolve) => {
@@ -162,6 +186,37 @@ describe("InteractiveMode prompt stash", () => {
 		expect(mode.showSettingsSelector).toHaveBeenCalled();
 		expect(mode.promptStash).toBeUndefined();
 		expect(mode.editor.getText()).toBe("half-written draft");
+	});
+
+	it("restores failed follow-up text without dropping the stashed prompt", async () => {
+		const error = new Error("send failed");
+		const mode: SubmitHarness & {
+			agentConnection: { prompt: Mock<() => Promise<void>> };
+			collectImagesFor: Mock;
+			updatePendingMessagesDisplay: Mock;
+			ui: { requestRender: Mock };
+		} = {
+			...createPromptStashHarness({ text: "quick follow-up", stash: "half-written draft" }),
+			defaultEditor: {},
+			isAgentCompacting: () => false,
+			isAgentStreaming: () => true,
+			flushPendingBashComponents: vi.fn(),
+			onInputCallback: vi.fn(),
+			agentConnection: {
+				prompt: vi.fn(async () => {
+					throw error;
+				}),
+			},
+			collectImagesFor: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+
+		await expect(interactiveModeMethods.handleFollowUp.call(mode)).rejects.toThrow(error);
+
+		expect(mode.editor.getText()).toBe("quick follow-up");
+		expect(mode.promptStash).toBe("half-written draft");
 	});
 
 	it("keeps image markers in a stashed prompt live", () => {
