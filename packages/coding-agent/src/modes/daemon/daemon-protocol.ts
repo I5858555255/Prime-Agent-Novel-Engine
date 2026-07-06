@@ -7,6 +7,7 @@ import type {
 } from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type { CustomMessage } from "../../core/messages.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type {
@@ -190,9 +191,15 @@ export interface DaemonUpdateRestartQueuedMessage {
 	images?: ImageContent[];
 }
 
+export interface DaemonUpdateRestartAcceptedPrompt extends DaemonUpdateRestartQueuedMessage {
+	nextTurn: CustomMessage[];
+}
+
 export interface DaemonUpdateRestartQueue {
 	steering: DaemonUpdateRestartQueuedMessage[];
 	followUp: DaemonUpdateRestartQueuedMessage[];
+	nextTurn: CustomMessage[];
+	acceptedPrompt?: DaemonUpdateRestartAcceptedPrompt;
 }
 
 export interface DaemonUpdateRestartSession {
@@ -251,6 +258,7 @@ export type DaemonCommand =
 	  }
 	| { id?: string; type: "steer"; activeSessionId: string; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; activeSessionId: string; message: string; images?: ImageContent[] }
+	| { id?: string; type: "restore_next_turn"; activeSessionId: string; messages: CustomMessage[] }
 	| {
 			id?: string;
 			type: "send_message";

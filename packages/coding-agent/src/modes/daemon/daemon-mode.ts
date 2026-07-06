@@ -1316,6 +1316,12 @@ export class AgentDaemon {
 				return success(command.id, "follow_up");
 			}
 
+			case "restore_next_turn": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.restorePendingNextTurnMessages(command.messages);
+				return success(command.id, "restore_next_turn");
+			}
+
 			case "send_message": {
 				const fromState = command.fromActiveSessionId
 					? this.getSessionState(command.fromActiveSessionId)
@@ -2134,8 +2140,26 @@ export class AgentDaemon {
 				message: message.text,
 				...(message.images ? { images: message.images } : {}),
 			})),
+			nextTurn: [...session.getPendingNextTurnMessageSnapshots()],
 		};
-		const hasQueuedMessages = queue.steering.length > 0 || queue.followUp.length > 0;
+		const acceptedPrompt = session.getAcceptedPromptSnapshot();
+		const restartQueue = {
+			...queue,
+			...(acceptedPrompt
+				? {
+						acceptedPrompt: {
+							message: acceptedPrompt.text,
+							...(acceptedPrompt.images ? { images: acceptedPrompt.images } : {}),
+							nextTurn: acceptedPrompt.nextTurn,
+						},
+					}
+				: {}),
+		};
+		const hasQueuedMessages =
+			restartQueue.steering.length > 0 ||
+			restartQueue.followUp.length > 0 ||
+			restartQueue.nextTurn.length > 0 ||
+			restartQueue.acceptedPrompt !== undefined;
 		if (!sessionFile || (this.isEmptyDraftContent(state) && !hasQueuedMessages)) {
 			return undefined;
 		}
@@ -2152,8 +2176,9 @@ export class AgentDaemon {
 			hadRunningRlmChildren ||
 			wasRetrying ||
 			hadAcceptedPromptInFlight ||
-			queue.steering.length > 0 ||
-			queue.followUp.length > 0;
+			restartQueue.steering.length > 0 ||
+			restartQueue.followUp.length > 0 ||
+			restartQueue.acceptedPrompt !== undefined;
 		return {
 			activeSessionId: state.activeSessionId,
 			sessionId: session.sessionId,
@@ -2164,7 +2189,7 @@ export class AgentDaemon {
 				cwd: session.sessionManager.getCwd(),
 			},
 			...(state.clientEnv ? { clientEnv: { ...state.clientEnv } } : {}),
-			queue,
+			queue: restartQueue,
 			shouldResume,
 			wasStreaming,
 			wasCompacting,

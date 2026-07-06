@@ -548,6 +548,7 @@ export class InteractiveMode {
 	private agentConnection: AgentConnection;
 	private localSessionHost: InteractiveModeLocalSessionHost | undefined;
 	private bindLocalSessionExtensions: boolean;
+	private readonly launchCwd = process.cwd();
 	private ui: TUI;
 	private chatContainer: Container;
 	private pendingMessagesContainer: Container;
@@ -7066,7 +7067,6 @@ export class InteractiveMode {
 		const updateExitCode = updateResult.status ?? (updateResult.signal ? 1 : 0);
 
 		if (includesSelf && updateExitCode === 0 && !updateResult.error) {
-			const cwd = this.getCurrentCwd();
 			const relaunchArgs = buildUpdateRelaunchArgs(process.argv.slice(2), this.connectionState?.sessionFile);
 			this.stop();
 			await this.agentConnection.dispose().catch(() => undefined);
@@ -7077,7 +7077,7 @@ export class InteractiveMode {
 			}
 			const relaunchResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, ...relaunchArgs], {
 				stdio: "inherit",
-				cwd,
+				cwd: this.launchCwd,
 				env: process.env,
 			});
 			if (relaunchResult.error) {

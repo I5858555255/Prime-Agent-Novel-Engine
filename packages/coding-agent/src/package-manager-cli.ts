@@ -19,6 +19,7 @@ import {
 	type SelfUpdateCommand,
 	VERSION,
 } from "./config.js";
+import type { CustomMessage } from "./core/messages.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { DaemonClient } from "./modes/daemon/daemon-client.js";
@@ -424,6 +425,32 @@ function isImageContent(value: unknown): value is NonNullable<DaemonUpdateRestar
 	);
 }
 
+function isCustomMessageContentBlock(value: unknown): boolean {
+	return (isRecord(value) && value.type === "text" && typeof value.text === "string") || isImageContent(value);
+}
+
+function isCustomMessage(value: unknown): value is CustomMessage {
+	return (
+		isRecord(value) &&
+		value.role === "custom" &&
+		typeof value.customType === "string" &&
+		(typeof value.content === "string" ||
+			(Array.isArray(value.content) && value.content.every(isCustomMessageContentBlock))) &&
+		typeof value.display === "boolean" &&
+		typeof value.timestamp === "number"
+	);
+}
+
+function readCustomMessages(value: unknown, fieldName: string): CustomMessage[] {
+	if (value === undefined) {
+		return [];
+	}
+	if (!Array.isArray(value) || !value.every(isCustomMessage)) {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
 function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRestartQueuedMessage {
 	if (!isRecord(value)) {
 		throw new Error("Daemon update restart response contains an invalid queued message");
@@ -433,6 +460,25 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 		message: readString(value.message, "queue.message"),
 		...(images ? { images } : {}),
 	};
+}
+
+function parseDaemonUpdateRestartAcceptedPrompt(
+	value: unknown,
+): NonNullable<DaemonUpdateRestartSession["queue"]["acceptedPrompt"]> {
+	if (!isRecord(value)) {
+		throw new Error("Daemon update restart response contains an invalid accepted prompt");
+	}
+	return {
+		...parseDaemonUpdateRestartQueuedMessage(value),
+		nextTurn: readCustomMessages(value.nextTurn, "queue.acceptedPrompt.nextTurn"),
+	};
+}
+
+function readOptionalAcceptedPrompt(value: unknown): DaemonUpdateRestartSession["queue"]["acceptedPrompt"] | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	return parseDaemonUpdateRestartAcceptedPrompt(value);
 }
 
 function readQueuedMessages(value: unknown, fieldName: string): DaemonUpdateRestartQueuedMessage[] {
@@ -465,6 +511,10 @@ function parseDaemonUpdateRestartSession(value: unknown): DaemonUpdateRestartSes
 		queue: {
 			steering: readQueuedMessages(queue.steering, "queue.steering"),
 			followUp: readQueuedMessages(queue.followUp, "queue.followUp"),
+			nextTurn: readCustomMessages(queue.nextTurn, "queue.nextTurn"),
+			...(queue.acceptedPrompt !== undefined
+				? { acceptedPrompt: readOptionalAcceptedPrompt(queue.acceptedPrompt) }
+				: {}),
 		},
 		shouldResume: readBoolean(value.shouldResume, "shouldResume"),
 		wasStreaming: readBoolean(value.wasStreaming, "wasStreaming"),
@@ -511,6 +561,26 @@ function readCreatedActiveSessionId(value: unknown): string {
 	return value.activeSessionId;
 }
 
+async function restoreNextTurnMessages(
+	client: DaemonClient,
+	activeSessionId: string,
+	sessionFile: string,
+	messages: readonly CustomMessage[],
+): Promise<boolean> {
+	if (messages.length === 0) {
+		return true;
+	}
+	const response = await client.request(
+		{ type: "restore_next_turn", activeSessionId, messages: [...messages] },
+		30000,
+	);
+	if (!response.success) {
+		console.error(chalk.yellow(`Warning: could not restore pending context for ${sessionFile}: ${response.error}`));
+		return false;
+	}
+	return true;
+}
+
 async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUpdateRestartManifest): Promise<void> {
 	if (manifest.sessions.length === 0) {
 		return;
@@ -536,7 +606,9 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			}
 			const activeSessionId = readCreatedActiveSessionId(createResponse.data);
 			restored++;
+			const acceptedPrompt = session.queue.acceptedPrompt;
 			if (!session.shouldResume) {
+				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
 				continue;
 			}
 			const needsContinuationPrompt =
@@ -549,7 +621,27 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			const steeringQueue = [...session.queue.steering];
 			const followUpQueue = [...session.queue.followUp];
 			let resumedSession = false;
-			if (needsContinuationPrompt) {
+			if (acceptedPrompt) {
+				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, acceptedPrompt.nextTurn);
+				const promptResponse = await client.request(
+					{
+						type: "prompt",
+						activeSessionId,
+						message: acceptedPrompt.message,
+						images: acceptedPrompt.images,
+					},
+					120000,
+				);
+				if (!promptResponse.success) {
+					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
+				} else {
+					resumedSession = true;
+				}
+				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
+			} else {
+				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
+			}
+			if (!acceptedPrompt && needsContinuationPrompt) {
 				const promptResponse = await client.request(
 					{ type: "prompt", activeSessionId, message: UPDATE_RESTART_CONTINUATION_PROMPT },
 					120000,
@@ -559,7 +651,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 				} else {
 					resumedSession = true;
 				}
-			} else {
+			} else if (!acceptedPrompt) {
 				const firstQueued =
 					steeringQueue.length > 0
 						? { kind: "steer" as const, value: steeringQueue.shift()! }
@@ -598,7 +690,11 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 				if (response.success) {
 					resumedSession = true;
 				} else {
-					console.error(chalk.yellow(`Warning: could not restore queued message for ${session.sessionFile}`));
+					console.error(
+						chalk.yellow(
+							`Warning: could not restore queued steering message for ${session.sessionFile}: ${response.error}`,
+						),
+					);
 				}
 			}
 			for (const queued of followUpQueue) {
@@ -609,7 +705,11 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 				if (response.success) {
 					resumedSession = true;
 				} else {
-					console.error(chalk.yellow(`Warning: could not restore queued message for ${session.sessionFile}`));
+					console.error(
+						chalk.yellow(
+							`Warning: could not restore queued follow-up message for ${session.sessionFile}: ${response.error}`,
+						),
+					);
 				}
 			}
 			if (resumedSession) {

@@ -402,21 +402,36 @@ export interface QueuedAgentInputSnapshot {
 	images?: ImageContent[];
 }
 
+export interface AcceptedAgentInputSnapshot extends QueuedAgentInputSnapshot {
+	nextTurn: CustomMessage[];
+}
+
+function cloneCustomMessage(message: CustomMessage): CustomMessage {
+	return {
+		...message,
+		content: Array.isArray(message.content) ? message.content.map((block) => ({ ...block })) : message.content,
+	};
+}
+
+function createQueuedAgentInputSnapshotFromUserMessage(text: string, message: UserMessage): QueuedAgentInputSnapshot {
+	const content = message.content;
+	if (!Array.isArray(content)) {
+		return { text };
+	}
+	const images = content.filter((block): block is ImageContent => block.type === "image");
+	return images.length > 0 ? { text, images } : { text };
+}
+
 function createQueuedAgentInputSnapshot(
 	message: QueuedSteeringMessage | QueuedFollowUpMessage,
 ): QueuedAgentInputSnapshot {
-	const content = message.message.content;
-	if (!Array.isArray(content)) {
-		return { text: message.text };
-	}
-	const images = content.filter((block): block is ImageContent => block.type === "image");
-	return images.length > 0 ? { text: message.text, images } : { text: message.text };
+	return createQueuedAgentInputSnapshotFromUserMessage(message.text, message.message);
 }
 
 interface AcceptedAgentMessagePrompt {
 	text: string;
 	agentMessageId: string;
-	message: AgentMessage;
+	message: UserMessage;
 	messages: Set<AgentMessage>;
 	/** Pending nextTurn messages drained into this prompt; restored to the queue if the prompt is cleared. */
 	pendingNextTurnMessages: CustomMessage[];
@@ -2987,6 +3002,25 @@ export class AgentSession {
 
 	getFollowUpQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
 		return this._followUpMessages.map((message) => createQueuedAgentInputSnapshot(message));
+	}
+
+	getPendingNextTurnMessageSnapshots(): readonly CustomMessage[] {
+		return this._pendingNextTurnMessages.map((message) => cloneCustomMessage(message));
+	}
+
+	getAcceptedPromptSnapshot(): AcceptedAgentInputSnapshot | undefined {
+		const accepted = this._acceptedAgentMessagePrompt;
+		if (!accepted || accepted.cleared || accepted.turnStarted) {
+			return undefined;
+		}
+		return {
+			...createQueuedAgentInputSnapshotFromUserMessage(accepted.text, accepted.message),
+			nextTurn: accepted.pendingNextTurnMessages.map((message) => cloneCustomMessage(message)),
+		};
+	}
+
+	restorePendingNextTurnMessages(messages: readonly CustomMessage[]): void {
+		this._pendingNextTurnMessages.push(...messages.map((message) => cloneCustomMessage(message)));
 	}
 
 	hasQueuedFollowUp(queueKey: string): boolean {

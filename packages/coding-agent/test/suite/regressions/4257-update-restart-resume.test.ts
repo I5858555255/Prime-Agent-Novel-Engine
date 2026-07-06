@@ -1,6 +1,7 @@
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.js";
+import type { CustomMessage } from "../../../src/core/messages.js";
 import type { BashOperations } from "../../../src/core/tools/bash.js";
 import type { ActiveSessionState } from "../../../src/modes/daemon/active-session-state.js";
 import { AgentDaemon } from "../../../src/modes/daemon/daemon-mode.js";
@@ -14,6 +15,19 @@ type AgentDaemonUpdateInternals = {
 
 type QueueInternals = {
 	_steeringMessages: Array<{ text: string; message: UserMessage }>;
+	_pendingNextTurnMessages: CustomMessage[];
+	_acceptedAgentMessagePrompt?: {
+		text: string;
+		agentMessageId: string;
+		message: UserMessage;
+		messages: Set<unknown>;
+		pendingNextTurnMessages: CustomMessage[];
+		accepted: Promise<void>;
+		resolveAccepted: () => void;
+		rejectAccepted: (error: Error) => void;
+		turnStarted: boolean;
+		cleared: boolean;
+	};
 };
 
 function createState(
@@ -45,6 +59,16 @@ function hasArchivedState(harness: Harness): boolean {
 	return harness.sessionManager
 		.getEntries()
 		.some((entry) => entry.type === "session_state" && entry.state.status === "archived");
+}
+
+function createCustomMessage(content: string): CustomMessage {
+	return {
+		role: "custom",
+		customType: "prime-agent.test",
+		content,
+		display: false,
+		timestamp: Date.now(),
+	};
 }
 
 describe("issue #4257 update restart resume", () => {
@@ -179,5 +203,58 @@ describe("issue #4257 update restart resume", () => {
 		});
 		expect(hasArchivedState(parentHarness)).toBe(false);
 		expect(hasArchivedState(childHarness)).toBe(true);
+	});
+
+	it("captures next-turn context and accepted prompts in the restart manifest", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+
+		const pendingNextTurn = createCustomMessage("pending next turn");
+		const acceptedNextTurn = createCustomMessage("accepted prompt context");
+		const acceptedMessage: UserMessage = {
+			role: "user",
+			content: [{ type: "text", text: "accepted work" }],
+			timestamp: Date.now(),
+		};
+		const queueInternals = harness.session as unknown as QueueInternals;
+		queueInternals._pendingNextTurnMessages = [pendingNextTurn];
+		queueInternals._acceptedAgentMessagePrompt = {
+			text: "accepted work",
+			agentMessageId: "agent-message-1",
+			message: acceptedMessage,
+			messages: new Set([acceptedNextTurn, acceptedMessage]),
+			pendingNextTurnMessages: [acceptedNextTurn],
+			accepted: Promise.resolve(),
+			resolveAccepted: () => undefined,
+			rejectAccepted: () => undefined,
+			turnStarted: false,
+			cleared: false,
+		};
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		const manifest = await internals.prepareUpdateRestart();
+
+		expect(manifest.sessions).toHaveLength(1);
+		expect(manifest.sessions[0]).toMatchObject({
+			activeSessionId: "active-1",
+			shouldResume: true,
+			hadAcceptedPromptInFlight: true,
+		});
+		expect(manifest.sessions[0]?.queue.nextTurn).toEqual([pendingNextTurn]);
+		expect(manifest.sessions[0]?.queue.acceptedPrompt).toEqual({
+			message: "accepted work",
+			nextTurn: [acceptedNextTurn],
+		});
 	});
 });
