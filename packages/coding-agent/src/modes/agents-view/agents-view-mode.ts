@@ -18,7 +18,7 @@ import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSI
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
-import { deleteSessionFile } from "../../core/session-file-actions.js";
+import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
@@ -125,6 +125,7 @@ type AgentsViewPersistentState = {
 };
 
 type PromptCommand = Extract<DaemonCommand, { type: "prompt" }>;
+type DeleteSavedSessionCommand = Extract<DaemonCommand, { type: "delete_saved_session" }>;
 type PendingDeleteAgent = {
 	identity: string;
 	activeSessionId?: string;
@@ -164,6 +165,18 @@ export function createAgentsViewListCommand(): Extract<DaemonCommand, { type: "l
 	// Omitting `all` returns daemon-resident sessions only; on-disk ones come back
 	// via /resume.
 	return { type: "list" };
+}
+
+export function createAgentsViewDeleteSavedSessionCommand(
+	sessionPath: string,
+	summaries: readonly SessionSummary[],
+): DeleteSavedSessionCommand {
+	const activeSummary = resolveAgentsViewActiveSummaryForPath(sessionPath, summaries);
+	const command: DeleteSavedSessionCommand = { type: "delete_saved_session", sessionPath };
+	if (activeSummary?.activeSessionId) {
+		command.activeSessionId = activeSummary.activeSessionId;
+	}
+	return command;
 }
 
 export function resolveAgentsViewResumeSummary(
@@ -1079,7 +1092,7 @@ class AgentsViewMode implements Component, Focusable {
 						}
 						await this.renameSavedSessionFromSelector(sessionPath, name);
 					},
-					deleteSession: deleteSessionFile,
+					deleteSession: (sessionPath) => this.deleteSavedSessionFromSelector(sessionPath),
 					showRenameHint: true,
 					keybindings: this.keybindings,
 				},
@@ -1106,6 +1119,13 @@ class AgentsViewMode implements Component, Focusable {
 		});
 		requireDaemonData(response);
 		await this.refreshSessions();
+	}
+
+	private async deleteSavedSessionFromSelector(sessionPath: string): Promise<DeleteSessionFileResult> {
+		const response = await this.requireClient().request(
+			createAgentsViewDeleteSavedSessionCommand(sessionPath, this.lastListedSummaries),
+		);
+		return expectDeleteSessionFileResult(requireDaemonData(response));
 	}
 
 	private getDefaultModelForNewAgents(): Model<Api> | undefined {
@@ -2169,6 +2189,22 @@ function expectSessionSummary(value: unknown): SessionSummary {
 		throw new Error("Daemon returned an invalid session summary");
 	}
 	return value;
+}
+
+function expectDeleteSessionFileResult(value: unknown): DeleteSessionFileResult {
+	if (!isRecord(value) || typeof value.ok !== "boolean") {
+		throw new Error("Daemon returned an invalid delete session response");
+	}
+	if (value.ok) {
+		if (value.method !== "trash" && value.method !== "unlink") {
+			throw new Error("Daemon returned an invalid delete session response");
+		}
+		return { ok: true, method: value.method };
+	}
+	if (typeof value.error !== "string") {
+		throw new Error("Daemon returned an invalid delete session response");
+	}
+	return { ok: false, error: value.error };
 }
 
 function isSessionSummary(value: unknown): value is SessionSummary {
