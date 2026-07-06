@@ -463,6 +463,14 @@ function getResumeSelector(parsed: Pick<Args, "resume">): string | undefined {
 	return typeof parsed.resume === "string" ? parsed.resume : undefined;
 }
 
+export function restoreResumeSelectorFallback(parsed: Args, selector: string): boolean {
+	if (parsed.resumeSelectorFallback !== selector) return false;
+	parsed.resume = true;
+	parsed.resumeSelectorFallback = undefined;
+	parsed.messages.unshift(selector);
+	return true;
+}
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -485,6 +493,7 @@ export async function createSessionManager(
 				return forkSessionOrExit(resolved.path, cwd, sessionDir);
 
 			case "not_found":
+				if (restoreResumeSelectorFallback(parsed, resolved.arg)) break;
 				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
 				process.exit(1);
 		}

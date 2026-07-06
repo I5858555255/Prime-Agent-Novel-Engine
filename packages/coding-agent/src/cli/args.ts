@@ -19,6 +19,7 @@ export interface Args {
 	thinking?: ThinkingLevel;
 	continue?: boolean;
 	resume?: true | string;
+	resumeSelectorFallback?: string;
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
@@ -54,22 +55,9 @@ export interface Args {
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
 const BUILTIN_TOOL_NAMES = ["ipython", "bash", "edit"];
-const SESSION_ID_PREFIX_PATTERN = /^[0-9a-f]{4,}(?:-[0-9a-f]*)*$/i;
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
-}
-
-function looksLikeResumeSelector(value: string): boolean {
-	return (
-		value.endsWith(".jsonl") ||
-		value.startsWith("~/") ||
-		value.startsWith("./") ||
-		value.startsWith("../") ||
-		value.includes("/") ||
-		value.includes("\\") ||
-		SESSION_ID_PREFIX_PATTERN.test(value)
-	);
 }
 
 export function parseArgs(args: string[]): Args {
@@ -115,11 +103,10 @@ export function parseArgs(args: string[]): Args {
 				if (next === "") {
 					result.resume = true;
 					i++;
-				} else if (looksLikeResumeSelector(next)) {
-					result.resume = next;
-					i++;
 				} else {
-					result.resume = true;
+					result.resume = next;
+					result.resumeSelectorFallback = next;
+					i++;
 				}
 			} else {
 				result.resume = true;
@@ -128,11 +115,9 @@ export function parseArgs(args: string[]): Args {
 			const value = arg.slice("--resume=".length);
 			if (!value) {
 				result.resume = true;
-			} else if (looksLikeResumeSelector(value)) {
-				result.resume = value;
 			} else {
-				result.resume = true;
-				result.messages.push(value);
+				result.resume = value;
+				result.resumeSelectorFallback = value;
 			}
 		} else if (arg === "--provider" && i + 1 < args.length) {
 			result.provider = args[++i];
