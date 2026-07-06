@@ -2143,11 +2143,15 @@ export class AgentDaemon {
 		const wasCompacting = session.isCompacting;
 		const wasBashRunning = session.isBashRunning;
 		const hadRunningRlmChildren = session.hasRunningRlmChildren();
+		const wasRetrying = session.isRetrying;
+		const hadAcceptedPromptInFlight = session.hasAcceptedPromptInFlight;
 		const shouldResume =
 			wasStreaming ||
 			wasCompacting ||
 			wasBashRunning ||
 			hadRunningRlmChildren ||
+			wasRetrying ||
+			hadAcceptedPromptInFlight ||
 			queue.steering.length > 0 ||
 			queue.followUp.length > 0;
 		return {
@@ -2166,6 +2170,8 @@ export class AgentDaemon {
 			wasCompacting,
 			wasBashRunning,
 			hadRunningRlmChildren,
+			wasRetrying,
+			hadAcceptedPromptInFlight,
 		};
 	}
 
@@ -2183,6 +2189,8 @@ export class AgentDaemon {
 				wasCompacting: restartSession.wasCompacting,
 				wasBashRunning: restartSession.wasBashRunning,
 				hadRunningRlmChildren: restartSession.hadRunningRlmChildren,
+				wasRetrying: restartSession.wasRetrying,
+				hadAcceptedPromptInFlight: restartSession.hadAcceptedPromptInFlight,
 			},
 		);
 	}

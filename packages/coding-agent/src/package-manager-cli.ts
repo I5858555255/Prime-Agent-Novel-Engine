@@ -471,6 +471,8 @@ function parseDaemonUpdateRestartSession(value: unknown): DaemonUpdateRestartSes
 		wasCompacting: readBoolean(value.wasCompacting, "wasCompacting"),
 		wasBashRunning: readBoolean(value.wasBashRunning, "wasBashRunning"),
 		hadRunningRlmChildren: readBoolean(value.hadRunningRlmChildren, "hadRunningRlmChildren"),
+		wasRetrying: readBoolean(value.wasRetrying, "wasRetrying"),
+		hadAcceptedPromptInFlight: readBoolean(value.hadAcceptedPromptInFlight, "hadAcceptedPromptInFlight"),
 	};
 }
 
@@ -538,9 +540,15 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 				continue;
 			}
 			const needsContinuationPrompt =
-				session.wasStreaming || session.wasCompacting || session.wasBashRunning || session.hadRunningRlmChildren;
+				session.wasStreaming ||
+				session.wasCompacting ||
+				session.wasBashRunning ||
+				session.hadRunningRlmChildren ||
+				session.wasRetrying ||
+				session.hadAcceptedPromptInFlight;
 			const steeringQueue = [...session.queue.steering];
 			const followUpQueue = [...session.queue.followUp];
+			let resumedSession = false;
 			if (needsContinuationPrompt) {
 				const promptResponse = await client.request(
 					{ type: "prompt", activeSessionId, message: UPDATE_RESTART_CONTINUATION_PROMPT },
@@ -548,33 +556,64 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 				);
 				if (!promptResponse.success) {
 					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
-					continue;
+				} else {
+					resumedSession = true;
 				}
 			} else {
-				const firstQueued = steeringQueue.shift() ?? followUpQueue.shift();
+				const firstQueued =
+					steeringQueue.length > 0
+						? { kind: "steer" as const, value: steeringQueue.shift()! }
+						: followUpQueue.length > 0
+							? { kind: "follow_up" as const, value: followUpQueue.shift()! }
+							: undefined;
 				if (firstQueued) {
 					const promptResponse = await client.request(
-						{ type: "prompt", activeSessionId, message: firstQueued.message, images: firstQueued.images },
+						{
+							type: "prompt",
+							activeSessionId,
+							message: firstQueued.value.message,
+							images: firstQueued.value.images,
+						},
 						120000,
 					);
 					if (!promptResponse.success) {
 						console.error(
 							chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`),
 						);
-						continue;
+						if (firstQueued.kind === "steer") {
+							steeringQueue.unshift(firstQueued.value);
+						} else {
+							followUpQueue.unshift(firstQueued.value);
+						}
+					} else {
+						resumedSession = true;
 					}
 				}
 			}
-			resumed++;
 			for (const queued of steeringQueue) {
-				await client
-					.request({ type: "steer", activeSessionId, message: queued.message, images: queued.images }, 30000)
-					.catch(() => undefined);
+				const response = await client.request(
+					{ type: "steer", activeSessionId, message: queued.message, images: queued.images },
+					30000,
+				);
+				if (response.success) {
+					resumedSession = true;
+				} else {
+					console.error(chalk.yellow(`Warning: could not restore queued message for ${session.sessionFile}`));
+				}
 			}
 			for (const queued of followUpQueue) {
-				await client
-					.request({ type: "follow_up", activeSessionId, message: queued.message, images: queued.images }, 30000)
-					.catch(() => undefined);
+				const response = await client.request(
+					{ type: "follow_up", activeSessionId, message: queued.message, images: queued.images },
+					30000,
+				);
+				if (response.success) {
+					resumedSession = true;
+				} else {
+					console.error(chalk.yellow(`Warning: could not restore queued message for ${session.sessionFile}`));
+				}
+			}
+			if (resumedSession) {
+				resumed++;
 			}
 		}
 	} finally {

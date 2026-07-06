@@ -479,6 +479,23 @@ function updateArgsIncludeSelf(args: readonly string[]): boolean {
 	return normalized === "self" || normalized === "pi" || normalized === APP_NAME.toLowerCase();
 }
 
+function argsIncludeSessionSelection(args: readonly string[]): boolean {
+	for (const arg of args) {
+		if (arg === "--session" || arg === "--resume" || arg === "-r" || arg === "--continue" || arg === "--fork") {
+			return true;
+		}
+	}
+	return false;
+}
+
+function buildUpdateRelaunchArgs(args: readonly string[], sessionFile: string | undefined): string[] {
+	const relaunchArgs = [...args];
+	if (sessionFile && !argsIncludeSessionSelection(relaunchArgs)) {
+		relaunchArgs.push("--session", sessionFile);
+	}
+	return relaunchArgs;
+}
+
 /**
  * Options for InteractiveMode initialization.
  */
@@ -3585,6 +3602,7 @@ export class InteractiveMode {
 			text = text.trim();
 			if (!text) return;
 			const promptStashToRestore = this.promptStash;
+			let restorePromptStashAfterSubmit = true;
 
 			try {
 				const slashCommand = parseSlashCommand(text);
@@ -3703,6 +3721,7 @@ export class InteractiveMode {
 				}
 				if (commandName === "tree" && !commandArgs) {
 					this.editor.setText("");
+					restorePromptStashAfterSubmit = false;
 					await this.showTreeSelector();
 					return;
 				}
@@ -3857,7 +3876,7 @@ export class InteractiveMode {
 				}
 				this.editor.addToHistory?.(text);
 			} finally {
-				if (promptStashToRestore !== undefined) {
+				if (restorePromptStashAfterSubmit && promptStashToRestore !== undefined) {
 					this.restorePromptStashIfEditorEmpty(promptStashToRestore);
 				}
 			}
@@ -7048,6 +7067,7 @@ export class InteractiveMode {
 
 		if (includesSelf && updateExitCode === 0 && !updateResult.error) {
 			const cwd = this.getCurrentCwd();
+			const relaunchArgs = buildUpdateRelaunchArgs(process.argv.slice(2), this.connectionState?.sessionFile);
 			this.stop();
 			await this.agentConnection.dispose().catch(() => undefined);
 			try {
@@ -7055,15 +7075,11 @@ export class InteractiveMode {
 			} catch {
 				// The update already completed; do not block relaunch on local teardown.
 			}
-			const relaunchResult = spawnSync(
-				process.execPath,
-				[...process.execArgv, entrypoint, ...process.argv.slice(2)],
-				{
-					stdio: "inherit",
-					cwd,
-					env: process.env,
-				},
-			);
+			const relaunchResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, ...relaunchArgs], {
+				stdio: "inherit",
+				cwd,
+				env: process.env,
+			});
 			if (relaunchResult.error) {
 				console.error(`Failed to relaunch ${APP_NAME}: ${relaunchResult.error.message}`);
 				process.exit(1);

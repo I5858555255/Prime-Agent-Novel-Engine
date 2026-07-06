@@ -208,6 +208,8 @@ export interface DaemonUpdateRestartSession {
 	wasCompacting: boolean;
 	wasBashRunning: boolean;
 	hadRunningRlmChildren: boolean;
+	wasRetrying: boolean;
+	hadAcceptedPromptInFlight: boolean;
 }
 
 export interface DaemonUpdateRestartManifest {
