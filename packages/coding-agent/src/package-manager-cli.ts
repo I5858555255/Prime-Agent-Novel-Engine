@@ -579,7 +579,7 @@ function clearPreparedDaemonUpdateRestartManifest(agentDir: string): void {
 
 function readPreparedDaemonUpdateRestartManifest(
 	agentDir: string,
-	notBeforeMs: number,
+	notBeforeMs?: number,
 ): DaemonUpdateRestartManifest | undefined {
 	const manifestPath = getDaemonUpdateRestartManifestPath(agentDir);
 	let modifiedAt: number;
@@ -588,14 +588,29 @@ function readPreparedDaemonUpdateRestartManifest(
 	} catch {
 		return undefined;
 	}
-	if (modifiedAt < notBeforeMs - 1000) {
+	if (notBeforeMs !== undefined && modifiedAt < notBeforeMs - 1000) {
 		return undefined;
 	}
 	const parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as unknown;
 	return parseDaemonUpdateRestartManifest(parsed);
 }
 
-async function prepareDaemonUpdateRestart(socketPath: string, agentDir: string): Promise<DaemonUpdateRestartManifest> {
+function tryReadPreparedDaemonUpdateRestartManifest(agentDir: string): DaemonUpdateRestartManifest | undefined {
+	try {
+		return readPreparedDaemonUpdateRestartManifest(agentDir);
+	} catch {
+		return undefined;
+	}
+}
+
+export async function prepareDaemonUpdateRestart(
+	socketPath: string,
+	agentDir: string,
+): Promise<DaemonUpdateRestartManifest> {
+	const pendingManifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
+	if (pendingManifest && pendingManifest.sessions.length > 0) {
+		return pendingManifest;
+	}
 	clearPreparedDaemonUpdateRestartManifest(agentDir);
 	const startedAt = Date.now();
 	const client = new DaemonClient(socketPath);

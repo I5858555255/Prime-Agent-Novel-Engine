@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getDaemonUpdateRestartManifestPath } from "../../../src/config.js";
@@ -8,6 +8,7 @@ import type { BashOperations } from "../../../src/core/tools/bash.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
 import { AgentDaemon } from "../../../src/modes/daemon/daemon-mode.js";
 import type { DaemonUpdateRestartManifest } from "../../../src/modes/daemon/daemon-protocol.js";
+import { prepareDaemonUpdateRestart } from "../../../src/package-manager-cli.js";
 import { createHarness, type Harness } from "../harness.js";
 
 type AgentDaemonUpdateInternals = {
@@ -148,6 +149,10 @@ describe("issue #4257 update restart resume", () => {
 			readFileSync(getDaemonUpdateRestartManifestPath(harness.tempDir), "utf-8"),
 		) as DaemonUpdateRestartManifest;
 		expect(persistedManifest).toEqual(manifest);
+		writeFileSync(getDaemonUpdateRestartManifestPath(harness.tempDir), JSON.stringify(manifest));
+		await expect(prepareDaemonUpdateRestart(`${harness.tempDir}/missing.sock`, harness.tempDir)).resolves.toEqual(
+			manifest,
+		);
 		expect(hasArchivedState(harness)).toBe(false);
 		expect(
 			harness.sessionManager
