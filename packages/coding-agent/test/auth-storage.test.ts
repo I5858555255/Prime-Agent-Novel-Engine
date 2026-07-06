@@ -285,6 +285,26 @@ describe("AuthStorage", () => {
 			expect(authStorage.getPrimeInferenceTeamSelection()).toBeNull();
 		});
 
+		test("prime inference legacy personal selection suppresses Prime CLI team with Prime CLI key", () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key", team_id: "cli-team" }));
+			writeAuthJson({
+				"prime-inference": {
+					type: "api_key",
+					key: "agent-key",
+					primeTeam: null,
+				},
+			});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+
+			expect(authStorage.getProviderHeaders("prime-inference")).toBeUndefined();
+			expect(authStorage.getPrimeInferenceTeamSelection()).toBeNull();
+		});
+
 		test("prime inference environment team overrides legacy personal selection", () => {
 			const originalPrimeTeamId = process.env.PRIME_TEAM_ID;
 			process.env.PRIME_TEAM_ID = "env-team";
@@ -451,6 +471,39 @@ describe("AuthStorage", () => {
 			expect(config.team_role).toBe("admin");
 			expect(authStorage.has("prime-inference")).toBe(false);
 			expect(authStorage.getProviderHeaders("prime-inference")).toEqual({ "X-Prime-Team-ID": "team-1" });
+		});
+
+		test("setPrimeInferenceApiKey migrates legacy personal selection for the same Prime CLI key", () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeFileSync(
+				primeConfigPath,
+				JSON.stringify({
+					api_key: "prime-cli-key",
+					team_id: "team-1",
+					team_name: "Research",
+				}),
+			);
+			writeAuthJson({
+				"prime-inference": {
+					type: "api_key",
+					key: "agent-key",
+					primeTeam: null,
+				},
+			});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+
+			authStorage.setPrimeInferenceApiKey("prime-cli-key");
+
+			const config = JSON.parse(readFileSync(primeConfigPath, "utf-8")) as Record<string, unknown>;
+			expect(config.api_key).toBe("prime-cli-key");
+			expect(config.team_id).toBeUndefined();
+			expect(config.team_name).toBeUndefined();
+			expect(authStorage.has("prime-inference")).toBe(false);
+			expect(authStorage.getProviderHeaders("prime-inference")).toBeUndefined();
 		});
 
 		test("setPrimeInferenceApiKey removes legacy Prime Agent credential after Prime CLI save", () => {

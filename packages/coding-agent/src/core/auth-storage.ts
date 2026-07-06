@@ -607,7 +607,7 @@ export class AuthStorage {
 				const legacyPrimeTeam = existingCredential?.type === "api_key" ? existingCredential.primeTeam : undefined;
 				if (config.apiKey !== apiKey) {
 					savePrimeCliApiKey(apiKey, configPath);
-				} else if (!config.teamId && legacyPrimeTeam) {
+				} else if (!config.teamIdFromEnv && (legacyPrimeTeam === null || (!config.teamId && legacyPrimeTeam))) {
 					savePrimeCliTeamSelection(legacyPrimeTeam, configPath);
 				}
 			} catch (error) {
@@ -636,13 +636,20 @@ export class AuthStorage {
 			if (config?.teamIdFromEnv) {
 				return undefined;
 			}
+			const credential = this.data[PRIME_INFERENCE_PROVIDER_ID];
 			if (config?.apiKey) {
+				if (credential?.type === "api_key" && credential.primeTeam === null) {
+					return null;
+				}
 				if (config.teamId) {
 					return this.toPrimeTeamCredential({
 						teamId: config.teamId,
 						name: config.teamName ?? "Prime CLI team",
 						...(config.teamRole ? { role: config.teamRole } : {}),
 					});
+				}
+				if (credential?.type === "api_key" && credential.primeTeam) {
+					return credential.primeTeam;
 				}
 				return null;
 			}
@@ -672,11 +679,19 @@ export class AuthStorage {
 			return primeCliConfig.teamId ? { "X-Prime-Team-ID": primeCliConfig.teamId } : undefined;
 		}
 
+		const credential = this.data[providerId];
 		if (primeCliConfig?.apiKey) {
-			return primeCliConfig.teamId ? { "X-Prime-Team-ID": primeCliConfig.teamId } : undefined;
+			if (credential?.type === "api_key" && credential.primeTeam === null) {
+				return undefined;
+			}
+			if (primeCliConfig.teamId) {
+				return { "X-Prime-Team-ID": primeCliConfig.teamId };
+			}
+			return credential?.type === "api_key" && credential.primeTeam?.teamId
+				? { "X-Prime-Team-ID": credential.primeTeam.teamId }
+				: undefined;
 		}
 
-		const credential = this.data[providerId];
 		if (credential?.type === "api_key") {
 			if (credential.primeTeam === null) {
 				return undefined;
