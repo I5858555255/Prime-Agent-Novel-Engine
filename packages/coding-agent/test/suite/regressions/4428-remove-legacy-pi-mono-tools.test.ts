@@ -39,6 +39,32 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 		expect(result.diagnostics).toEqual([]);
 	});
 
+	it("falls back to ipython when only removed built-in tool names are requested", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory(tempDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-5")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+			tools: ["bash", "edit"],
+		});
+		await session.bindExtensions({});
+
+		expect(session.getAllTools().map((tool) => tool.name)).toEqual(["ipython"]);
+		expect(session.getActiveToolNames()).toEqual(["ipython"]);
+		session.dispose();
+	});
+
 	it("allowlists an extension tool that reuses a legacy built-in name", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory(tempDir);

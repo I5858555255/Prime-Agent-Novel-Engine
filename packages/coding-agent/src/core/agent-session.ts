@@ -189,6 +189,11 @@ export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
 export { type ParsedSkillBlock, parseSkillBlock } from "./skill-blocks.js";
 
+const LEGACY_BUILT_IN_TOOL_REPLACEMENTS = new Map<string, string>([
+	["bash", "ipython"],
+	["edit", "ipython"],
+]);
+
 export type RlmChildAgentStatus = "queued" | "running" | "done" | "error" | "cancelled";
 
 export interface RlmChildAgentActivity {
@@ -2048,6 +2053,14 @@ export class AgentSession {
 		return this._toolDefinitions.get(name)?.definition;
 	}
 
+	private _resolveActiveToolName(name: string): string {
+		if (this._toolRegistry.has(name)) {
+			return name;
+		}
+		const replacement = LEGACY_BUILT_IN_TOOL_REPLACEMENTS.get(name);
+		return replacement && this._toolRegistry.has(replacement) ? replacement : name;
+	}
+
 	/**
 	 * Set active tools by name.
 	 * Only tools in the registry can be enabled. Unknown tool names are ignored.
@@ -2057,11 +2070,17 @@ export class AgentSession {
 	setActiveToolsByName(toolNames: string[]): void {
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
+		const seenToolNames = new Set<string>();
 		for (const name of toolNames) {
-			const tool = this._toolRegistry.get(name);
+			const resolvedName = this._resolveActiveToolName(name);
+			if (seenToolNames.has(resolvedName)) {
+				continue;
+			}
+			const tool = this._toolRegistry.get(resolvedName);
 			if (tool) {
+				seenToolNames.add(resolvedName);
 				tools.push(tool);
-				validToolNames.push(name);
+				validToolNames.push(resolvedName);
 			}
 		}
 		this.agent.state.tools = tools;
@@ -4432,8 +4451,6 @@ export class AgentSession {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
-		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
-
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools = [
 			...registeredTools,
@@ -4441,7 +4458,19 @@ export class AgentSession {
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
-		].filter((tool) => isAllowedTool(tool.definition.name));
+		];
+		const registeredCustomToolNames = new Set(allCustomTools.map((tool) => tool.definition.name));
+		const effectiveAllowedToolNames = allowedToolNames
+			? new Set(
+					[...allowedToolNames].flatMap((name) => {
+						const replacement = LEGACY_BUILT_IN_TOOL_REPLACEMENTS.get(name);
+						return replacement && !registeredCustomToolNames.has(name) ? [name, replacement] : [name];
+					}),
+				)
+			: undefined;
+		const isAllowedTool = (name: string): boolean =>
+			!effectiveAllowedToolNames || effectiveAllowedToolNames.has(name);
+		const allowedCustomTools = allCustomTools.filter((tool) => isAllowedTool(tool.definition.name));
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 			Array.from(this._baseToolDefinitions.entries())
 				.filter(([name]) => isAllowedTool(name))
@@ -4453,7 +4482,7 @@ export class AgentSession {
 					},
 				]),
 		);
-		for (const tool of allCustomTools) {
+		for (const tool of allowedCustomTools) {
 			definitionRegistry.set(tool.definition.name, {
 				definition: tool.definition,
 				sourceInfo: tool.sourceInfo,
@@ -4477,7 +4506,7 @@ export class AgentSession {
 				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
 		);
 		const runner = this._extensionRunner;
-		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
+		const wrappedExtensionTools = wrapRegisteredTools(allowedCustomTools, runner);
 		// Resolve the runner at call time so a rebuild/reload rebinds built-in tools to the
 		// live runner instead of wedging them on the invalidated one's stale-ctx guard.
 		const wrappedBuiltInTools = wrapRegisteredTools(
@@ -4500,9 +4529,9 @@ export class AgentSession {
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
 		).filter((name) => isAllowedTool(name));
 
-		if (allowedToolNames) {
+		if (effectiveAllowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (allowedToolNames.has(toolName)) {
+				if (effectiveAllowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
 			}
