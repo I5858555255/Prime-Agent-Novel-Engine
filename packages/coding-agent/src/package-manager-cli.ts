@@ -603,28 +603,46 @@ function tryReadPreparedDaemonUpdateRestartManifest(agentDir: string): DaemonUpd
 	}
 }
 
+function responseHasActiveDaemonSessions(data: unknown): boolean {
+	if (!isRecord(data) || !Array.isArray(data.sessions)) {
+		return true;
+	}
+	return data.sessions.length > 0;
+}
+
 export async function prepareDaemonUpdateRestart(
 	socketPath: string,
 	agentDir: string,
 ): Promise<DaemonUpdateRestartManifest> {
 	const pendingManifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
-	if (pendingManifest && pendingManifest.sessions.length > 0) {
-		return pendingManifest;
-	}
-	clearPreparedDaemonUpdateRestartManifest(agentDir);
-	const startedAt = Date.now();
 	const client = new DaemonClient(socketPath);
+	let connected = false;
+	let startedAt: number | undefined;
 	try {
 		await client.connect(1000);
+		connected = true;
+		if (pendingManifest && pendingManifest.sessions.length > 0) {
+			const listResponse = await client.request({ type: "list" }, 30000);
+			if (listResponse.success && !responseHasActiveDaemonSessions(listResponse.data)) {
+				return pendingManifest;
+			}
+		}
+		clearPreparedDaemonUpdateRestartManifest(agentDir);
+		startedAt = Date.now();
 		const response = await client.request({ type: "prepare_update_restart" }, 120000);
 		if (!response.success) {
 			throw new Error(response.error);
 		}
 		return parseDaemonUpdateRestartManifest(response.data);
 	} catch (error) {
-		const fallback = readPreparedDaemonUpdateRestartManifest(agentDir, startedAt);
-		if (fallback) {
-			return fallback;
+		if (startedAt !== undefined) {
+			const fallback = readPreparedDaemonUpdateRestartManifest(agentDir, startedAt);
+			if (fallback) {
+				return fallback;
+			}
+		}
+		if (!connected && pendingManifest && pendingManifest.sessions.length > 0) {
+			return pendingManifest;
 		}
 		throw error;
 	} finally {
