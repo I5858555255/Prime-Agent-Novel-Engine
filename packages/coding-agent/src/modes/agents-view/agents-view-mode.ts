@@ -364,6 +364,7 @@ class AgentsViewMode implements Component, Focusable {
 	private deleteConfirmTimer: ReturnType<typeof setTimeout> | undefined;
 	private workingIconFrame = 0;
 	private rows: AgentsViewRow[] = [];
+	private lastListedSummaries: SessionSummary[] = [];
 	private lastVisibleSummaries: SessionSummary[] = [];
 	private expandedSubagentParents = new Set<string>();
 	// Agent row identities whose full spawn program is currently shown.
@@ -1044,7 +1045,7 @@ class AgentsViewMode implements Component, Focusable {
 					const summary = resolveAgentsViewResumeSummary(
 						sessionPath,
 						[...savedSessionsByPath.values()],
-						this.lastVisibleSummaries,
+						this.lastListedSummaries,
 					);
 					close();
 					if (!summary) {
@@ -1667,6 +1668,7 @@ class AgentsViewMode implements Component, Focusable {
 			const response = await client.request(createAgentsViewListCommand());
 			const data = requireDaemonData(response);
 			const sessions = expectSessionList(data);
+			this.lastListedSummaries = sessions;
 			const visibleSessions = sessions.filter((summary) =>
 				shouldShowAgentsViewSession(summary, this.inactiveAgentIdentities.has(getSummaryIdentity(summary))),
 			);
