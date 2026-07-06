@@ -359,9 +359,9 @@ export class AuthStorage {
 	hasAuth(provider: string): boolean {
 		if (this.runtimeOverrides.has(provider)) return true;
 		if (provider === PRIME_INFERENCE_PROVIDER_ID) {
-			if (getEnvApiKey(provider)) return true;
 			if (this.getPrimeCliApiKey(provider)) return true;
 			if (this.data[provider]) return true;
+			if (getEnvApiKey(provider)) return true;
 			if (this.fallbackResolver?.(provider)) return true;
 			return false;
 		}
@@ -507,9 +507,6 @@ export class AuthStorage {
 		}
 
 		if (providerId === PRIME_INFERENCE_PROVIDER_ID) {
-			const envKey = getEnvApiKey(providerId);
-			if (envKey) return envKey;
-
 			const primeCliKey = this.getPrimeCliApiKey(providerId);
 			if (primeCliKey) return primeCliKey;
 		}
@@ -729,17 +726,17 @@ export class AuthStorage {
 			return { configured: false, source: "runtime", label: "--api-key" };
 		}
 
-		const envKeys = findEnvKeys(PRIME_INFERENCE_PROVIDER_ID);
-		if (envKeys?.[0]) {
-			return { configured: false, source: "environment", label: envKeys[0] };
-		}
-
 		if (this.getPrimeCliApiKey(PRIME_INFERENCE_PROVIDER_ID)) {
 			return { configured: false, source: "prime_cli", label: "Prime CLI" };
 		}
 
 		if (this.data[PRIME_INFERENCE_PROVIDER_ID]) {
 			return { configured: true, source: "stored" };
+		}
+
+		const envKeys = findEnvKeys(PRIME_INFERENCE_PROVIDER_ID);
+		if (envKeys?.[0]) {
+			return { configured: false, source: "environment", label: envKeys[0] };
 		}
 
 		if (this.fallbackResolver?.(PRIME_INFERENCE_PROVIDER_ID)) {

@@ -205,6 +205,34 @@ describe("AuthStorage", () => {
 			});
 		});
 
+		test("prime inference uses Prime CLI auth over environment auth", async () => {
+			const originalPrimeApiKey = process.env.PRIME_API_KEY;
+			process.env.PRIME_API_KEY = "env-prime-key";
+			try {
+				const primeConfigPath = join(tempDir, "prime-config.json");
+				writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key" }));
+				writeAuthJson({});
+
+				authStorage = AuthStorage.create(authJsonPath, {
+					primeCliConfigPath: primeConfigPath,
+					usePrimeCliConfig: true,
+				});
+
+				await expect(authStorage.getApiKey("prime-inference")).resolves.toBe("prime-cli-key");
+				expect(authStorage.getAuthStatus("prime-inference")).toEqual({
+					configured: false,
+					source: "prime_cli",
+					label: "Prime CLI",
+				});
+			} finally {
+				if (originalPrimeApiKey === undefined) {
+					delete process.env.PRIME_API_KEY;
+				} else {
+					process.env.PRIME_API_KEY = originalPrimeApiKey;
+				}
+			}
+		});
+
 		test("prime inference provider headers use selected Prime CLI team", () => {
 			const primeConfigPath = join(tempDir, "prime-config.json");
 			writeFileSync(

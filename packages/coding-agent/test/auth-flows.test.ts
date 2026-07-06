@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
+import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
@@ -28,11 +29,14 @@ function createOverlayHandle(): OverlayHandle {
 	};
 }
 
-function createFakeTui(): TUI {
+function createFakeTui(overlays: Component[] = []): TUI {
 	return {
 		terminal: { columns: 80, rows: 24 },
 		requestRender: vi.fn(),
-		showOverlay: vi.fn((_component: Component) => createOverlayHandle()),
+		showOverlay: vi.fn((component: Component) => {
+			overlays.push(component);
+			return createOverlayHandle();
+		}),
 	} as unknown as TUI;
 }
 
@@ -40,9 +44,11 @@ function createHost(authStorage: AuthStorage): {
 	host: ProviderAuthFlowsHost;
 	statusMessages: string[];
 	errorMessages: string[];
+	overlays: Component[];
 } {
 	const statusMessages: string[] = [];
 	const errorMessages: string[] = [];
+	const overlays: Component[] = [];
 	const modelRegistry = {
 		authStorage,
 		refresh: vi.fn(),
@@ -52,7 +58,7 @@ function createHost(authStorage: AuthStorage): {
 
 	return {
 		host: {
-			ui: createFakeTui(),
+			ui: createFakeTui(overlays),
 			modelRegistry,
 			showStatus: (message) => statusMessages.push(message),
 			showError: (message) => errorMessages.push(message),
@@ -60,6 +66,7 @@ function createHost(authStorage: AuthStorage): {
 		},
 		statusMessages,
 		errorMessages,
+		overlays,
 	};
 }
 
@@ -128,5 +135,21 @@ describe("ProviderAuthFlows", () => {
 		expect(config.team_id).toBe("cli-team");
 		expect(config.team_name).toBe("CLI Research");
 		expect(config.team_role).toBe("admin");
+	});
+
+	it("offers Prime Inference logout when auth comes from the Prime CLI config", async () => {
+		writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key" }));
+		const authStorage = AuthStorage.create(authJsonPath, {
+			primeCliConfigPath: primeConfigPath,
+			usePrimeCliConfig: true,
+		});
+		const { host, overlays } = createHost(authStorage);
+
+		const logoutResult = new ProviderAuthFlows(host).runLogout();
+
+		expect(overlays).toHaveLength(1);
+		expect(stripAnsi(overlays[0]?.render(80).join("\n") ?? "")).toContain("Prime Inference");
+		overlays[0]?.handleInput?.("\x1b");
+		await expect(logoutResult).resolves.toBeNull();
 	});
 });

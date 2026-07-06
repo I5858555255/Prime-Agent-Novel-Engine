@@ -297,6 +297,17 @@ export class ProviderAuthFlows {
 			});
 		}
 
+		if (!options.some((option) => option.id === PRIME_INFERENCE_PROVIDER_ID)) {
+			const primeInferenceStatus = authStorage.getAuthStatus(PRIME_INFERENCE_PROVIDER_ID);
+			if (primeInferenceStatus.source === "prime_cli") {
+				options.push({
+					id: PRIME_INFERENCE_PROVIDER_ID,
+					name: PRIME_INFERENCE_PROVIDER_NAME,
+					authType: "api_key",
+				});
+			}
+		}
+
 		return options.sort((a, b) => a.name.localeCompare(b.name));
 	}
 

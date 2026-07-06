@@ -1,8 +1,18 @@
 import { Buffer } from "node:buffer";
 import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { OAuthAuthInfo } from "@earendil-works/pi-ai";
 
 export const PRIME_INFERENCE_PROVIDER_ID = "prime-inference";
@@ -131,13 +141,26 @@ function writePrimeCliConfigData(configPath: string, data: Record<string, unknow
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 	}
-	const fd = openSync(configPath, "w", 0o600);
+	const tempPath = join(
+		dir,
+		`.${basename(configPath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`,
+	);
+	let fd: number | undefined = openSync(tempPath, "wx", 0o600);
 	try {
 		writeFileSync(fd, `${JSON.stringify(data, null, 2)}\n`, "utf-8");
-	} finally {
 		closeSync(fd);
+		fd = undefined;
+		chmodSync(tempPath, 0o600);
+		renameSync(tempPath, configPath);
+		chmodSync(configPath, 0o600);
+	} finally {
+		if (fd !== undefined) {
+			closeSync(fd);
+		}
+		if (existsSync(tempPath)) {
+			rmSync(tempPath, { force: true });
+		}
 	}
-	chmodSync(configPath, 0o600);
 }
 
 function clearPrimeTeamFields(data: Record<string, unknown>): void {
