@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added fullscreen viewport rendering with alternate-screen scrolling, follow controls, mouse selection, and clipboard copy hooks ([#316](https://github.com/PrimeIntellect-ai/prime-agent/pull/316)).
+
 ## [0.2.4] - 2026-07-01
 
 ## [0.2.3] - 2026-06-30
