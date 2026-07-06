@@ -6,6 +6,7 @@ type FakeEditor = {
 	text: string;
 	expandedText: string;
 	history: string[];
+	onSubmit?: (text: string) => void | Promise<void>;
 	getText: () => string;
 	getExpandedText: () => string;
 	setText: (text: string) => void;
@@ -33,6 +34,7 @@ type SubmitHarness = PromptStashHarness & {
 };
 
 type PromptStashMethods = {
+	handleFollowUp: (this: SubmitHarness) => Promise<void>;
 	handlePromptStash: (this: PromptStashHarness) => void;
 	restorePromptStashIfEditorEmpty: (this: PromptStashHarness) => boolean;
 	liveImageMarkerIds: (this: PromptStashLiveMarkerHarness) => Set<number>;
@@ -130,6 +132,34 @@ describe("InteractiveMode prompt stash", () => {
 
 		expect(mode.onInputCallback).toHaveBeenCalledWith("temporary prompt");
 		expect(mode.editor.addToHistory).toHaveBeenCalledWith("temporary prompt");
+		expect(mode.promptStash).toBeUndefined();
+		expect(mode.editor.getText()).toBe("half-written draft");
+	});
+
+	it("restores a stashed prompt after idle follow-up slash commands clear the editor", async () => {
+		let resolveSettings: () => void = () => {};
+		const settingsDone = new Promise<void>((resolve) => {
+			resolveSettings = resolve;
+		});
+		const mode: SubmitHarness & { showSettingsSelector: Mock<() => Promise<void>> } = {
+			...createPromptStashHarness({ text: "/settings", stash: "half-written draft" }),
+			defaultEditor: {},
+			isAgentCompacting: () => false,
+			isAgentStreaming: () => false,
+			flushPendingBashComponents: vi.fn(),
+			onInputCallback: vi.fn(),
+			showSettingsSelector: vi.fn(() => settingsDone),
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+		interactiveModeMethods.setupEditorSubmitHandler.call(mode);
+		mode.editor.onSubmit = mode.defaultEditor.onSubmit;
+
+		const followUp = interactiveModeMethods.handleFollowUp.call(mode);
+		await Promise.resolve();
+		resolveSettings();
+		await followUp;
+
+		expect(mode.showSettingsSelector).toHaveBeenCalled();
 		expect(mode.promptStash).toBeUndefined();
 		expect(mode.editor.getText()).toBe("half-written draft");
 	});
