@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import { selectConfig } from "./cli/config-selector.js";
 import {
 	ensureInteractiveDaemonRunning,
+	isDaemonSessionSummary,
 	probeRunningDaemonSessions,
 	type RunningDaemonProbe,
 	shutdownDaemonAndWait,
@@ -20,6 +21,8 @@ import {
 } from "./config.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
+import { DaemonClient } from "./modes/daemon/daemon-client.js";
+import type { DaemonUpdateRestartManifest, DaemonUpdateRestartSession } from "./modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "./modes/daemon/daemon-socket.js";
 import { shouldUseWindowsShell } from "./utils/child-process.js";
 import { getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.js";
@@ -354,15 +357,16 @@ async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
 	}
 }
 
-// Only busy sessions (streaming, compacting, or pending messages) would lose work;
-// idle loaded sessions reload from disk on the fresh daemon.
+const UPDATE_RESTART_CONTINUATION_PROMPT =
+	"Prime Agent restarted after an update. Continue the interrupted task from the saved transcript and restored tool/kernel state. Inspect current state before retrying commands when needed.";
+
 const UPDATE_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
 	busyDetail(count) {
 		const { noun, pronoun } = pluralizeSessions(count);
-		return `The running daemon has ${count} busy ${noun}. Updating will stop the daemon and terminate ${pronoun}.`;
+		return `The running daemon has ${count} busy ${noun}. Updating will stop ${pronoun}, restart the daemon, and resume interrupted work.`;
 	},
 	unlistableDetail:
-		"A running daemon's sessions could not be listed. Updating will stop the daemon and may terminate active sessions.",
+		"A running daemon's sessions could not be listed. Updating will stop resident sessions, restart the daemon, and resume interrupted work where possible.",
 	question: "Continue?",
 	nonTtyHint: "Re-run with --force to proceed.",
 };
@@ -372,7 +376,149 @@ function confirmDaemonSessionLossBeforeUpdate(probe: RunningDaemonProbe, force: 
 	return confirmDaemonSessionLoss(probe, { force, copy: UPDATE_SESSION_LOSS_COPY });
 }
 
-async function restartDaemonAfterSelfUpdate(socketPath: string, daemonWasRunning: boolean): Promise<void> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown, fieldName: string): string {
+	if (typeof value !== "string") {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
+function readStringArray(value: unknown, fieldName: string): string[] {
+	if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string")) {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
+function readBoolean(value: unknown, fieldName: string): boolean {
+	if (typeof value !== "boolean") {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
+function parseDaemonUpdateRestartSession(value: unknown): DaemonUpdateRestartSession {
+	if (!isRecord(value)) {
+		throw new Error("Daemon update restart response contains an invalid session");
+	}
+	const queue = value.queue;
+	if (!isRecord(queue)) {
+		throw new Error("Daemon update restart response contains an invalid queue");
+	}
+	const config = value.config;
+	if (!isRecord(config)) {
+		throw new Error("Daemon update restart response contains an invalid session config");
+	}
+	return {
+		activeSessionId: readString(value.activeSessionId, "activeSessionId"),
+		sessionId: readString(value.sessionId, "sessionId"),
+		sessionFile: readString(value.sessionFile, "sessionFile"),
+		cwd: readString(value.cwd, "cwd"),
+		config: config as DaemonUpdateRestartSession["config"],
+		queue: {
+			steering: readStringArray(queue.steering, "queue.steering"),
+			followUp: readStringArray(queue.followUp, "queue.followUp"),
+		},
+		shouldResume: readBoolean(value.shouldResume, "shouldResume"),
+		wasStreaming: readBoolean(value.wasStreaming, "wasStreaming"),
+		wasCompacting: readBoolean(value.wasCompacting, "wasCompacting"),
+		wasBashRunning: readBoolean(value.wasBashRunning, "wasBashRunning"),
+		hadRunningRlmChildren: readBoolean(value.hadRunningRlmChildren, "hadRunningRlmChildren"),
+	};
+}
+
+function parseDaemonUpdateRestartManifest(value: unknown): DaemonUpdateRestartManifest {
+	if (!isRecord(value)) {
+		throw new Error("Daemon update restart response is invalid");
+	}
+	const sessions = value.sessions;
+	if (!Array.isArray(sessions)) {
+		throw new Error("Daemon update restart response is missing sessions");
+	}
+	return {
+		createdAt: readString(value.createdAt, "createdAt"),
+		sessions: sessions.map(parseDaemonUpdateRestartSession),
+	};
+}
+
+async function prepareDaemonUpdateRestart(socketPath: string): Promise<DaemonUpdateRestartManifest> {
+	const client = new DaemonClient(socketPath);
+	try {
+		await client.connect(1000);
+		const response = await client.request({ type: "prepare_update_restart" }, 120000);
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+		return parseDaemonUpdateRestartManifest(response.data);
+	} finally {
+		client.close();
+	}
+}
+
+function readCreatedActiveSessionId(value: unknown): string {
+	if (!isDaemonSessionSummary(value) || typeof value.activeSessionId !== "string") {
+		throw new Error("Daemon returned an invalid session create response");
+	}
+	return value.activeSessionId;
+}
+
+async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUpdateRestartManifest): Promise<void> {
+	if (manifest.sessions.length === 0) {
+		return;
+	}
+	const client = new DaemonClient(socketPath);
+	let restored = 0;
+	let resumed = 0;
+	try {
+		await client.connect(10000);
+		for (const session of manifest.sessions) {
+			const createResponse = await client.request(
+				{ type: "create", sessionPath: session.sessionFile, config: session.config },
+				120000,
+			);
+			if (!createResponse.success) {
+				console.error(chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${createResponse.error}`));
+				continue;
+			}
+			const activeSessionId = readCreatedActiveSessionId(createResponse.data);
+			restored++;
+			if (!session.shouldResume) {
+				continue;
+			}
+			const promptResponse = await client.request(
+				{ type: "prompt", activeSessionId, message: UPDATE_RESTART_CONTINUATION_PROMPT },
+				120000,
+			);
+			if (!promptResponse.success) {
+				console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
+				continue;
+			}
+			resumed++;
+			for (const message of session.queue.steering) {
+				await client.request({ type: "steer", activeSessionId, message }, 30000).catch(() => undefined);
+			}
+			for (const message of session.queue.followUp) {
+				await client.request({ type: "follow_up", activeSessionId, message }, 30000).catch(() => undefined);
+			}
+		}
+	} finally {
+		client.close();
+	}
+	console.log(chalk.green(`Restored ${restored} daemon session${restored === 1 ? "" : "s"}`));
+	if (resumed > 0) {
+		console.log(chalk.green(`Resumed ${resumed} interrupted session${resumed === 1 ? "" : "s"}`));
+	}
+}
+
+async function restartDaemonAfterSelfUpdate(
+	socketPath: string,
+	daemonWasRunning: boolean,
+	manifest?: DaemonUpdateRestartManifest,
+): Promise<void> {
 	if (!daemonWasRunning) {
 		return;
 	}
@@ -385,6 +531,9 @@ async function restartDaemonAfterSelfUpdate(socketPath: string, daemonWasRunning
 	}
 	try {
 		await ensureInteractiveDaemonRunning(socketPath);
+		if (manifest) {
+			await restoreDaemonUpdateRestart(socketPath, manifest);
+		}
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(
@@ -583,7 +732,21 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME}`));
-					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable);
+					let restartManifest: DaemonUpdateRestartManifest | undefined;
+					if (daemonProbe.reachable) {
+						try {
+							restartManifest = await prepareDaemonUpdateRestart(daemonSocketPath);
+						} catch (error: unknown) {
+							const message = error instanceof Error ? error.message : String(error);
+							console.error(
+								chalk.yellow(
+									`Warning: updated, but could not prepare daemon sessions for restart (${message}); the running daemon was left in place.`,
+								),
+							);
+							return true;
+						}
+					}
+					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe.reachable, restartManifest);
 				}
 				return true;
 			}

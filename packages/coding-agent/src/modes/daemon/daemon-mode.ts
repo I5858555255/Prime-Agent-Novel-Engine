@@ -101,6 +101,8 @@ import {
 	type DaemonSavedSessionInfo,
 	type DaemonSessionClosedReason,
 	type DaemonSessionSnapshot,
+	type DaemonUpdateRestartManifest,
+	type DaemonUpdateRestartSession,
 	failure,
 	isDaemonDialogExtensionUiRequest,
 	success,
@@ -201,6 +203,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_tool_definition",
 	"set_session_entry_label",
 	"extension_ui_response",
+	"prepare_update_restart",
 	"shutdown",
 ]);
 
@@ -212,6 +215,15 @@ const DAEMON_SERVER_CAPABILITIES: readonly DaemonClientCapability[] = [
 ];
 
 const DAEMON_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SERVER_CAPABILITIES);
+const UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS = 5000;
+const UPDATE_RESTART_MARKER =
+	"<prime_agent_update_interrupted>\n" +
+	"Prime Agent was updated and intentionally interrupted this session. Continue from the saved transcript and restored tool/kernel state. Any running model, tool, bash, or child-agent work may have been partially completed.\n" +
+	"</prime_agent_update_interrupted>";
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
 
 export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
@@ -1736,6 +1748,12 @@ export class AgentDaemon {
 				return success(command.id, "extension_ui_response");
 			}
 
+			case "prepare_update_restart":
+				this.log(
+					`prepare_update_restart command received over socket; ${this.sessions.size} active session(s) will be closed`,
+				);
+				return success(command.id, "prepare_update_restart", await this.prepareUpdateRestart());
+
 			case "shutdown":
 				this.log(`shutdown command received over socket; ${this.sessions.size} active session(s) will be closed`);
 				setImmediate(() => {
@@ -2101,6 +2119,90 @@ export class AgentDaemon {
 		return !this.hasScheduledJobsForSession(state.activeSessionId);
 	}
 
+	private createUpdateRestartSession(state: ActiveSessionState): DaemonUpdateRestartSession | undefined {
+		if (state.runtime.metadata.kind === "subagent") {
+			return undefined;
+		}
+		const session = state.runtime.session;
+		const sessionFile = session.sessionFile;
+		if (!sessionFile || this.isEmptyDraftContent(state)) {
+			return undefined;
+		}
+		const queue = {
+			steering: [...session.getSteeringMessages()],
+			followUp: [...session.getFollowUpMessages()],
+		};
+		const wasStreaming = session.isStreaming;
+		const wasCompacting = session.isCompacting;
+		const wasBashRunning = session.isBashRunning;
+		const hadRunningRlmChildren = session.hasRunningRlmChildren();
+		const shouldResume =
+			wasStreaming ||
+			wasCompacting ||
+			wasBashRunning ||
+			hadRunningRlmChildren ||
+			queue.steering.length > 0 ||
+			queue.followUp.length > 0;
+		return {
+			activeSessionId: state.activeSessionId,
+			sessionId: session.sessionId,
+			sessionFile,
+			cwd: session.sessionManager.getCwd(),
+			config: {
+				...state.runtime.runtimeConfig,
+				cwd: session.sessionManager.getCwd(),
+			},
+			queue,
+			shouldResume,
+			wasStreaming,
+			wasCompacting,
+			wasBashRunning,
+			hadRunningRlmChildren,
+		};
+	}
+
+	private appendUpdateRestartMarker(state: ActiveSessionState, restartSession: DaemonUpdateRestartSession): void {
+		if (!restartSession.shouldResume) {
+			return;
+		}
+		state.runtime.session.sessionManager.appendCustomMessageEntry(
+			"prime-agent.update_restart",
+			UPDATE_RESTART_MARKER,
+			false,
+			{
+				activeSessionId: restartSession.activeSessionId,
+				wasStreaming: restartSession.wasStreaming,
+				wasCompacting: restartSession.wasCompacting,
+				wasBashRunning: restartSession.wasBashRunning,
+				hadRunningRlmChildren: restartSession.hadRunningRlmChildren,
+			},
+		);
+	}
+
+	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
+		const topLevelStates = [...this.sessions.values()].filter((state) => state.runtime.metadata.kind !== "subagent");
+		const restartSessions = topLevelStates
+			.map((state) => [state, this.createUpdateRestartSession(state)] as const)
+			.filter((entry): entry is readonly [ActiveSessionState, DaemonUpdateRestartSession] => entry[1] !== undefined);
+
+		for (const [state, restartSession] of restartSessions) {
+			this.appendUpdateRestartMarker(state, restartSession);
+		}
+		for (const state of topLevelStates) {
+			if (this.sessions.has(state.activeSessionId)) {
+				await this.closeSession(state, "update");
+			}
+		}
+		for (const state of [...this.sessions.values()]) {
+			await this.closeSession(state, "update");
+		}
+
+		return {
+			createdAt: new Date().toISOString(),
+			sessions: restartSessions.map(([, restartSession]) => restartSession),
+		};
+	}
+
 	private hasScheduledJobsForSession(activeSessionId: string): boolean {
 		return this.cronStore
 			.list()
@@ -2145,6 +2247,17 @@ export class AgentDaemon {
 		}
 	}
 
+	private async abortBashForClose(state: ActiveSessionState): Promise<void> {
+		if (!state.runtime.session.isBashRunning) {
+			return;
+		}
+		state.runtime.session.abortBash();
+		const deadline = Date.now() + UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS;
+		while (state.runtime.session.isBashRunning && Date.now() < deadline) {
+			await delay(50);
+		}
+	}
+
 	private async closeSessionOnce(state: ActiveSessionState, reason: DaemonSessionClosedReason): Promise<void> {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
@@ -2157,10 +2270,11 @@ export class AgentDaemon {
 		// Empty draft (no messages, config, or jobs): discard rather than persist an
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
-		const isEmptyDraftSession = reason !== "shutdown" && this.isEmptyDraftContent(state);
+		const keepsResumeEntry = reason === "shutdown" || reason === "update";
+		const isEmptyDraftSession = !keepsResumeEntry && this.isEmptyDraftContent(state);
 		let persistError: unknown;
 		// Clean shutdown leaves the session un-archived so it stays in the resume list.
-		if (reason !== "shutdown" && !isEmptyDraftSession) {
+		if (!keepsResumeEntry && !isEmptyDraftSession) {
 			try {
 				state.runtime.session.sessionManager.appendSessionState({ status: "archived" });
 			} catch (error) {
@@ -2168,7 +2282,8 @@ export class AgentDaemon {
 			}
 		}
 		cancelPendingExtensionUiRequests(state);
-		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
+		if (reason === "killed" || reason === "shutdown" || reason === "replaced" || reason === "update") {
+			await this.abortBashForClose(state);
 			await state.runtime.session.abort().catch(() => undefined);
 		}
 		state.unsubscribe?.();
@@ -2185,10 +2300,10 @@ export class AgentDaemon {
 				await deleteSessionFile(sessionFile).catch(() => undefined);
 			}
 		}
-		if (persistError && reason !== "shutdown" && reason !== "completed") {
+		if (persistError && !keepsResumeEntry && reason !== "completed") {
 			throw persistError;
 		}
-		if (cascadeError && reason !== "shutdown" && reason !== "completed") {
+		if (cascadeError && !keepsResumeEntry && reason !== "completed") {
 			throw cascadeError;
 		}
 	}
