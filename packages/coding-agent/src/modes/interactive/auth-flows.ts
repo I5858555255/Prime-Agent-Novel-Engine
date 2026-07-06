@@ -493,7 +493,9 @@ export class ProviderAuthFlows {
 		dialog: LoginDialogComponent,
 		closeDialog: () => void,
 	): Promise<AuthenticationResult> {
-		if (source !== "prime-cli") {
+		const canReusePrimeCliAuth =
+			source === "prime-cli" && this.host.modelRegistry.authStorage.getPrimeCliConfigPath() !== undefined;
+		if (!canReusePrimeCliAuth) {
 			this.host.modelRegistry.authStorage.setPrimeInferenceApiKey(apiKey);
 		}
 		const teamStatus = await this.selectPrimeInferenceTeam(apiKey, dialog);

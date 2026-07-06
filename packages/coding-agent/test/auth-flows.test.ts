@@ -6,6 +6,7 @@ import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
+import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
 import { ProviderAuthFlows, type ProviderAuthFlowsHost } from "../src/modes/interactive/auth-flows.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -74,6 +75,7 @@ describe("ProviderAuthFlows", () => {
 	let tempDir: string;
 	let authJsonPath: string;
 	let primeConfigPath: string;
+	let originalHome: string | undefined;
 	let originalPrimeTeamId: string | undefined;
 
 	beforeAll(() => {
@@ -86,10 +88,16 @@ describe("ProviderAuthFlows", () => {
 		authJsonPath = join(tempDir, "auth.json");
 		primeConfigPath = join(tempDir, "prime-config.json");
 		writeFileSync(authJsonPath, "{}");
+		originalHome = process.env.HOME;
 		originalPrimeTeamId = process.env.PRIME_TEAM_ID;
 	});
 
 	afterEach(() => {
+		if (originalHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = originalHome;
+		}
 		if (originalPrimeTeamId === undefined) {
 			delete process.env.PRIME_TEAM_ID;
 		} else {
@@ -135,6 +143,41 @@ describe("ProviderAuthFlows", () => {
 		expect(config.team_id).toBe("cli-team");
 		expect(config.team_name).toBe("CLI Research");
 		expect(config.team_role).toBe("admin");
+	});
+
+	it("stores a reused Prime CLI key when Prime CLI config sync is disabled", async () => {
+		process.env.HOME = tempDir;
+		process.env.PRIME_TEAM_ID = "env-team";
+		const defaultPrimeDir = join(tempDir, ".prime");
+		mkdirSync(defaultPrimeDir, { recursive: true });
+		writeFileSync(join(defaultPrimeDir, "config.json"), JSON.stringify({ api_key: "prime-cli-key" }));
+		const authStorage = AuthStorage.create(authJsonPath, { usePrimeCliConfig: false });
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			jsonResponse({
+				data: { scope: { inference: { write: true } } },
+			}),
+		);
+		const { host, errorMessages } = createHost(authStorage);
+
+		const result = await new ProviderAuthFlows(host).runPrimeInferenceLogin();
+
+		expect(errorMessages).toEqual([]);
+		expect(result.status).toBe("success");
+		expect(fetchMock).toHaveBeenCalledOnce();
+		await expect(authStorage.getApiKey(PRIME_INFERENCE_PROVIDER_ID)).resolves.toBe("prime-cli-key");
+		expect(authStorage.getAuthStatus(PRIME_INFERENCE_PROVIDER_ID)).toEqual({
+			configured: true,
+			source: "stored",
+		});
+
+		const authData = JSON.parse(readFileSync(authJsonPath, "utf-8")) as Record<
+			string,
+			{ type?: string; key?: string }
+		>;
+		expect(authData[PRIME_INFERENCE_PROVIDER_ID]).toEqual({
+			type: "api_key",
+			key: "prime-cli-key",
+		});
 	});
 
 	it("offers Prime Inference logout when auth comes from the Prime CLI config", async () => {
