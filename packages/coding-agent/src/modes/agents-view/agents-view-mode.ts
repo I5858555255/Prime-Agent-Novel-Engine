@@ -171,15 +171,26 @@ export function resolveAgentsViewResumeSummary(
 	savedSessions: readonly SessionInfo[],
 	visibleSummaries: readonly SessionSummary[],
 ): SessionSummary | undefined {
-	const selectedPath = resolvePath(sessionPath);
-	const activeSummary = visibleSummaries.find(
-		(summary) => summary.sessionFile !== undefined && resolvePath(summary.sessionFile) === selectedPath,
-	);
+	const activeSummary = resolveAgentsViewActiveSummaryForPath(sessionPath, visibleSummaries);
 	if (activeSummary) {
 		return activeSummary;
 	}
+	const selectedPath = resolvePath(sessionPath);
 	const savedSession = savedSessions.find((session) => resolvePath(session.path) === selectedPath);
 	return savedSession ? summaryForInactiveSession(savedSession) : undefined;
+}
+
+export function resolveAgentsViewActiveSummaryForPath(
+	sessionPath: string,
+	summaries: readonly SessionSummary[],
+): SessionSummary | undefined {
+	const selectedPath = resolvePath(sessionPath);
+	return summaries.find(
+		(summary) =>
+			summary.activeSessionId !== undefined &&
+			summary.sessionFile !== undefined &&
+			resolvePath(summary.sessionFile) === selectedPath,
+	);
 }
 
 // Status messages render in a single-row hint slot below the editor; embedded
@@ -1066,7 +1077,7 @@ class AgentsViewMode implements Component, Focusable {
 						if (!name) {
 							return;
 						}
-						SessionManager.open(sessionPath).appendSessionInfo(name);
+						await this.renameSavedSessionFromSelector(sessionPath, name);
 					},
 					deleteSession: deleteSessionFile,
 					showRenameHint: true,
@@ -1079,6 +1090,22 @@ class AgentsViewMode implements Component, Focusable {
 
 	private getSavedSessionCwd(): string {
 		return this.options.config.cwd ?? this.options.uiServices.getInitialCwd();
+	}
+
+	private async renameSavedSessionFromSelector(sessionPath: string, name: string): Promise<void> {
+		const activeSummary = resolveAgentsViewActiveSummaryForPath(sessionPath, this.lastListedSummaries);
+		if (!activeSummary?.activeSessionId) {
+			SessionManager.open(sessionPath).appendSessionInfo(name);
+			return;
+		}
+		const response = await this.requireClient().request({
+			type: "rename_saved_session",
+			activeSessionId: activeSummary.activeSessionId,
+			sessionPath,
+			name,
+		});
+		requireDaemonData(response);
+		await this.refreshSessions();
 	}
 
 	private getDefaultModelForNewAgents(): Model<Api> | undefined {

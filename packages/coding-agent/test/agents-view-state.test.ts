@@ -13,6 +13,7 @@ import {
 	createAgentsViewSessionName,
 	formatAgentsViewRelativeTime,
 	formatAgentsViewStatusLine,
+	resolveAgentsViewActiveSummaryForPath,
 	resolveAgentsViewOpenCwd,
 	resolveAgentsViewResumeSummary,
 	resolveAgentsViewSessionUiServices,
@@ -549,6 +550,27 @@ describe("agents view state", () => {
 		});
 
 		expect(resolveAgentsViewResumeSummary(savedSession.path, [savedSession], [activeSummary])).toBe(activeSummary);
+	});
+
+	test("resolves active summaries by session file path", () => {
+		const activeSummary = makeSummary({
+			id: "active-runtime",
+			activeSessionId: "active-runtime",
+			sessionId: "saved-active",
+			sessionFile: "/tmp/sessions/active.jsonl",
+			sessionName: "Running",
+		});
+		const inactiveSummary = makeSummary({
+			id: "inactive",
+			activeSessionId: undefined,
+			sessionId: "inactive",
+			sessionFile: "/tmp/sessions/inactive.jsonl",
+		});
+
+		expect(
+			resolveAgentsViewActiveSummaryForPath("/tmp/sessions/active.jsonl", [inactiveSummary, activeSummary]),
+		).toBe(activeSummary);
+		expect(resolveAgentsViewActiveSummaryForPath("/tmp/sessions/inactive.jsonl", [inactiveSummary])).toBeUndefined();
 	});
 
 	test("derives the reply headline from the first line of the latest assistant text", () => {
