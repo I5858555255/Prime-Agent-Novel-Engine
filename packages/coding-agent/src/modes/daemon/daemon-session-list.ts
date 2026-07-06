@@ -324,6 +324,7 @@ export function isActiveSessionBusy(activeSession: ActiveSessionState): boolean 
 	return (
 		session.isStreaming ||
 		session.isCompacting ||
+		session.isBashRunning ||
 		effectivePendingMessageCount(session) > 0 ||
 		session.hasRunningRlmChildren()
 	);

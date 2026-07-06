@@ -48,6 +48,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
 import {
+	APP_NAME,
 	APP_TITLE,
 	getAgentDir,
 	getAgentTracesLogPath,
@@ -80,6 +81,7 @@ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.j
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
+import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
@@ -440,6 +442,34 @@ function getPayloadWorkingIndicatorOptions(
 		...(frames === undefined ? {} : { frames }),
 		...(intervalMs === undefined ? {} : { intervalMs }),
 	};
+}
+
+function updateArgsIncludeSelf(args: readonly string[]): boolean {
+	let selfFlag = false;
+	let extensionsOnlyFlag = false;
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--self") {
+			selfFlag = true;
+		} else if (arg === "--extensions") {
+			extensionsOnlyFlag = true;
+		} else if (arg === "--extension") {
+			extensionsOnlyFlag = true;
+			index++;
+		}
+	}
+	if (selfFlag) {
+		return true;
+	}
+	if (extensionsOnlyFlag) {
+		return false;
+	}
+	const positional = args.find((arg) => !arg.startsWith("-"));
+	if (!positional) {
+		return true;
+	}
+	const normalized = positional.toLowerCase();
+	return normalized === "self" || normalized === "pi" || normalized === APP_NAME.toLowerCase();
 }
 
 /**
@@ -3651,6 +3681,11 @@ export class InteractiveMode {
 			if (commandName === "reload" && !commandArgs) {
 				this.editor.setText("");
 				await this.handleReloadCommand();
+				return;
+			}
+			if (commandName === "update") {
+				this.editor.setText("");
+				await this.handleUpdateCommand(commandArgs);
 				return;
 			}
 			if (commandName === "fullscreen") {
@@ -6899,6 +6934,73 @@ export class InteractiveMode {
 	// =========================================================================
 	// Command handlers
 	// =========================================================================
+
+	private async handleUpdateCommand(args: string): Promise<void> {
+		const entrypoint = process.argv[1];
+		if (!entrypoint) {
+			this.showError("Cannot determine current CLI entrypoint for update");
+			return;
+		}
+
+		const updateArgs = parseCommandArgs(args);
+		const includesSelf = updateArgsIncludeSelf(updateArgs);
+		this.stopWorkingLoader();
+		await this.ui.terminal.drainInput(1000).catch(() => undefined);
+		this.ui.stop();
+
+		const updateResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, "update", ...updateArgs], {
+			stdio: "inherit",
+			cwd: this.getCurrentCwd(),
+			env: process.env,
+		});
+		const updateExitCode = updateResult.status ?? (updateResult.signal ? 1 : 0);
+
+		if (includesSelf && updateExitCode === 0 && !updateResult.error) {
+			const cwd = this.getCurrentCwd();
+			this.stop();
+			await this.agentConnection.dispose().catch(() => undefined);
+			try {
+				await this.options.onShutdown?.();
+			} catch {
+				// The update already completed; do not block relaunch on local teardown.
+			}
+			const relaunchResult = spawnSync(process.execPath, [...process.execArgv, entrypoint], {
+				stdio: "inherit",
+				cwd,
+				env: process.env,
+			});
+			if (relaunchResult.error) {
+				console.error(`Failed to relaunch ${APP_NAME}: ${relaunchResult.error.message}`);
+				process.exit(1);
+			}
+			process.exit(relaunchResult.status ?? (relaunchResult.signal ? 1 : 0));
+		}
+
+		this.ui.start();
+		if (this.fullscreenEnabled) {
+			this.applyFullscreen(true);
+		}
+		this.ui.requestRender(true);
+
+		if (updateResult.error) {
+			this.showError(`Update failed: ${updateResult.error.message}`);
+			return;
+		}
+		if (updateExitCode !== 0) {
+			this.showError(
+				updateResult.signal
+					? `Update terminated by signal ${updateResult.signal}`
+					: `Update exited with code ${updateExitCode}`,
+			);
+			return;
+		}
+		if (includesSelf) {
+			this.showStatus(`${APP_NAME} updated. Restart the terminal session to use the new version.`);
+			return;
+		}
+		this.showStatus("Packages updated. Reloading resources...");
+		await this.handleReloadCommand();
+	}
 
 	private async handleReloadCommand(): Promise<void> {
 		if (this.isAgentStreaming()) {

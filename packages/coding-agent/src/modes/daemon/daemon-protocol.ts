@@ -185,6 +185,30 @@ export interface DaemonAttachResult {
 	};
 }
 
+export interface DaemonUpdateRestartQueue {
+	steering: string[];
+	followUp: string[];
+}
+
+export interface DaemonUpdateRestartSession {
+	activeSessionId: string;
+	sessionId: string;
+	sessionFile: string;
+	cwd: string;
+	config: AgentSessionRuntimeConfig;
+	queue: DaemonUpdateRestartQueue;
+	shouldResume: boolean;
+	wasStreaming: boolean;
+	wasCompacting: boolean;
+	wasBashRunning: boolean;
+	hadRunningRlmChildren: boolean;
+}
+
+export interface DaemonUpdateRestartManifest {
+	createdAt: string;
+	sessions: DaemonUpdateRestartSession[];
+}
+
 export type DaemonCommand =
 	| { id?: string; type: "list"; all?: boolean; cwd?: string; sessionDir?: string }
 	| { id?: string; type: "list_saved_sessions"; activeSessionId: string; scope: AgentConnectionSavedSessionScope }
@@ -313,6 +337,7 @@ export type DaemonCommand =
 			requestId: string;
 			response: DaemonExtensionUIResponse;
 	  }
+	| { id?: string; type: "prepare_update_restart" }
 	| { id?: string; type: "shutdown" };
 
 type DaemonCommandName = DaemonCommand["type"];
@@ -332,7 +357,7 @@ export type DaemonErrorInfo =
 	| { code: "missing_session_cwd"; issue: SessionCwdIssue }
 	| { code: "session_import_file_not_found"; filePath: string };
 
-export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced";
+export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced" | "update";
 
 export type DaemonExtensionUIResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
 
