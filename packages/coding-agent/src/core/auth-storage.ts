@@ -625,10 +625,10 @@ export class AuthStorage {
 		let config: PrimeCliConfig | undefined;
 		if (this.isPrimeCliConfigEnabled()) {
 			config = this.getPrimeCliConfig(PRIME_INFERENCE_PROVIDER_ID);
+			if (config?.teamIdFromEnv) {
+				return undefined;
+			}
 			if (config?.apiKey) {
-				if (config.teamIdFromEnv) {
-					return undefined;
-				}
 				if (config.teamId) {
 					return this.toPrimeTeamCredential({
 						teamId: config.teamId,
@@ -643,9 +643,6 @@ export class AuthStorage {
 		const credential = this.data[PRIME_INFERENCE_PROVIDER_ID];
 		if (credential?.type === "api_key" && credential.primeTeam !== undefined) {
 			return credential.primeTeam;
-		}
-		if (config?.teamIdFromEnv) {
-			return undefined;
 		}
 		if (config?.teamId) {
 			return this.toPrimeTeamCredential({

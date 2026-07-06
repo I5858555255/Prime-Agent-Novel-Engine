@@ -285,6 +285,36 @@ describe("AuthStorage", () => {
 			expect(authStorage.getPrimeInferenceTeamSelection()).toBeNull();
 		});
 
+		test("prime inference environment team overrides legacy personal selection", () => {
+			const originalPrimeTeamId = process.env.PRIME_TEAM_ID;
+			process.env.PRIME_TEAM_ID = "env-team";
+			try {
+				const primeConfigPath = join(tempDir, "prime-config.json");
+				writeFileSync(primeConfigPath, JSON.stringify({ team_id: "cli-team" }));
+				writeAuthJson({
+					"prime-inference": {
+						type: "api_key",
+						key: "agent-key",
+						primeTeam: null,
+					},
+				});
+
+				authStorage = AuthStorage.create(authJsonPath, {
+					primeCliConfigPath: primeConfigPath,
+					usePrimeCliConfig: true,
+				});
+
+				expect(authStorage.getProviderHeaders("prime-inference")).toEqual({ "X-Prime-Team-ID": "env-team" });
+				expect(authStorage.getPrimeInferenceTeamSelection()).toBeUndefined();
+			} finally {
+				if (originalPrimeTeamId === undefined) {
+					delete process.env.PRIME_TEAM_ID;
+				} else {
+					process.env.PRIME_TEAM_ID = originalPrimeTeamId;
+				}
+			}
+		});
+
 		test("prime inference missing Agent team selection falls back to Prime CLI team", () => {
 			const primeConfigPath = join(tempDir, "prime-config.json");
 			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key", team_id: "cli-team" }));
