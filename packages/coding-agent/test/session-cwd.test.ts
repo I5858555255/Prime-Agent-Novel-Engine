@@ -88,7 +88,7 @@ describe("session cwd handling", () => {
 		expect(getMissingSessionCwdIssue(sessionManager, fallbackCwd)).toBeUndefined();
 	});
 
-	it("uses explicit --cwd as the cwd override when opening --session", async () => {
+	it("uses explicit --cwd as the cwd override when opening --resume", async () => {
 		const storedCwd = createTempDir("pi-session-cwd-stored");
 		const explicitCwd = createTempDir("pi-session-cwd-explicit");
 		const agentDir = createTempDir("pi-session-cwd-agent-dir");
@@ -97,7 +97,7 @@ describe("session cwd handling", () => {
 		cleanupPaths.push(storedCwd, explicitCwd, agentDir, sessionDir);
 		writeSessionFile(sessionFile, storedCwd);
 
-		const parsed = parseArgs(["--cwd", explicitCwd, "--session", sessionFile]);
+		const parsed = parseArgs(["--cwd", explicitCwd, "--resume", sessionFile]);
 		const sessionManager = await createSessionManager(
 			parsed,
 			explicitCwd,

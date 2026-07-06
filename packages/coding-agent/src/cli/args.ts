@@ -18,13 +18,12 @@ export interface Args {
 	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
 	continue?: boolean;
-	resume?: boolean;
+	resume?: true | string;
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
 	daemonSocket?: string;
 	noSession?: boolean;
-	session?: string;
 	fork?: string;
 	sessionDir?: string;
 	models?: string[];
@@ -98,7 +97,15 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
-			result.resume = true;
+			const next = args[i + 1];
+			if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+				result.resume = next;
+				i++;
+			} else {
+				result.resume = true;
+			}
+		} else if (arg.startsWith("--resume=")) {
+			result.resume = arg.slice("--resume=".length) || true;
 		} else if (arg === "--provider" && i + 1 < args.length) {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
@@ -114,8 +121,17 @@ export function parseArgs(args: string[]): Args {
 			result.appendSystemPrompt.push(args[++i]);
 		} else if (arg === "--no-session") {
 			result.noSession = true;
-		} else if (arg === "--session" && i + 1 < args.length) {
-			result.session = args[++i];
+		} else if (arg === "--session" || arg.startsWith("--session=")) {
+			result.diagnostics.push({
+				type: "error",
+				message: "--session has been replaced by --resume <path|id>",
+			});
+			if (arg === "--session" && i + 1 < args.length) {
+				const next = args[i + 1];
+				if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+					i++;
+				}
+			}
 		} else if (arg === "--fork" && i + 1 < args.length) {
 			result.fork = args[++i];
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
@@ -254,8 +270,7 @@ ${chalk.bold("Options:")}
   --daemon-socket <path>         Socket path for daemon mode
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
-  --resume, -r                   Select a session to resume
-  --session <path|id>            Use specific session file or partial UUID
+  --resume, -r [path|id]         Resume specific session, or browse when omitted
   --fork <path|id>               Fork specific session file or partial UUID into a new session
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)

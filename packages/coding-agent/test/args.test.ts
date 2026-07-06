@@ -82,6 +82,32 @@ describe("parseArgs", () => {
 			const result = parseArgs(["-r"]);
 			expect(result.resume).toBe(true);
 		});
+
+		test("parses --resume with a session selector", () => {
+			const result = parseArgs(["--resume", "/path/to/session.jsonl"]);
+			expect(result.resume).toBe("/path/to/session.jsonl");
+			expect(result.messages).toEqual([]);
+		});
+
+		test("parses -r with a session selector", () => {
+			const result = parseArgs(["-r", "1234abcd"]);
+			expect(result.resume).toBe("1234abcd");
+			expect(result.messages).toEqual([]);
+		});
+
+		test("parses --resume=value", () => {
+			const result = parseArgs(["--resume=1234abcd"]);
+			expect(result.resume).toBe("1234abcd");
+		});
+
+		test("rejects --session", () => {
+			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
+			expect(result.diagnostics).toContainEqual({
+				type: "error",
+				message: "--session has been replaced by --resume <path|id>",
+			});
+			expect(result.messages).toEqual([]);
+		});
 	});
 
 	describe("--cwd flag", () => {
@@ -130,11 +156,6 @@ describe("parseArgs", () => {
 		test("parses --mode rpc", () => {
 			const result = parseArgs(["--mode", "rpc"]);
 			expect(result.mode).toBe("rpc");
-		});
-
-		test("parses --session", () => {
-			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
-			expect(result.session).toBe("/path/to/session.jsonl");
 		});
 
 		test("parses --fork", () => {
