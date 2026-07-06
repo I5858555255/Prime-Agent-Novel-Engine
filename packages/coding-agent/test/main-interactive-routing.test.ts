@@ -185,7 +185,7 @@ describe("daemon-backed interactive session manager routing", () => {
 		};
 
 		expect(restoreResumeSelectorFallback(parsed, "fix")).toBe(true);
-		expect(parsed.resume).toBe(true);
+		expect(parsed.resume).toBeUndefined();
 		expect(parsed.resumeSelectorFallback).toBeUndefined();
 		expect(parsed.messages).toEqual(["fix", "the", "bug"]);
 	});

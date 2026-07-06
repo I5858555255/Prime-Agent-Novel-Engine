@@ -465,8 +465,8 @@ function getResumeSelector(parsed: Pick<Args, "resume">): string | undefined {
 
 export function restoreResumeSelectorFallback(parsed: Args, selector: string): boolean {
 	if (parsed.resumeSelectorFallback !== selector) return false;
-	parsed.resume = true;
-	parsed.resumeSelectorFallback = undefined;
+	delete parsed.resume;
+	delete parsed.resumeSelectorFallback;
 	parsed.messages.unshift(selector);
 	return true;
 }
@@ -519,6 +519,7 @@ export async function createSessionManager(
 			}
 
 			case "not_found":
+				if (restoreResumeSelectorFallback(parsed, resolved.arg)) break;
 				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
 				process.exit(1);
 		}

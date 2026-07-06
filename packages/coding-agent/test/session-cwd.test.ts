@@ -108,6 +108,21 @@ describe("session cwd handling", () => {
 		expect(sessionManager.getCwd()).toBe(explicitCwd);
 	});
 
+	it("restores an unresolved resume selector as prompt text for a fresh session", async () => {
+		const cwd = createTempDir("pi-session-cwd-resume-fallback");
+		const agentDir = createTempDir("pi-session-cwd-resume-fallback-agent-dir");
+		const sessionDir = createTempDir("pi-session-cwd-resume-fallback-session-dir");
+		cleanupPaths.push(cwd, agentDir, sessionDir);
+
+		const parsed = parseArgs(["--resume", "fix", "the", "bug"]);
+		const sessionManager = await createSessionManager(parsed, cwd, sessionDir, SettingsManager.create(cwd, agentDir));
+
+		expect(sessionManager.getCwd()).toBe(cwd);
+		expect(parsed.resume).toBeUndefined();
+		expect(parsed.resumeSelectorFallback).toBeUndefined();
+		expect(parsed.messages).toEqual(["fix", "the", "bug"]);
+	});
+
 	it("throws a controlled error before runtime creation when the stored cwd is missing", async () => {
 		const fallbackCwd = createTempDir("pi-session-cwd-runtime");
 		const missingCwd = join(fallbackCwd, "does-not-exist");
