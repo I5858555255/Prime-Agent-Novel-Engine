@@ -7,6 +7,7 @@ type FakeEditor = {
 	expandedText: string;
 	history: string[];
 	onSubmit?: (text: string) => void | Promise<void>;
+	clearHistory?: Mock;
 	getText: () => string;
 	getExpandedText: () => string;
 	setText: (text: string) => void;
@@ -25,6 +26,25 @@ type PromptStashLiveMarkerHarness = PromptStashHarness & {
 	connectionQueue: { steering: string[]; followUp: string[] };
 };
 
+type ResetHarness = PromptStashLiveMarkerHarness & {
+	chatContainer: { clear: Mock };
+	pendingMessagesContainer: { clear: Mock };
+	queuedMessagesContainer: { clear: Mock };
+	defaultEditor: FakeEditor;
+	pastedImages: Map<number, unknown>;
+	streamingComponent?: unknown;
+	streamingMessage?: unknown;
+	activeBashComponent?: { setComplete: Mock };
+	pendingBashComponents: unknown[];
+	activityTracker: { reset: Mock };
+	contextUsageTokenBaseline: number;
+	resetPendingToolState: Mock;
+	resetChildAgentInspector: Mock;
+	setGoalAnnouncementBaseline: Mock;
+	getGoalState: Mock<() => unknown>;
+	syncGoalTray: Mock;
+};
+
 type SubmitHarness = PromptStashHarness & {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
 	isAgentCompacting: () => boolean;
@@ -36,6 +56,7 @@ type SubmitHarness = PromptStashHarness & {
 type PromptStashMethods = {
 	handleFollowUp: (this: SubmitHarness) => Promise<void>;
 	handlePromptStash: (this: PromptStashHarness) => void;
+	resetCurrentSessionRenderState: (this: ResetHarness) => void;
 	restorePromptStashIfEditorEmpty: (this: PromptStashHarness, text?: string) => boolean;
 	liveImageMarkerIds: (this: PromptStashLiveMarkerHarness) => Set<number>;
 	setupEditorSubmitHandler: (this: SubmitHarness) => void;
@@ -62,6 +83,9 @@ function createEditor(options: { text?: string; expandedText?: string; history?:
 		getHistory() {
 			return this.history;
 		},
+		clearHistory: vi.fn(function (this: FakeEditor) {
+			this.history = [];
+		}),
 	};
 	return editor;
 }
@@ -218,6 +242,38 @@ describe("InteractiveMode prompt stash", () => {
 		expect(mode.showSettingsSelector).toHaveBeenCalled();
 		expect(mode.promptStash).toBeUndefined();
 		expect(mode.editor.getText()).toBe("half-written draft");
+	});
+
+	it("drops queued image references from old sessions while keeping stashed images", () => {
+		const base = createPromptStashHarness({ stash: "keep [image #1]" });
+		const mode: ResetHarness = {
+			...base,
+			defaultEditor: base.editor,
+			compactionQueuedMessages: [],
+			connectionQueue: { steering: ["old [image #2]"], followUp: [] },
+			chatContainer: { clear: vi.fn() },
+			pendingMessagesContainer: { clear: vi.fn() },
+			queuedMessagesContainer: { clear: vi.fn() },
+			pastedImages: new Map<number, unknown>([
+				[1, {}],
+				[2, {}],
+			]),
+			pendingBashComponents: [],
+			activityTracker: { reset: vi.fn() },
+			contextUsageTokenBaseline: 1,
+			resetPendingToolState: vi.fn(),
+			resetChildAgentInspector: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			getGoalState: vi.fn(() => undefined),
+			syncGoalTray: vi.fn(),
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+
+		interactiveModeMethods.resetCurrentSessionRenderState.call(mode);
+
+		expect(mode.connectionQueue).toEqual({ steering: [], followUp: [] });
+		expect(mode.pastedImages.has(1)).toBe(true);
+		expect(mode.pastedImages.has(2)).toBe(false);
 	});
 
 	it("restores failed follow-up text without dropping the stashed prompt", async () => {

@@ -2281,8 +2281,9 @@ export class InteractiveMode {
 		this.pendingMessagesContainer.clear();
 		this.queuedMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
-		// Clear every editor's prompt history and draft text, then prune any pasted
-		// images no longer referenced by the remaining stashed draft.
+		this.connectionQueue = { steering: [], followUp: [] };
+		// Clear every editor's prompt history, draft text, and queues, then prune
+		// any pasted images no longer referenced by the remaining stashed draft.
 		this.defaultEditor.clearHistory?.();
 		this.defaultEditor.setText("");
 		if (this.editor !== this.defaultEditor) {
