@@ -238,6 +238,39 @@ describe("session selector path/delete interactions", () => {
 		expect(output).toContain("Failed to delete: Cannot delete the currently active session");
 	});
 
+	it("keeps delete success visible when refresh after deletion fails", async () => {
+		const sessions = [makeSession({ id: "a" })];
+		const deleteSession = vi.fn(async () => ({ ok: true as const, method: "unlink" as const }));
+		let loadCalls = 0;
+
+		const selector = new SessionSelectorComponent(
+			async () => {
+				loadCalls++;
+				if (loadCalls > 1) {
+					throw new Error("refresh unavailable");
+				}
+				return sessions;
+			},
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, deleteSession },
+		);
+		await flushPromises();
+
+		const list = selector.getSessionList();
+		list.handleInput(CTRL_X);
+		list.handleInput(CTRL_X);
+		await flushPromises();
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(deleteSession).toHaveBeenCalledTimes(1);
+		expect(output).toContain("Session deleted");
+		expect(output).not.toContain("Failed to delete");
+	});
+
 	it("does not switch scope back to All when All load resolves after toggling back to Current", async () => {
 		const currentSessions = [makeSession({ id: "current" })];
 		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();

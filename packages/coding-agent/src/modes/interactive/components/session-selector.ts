@@ -819,33 +819,43 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Handle session deletion
 		this.sessionList.onDeleteSession = async (sessionPath: string) => {
+			let result: DeleteSessionFileResult;
 			try {
-				const result = await this.deleteSession(sessionPath);
-
-				if (result.ok) {
-					if (this.currentSessions) {
-						this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
-					}
-					if (this.allSessions) {
-						this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
-					}
-
-					const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
-					const showCwd = this.scope === "all";
-					this.sessionList.setSessions(sessions, showCwd);
-
-					const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
-					this.header.setStatusMessage({ type: "info", message: msg }, 2000);
-					await this.refreshSessionsAfterMutation();
-				} else {
-					const errorMessage = result.error ?? "Unknown error";
-					this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);
-				}
+				result = await this.deleteSession(sessionPath);
 			} catch (error) {
 				this.header.setStatusMessage(
 					{ type: "error", message: `Failed to delete: ${formatMutationError(error)}` },
 					3000,
 				);
+				this.requestRender();
+				return;
+			}
+
+			if (result.ok) {
+				if (this.currentSessions) {
+					this.currentSessions = this.currentSessions.filter((s) => s.path !== sessionPath);
+				}
+				if (this.allSessions) {
+					this.allSessions = this.allSessions.filter((s) => s.path !== sessionPath);
+				}
+
+				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
+				const showCwd = this.scope === "all";
+				this.sessionList.setSessions(sessions, showCwd);
+
+				const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
+				try {
+					await this.refreshSessionsAfterMutation();
+					this.header.setStatusMessage({ type: "info", message: msg }, 2000);
+				} catch (error) {
+					this.header.setStatusMessage(
+						{ type: "error", message: `${msg}; refresh failed: ${formatMutationError(error)}` },
+						3000,
+					);
+				}
+			} else {
+				const errorMessage = result.error ?? "Unknown error";
+				this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);
 			}
 
 			this.requestRender();
