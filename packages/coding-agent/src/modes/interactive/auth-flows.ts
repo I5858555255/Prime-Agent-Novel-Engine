@@ -424,20 +424,23 @@ export class ProviderAuthFlows {
 	}
 
 	private getPrimeInferenceDefaultTeamStatus(): string {
-		let config: ReturnType<typeof loadPrimeCliConfig>;
-		try {
-			config = loadPrimeCliConfig(this.host.modelRegistry.authStorage.getPrimeCliConfigPath());
-		} catch {
-			return "Using personal account.";
-		}
-		if (config.teamIdFromEnv) {
-			return "Using team from PRIME_TEAM_ID.";
-		}
-		if (config.teamName) {
-			return `Using team "${config.teamName}".`;
-		}
-		if (config.teamId) {
-			return "Using Prime CLI team.";
+		const configPath = this.host.modelRegistry.authStorage.getPrimeCliConfigPath();
+		if (configPath) {
+			let config: ReturnType<typeof loadPrimeCliConfig>;
+			try {
+				config = loadPrimeCliConfig(configPath);
+			} catch {
+				return "Using personal account.";
+			}
+			if (config.teamIdFromEnv) {
+				return "Using team from PRIME_TEAM_ID.";
+			}
+			if (config.teamName) {
+				return `Using team "${config.teamName}".`;
+			}
+			if (config.teamId) {
+				return "Using Prime CLI team.";
+			}
 		}
 		const storedTeam = this.host.modelRegistry.authStorage.getPrimeInferenceTeamSelection();
 		if (storedTeam) {

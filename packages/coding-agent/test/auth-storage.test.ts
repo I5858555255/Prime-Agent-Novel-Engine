@@ -282,6 +282,7 @@ describe("AuthStorage", () => {
 			});
 
 			expect(authStorage.getProviderHeaders("prime-inference")).toBeUndefined();
+			expect(authStorage.getPrimeInferenceTeamSelection()).toBeNull();
 		});
 
 		test("prime inference missing Agent team selection falls back to Prime CLI team", () => {

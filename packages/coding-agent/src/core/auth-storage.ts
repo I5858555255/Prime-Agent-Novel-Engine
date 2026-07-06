@@ -622,28 +622,39 @@ export class AuthStorage {
 	}
 
 	getPrimeInferenceTeamSelection(): PrimeTeamCredential | null | undefined {
+		let config: PrimeCliConfig | undefined;
 		if (this.isPrimeCliConfigEnabled()) {
-			const config = this.getPrimeCliConfig(PRIME_INFERENCE_PROVIDER_ID);
-			if (config?.teamIdFromEnv) {
-				return undefined;
-			}
-			if (config?.teamId) {
-				const credential: PrimeTeamCredential = {
-					teamId: config.teamId,
-					name: config.teamName ?? "Prime CLI team",
-				};
-				if (config.teamRole) {
-					credential.role = config.teamRole;
-				}
-				return credential;
-			}
+			config = this.getPrimeCliConfig(PRIME_INFERENCE_PROVIDER_ID);
 			if (config?.apiKey) {
+				if (config.teamIdFromEnv) {
+					return undefined;
+				}
+				if (config.teamId) {
+					return this.toPrimeTeamCredential({
+						teamId: config.teamId,
+						name: config.teamName ?? "Prime CLI team",
+						...(config.teamRole ? { role: config.teamRole } : {}),
+					});
+				}
 				return null;
 			}
 		}
 
 		const credential = this.data[PRIME_INFERENCE_PROVIDER_ID];
-		return credential?.type === "api_key" ? credential.primeTeam : undefined;
+		if (credential?.type === "api_key" && credential.primeTeam !== undefined) {
+			return credential.primeTeam;
+		}
+		if (config?.teamIdFromEnv) {
+			return undefined;
+		}
+		if (config?.teamId) {
+			return this.toPrimeTeamCredential({
+				teamId: config.teamId,
+				name: config.teamName ?? "Prime CLI team",
+				...(config.teamRole ? { role: config.teamRole } : {}),
+			});
+		}
+		return undefined;
 	}
 
 	getProviderHeaders(providerId: string): Record<string, string> | undefined {
