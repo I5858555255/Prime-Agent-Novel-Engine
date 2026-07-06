@@ -138,15 +138,6 @@ describe("parseArgs", () => {
 			expect(equals.resume).toBe(true);
 			expect(equals.messages).toEqual([]);
 		});
-
-		test("rejects --session", () => {
-			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
-			expect(result.diagnostics).toContainEqual({
-				type: "error",
-				message: "--session has been replaced by --resume <path|id>",
-			});
-			expect(result.messages).toEqual([]);
-		});
 	});
 
 	describe("--cwd flag", () => {

@@ -134,17 +134,6 @@ export function parseArgs(args: string[]): Args {
 			result.appendSystemPrompt.push(args[++i]);
 		} else if (arg === "--no-session") {
 			result.noSession = true;
-		} else if (arg === "--session" || arg.startsWith("--session=")) {
-			result.diagnostics.push({
-				type: "error",
-				message: "--session has been replaced by --resume <path|id>",
-			});
-			if (arg === "--session" && i + 1 < args.length) {
-				const next = args[i + 1];
-				if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
-					i++;
-				}
-			}
 		} else if (arg === "--fork" && i + 1 < args.length) {
 			result.fork = args[++i];
 		} else if (arg === "--session-dir" && i + 1 < args.length) {

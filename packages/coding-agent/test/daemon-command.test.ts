@@ -229,18 +229,6 @@ describe("daemon command", () => {
 		});
 	});
 
-	it("rejects --session for daemon-created sessions", async () => {
-		await expect(
-			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "create", "--session", "abc123"]),
-		).rejects.toThrow("exit 1");
-
-		expect(
-			consoleErrorMessages.some(
-				(message) => typeof message === "string" && message.includes("--session has been replaced"),
-			),
-		).toBe(true);
-	});
-
 	it("honors send delivery-mode flags after the target", async () => {
 		await expect(
 			handleDaemonCommand([

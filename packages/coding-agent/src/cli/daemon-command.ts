@@ -428,9 +428,6 @@ function parseSessionOption(
 	if (arg.startsWith("--resume=")) {
 		return withSessionSelector(arg.slice("--resume=".length), 0);
 	}
-	if (arg.startsWith("--session=")) {
-		throw new Error("--session has been replaced by --resume <selector>");
-	}
 
 	switch (arg) {
 		case "--continue":
@@ -439,8 +436,6 @@ function parseSessionOption(
 		case "--resume":
 		case "-r":
 			return withSessionSelector(readValue(), 1);
-		case "--session":
-			throw new Error("--session has been replaced by --resume <selector>");
 		case "--session-dir":
 			return withParsedValue(arg, (value) => {
 				config.sessionDir = expandTildePath(value);
