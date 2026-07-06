@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type { AutocompleteItem, OverlayHandle, SlashCommand } from "@earendil-works/pi-tui";
 import {
@@ -17,16 +18,22 @@ import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSI
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
-import { SessionManager } from "../../core/session-manager.js";
+import { deleteSessionFile } from "../../core/session-file-actions.js";
+import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
 import { type DaemonCommand, type DaemonResponse, isUnknownDaemonCommandError } from "../daemon/daemon-protocol.js";
-import { resolveAttachModelFallbackMessage, type SessionSummary } from "../daemon/daemon-session-list.js";
+import {
+	resolveAttachModelFallbackMessage,
+	type SessionSummary,
+	summaryForInactiveSession,
+} from "../daemon/daemon-session-list.js";
 import { getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "../interactive/auth-flows.js";
 import { showFullPaneOverlay } from "../interactive/components/centered-overlay.js";
 import { CustomEditor } from "../interactive/components/custom-editor.js";
 import { keyText } from "../interactive/components/keybinding-hints.js";
 import { ModelSelectorComponent } from "../interactive/components/model-selector.js";
+import { SessionSelectorComponent } from "../interactive/components/session-selector.js";
 import { BrandSplashHeader, InteractiveMode } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
 import {
@@ -157,6 +164,22 @@ export function createAgentsViewListCommand(): Extract<DaemonCommand, { type: "l
 	// Omitting `all` returns daemon-resident sessions only; on-disk ones come back
 	// via /resume.
 	return { type: "list" };
+}
+
+export function resolveAgentsViewResumeSummary(
+	sessionPath: string,
+	savedSessions: readonly SessionInfo[],
+	visibleSummaries: readonly SessionSummary[],
+): SessionSummary | undefined {
+	const selectedPath = resolvePath(sessionPath);
+	const activeSummary = visibleSummaries.find(
+		(summary) => summary.sessionFile !== undefined && resolvePath(summary.sessionFile) === selectedPath,
+	);
+	if (activeSummary) {
+		return activeSummary;
+	}
+	const savedSession = savedSessions.find((session) => resolvePath(session.path) === selectedPath);
+	return savedSession ? summaryForInactiveSession(savedSession) : undefined;
 }
 
 // Status messages render in a single-row hint slot below the editor; embedded
@@ -907,6 +930,9 @@ class AgentsViewMode implements Component, Focusable {
 				await this.showModelSelector(searchTerm);
 				return;
 			}
+			case "resume":
+				await this.showSessionSelector();
+				return;
 			case "quit":
 				this.finish({ type: "exit" });
 				return;
@@ -982,6 +1008,76 @@ class AgentsViewMode implements Component, Focusable {
 			);
 			handle = showFullPaneOverlay(this.ui, selector, 96);
 		});
+	}
+
+	private showSessionSelector(): Promise<void> {
+		return new Promise((done) => {
+			let handle: OverlayHandle | undefined;
+			let settled = false;
+			const savedSessionsByPath = new Map<string, SessionInfo>();
+
+			const rememberSessions = (sessions: SessionInfo[]): SessionInfo[] => {
+				for (const session of sessions) {
+					savedSessionsByPath.set(resolvePath(session.path), session);
+				}
+				return sessions;
+			};
+
+			const close = () => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				handle?.hide();
+				this.ui.requestRender();
+				done();
+			};
+
+			const selector = new SessionSelectorComponent(
+				async (onProgress) =>
+					rememberSessions(
+						await SessionManager.list(this.getSavedSessionCwd(), this.options.config.sessionDir, onProgress),
+					),
+				async (onProgress) =>
+					rememberSessions(await SessionManager.listAll(onProgress, this.options.config.sessionDir)),
+				(sessionPath) => {
+					const summary = resolveAgentsViewResumeSummary(
+						sessionPath,
+						[...savedSessionsByPath.values()],
+						this.lastVisibleSummaries,
+					);
+					close();
+					if (!summary) {
+						this.setStatusMessage("Failed to resume session: selected session was not found");
+						return;
+					}
+					this.finish({ type: "open", summary });
+				},
+				close,
+				() => {
+					close();
+					this.finish({ type: "exit" });
+				},
+				() => this.ui.requestRender(),
+				{
+					renameSession: async (sessionPath, nextName) => {
+						const name = (nextName ?? "").trim();
+						if (!name) {
+							return;
+						}
+						SessionManager.open(sessionPath).appendSessionInfo(name);
+					},
+					deleteSession: deleteSessionFile,
+					showRenameHint: true,
+					keybindings: this.keybindings,
+				},
+			);
+			handle = showFullPaneOverlay(this.ui, selector, 96);
+		});
+	}
+
+	private getSavedSessionCwd(): string {
+		return this.options.config.cwd ?? this.options.uiServices.getInitialCwd();
 	}
 
 	private getDefaultModelForNewAgents(): Model<Api> | undefined {
