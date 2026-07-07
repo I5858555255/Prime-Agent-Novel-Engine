@@ -2279,6 +2279,8 @@ export class AgentSession {
 			}
 		};
 
+		let messages: AgentMessage[] | undefined;
+		let drainedNextTurnMessages: CustomMessage[] = [];
 		try {
 			const shouldQueueForStreaming = this.isStreaming;
 			const shouldQueueForPendingWork =
@@ -2297,16 +2299,12 @@ export class AgentSession {
 						`${stateDescription}. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`,
 					);
 				}
-				let queued = true;
-				if (options.streamingBehavior === "followUp") {
-					queued = await this._queueFollowUp(text, undefined, {
-						queueKey: options.followUpQueueKey,
-						message,
-						previewLabel: "Heartbeat",
-					});
-				} else {
-					await this._queueSteer(text, undefined, { message, previewLabel: "Heartbeat" });
-				}
+				const queued = await this._queueInjectedMessageWithPendingNextTurnMessages(
+					text,
+					message,
+					options.streamingBehavior,
+					{ queueKey: options.followUpQueueKey, previewLabel: "Heartbeat" },
+				);
 				if (!queued) {
 					reportPreflight(false);
 					return;
@@ -2333,20 +2331,80 @@ export class AgentSession {
 				await this._checkCompaction(lastAssistant, false);
 			}
 
-			const pendingNextTurnMessages = this._pendingNextTurnMessages;
+			drainedNextTurnMessages = this._pendingNextTurnMessages;
 			this._pendingNextTurnMessages = [];
-			const promptMessages = [...pendingNextTurnMessages, message];
-			try {
-				await this.agent.prompt(promptMessages);
-			} catch (error) {
-				this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages.map((pending) => ({ ...pending })));
-				throw error;
+			messages = [...drainedNextTurnMessages, message];
+
+			const result = await this._extensionRunner.emitBeforeAgentStart(
+				text,
+				undefined,
+				this._baseSystemPrompt,
+				this._baseSystemPromptOptions,
+			);
+			if (result?.messages) {
+				for (const msg of result.messages) {
+					messages.push({
+						role: "custom",
+						customType: msg.customType,
+						content: msg.content,
+						display: msg.display,
+						details: msg.details,
+						timestamp: Date.now(),
+					});
+				}
 			}
-			reportPreflight(true);
+			this.agent.state.systemPrompt = result?.systemPrompt ?? this._baseSystemPrompt;
 		} catch (error) {
 			reportPreflight(false);
 			throw error;
 		}
+
+		if (!messages) {
+			return;
+		}
+
+		if (this._refineInFlight) {
+			await this._waitForRefineIdle();
+		}
+		const shouldQueueAtHandoff =
+			options?.queueIfBusy === true &&
+			(this.isStreaming ||
+				this.pendingMessageCount > 0 ||
+				this.isCompacting ||
+				this.isRetrying ||
+				this.isBashRunning ||
+				this._acceptedPromptCompletions.size > 0 ||
+				this._acceptedAgentMessagePrompt !== undefined);
+		if (shouldQueueAtHandoff) {
+			if (!options?.streamingBehavior) {
+				this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+				reportPreflight(false);
+				throw new Error(
+					"Agent became busy before prompt delivery. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+				);
+			}
+			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+			const queued = await this._queueInjectedMessageWithPendingNextTurnMessages(
+				text,
+				message,
+				options.streamingBehavior,
+				{ queueKey: options.followUpQueueKey, previewLabel: "Heartbeat" },
+			);
+			if (!queued) {
+				reportPreflight(false);
+				return;
+			}
+			reportPreflight(true, true);
+			return;
+		}
+
+		try {
+			await this.agent.prompt(messages);
+		} catch (error) {
+			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+			throw error;
+		}
+		reportPreflight(true);
 		await this.waitForRetry();
 	}
 
@@ -2831,6 +2889,38 @@ export class AgentSession {
 				return queued;
 			}
 			await this._queueSteer(text, undefined, { agentMessageId: options.agentMessageId, content });
+			return true;
+		} catch (error) {
+			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+			throw error;
+		}
+	}
+
+	private async _queueInjectedMessageWithPendingNextTurnMessages(
+		text: string,
+		message: CustomMessage,
+		streamingBehavior: "steer" | "followUp",
+		options: { queueKey?: string; previewLabel?: string } = {},
+	): Promise<boolean> {
+		const pendingNextTurnMessages = this._pendingNextTurnMessages;
+		this._pendingNextTurnMessages = [];
+		const queuedMessage: CustomMessage = {
+			...message,
+			content: this._buildPromptContent(text, undefined, pendingNextTurnMessages),
+		};
+		try {
+			if (streamingBehavior === "followUp") {
+				const queued = await this._queueFollowUp(text, undefined, {
+					queueKey: options.queueKey,
+					message: queuedMessage,
+					previewLabel: options.previewLabel,
+				});
+				if (!queued) {
+					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+				}
+				return queued;
+			}
+			await this._queueSteer(text, undefined, { message: queuedMessage, previewLabel: options.previewLabel });
 			return true;
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);

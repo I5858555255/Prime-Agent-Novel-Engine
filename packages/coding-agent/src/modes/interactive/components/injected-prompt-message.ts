@@ -1,5 +1,4 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { TextContent } from "@earendil-works/pi-ai";
 import {
 	Container,
 	Markdown,
@@ -32,10 +31,7 @@ function readCustomText(message: CustomMessage): string {
 	if (typeof message.content === "string") {
 		return message.content;
 	}
-	return message.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map((block) => block.text)
-		.join("\n");
+	return message.content.map((block) => (block.type === "text" ? block.text : "[image]")).join("\n");
 }
 
 function collapseText(text: string): string {

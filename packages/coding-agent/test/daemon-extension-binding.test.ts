@@ -11,8 +11,10 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import type { AgentCronJob } from "../src/core/cron-jobs.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ExtensionAPI, ExtensionFactory } from "../src/index.js";
+import { createAgentConnectionState } from "../src/modes/agent-connection/snapshot.js";
 import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
 import { bindActiveSessionState } from "../src/modes/daemon/daemon-extension-binding.js";
 import type { DaemonOutbound } from "../src/modes/daemon/daemon-protocol.js";
@@ -171,6 +173,21 @@ describe("daemon extension binding", () => {
 		);
 
 		const outbound: DaemonOutbound[] = [];
+		const heartbeat: AgentCronJob = {
+			id: "heartbeat-1",
+			status: "active",
+			source: "heartbeat",
+			activeSessionId: "active-test",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			prompt: "check status",
+			schedule: { kind: "interval", expression: "every 10s", intervalMs: 10_000 },
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			nextRunAt: "2026-01-01T00:00:10.000Z",
+			runCount: 0,
+		};
 		const state: ActiveSessionState = {
 			activeSessionId: "active-test",
 			runtime,
@@ -185,6 +202,10 @@ describe("daemon extension binding", () => {
 					phases.push("broadcast:session_replaced");
 				}
 			},
+			createConnectionState: (targetState) => ({
+				...createAgentConnectionState(targetState.runtime, targetState.activeSessionId),
+				heartbeat,
+			}),
 			shutdown: () => {
 				phases.push("shutdown");
 			},
@@ -203,6 +224,9 @@ describe("daemon extension binding", () => {
 			expect.objectContaining({
 				type: "session_replaced",
 				activeSessionId: "active-test",
+				state: expect.objectContaining({
+					heartbeat: expect.objectContaining({ id: "heartbeat-1" }),
+				}),
 			}),
 		);
 		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([

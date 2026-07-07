@@ -5014,7 +5014,6 @@ export class InteractiveMode {
 		if (
 			message.role !== "user" ||
 			!heartbeat ||
-			(heartbeat.status !== "active" && heartbeat.status !== "paused") ||
 			!this.isTextOnlyUserMessage(message) ||
 			textContent.trim() !== heartbeat.prompt.trim() ||
 			!this.isLikelyHeartbeatPromptTimestamp(heartbeat, message.timestamp)
@@ -7680,7 +7679,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
-					this.patchConnectionState({ heartbeat: null });
+					this.patchConnectionState({ heartbeat });
 					this.showStatus("Heartbeat cleared");
 					return;
 				}

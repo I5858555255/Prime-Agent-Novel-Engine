@@ -8,6 +8,7 @@ import type {
 } from "../../core/extensions/index.js";
 import type { SubagentRuntimeHost } from "../../core/rlm-runtime.js";
 import { createAgentConnectionState } from "../agent-connection/snapshot.js";
+import type { AgentConnectionState } from "../agent-connection/types.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import type { ActiveSessionState } from "./active-session-state.js";
 import { execEnvForSession, withClientEnv } from "./daemon-client-env.js";
@@ -19,6 +20,7 @@ import {
 
 export interface ActiveSessionBindingCallbacks {
 	broadcast: (state: ActiveSessionState, message: DaemonOutbound) => void;
+	createConnectionState?: (state: ActiveSessionState) => AgentConnectionState;
 	shutdown: () => void;
 	subagentRuntimeHost?: SubagentRuntimeHost;
 }
@@ -69,7 +71,9 @@ export async function bindActiveSessionState(
 		callbacks.broadcast(state, {
 			type: "session_replaced",
 			activeSessionId: state.activeSessionId,
-			state: createAgentConnectionState(state.runtime, state.activeSessionId),
+			state:
+				callbacks.createConnectionState?.(state) ??
+				createAgentConnectionState(state.runtime, state.activeSessionId),
 			messages: state.runtime.session.messages,
 		});
 	});

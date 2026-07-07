@@ -1,6 +1,7 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, type Message } from "@earendil-works/pi-ai";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
 import { Container, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentCronJob } from "../../../src/core/cron-jobs.js";
 import { createGoalContextMessage, type GoalState } from "../../../src/core/goals.js";
@@ -94,6 +95,104 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 		expect(getMessageText(providerMessages.at(-1))).toBe("Check whether the long-running task needs another step.");
 	});
 
+	it("runs heartbeat prompts through before_agent_start handlers", async () => {
+		const harness = await createHarness({
+			systemPrompt: "base prompt",
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async (event) => ({
+						message: {
+							customType: "before-start",
+							content: "extension context",
+							display: true,
+							details: { source: "test" },
+						},
+						systemPrompt: `${event.systemPrompt}\n\nheartbeat instructions`,
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		let providerSystemPrompt = "";
+		let sawExtensionContext = false;
+		harness.setResponses([
+			(context) => {
+				providerSystemPrompt = context.systemPrompt ?? "";
+				sawExtensionContext = context.messages.some(
+					(message) => message.role === "user" && getMessageText(message) === "extension context",
+				);
+				return fauxAssistantMessage("heartbeat handled");
+			},
+		]);
+
+		await harness.session.promptHeartbeat(createHeartbeat());
+
+		expect(providerSystemPrompt).toContain("heartbeat instructions");
+		expect(sawExtensionContext).toBe(true);
+		expect(
+			harness.session.messages.some((message) => message.role === "custom" && message.customType === "before-start"),
+		).toBe(true);
+	});
+
+	it("folds pending nextTurn context into queued heartbeat prompts", async () => {
+		let releaseToolExecution: (() => void) | undefined;
+		const toolRelease = new Promise<void>((resolve) => {
+			releaseToolExecution = resolve;
+		});
+		const waitTool: AgentTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for release",
+			parameters: Type.Object({}),
+			execute: async () => {
+				await toolRelease;
+				return {
+					content: [{ type: "text", text: "released" }],
+					details: {},
+				};
+			},
+		};
+		const harness = await createHarness({ tools: [waitTool] });
+		harnesses.push(harness);
+		let queuedHeartbeatText = "";
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("original turn complete"),
+			(context) => {
+				const queuedUserMessage = context.messages.find(
+					(message) =>
+						message.role === "user" &&
+						getMessageText(message).includes("Check whether the long-running task needs another step."),
+				);
+				queuedHeartbeatText = getMessageText(queuedUserMessage);
+				return fauxAssistantMessage("heartbeat handled");
+			},
+		]);
+
+		const sawToolStart = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "tool_execution_start") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+
+		const promptPromise = harness.session.prompt("start");
+		await sawToolStart;
+		await harness.session.sendCustomMessage(
+			{ customType: "pending-context", content: "pending heartbeat context", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		await harness.session.promptHeartbeat(createHeartbeat(), { streamingBehavior: "followUp" });
+
+		releaseToolExecution?.();
+		await promptPromise;
+
+		expect(queuedHeartbeatText).toContain("pending heartbeat context");
+		expect(queuedHeartbeatText).toContain("Check whether the long-running task needs another step.");
+	});
+
 	it("renders heartbeat prompts as expandable injected prompt panels", () => {
 		const component = new InjectedPromptMessageComponent(createHeartbeatPromptMessage(createHeartbeat()));
 		const collapsed = render(component);
@@ -110,33 +209,53 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 		expect(expanded).toContain("Check whether the long-running task needs another step.");
 	});
 
-	it("renders legacy daemon heartbeat user messages as injected prompt panels", () => {
-		const heartbeat = createHeartbeat();
-		const timestamp = Date.parse(heartbeat.nextRunAt ?? heartbeat.createdAt);
-		const chatContainer = new Container();
-		const addToHistory = vi.fn();
-		const mode = Object.create(InteractiveMode.prototype) as LegacyHeartbeatRenderMode;
-		mode.connectionState = { heartbeat };
-		mode.chatContainer = chatContainer;
-		mode.toolOutputExpanded = false;
-		mode.editor = { addToHistory };
-		mode.getMarkdownThemeWithSettings = () => getMarkdownTheme();
-		const message: AgentMessage = {
-			role: "user",
-			content: [{ type: "text", text: heartbeat.prompt }],
-			timestamp,
-		};
+	it("renders expanded injected prompt images as placeholders", () => {
+		const message = createHeartbeatPromptMessage(createHeartbeat());
+		message.content = [
+			{ type: "text", text: "Review this screenshot." },
+			{ type: "image", data: "base64-data", mimeType: "image/png" },
+		];
+		const component = new InjectedPromptMessageComponent(message);
 
-		(InteractiveMode.prototype as unknown as AddMessageToChatHost).addMessageToChat.call(mode, message, {
-			populateHistory: true,
-		});
+		component.setExpanded(true);
 
-		const rendered = stripAnsi(chatContainer.render(120).join("\n"));
-		expect(rendered).toContain("Heartbeat prompt");
-		expect(rendered).toContain("every 5m");
-		expect(rendered).not.toContain("Check whether the long-running task needs another step.");
-		expect(addToHistory).not.toHaveBeenCalled();
+		expect(render(component)).toContain("Review this screenshot.");
+		expect(render(component)).toContain("[image]");
 	});
+
+	it.each(["active", "cancelled"] as const)(
+		"renders %s legacy daemon heartbeat user messages as injected prompt panels",
+		(status) => {
+			const heartbeat =
+				status === "cancelled"
+					? { ...createHeartbeat(), status, nextRunAt: undefined, lastRunAt: "2026-01-01T00:05:00.000Z" }
+					: { ...createHeartbeat(), status };
+			const timestamp = Date.parse(heartbeat.nextRunAt ?? heartbeat.lastRunAt ?? heartbeat.createdAt);
+			const chatContainer = new Container();
+			const addToHistory = vi.fn();
+			const mode = Object.create(InteractiveMode.prototype) as LegacyHeartbeatRenderMode;
+			mode.connectionState = { heartbeat };
+			mode.chatContainer = chatContainer;
+			mode.toolOutputExpanded = false;
+			mode.editor = { addToHistory };
+			mode.getMarkdownThemeWithSettings = () => getMarkdownTheme();
+			const message: AgentMessage = {
+				role: "user",
+				content: [{ type: "text", text: heartbeat.prompt }],
+				timestamp,
+			};
+
+			(InteractiveMode.prototype as unknown as AddMessageToChatHost).addMessageToChat.call(mode, message, {
+				populateHistory: true,
+			});
+
+			const rendered = stripAnsi(chatContainer.render(120).join("\n"));
+			expect(rendered).toContain("Heartbeat prompt");
+			expect(rendered).toContain("every 5m");
+			expect(rendered).not.toContain("Check whether the long-running task needs another step.");
+			expect(addToHistory).not.toHaveBeenCalled();
+		},
+	);
 
 	it("renders goal continuation prompts as injected prompt panels", () => {
 		const goal: GoalState = {

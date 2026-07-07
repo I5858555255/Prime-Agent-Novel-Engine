@@ -391,6 +391,7 @@ export class AgentDaemon {
 		try {
 			await bindActiveSessionState(state, {
 				broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
+				createConnectionState: (targetSessionState) => this.createConnectionState(targetSessionState),
 				shutdown: () => {
 					void this.shutdown(0);
 				},
@@ -1833,7 +1834,7 @@ export class AgentDaemon {
 
 	private createConnectionState(state: ActiveSessionState): ReturnType<typeof createAgentConnectionState> {
 		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
-		connectionState.heartbeat = this.cronStore.getHeartbeat(state.activeSessionId) ?? null;
+		connectionState.heartbeat = this.cronStore.getLatestHeartbeat(state.activeSessionId) ?? null;
 		if (state.summaryState?.summary) {
 			connectionState.recap = state.summaryState.summary;
 		}
