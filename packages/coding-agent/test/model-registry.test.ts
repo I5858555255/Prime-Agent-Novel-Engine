@@ -1433,6 +1433,29 @@ describe("ModelRegistry", () => {
 				expect(readFileSync(counterFile, "utf-8")).toBe("0");
 			});
 
+			test("provider auth status reports stale command auth without executing it", () => {
+				const counterFile = join(tempDir, "stale-status-counter");
+				writeFileSync(counterFile, "0");
+				const counterPath = toShPath(counterFile);
+				const command = `!sh -c 'count=$(cat "${counterPath}"); echo $((count + 1)) > "${counterPath}"; echo key-value'`;
+				writeRawModelsJson({
+					"custom-provider": providerWithApiKey(command),
+				});
+
+				const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+				expect(registry.markProviderAuthStale("custom-provider")).toBe(true);
+				expect(readFileSync(counterFile, "utf-8").trim()).toBe("1");
+				writeFileSync(counterFile, "0");
+
+				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+					configured: false,
+					source: "stale",
+					label: "expired",
+				});
+				expect(readFileSync(counterFile, "utf-8").trim()).toBe("0");
+			});
+
 			test("environment variables are not cached (changes are picked up)", async () => {
 				const envVarName = "TEST_API_KEY_CACHE_TEST_98765";
 				const originalEnv = process.env[envVarName];

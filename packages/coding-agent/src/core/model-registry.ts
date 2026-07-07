@@ -354,7 +354,7 @@ export const clearApiKeyCache = clearConfigValueCache;
 export class ModelRegistry {
 	private models: Model<Api>[] = [];
 	private providerRequestConfigs: Map<string, ProviderRequestConfig> = new Map();
-	private staleProviderRequestAuthSources: Map<string, Set<string>> = new Map();
+	private staleProviderRequestAuthSources: Map<string, AuthSourceToken[]> = new Map();
 	private modelRequestHeaders: Map<string, Record<string, string>> = new Map();
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
 	private loadError: string | undefined = undefined;
@@ -781,22 +781,45 @@ export class ModelRegistry {
 	}
 
 	private isProviderRequestAuthStale(provider: string, source: ProviderRequestAuthSource): boolean {
-		const stale = this.staleProviderRequestAuthSources.get(provider);
-		if (!stale) {
+		const matchingStale = this.getMatchingStaleProviderRequestAuthSources(provider, source);
+		if (matchingStale.length === 0) {
 			return false;
 		}
-		for (const fingerprint of stale) {
-			const valueFingerprint = source.valueFingerprint ?? source.resolveValueFingerprint?.();
-			if (valueFingerprint && valueFingerprint === fingerprint) {
-				return true;
-			}
+		const valueFingerprint = source.valueFingerprint ?? source.resolveValueFingerprint?.();
+		return Boolean(valueFingerprint && matchingStale.some((token) => token.valueFingerprint === valueFingerprint));
+	}
+
+	private getMatchingStaleProviderRequestAuthSources(
+		provider: string,
+		source: ProviderRequestAuthSource,
+	): AuthSourceToken[] {
+		const stale = this.staleProviderRequestAuthSources.get(provider);
+		if (!stale) {
+			return [];
 		}
-		return false;
+		return stale.filter(
+			(token) => token.source === source.source && token.identityFingerprint === source.identityFingerprint,
+		);
+	}
+
+	private clearStaleProviderRequestAuthSource(provider: string, source: ProviderRequestAuthSource): void {
+		const stale = this.staleProviderRequestAuthSources.get(provider);
+		if (!stale) {
+			return;
+		}
+		const next = stale.filter(
+			(token) => token.source !== source.source || token.identityFingerprint !== source.identityFingerprint,
+		);
+		if (next.length === 0) {
+			this.staleProviderRequestAuthSources.delete(provider);
+		} else {
+			this.staleProviderRequestAuthSources.set(provider, next);
+		}
 	}
 
 	private hasConfiguredProviderRequestAuth(provider: string): boolean {
 		const source = this.getProviderRequestAuthSource(provider);
-		return source !== undefined && !this.isProviderRequestAuthStale(provider, source);
+		return source !== undefined && this.getMatchingStaleProviderRequestAuthSources(provider, source).length === 0;
 	}
 
 	markProviderAuthStale(provider: string): boolean {
@@ -840,8 +863,17 @@ export class ModelRegistry {
 			providerRequestSource?.source === token.source &&
 			providerRequestSource.identityFingerprint === token.identityFingerprint
 		) {
-			const stale = this.staleProviderRequestAuthSources.get(token.provider) ?? new Set<string>();
-			stale.add(token.valueFingerprint);
+			const stale = this.staleProviderRequestAuthSources.get(token.provider) ?? [];
+			if (
+				!stale.some(
+					(existing) =>
+						existing.source === token.source &&
+						existing.identityFingerprint === token.identityFingerprint &&
+						existing.valueFingerprint === token.valueFingerprint,
+				)
+			) {
+				stale.push(token);
+			}
 			this.staleProviderRequestAuthSources.set(token.provider, stale);
 			marked = true;
 		}
@@ -903,6 +935,7 @@ export class ModelRegistry {
 					providerRequestAuthSource &&
 					!this.isProviderRequestAuthStale(model.provider, providerRequestAuthSource)
 				) {
+					this.clearStaleProviderRequestAuthSource(model.provider, providerRequestAuthSource);
 					apiKey = resolvedApiKey;
 				}
 			}
@@ -954,7 +987,7 @@ export class ModelRegistry {
 			return authStatus;
 		}
 
-		if (this.isProviderRequestAuthStale(provider, source)) {
+		if (this.getMatchingStaleProviderRequestAuthSources(provider, source).length > 0) {
 			return { configured: false, source: "stale", label: "expired" };
 		}
 
@@ -1000,6 +1033,7 @@ export class ModelRegistry {
 		if (!source || this.isProviderRequestAuthStale(provider, source)) {
 			return undefined;
 		}
+		this.clearStaleProviderRequestAuthSource(provider, source);
 
 		return resolvedApiKey;
 	}

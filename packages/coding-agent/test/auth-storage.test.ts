@@ -157,6 +157,29 @@ describe("AuthStorage", () => {
 			}
 		});
 
+		test("changed ambient environment credential no longer matches stale auth marker", async () => {
+			const originalAwsProfile = process.env.AWS_PROFILE;
+			process.env.AWS_PROFILE = "stale-profile";
+
+			try {
+				authStorage = AuthStorage.inMemory();
+				expect(authStorage.markAuthStale("amazon-bedrock")).toBe(true);
+				expect(authStorage.hasAuth("amazon-bedrock")).toBe(false);
+				await expect(authStorage.getApiKey("amazon-bedrock")).resolves.toBeUndefined();
+
+				process.env.AWS_PROFILE = "fresh-profile";
+
+				expect(authStorage.hasAuth("amazon-bedrock")).toBe(true);
+				await expect(authStorage.getApiKey("amazon-bedrock")).resolves.toBe("<authenticated>");
+			} finally {
+				if (originalAwsProfile === undefined) {
+					delete process.env.AWS_PROFILE;
+				} else {
+					process.env.AWS_PROFILE = originalAwsProfile;
+				}
+			}
+		});
+
 		test("apiKey as literal value is used directly when not an env var", async () => {
 			// Make sure this isn't an env var
 			delete process.env.literal_api_key_value;

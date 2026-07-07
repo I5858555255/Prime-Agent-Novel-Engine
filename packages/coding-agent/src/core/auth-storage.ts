@@ -418,13 +418,42 @@ export class AuthStorage {
 			return undefined;
 		}
 		const label = envKey ?? "ambient credentials";
+		const identityMaterial = envKey ?? this.getAmbientEnvironmentIdentityMaterial(provider);
 		return this.createAuthSourceCandidate({
 			configured: false,
 			source: "environment",
 			label,
-			identityMaterial: envKey ?? provider,
-			valueMaterial: `${envKey ?? provider}\0${apiKey}`,
+			identityMaterial,
+			valueMaterial: `${identityMaterial}\0${apiKey}`,
 		});
+	}
+
+	private getAmbientEnvironmentIdentityMaterial(provider: string): string {
+		if (provider === "amazon-bedrock") {
+			if (process.env.AWS_PROFILE) return `amazon-bedrock:profile:${process.env.AWS_PROFILE}`;
+			if (process.env.AWS_ACCESS_KEY_ID) {
+				return `amazon-bedrock:access-key:${process.env.AWS_ACCESS_KEY_ID}:${process.env.AWS_SECRET_ACCESS_KEY ?? ""}:${process.env.AWS_SESSION_TOKEN ?? ""}`;
+			}
+			if (process.env.AWS_BEARER_TOKEN_BEDROCK) {
+				return `amazon-bedrock:bearer:${process.env.AWS_BEARER_TOKEN_BEDROCK}`;
+			}
+			if (process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) {
+				return `amazon-bedrock:ecs-relative:${process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI}`;
+			}
+			if (process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI) {
+				return `amazon-bedrock:ecs-full:${process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI}`;
+			}
+			if (process.env.AWS_WEB_IDENTITY_TOKEN_FILE) {
+				return `amazon-bedrock:web-identity:${process.env.AWS_WEB_IDENTITY_TOKEN_FILE}`;
+			}
+		}
+		if (provider === "google-vertex") {
+			const project = process.env.GOOGLE_CLOUD_PROJECT ?? process.env.GCLOUD_PROJECT ?? "";
+			const location = process.env.GOOGLE_CLOUD_LOCATION ?? "";
+			const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS ?? "application-default";
+			return `google-vertex:${project}:${location}:${credentialsPath}`;
+		}
+		return provider;
 	}
 
 	private getFallbackAuthCandidate(provider: string): AuthSourceCandidate | undefined {
