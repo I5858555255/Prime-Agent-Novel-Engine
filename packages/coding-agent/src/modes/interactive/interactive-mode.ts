@@ -7077,8 +7077,19 @@ export class InteractiveMode {
 		});
 		const updateExitCode = updateResult.status ?? (updateResult.signal ? 1 : 0);
 
-		if (includesSelf && updateExitCode === 0 && !updateResult.error) {
+		if (includesSelf) {
 			const relaunchArgs = buildUpdateRelaunchArgs(process.argv.slice(2), this.connectionState?.sessionFile);
+			if (updateResult.error) {
+				console.error(`Update failed: ${updateResult.error.message}`);
+				console.error(`Relaunching ${APP_NAME}...`);
+			} else if (updateExitCode !== 0) {
+				console.error(
+					updateResult.signal
+						? `Update terminated by signal ${updateResult.signal}`
+						: `Update exited with code ${updateExitCode}`,
+				);
+				console.error(`Relaunching ${APP_NAME}...`);
+			}
 			this.stop();
 			await this.agentConnection.dispose().catch(() => undefined);
 			try {
