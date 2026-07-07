@@ -3074,7 +3074,12 @@ export class AgentSession {
 	}
 
 	getPendingNextTurnMessageSnapshots(): readonly CustomMessage[] {
-		return this._pendingNextTurnMessages.map((message) => cloneCustomMessage(message));
+		const messages = this._pendingNextTurnMessages.map((message) => cloneCustomMessage(message));
+		const accepted = this._acceptedAgentMessagePrompt;
+		if (accepted && !accepted.cleared && accepted.turnStarted) {
+			messages.push(...undeliveredPendingNextTurnMessages(accepted).map((message) => cloneCustomMessage(message)));
+		}
+		return messages;
 	}
 
 	getAcceptedPromptSnapshot(): AcceptedAgentInputSnapshot | undefined {

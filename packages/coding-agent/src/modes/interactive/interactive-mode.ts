@@ -3771,7 +3771,11 @@ export class InteractiveMode {
 				}
 				if (commandName === "update") {
 					this.editor.setText("");
-					if (this.isAgentCompacting() || this.isAgentStreaming() || this.isBashRunning()) {
+					const updateArgs = parseCommandArgs(commandArgs);
+					if (
+						!updateArgsIncludeSelf(updateArgs) &&
+						(this.isAgentCompacting() || this.isAgentStreaming() || this.isBashRunning())
+					) {
 						this.showWarning("Wait for the current work to finish before updating.");
 						return;
 					}

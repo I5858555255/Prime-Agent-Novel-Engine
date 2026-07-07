@@ -293,6 +293,58 @@ describe("issue #4257 update restart resume", () => {
 		});
 	});
 
+	it("keeps undelivered accepted-prompt context after the accepted turn starts", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+
+		const pendingNextTurn = createCustomMessage("pending next turn");
+		const acceptedNextTurn = createCustomMessage("accepted prompt context");
+		const deliveredAcceptedNextTurn = createCustomMessage("already delivered context");
+		const acceptedMessage: UserMessage = {
+			role: "user",
+			content: [{ type: "text", text: "accepted work" }],
+			timestamp: Date.now(),
+		};
+		const queueInternals = harness.session as unknown as QueueInternals;
+		queueInternals._pendingNextTurnMessages = [pendingNextTurn];
+		queueInternals._acceptedAgentMessagePrompt = {
+			text: "accepted work",
+			agentMessageId: "agentmsg_accepted",
+			message: acceptedMessage,
+			messages: new Set([acceptedMessage, deliveredAcceptedNextTurn]),
+			pendingNextTurnMessages: [acceptedNextTurn, deliveredAcceptedNextTurn],
+			deliveredPendingNextTurnMessages: new Set([deliveredAcceptedNextTurn]),
+			accepted: Promise.resolve(),
+			resolveAccepted: () => undefined,
+			rejectAccepted: () => undefined,
+			turnStarted: true,
+			cleared: false,
+		};
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		const manifest = await internals.prepareUpdateRestart();
+
+		expect(manifest.sessions).toHaveLength(1);
+		expect(manifest.sessions[0]).toMatchObject({
+			activeSessionId: "active-1",
+			shouldResume: true,
+			hadAcceptedPromptInFlight: true,
+		});
+		expect(manifest.sessions[0]?.queue.nextTurn).toEqual([pendingNextTurn, acceptedNextTurn]);
+		expect(manifest.sessions[0]?.queue.acceptedPrompt).toBeUndefined();
+	});
+
 	it("accepts restore_next_turn through daemon command parsing", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
