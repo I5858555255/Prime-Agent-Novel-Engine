@@ -182,6 +182,71 @@ describe("AuthStorage", () => {
 			await expect(authStorage.getApiKey("prime-inference")).resolves.toBe("changed-prime-key");
 		});
 
+		test("prime inference marks current Prime CLI auth stale", async () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key" }));
+			writeAuthJson({});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+
+			expect(authStorage.markAuthStale("prime-inference")).toBe(true);
+
+			expect(authStorage.hasAuth("prime-inference")).toBe(false);
+			await expect(authStorage.getApiKey("prime-inference")).resolves.toBeUndefined();
+			expect(authStorage.getAuthStatus("prime-inference")).toEqual({
+				configured: false,
+				source: "stale",
+				label: "expired",
+			});
+		});
+
+		test("changed Prime CLI key no longer matches stale auth marker", async () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key" }));
+			writeAuthJson({});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+			authStorage.markAuthStale("prime-inference");
+
+			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "changed-prime-key" }));
+
+			expect(authStorage.hasAuth("prime-inference")).toBe(true);
+			await expect(authStorage.getApiKey("prime-inference")).resolves.toBe("changed-prime-key");
+			expect(authStorage.getAuthStatus("prime-inference")).toEqual({
+				configured: false,
+				source: "prime_cli",
+				label: "Prime CLI",
+			});
+		});
+
+		test("setPrimeInferenceApiKey clears stale Prime CLI auth marker", async () => {
+			const primeConfigPath = join(tempDir, "prime-config.json");
+			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key" }));
+			writeAuthJson({});
+
+			authStorage = AuthStorage.create(authJsonPath, {
+				primeCliConfigPath: primeConfigPath,
+				usePrimeCliConfig: true,
+			});
+			authStorage.markAuthStale("prime-inference");
+
+			authStorage.setPrimeInferenceApiKey("new-prime-key");
+
+			expect(authStorage.hasAuth("prime-inference")).toBe(true);
+			await expect(authStorage.getApiKey("prime-inference")).resolves.toBe("new-prime-key");
+			expect(authStorage.getAuthStatus("prime-inference")).toEqual({
+				configured: false,
+				source: "prime_cli",
+				label: "Prime CLI",
+			});
+		});
+
 		test("prime inference uses Prime CLI auth over legacy Prime Agent auth", async () => {
 			const primeConfigPath = join(tempDir, "prime-config.json");
 			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key" }));

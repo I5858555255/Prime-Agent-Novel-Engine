@@ -1594,7 +1594,10 @@ export class AgentSession {
 		}
 
 		const lastAssistant = this._findLastAssistantInMessages(event.messages);
-		if (!lastAssistant || !this._isRetryableError(lastAssistant)) {
+		if (
+			!lastAssistant ||
+			(!this._isRetryableError(lastAssistant) && !this._isConcreteProviderAuthFailure(lastAssistant))
+		) {
 			return;
 		}
 
@@ -1760,8 +1763,9 @@ export class AgentSession {
 			this._lastAssistantMessage = undefined;
 
 			// Check for retryable errors first (overloaded, rate limit, server errors)
-			if (this._isRetryableError(msg)) {
-				const didRetry = await this._handleRetryableError(msg);
+			const concreteAuthFailure = this._isConcreteProviderAuthFailure(msg);
+			if (this._isRetryableError(msg) || concreteAuthFailure) {
+				const didRetry = await this._handleRetryableError(msg, { markAuthStaleOnFailure: concreteAuthFailure });
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
 
@@ -5344,11 +5348,55 @@ export class AgentSession {
 		);
 	}
 
+	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
+		const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
+		const details = failure?.details;
+		if (!details || typeof details !== "object") {
+			return undefined;
+		}
+
+		const kind = "kind" in details ? details.kind : undefined;
+		if (kind !== "auth") {
+			return undefined;
+		}
+
+		const status = "status" in details ? details.status : undefined;
+		if (typeof status === "number") {
+			return status;
+		}
+		if (typeof status === "string") {
+			const parsed = Number(status);
+			return Number.isInteger(parsed) ? parsed : undefined;
+		}
+		return undefined;
+	}
+
+	private _isConcreteProviderAuthFailure(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error" || !message.errorMessage) return false;
+
+		const structuredStatus = this._getProviderStreamFailureAuthStatus(message);
+		if (structuredStatus === 401 || structuredStatus === 403) {
+			return true;
+		}
+
+		return (
+			/\b(?:401|403)\b/.test(message.errorMessage) &&
+			/auth|unauthori[sz]ed|forbidden|api.?key|token|credential/i.test(message.errorMessage)
+		);
+	}
+
+	private _markProviderAuthStale(message: AssistantMessage): void {
+		this._modelRegistry.markProviderAuthStale(message.provider);
+	}
+
 	/**
 	 * Handle retryable errors with exponential backoff.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
 	 */
-	private async _handleRetryableError(message: AssistantMessage): Promise<boolean> {
+	private async _handleRetryableError(
+		message: AssistantMessage,
+		options?: { markAuthStaleOnFailure?: boolean },
+	): Promise<boolean> {
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled) {
 			this._resolveRetry();
@@ -5366,6 +5414,9 @@ export class AgentSession {
 		this._retryAttempt++;
 
 		if (this._retryAttempt > settings.maxRetries) {
+			if (options?.markAuthStaleOnFailure) {
+				this._markProviderAuthStale(message);
+			}
 			// Max retries exceeded, emit final failure and reset
 			this._emit({
 				type: "auto_retry_end",

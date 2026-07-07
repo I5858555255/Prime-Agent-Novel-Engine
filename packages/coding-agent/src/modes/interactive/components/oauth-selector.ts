@@ -172,6 +172,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	}
 
 	private isProviderConfigured(provider: AuthSelectorProvider): boolean {
+		const status = this.getAuthStatus(provider.id);
+		if (status.source === "stale") {
+			return false;
+		}
+
 		const credential = this.authStorage.get(provider.id);
 		if (credential) {
 			return true;
@@ -179,7 +184,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		if (provider.authType !== "api_key") {
 			return false;
 		}
-		return this.getAuthStatus(provider.id).source !== undefined;
+		return status.source !== undefined;
 	}
 
 	override render(width: number): string[] {
@@ -239,6 +244,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	}
 
 	private formatStatusIndicator(provider: AuthSelectorProvider): string {
+		const status = this.getAuthStatus(provider.id);
+		if (status.source === "stale") {
+			return theme.fg("warning", status.label ?? "expired");
+		}
+
 		const credential = this.authStorage.get(provider.id);
 		if (credential?.type === provider.authType) return theme.fg("success", "configured");
 		if (credential) {
@@ -247,7 +257,6 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		}
 		if (provider.authType !== "api_key") return theme.fg("muted", "unconfigured");
 
-		const status = this.getAuthStatus(provider.id);
 		switch (status.source) {
 			case "environment":
 				return theme.fg("success", `env: ${status.label ?? "API key"}`);

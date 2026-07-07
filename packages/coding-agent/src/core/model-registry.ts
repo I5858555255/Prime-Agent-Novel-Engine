@@ -2,6 +2,7 @@
  * Model registry - manages built-in and custom models, provides API key resolution.
  */
 
+import { createHash } from "node:crypto";
 import {
 	type AnthropicMessagesCompat,
 	type Api,
@@ -246,6 +247,13 @@ interface ProviderRequestConfig {
 	authHeader?: boolean;
 }
 
+type ProviderRequestAuthSource = {
+	source: "environment" | "models_json_key" | "models_json_command";
+	configured: true;
+	label?: string;
+	fingerprint: string;
+};
+
 export type ResolvedRequestAuth =
 	| {
 			ok: true;
@@ -344,6 +352,7 @@ export const clearApiKeyCache = clearConfigValueCache;
 export class ModelRegistry {
 	private models: Model<Api>[] = [];
 	private providerRequestConfigs: Map<string, ProviderRequestConfig> = new Map();
+	private staleProviderRequestAuthSources: Map<string, Set<string>> = new Map();
 	private modelRequestHeaders: Map<string, Record<string, string>> = new Map();
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
 	private loadError: string | undefined = undefined;
@@ -683,10 +692,68 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
-		return (
-			this.authStorage.hasAuth(model.provider) ||
-			this.providerRequestConfigs.get(model.provider)?.apiKey !== undefined
-		);
+		return this.authStorage.hasAuth(model.provider) || this.hasConfiguredProviderRequestAuth(model.provider);
+	}
+
+	private fingerprintProviderRequestAuthSource(source: ProviderRequestAuthSource["source"], material: string): string {
+		const digest = createHash("sha256").update(source).update("\0").update(material).digest("hex");
+		return `${source}:${digest}`;
+	}
+
+	private getProviderRequestAuthSource(provider: string): ProviderRequestAuthSource | undefined {
+		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
+		if (!providerApiKey) {
+			return undefined;
+		}
+
+		if (providerApiKey.startsWith("!")) {
+			return {
+				configured: true,
+				source: "models_json_command",
+				fingerprint: this.fingerprintProviderRequestAuthSource("models_json_command", providerApiKey),
+			};
+		}
+
+		const envValue = process.env[providerApiKey];
+		if (envValue) {
+			return {
+				configured: true,
+				source: "environment",
+				label: providerApiKey,
+				fingerprint: this.fingerprintProviderRequestAuthSource("environment", `${providerApiKey}\0${envValue}`),
+			};
+		}
+
+		return {
+			configured: true,
+			source: "models_json_key",
+			fingerprint: this.fingerprintProviderRequestAuthSource("models_json_key", providerApiKey),
+		};
+	}
+
+	private isProviderRequestAuthStale(provider: string, source: ProviderRequestAuthSource): boolean {
+		return this.staleProviderRequestAuthSources.get(provider)?.has(source.fingerprint) ?? false;
+	}
+
+	private hasConfiguredProviderRequestAuth(provider: string): boolean {
+		const source = this.getProviderRequestAuthSource(provider);
+		return source !== undefined && !this.isProviderRequestAuthStale(provider, source);
+	}
+
+	markProviderAuthStale(provider: string): boolean {
+		if (this.authStorage.markAuthStale(provider)) {
+			return true;
+		}
+
+		const source = this.getProviderRequestAuthSource(provider);
+		if (!source || this.isProviderRequestAuthStale(provider, source)) {
+			return false;
+		}
+
+		const stale = this.staleProviderRequestAuthSources.get(provider) ?? new Set<string>();
+		stale.add(source.fingerprint);
+		this.staleProviderRequestAuthSources.set(provider, stale);
+		return true;
 	}
 
 	private getModelRequestKey(provider: string, modelId: string): string {
@@ -727,10 +794,13 @@ export class ModelRegistry {
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
 		try {
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
+			const providerRequestAuthSource = this.getProviderRequestAuthSource(model.provider);
 			const apiKeyFromAuthStorage = await this.authStorage.getApiKey(model.provider, { includeFallback: false });
 			const apiKey =
 				apiKeyFromAuthStorage ??
-				(providerConfig?.apiKey
+				(providerConfig?.apiKey &&
+				providerRequestAuthSource &&
+				!this.isProviderRequestAuthStale(model.provider, providerRequestAuthSource)
 					? resolveConfigValueOrThrow(providerConfig.apiKey, `API key for provider "${model.provider}"`)
 					: undefined);
 
@@ -776,20 +846,20 @@ export class ModelRegistry {
 			return authStatus;
 		}
 
-		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
-		if (!providerApiKey) {
+		const source = this.getProviderRequestAuthSource(provider);
+		if (!source) {
 			return authStatus;
 		}
 
-		if (providerApiKey.startsWith("!")) {
-			return { configured: true, source: "models_json_command" };
+		if (this.isProviderRequestAuthStale(provider, source)) {
+			return { configured: false, source: "stale", label: "expired" };
 		}
 
-		if (process.env[providerApiKey]) {
-			return { configured: true, source: "environment", label: providerApiKey };
-		}
-
-		return { configured: true, source: "models_json_key" };
+		return {
+			configured: true,
+			source: source.source,
+			...(source.label ? { label: source.label } : {}),
+		};
 	}
 
 	/**
@@ -815,6 +885,11 @@ export class ModelRegistry {
 		const apiKey = await this.authStorage.getApiKey(provider, { includeFallback: false });
 		if (apiKey !== undefined) {
 			return apiKey;
+		}
+
+		const source = this.getProviderRequestAuthSource(provider);
+		if (!source || this.isProviderRequestAuthStale(provider, source)) {
+			return undefined;
 		}
 
 		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;

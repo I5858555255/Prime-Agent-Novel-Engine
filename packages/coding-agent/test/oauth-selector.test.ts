@@ -143,6 +143,59 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).not.toContain("unconfigured");
 	});
 
+	it("shows stale auth as expired instead of configured", () => {
+		const authStorage = AuthStorage.inMemory({
+			anthropic: {
+				type: "oauth",
+				access: "stale-access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			},
+		});
+		authStorage.markAuthStale("anthropic");
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			[{ id: "anthropic", name: "Anthropic", authType: "oauth" }],
+			() => {},
+			() => {},
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+
+		expect(output).toContain("Anthropic");
+		expect(output).toContain("expired");
+		expect(output).not.toContain("configured");
+	});
+
+	it("does not sort stale auth ahead of configured providers", () => {
+		process.env.OPENAI_API_KEY = "test-openai-key";
+		const authStorage = AuthStorage.inMemory({
+			anthropic: {
+				type: "oauth",
+				access: "stale-access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			},
+		});
+		authStorage.markAuthStale("anthropic");
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			[
+				{ id: "anthropic", name: "Anthropic", authType: "oauth" },
+				{ id: "openai", name: "OpenAI", authType: "api_key" },
+			],
+			() => {},
+			() => {},
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+
+		expect(output.indexOf("OpenAI")).toBeLessThan(output.indexOf("Anthropic"));
+		expect(output).toContain("expired");
+	});
+
 	it("shows custom provider environment API key auth from status resolver", () => {
 		const authStorage = AuthStorage.inMemory();
 		const selector = new OAuthSelectorComponent(
