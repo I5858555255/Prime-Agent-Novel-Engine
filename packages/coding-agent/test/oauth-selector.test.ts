@@ -196,6 +196,36 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).toContain("expired");
 	});
 
+	it("sorts stale auth ahead of unconfigured providers", () => {
+		process.env.OPENAI_API_KEY = "test-openai-key";
+		const authStorage = AuthStorage.inMemory({
+			"prime-inference": {
+				type: "api_key",
+				key: "stale-prime-key",
+			},
+		});
+		authStorage.markAuthStale("prime-inference");
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			[
+				{ id: "github-copilot", name: "GitHub Copilot", authType: "oauth" },
+				{ id: "amazon-bedrock", name: "Amazon Bedrock", authType: "api_key" },
+				{ id: "prime-inference", name: "Prime Inference", authType: "api_key" },
+				{ id: "openai", name: "OpenAI", authType: "api_key" },
+			],
+			() => {},
+			() => {},
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+
+		expect(output.indexOf("OpenAI")).toBeLessThan(output.indexOf("Prime Inference"));
+		expect(output.indexOf("Prime Inference")).toBeLessThan(output.indexOf("GitHub Copilot"));
+		expect(output.indexOf("Prime Inference")).toBeLessThan(output.indexOf("Amazon Bedrock"));
+		expect(output).toContain("expired");
+	});
+
 	it("shows models.json auth instead of stale stored auth on API key rows", () => {
 		const authStorage = AuthStorage.inMemory({
 			anthropic: {

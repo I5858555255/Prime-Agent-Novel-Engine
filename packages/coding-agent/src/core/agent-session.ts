@@ -247,6 +247,7 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "auth_stale"; provider: string; sourceTokens?: readonly AuthSourceToken[] }
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
@@ -5429,9 +5430,16 @@ export class AgentSession {
 			for (const token of authSourceTokens) {
 				marked = this._modelRegistry.markProviderAuthSourceStale(token) || marked;
 			}
+			if (marked) {
+				this._emit({ type: "auth_stale", provider: message.provider, sourceTokens: authSourceTokens });
+			}
 			return marked;
 		}
-		return this._modelRegistry.markProviderAuthStale(message.provider);
+		const marked = this._modelRegistry.markProviderAuthStale(message.provider);
+		if (marked) {
+			this._emit({ type: "auth_stale", provider: message.provider });
+		}
+		return marked;
 	}
 
 	private _markProviderAuthStaleForRetryFailure(

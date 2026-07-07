@@ -163,19 +163,35 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 	private sortProviders(providers: AuthSelectorProvider[]): AuthSelectorProvider[] {
 		return [...providers].sort((a, b) => {
-			const configuredDelta = Number(this.isProviderConfigured(b)) - Number(this.isProviderConfigured(a));
-			if (configuredDelta !== 0) {
-				return configuredDelta;
+			const rankDelta = this.getProviderSortRank(a) - this.getProviderSortRank(b);
+			if (rankDelta !== 0) {
+				return rankDelta;
 			}
 			return compareAuthSelectorProviders(a, b);
 		});
 	}
 
-	private isProviderConfigured(provider: AuthSelectorProvider): boolean {
+	private getProviderSortRank(provider: AuthSelectorProvider): number {
+		if (this.isProviderConfigured(provider)) {
+			return 0;
+		}
+		if (this.isProviderStale(provider)) {
+			return 1;
+		}
+		return 2;
+	}
+
+	private isProviderStale(provider: AuthSelectorProvider): boolean {
 		const status = this.getAuthStatus(provider.id);
 		const credential = this.authStorage.get(provider.id);
 		const storageStatus = this.authStorage.getAuthStatus(provider.id);
-		if (status.source === "stale" || (storageStatus.source === "stale" && credential?.type === provider.authType)) {
+		return status.source === "stale" || (storageStatus.source === "stale" && credential?.type === provider.authType);
+	}
+
+	private isProviderConfigured(provider: AuthSelectorProvider): boolean {
+		const status = this.getAuthStatus(provider.id);
+		const credential = this.authStorage.get(provider.id);
+		if (this.isProviderStale(provider)) {
 			return false;
 		}
 
@@ -251,8 +267,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	private formatStatusIndicator(provider: AuthSelectorProvider): string {
 		const status = this.getAuthStatus(provider.id);
 		const credential = this.authStorage.get(provider.id);
-		const storageStatus = this.authStorage.getAuthStatus(provider.id);
-		if (status.source === "stale" || (storageStatus.source === "stale" && credential?.type === provider.authType)) {
+		if (this.isProviderStale(provider)) {
 			return theme.fg("warning", status.label ?? "expired");
 		}
 

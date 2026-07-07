@@ -19,6 +19,13 @@ function provider401Message(): AssistantMessage {
 	};
 }
 
+function bareProvider401Message(): AssistantMessage {
+	return fauxAssistantMessage("", {
+		stopReason: "error",
+		errorMessage: "401 status code (no body)",
+	});
+}
+
 function provider500Message(): AssistantMessage {
 	return {
 		...fauxAssistantMessage("", {
@@ -56,6 +63,7 @@ describe("issue #4491 provider stale after repeated 401", () => {
 		expect(harness.faux.state.callCount).toBe(3);
 		expect(harness.eventsOfType("auto_retry_start").map((event) => event.attempt)).toEqual([1, 2]);
 		expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([false]);
+		expect(harness.eventsOfType("auth_stale")).toHaveLength(1);
 
 		const provider = harness.getModel().provider;
 		expect(harness.authStorage.hasAuth(provider)).toBe(false);
@@ -71,6 +79,32 @@ describe("issue #4491 provider stale after repeated 401", () => {
 		const finalAssistant = assistantMessages[assistantMessages.length - 1];
 		expect(finalAssistant?.errorMessage).toContain("401 Unauthorized");
 		expect(finalAssistant?.errorMessage).toContain("Run /login to update credentials.");
+	});
+
+	it("emits stale auth source tokens for daemon clients after bare 401 auth failures", async () => {
+		const harness = await createHarness({
+			provider: "prime-inference",
+			settings: { retry: { enabled: true, maxRetries: 0, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		harness.setResponses([bareProvider401Message()]);
+
+		await harness.session.prompt("hello");
+
+		const authStaleEvents = harness.eventsOfType("auth_stale");
+		expect(authStaleEvents).toHaveLength(1);
+		expect(authStaleEvents[0]?.provider).toBe("prime-inference");
+		expect(authStaleEvents[0]?.sourceTokens).toMatchObject([
+			{
+				provider: "prime-inference",
+				source: "runtime",
+			},
+		]);
+		expect(harness.authStorage.getAuthStatus("prime-inference")).toEqual({
+			configured: false,
+			source: "stale",
+			label: "expired",
+		});
 	});
 
 	it("marks each failed auth source stale when credentials change during retry backoff", async () => {
