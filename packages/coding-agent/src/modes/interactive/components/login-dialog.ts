@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { exec } from "child_process";
 import { PRIME_BUTTERFLY_LOGO } from "../../../themes/prime-logo.js";
+import { copyToClipboard } from "../../../utils/clipboard.js";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
 import { MenuPanel, MenuSearchInput } from "./menu-panel.js";
@@ -69,6 +70,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 	// Tracks visibility directly rather than inferring it from inputResolver,
 	// which can outlive the field when a new screen clears the content.
 	private inputVisible = false;
+	private authUrl: string | undefined;
+	private authCopyStatus = new Text("", 0, 0);
 	private continueResolver?: () => void;
 	private continueRejecter?: (error: Error) => void;
 
@@ -142,12 +145,25 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 */
 	showAuth(url: string, instructions?: string): void {
 		this.startContent();
+		this.authUrl = url;
+		this.authCopyStatus.setText("");
 		this.addSectionTitle("Browser sign-in");
 		this.addMutedText("The sign-in page should already be opening. If it did not open, use the link below.");
 		this.contentContainer.addChild(new Spacer(1));
 		this.addLabel("Sign-in link");
 		const linkedUrl = getCapabilities().hyperlinks ? `\x1b]8;;${url}\x07${url}\x1b]8;;\x07` : url;
 		this.contentContainer.addChild(new Text(theme.fg("text", linkedUrl), 0, 0));
+		this.contentContainer.addChild(
+			new Text(
+				theme.fg(
+					"muted",
+					`${keyHint("app.auth.copyLoginUrl", "copy link")}  ${keyHint("tui.select.cancel", "cancel")}`,
+				),
+				0,
+				0,
+			),
+		);
+		this.contentContainer.addChild(this.authCopyStatus);
 
 		if (instructions) {
 			this.contentContainer.addChild(new Spacer(1));
@@ -274,6 +290,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.contentContainer.clear();
 		// The cleared panel no longer shows the paste field.
 		this.inputVisible = false;
+		this.authUrl = undefined;
+		this.authCopyStatus.setText("");
 		if (this.isPrimeInference) {
 			this.contentContainer.addChild(new PrimeLoginHeader());
 			this.contentContainer.addChild(new Spacer(1));
@@ -313,6 +331,20 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.contentContainer.addChild(new Text(theme.fg("muted", text), 0, 0));
 	}
 
+	private copyAuthUrl(): void {
+		const url = this.authUrl;
+		if (!url) return;
+		void copyToClipboard(url)
+			.then(() => {
+				this.authCopyStatus.setText(theme.fg("muted", "Sign-in link copied."));
+				this.tui.requestRender();
+			})
+			.catch(() => {
+				this.authCopyStatus.setText(theme.fg("muted", "Could not copy sign-in link."));
+				this.tui.requestRender();
+			});
+	}
+
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 
@@ -322,6 +354,11 @@ export class LoginDialogComponent extends Container implements Focusable {
 		const backGuardInput = this.inputVisible ? this.input : undefined;
 		if (kb.matches(data, "tui.select.cancel") || shouldTreatAsBack(data, backGuardInput)) {
 			this.cancel();
+			return;
+		}
+
+		if (this.authUrl && kb.matches(data, "app.auth.copyLoginUrl")) {
+			this.copyAuthUrl();
 			return;
 		}
 

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed login dialogs in fullscreen so sign-in URLs can be selected natively and copied with a keyboard shortcut ([ENG-4480](https://linear.app/primeintellect/issue/ENG-4480/new-fullscreen-tui-makes-it-impossible-to-copy-login-url)).
+
 ## [0.2.6] - 2026-07-06
 
 - Fixed the installer splash flickering during animation and resize by stabilizing full-screen redraws and removing misleading synthetic percentages ([ENG-4481](https://linear.app/primeintellect/issue/ENG-4481/installer-screen-is-unstable-and-flickery)).
