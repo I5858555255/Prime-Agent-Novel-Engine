@@ -393,7 +393,8 @@ export class Agent {
 			throw new Error("Cannot continue from message role: assistant");
 		}
 
-		if (lastMessage.role === "custom") {
+		const lastMessageRole: string = lastMessage.role;
+		if (lastMessageRole === "custom") {
 			const queuedRun = runQueuedMessages();
 			if (queuedRun) {
 				await queuedRun;
