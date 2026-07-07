@@ -735,57 +735,17 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			const steeringQueue = [...session.queue.steering];
 			const followUpQueue = [...session.queue.followUp];
 			let resumedSession = false;
-			let acceptedPromptResumed = false;
 			let restoredQueuedWork = false;
+			let acceptedPromptContextRestored = true;
 			if (acceptedPrompt) {
-				const acceptedContextRestored = await restoreNextTurnMessages(
+				acceptedPromptContextRestored = await restoreNextTurnMessages(
 					client,
 					activeSessionId,
 					session.sessionFile,
 					acceptedPrompt.nextTurn,
 				);
-				if (acceptedContextRestored) {
-					const promptResponse = await client.request(
-						{
-							type: "prompt",
-							activeSessionId,
-							message: acceptedPrompt.message,
-							content: acceptedPrompt.content,
-							images: acceptedPrompt.images,
-							expandPromptTemplates: false,
-							agentMessageId: acceptedPrompt.agentMessageId,
-						},
-						120000,
-					);
-					if (!promptResponse.success) {
-						console.error(
-							chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`),
-						);
-					} else {
-						acceptedPromptResumed = true;
-						resumedSession = true;
-					}
-				}
-				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
-			} else {
-				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
 			}
-			if (!acceptedPromptResumed && needsContinuationPrompt) {
-				const promptResponse = await client.request(
-					{
-						type: "prompt",
-						activeSessionId,
-						message: UPDATE_RESTART_CONTINUATION_PROMPT,
-						expandPromptTemplates: false,
-					},
-					120000,
-				);
-				if (!promptResponse.success) {
-					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
-				} else {
-					resumedSession = true;
-				}
-			}
+			await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
 			for (const queued of steeringQueue) {
 				const response = await client.request(
 					{
@@ -833,7 +793,41 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 					);
 				}
 			}
-			if (!acceptedPromptResumed && !needsContinuationPrompt && restoredQueuedWork) {
+			if (acceptedPrompt && acceptedPromptContextRestored) {
+				const promptResponse = await client.request(
+					{
+						type: "prompt",
+						activeSessionId,
+						message: acceptedPrompt.message,
+						content: acceptedPrompt.content,
+						images: acceptedPrompt.images,
+						expandPromptTemplates: false,
+						agentMessageId: acceptedPrompt.agentMessageId,
+					},
+					120000,
+				);
+				if (!promptResponse.success) {
+					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
+				} else {
+					resumedSession = true;
+				}
+			} else if (needsContinuationPrompt) {
+				const promptResponse = await client.request(
+					{
+						type: "prompt",
+						activeSessionId,
+						message: UPDATE_RESTART_CONTINUATION_PROMPT,
+						expandPromptTemplates: false,
+					},
+					120000,
+				);
+				if (!promptResponse.success) {
+					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
+				} else {
+					resumedSession = true;
+				}
+			}
+			if (!resumedSession && restoredQueuedWork) {
 				const response = await client.request({ type: "resume_queue", activeSessionId }, 30000);
 				if (response.success) {
 					resumedSession = true;

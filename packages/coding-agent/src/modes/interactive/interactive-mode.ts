@@ -7127,10 +7127,6 @@ export class InteractiveMode {
 			);
 			return;
 		}
-		if (includesSelf) {
-			this.showStatus(`${APP_NAME} updated. Restart the terminal session to use the new version.`);
-			return;
-		}
 		this.showStatus("Packages updated. Reloading resources...");
 		await this.handleReloadCommand();
 	}

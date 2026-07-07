@@ -775,6 +775,88 @@ describe("issue #4257 update restart resume", () => {
 		expect(harness.session.getFollowUpQueueSnapshots()).toEqual([]);
 	});
 
+	it("drains restored queues when a continuation prompt resumes interrupted work", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("handled continuation"), fauxAssistantMessage("handled follow-up")]);
+		harness.session.agent.state.messages.push(createCustomMessage("update interrupted"));
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+		const writes: string[] = [];
+		const client: DaemonSocketClient = {
+			id: "client-1",
+			socket: {
+				destroyed: false,
+				write: vi.fn((chunk: string) => {
+					writes.push(chunk);
+					return true;
+				}),
+			} as unknown as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set(["active-1"]),
+			detachInput: vi.fn(),
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		};
+
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "steer-1",
+				type: "steer",
+				activeSessionId: "active-1",
+				message: "restored steer",
+				expandPromptTemplates: false,
+			}),
+		);
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "follow-up-1",
+				type: "follow_up",
+				activeSessionId: "active-1",
+				message: "restored follow-up",
+				expandPromptTemplates: false,
+			}),
+		);
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "prompt-1",
+				type: "prompt",
+				activeSessionId: "active-1",
+				message: "continue interrupted work",
+				expandPromptTemplates: false,
+			}),
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await harness.session.agent.waitForIdle();
+
+		const responses = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(responses).toEqual([
+			expect.objectContaining({ id: "steer-1", command: "steer", success: true }),
+			expect.objectContaining({ id: "follow-up-1", command: "follow_up", success: true }),
+			expect.objectContaining({ id: "prompt-1", command: "prompt", success: true }),
+		]);
+		expect(getUserTexts(harness)).toEqual(["continue interrupted work", "restored steer", "restored follow-up"]);
+		expect(harness.session.getSteeringQueueSnapshots()).toEqual([]);
+		expect(harness.session.getFollowUpQueueSnapshots()).toEqual([]);
+	});
+
 	it("resumes restored queues after an update marker without prior transcript messages", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
