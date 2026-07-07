@@ -355,6 +355,7 @@ export class ModelRegistry {
 	private models: Model<Api>[] = [];
 	private providerRequestConfigs: Map<string, ProviderRequestConfig> = new Map();
 	private staleProviderRequestAuthSources: Map<string, AuthSourceToken[]> = new Map();
+	private lastProviderAuthSourceTokens: Map<string, AuthSourceToken> = new Map();
 	private modelRequestHeaders: Map<string, Record<string, string>> = new Map();
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
 	private loadError: string | undefined = undefined;
@@ -387,6 +388,7 @@ export class ModelRegistry {
 	refresh(): void {
 		this.providerRequestConfigs.clear();
 		this.modelRequestHeaders.clear();
+		this.lastProviderAuthSourceTokens.clear();
 		this.loadError = undefined;
 
 		// Credentials may have been written by another process (e.g. the UI
@@ -817,6 +819,30 @@ export class ModelRegistry {
 		}
 	}
 
+	private getProviderRequestAuthSourceToken(
+		provider: string,
+		source: ProviderRequestAuthSource,
+	): AuthSourceToken | undefined {
+		const valueFingerprint = source.valueFingerprint ?? source.resolveValueFingerprint?.();
+		if (!valueFingerprint) {
+			return undefined;
+		}
+		return {
+			provider,
+			source: source.source,
+			identityFingerprint: source.identityFingerprint,
+			valueFingerprint,
+		};
+	}
+
+	private setLastProviderAuthSourceToken(provider: string, token: AuthSourceToken | undefined): void {
+		if (token) {
+			this.lastProviderAuthSourceTokens.set(provider, token);
+		} else {
+			this.lastProviderAuthSourceTokens.delete(provider);
+		}
+	}
+
 	private hasConfiguredProviderRequestAuth(provider: string): boolean {
 		const source = this.getProviderRequestAuthSource(provider);
 		return source !== undefined && this.getMatchingStaleProviderRequestAuthSources(provider, source).length === 0;
@@ -832,6 +858,11 @@ export class ModelRegistry {
 	}
 
 	getCurrentProviderAuthSourceToken(provider: string): AuthSourceToken | undefined {
+		const lastRequestToken = this.lastProviderAuthSourceTokens.get(provider);
+		if (lastRequestToken) {
+			return lastRequestToken;
+		}
+
 		const authStorageToken = this.authStorage.getCurrentAuthSourceToken(provider);
 		if (authStorageToken) {
 			return authStorageToken;
@@ -923,8 +954,11 @@ export class ModelRegistry {
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
 		try {
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
-			const apiKeyFromAuthStorage = await this.authStorage.getApiKey(model.provider, { includeFallback: false });
-			let apiKey = apiKeyFromAuthStorage;
+			const authStorageAuth = await this.authStorage.getApiKeyWithSourceToken(model.provider, {
+				includeFallback: false,
+			});
+			let apiKey = authStorageAuth.apiKey;
+			let authSourceToken = authStorageAuth.sourceToken;
 			if (apiKey === undefined && providerConfig?.apiKey) {
 				const resolvedApiKey = resolveConfigValueOrThrow(
 					providerConfig.apiKey,
@@ -937,8 +971,10 @@ export class ModelRegistry {
 				) {
 					this.clearStaleProviderRequestAuthSource(model.provider, providerRequestAuthSource);
 					apiKey = resolvedApiKey;
+					authSourceToken = this.getProviderRequestAuthSourceToken(model.provider, providerRequestAuthSource);
 				}
 			}
+			this.setLastProviderAuthSourceToken(model.provider, apiKey === undefined ? undefined : authSourceToken);
 
 			const providerHeaders = resolveHeadersOrThrow(providerConfig?.headers, `provider "${model.provider}"`);
 			const authStorageHeaders = this.authStorage.getProviderHeaders(model.provider);
@@ -1018,22 +1054,30 @@ export class ModelRegistry {
 	 * Get API key for a provider.
 	 */
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
-		const apiKey = await this.authStorage.getApiKey(provider, { includeFallback: false });
-		if (apiKey !== undefined) {
-			return apiKey;
+		const authStorageAuth = await this.authStorage.getApiKeyWithSourceToken(provider, { includeFallback: false });
+		if (authStorageAuth.apiKey !== undefined) {
+			this.setLastProviderAuthSourceToken(provider, authStorageAuth.sourceToken);
+			return authStorageAuth.apiKey;
 		}
 
 		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
 		if (!providerApiKey) {
+			this.setLastProviderAuthSourceToken(provider, undefined);
 			return undefined;
 		}
 
 		const resolvedApiKey = resolveConfigValueUncached(providerApiKey);
+		if (resolvedApiKey === undefined) {
+			this.setLastProviderAuthSourceToken(provider, undefined);
+			return undefined;
+		}
 		const source = this.getProviderRequestAuthSource(provider, { resolvedApiKey });
 		if (!source || this.isProviderRequestAuthStale(provider, source)) {
+			this.setLastProviderAuthSourceToken(provider, undefined);
 			return undefined;
 		}
 		this.clearStaleProviderRequestAuthSource(provider, source);
+		this.setLastProviderAuthSourceToken(provider, this.getProviderRequestAuthSourceToken(provider, source));
 
 		return resolvedApiKey;
 	}

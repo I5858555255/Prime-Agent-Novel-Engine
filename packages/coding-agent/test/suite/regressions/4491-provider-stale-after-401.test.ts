@@ -19,6 +19,22 @@ function provider401Message(): AssistantMessage {
 	};
 }
 
+function provider500Message(): AssistantMessage {
+	return {
+		...fauxAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "500 Internal Server Error",
+		}),
+		diagnostics: [
+			{
+				type: "provider_stream_failure",
+				timestamp: Date.now(),
+				details: { kind: "server_error", status: 500 },
+			},
+		],
+	};
+}
+
 describe("issue #4491 provider stale after repeated 401", () => {
 	const harnesses: Harness[] = [];
 
@@ -83,6 +99,22 @@ describe("issue #4491 provider stale after repeated 401", () => {
 			source: "stale",
 			label: "expired",
 		});
+	});
+
+	it("marks captured auth failures stale when the final retryable error is not auth", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		harness.setResponses([provider401Message(), provider401Message(), provider500Message()]);
+
+		await harness.session.prompt("hello");
+
+		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.eventsOfType("auto_retry_start").map((event) => event.attempt)).toEqual([1, 2]);
+		expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([false]);
+		expect(harness.authStorage.hasAuth(harness.getModel().provider)).toBe(false);
+		await expect(harness.authStorage.getApiKey(harness.getModel().provider)).resolves.toBeUndefined();
 	});
 
 	it("marks concrete auth failures stale when retry is disabled", async () => {

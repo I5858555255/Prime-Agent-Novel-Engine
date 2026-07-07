@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnthropicMessagesCompat, Api, Context, Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 import { getApiProvider } from "@earendil-works/pi-ai";
-import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import { getOAuthProvider, registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { clearApiKeyCache, ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.js";
@@ -1412,6 +1412,46 @@ describe("ModelRegistry", () => {
 				await expect(registry.getApiKeyAndHeaders(model!)).resolves.toMatchObject({
 					ok: true,
 					apiKey: "literal_api_key_value",
+				});
+			});
+
+			test("stale marking uses the auth source resolved for the last request", async () => {
+				const providerId = `test-oauth-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+				registerOAuthProvider({
+					id: providerId,
+					name: "Test OAuth Fallback",
+					async login() {
+						throw new Error("Not used in this test");
+					},
+					async refreshToken() {
+						throw new Error("refresh failed");
+					},
+					getApiKey(credentials) {
+						return `Bearer ${credentials.access}`;
+					},
+				});
+				authStorage.set(providerId, {
+					type: "oauth",
+					refresh: "refresh-token",
+					access: "expired-access-token",
+					expires: Date.now() - 10_000,
+				});
+				writeRawModelsJson({
+					[providerId]: providerWithApiKey("literal_api_key_value"),
+				});
+
+				const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+				await expect(registry.getApiKeyForProvider(providerId)).resolves.toBe("literal_api_key_value");
+				const token = registry.getCurrentProviderAuthSourceToken(providerId);
+				expect(token?.source).toBe("models_json_key");
+				expect(token).toBeDefined();
+				expect(registry.markProviderAuthSourceStale(token!)).toBe(true);
+
+				await expect(registry.getApiKeyForProvider(providerId)).resolves.toBeUndefined();
+				expect(authStorage.getAuthStatus(providerId)).toEqual({
+					configured: true,
+					source: "stored",
 				});
 			});
 

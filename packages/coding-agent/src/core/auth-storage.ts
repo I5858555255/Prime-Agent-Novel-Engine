@@ -95,6 +95,11 @@ type AuthSourceCandidate = {
 	resolveValueFingerprint?: () => string | undefined;
 };
 
+type AuthApiKeyResult = {
+	apiKey?: string;
+	sourceToken?: AuthSourceToken;
+};
+
 export interface AuthStorageBackend {
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
@@ -388,7 +393,7 @@ export class AuthStorage {
 
 	private getStoredAuthCandidate(
 		provider: string,
-		options?: { resolveCommandValue?: boolean },
+		options?: { resolveCommandValue?: boolean; resolvedCommandValue?: string },
 	): AuthSourceCandidate | undefined {
 		const credential = this.data[provider];
 		if (!credential) {
@@ -396,14 +401,19 @@ export class AuthStorage {
 		}
 		const isCommandApiKey = credential.type === "api_key" && credential.key.startsWith("!");
 		const identityMaterial = isCommandApiKey ? `api_key:command:${credential.key}` : `${provider}:${credential.type}`;
+		const commandValueMaterial =
+			isCommandApiKey && options?.resolvedCommandValue !== undefined
+				? `api_key:command:${credential.key}\0${options.resolvedCommandValue}`
+				: undefined;
 		return this.createAuthSourceCandidate({
 			configured: true,
 			source: "stored",
 			identityMaterial,
 			valueMaterial:
-				isCommandApiKey && !options?.resolveCommandValue
+				commandValueMaterial ??
+				(isCommandApiKey && !options?.resolveCommandValue
 					? undefined
-					: this.getStoredCredentialValueMaterial(provider, credential),
+					: this.getStoredCredentialValueMaterial(provider, credential)),
 			resolveValueMaterial: isCommandApiKey
 				? () => this.getStoredCredentialValueMaterial(provider, credential)
 				: undefined,
@@ -539,11 +549,10 @@ export class AuthStorage {
 		return token ? this.markAuthSourceStale(token) : false;
 	}
 
-	getCurrentAuthSourceToken(provider: string): AuthSourceToken | undefined {
-		const { candidate } = this.getAvailableAuthCandidate(provider);
-		if (!candidate) {
-			return undefined;
-		}
+	private getAuthSourceTokenForCandidate(
+		provider: string,
+		candidate: AuthSourceCandidate,
+	): AuthSourceToken | undefined {
 		const valueFingerprint = candidate.valueFingerprint ?? candidate.resolveValueFingerprint?.();
 		if (!valueFingerprint) {
 			return undefined;
@@ -554,6 +563,14 @@ export class AuthStorage {
 			identityFingerprint: candidate.identityFingerprint,
 			valueFingerprint,
 		};
+	}
+
+	getCurrentAuthSourceToken(provider: string): AuthSourceToken | undefined {
+		const { candidate } = this.getAvailableAuthCandidate(provider);
+		if (!candidate) {
+			return undefined;
+		}
+		return this.getAuthSourceTokenForCandidate(provider, candidate);
 	}
 
 	markAuthSourceStale(token: AuthSourceToken): boolean {
@@ -789,19 +806,28 @@ export class AuthStorage {
 	 * 4. Environment variable
 	 * 5. Fallback resolver (models.json custom providers)
 	 */
-	async getApiKey(providerId: string, options?: { includeFallback?: boolean }): Promise<string | undefined> {
+	async getApiKeyWithSourceToken(
+		providerId: string,
+		options?: { includeFallback?: boolean },
+	): Promise<AuthApiKeyResult> {
 		// Runtime override takes highest priority
 		const runtimeCandidate = this.getRuntimeAuthCandidate(providerId);
 		const runtimeKey = this.runtimeOverrides.get(providerId);
 		if (runtimeKey && runtimeCandidate && !this.isAuthSourceStale(providerId, runtimeCandidate)) {
-			return runtimeKey;
+			return {
+				apiKey: runtimeKey,
+				sourceToken: this.getAuthSourceTokenForCandidate(providerId, runtimeCandidate),
+			};
 		}
 
 		if (providerId === PRIME_INFERENCE_PROVIDER_ID) {
 			const primeCliCandidate = this.getPrimeCliAuthCandidate(providerId);
 			const primeCliKey = this.getPrimeCliApiKey(providerId);
 			if (primeCliKey && primeCliCandidate && !this.isAuthSourceStale(providerId, primeCliCandidate)) {
-				return primeCliKey;
+				return {
+					apiKey: primeCliKey,
+					sourceToken: this.getAuthSourceTokenForCandidate(providerId, primeCliCandidate),
+				};
 			}
 		}
 
@@ -811,9 +837,21 @@ export class AuthStorage {
 			const storedCandidate = this.getStoredAuthCandidate(providerId);
 			if (storedCandidate && !this.isAuthSourceStale(providerId, storedCandidate)) {
 				const hasStaleRecord = this.getMatchingStaleAuthSources(providerId, storedCandidate).length > 0;
-				return cred.key.startsWith("!") && hasStaleRecord
-					? resolveConfigValueUncached(cred.key)
-					: resolveConfigValue(cred.key);
+				const apiKey =
+					cred.key.startsWith("!") && hasStaleRecord
+						? resolveConfigValueUncached(cred.key)
+						: resolveConfigValue(cred.key);
+				const sourceToken =
+					apiKey === undefined
+						? undefined
+						: this.getAuthSourceTokenForCandidate(
+								providerId,
+								cred.key.startsWith("!")
+									? (this.getStoredAuthCandidate(providerId, { resolvedCommandValue: apiKey }) ??
+											storedCandidate)
+									: storedCandidate,
+							);
+				return { apiKey, sourceToken };
 			}
 		}
 
@@ -823,7 +861,7 @@ export class AuthStorage {
 				const provider = getOAuthProvider(providerId);
 				if (!provider) {
 					// Unknown OAuth provider, can't get API key
-					return undefined;
+					return {};
 				}
 
 				// Check if token needs refresh
@@ -834,7 +872,13 @@ export class AuthStorage {
 					try {
 						const result = await this.refreshOAuthTokenWithLock(providerId);
 						if (result) {
-							return result.apiKey;
+							const refreshedCandidate = this.getStoredAuthCandidate(providerId);
+							return {
+								apiKey: result.apiKey,
+								sourceToken: refreshedCandidate
+									? this.getAuthSourceTokenForCandidate(providerId, refreshedCandidate)
+									: undefined,
+							};
 						}
 					} catch (error) {
 						this.recordError(error);
@@ -844,16 +888,25 @@ export class AuthStorage {
 
 						if (updatedCred?.type === "oauth" && Date.now() < updatedCred.expires) {
 							// Another instance refreshed successfully, use those credentials
-							return provider.getApiKey(updatedCred);
+							const updatedCandidate = this.getStoredAuthCandidate(providerId);
+							return {
+								apiKey: provider.getApiKey(updatedCred),
+								sourceToken: updatedCandidate
+									? this.getAuthSourceTokenForCandidate(providerId, updatedCandidate)
+									: undefined,
+							};
 						}
 
 						// Refresh truly failed - return undefined so model discovery skips this provider
 						// User can /login to re-authenticate (credentials preserved for retry)
-						return undefined;
+						return {};
 					}
 				} else {
 					// Token not expired, use current access token
-					return provider.getApiKey(cred);
+					return {
+						apiKey: provider.getApiKey(cred),
+						sourceToken: this.getAuthSourceTokenForCandidate(providerId, storedCandidate),
+					};
 				}
 			}
 		}
@@ -861,17 +914,30 @@ export class AuthStorage {
 		// Fall back to environment variable
 		const envCandidate = this.getEnvironmentAuthCandidate(providerId);
 		const envKey = getEnvApiKey(providerId);
-		if (envKey && envCandidate && !this.isAuthSourceStale(providerId, envCandidate)) return envKey;
+		if (envKey && envCandidate && !this.isAuthSourceStale(providerId, envCandidate)) {
+			return {
+				apiKey: envKey,
+				sourceToken: this.getAuthSourceTokenForCandidate(providerId, envCandidate),
+			};
+		}
 
 		// Fall back to custom resolver (e.g., models.json custom providers)
 		if (options?.includeFallback !== false) {
 			const fallbackCandidate = this.getFallbackAuthCandidate(providerId);
 			if (fallbackCandidate && !this.isAuthSourceStale(providerId, fallbackCandidate)) {
-				return this.fallbackResolver?.(providerId) ?? undefined;
+				return {
+					apiKey: this.fallbackResolver?.(providerId) ?? undefined,
+					sourceToken: this.getAuthSourceTokenForCandidate(providerId, fallbackCandidate),
+				};
 			}
 		}
 
-		return undefined;
+		return {};
+	}
+
+	async getApiKey(providerId: string, options?: { includeFallback?: boolean }): Promise<string | undefined> {
+		const result = await this.getApiKeyWithSourceToken(providerId, options);
+		return result.apiKey;
 	}
 
 	/**

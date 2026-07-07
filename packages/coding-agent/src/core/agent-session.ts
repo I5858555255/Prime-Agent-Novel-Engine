@@ -5433,6 +5433,17 @@ export class AgentSession {
 		this._modelRegistry.markProviderAuthStale(message.provider);
 	}
 
+	private _markProviderAuthStaleForRetryFailure(
+		message: AssistantMessage,
+		options?: { markAuthStaleOnFailure?: boolean; authSourceTokens?: readonly AuthSourceToken[] },
+	): void {
+		const authSourceTokens =
+			this._retryAuthFailureSources.length > 0 ? this._retryAuthFailureSources : options?.authSourceTokens;
+		if ((authSourceTokens?.length ?? 0) > 0 || options?.markAuthStaleOnFailure) {
+			this._markProviderAuthStale(message, authSourceTokens);
+		}
+	}
+
 	/**
 	 * Handle retryable errors with exponential backoff.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
@@ -5443,9 +5454,7 @@ export class AgentSession {
 	): Promise<boolean> {
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled) {
-			if (options?.markAuthStaleOnFailure) {
-				this._markProviderAuthStale(message, options.authSourceTokens);
-			}
+			this._markProviderAuthStaleForRetryFailure(message, options);
 			this._retryAuthFailureSources = [];
 			this._resolveRetry();
 			return false;
@@ -5462,9 +5471,7 @@ export class AgentSession {
 		this._retryAttempt++;
 
 		if (this._retryAttempt > settings.maxRetries) {
-			if (options?.markAuthStaleOnFailure) {
-				this._markProviderAuthStale(message, options.authSourceTokens);
-			}
+			this._markProviderAuthStaleForRetryFailure(message, options);
 			// Max retries exceeded, emit final failure and reset
 			this._emit({
 				type: "auto_retry_end",
