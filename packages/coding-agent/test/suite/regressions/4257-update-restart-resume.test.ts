@@ -775,10 +775,11 @@ describe("issue #4257 update restart resume", () => {
 		expect(harness.session.getFollowUpQueueSnapshots()).toEqual([]);
 	});
 
-	it("resumes restored queues without prior transcript messages", async () => {
+	it("resumes restored queues after an update marker without prior transcript messages", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("handled restored follow-up")]);
+		harness.session.agent.state.messages.push(createCustomMessage("update interrupted"));
 
 		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
 			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
