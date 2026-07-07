@@ -117,6 +117,17 @@ describe("Prime Inference models", () => {
 		expect(getModel("prime-inference", "moonshotai/kimi-k2.7-code").reasoning).toBe(true);
 	});
 
+	it("uses Anthropic context windows for Prime Inference Claude routes", () => {
+		expect(getModel("prime-inference", "anthropic/claude-fable-5").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-opus-4.6").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-opus-4.8").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-sonnet-4.6").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-sonnet-5").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-haiku-4.5").contextWindow).toBe(200000);
+		expect(getModel("prime-inference", "anthropic/claude-sonnet-4.5").contextWindow).toBe(200000);
+	});
+
 	it("resolves PRIME_API_KEY from the environment", () => {
 		process.env.PRIME_API_KEY = "test-prime-key";
 
