@@ -44,7 +44,7 @@ import {
 	normalizeObserveLimit,
 	normalizeObserveMaxChars,
 } from "../../core/agent-observe.js";
-import type { PromptOptions } from "../../core/agent-session.js";
+import type { AgentSession, PromptOptions } from "../../core/agent-session.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
 	AgentSessionRuntime,
@@ -588,9 +588,16 @@ export class AgentDaemon {
 			await session.followUp(job.prompt);
 			return;
 		}
+		if (isHeartbeatCronJob(job)) {
+			await this.promptHeartbeatWithAgentMessagePreparingGuard(state, job, {
+				streamingBehavior: "followUp",
+				followUpQueueKey: `heartbeat:${job.id}`,
+				source: "rpc",
+			});
+			return;
+		}
 		await this.promptWithAgentMessagePreparingGuard(state, job.prompt, {
 			streamingBehavior: "followUp",
-			followUpQueueKey: isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined,
 			source: "rpc",
 		});
 	}
@@ -603,6 +610,35 @@ export class AgentDaemon {
 		state: ActiveSessionState,
 		message: string,
 		options?: PromptOptions,
+	): Promise<void> {
+		await this.withAgentMessagePreparingGuard(state, (session) =>
+			session.prompt(message, {
+				...options,
+				preflightResult: (didSucceed) => {
+					options?.preflightResult?.(didSucceed);
+				},
+			}),
+		);
+	}
+
+	private async promptHeartbeatWithAgentMessagePreparingGuard(
+		state: ActiveSessionState,
+		job: AgentCronJob,
+		options?: PromptOptions,
+	): Promise<void> {
+		await this.withAgentMessagePreparingGuard(state, (session) =>
+			session.promptHeartbeat(job, {
+				...options,
+				preflightResult: (didSucceed) => {
+					options?.preflightResult?.(didSucceed);
+				},
+			}),
+		);
+	}
+
+	private async withAgentMessagePreparingGuard(
+		state: ActiveSessionState,
+		run: (session: AgentSession) => Promise<void>,
 	): Promise<void> {
 		const activeSessionId = state.activeSessionId;
 		const session = state.runtime.session;
@@ -625,12 +661,7 @@ export class AgentDaemon {
 		};
 		try {
 			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
-			await session.prompt(message, {
-				...options,
-				preflightResult: (didSucceed) => {
-					options?.preflightResult?.(didSucceed);
-				},
-			});
+			await run(session);
 		} finally {
 			clearPreparing();
 		}
@@ -1394,11 +1425,7 @@ export class AgentDaemon {
 
 			case "get_connection_state": {
 				const state = this.getSessionState(command.activeSessionId);
-				return success(
-					command.id,
-					"get_connection_state",
-					createAgentConnectionState(state.runtime, state.activeSessionId),
-				);
+				return success(command.id, "get_connection_state", this.createConnectionState(state));
 			}
 
 			case "get_messages": {
@@ -1444,8 +1471,8 @@ export class AgentDaemon {
 			case "get_queue": {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "get_queue", {
-					steering: [...state.runtime.session.getSteeringMessages()],
-					followUp: [...state.runtime.session.getFollowUpMessages()],
+					steering: [...state.runtime.session.getSteeringMessagePreviews()],
+					followUp: [...state.runtime.session.getFollowUpMessagePreviews()],
 				});
 			}
 
@@ -1789,11 +1816,7 @@ export class AgentDaemon {
 					}
 				: undefined;
 		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
-		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
-		// Prefer the live in-memory recap over the persisted baseline.
-		if (state.summaryState?.summary) {
-			connectionState.recap = state.summaryState.summary;
-		}
+		const connectionState = this.createConnectionState(state);
 		return {
 			activeSessionId: state.activeSessionId,
 			summary: summaryForActiveSession(state),
@@ -1806,6 +1829,15 @@ export class AgentDaemon {
 			...(parent ? { parent } : {}),
 			...(children.length > 0 ? { children } : {}),
 		};
+	}
+
+	private createConnectionState(state: ActiveSessionState): ReturnType<typeof createAgentConnectionState> {
+		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
+		connectionState.heartbeat = this.cronStore.getHeartbeat(state.activeSessionId) ?? null;
+		if (state.summaryState?.summary) {
+			connectionState.recap = state.summaryState.summary;
+		}
+		return connectionState;
 	}
 
 	private createAgentSessionMessageEndpoint(state: ActiveSessionState): AgentSessionMessageEndpoint {

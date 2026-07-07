@@ -138,7 +138,7 @@ import {
 import type { HostRequestHandlers } from "./kernel/index.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { McpManager } from "./mcp/mcp-manager.js";
-import type { BashExecutionMessage, CustomMessage } from "./messages.js";
+import { type BashExecutionMessage, type CustomMessage, createHeartbeatPromptMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
@@ -392,15 +392,21 @@ interface InternalPromptOptions extends PromptOptions {
 
 interface QueuedSteeringMessage {
 	text: string;
+	previewLabel?: string;
 	agentMessageId?: string;
 	message: AgentMessage;
 }
 
 interface QueuedFollowUpMessage {
 	text: string;
+	previewLabel?: string;
 	queueKey?: string;
 	agentMessageId?: string;
 	message: AgentMessage;
+}
+
+function queuedMessagePreview(message: { text: string; previewLabel?: string }): string {
+	return message.previewLabel ? `${message.previewLabel}: ${message.text}` : message.text;
 }
 
 interface AcceptedAgentMessagePrompt {
@@ -836,8 +842,8 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: this._steeringMessages.map((message) => message.text),
-			followUp: this._followUpMessages.map((message) => message.text),
+			steering: this._steeringMessages.map(queuedMessagePreview),
+			followUp: this._followUpMessages.map(queuedMessagePreview),
 		});
 	}
 
@@ -1666,10 +1672,11 @@ export class AgentSession {
 			this._resolveRetry();
 		}
 
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
-		// This ensures the UI sees the updated queue state
-		if (event.type === "message_start" && event.message.role === "user") {
-			this._overflowRecoveryAttempted = false;
+		// Remove queued messages before emitting so the UI sees the updated queue.
+		if (event.type === "message_start") {
+			if (event.message.role === "user") {
+				this._overflowRecoveryAttempted = false;
+			}
 			const steeringIndex = this._steeringMessages.findIndex((message) => message.message === event.message);
 			if (steeringIndex !== -1) {
 				const [removed] = this._steeringMessages.splice(steeringIndex, 1);
@@ -2250,6 +2257,99 @@ export class AgentSession {
 		return this._queueFollowUp(text, undefined, { agentMessageId });
 	}
 
+	async promptHeartbeat(job: AgentCronJob, options?: PromptOptions): Promise<void> {
+		const message = createHeartbeatPromptMessage(job);
+		await this._promptInjectedMessage(job.prompt, message, {
+			...options,
+			followUpQueueKey: options?.followUpQueueKey ?? `heartbeat:${job.id}`,
+		});
+	}
+
+	private async _promptInjectedMessage(
+		text: string,
+		message: CustomMessage,
+		options?: InternalPromptOptions,
+	): Promise<void> {
+		const preflightResult = options?.preflightResult;
+		let preflightSettled = false;
+		const reportPreflight = (success: boolean, queued = false) => {
+			if (!preflightSettled) {
+				preflightSettled = true;
+				preflightResult?.(success, queued);
+			}
+		};
+
+		try {
+			const shouldQueueForStreaming = this.isStreaming;
+			const shouldQueueForPendingWork =
+				options?.queueIfBusy === true &&
+				(this.pendingMessageCount > 0 ||
+					this.isCompacting ||
+					this.isRetrying ||
+					this.isBashRunning ||
+					this.hasAcceptedPromptInFlight);
+			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
+				if (!options?.streamingBehavior) {
+					const stateDescription = shouldQueueForStreaming
+						? "Agent is already processing"
+						: "Agent has queued work";
+					throw new Error(
+						`${stateDescription}. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`,
+					);
+				}
+				let queued = true;
+				if (options.streamingBehavior === "followUp") {
+					queued = await this._queueFollowUp(text, undefined, {
+						queueKey: options.followUpQueueKey,
+						message,
+						previewLabel: "Heartbeat",
+					});
+				} else {
+					await this._queueSteer(text, undefined, { message, previewLabel: "Heartbeat" });
+				}
+				if (!queued) {
+					reportPreflight(false);
+					return;
+				}
+				reportPreflight(true, true);
+				return;
+			}
+
+			await this._waitForRefineIdle();
+			this._flushPendingBashMessages();
+			if (!this.model) {
+				throw new Error(formatNoModelSelectedMessage());
+			}
+			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+				const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+				if (isOAuth) {
+					throw new Error(formatAuthenticationFailedMessage(this.model.provider));
+				}
+				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			}
+
+			const lastAssistant = this._findLastAssistantMessage();
+			if (lastAssistant) {
+				await this._checkCompaction(lastAssistant, false);
+			}
+
+			const pendingNextTurnMessages = this._pendingNextTurnMessages;
+			this._pendingNextTurnMessages = [];
+			const promptMessages = [...pendingNextTurnMessages, message];
+			try {
+				await this.agent.prompt(promptMessages);
+			} catch (error) {
+				this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages.map((pending) => ({ ...pending })));
+				throw error;
+			}
+			reportPreflight(true);
+		} catch (error) {
+			reportPreflight(false);
+			throw error;
+		}
+		await this.waitForRetry();
+	}
+
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
@@ -2744,16 +2844,24 @@ export class AgentSession {
 	private async _queueSteer(
 		text: string,
 		images?: ImageContent[],
-		options: { agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
+		options: {
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			message?: AgentMessage;
+			previewLabel?: string;
+		} = {},
 	): Promise<void> {
 		const content = options.content ?? this._buildPromptContent(text, images);
-		const message: AgentMessage = {
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		};
+		const message: AgentMessage =
+			options.message ??
+			({
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			} satisfies AgentMessage);
 		this._steeringMessages.push({
 			text,
+			previewLabel: options.previewLabel,
 			agentMessageId: options.agentMessageId,
 			message,
 		});
@@ -2767,19 +2875,28 @@ export class AgentSession {
 	private async _queueFollowUp(
 		text: string,
 		images?: ImageContent[],
-		options: { queueKey?: string; agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
+		options: {
+			queueKey?: string;
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			message?: AgentMessage;
+			previewLabel?: string;
+		} = {},
 	): Promise<boolean> {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
 			return false;
 		}
 		const content = options.content ?? this._buildPromptContent(text, images);
-		const message: AgentMessage = {
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		};
+		const message: AgentMessage =
+			options.message ??
+			({
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			} satisfies AgentMessage);
 		this._followUpMessages.push({
 			text,
+			previewLabel: options.previewLabel,
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			message,
@@ -2977,9 +3094,17 @@ export class AgentSession {
 		return this._steeringMessages.map((message) => message.text);
 	}
 
+	getSteeringMessagePreviews(): readonly string[] {
+		return this._steeringMessages.map(queuedMessagePreview);
+	}
+
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
 		return this._followUpMessages.map((message) => message.text);
+	}
+
+	getFollowUpMessagePreviews(): readonly string[] {
+		return this._followUpMessages.map(queuedMessagePreview);
 	}
 
 	hasQueuedFollowUp(queueKey: string): boolean {
