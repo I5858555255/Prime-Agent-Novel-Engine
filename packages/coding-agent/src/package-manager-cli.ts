@@ -380,10 +380,10 @@ const UPDATE_RESTART_CONTINUATION_PROMPT =
 const UPDATE_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
 	busyDetail(count) {
 		const { noun, pronoun } = pluralizeSessions(count);
-		return `The running daemon has ${count} busy ${noun}. Updating will stop ${pronoun}, restart the daemon, and resume interrupted work.`;
+		return `The running daemon has ${count} busy ${noun}. After the update installs, Prime Agent will stop ${pronoun}, restart the daemon, and resume interrupted work.`;
 	},
 	unlistableDetail:
-		"A running daemon's sessions could not be listed. Updating will stop resident sessions, restart the daemon, and resume interrupted work where possible.",
+		"A running daemon's sessions could not be listed. After the update installs, Prime Agent will stop resident sessions, restart the daemon, and resume interrupted work where possible.",
 	question: "Continue?",
 	nonTtyHint: "Re-run with --force to proceed.",
 };
@@ -882,14 +882,35 @@ async function tryRestoreDaemonUpdateRestart(
 	}
 }
 
-async function restartDaemonAfterSelfUpdate(
-	socketPath: string,
-	daemonWasRunning: boolean,
-	agentDir: string,
-	manifest?: DaemonUpdateRestartManifest,
-	oldDaemonAlreadyStopped = false,
-): Promise<void> {
-	if (!daemonWasRunning && !hasRestorableDaemonUpdateRestart(manifest)) {
+async function restartDaemonAfterSelfUpdate(socketPath: string, agentDir: string): Promise<void> {
+	const daemonProbe = await probeRunningDaemonSessions(socketPath);
+	let manifest: DaemonUpdateRestartManifest | undefined;
+	let oldDaemonAlreadyStopped = false;
+	if (daemonProbe.reachable) {
+		try {
+			manifest = await prepareDaemonUpdateRestart(socketPath, agentDir);
+		} catch (error: unknown) {
+			const message = formatUnknownError(error);
+			const daemonLacksPrepareCommand = isUnknownDaemonCommandError(error, "prepare_update_restart");
+			if (daemonProbeMayHaveBusySessions(daemonProbe) || !daemonLacksPrepareCommand) {
+				console.error(
+					chalk.yellow(
+						`Warning: updated, but could not prepare daemon sessions for automatic resume (${message}); leaving the running daemon on the previous version.`,
+					),
+				);
+				return;
+			}
+			console.error(
+				chalk.yellow(
+					`Warning: the old daemon cannot prepare idle sessions for automatic resume (${message}); restarting the daemon without restored sessions.`,
+				),
+			);
+		}
+	} else {
+		manifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
+		oldDaemonAlreadyStopped = hasRestorableDaemonUpdateRestart(manifest);
+	}
+	if (!daemonProbe.reachable && !hasRestorableDaemonUpdateRestart(manifest)) {
 		return;
 	}
 	const stopped = oldDaemonAlreadyStopped || (await shutdownDaemonAndWait(socketPath));
@@ -897,6 +918,7 @@ async function restartDaemonAfterSelfUpdate(
 		console.error(
 			chalk.yellow(`Warning: could not stop the old daemon on ${socketPath}; it will be replaced on next launch.`),
 		);
+		await tryRestoreDaemonUpdateRestart(socketPath, agentDir, manifest, "after daemon stop failed");
 		return;
 	}
 	try {
@@ -1085,7 +1107,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						setSelfUpdateNotAttemptedExitCode(1);
 						return true;
 					}
-					// Confirm before the install, since upgrading the daemon afterward stops it.
+					// Confirm before the install, since upgrading the daemon afterward stops and resumes busy work.
 					const daemonSocketPath = defaultDaemonSocketPath();
 					const daemonProbe = await probeRunningDaemonSessions(daemonSocketPath);
 					if (!(await confirmDaemonSessionLossBeforeUpdate(daemonProbe, options.force))) {
@@ -1095,85 +1117,17 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						setSelfUpdateNotAttemptedExitCode(1);
 						return true;
 					}
-					let restartManifest: DaemonUpdateRestartManifest | undefined;
-					let daemonStoppedBeforeUpdate = false;
-					if (daemonProbe.reachable) {
-						try {
-							restartManifest = await prepareDaemonUpdateRestart(daemonSocketPath, agentDir);
-							daemonStoppedBeforeUpdate = await shutdownDaemonAndWait(daemonSocketPath);
-							if (!daemonStoppedBeforeUpdate) {
-								console.error(
-									chalk.yellow(
-										"Warning: could not stop the prepared daemon before updating; update cancelled.",
-									),
-								);
-								await tryRestoreDaemonUpdateRestart(
-									daemonSocketPath,
-									agentDir,
-									restartManifest,
-									"after daemon stop failed",
-								);
-								process.exitCode = 1;
-								return true;
-							}
-						} catch (error: unknown) {
-							const message = error instanceof Error ? error.message : String(error);
-							const daemonLacksPrepareCommand = isUnknownDaemonCommandError(error, "prepare_update_restart");
-							if (daemonProbeMayHaveBusySessions(daemonProbe) || !daemonLacksPrepareCommand) {
-								console.error(
-									chalk.yellow(
-										`Warning: could not prepare daemon sessions for automatic resume (${message}); update cancelled.`,
-									),
-								);
-								setSelfUpdateNotAttemptedExitCode(1);
-								return true;
-							}
-							console.error(
-								chalk.yellow(
-									`Warning: the old daemon cannot prepare idle sessions for automatic resume (${message}); restarting the daemon without restored sessions.`,
-								),
-							);
-						}
-					} else {
-						restartManifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
-						daemonStoppedBeforeUpdate = hasRestorableDaemonUpdateRestart(restartManifest);
-					}
 					try {
 						await runSelfUpdate(selfUpdateCommand);
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${message}`));
-						if (daemonStoppedBeforeUpdate && restartManifest) {
-							try {
-								await ensureInteractiveDaemonRunning(daemonSocketPath);
-							} catch (daemonError: unknown) {
-								console.error(
-									chalk.yellow(
-										`Warning: could not relaunch the daemon after update failed (${formatUnknownError(
-											daemonError,
-										)}).`,
-									),
-								);
-							}
-						}
-						await tryRestoreDaemonUpdateRestart(
-							daemonSocketPath,
-							agentDir,
-							restartManifest,
-							"after update failed",
-						);
 						printSelfUpdateFallback(selfUpdateCommand);
 						process.exitCode = 1;
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME}`));
-					await restartDaemonAfterSelfUpdate(
-						daemonSocketPath,
-						daemonProbe.reachable,
-						agentDir,
-						restartManifest,
-						daemonStoppedBeforeUpdate,
-					);
+					await restartDaemonAfterSelfUpdate(daemonSocketPath, agentDir);
 				}
 				return true;
 			}
