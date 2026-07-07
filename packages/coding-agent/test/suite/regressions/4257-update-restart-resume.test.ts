@@ -118,6 +118,7 @@ describe("issue #4257 update restart resume", () => {
 		const bashPromise = harness.session.executeBash("sleep", undefined, { operations });
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(harness.session.isBashRunning).toBe(true);
+		const abortSpy = vi.spyOn(harness.session, "abort");
 
 		let disposed = false;
 		const state = createState(
@@ -143,6 +144,7 @@ describe("issue #4257 update restart resume", () => {
 		const bashResult = await bashPromise;
 
 		expect(bashResult.cancelled).toBe(true);
+		expect(abortSpy).not.toHaveBeenCalled();
 		expect(disposed).toBe(true);
 		expect(internals.sessions.size).toBe(0);
 		expect(manifest.sessions).toHaveLength(1);
@@ -166,6 +168,7 @@ describe("issue #4257 update restart resume", () => {
 				.getEntries()
 				.some((entry) => entry.type === "custom_message" && entry.customType === "prime-agent.update_restart"),
 		).toBe(true);
+		abortSpy.mockRestore();
 	});
 
 	it("keeps queued draft sessions and subagents resumable", async () => {
