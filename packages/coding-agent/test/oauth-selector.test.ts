@@ -196,6 +196,59 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).toContain("expired");
 	});
 
+	it("shows models.json auth instead of stale stored auth on API key rows", () => {
+		const authStorage = AuthStorage.inMemory({
+			anthropic: {
+				type: "oauth",
+				access: "stale-access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			},
+		});
+		authStorage.markAuthStale("anthropic");
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			[{ id: "anthropic", name: "Anthropic", authType: "api_key" }],
+			() => {},
+			() => {},
+			() => ({ configured: true, source: "models_json_key" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+
+		expect(output).toContain("Anthropic");
+		expect(output).toContain("key in models.json");
+		expect(output).not.toContain("subscription configured");
+		expect(output).not.toContain("expired");
+	});
+
+	it("shows stale stored auth as expired when models.json auth is active for the provider", () => {
+		const authStorage = AuthStorage.inMemory({
+			anthropic: {
+				type: "oauth",
+				access: "stale-access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			},
+		});
+		authStorage.markAuthStale("anthropic");
+		const selector = new OAuthSelectorComponent(
+			"login",
+			authStorage,
+			[{ id: "anthropic", name: "Anthropic", authType: "oauth" }],
+			() => {},
+			() => {},
+			() => ({ configured: true, source: "models_json_key" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+
+		expect(output).toContain("Anthropic");
+		expect(output).toContain("expired");
+		expect(output).not.toContain("configured");
+	});
+
 	it("shows custom provider environment API key auth from status resolver", () => {
 		const authStorage = AuthStorage.inMemory();
 		const selector = new OAuthSelectorComponent(

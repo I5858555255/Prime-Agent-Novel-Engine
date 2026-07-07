@@ -173,11 +173,16 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 	private isProviderConfigured(provider: AuthSelectorProvider): boolean {
 		const status = this.getAuthStatus(provider.id);
-		if (status.source === "stale") {
+		const credential = this.authStorage.get(provider.id);
+		const storageStatus = this.authStorage.getAuthStatus(provider.id);
+		if (status.source === "stale" || (storageStatus.source === "stale" && credential?.type === provider.authType)) {
 			return false;
 		}
 
-		const credential = this.authStorage.get(provider.id);
+		if (status.source && status.source !== "stored") {
+			return provider.authType === "api_key";
+		}
+
 		if (credential) {
 			return true;
 		}
@@ -245,11 +250,18 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 	private formatStatusIndicator(provider: AuthSelectorProvider): string {
 		const status = this.getAuthStatus(provider.id);
-		if (status.source === "stale") {
+		const credential = this.authStorage.get(provider.id);
+		const storageStatus = this.authStorage.getAuthStatus(provider.id);
+		if (status.source === "stale" || (storageStatus.source === "stale" && credential?.type === provider.authType)) {
 			return theme.fg("warning", status.label ?? "expired");
 		}
 
-		const credential = this.authStorage.get(provider.id);
+		if (status.source && status.source !== "stored") {
+			return provider.authType === "api_key"
+				? this.formatApiKeyStatusIndicator(status)
+				: theme.fg("muted", "unconfigured");
+		}
+
 		if (credential?.type === provider.authType) return theme.fg("success", "configured");
 		if (credential) {
 			const label = credential.type === "oauth" ? "subscription configured" : "API key configured";
@@ -257,6 +269,10 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		}
 		if (provider.authType !== "api_key") return theme.fg("muted", "unconfigured");
 
+		return this.formatApiKeyStatusIndicator(status);
+	}
+
+	private formatApiKeyStatusIndicator(status: AuthStatus): string {
 		switch (status.source) {
 			case "environment":
 				return theme.fg("success", `env: ${status.label ?? "API key"}`);
