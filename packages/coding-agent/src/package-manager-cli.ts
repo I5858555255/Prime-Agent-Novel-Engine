@@ -322,7 +322,7 @@ interface SelfUpdatePlan {
 	shouldRun: boolean;
 }
 
-function setSelfUpdateNotAttemptedExitCode(fallbackExitCode: number): void {
+function setSelfUpdateNotAttemptedExitCode(fallbackExitCode?: number): void {
 	process.exitCode =
 		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] === "1" ? SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE : fallbackExitCode;
 }
@@ -1067,7 +1067,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 				if (updateTargetIncludesSelf(target)) {
 					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
 					if (!selfUpdatePlan.shouldRun) {
-						setSelfUpdateNotAttemptedExitCode(0);
+						setSelfUpdateNotAttemptedExitCode();
 						return true;
 					}
 					const selfUpdateCommand = getSelfUpdateCommand(
