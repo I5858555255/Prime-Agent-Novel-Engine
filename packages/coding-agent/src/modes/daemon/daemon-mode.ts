@@ -55,6 +55,7 @@ import type { PromptOptions } from "../../core/agent-session.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
 	AgentSessionRuntime,
+	type AgentSessionRuntimeMetadata,
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntime,
 } from "../../core/agent-session-runtime.js";
@@ -488,6 +489,7 @@ export class AgentDaemon {
 					agentDir,
 					sessionManager,
 					sessionConfig: config,
+					runtimeMetadata: command.runtimeMetadata,
 					sessionOptions: {
 						customTools: [
 							...createAgentHeartbeatToolDefinitions({
@@ -2185,9 +2187,6 @@ export class AgentDaemon {
 	}
 
 	private createUpdateRestartSession(state: ActiveSessionState): DaemonUpdateRestartSession | undefined {
-		if (state.runtime.metadata.kind === "subagent") {
-			return undefined;
-		}
 		const session = state.runtime.session;
 		const queue = {
 			steering: [...session.getSteeringQueueSnapshots()].map((message) => ({
@@ -2260,6 +2259,7 @@ export class AgentDaemon {
 				...state.runtime.runtimeConfig,
 				cwd: session.sessionManager.getCwd(),
 			},
+			runtimeMetadata: state.runtime.metadata,
 			...(state.clientEnv ? { clientEnv: { ...state.clientEnv } } : {}),
 			queue: restartQueue,
 			shouldResume,
@@ -2298,11 +2298,28 @@ export class AgentDaemon {
 		writeFileSync(path, `${JSON.stringify(manifest)}\n`);
 	}
 
+	private getUpdateRestartSessionDepth(state: ActiveSessionState): number {
+		let depth = 0;
+		let metadata: AgentSessionRuntimeMetadata = state.runtime.metadata;
+		const seen = new Set<string>([state.activeSessionId]);
+		while (metadata.parentActiveSessionId && !seen.has(metadata.parentActiveSessionId)) {
+			const parent = this.sessions.get(metadata.parentActiveSessionId);
+			if (!parent) {
+				break;
+			}
+			seen.add(parent.activeSessionId);
+			depth++;
+			metadata = parent.runtime.metadata;
+		}
+		return depth;
+	}
+
 	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
-		const topLevelStates = [...this.sessions.values()].filter((state) => state.runtime.metadata.kind !== "subagent");
-		const restartSessions = topLevelStates
+		const states = [...this.sessions.values()];
+		const restartSessions = states
 			.map((state) => [state, this.createUpdateRestartSession(state)] as const)
-			.filter((entry): entry is readonly [ActiveSessionState, DaemonUpdateRestartSession] => entry[1] !== undefined);
+			.filter((entry): entry is readonly [ActiveSessionState, DaemonUpdateRestartSession] => entry[1] !== undefined)
+			.sort(([left], [right]) => this.getUpdateRestartSessionDepth(left) - this.getUpdateRestartSessionDepth(right));
 		const manifest = {
 			createdAt: new Date().toISOString(),
 			sessions: restartSessions.map(([, restartSession]) => restartSession),
@@ -2314,7 +2331,10 @@ export class AgentDaemon {
 			this.appendUpdateRestartMarker(state, restartSession);
 		}
 		const restoredActiveSessionIds = new Set(restartSessions.map(([state]) => state.activeSessionId));
-		for (const state of topLevelStates) {
+		const closeStates = [...states].sort(
+			(left, right) => this.getUpdateRestartSessionDepth(right) - this.getUpdateRestartSessionDepth(left),
+		);
+		for (const state of closeStates) {
 			if (this.sessions.has(state.activeSessionId)) {
 				await this.closeSession(state, restoredActiveSessionIds.has(state.activeSessionId) ? "update" : "killed");
 			}
@@ -2393,8 +2413,7 @@ export class AgentDaemon {
 		// Empty draft (no messages, config, or jobs): discard rather than persist an
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
-		const keepsResumeEntry =
-			reason === "shutdown" || (reason === "update" && state.runtime.metadata.kind !== "subagent");
+		const keepsResumeEntry = reason === "shutdown" || reason === "update";
 		const isEmptyDraftSession = !keepsResumeEntry && this.isEmptyDraftContent(state);
 		let persistError: unknown;
 		// Clean shutdown leaves the session un-archived so it stays in the resume list.

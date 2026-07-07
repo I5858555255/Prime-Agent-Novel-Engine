@@ -168,7 +168,7 @@ describe("issue #4257 update restart resume", () => {
 		).toBe(true);
 	});
 
-	it("keeps queued draft sessions resumable and archives non-restored subagents", async () => {
+	it("keeps queued draft sessions and subagents resumable", async () => {
 		const parentHarness = await createHarness({ persistSession: true });
 		const childHarness = await createHarness({ persistSession: true });
 		harnesses.push(parentHarness, childHarness);
@@ -237,10 +237,11 @@ describe("issue #4257 update restart resume", () => {
 		const manifest = await internals.prepareUpdateRestart();
 
 		expect(internals.sessions.size).toBe(0);
-		expect(manifest.sessions).toHaveLength(1);
+		expect(manifest.sessions).toHaveLength(2);
 		expect(manifest.sessions[0]).toMatchObject({
 			activeSessionId: "parent-active",
 			clientEnv: { PRIME_SESSION: "pane-1" },
+			runtimeMetadata: { kind: "top-level" },
 			queue: {
 				steering: [{ message: "queued work", content, images: [image], agentMessageId: "agentmsg_steer" }],
 				followUp: [
@@ -254,8 +255,21 @@ describe("issue #4257 update restart resume", () => {
 			},
 			shouldResume: true,
 		});
+		expect(manifest.sessions[1]).toMatchObject({
+			activeSessionId: "child-active",
+			sessionFile: childHarness.session.sessionFile,
+			runtimeMetadata: {
+				kind: "subagent",
+				parentActiveSessionId: "parent-active",
+				parentSessionId: parentHarness.session.sessionId,
+				parentSessionFile: parentHarness.session.sessionFile,
+				rlmChildId: "child-1",
+			},
+			queue: { steering: [], followUp: [], nextTurn: [] },
+			shouldResume: false,
+		});
 		expect(hasArchivedState(parentHarness)).toBe(false);
-		expect(hasArchivedState(childHarness)).toBe(true);
+		expect(hasArchivedState(childHarness)).toBe(false);
 	});
 
 	it("captures next-turn context and accepted prompts in the restart manifest", async () => {

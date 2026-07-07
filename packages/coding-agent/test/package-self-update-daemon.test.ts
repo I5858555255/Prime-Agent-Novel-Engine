@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, PACKAGE_NAME } from "../src/config.js";
+import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
 import { handlePackageCommand } from "../src/package-manager-cli.js";
 
 interface MockSessionSummary {
@@ -37,6 +38,7 @@ interface MockUpdateRestartSession {
 	sessionFile: string;
 	cwd: string;
 	config: Record<string, unknown>;
+	runtimeMetadata?: AgentSessionRuntimeMetadata;
 	queue: {
 		steering: MockQueuedMessage[];
 		followUp: MockQueuedMessage[];
@@ -65,12 +67,14 @@ interface MockDaemonRequest {
 	content?: unknown;
 	messages?: MockCustomMessage[];
 	sessionPath?: string;
+	runtimeMetadata?: AgentSessionRuntimeMetadata;
 }
 
 type MockDaemonResponse = { success: true; data?: unknown } | { success: false; error: string };
 
 const mockState = vi.hoisted(() => ({
 	calls: [] as string[],
+	createActiveSessionIds: [] as string[],
 	createThrowSessionPaths: [] as string[],
 	daemonProbe: { reachable: true, activeSessions: [] } as MockRunningDaemonProbe,
 	globalPackageRoot: "",
@@ -155,7 +159,8 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 				if (request.sessionPath && mockState.createThrowSessionPaths.includes(request.sessionPath)) {
 					throw new Error("create failed");
 				}
-				return { success: true, data: { id: "restored-active", activeSessionId: "restored-active" } };
+				const activeSessionId = mockState.createActiveSessionIds.shift() ?? "restored-active";
+				return { success: true, data: { id: activeSessionId, activeSessionId } };
 			}
 			if (request.type === "restore_next_turn" && mockState.restoreNextTurnFailures > 0) {
 				mockState.restoreNextTurnFailures--;
@@ -191,6 +196,7 @@ describe("self-update daemon restart", () => {
 		mockState.globalPackageRoot = join(tempDir, "global-prefix", "lib", "node_modules");
 		mockState.socketPath = join(tempDir, "daemon.sock");
 		mockState.calls = [];
+		mockState.createActiveSessionIds = [];
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
@@ -412,6 +418,85 @@ describe("self-update daemon restart", () => {
 					(request) => request.type === "prompt" && request.activeSessionId === "restored-active",
 				),
 			).toBe(true);
+		} finally {
+			errorSpy.mockRestore();
+			logSpy.mockRestore();
+		}
+	});
+
+	it("restores subagent runtime metadata under the recreated parent session", async () => {
+		const parentSessionFile = join(projectDir, "parent.jsonl");
+		const childSessionFile = join(projectDir, "child.jsonl");
+		mockState.createActiveSessionIds = ["new-parent", "new-child"];
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "old-parent",
+					sessionId: "parent-session",
+					sessionFile: parentSessionFile,
+					cwd: projectDir,
+					config: { cwd: projectDir, agentDir },
+					runtimeMetadata: { kind: "top-level", createdAt: 1 },
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: false,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+				{
+					activeSessionId: "old-child",
+					sessionId: "child-session",
+					sessionFile: childSessionFile,
+					cwd: projectDir,
+					config: { cwd: projectDir, agentDir },
+					runtimeMetadata: {
+						kind: "subagent",
+						createdAt: 2,
+						parentActiveSessionId: "old-parent",
+						parentSessionId: "parent-session",
+						parentSessionFile,
+						rlmChildId: "child-1",
+						prompt: "child task",
+					},
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: false,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+
+			const createRequests = mockState.requestPayloads.filter((request) => request.type === "create");
+			expect(createRequests).toHaveLength(2);
+			expect(createRequests[0]).toMatchObject({
+				sessionPath: parentSessionFile,
+				runtimeMetadata: { kind: "top-level", createdAt: 1 },
+			});
+			expect(createRequests[1]).toMatchObject({
+				sessionPath: childSessionFile,
+				runtimeMetadata: {
+					kind: "subagent",
+					createdAt: 2,
+					parentActiveSessionId: "new-parent",
+					parentSessionId: "parent-session",
+					parentSessionFile,
+					rlmChildId: "child-1",
+					prompt: "child task",
+				},
+			});
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();

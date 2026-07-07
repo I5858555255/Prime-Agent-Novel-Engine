@@ -25,6 +25,7 @@ import {
 	VERSION,
 } from "./config.js";
 import { parseAgentSessionMessagePromptId } from "./core/agent-messages.js";
+import type { AgentSessionRuntimeMetadata } from "./core/agent-session-runtime.js";
 import type { CustomMessage } from "./core/messages.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
@@ -425,6 +426,13 @@ function readBoolean(value: unknown, fieldName: string): boolean {
 	return value;
 }
 
+function readNumber(value: unknown, fieldName: string): number {
+	if (typeof value !== "number") {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
 function readOptionalStringRecord(value: unknown, fieldName: string): Record<string, string> | undefined {
 	if (value === undefined) {
 		return undefined;
@@ -534,6 +542,42 @@ function readQueuedMessages(value: unknown, fieldName: string): DaemonUpdateRest
 	return value.map(parseDaemonUpdateRestartQueuedMessage);
 }
 
+function parseDaemonUpdateRestartRuntimeMetadata(value: unknown): AgentSessionRuntimeMetadata | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!isRecord(value)) {
+		throw new Error("Daemon update restart response contains invalid runtime metadata");
+	}
+	const kind = readString(value.kind, "runtimeMetadata.kind");
+	if (kind !== "top-level" && kind !== "subagent") {
+		throw new Error("Daemon update restart response contains invalid runtime metadata kind");
+	}
+	const parentActiveSessionId = readOptionalString(
+		value.parentActiveSessionId,
+		"runtimeMetadata.parentActiveSessionId",
+	);
+	const parentSessionId = readOptionalString(value.parentSessionId, "runtimeMetadata.parentSessionId");
+	const parentSessionFile = readOptionalString(value.parentSessionFile, "runtimeMetadata.parentSessionFile");
+	const rlmChildId = readOptionalString(value.rlmChildId, "runtimeMetadata.rlmChildId");
+	const rlmParentNodeId = readOptionalString(value.rlmParentNodeId, "runtimeMetadata.rlmParentNodeId");
+	const prompt = readOptionalString(value.prompt, "runtimeMetadata.prompt");
+	const spawnCode = readOptionalString(value.spawnCode, "runtimeMetadata.spawnCode");
+	const sessionDir = readOptionalString(value.sessionDir, "runtimeMetadata.sessionDir");
+	return {
+		kind,
+		createdAt: readNumber(value.createdAt, "runtimeMetadata.createdAt"),
+		...(parentActiveSessionId ? { parentActiveSessionId } : {}),
+		...(parentSessionId ? { parentSessionId } : {}),
+		...(parentSessionFile ? { parentSessionFile } : {}),
+		...(rlmChildId ? { rlmChildId } : {}),
+		...(rlmParentNodeId ? { rlmParentNodeId } : {}),
+		...(prompt ? { prompt } : {}),
+		...(spawnCode ? { spawnCode } : {}),
+		...(sessionDir ? { sessionDir } : {}),
+	};
+}
+
 function wasFollowUpQueued(response: { success: true; data?: unknown }): boolean {
 	return !isRecord(response.data) || response.data.queued !== false;
 }
@@ -551,12 +595,14 @@ function parseDaemonUpdateRestartSession(value: unknown): DaemonUpdateRestartSes
 		throw new Error("Daemon update restart response contains an invalid session config");
 	}
 	const clientEnv = readOptionalStringRecord(value.clientEnv, "clientEnv");
+	const runtimeMetadata = parseDaemonUpdateRestartRuntimeMetadata(value.runtimeMetadata);
 	return {
 		activeSessionId: readString(value.activeSessionId, "activeSessionId"),
 		sessionId: readString(value.sessionId, "sessionId"),
 		sessionFile: readString(value.sessionFile, "sessionFile"),
 		cwd: readString(value.cwd, "cwd"),
 		config: config as DaemonUpdateRestartSession["config"],
+		...(runtimeMetadata ? { runtimeMetadata } : {}),
 		...(clientEnv ? { clientEnv } : {}),
 		queue: {
 			steering: readQueuedMessages(queue.steering, "queue.steering"),
@@ -707,15 +753,39 @@ interface RestoreDaemonUpdateRestartSessionResult {
 	resumed: boolean;
 }
 
+function remapDaemonUpdateRestartRuntimeMetadata(
+	session: DaemonUpdateRestartSession,
+	restoredActiveSessionIds: ReadonlyMap<string, string>,
+): AgentSessionRuntimeMetadata | undefined {
+	const metadata = session.runtimeMetadata;
+	if (!metadata) {
+		return undefined;
+	}
+	if (metadata.kind !== "subagent") {
+		return metadata;
+	}
+	const { parentActiveSessionId: oldParentActiveSessionId, ...runtimeMetadata } = metadata;
+	const parentActiveSessionId = oldParentActiveSessionId
+		? restoredActiveSessionIds.get(oldParentActiveSessionId)
+		: undefined;
+	return {
+		...runtimeMetadata,
+		...(parentActiveSessionId ? { parentActiveSessionId } : {}),
+	};
+}
+
 async function restoreDaemonUpdateRestartSession(
 	client: DaemonClient,
 	session: DaemonUpdateRestartSession,
+	restoredActiveSessionIds: Map<string, string>,
 ): Promise<RestoreDaemonUpdateRestartSessionResult> {
+	const runtimeMetadata = remapDaemonUpdateRestartRuntimeMetadata(session, restoredActiveSessionIds);
 	const createResponse = await client.request(
 		{
 			type: "create",
 			sessionPath: session.sessionFile,
 			config: session.config,
+			...(runtimeMetadata ? { runtimeMetadata } : {}),
 			...(session.clientEnv ? { env: session.clientEnv } : {}),
 		},
 		120000,
@@ -725,6 +795,7 @@ async function restoreDaemonUpdateRestartSession(
 		return { restored: false, resumed: false };
 	}
 	const activeSessionId = readCreatedActiveSessionId(createResponse.data);
+	restoredActiveSessionIds.set(session.activeSessionId, activeSessionId);
 	const acceptedPrompt = session.queue.acceptedPrompt;
 	if (!session.shouldResume) {
 		await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
@@ -848,11 +919,12 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 	const client = new DaemonClient(socketPath);
 	let restored = 0;
 	let resumed = 0;
+	const restoredActiveSessionIds = new Map<string, string>();
 	try {
 		await client.connect(10000);
 		for (const session of manifest.sessions) {
 			try {
-				const result = await restoreDaemonUpdateRestartSession(client, session);
+				const result = await restoreDaemonUpdateRestartSession(client, session, restoredActiveSessionIds);
 				if (result.restored) {
 					restored++;
 				}

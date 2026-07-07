@@ -6,6 +6,7 @@ import type {
 	AgentSessionMessageSafetyStatus,
 } from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
+import type { AgentSessionRuntimeMetadata } from "../../core/agent-session-runtime.js";
 import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
 import type { CustomMessage } from "../../core/messages.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
@@ -211,6 +212,7 @@ export interface DaemonUpdateRestartSession {
 	sessionFile: string;
 	cwd: string;
 	config: AgentSessionRuntimeConfig;
+	runtimeMetadata?: AgentSessionRuntimeMetadata;
 	clientEnv?: Record<string, string>;
 	queue: DaemonUpdateRestartQueue;
 	shouldResume: boolean;
@@ -237,6 +239,7 @@ export type DaemonCommand =
 			continueRecent?: boolean;
 			name?: string;
 			config?: AgentSessionRuntimeConfig;
+			runtimeMetadata?: AgentSessionRuntimeMetadata;
 	  } & DaemonClientEnv)
 	// Attach env is adopt-if-absent only: it fills identity for env-less
 	// sessions (e.g. cron-created) but never rebinds one, since watchers

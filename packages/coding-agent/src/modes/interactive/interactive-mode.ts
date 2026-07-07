@@ -483,24 +483,17 @@ function updateArgsIncludeSelf(args: readonly string[]): boolean {
 
 function argsIncludeSessionSelection(args: readonly string[]): boolean {
 	for (const arg of args) {
-		if (
-			arg === "--session" ||
-			arg === "--resume" ||
-			arg === "-r" ||
-			arg === "--continue" ||
-			arg === "-c" ||
-			arg === "--fork"
-		) {
+		if (arg === "--resume" || arg === "-r" || arg === "--continue" || arg === "-c" || arg === "--fork") {
 			return true;
 		}
 	}
 	return false;
 }
 
-function buildUpdateRelaunchArgs(args: readonly string[], sessionFile: string | undefined): string[] {
+export function buildUpdateRelaunchArgs(args: readonly string[], sessionFile: string | undefined): string[] {
 	const relaunchArgs = [...args];
 	if (sessionFile && !argsIncludeSessionSelection(relaunchArgs)) {
-		relaunchArgs.push("--session", sessionFile);
+		relaunchArgs.push("--resume", sessionFile);
 	}
 	return relaunchArgs;
 }
