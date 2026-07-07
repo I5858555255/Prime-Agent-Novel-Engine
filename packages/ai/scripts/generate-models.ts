@@ -124,8 +124,8 @@ interface PrimeInferenceModelMetadata {
 // model picker. Add new model IDs here, then rerun this script to refresh
 // src/models.generated.ts.
 const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata> = {
-	// prime-inference proxies Anthropic models through OpenRouter without the
-	// context-1m beta header, so the enforced window is the standard 200k, not 1M.
+	// Some Prime Inference Anthropic routes are constrained below first-party
+	// limits. Claude Sonnet 5 has 1M context by default and needs no beta header.
 	"anthropic/claude-fable-5": { contextWindow: 200000, maxTokens: 128000, vision: true },
 	"anthropic/claude-haiku-4.5": { contextWindow: 200000, maxTokens: 64000, vision: true },
 	"anthropic/claude-opus-4.6": { contextWindow: 200000, maxTokens: 128000, vision: true },
@@ -133,6 +133,7 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"anthropic/claude-opus-4.8": { contextWindow: 200000, maxTokens: 128000, vision: true },
 	"anthropic/claude-sonnet-4.5": { contextWindow: 200000, maxTokens: 64000, vision: true },
 	"anthropic/claude-sonnet-4.6": { contextWindow: 200000, maxTokens: 128000, vision: true },
+	"anthropic/claude-sonnet-5": { contextWindow: 1000000, maxTokens: 128000, vision: true },
 	"deepseek/deepseek-v3.2": { contextWindow: 128000, maxTokens: 8000 },
 	"deepseek/deepseek-v4-flash": { contextWindow: 1000000, maxTokens: 384000 },
 	"deepseek/deepseek-v4-pro": { contextWindow: 1000000, maxTokens: 384000 },
@@ -350,7 +351,7 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 		id.startsWith("x-ai/grok-4") ||
 		id.startsWith("z-ai/glm-") ||
 		(id.startsWith("openai/gpt-5") && !id.includes("-chat")) ||
-		/^anthropic\/claude-(?:fable-5|opus-4|sonnet-4)/.test(id)
+		/^anthropic\/claude-(?:fable-5|opus-4|sonnet-(?:4|5))/.test(id)
 	);
 }
 
@@ -1418,6 +1419,27 @@ async function generateModels() {
 			},
 			contextWindow: 1000000,
 			maxTokens: 64000,
+		});
+	}
+
+	// Add missing Claude Sonnet 5
+	if (!allModels.some(m => m.provider === "anthropic" && m.id === "claude-sonnet-5")) {
+		allModels.push({
+			id: "claude-sonnet-5",
+			name: "Claude Sonnet 5",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			provider: "anthropic",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 2,
+				output: 10,
+				cacheRead: 0.2,
+				cacheWrite: 2.5,
+			},
+			contextWindow: 1000000,
+			maxTokens: 128000,
 		});
 	}
 
