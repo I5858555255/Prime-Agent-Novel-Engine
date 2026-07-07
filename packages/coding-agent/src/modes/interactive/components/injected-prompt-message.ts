@@ -63,6 +63,11 @@ function compactHeartbeatSchedule(schedule: string | undefined): string {
 	return trimmed.replace(/^every\s+/i, "");
 }
 
+function heartbeatPromptSchedule(schedule: string | undefined): string {
+	const compact = compactHeartbeatSchedule(schedule);
+	return compact === "prompt" ? "scheduled" : `every ${compact}`;
+}
+
 export class InjectedPromptMessageComponent extends Container {
 	private readonly content = new Container();
 	private readonly header = new Text("", 1, 0);
@@ -120,7 +125,7 @@ export class InjectedPromptMessageComponent extends Container {
 	private heartbeatHeaderText(): string {
 		const details = this.message.details as HeartbeatPromptDetails | undefined;
 		const pulse = theme.fg("error", "♥");
-		const schedule = theme.fg("muted", compactHeartbeatSchedule(details?.schedule));
+		const schedule = theme.fg("muted", heartbeatPromptSchedule(details?.schedule));
 		const hint = this.expanded ? "" : ` (${keyText("app.tools.expand")} to expand)`;
 		return `${pulse} ${theme.fg("muted", "Heartbeat prompt")}${theme.fg("dim", " · ")}${schedule}${theme.fg("dim", hint)}`;
 	}

@@ -100,8 +100,7 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 
 		expect(collapsed).toContain("♥");
 		expect(collapsed).toContain("Heartbeat prompt");
-		expect(collapsed).toContain("5m");
-		expect(collapsed).not.toContain("every 5m");
+		expect(collapsed).toContain("every 5m");
 		expect(collapsed).toContain("to expand");
 		expect(collapsed).not.toContain("Check whether the long-running task needs another step.");
 
@@ -134,8 +133,7 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 
 		const rendered = stripAnsi(chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("Heartbeat prompt");
-		expect(rendered).toContain("5m");
-		expect(rendered).not.toContain("every 5m");
+		expect(rendered).toContain("every 5m");
 		expect(rendered).not.toContain("Check whether the long-running task needs another step.");
 		expect(addToHistory).not.toHaveBeenCalled();
 	});
