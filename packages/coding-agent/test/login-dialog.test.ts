@@ -1,28 +1,16 @@
-import {
-	resetCapabilitiesCache,
-	setCapabilities,
-	setKeybindings,
-	type TUI,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.js";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { PRIME_BUTTERFLY_LOGO } from "../src/themes/prime-logo.js";
 
 const mocks = vi.hoisted(() => ({
 	exec: vi.fn(),
-	copyToClipboard: vi.fn(),
 }));
 
 vi.mock("child_process", () => ({
 	exec: mocks.exec,
-}));
-
-vi.mock("../src/utils/clipboard.js", () => ({
-	copyToClipboard: mocks.copyToClipboard,
 }));
 
 function createFakeTui(): TUI {
@@ -38,9 +26,6 @@ describe("LoginDialogComponent", () => {
 
 	beforeEach(() => {
 		mocks.exec.mockClear();
-		mocks.copyToClipboard.mockReset();
-		mocks.copyToClipboard.mockResolvedValue(undefined);
-		setKeybindings(new KeybindingsManager());
 	});
 
 	afterEach(() => {
@@ -88,24 +73,6 @@ describe("LoginDialogComponent", () => {
 
 		expect(rawOutput).not.toContain("\x1b]8;;");
 		expect(stripAnsi(rawOutput)).toContain(url);
-	});
-
-	it("copies the raw sign-in URL with the login URL copy key", async () => {
-		const requestRender = vi.fn();
-		const tui = { requestRender } as unknown as TUI;
-		const dialog = new LoginDialogComponent(tui, "anthropic", () => {}, "Anthropic");
-		const url = "https://example.com/oauth?client_id=test&redirect_uri=https%3A%2F%2Fcallback.example.com%2Fdone";
-
-		dialog.showAuth(url, "Complete login in your browser.");
-		dialog.handleInput("\x1b[17~");
-
-		await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith(url));
-		expect(requestRender).toHaveBeenCalled();
-		const output = stripAnsi(dialog.render(88).join("\n"));
-		expect(output).toContain("F6 copy link");
-		expect(output).not.toContain("Alt+C");
-		expect(output).not.toContain("Option+C");
-		expect(output).toContain("Sign-in link copied.");
 	});
 
 	it("renders verification codes as a distinct field", () => {

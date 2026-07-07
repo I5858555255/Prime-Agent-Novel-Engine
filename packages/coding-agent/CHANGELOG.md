@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Fixed login dialogs in fullscreen so sign-in URLs can be selected natively and copied with a keyboard shortcut ([ENG-4480](https://linear.app/primeintellect/issue/ENG-4480/new-fullscreen-tui-makes-it-impossible-to-copy-login-url)).
+- Fixed login dialogs in fullscreen so sign-in URLs can be selected natively ([ENG-4480](https://linear.app/primeintellect/issue/ENG-4480/new-fullscreen-tui-makes-it-impossible-to-copy-login-url)).
 
 ## [0.2.6] - 2026-07-06
 
