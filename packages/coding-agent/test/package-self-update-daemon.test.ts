@@ -75,6 +75,7 @@ const mockState = vi.hoisted(() => ({
 	daemonProbe: { reachable: true, activeSessions: [] } as MockRunningDaemonProbe,
 	globalPackageRoot: "",
 	prepareManifest: { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] } as MockUpdateRestartManifest,
+	promptFailures: 0,
 	requestPayloads: [] as MockDaemonRequest[],
 	restoreNextTurnFailures: 0,
 	socketPath: "",
@@ -160,6 +161,10 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 				mockState.restoreNextTurnFailures--;
 				return { success: false, error: "restore failed" };
 			}
+			if (request.type === "prompt" && mockState.promptFailures > 0) {
+				mockState.promptFailures--;
+				return { success: false, error: "prompt failed" };
+			}
 			return { success: true };
 		}
 
@@ -189,6 +194,7 @@ describe("self-update daemon restart", () => {
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
+		mockState.promptFailures = 0;
 		mockState.requestPayloads = [];
 		mockState.restoreNextTurnFailures = 0;
 		mockState.spawnExitCodes = [];
@@ -406,6 +412,51 @@ describe("self-update daemon restart", () => {
 					(request) => request.type === "prompt" && request.activeSessionId === "restored-active",
 				),
 			).toBe(true);
+		} finally {
+			errorSpy.mockRestore();
+			logSpy.mockRestore();
+		}
+	});
+
+	it("does not resume queued work when accepted prompt replay fails", async () => {
+		mockState.promptFailures = 1;
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "old-active",
+					sessionId: "session-1",
+					sessionFile: join(projectDir, "session.jsonl"),
+					cwd: projectDir,
+					config: { cwd: projectDir, agentDir },
+					queue: {
+						steering: [],
+						followUp: [{ message: "queued follow-up", agentMessageId: "agentmsg_followup" }],
+						nextTurn: [],
+						acceptedPrompt: {
+							message: "accepted work",
+							agentMessageId: "agentmsg_accepted",
+							nextTurn: [],
+						},
+					},
+					shouldResume: true,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: true,
+				},
+			],
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+
+			expect(mockState.requestPayloads.some((request) => request.type === "follow_up")).toBe(true);
+			expect(mockState.requestPayloads.some((request) => request.type === "resume_queue")).toBe(false);
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();

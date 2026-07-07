@@ -828,7 +828,7 @@ async function restoreDaemonUpdateRestartSession(
 			resumedSession = true;
 		}
 	}
-	if (!resumedSession && restoredQueuedWork) {
+	if (!resumedSession && restoredQueuedWork && !acceptedPrompt) {
 		const response = await client.request({ type: "resume_queue", activeSessionId }, 30000);
 		if (response.success) {
 			resumedSession = true;
