@@ -702,6 +702,145 @@ async function restoreNextTurnMessages(
 	return true;
 }
 
+interface RestoreDaemonUpdateRestartSessionResult {
+	restored: boolean;
+	resumed: boolean;
+}
+
+async function restoreDaemonUpdateRestartSession(
+	client: DaemonClient,
+	session: DaemonUpdateRestartSession,
+): Promise<RestoreDaemonUpdateRestartSessionResult> {
+	const createResponse = await client.request(
+		{
+			type: "create",
+			sessionPath: session.sessionFile,
+			config: session.config,
+			...(session.clientEnv ? { env: session.clientEnv } : {}),
+		},
+		120000,
+	);
+	if (!createResponse.success) {
+		console.error(chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${createResponse.error}`));
+		return { restored: false, resumed: false };
+	}
+	const activeSessionId = readCreatedActiveSessionId(createResponse.data);
+	const acceptedPrompt = session.queue.acceptedPrompt;
+	if (!session.shouldResume) {
+		await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
+		return { restored: true, resumed: false };
+	}
+	const needsContinuationPrompt =
+		session.wasStreaming ||
+		session.wasCompacting ||
+		session.wasBashRunning ||
+		session.hadRunningRlmChildren ||
+		session.wasRetrying ||
+		session.hadAcceptedPromptInFlight;
+	const steeringQueue = [...session.queue.steering];
+	const followUpQueue = [...session.queue.followUp];
+	let resumedSession = false;
+	let restoredQueuedWork = false;
+	if (acceptedPrompt) {
+		await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, acceptedPrompt.nextTurn);
+	} else {
+		await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
+	}
+	for (const queued of steeringQueue) {
+		const response = await client.request(
+			{
+				type: "steer",
+				activeSessionId,
+				message: queued.message,
+				content: queued.content,
+				images: queued.images,
+				expandPromptTemplates: false,
+				agentMessageId: queued.agentMessageId,
+			},
+			30000,
+		);
+		if (response.success) {
+			restoredQueuedWork = true;
+		} else {
+			console.error(
+				chalk.yellow(
+					`Warning: could not restore queued steering message for ${session.sessionFile}: ${response.error}`,
+				),
+			);
+		}
+	}
+	for (const queued of followUpQueue) {
+		const response = await client.request(
+			{
+				type: "follow_up",
+				activeSessionId,
+				message: queued.message,
+				content: queued.content,
+				images: queued.images,
+				queueKey: queued.queueKey,
+				expandPromptTemplates: false,
+				agentMessageId: queued.agentMessageId,
+			},
+			30000,
+		);
+		if (response.success && wasFollowUpQueued(response)) {
+			restoredQueuedWork = true;
+		} else if (!response.success) {
+			console.error(
+				chalk.yellow(
+					`Warning: could not restore queued follow-up message for ${session.sessionFile}: ${response.error}`,
+				),
+			);
+		}
+	}
+	if (acceptedPrompt) {
+		const promptResponse = await client.request(
+			{
+				type: "prompt",
+				activeSessionId,
+				message: acceptedPrompt.message,
+				content: acceptedPrompt.content,
+				images: acceptedPrompt.images,
+				expandPromptTemplates: false,
+				agentMessageId: acceptedPrompt.agentMessageId,
+			},
+			120000,
+		);
+		if (!promptResponse.success) {
+			console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
+		} else {
+			resumedSession = true;
+		}
+		await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
+	} else if (needsContinuationPrompt) {
+		const promptResponse = await client.request(
+			{
+				type: "prompt",
+				activeSessionId,
+				message: UPDATE_RESTART_CONTINUATION_PROMPT,
+				expandPromptTemplates: false,
+			},
+			120000,
+		);
+		if (!promptResponse.success) {
+			console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
+		} else {
+			resumedSession = true;
+		}
+	}
+	if (!resumedSession && restoredQueuedWork) {
+		const response = await client.request({ type: "resume_queue", activeSessionId }, 30000);
+		if (response.success) {
+			resumedSession = true;
+		} else {
+			console.error(
+				chalk.yellow(`Warning: could not resume queued work for ${session.sessionFile}: ${response.error}`),
+			);
+		}
+	}
+	return { restored: true, resumed: resumedSession };
+}
+
 async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUpdateRestartManifest): Promise<void> {
 	if (manifest.sessions.length === 0) {
 		return;
@@ -712,134 +851,18 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 	try {
 		await client.connect(10000);
 		for (const session of manifest.sessions) {
-			const createResponse = await client.request(
-				{
-					type: "create",
-					sessionPath: session.sessionFile,
-					config: session.config,
-					...(session.clientEnv ? { env: session.clientEnv } : {}),
-				},
-				120000,
-			);
-			if (!createResponse.success) {
-				console.error(chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${createResponse.error}`));
-				continue;
-			}
-			const activeSessionId = readCreatedActiveSessionId(createResponse.data);
-			restored++;
-			const acceptedPrompt = session.queue.acceptedPrompt;
-			if (!session.shouldResume) {
-				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
-				continue;
-			}
-			const needsContinuationPrompt =
-				session.wasStreaming ||
-				session.wasCompacting ||
-				session.wasBashRunning ||
-				session.hadRunningRlmChildren ||
-				session.wasRetrying ||
-				session.hadAcceptedPromptInFlight;
-			const steeringQueue = [...session.queue.steering];
-			const followUpQueue = [...session.queue.followUp];
-			let resumedSession = false;
-			let restoredQueuedWork = false;
-			if (acceptedPrompt) {
-				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, acceptedPrompt.nextTurn);
-			}
-			await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
-			for (const queued of steeringQueue) {
-				const response = await client.request(
-					{
-						type: "steer",
-						activeSessionId,
-						message: queued.message,
-						content: queued.content,
-						images: queued.images,
-						expandPromptTemplates: false,
-						agentMessageId: queued.agentMessageId,
-					},
-					30000,
+			try {
+				const result = await restoreDaemonUpdateRestartSession(client, session);
+				if (result.restored) {
+					restored++;
+				}
+				if (result.resumed) {
+					resumed++;
+				}
+			} catch (error: unknown) {
+				console.error(
+					chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${formatUnknownError(error)}`),
 				);
-				if (response.success) {
-					restoredQueuedWork = true;
-				} else {
-					console.error(
-						chalk.yellow(
-							`Warning: could not restore queued steering message for ${session.sessionFile}: ${response.error}`,
-						),
-					);
-				}
-			}
-			for (const queued of followUpQueue) {
-				const response = await client.request(
-					{
-						type: "follow_up",
-						activeSessionId,
-						message: queued.message,
-						content: queued.content,
-						images: queued.images,
-						queueKey: queued.queueKey,
-						expandPromptTemplates: false,
-						agentMessageId: queued.agentMessageId,
-					},
-					30000,
-				);
-				if (response.success && wasFollowUpQueued(response)) {
-					restoredQueuedWork = true;
-				} else if (!response.success) {
-					console.error(
-						chalk.yellow(
-							`Warning: could not restore queued follow-up message for ${session.sessionFile}: ${response.error}`,
-						),
-					);
-				}
-			}
-			if (acceptedPrompt) {
-				const promptResponse = await client.request(
-					{
-						type: "prompt",
-						activeSessionId,
-						message: acceptedPrompt.message,
-						content: acceptedPrompt.content,
-						images: acceptedPrompt.images,
-						expandPromptTemplates: false,
-						agentMessageId: acceptedPrompt.agentMessageId,
-					},
-					120000,
-				);
-				if (!promptResponse.success) {
-					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
-				} else {
-					resumedSession = true;
-				}
-			} else if (needsContinuationPrompt) {
-				const promptResponse = await client.request(
-					{
-						type: "prompt",
-						activeSessionId,
-						message: UPDATE_RESTART_CONTINUATION_PROMPT,
-						expandPromptTemplates: false,
-					},
-					120000,
-				);
-				if (!promptResponse.success) {
-					console.error(chalk.yellow(`Warning: could not resume ${session.sessionFile}: ${promptResponse.error}`));
-				} else {
-					resumedSession = true;
-				}
-			}
-			if (!resumedSession && restoredQueuedWork) {
-				const response = await client.request({ type: "resume_queue", activeSessionId }, 30000);
-				if (response.success) {
-					resumedSession = true;
-				} else {
-					console.error(
-						chalk.yellow(`Warning: could not resume queued work for ${session.sessionFile}: ${response.error}`),
-					);
-				}
-			}
-			if (resumedSession) {
-				resumed++;
 			}
 		}
 	} finally {

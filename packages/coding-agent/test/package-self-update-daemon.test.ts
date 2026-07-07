@@ -63,12 +63,15 @@ interface MockDaemonRequest {
 	message?: string;
 	agentMessageId?: string;
 	content?: unknown;
+	messages?: MockCustomMessage[];
+	sessionPath?: string;
 }
 
 type MockDaemonResponse = { success: true; data?: unknown } | { success: false; error: string };
 
 const mockState = vi.hoisted(() => ({
 	calls: [] as string[],
+	createThrowSessionPaths: [] as string[],
 	daemonProbe: { reachable: true, activeSessions: [] } as MockRunningDaemonProbe,
 	globalPackageRoot: "",
 	prepareManifest: { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] } as MockUpdateRestartManifest,
@@ -148,6 +151,9 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 				return { success: true, data: mockState.prepareManifest };
 			}
 			if (request.type === "create") {
+				if (request.sessionPath && mockState.createThrowSessionPaths.includes(request.sessionPath)) {
+					throw new Error("create failed");
+				}
 				return { success: true, data: { id: "restored-active", activeSessionId: "restored-active" } };
 			}
 			if (request.type === "restore_next_turn" && mockState.restoreNextTurnFailures > 0) {
@@ -180,6 +186,7 @@ describe("self-update daemon restart", () => {
 		mockState.globalPackageRoot = join(tempDir, "global-prefix", "lib", "node_modules");
 		mockState.socketPath = join(tempDir, "daemon.sock");
 		mockState.calls = [];
+		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
 		mockState.requestPayloads = [];
@@ -282,7 +289,15 @@ describe("self-update daemon restart", () => {
 					queue: {
 						steering: [],
 						followUp: [],
-						nextTurn: [],
+						nextTurn: [
+							{
+								role: "custom",
+								customType: "prime-agent.test",
+								content: "subsequent turn context",
+								display: false,
+								timestamp: Date.now(),
+							},
+						],
 						acceptedPrompt: {
 							message: "accepted work",
 							content: [{ type: "text", text: "accepted work" }],
@@ -322,6 +337,75 @@ describe("self-update daemon restart", () => {
 					agentMessageId: "agentmsg_accepted",
 				}),
 			]);
+			const promptIndex = mockState.requestPayloads.findIndex((request) => request.type === "prompt");
+			const subsequentNextTurnIndex = mockState.requestPayloads.findIndex(
+				(request) =>
+					request.type === "restore_next_turn" &&
+					request.messages?.some((message) => message.content === "subsequent turn context") === true,
+			);
+			expect(promptIndex).toBeGreaterThanOrEqual(0);
+			expect(subsequentNextTurnIndex).toBeGreaterThan(promptIndex);
+		} finally {
+			errorSpy.mockRestore();
+			logSpy.mockRestore();
+		}
+	});
+
+	it("continues restoring later sessions when one session restore throws", async () => {
+		const failedSessionFile = join(projectDir, "failed.jsonl");
+		const restoredSessionFile = join(projectDir, "restored.jsonl");
+		mockState.createThrowSessionPaths = [failedSessionFile];
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "failed-active",
+					sessionId: "failed-session",
+					sessionFile: failedSessionFile,
+					cwd: projectDir,
+					config: { cwd: projectDir, agentDir },
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: true,
+					wasStreaming: true,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+				{
+					activeSessionId: "restored-active",
+					sessionId: "restored-session",
+					sessionFile: restoredSessionFile,
+					cwd: projectDir,
+					config: { cwd: projectDir, agentDir },
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: true,
+					wasStreaming: true,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+
+			expect(
+				mockState.requestPayloads
+					.filter((request) => request.type === "create")
+					.map((request) => request.sessionPath),
+			).toEqual([failedSessionFile, restoredSessionFile]);
+			expect(
+				mockState.requestPayloads.some(
+					(request) => request.type === "prompt" && request.activeSessionId === "restored-active",
+				),
+			).toBe(true);
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
