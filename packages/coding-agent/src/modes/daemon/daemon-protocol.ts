@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Transport } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent, Transport } from "@earendil-works/pi-ai";
 import type {
 	AgentSessionMessageDeliveryMode,
 	AgentSessionMessageReceipt,
@@ -188,6 +188,7 @@ export interface DaemonAttachResult {
 
 export interface DaemonUpdateRestartQueuedMessage {
 	message: string;
+	content?: (TextContent | ImageContent)[];
 	images?: ImageContent[];
 	queueKey?: string;
 	agentMessageId?: string;
@@ -265,6 +266,7 @@ export type DaemonCommand =
 			type: "steer";
 			activeSessionId: string;
 			message: string;
+			content?: (TextContent | ImageContent)[];
 			images?: ImageContent[];
 			expandPromptTemplates?: boolean;
 			agentMessageId?: string;
@@ -274,6 +276,7 @@ export type DaemonCommand =
 			type: "follow_up";
 			activeSessionId: string;
 			message: string;
+			content?: (TextContent | ImageContent)[];
 			images?: ImageContent[];
 			queueKey?: string;
 			expandPromptTemplates?: boolean;

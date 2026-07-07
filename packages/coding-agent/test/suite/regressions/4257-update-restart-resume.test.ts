@@ -168,11 +168,19 @@ describe("issue #4257 update restart resume", () => {
 		harnesses.push(parentHarness, childHarness);
 
 		const image: ImageContent = { type: "image", data: "ZmFrZQ==", mimeType: "image/png" };
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text: "queued work" }, image];
+		const content: (TextContent | ImageContent)[] = [
+			{ type: "text", text: "queued context" },
+			{ type: "text", text: "queued work" },
+			image,
+		];
 		const message: UserMessage = { role: "user", content, timestamp: Date.now() };
+		const followUpContent: TextContent[] = [
+			{ type: "text", text: "follow-up context" },
+			{ type: "text", text: "heartbeat" },
+		];
 		const followUpMessage: UserMessage = {
 			role: "user",
-			content: [{ type: "text", text: "heartbeat" }],
+			content: followUpContent,
 			timestamp: Date.now(),
 		};
 		const queueInternals = parentHarness.session as unknown as QueueInternals;
@@ -228,8 +236,15 @@ describe("issue #4257 update restart resume", () => {
 			activeSessionId: "parent-active",
 			clientEnv: { PRIME_SESSION: "pane-1" },
 			queue: {
-				steering: [{ message: "queued work", images: [image], agentMessageId: "agentmsg_steer" }],
-				followUp: [{ message: "heartbeat", queueKey: "heartbeat:job-1", agentMessageId: "agentmsg_followup" }],
+				steering: [{ message: "queued work", content, images: [image], agentMessageId: "agentmsg_steer" }],
+				followUp: [
+					{
+						message: "heartbeat",
+						content: followUpContent,
+						queueKey: "heartbeat:job-1",
+						agentMessageId: "agentmsg_followup",
+					},
+				],
 			},
 			shouldResume: true,
 		});
@@ -414,6 +429,14 @@ describe("issue #4257 update restart resume", () => {
 		);
 
 		const queueInternals = harness.session as unknown as QueueInternals;
+		const restoredSteerContent: TextContent[] = [
+			{ type: "text", text: "restored steer context" },
+			{ type: "text", text: "restored steer" },
+		];
+		const restoredFollowUpContent: TextContent[] = [
+			{ type: "text", text: "restored follow-up context" },
+			{ type: "text", text: "restored follow-up" },
+		];
 		queueInternals._followUpMessages = [
 			{
 				text: "existing",
@@ -445,6 +468,7 @@ describe("issue #4257 update restart resume", () => {
 				type: "steer",
 				activeSessionId: "active-1",
 				message: "restored steer",
+				content: restoredSteerContent,
 				expandPromptTemplates: false,
 				agentMessageId: "agentmsg_restored_steer",
 			}),
@@ -468,6 +492,7 @@ describe("issue #4257 update restart resume", () => {
 				type: "follow_up",
 				activeSessionId: "active-1",
 				message: "restored follow-up",
+				content: restoredFollowUpContent,
 				queueKey: "heartbeat:job-2",
 				expandPromptTemplates: false,
 				agentMessageId: "agentmsg_restored_followup",
@@ -485,11 +510,19 @@ describe("issue #4257 update restart resume", () => {
 			expect.objectContaining({ id: "follow-up-2", command: "follow_up", success: true, data: { queued: true } }),
 		]);
 		expect(harness.session.getSteeringQueueSnapshots()).toEqual([
-			expect.objectContaining({ text: "restored steer", agentMessageId: "agentmsg_restored_steer" }),
+			expect.objectContaining({
+				text: "restored steer",
+				content: restoredSteerContent,
+				agentMessageId: "agentmsg_restored_steer",
+			}),
 		]);
 		expect(harness.session.getFollowUpQueueSnapshots()).toEqual([
 			expect.objectContaining({ text: "existing", agentMessageId: "agentmsg_existing" }),
-			expect.objectContaining({ text: "restored follow-up", agentMessageId: "agentmsg_restored_followup" }),
+			expect.objectContaining({
+				text: "restored follow-up",
+				content: restoredFollowUpContent,
+				agentMessageId: "agentmsg_restored_followup",
+			}),
 		]);
 	});
 

@@ -407,6 +407,7 @@ interface QueuedFollowUpMessage {
 
 export interface QueuedAgentInputSnapshot {
 	text: string;
+	content?: (TextContent | ImageContent)[];
 	images?: ImageContent[];
 	queueKey?: string;
 	agentMessageId?: string;
@@ -424,12 +425,13 @@ function cloneCustomMessage(message: CustomMessage): CustomMessage {
 }
 
 function createQueuedAgentInputSnapshotFromUserMessage(text: string, message: UserMessage): QueuedAgentInputSnapshot {
-	const content = message.content;
-	if (!Array.isArray(content)) {
+	const messageContent = message.content;
+	if (!Array.isArray(messageContent)) {
 		return { text };
 	}
+	const content = messageContent.map((block) => ({ ...block }));
 	const images = content.filter((block): block is ImageContent => block.type === "image");
-	return images.length > 0 ? { text, images } : { text };
+	return { text, content, ...(images.length > 0 ? { images } : {}) };
 }
 
 function createQueuedAgentInputSnapshot(
@@ -2758,19 +2760,20 @@ export class AgentSession {
 	async restoreSteeringMessage(
 		text: string,
 		images?: ImageContent[],
-		options: { agentMessageId?: string } = {},
+		options: { agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
 	): Promise<void> {
-		await this._queueSteer(text, images, { agentMessageId: options.agentMessageId });
+		await this._queueSteer(text, images, { agentMessageId: options.agentMessageId, content: options.content });
 	}
 
 	async restoreFollowUpMessage(
 		text: string,
 		images?: ImageContent[],
-		options: { queueKey?: string; agentMessageId?: string } = {},
+		options: { queueKey?: string; agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
 	): Promise<boolean> {
 		return this._queueFollowUp(text, images, {
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
+			content: options.content,
 		});
 	}
 

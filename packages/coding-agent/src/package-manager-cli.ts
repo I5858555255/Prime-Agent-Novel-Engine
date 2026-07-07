@@ -438,13 +438,25 @@ function readOptionalImages(value: unknown, fieldName: string): DaemonUpdateRest
 	return value;
 }
 
+function readOptionalMessageContent(value: unknown, fieldName: string): DaemonUpdateRestartQueuedMessage["content"] {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!Array.isArray(value) || !value.every(isCustomMessageContentBlock)) {
+		throw new Error(`Daemon update restart response is missing ${fieldName}`);
+	}
+	return value;
+}
+
 function isImageContent(value: unknown): value is NonNullable<DaemonUpdateRestartQueuedMessage["images"]>[number] {
 	return (
 		isRecord(value) && value.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string"
 	);
 }
 
-function isCustomMessageContentBlock(value: unknown): boolean {
+function isCustomMessageContentBlock(
+	value: unknown,
+): value is NonNullable<DaemonUpdateRestartQueuedMessage["content"]>[number] {
 	return (isRecord(value) && value.type === "text" && typeof value.text === "string") || isImageContent(value);
 }
 
@@ -475,12 +487,14 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 		throw new Error("Daemon update restart response contains an invalid queued message");
 	}
 	const message = readString(value.message, "queue.message");
+	const content = readOptionalMessageContent(value.content, "queue.content");
 	const images = readOptionalImages(value.images, "queue.images");
 	const queueKey = readOptionalString(value.queueKey, "queue.queueKey");
 	const agentMessageId =
 		readOptionalString(value.agentMessageId, "queue.agentMessageId") ?? parseAgentSessionMessagePromptId(message);
 	return {
 		message,
+		...(content ? { content } : {}),
 		...(images ? { images } : {}),
 		...(queueKey ? { queueKey } : {}),
 		...(agentMessageId ? { agentMessageId } : {}),
@@ -777,6 +791,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 						type: "steer",
 						activeSessionId,
 						message: queued.message,
+						content: queued.content,
 						images: queued.images,
 						expandPromptTemplates: false,
 						agentMessageId: queued.agentMessageId,
@@ -799,6 +814,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 						type: "follow_up",
 						activeSessionId,
 						message: queued.message,
+						content: queued.content,
 						images: queued.images,
 						queueKey: queued.queueKey,
 						expandPromptTemplates: false,

@@ -1325,6 +1325,7 @@ export class AgentDaemon {
 				if (command.expandPromptTemplates === false) {
 					await state.runtime.session.restoreSteeringMessage(command.message, command.images, {
 						agentMessageId: command.agentMessageId,
+						content: command.content,
 					});
 				} else {
 					await state.runtime.session.steer(command.message, command.images);
@@ -1339,6 +1340,7 @@ export class AgentDaemon {
 					queued = await state.runtime.session.restoreFollowUpMessage(command.message, command.images, {
 						queueKey: command.queueKey,
 						agentMessageId: command.agentMessageId,
+						content: command.content,
 					});
 				} else {
 					queued = await state.runtime.session.followUp(command.message, command.images, {
@@ -2175,11 +2177,13 @@ export class AgentDaemon {
 		const queue = {
 			steering: [...session.getSteeringQueueSnapshots()].map((message) => ({
 				message: message.text,
+				...(message.content ? { content: message.content } : {}),
 				...(message.images ? { images: message.images } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 			})),
 			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
 				message: message.text,
+				...(message.content ? { content: message.content } : {}),
 				...(message.images ? { images: message.images } : {}),
 				...(message.queueKey ? { queueKey: message.queueKey } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
