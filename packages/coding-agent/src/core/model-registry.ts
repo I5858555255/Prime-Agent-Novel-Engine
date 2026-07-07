@@ -791,6 +791,21 @@ export class ModelRegistry {
 		return Boolean(valueFingerprint && matchingStale.some((token) => token.valueFingerprint === valueFingerprint));
 	}
 
+	private isProviderRequestAuthStaleForStatus(provider: string, source: ProviderRequestAuthSource): boolean {
+		const matchingStale = this.getMatchingStaleProviderRequestAuthSources(provider, source);
+		if (matchingStale.length === 0) {
+			return false;
+		}
+		if (!source.valueFingerprint) {
+			return true;
+		}
+		const isStale = matchingStale.some((token) => token.valueFingerprint === source.valueFingerprint);
+		if (!isStale) {
+			this.clearStaleProviderRequestAuthSource(provider, source);
+		}
+		return isStale;
+	}
+
 	private getMatchingStaleProviderRequestAuthSources(
 		provider: string,
 		source: ProviderRequestAuthSource,
@@ -845,7 +860,7 @@ export class ModelRegistry {
 
 	private hasConfiguredProviderRequestAuth(provider: string): boolean {
 		const source = this.getProviderRequestAuthSource(provider);
-		return source !== undefined && this.getMatchingStaleProviderRequestAuthSources(provider, source).length === 0;
+		return source !== undefined && !this.isProviderRequestAuthStaleForStatus(provider, source);
 	}
 
 	markProviderAuthStale(provider: string): boolean {
@@ -1023,7 +1038,7 @@ export class ModelRegistry {
 			return authStatus;
 		}
 
-		if (this.getMatchingStaleProviderRequestAuthSources(provider, source).length > 0) {
+		if (this.isProviderRequestAuthStaleForStatus(provider, source)) {
 			return { configured: false, source: "stale", label: "expired" };
 		}
 

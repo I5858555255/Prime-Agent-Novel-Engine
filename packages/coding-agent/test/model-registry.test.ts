@@ -1455,6 +1455,35 @@ describe("ModelRegistry", () => {
 				});
 			});
 
+			test("changed literal models.json apiKey no longer matches stale provider marker", async () => {
+				writeRawModelsJson({
+					"custom-provider": providerWithApiKey("stale-key"),
+				});
+
+				const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+				await expect(registry.getApiKeyForProvider("custom-provider")).resolves.toBe("stale-key");
+				expect(registry.markProviderAuthStale("custom-provider")).toBe(true);
+				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+					configured: false,
+					source: "stale",
+					label: "expired",
+				});
+				expect(registry.getAvailable().some((model) => model.provider === "custom-provider")).toBe(false);
+
+				writeRawModelsJson({
+					"custom-provider": providerWithApiKey("fresh-key"),
+				});
+				registry.refresh();
+
+				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+					configured: true,
+					source: "models_json_key",
+				});
+				expect(registry.getAvailable().some((model) => model.provider === "custom-provider")).toBe(true);
+				await expect(registry.getApiKeyForProvider("custom-provider")).resolves.toBe("fresh-key");
+			});
+
 			test("provider auth status reports command apiKey values from models.json without executing them", () => {
 				const counterFile = join(tempDir, "status-counter");
 				writeFileSync(counterFile, "0");
