@@ -34,6 +34,9 @@ export const isBunBinary =
 /** Detect if Bun is the runtime (compiled binary or bun run) */
 export const isBunRuntime = !!process.versions.bun;
 
+export const SELF_UPDATE_INTERACTIVE_CHILD_ENV = "PRIME_AGENT_INTERACTIVE_SELF_UPDATE";
+export const SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE = 75;
+
 // =============================================================================
 // Install Method Detection
 // =============================================================================

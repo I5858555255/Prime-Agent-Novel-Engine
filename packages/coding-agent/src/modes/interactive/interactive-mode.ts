@@ -56,6 +56,8 @@ import {
 	getDebugLogPath,
 	getLogsDir,
 	getShareViewerUrl,
+	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
+	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 	VERSION,
 } from "../../config.js";
 import {
@@ -7070,14 +7072,17 @@ export class InteractiveMode {
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
 		this.ui.stop();
 
+		const updateEnv = includesSelf ? { ...process.env, [SELF_UPDATE_INTERACTIVE_CHILD_ENV]: "1" } : process.env;
 		const updateResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, "update", ...updateArgs], {
 			stdio: "inherit",
 			cwd: updateCwd,
-			env: process.env,
+			env: updateEnv,
 		});
 		const updateExitCode = updateResult.status ?? (updateResult.signal ? 1 : 0);
+		const selfUpdateNotAttempted =
+			includesSelf && !updateResult.error && updateExitCode === SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE;
 
-		if (includesSelf) {
+		if (includesSelf && !selfUpdateNotAttempted) {
 			const relaunchArgs = buildUpdateRelaunchArgs(process.argv.slice(2), this.connectionState?.sessionFile);
 			if (updateResult.error) {
 				console.error(`Update failed: ${updateResult.error.message}`);
@@ -7115,6 +7120,11 @@ export class InteractiveMode {
 		}
 		this.ui.requestRender(true);
 
+		if (selfUpdateNotAttempted) {
+			this.showStatus(`Update did not change ${APP_NAME}. Reloading resources...`);
+			await this.handleReloadCommand();
+			return;
+		}
 		if (updateResult.error) {
 			this.showError(`Update failed: ${updateResult.error.message}`);
 			return;

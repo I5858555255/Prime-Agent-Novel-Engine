@@ -19,6 +19,8 @@ import {
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	PACKAGE_NAME,
+	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
+	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 	type SelfUpdateCommand,
 	VERSION,
 } from "./config.js";
@@ -318,6 +320,11 @@ interface SelfUpdatePlan {
 	installSpec: string;
 	packageName: string;
 	shouldRun: boolean;
+}
+
+function setSelfUpdateNotAttemptedExitCode(fallbackExitCode: number): void {
+	process.exitCode =
+		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] === "1" ? SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE : fallbackExitCode;
 }
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
@@ -887,18 +894,9 @@ async function restartDaemonAfterSelfUpdate(
 	}
 	const stopped = oldDaemonAlreadyStopped || (await shutdownDaemonAndWait(socketPath));
 	if (!stopped) {
-		if (!manifest) {
-			console.error(
-				chalk.yellow(
-					`Warning: could not stop the old daemon on ${socketPath}; it will be replaced on next launch.`,
-				),
-			);
-			return;
-		}
 		console.error(
-			chalk.yellow(`Warning: could not stop the old daemon on ${socketPath}; trying to restore sessions there.`),
+			chalk.yellow(`Warning: could not stop the old daemon on ${socketPath}; it will be replaced on next launch.`),
 		);
-		await tryRestoreDaemonUpdateRestart(socketPath, agentDir, manifest, "on the old daemon");
 		return;
 	}
 	try {
@@ -1069,6 +1067,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 				if (updateTargetIncludesSelf(target)) {
 					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
 					if (!selfUpdatePlan.shouldRun) {
+						setSelfUpdateNotAttemptedExitCode(0);
 						return true;
 					}
 					const selfUpdateCommand = getSelfUpdateCommand(
@@ -1083,7 +1082,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 							selfUpdatePlan.installSpec,
 							selfUpdatePlan.packageName,
 						);
-						process.exitCode = 1;
+						setSelfUpdateNotAttemptedExitCode(1);
 						return true;
 					}
 					// Confirm before the install, since upgrading the daemon afterward stops it.
@@ -1093,7 +1092,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						if (process.stdin.isTTY) {
 							console.log(chalk.dim("Update cancelled."));
 						}
-						process.exitCode = 1;
+						setSelfUpdateNotAttemptedExitCode(1);
 						return true;
 					}
 					let restartManifest: DaemonUpdateRestartManifest | undefined;
@@ -1126,7 +1125,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 										`Warning: could not prepare daemon sessions for automatic resume (${message}); update cancelled.`,
 									),
 								);
-								process.exitCode = 1;
+								setSelfUpdateNotAttemptedExitCode(1);
 								return true;
 							}
 							console.error(
