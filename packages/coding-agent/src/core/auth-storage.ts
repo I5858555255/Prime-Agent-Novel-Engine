@@ -265,7 +265,7 @@ export class AuthStorage {
 	 * Used for CLI --api-key flag.
 	 */
 	setRuntimeApiKey(provider: string, apiKey: string): void {
-		this.clearStaleAuth(provider);
+		this.clearStaleAuthSource(provider, "runtime");
 		this.runtimeOverrides.set(provider, apiKey);
 	}
 
@@ -273,7 +273,7 @@ export class AuthStorage {
 	 * Remove a runtime API key override.
 	 */
 	removeRuntimeApiKey(provider: string): void {
-		this.clearStaleAuth(provider);
+		this.clearStaleAuthSource(provider, "runtime");
 		this.runtimeOverrides.delete(provider);
 	}
 
@@ -436,8 +436,19 @@ export class AuthStorage {
 		return true;
 	}
 
-	private clearStaleAuth(provider: string): void {
-		this.staleAuthSources.delete(provider);
+	private clearStaleAuthSource(provider: string, source: ActiveAuthStatusSource): void {
+		const stale = this.staleAuthSources.get(provider);
+		if (!stale) {
+			return;
+		}
+		for (const fingerprint of stale) {
+			if (fingerprint.startsWith(`${source}:`)) {
+				stale.delete(fingerprint);
+			}
+		}
+		if (stale.size === 0) {
+			this.staleAuthSources.delete(provider);
+		}
 	}
 
 	private parseStorageData(content: string | undefined): AuthStorageData {
@@ -497,7 +508,7 @@ export class AuthStorage {
 	 * Set credential for a provider.
 	 */
 	set(provider: string, credential: AuthCredential): void {
-		this.clearStaleAuth(provider);
+		this.clearStaleAuthSource(provider, "stored");
 		this.data[provider] = credential;
 		this.persistProviderChange(provider, credential);
 	}
@@ -506,7 +517,7 @@ export class AuthStorage {
 	 * Remove credential for a provider.
 	 */
 	remove(provider: string): void {
-		this.clearStaleAuth(provider);
+		this.clearStaleAuthSource(provider, "stored");
 		delete this.data[provider];
 		this.persistProviderChange(provider, undefined);
 	}
@@ -570,10 +581,10 @@ export class AuthStorage {
 	 * Logout from a provider.
 	 */
 	logout(provider: string): void {
-		this.clearStaleAuth(provider);
 		if (provider === PRIME_INFERENCE_PROVIDER_ID && this.isPrimeCliConfigEnabled()) {
 			try {
 				clearPrimeCliCredentials(this.getEnabledPrimeCliConfigPath());
+				this.clearStaleAuthSource(provider, "prime_cli");
 			} catch (error) {
 				this.recordError(error);
 				throw error;
@@ -752,7 +763,6 @@ export class AuthStorage {
 	}
 
 	setPrimeInferenceApiKey(apiKey: string): void {
-		this.clearStaleAuth(PRIME_INFERENCE_PROVIDER_ID);
 		if (this.isPrimeCliConfigEnabled()) {
 			try {
 				const configPath = this.getEnabledPrimeCliConfigPath();
@@ -764,6 +774,7 @@ export class AuthStorage {
 				} else if (!config.teamIdFromEnv && (legacyPrimeTeam === null || (!config.teamId && legacyPrimeTeam))) {
 					savePrimeCliTeamSelection(legacyPrimeTeam, configPath);
 				}
+				this.clearStaleAuthSource(PRIME_INFERENCE_PROVIDER_ID, "prime_cli");
 			} catch (error) {
 				this.recordError(error);
 				throw error;

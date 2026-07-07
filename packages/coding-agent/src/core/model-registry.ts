@@ -842,7 +842,7 @@ export class ModelRegistry {
 	 */
 	getProviderAuthStatus(provider: string): AuthStatus {
 		const authStatus = this.authStorage.getAuthStatus(provider);
-		if (authStatus.source) {
+		if (authStatus.source && authStatus.source !== "stale") {
 			return authStatus;
 		}
 

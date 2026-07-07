@@ -1393,6 +1393,28 @@ describe("ModelRegistry", () => {
 				});
 			});
 
+			test("provider auth status reports models.json auth when stored auth is stale", async () => {
+				authStorage.setRuntimeApiKey("custom-provider", "stale-runtime-key");
+				expect(authStorage.markAuthStale("custom-provider")).toBe(true);
+				writeRawModelsJson({
+					"custom-provider": providerWithApiKey("literal_api_key_value"),
+				});
+
+				const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+				const model = registry.find("custom-provider", "test-model");
+				expect(model).toBeDefined();
+
+				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+					configured: true,
+					source: "models_json_key",
+				});
+				await expect(registry.getApiKeyForProvider("custom-provider")).resolves.toBe("literal_api_key_value");
+				await expect(registry.getApiKeyAndHeaders(model!)).resolves.toMatchObject({
+					ok: true,
+					apiKey: "literal_api_key_value",
+				});
+			});
+
 			test("provider auth status reports command apiKey values from models.json without executing them", () => {
 				const counterFile = join(tempDir, "status-counter");
 				writeFileSync(counterFile, "0");

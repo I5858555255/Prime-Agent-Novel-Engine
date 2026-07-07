@@ -247,6 +247,26 @@ describe("AuthStorage", () => {
 			});
 		});
 
+		test("stored credential updates do not revive stale runtime auth", async () => {
+			authStorage = AuthStorage.inMemory();
+			authStorage.setRuntimeApiKey("anthropic", "runtime-key");
+			expect(authStorage.markAuthStale("anthropic")).toBe(true);
+
+			authStorage.set("anthropic", { type: "api_key", key: "stored-key" });
+
+			expect(authStorage.getAuthStatus("anthropic")).toEqual({ configured: true, source: "stored" });
+			await expect(authStorage.getApiKey("anthropic")).resolves.toBe("stored-key");
+
+			authStorage.remove("anthropic");
+
+			expect(authStorage.getAuthStatus("anthropic")).toEqual({
+				configured: false,
+				source: "stale",
+				label: "expired",
+			});
+			await expect(authStorage.getApiKey("anthropic")).resolves.toBeUndefined();
+		});
+
 		test("prime inference uses Prime CLI auth over legacy Prime Agent auth", async () => {
 			const primeConfigPath = join(tempDir, "prime-config.json");
 			writeFileSync(primeConfigPath, JSON.stringify({ api_key: "prime-cli-key" }));
