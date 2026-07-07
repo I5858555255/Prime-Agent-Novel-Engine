@@ -1360,9 +1360,23 @@ export class AgentDaemon {
 
 			case "resume_queue": {
 				const state = this.getSessionState(command.activeSessionId);
-				void state.runtime.session.agent.continue().catch((error) => {
-					this.broadcastToSession(state, failure(undefined, "resume_queue", error, serializeDaemonError(error)));
+				let checkedStart = false;
+				let startError: unknown;
+				void state.runtime.session.agent.continue().then(undefined, (error: unknown) => {
+					if (checkedStart) {
+						this.broadcastToSession(
+							state,
+							failure(undefined, "resume_queue", error, serializeDaemonError(error)),
+						);
+					} else {
+						startError = error;
+					}
 				});
+				await Promise.resolve();
+				checkedStart = true;
+				if (startError !== undefined) {
+					return failure(command.id, "resume_queue", startError, serializeDaemonError(startError));
+				}
 				return success(command.id, "resume_queue");
 			}
 

@@ -737,4 +737,117 @@ describe("issue #4257 update restart resume", () => {
 		expect(harness.session.getSteeringQueueSnapshots()).toEqual([]);
 		expect(harness.session.getFollowUpQueueSnapshots()).toEqual([]);
 	});
+
+	it("resumes restored queues without prior transcript messages", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("handled restored follow-up")]);
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+		const writes: string[] = [];
+		const client: DaemonSocketClient = {
+			id: "client-1",
+			socket: {
+				destroyed: false,
+				write: vi.fn((chunk: string) => {
+					writes.push(chunk);
+					return true;
+				}),
+			} as unknown as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set(["active-1"]),
+			detachInput: vi.fn(),
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		};
+
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "follow-up-1",
+				type: "follow_up",
+				activeSessionId: "active-1",
+				message: "restored follow-up",
+				expandPromptTemplates: false,
+			}),
+		);
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "resume-1",
+				type: "resume_queue",
+				activeSessionId: "active-1",
+			}),
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await harness.session.agent.waitForIdle();
+
+		const responses = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(responses).toEqual([
+			expect.objectContaining({ id: "follow-up-1", command: "follow_up", success: true }),
+			expect.objectContaining({ id: "resume-1", command: "resume_queue", success: true }),
+		]);
+		expect(getUserTexts(harness)).toEqual(["restored follow-up"]);
+		expect(harness.session.getFollowUpQueueSnapshots()).toEqual([]);
+	});
+
+	it("reports resume_queue failure when no work can resume", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+		const writes: string[] = [];
+		const client: DaemonSocketClient = {
+			id: "client-1",
+			socket: {
+				destroyed: false,
+				write: vi.fn((chunk: string) => {
+					writes.push(chunk);
+					return true;
+				}),
+			} as unknown as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set(["active-1"]),
+			detachInput: vi.fn(),
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		};
+
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "resume-1",
+				type: "resume_queue",
+				activeSessionId: "active-1",
+			}),
+		);
+		await Promise.resolve();
+
+		const response = JSON.parse(writes.join("").trim());
+		expect(response).toMatchObject({ id: "resume-1", command: "resume_queue", success: false });
+		expect(JSON.stringify(response)).toContain("No messages to continue from");
+	});
 });

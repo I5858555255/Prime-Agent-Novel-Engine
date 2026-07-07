@@ -360,6 +360,18 @@ export class Agent {
 
 		const lastMessage = this._state.messages[this._state.messages.length - 1];
 		if (!lastMessage) {
+			const queuedSteering = this.steeringQueue.drain();
+			if (queuedSteering.length > 0) {
+				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
+				return;
+			}
+
+			const queuedFollowUps = this.followUpQueue.drain();
+			if (queuedFollowUps.length > 0) {
+				await this.runPromptMessages(queuedFollowUps);
+				return;
+			}
+
 			throw new Error("No messages to continue from");
 		}
 
