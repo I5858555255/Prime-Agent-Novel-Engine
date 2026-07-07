@@ -5423,25 +5423,31 @@ export class AgentSession {
 		return token;
 	}
 
-	private _markProviderAuthStale(message: AssistantMessage, authSourceTokens?: readonly AuthSourceToken[]): void {
+	private _markProviderAuthStale(message: AssistantMessage, authSourceTokens?: readonly AuthSourceToken[]): boolean {
 		if (authSourceTokens && authSourceTokens.length > 0) {
+			let marked = false;
 			for (const token of authSourceTokens) {
-				this._modelRegistry.markProviderAuthSourceStale(token);
+				marked = this._modelRegistry.markProviderAuthSourceStale(token) || marked;
 			}
-			return;
+			return marked;
 		}
-		this._modelRegistry.markProviderAuthStale(message.provider);
+		return this._modelRegistry.markProviderAuthStale(message.provider);
 	}
 
 	private _markProviderAuthStaleForRetryFailure(
 		message: AssistantMessage,
 		options?: { markAuthStaleOnFailure?: boolean; authSourceTokens?: readonly AuthSourceToken[] },
-	): void {
+	): boolean {
 		const authSourceTokens =
 			this._retryAuthFailureSources.length > 0 ? this._retryAuthFailureSources : options?.authSourceTokens;
 		if ((authSourceTokens?.length ?? 0) > 0 || options?.markAuthStaleOnFailure) {
-			this._markProviderAuthStale(message, authSourceTokens);
+			const marked = this._markProviderAuthStale(message, authSourceTokens);
+			if (marked && message.errorMessage) {
+				message.errorMessage = addLoginGuidanceToAuthError(message.errorMessage);
+			}
+			return marked;
 		}
+		return false;
 	}
 
 	/**

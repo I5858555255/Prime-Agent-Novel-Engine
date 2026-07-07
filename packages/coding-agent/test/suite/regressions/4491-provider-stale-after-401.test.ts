@@ -115,6 +115,13 @@ describe("issue #4491 provider stale after repeated 401", () => {
 		expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([false]);
 		expect(harness.authStorage.hasAuth(harness.getModel().provider)).toBe(false);
 		await expect(harness.authStorage.getApiKey(harness.getModel().provider)).resolves.toBeUndefined();
+
+		const assistantMessages = harness.session.messages.filter(
+			(message): message is AssistantMessage => message.role === "assistant",
+		);
+		const finalAssistant = assistantMessages[assistantMessages.length - 1];
+		expect(finalAssistant?.errorMessage).toContain("500 Internal Server Error");
+		expect(finalAssistant?.errorMessage).toContain("Run /login to update credentials.");
 	});
 
 	it("marks concrete auth failures stale when retry is disabled", async () => {
