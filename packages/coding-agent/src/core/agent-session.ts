@@ -589,7 +589,7 @@ export class AgentSession {
 	private _retryAttempt = 0;
 	private _retryPromise: Promise<void> | undefined = undefined;
 	private _retryResolve: (() => void) | undefined = undefined;
-	private _retryAuthFailureSource: AuthSourceToken | undefined = undefined;
+	private _retryAuthFailureSources: AuthSourceToken[] = [];
 	private _acceptedPromptCompletions = new Set<Promise<void>>();
 	private _acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined = undefined;
 	private _agentMessageDeliveryWaiters = new Map<string, AgentMessageDeliveryWaiter>();
@@ -1752,7 +1752,7 @@ export class AgentSession {
 						attempt: this._retryAttempt,
 					});
 					this._retryAttempt = 0;
-					this._retryAuthFailureSource = undefined;
+					this._retryAuthFailureSources = [];
 				}
 				if (this._accountGoalUsageForAssistantMessage(assistantMsg)) {
 					this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
@@ -1783,7 +1783,7 @@ export class AgentSession {
 				}
 				const didRetry = await this._handleRetryableError(msg, {
 					markAuthStaleOnFailure: concreteAuthFailure,
-					authSourceToken: concreteAuthFailure ? this._retryAuthFailureSource : undefined,
+					authSourceTokens: concreteAuthFailure ? this._retryAuthFailureSources : undefined,
 				});
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
@@ -5405,16 +5405,29 @@ export class AgentSession {
 	}
 
 	private _captureRetryAuthFailureSource(message: AssistantMessage): AuthSourceToken | undefined {
-		if (this._retryAuthFailureSource) {
-			return this._retryAuthFailureSource;
+		const token = this._modelRegistry.getCurrentProviderAuthSourceToken(message.provider);
+		if (!token) {
+			return undefined;
 		}
-		this._retryAuthFailureSource = this._modelRegistry.getCurrentProviderAuthSourceToken(message.provider);
-		return this._retryAuthFailureSource;
+		if (
+			!this._retryAuthFailureSources.some(
+				(existing) =>
+					existing.provider === token.provider &&
+					existing.source === token.source &&
+					existing.identityFingerprint === token.identityFingerprint &&
+					existing.valueFingerprint === token.valueFingerprint,
+			)
+		) {
+			this._retryAuthFailureSources.push(token);
+		}
+		return token;
 	}
 
-	private _markProviderAuthStale(message: AssistantMessage, authSourceToken?: AuthSourceToken): void {
-		if (authSourceToken) {
-			this._modelRegistry.markProviderAuthSourceStale(authSourceToken);
+	private _markProviderAuthStale(message: AssistantMessage, authSourceTokens?: readonly AuthSourceToken[]): void {
+		if (authSourceTokens && authSourceTokens.length > 0) {
+			for (const token of authSourceTokens) {
+				this._modelRegistry.markProviderAuthSourceStale(token);
+			}
 			return;
 		}
 		this._modelRegistry.markProviderAuthStale(message.provider);
@@ -5426,11 +5439,14 @@ export class AgentSession {
 	 */
 	private async _handleRetryableError(
 		message: AssistantMessage,
-		options?: { markAuthStaleOnFailure?: boolean; authSourceToken?: AuthSourceToken },
+		options?: { markAuthStaleOnFailure?: boolean; authSourceTokens?: readonly AuthSourceToken[] },
 	): Promise<boolean> {
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled) {
-			this._retryAuthFailureSource = undefined;
+			if (options?.markAuthStaleOnFailure) {
+				this._markProviderAuthStale(message, options.authSourceTokens);
+			}
+			this._retryAuthFailureSources = [];
 			this._resolveRetry();
 			return false;
 		}
@@ -5447,7 +5463,7 @@ export class AgentSession {
 
 		if (this._retryAttempt > settings.maxRetries) {
 			if (options?.markAuthStaleOnFailure) {
-				this._markProviderAuthStale(message, options.authSourceToken);
+				this._markProviderAuthStale(message, options.authSourceTokens);
 			}
 			// Max retries exceeded, emit final failure and reset
 			this._emit({
@@ -5457,7 +5473,7 @@ export class AgentSession {
 				finalError: message.errorMessage,
 			});
 			this._retryAttempt = 0;
-			this._retryAuthFailureSource = undefined;
+			this._retryAuthFailureSources = [];
 			this._resolveRetry(); // Resolve so waitForRetry() completes
 			return false;
 		}
@@ -5494,7 +5510,7 @@ export class AgentSession {
 				finalError: "Retry cancelled",
 			});
 			this._resolveRetry();
-			this._retryAuthFailureSource = undefined;
+			this._retryAuthFailureSources = [];
 			return false;
 		}
 		this._retryAbortController = undefined;
@@ -5515,7 +5531,7 @@ export class AgentSession {
 	abortRetry(): void {
 		this._retryAbortController?.abort();
 		// Note: _retryAttempt is reset in the catch block of _autoRetry
-		this._retryAuthFailureSource = undefined;
+		this._retryAuthFailureSources = [];
 		this._resolveRetry();
 	}
 
