@@ -743,14 +743,8 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 			const followUpQueue = [...session.queue.followUp];
 			let resumedSession = false;
 			let restoredQueuedWork = false;
-			let acceptedPromptContextRestored = true;
 			if (acceptedPrompt) {
-				acceptedPromptContextRestored = await restoreNextTurnMessages(
-					client,
-					activeSessionId,
-					session.sessionFile,
-					acceptedPrompt.nextTurn,
-				);
+				await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, acceptedPrompt.nextTurn);
 			}
 			await restoreNextTurnMessages(client, activeSessionId, session.sessionFile, session.queue.nextTurn);
 			for (const queued of steeringQueue) {
@@ -800,7 +794,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 					);
 				}
 			}
-			if (acceptedPrompt && acceptedPromptContextRestored) {
+			if (acceptedPrompt) {
 				const promptResponse = await client.request(
 					{
 						type: "prompt",
