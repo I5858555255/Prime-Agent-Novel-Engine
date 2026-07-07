@@ -384,6 +384,7 @@ export interface PromptOptions {
 	/** Skip extension input handlers for replaying already-accepted input. */
 	skipInputHandlers?: boolean;
 	agentMessageId?: string;
+	content?: (TextContent | ImageContent)[];
 }
 
 interface InternalPromptOptions extends PromptOptions {
@@ -2431,8 +2432,10 @@ export class AgentSession {
 					messages.push(msg);
 				}
 				this._pendingNextTurnMessages = [];
-				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-				if (currentImages) {
+				const userContent: (TextContent | ImageContent)[] = options?.content
+					? options.content.map((block) => ({ ...block }))
+					: [{ type: "text", text: expandedText }];
+				if (!options?.content && currentImages) {
 					userContent.push(...currentImages);
 				}
 				const userMessage: AgentMessage = {
@@ -2480,8 +2483,10 @@ export class AgentSession {
 				this._pendingNextTurnMessages = [];
 
 				// Add user message
-				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-				if (currentImages) {
+				const userContent: (TextContent | ImageContent)[] = options?.content
+					? options.content.map((block) => ({ ...block }))
+					: [{ type: "text", text: expandedText }];
+				if (!options?.content && currentImages) {
 					userContent.push(...currentImages);
 				}
 				const userMessage: AgentMessage = {

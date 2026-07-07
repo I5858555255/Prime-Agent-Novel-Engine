@@ -750,6 +750,7 @@ async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUp
 							type: "prompt",
 							activeSessionId,
 							message: acceptedPrompt.message,
+							content: acceptedPrompt.content,
 							images: acceptedPrompt.images,
 							expandPromptTemplates: false,
 							agentMessageId: acceptedPrompt.agentMessageId,

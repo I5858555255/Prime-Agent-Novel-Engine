@@ -259,9 +259,13 @@ describe("issue #4257 update restart resume", () => {
 		const pendingNextTurn = createCustomMessage("pending next turn");
 		const acceptedNextTurn = createCustomMessage("accepted prompt context");
 		const deliveredAcceptedNextTurn = createCustomMessage("already delivered context");
+		const acceptedContent: TextContent[] = [
+			{ type: "text", text: "accepted prefix" },
+			{ type: "text", text: "accepted work" },
+		];
 		const acceptedMessage: UserMessage = {
 			role: "user",
-			content: [{ type: "text", text: "accepted work" }],
+			content: acceptedContent,
 			timestamp: Date.now(),
 		};
 		const queueInternals = harness.session as unknown as QueueInternals;
@@ -303,9 +307,59 @@ describe("issue #4257 update restart resume", () => {
 		expect(manifest.sessions[0]?.queue.nextTurn).toEqual([pendingNextTurn]);
 		expect(manifest.sessions[0]?.queue.acceptedPrompt).toEqual({
 			message: "accepted work",
+			content: acceptedContent,
 			agentMessageId: "agentmsg_accepted",
 			nextTurn: [acceptedNextTurn],
 		});
+	});
+
+	it("materializes queued in-memory drafts before update restart", async () => {
+		const harness = await createHarness({ persistSession: false });
+		harnesses.push(harness);
+
+		const followUpContent: TextContent[] = [
+			{ type: "text", text: "queued context" },
+			{ type: "text", text: "queued follow-up" },
+		];
+		const queueInternals = harness.session as unknown as QueueInternals;
+		queueInternals._followUpMessages = [
+			{
+				text: "queued follow-up",
+				queueKey: "heartbeat:job-1",
+				agentMessageId: "agentmsg_followup",
+				message: { role: "user", content: followUpContent, timestamp: Date.now() },
+			},
+		];
+
+		const sessionDir = `${harness.tempDir}/sessions`;
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir, sessionDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		const manifest = await internals.prepareUpdateRestart();
+
+		expect(manifest.sessions).toHaveLength(1);
+		const session = manifest.sessions[0];
+		expect(session?.sessionFile.startsWith(`${sessionDir}/`)).toBe(true);
+		expect(harness.session.sessionFile).toBe(session?.sessionFile);
+		expect(readFileSync(session?.sessionFile ?? "", "utf8")).toContain('"type":"session"');
+		expect(session?.queue.followUp).toEqual([
+			{
+				message: "queued follow-up",
+				content: followUpContent,
+				queueKey: "heartbeat:job-1",
+				agentMessageId: "agentmsg_followup",
+			},
+		]);
+		expect(session?.shouldResume).toBe(true);
 	});
 
 	it("keeps undelivered accepted-prompt context after the accepted turn starts", async () => {
@@ -410,6 +464,68 @@ describe("issue #4257 update restart resume", () => {
 			success: true,
 		});
 		expect(harness.session.getPendingNextTurnMessageSnapshots()).toEqual([restoredMessage]);
+	});
+
+	it("accepts restored prompt content through daemon command parsing", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("accepted restored prompt")]);
+
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		const promptContent: TextContent[] = [
+			{ type: "text", text: "accepted prefix" },
+			{ type: "text", text: "accepted work" },
+		];
+		const writes: string[] = [];
+		const client: DaemonSocketClient = {
+			id: "client-1",
+			socket: {
+				destroyed: false,
+				write: vi.fn((chunk: string) => {
+					writes.push(chunk);
+					return true;
+				}),
+			} as unknown as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set(["active-1"]),
+			detachInput: vi.fn(),
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		};
+
+		await internals.handleLine(
+			client,
+			JSON.stringify({
+				id: "prompt-1",
+				type: "prompt",
+				activeSessionId: "active-1",
+				message: "accepted work",
+				content: promptContent,
+				expandPromptTemplates: false,
+				agentMessageId: "agentmsg_accepted",
+			}),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await harness.session.agent.waitForIdle();
+
+		expect(
+			writes
+				.join("")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line)),
+		).toEqual([expect.objectContaining({ id: "prompt-1", command: "prompt", success: true })]);
+		expect(harness.session.messages.find((message) => message.role === "user")?.content).toEqual(promptContent);
 	});
 
 	it("restores agent-message ids and reports deduped follow-ups", async () => {

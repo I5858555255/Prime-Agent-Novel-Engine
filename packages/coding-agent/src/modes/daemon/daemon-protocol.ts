@@ -256,6 +256,7 @@ export type DaemonCommand =
 			type: "prompt";
 			activeSessionId: string;
 			message: string;
+			content?: (TextContent | ImageContent)[];
 			images?: ImageContent[];
 			streamingBehavior?: "steer" | "followUp";
 			expandPromptTemplates?: boolean;

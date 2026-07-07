@@ -1295,6 +1295,7 @@ export class AgentDaemon {
 					this.write(client, success(command.id, "prompt"));
 				};
 				void this.promptWithAgentMessagePreparingGuard(state, command.message, {
+					content: command.content,
 					images: command.images,
 					streamingBehavior: command.streamingBehavior,
 					expandPromptTemplates: command.expandPromptTemplates,
@@ -2173,7 +2174,6 @@ export class AgentDaemon {
 			return undefined;
 		}
 		const session = state.runtime.session;
-		const sessionFile = session.sessionFile;
 		const queue = {
 			steering: [...session.getSteeringQueueSnapshots()].map((message) => ({
 				message: message.text,
@@ -2197,6 +2197,7 @@ export class AgentDaemon {
 				? {
 						acceptedPrompt: {
 							message: acceptedPrompt.text,
+							...(acceptedPrompt.content ? { content: acceptedPrompt.content } : {}),
 							...(acceptedPrompt.images ? { images: acceptedPrompt.images } : {}),
 							agentMessageId: acceptedPrompt.agentMessageId,
 							nextTurn: acceptedPrompt.nextTurn,
@@ -2209,6 +2210,13 @@ export class AgentDaemon {
 			restartQueue.followUp.length > 0 ||
 			restartQueue.nextTurn.length > 0 ||
 			restartQueue.acceptedPrompt !== undefined;
+		const sessionFile =
+			session.sessionFile ??
+			(hasQueuedMessages
+				? session.sessionManager.materializeSessionFile(
+						state.runtime.runtimeConfig?.sessionDir ?? this.options.defaultSessionConfig.sessionDir,
+					)
+				: undefined);
 		if (!sessionFile || (this.isEmptyDraftContent(state) && !hasQueuedMessages)) {
 			return undefined;
 		}
