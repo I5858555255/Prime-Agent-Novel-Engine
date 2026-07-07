@@ -97,11 +97,15 @@ describe("LoginDialogComponent", () => {
 		const url = "https://example.com/oauth?client_id=test&redirect_uri=https%3A%2F%2Fcallback.example.com%2Fdone";
 
 		dialog.showAuth(url, "Complete login in your browser.");
-		dialog.handleInput("\x1bc");
+		dialog.handleInput("\x1b[17~");
 
 		await vi.waitFor(() => expect(mocks.copyToClipboard).toHaveBeenCalledWith(url));
 		expect(requestRender).toHaveBeenCalled();
-		expect(stripAnsi(dialog.render(88).join("\n"))).toContain("Sign-in link copied.");
+		const output = stripAnsi(dialog.render(88).join("\n"));
+		expect(output).toContain("F6 copy link");
+		expect(output).not.toContain("Alt+C");
+		expect(output).not.toContain("Option+C");
+		expect(output).toContain("Sign-in link copied.");
 	});
 
 	it("renders verification codes as a distinct field", () => {

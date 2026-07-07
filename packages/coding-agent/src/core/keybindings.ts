@@ -115,7 +115,7 @@ export const KEYBINDINGS = {
 		description: "Paste image from clipboard",
 	},
 	"app.auth.copyLoginUrl": {
-		defaultKeys: "alt+c",
+		defaultKeys: ["f6", "alt+c"],
 		description: "Copy login URL",
 	},
 	"app.session.new": { defaultKeys: [], description: "Start a new session" },

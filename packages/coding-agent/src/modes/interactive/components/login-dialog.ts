@@ -157,7 +157,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 			new Text(
 				theme.fg(
 					"muted",
-					`${keyHint("app.auth.copyLoginUrl", "copy link")}  ${keyHint("tui.select.cancel", "cancel")}`,
+					`${keyHint("app.auth.copyLoginUrl", "copy link", { primaryOnly: true })}  ${keyHint("tui.select.cancel", "cancel")}`,
 				),
 				0,
 				0,
