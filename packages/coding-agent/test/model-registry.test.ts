@@ -1480,6 +1480,35 @@ describe("ModelRegistry", () => {
 				expect(count).toBe(0);
 			});
 
+			test("changed command-backed apiKey no longer matches stale models.json marker", async () => {
+				const tokenFile = join(tempDir, "models-json-token");
+				writeFileSync(tokenFile, "stale-key");
+				const tokenPath = toShPath(tokenFile);
+
+				writeRawModelsJson({
+					"custom-provider": providerWithApiKey(`!sh -c 'cat "${tokenPath}"'`),
+				});
+
+				const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+				await expect(registry.getApiKeyForProvider("custom-provider")).resolves.toBe("stale-key");
+				expect(registry.markProviderAuthStale("custom-provider")).toBe(true);
+				await expect(registry.getApiKeyForProvider("custom-provider")).resolves.toBeUndefined();
+				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+					configured: false,
+					source: "stale",
+					label: "expired",
+				});
+
+				writeFileSync(tokenFile, "fresh-key");
+
+				await expect(registry.getApiKeyForProvider("custom-provider")).resolves.toBe("fresh-key");
+				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+					configured: true,
+					source: "models_json_command",
+				});
+			});
+
 			test("getApiKeyAndHeaders resolves authHeader on every request", async () => {
 				const tokenFile = join(tempDir, "token");
 				writeFileSync(tokenFile, "token-1");

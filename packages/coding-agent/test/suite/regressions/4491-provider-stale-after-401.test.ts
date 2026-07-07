@@ -1,3 +1,4 @@
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.js";
@@ -54,5 +55,54 @@ describe("issue #4491 provider stale after repeated 401", () => {
 		const finalAssistant = assistantMessages[assistantMessages.length - 1];
 		expect(finalAssistant?.errorMessage).toContain("401 Unauthorized");
 		expect(finalAssistant?.errorMessage).toContain("Run /login to update credentials.");
+	});
+
+	it("marks the failed auth source stale when credentials change during retry backoff", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 5 } },
+		});
+		harnesses.push(harness);
+		harness.setResponses([provider401Message(), provider401Message()]);
+
+		let changedCredentials = false;
+		harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start" && !changedCredentials) {
+				changedCredentials = true;
+				harness.authStorage.setRuntimeApiKey(harness.getModel().provider, "fresh-key");
+			}
+		});
+
+		await harness.session.prompt("hello");
+
+		expect(changedCredentials).toBe(true);
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.authStorage.hasAuth(harness.getModel().provider)).toBe(true);
+		await expect(harness.authStorage.getApiKey(harness.getModel().provider)).resolves.toBe("fresh-key");
+		expect(harness.authStorage.getAuthStatus(harness.getModel().provider)).toEqual({
+			configured: false,
+			source: "runtime",
+			label: "--api-key",
+		});
+	});
+
+	it("resolves retry state for auth failures surfaced only on agent_end", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 0, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		const message = provider401Message();
+		const event = { type: "agent_end", messages: [message] } as AgentEvent;
+		const session = harness.session as unknown as {
+			_createRetryPromiseForAgentEnd(event: AgentEvent): void;
+			_processAgentEvent(event: AgentEvent): Promise<void>;
+		};
+
+		session._createRetryPromiseForAgentEnd(event);
+		await session._processAgentEvent(event);
+
+		expect(harness.session.isRetrying).toBe(false);
+		expect(harness.eventsOfType("auto_retry_end").map((retryEvent) => retryEvent.success)).toEqual([false]);
+		expect(harness.authStorage.hasAuth(harness.getModel().provider)).toBe(false);
+		expect(message.errorMessage).toContain("Run /login to update credentials.");
 	});
 });

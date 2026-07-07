@@ -29,7 +29,7 @@ import {
 	savePrimeCliApiKey,
 	savePrimeCliTeamSelection,
 } from "./prime-inference-auth.js";
-import { resolveConfigValue } from "./resolve-config-value.js";
+import { resolveConfigValue, resolveConfigValueUncached } from "./resolve-config-value.js";
 
 export type PrimeTeamCredential = {
 	teamId: string;
@@ -79,11 +79,20 @@ type LockResult<T> = {
 
 type ActiveAuthStatusSource = Exclude<NonNullable<AuthStatus["source"]>, "stale">;
 
+export type AuthSourceToken = {
+	provider: string;
+	source: ActiveAuthStatusSource;
+	identityFingerprint: string;
+	valueFingerprint: string;
+};
+
 type AuthSourceCandidate = {
 	source: ActiveAuthStatusSource;
 	configured: boolean;
 	label?: string;
-	fingerprint: string;
+	identityFingerprint: string;
+	valueFingerprint?: string;
+	resolveValueFingerprint?: () => string | undefined;
 };
 
 export interface AuthStorageBackend {
@@ -233,7 +242,7 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 export class AuthStorage {
 	private data: AuthStorageData = {};
 	private runtimeOverrides: Map<string, string> = new Map();
-	private staleAuthSources: Map<string, Set<string>> = new Map();
+	private staleAuthSources: Map<string, AuthSourceToken[]> = new Map();
 	private fallbackResolver?: (provider: string) => string | undefined;
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
@@ -295,10 +304,48 @@ export class AuthStorage {
 		return `${source}:${digest}`;
 	}
 
-	private getStoredCredentialFingerprintMaterial(providerId: string, credential: AuthCredential): string {
+	private createAuthSourceCandidate(options: {
+		source: ActiveAuthStatusSource;
+		configured: boolean;
+		identityMaterial: string;
+		valueMaterial?: string;
+		label?: string;
+		resolveValueMaterial?: () => string | undefined;
+	}): AuthSourceCandidate {
+		return {
+			configured: options.configured,
+			source: options.source,
+			...(options.label ? { label: options.label } : {}),
+			identityFingerprint: this.fingerprintAuthSource(options.source, `identity:${options.identityMaterial}`),
+			...(options.valueMaterial !== undefined
+				? {
+						valueFingerprint: this.fingerprintAuthSource(
+							options.source,
+							`value:${options.identityMaterial}\0${options.valueMaterial}`,
+						),
+					}
+				: {}),
+			...(options.resolveValueMaterial
+				? {
+						resolveValueFingerprint: () => {
+							const valueMaterial = options.resolveValueMaterial?.();
+							return valueMaterial === undefined
+								? undefined
+								: this.fingerprintAuthSource(
+										options.source,
+										`value:${options.identityMaterial}\0${valueMaterial}`,
+									);
+						},
+					}
+				: {}),
+		};
+	}
+
+	private getStoredCredentialValueMaterial(providerId: string, credential: AuthCredential): string | undefined {
 		if (credential.type === "api_key") {
 			if (credential.key.startsWith("!")) {
-				return `api_key:command:${credential.key}`;
+				const resolvedKey = resolveConfigValueUncached(credential.key);
+				return resolvedKey === undefined ? undefined : `api_key:command:${credential.key}\0${resolvedKey}`;
 			}
 			return `api_key:${credential.key}\0${resolveConfigValue(credential.key) ?? ""}`;
 		}
@@ -313,10 +360,13 @@ export class AuthStorage {
 			return undefined;
 		}
 		return {
-			configured: false,
-			source: "runtime",
 			label: "--api-key",
-			fingerprint: this.fingerprintAuthSource("runtime", apiKey),
+			...this.createAuthSourceCandidate({
+				configured: false,
+				source: "runtime",
+				identityMaterial: provider,
+				valueMaterial: apiKey,
+			}),
 		};
 	}
 
@@ -326,41 +376,55 @@ export class AuthStorage {
 			return undefined;
 		}
 		return {
-			configured: false,
-			source: "prime_cli",
 			label: "Prime CLI",
-			fingerprint: this.fingerprintAuthSource("prime_cli", apiKey),
+			...this.createAuthSourceCandidate({
+				configured: false,
+				source: "prime_cli",
+				identityMaterial: provider,
+				valueMaterial: apiKey,
+			}),
 		};
 	}
 
-	private getStoredAuthCandidate(provider: string): AuthSourceCandidate | undefined {
+	private getStoredAuthCandidate(
+		provider: string,
+		options?: { resolveCommandValue?: boolean },
+	): AuthSourceCandidate | undefined {
 		const credential = this.data[provider];
 		if (!credential) {
 			return undefined;
 		}
-		return {
+		const isCommandApiKey = credential.type === "api_key" && credential.key.startsWith("!");
+		const identityMaterial = isCommandApiKey ? `api_key:command:${credential.key}` : `${provider}:${credential.type}`;
+		return this.createAuthSourceCandidate({
 			configured: true,
 			source: "stored",
-			fingerprint: this.fingerprintAuthSource(
-				"stored",
-				this.getStoredCredentialFingerprintMaterial(provider, credential),
-			),
-		};
+			identityMaterial,
+			valueMaterial:
+				isCommandApiKey && !options?.resolveCommandValue
+					? undefined
+					: this.getStoredCredentialValueMaterial(provider, credential),
+			resolveValueMaterial: isCommandApiKey
+				? () => this.getStoredCredentialValueMaterial(provider, credential)
+				: undefined,
+		});
 	}
 
 	private getEnvironmentAuthCandidate(provider: string): AuthSourceCandidate | undefined {
 		const envKeys = findEnvKeys(provider);
 		const envKey = envKeys?.[0];
 		const apiKey = getEnvApiKey(provider);
-		if (!envKey || !apiKey) {
+		if (!apiKey) {
 			return undefined;
 		}
-		return {
+		const label = envKey ?? "ambient credentials";
+		return this.createAuthSourceCandidate({
 			configured: false,
 			source: "environment",
-			label: envKey,
-			fingerprint: this.fingerprintAuthSource("environment", `${envKey}\0${apiKey}`),
-		};
+			label,
+			identityMaterial: envKey ?? provider,
+			valueMaterial: `${envKey ?? provider}\0${apiKey}`,
+		});
 	}
 
 	private getFallbackAuthCandidate(provider: string): AuthSourceCandidate | undefined {
@@ -368,12 +432,13 @@ export class AuthStorage {
 		if (!apiKey) {
 			return undefined;
 		}
-		return {
+		return this.createAuthSourceCandidate({
 			configured: false,
 			source: "fallback",
 			label: "custom provider config",
-			fingerprint: this.fingerprintAuthSource("fallback", apiKey),
-		};
+			identityMaterial: provider,
+			valueMaterial: apiKey,
+		});
 	}
 
 	private getAuthSourceCandidates(provider: string, options?: { includeFallback?: boolean }): AuthSourceCandidate[] {
@@ -388,7 +453,22 @@ export class AuthStorage {
 	}
 
 	private isAuthSourceStale(provider: string, candidate: AuthSourceCandidate): boolean {
-		return this.staleAuthSources.get(provider)?.has(candidate.fingerprint) ?? false;
+		const matchingStale = this.getMatchingStaleAuthSources(provider, candidate);
+		if (matchingStale.length === 0) {
+			return false;
+		}
+		const valueFingerprint = candidate.valueFingerprint ?? candidate.resolveValueFingerprint?.();
+		return Boolean(valueFingerprint && matchingStale.some((token) => token.valueFingerprint === valueFingerprint));
+	}
+
+	private getMatchingStaleAuthSources(provider: string, candidate: AuthSourceCandidate): AuthSourceToken[] {
+		const stale = this.staleAuthSources.get(provider);
+		if (!stale) {
+			return [];
+		}
+		return stale.filter(
+			(token) => token.source === candidate.source && token.identityFingerprint === candidate.identityFingerprint,
+		);
 	}
 
 	private getAvailableAuthCandidate(
@@ -426,13 +506,43 @@ export class AuthStorage {
 	}
 
 	markAuthStale(provider: string): boolean {
+		const token = this.getCurrentAuthSourceToken(provider);
+		return token ? this.markAuthSourceStale(token) : false;
+	}
+
+	getCurrentAuthSourceToken(provider: string): AuthSourceToken | undefined {
 		const { candidate } = this.getAvailableAuthCandidate(provider);
 		if (!candidate) {
+			return undefined;
+		}
+		const valueFingerprint = candidate.valueFingerprint ?? candidate.resolveValueFingerprint?.();
+		if (!valueFingerprint) {
+			return undefined;
+		}
+		return {
+			provider,
+			source: candidate.source,
+			identityFingerprint: candidate.identityFingerprint,
+			valueFingerprint,
+		};
+	}
+
+	markAuthSourceStale(token: AuthSourceToken): boolean {
+		if (token.provider.length === 0) {
 			return false;
 		}
-		const stale = this.staleAuthSources.get(provider) ?? new Set<string>();
-		stale.add(candidate.fingerprint);
-		this.staleAuthSources.set(provider, stale);
+		const stale = this.staleAuthSources.get(token.provider) ?? [];
+		if (
+			!stale.some(
+				(existing) =>
+					existing.source === token.source &&
+					existing.identityFingerprint === token.identityFingerprint &&
+					existing.valueFingerprint === token.valueFingerprint,
+			)
+		) {
+			stale.push(token);
+		}
+		this.staleAuthSources.set(token.provider, stale);
 		return true;
 	}
 
@@ -441,13 +551,11 @@ export class AuthStorage {
 		if (!stale) {
 			return;
 		}
-		for (const fingerprint of stale) {
-			if (fingerprint.startsWith(`${source}:`)) {
-				stale.delete(fingerprint);
-			}
-		}
-		if (stale.size === 0) {
+		const next = stale.filter((token) => token.source !== source);
+		if (next.length === 0) {
 			this.staleAuthSources.delete(provider);
+		} else {
+			this.staleAuthSources.set(provider, next);
 		}
 	}
 
@@ -673,7 +781,10 @@ export class AuthStorage {
 		if (cred?.type === "api_key") {
 			const storedCandidate = this.getStoredAuthCandidate(providerId);
 			if (storedCandidate && !this.isAuthSourceStale(providerId, storedCandidate)) {
-				return resolveConfigValue(cred.key);
+				const hasStaleRecord = this.getMatchingStaleAuthSources(providerId, storedCandidate).length > 0;
+				return cred.key.startsWith("!") && hasStaleRecord
+					? resolveConfigValueUncached(cred.key)
+					: resolveConfigValue(cred.key);
 			}
 		}
 

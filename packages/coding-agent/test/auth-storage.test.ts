@@ -134,6 +134,29 @@ describe("AuthStorage", () => {
 			}
 		});
 
+		test("ambient environment credentials count as available auth", async () => {
+			const originalAwsProfile = process.env.AWS_PROFILE;
+			process.env.AWS_PROFILE = "pi-test-profile";
+
+			try {
+				authStorage = AuthStorage.inMemory();
+
+				expect(authStorage.hasAuth("amazon-bedrock")).toBe(true);
+				await expect(authStorage.getApiKey("amazon-bedrock")).resolves.toBe("<authenticated>");
+				expect(authStorage.getAuthStatus("amazon-bedrock")).toEqual({
+					configured: false,
+					source: "environment",
+					label: "ambient credentials",
+				});
+			} finally {
+				if (originalAwsProfile === undefined) {
+					delete process.env.AWS_PROFILE;
+				} else {
+					process.env.AWS_PROFILE = originalAwsProfile;
+				}
+			}
+		});
+
 		test("apiKey as literal value is used directly when not an env var", async () => {
 			// Make sure this isn't an env var
 			delete process.env.literal_api_key_value;
@@ -265,6 +288,27 @@ describe("AuthStorage", () => {
 				label: "expired",
 			});
 			await expect(authStorage.getApiKey("anthropic")).resolves.toBeUndefined();
+		});
+
+		test("changed command-backed stored key no longer matches stale auth marker", async () => {
+			const tokenFile = join(tempDir, "command-token");
+			writeFileSync(tokenFile, "stale-key");
+			const tokenPath = toShPath(tokenFile);
+			writeAuthJson({
+				anthropic: { type: "api_key", key: `!sh -c 'cat "${tokenPath}"'` },
+			});
+
+			authStorage = AuthStorage.create(authJsonPath);
+			await expect(authStorage.getApiKey("anthropic")).resolves.toBe("stale-key");
+			expect(authStorage.markAuthStale("anthropic")).toBe(true);
+			expect(authStorage.hasAuth("anthropic")).toBe(false);
+			await expect(authStorage.getApiKey("anthropic")).resolves.toBeUndefined();
+
+			writeFileSync(tokenFile, "fresh-key");
+
+			expect(authStorage.hasAuth("anthropic")).toBe(true);
+			await expect(authStorage.getApiKey("anthropic")).resolves.toBe("fresh-key");
+			expect(authStorage.getAuthStatus("anthropic")).toEqual({ configured: true, source: "stored" });
 		});
 
 		test("prime inference uses Prime CLI auth over legacy Prime Agent auth", async () => {
