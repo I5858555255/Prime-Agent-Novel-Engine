@@ -37,6 +37,12 @@ type QueueInternals = {
 	};
 };
 
+type AgentInternals = {
+	_state: {
+		isStreaming: boolean;
+	};
+};
+
 function createState(
 	harness: Harness,
 	activeSessionId: string,
@@ -360,6 +366,37 @@ describe("issue #4257 update restart resume", () => {
 			},
 		]);
 		expect(session?.shouldResume).toBe(true);
+	});
+
+	it("materializes busy in-memory drafts before update restart", async () => {
+		const harness = await createHarness({ persistSession: false });
+		harnesses.push(harness);
+		(harness.session.agent as unknown as AgentInternals)._state.isStreaming = true;
+
+		const sessionDir = `${harness.tempDir}/sessions`;
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir, sessionDir },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		const manifest = await internals.prepareUpdateRestart();
+
+		expect(manifest.sessions).toHaveLength(1);
+		const session = manifest.sessions[0];
+		expect(session?.sessionFile.startsWith(`${sessionDir}/`)).toBe(true);
+		expect(harness.session.sessionFile).toBe(session?.sessionFile);
+		expect(session).toMatchObject({
+			shouldResume: true,
+			wasStreaming: true,
+			queue: { steering: [], followUp: [], nextTurn: [] },
+		});
 	});
 
 	it("keeps undelivered accepted-prompt context after the accepted turn starts", async () => {

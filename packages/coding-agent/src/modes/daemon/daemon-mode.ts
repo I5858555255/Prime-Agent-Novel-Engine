@@ -1372,6 +1372,7 @@ export class AgentDaemon {
 						startError = error;
 					}
 				});
+				// Self-update restore must acknowledge that queued work restarted without waiting for it to finish.
 				await Promise.resolve();
 				checkedStart = true;
 				if (startError !== undefined) {
@@ -2224,16 +2225,6 @@ export class AgentDaemon {
 			restartQueue.followUp.length > 0 ||
 			restartQueue.nextTurn.length > 0 ||
 			restartQueue.acceptedPrompt !== undefined;
-		const sessionFile =
-			session.sessionFile ??
-			(hasQueuedMessages
-				? session.sessionManager.materializeSessionFile(
-						state.runtime.runtimeConfig?.sessionDir ?? this.options.defaultSessionConfig.sessionDir,
-					)
-				: undefined);
-		if (!sessionFile || (this.isEmptyDraftContent(state) && !hasQueuedMessages)) {
-			return undefined;
-		}
 		const wasStreaming = session.isStreaming;
 		const wasCompacting = session.isCompacting;
 		const wasBashRunning = session.isBashRunning;
@@ -2250,6 +2241,16 @@ export class AgentDaemon {
 			restartQueue.steering.length > 0 ||
 			restartQueue.followUp.length > 0 ||
 			restartQueue.acceptedPrompt !== undefined;
+		const sessionFile =
+			session.sessionFile ??
+			(hasQueuedMessages || shouldResume
+				? session.sessionManager.materializeSessionFile(
+						state.runtime.runtimeConfig?.sessionDir ?? this.options.defaultSessionConfig.sessionDir,
+					)
+				: undefined);
+		if (!sessionFile || (this.isEmptyDraftContent(state) && !hasQueuedMessages && !shouldResume)) {
+			return undefined;
+		}
 		return {
 			activeSessionId: state.activeSessionId,
 			sessionId: session.sessionId,
