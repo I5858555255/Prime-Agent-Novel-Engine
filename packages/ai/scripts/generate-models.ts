@@ -125,13 +125,13 @@ interface PrimeInferenceModelMetadata {
 // src/models.generated.ts.
 const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata> = {
 	// Prime Inference's models endpoint does not publish context/max-token
-	// limits, so keep route-specific overrides here for picker metadata.
+	// limits, so mirror the platform/OpenRouter route metadata here.
 	"anthropic/claude-fable-5": { contextWindow: 1000000, maxTokens: 128000, vision: true },
 	"anthropic/claude-haiku-4.5": { contextWindow: 200000, maxTokens: 64000, vision: true },
 	"anthropic/claude-opus-4.6": { contextWindow: 1000000, maxTokens: 128000, vision: true },
 	"anthropic/claude-opus-4.7": { contextWindow: 1000000, maxTokens: 128000, vision: true },
 	"anthropic/claude-opus-4.8": { contextWindow: 1000000, maxTokens: 128000, vision: true },
-	"anthropic/claude-sonnet-4.5": { contextWindow: 200000, maxTokens: 64000, vision: true },
+	"anthropic/claude-sonnet-4.5": { contextWindow: 1000000, maxTokens: 64000, vision: true },
 	"anthropic/claude-sonnet-4.6": { contextWindow: 1000000, maxTokens: 128000, vision: true },
 	"anthropic/claude-sonnet-5": { contextWindow: 1000000, maxTokens: 128000, vision: true },
 	"deepseek/deepseek-v3.2": { contextWindow: 128000, maxTokens: 8000 },
