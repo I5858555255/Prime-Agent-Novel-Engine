@@ -125,6 +125,24 @@ describe("issue #4491 provider stale after repeated 401", () => {
 		harness.session.abortRetry();
 	});
 
+	it("creates retry promises for exhausted structured auth failures so cleanup is awaited", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		const event = { type: "agent_end", messages: [provider401Message()] } as AgentEvent;
+		const session = harness.session as unknown as {
+			_retryAttempt: number;
+			_createRetryPromiseForAgentEnd(event: AgentEvent): void;
+		};
+		session._retryAttempt = 1;
+
+		session._createRetryPromiseForAgentEnd(event);
+
+		expect(harness.session.isRetrying).toBe(true);
+		harness.session.abortRetry();
+	});
+
 	it("marks captured auth failures stale when retry backoff is cancelled", async () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100 } },

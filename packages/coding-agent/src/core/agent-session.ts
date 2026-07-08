@@ -1689,10 +1689,7 @@ export class AgentSession {
 		}
 
 		const lastAssistant = this._findLastAssistantInMessages(event.messages);
-		const concreteAuthFailure =
-			lastAssistant !== undefined &&
-			this._isConcreteProviderAuthFailure(lastAssistant) &&
-			!this._isStructuredPermanentProviderRetryExhausted(lastAssistant);
+		const concreteAuthFailure = lastAssistant ? this._isConcreteProviderAuthFailure(lastAssistant) : false;
 		if (!lastAssistant || (!this._isRetryableError(lastAssistant) && !concreteAuthFailure)) {
 			return;
 		}
