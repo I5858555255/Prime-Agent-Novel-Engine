@@ -2499,9 +2499,9 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion).
-			// Agent-to-agent messages use acceptAgentMessagePrompt(), which bypasses
-			// input handlers so extensions cannot rewrite or swallow direct delivery.
-			if (!options?.skipInputHandlers && this._extensionRunner.hasHandlers("input")) {
+			// Agent-to-agent and internal host prompts bypass input handlers so
+			// extensions cannot rewrite or swallow direct delivery.
+			if (!isInternalPrompt && !options?.skipInputHandlers && this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
 					currentImages,
