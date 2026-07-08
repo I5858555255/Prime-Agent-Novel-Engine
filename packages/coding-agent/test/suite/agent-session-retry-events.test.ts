@@ -1,4 +1,4 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentTool } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
@@ -36,6 +36,14 @@ function structuredProviderFailure(kind: "auth" | "invalid_request" | "refusal")
 		],
 	};
 }
+
+type SessionRetryCompactionInternals = {
+	_retryAttempt: number;
+	_retryPromise: Promise<void> | undefined;
+	_retryResolve: (() => void) | undefined;
+	_processAgentEvent: (event: AgentEvent) => Promise<void>;
+	_checkCompaction: (message: AssistantMessage) => Promise<boolean>;
+};
 
 describe("AgentSession retry and event characterization", () => {
 	const harnesses: Harness[] = [];
@@ -206,6 +214,33 @@ describe("AgentSession retry and event characterization", () => {
 			expect(harness.session.isRetrying).toBe(false);
 		});
 	}
+
+	it("keeps retry state active when overflow compaction will retry", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SessionRetryCompactionInternals;
+		const originalCheckCompaction = internals._checkCompaction.bind(harness.session);
+		const overflowMessage = fauxAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+		});
+		internals._retryAttempt = 1;
+		internals._retryPromise = new Promise<void>((resolve) => {
+			internals._retryResolve = resolve;
+		});
+		internals._checkCompaction = async () => true;
+
+		try {
+			await internals._processAgentEvent({ type: "agent_end", messages: [overflowMessage] } as AgentEvent);
+
+			expect(internals._retryAttempt).toBe(1);
+			expect(harness.session.isRetrying).toBe(true);
+			expect(harness.eventsOfType("auto_retry_end")).toEqual([]);
+		} finally {
+			internals._checkCompaction = originalCheckCompaction;
+			harness.session.abortRetry();
+		}
+	});
 
 	it("cancels retry sleep when abortRetry is called", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100 } } });
