@@ -309,6 +309,13 @@ export class DaemonAgentConnection implements AgentConnection {
 		});
 	}
 
+	async abortAndClearQueue(): Promise<AgentConnectionQueueState> {
+		return this.requestData<AgentConnectionQueueState>({
+			type: "abort_and_clear_queue",
+			activeSessionId: this.activeSessionId,
+		});
+	}
+
 	async listCronJobs(options: { includeInactive?: boolean } = {}): Promise<AgentCronJob[]> {
 		const data = await this.requestData<{ jobs: AgentCronJob[] }>({
 			type: "cron_list",

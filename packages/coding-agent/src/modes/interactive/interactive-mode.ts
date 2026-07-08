@@ -5328,10 +5328,7 @@ export class InteractiveMode {
 			void this.agentConnection.abortBash();
 		}
 		if (this.isAgentStreaming()) {
-			void this.agentConnection.abort().catch((error) => {
-				this.showError(error instanceof Error ? error.message : String(error));
-			});
-			void this.restoreQueuedMessagesToEditor().catch((error) => {
+			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
 		}
@@ -5806,8 +5803,12 @@ export class InteractiveMode {
 	 * Clear all queued messages and return their contents.
 	 * Clears both session queue and compaction queue.
 	 */
-	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
-		const { steering, followUp } = await this.agentConnection.clearQueue();
+	private async clearAllQueues(
+		options: { abort?: boolean } = {},
+	): Promise<{ steering: string[]; followUp: string[] }> {
+		const { steering, followUp } = options.abort
+			? await this.agentConnection.abortAndClearQueue()
+			: await this.agentConnection.clearQueue();
 		this.connectionQueue = { steering: [], followUp: [] };
 		const compactionSteering = this.compactionQueuedMessages
 			.filter((msg) => msg.mode === "steer")
@@ -5860,13 +5861,10 @@ export class InteractiveMode {
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
-		const { steering, followUp } = await this.clearAllQueues();
+		const { steering, followUp } = await this.clearAllQueues({ abort: options?.abort });
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
 			this.updatePendingMessagesDisplay();
-			if (options?.abort) {
-				await this.agentConnection.abort();
-			}
 			return 0;
 		}
 		const queuedText = allQueued.join("\n\n");
@@ -5876,9 +5874,6 @@ export class InteractiveMode {
 		// on resubmit without any re-registration here.
 		this.editor.setText(combinedText);
 		this.updatePendingMessagesDisplay();
-		if (options?.abort) {
-			await this.agentConnection.abort();
-		}
 		return allQueued.length;
 	}
 

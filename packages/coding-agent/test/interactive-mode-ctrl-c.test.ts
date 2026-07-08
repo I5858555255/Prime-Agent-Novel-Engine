@@ -21,8 +21,12 @@ type FakeInteractiveMode = {
 		isBashRunning: boolean;
 		retryAttempt: number;
 	};
+	connectionQueue: { steering: string[]; followUp: string[] };
+	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
 	agentConnection: {
 		abort: Mock;
+		clearQueue: Mock;
+		abortAndClearQueue: Mock;
 		abortRetry: Mock;
 		abortCompaction: Mock;
 		abortBranchSummary: Mock;
@@ -31,6 +35,7 @@ type FakeInteractiveMode = {
 	childAgentSummary: { invalidate: Mock };
 	ui: { requestRender: Mock; onDebug?: () => void };
 	restoreQueuedMessagesToEditor: Mock;
+	updatePendingMessagesDisplay: Mock;
 	shutdown: Mock;
 	updateEditorBorderColor: Mock;
 	defaultEditor?: {
@@ -80,8 +85,12 @@ function createInteractiveFake(options: {
 			isBashRunning: options.bashRunning ?? false,
 			retryAttempt: options.retryAttempt ?? 0,
 		},
+		connectionQueue: { steering: [], followUp: [] },
+		compactionQueuedMessages: [],
 		agentConnection: {
 			abort: vi.fn().mockResolvedValue(undefined),
+			clearQueue: vi.fn().mockResolvedValue({ steering: [], followUp: [] }),
+			abortAndClearQueue: vi.fn().mockResolvedValue({ steering: [], followUp: [] }),
 			abortRetry: vi.fn(),
 			abortCompaction: vi.fn(),
 			abortBranchSummary: vi.fn(),
@@ -90,6 +99,7 @@ function createInteractiveFake(options: {
 		childAgentSummary: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() },
 		restoreQueuedMessagesToEditor: vi.fn().mockResolvedValue(0),
+		updatePendingMessagesDisplay: vi.fn(),
 		shutdown: vi.fn().mockResolvedValue(undefined),
 		updateEditorBorderColor: vi.fn(),
 	};
@@ -113,8 +123,7 @@ describe("InteractiveMode Ctrl+C flow", () => {
 
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
 
-		expect(mode.agentConnection.abort).toHaveBeenCalledTimes(1);
-		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith();
+		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
 		expect(mode.shutdown).not.toHaveBeenCalled();
 		expect(Reflect.get(InteractiveMode.prototype, "getTrayOverrideLabel").call(mode)).toBe(
 			"Press Ctrl+C again to exit",
@@ -127,9 +136,25 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
 
 		expect(mode.agentConnection.abortBash).toHaveBeenCalledTimes(1);
-		expect(mode.agentConnection.abort).toHaveBeenCalledTimes(1);
-		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith();
+		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
 		expect(mode.shutdown).not.toHaveBeenCalled();
+	});
+
+	it("restores queued messages through the atomic abort-and-clear path", async () => {
+		const mode = createInteractiveFake({ editorText: "draft" });
+		mode.agentConnection.abortAndClearQueue.mockResolvedValue({
+			steering: ["steer"],
+			followUp: ["follow"],
+		});
+
+		const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor");
+		const restored = await restoreQueuedMessagesToEditor.call(mode, { abort: true });
+
+		expect(restored).toBe(2);
+		expect(mode.agentConnection.abortAndClearQueue).toHaveBeenCalledTimes(1);
+		expect(mode.agentConnection.clearQueue).not.toHaveBeenCalled();
+		expect(mode.agentConnection.abort).not.toHaveBeenCalled();
+		expect(mode.editor.getText()).toBe("steer\n\nfollow\n\ndraft");
 	});
 
 	it("exits on the second Ctrl+C while the hint is visible", () => {

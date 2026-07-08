@@ -518,6 +518,7 @@ export interface AgentConnection {
 	): Promise<AgentConnectionSavedSessionInfo[]>;
 	getQueue(): Promise<AgentConnectionQueueState>;
 	clearQueue(): Promise<AgentConnectionQueueState>;
+	abortAndClearQueue(): Promise<AgentConnectionQueueState>;
 	listCronJobs(options?: { includeInactive?: boolean }): Promise<AgentCronJob[]>;
 	addCronJob(schedule: string, prompt: string): Promise<AgentCronJob>;
 	cancelCronJob(jobId: string): Promise<AgentCronJob>;

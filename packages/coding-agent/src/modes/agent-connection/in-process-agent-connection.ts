@@ -153,6 +153,12 @@ export class InProcessAgentConnection implements AgentConnection {
 		return this.session.clearQueue();
 	}
 
+	async abortAndClearQueue(): Promise<AgentConnectionQueueState> {
+		const queue = this.session.clearQueue();
+		this.session.requestAbort();
+		return queue;
+	}
+
 	async listCronJobs(_options: { includeInactive?: boolean } = {}): Promise<AgentCronJob[]> {
 		return [];
 	}
