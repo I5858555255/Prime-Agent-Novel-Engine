@@ -396,6 +396,14 @@ const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	max: "Maximum reasoning",
 };
 
+const HEARTBEAT_ARGUMENT_COMPLETIONS: AutocompleteItem[] = [
+	{
+		value: "every ",
+		label: "every <duration> <instruction>",
+		description: "Set an interval, then add an instruction: /heartbeat every 10s Scan the logs",
+	},
+];
+
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 
 // Cap on retained pasted-image bytes (base64). Images are resized below the
@@ -879,6 +887,12 @@ export class InteractiveMode {
 			if (levels.length > 0) {
 				effortCommand.argumentHint = `[${levels.join("/")}]`;
 			}
+		}
+
+		const heartbeatCommand = slashCommands.find((command) => command.name === "heartbeat");
+		if (heartbeatCommand) {
+			heartbeatCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
+				this.getHeartbeatArgumentCompletions(prefix);
 		}
 
 		const connectionCommands = this.connectionCommands;
@@ -6416,6 +6430,16 @@ export class InteractiveMode {
 			description:
 				level === current ? `${THINKING_LEVEL_DESCRIPTIONS[level]} (current)` : THINKING_LEVEL_DESCRIPTIONS[level],
 		}));
+	}
+
+	private getHeartbeatArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+		const term = prefix.trim().toLowerCase();
+		const filtered = term
+			? HEARTBEAT_ARGUMENT_COMPLETIONS.filter(
+					(item) => item.value.toLowerCase().startsWith(term) || item.label.toLowerCase().startsWith(term),
+				)
+			: HEARTBEAT_ARGUMENT_COMPLETIONS;
+		return filtered.length === 0 ? null : filtered;
 	}
 
 	private handleEffortCommand(arg: string): void {
