@@ -4,6 +4,7 @@ import { selectConfig } from "./cli/config-selector.js";
 import {
 	type DaemonSessionRestoreResult,
 	isRunningDaemonProbeAtRiskFromStop,
+	isSessionAtRiskFromDaemonStop,
 	probeRunningDaemonSessions,
 	type RunningDaemonProbe,
 	relaunchDaemonAndRestoreSessions,
@@ -387,6 +388,28 @@ function reportDaemonSessionRestoreWarnings(result: DaemonSessionRestoreResult):
 	}
 }
 
+function atRiskDaemonSessionKeys(probe: RunningDaemonProbe): Set<string> | undefined {
+	if (!probe.reachable || probe.activeSessions === undefined) {
+		return undefined;
+	}
+	return new Set(
+		probe.activeSessions
+			.filter(isSessionAtRiskFromDaemonStop)
+			.map((session) => session.activeSessionId ?? session.sessionFile ?? session.sessionId),
+	);
+}
+
+function hasNewAtRiskDaemonSessions(before: RunningDaemonProbe, after: RunningDaemonProbe): boolean {
+	if (!after.reachable || after.activeSessions === undefined) {
+		return false;
+	}
+	const previousKeys = atRiskDaemonSessionKeys(before);
+	if (previousKeys === undefined) {
+		return false;
+	}
+	return [...atRiskDaemonSessionKeys(after)!].some((key) => !previousKeys.has(key));
+}
+
 async function restartDaemonAfterSelfUpdate(
 	socketPath: string,
 	daemonProbe: RunningDaemonProbe,
@@ -398,7 +421,8 @@ async function restartDaemonAfterSelfUpdate(
 	try {
 		const latestProbe = await probeRunningDaemonSessions(socketPath);
 		const latestProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(latestProbe);
-		if (latestProbeAtRisk && !(await confirmDaemonSessionLossBeforeUpdate(latestProbe, force))) {
+		const shouldPromptForLatestProbe = latestProbeAtRisk && hasNewAtRiskDaemonSessions(daemonProbe, latestProbe);
+		if (shouldPromptForLatestProbe && !(await confirmDaemonSessionLossBeforeUpdate(latestProbe, force))) {
 			console.error(
 				chalk.yellow("Warning: updated, but left the running daemon in place to avoid terminating live sessions."),
 			);

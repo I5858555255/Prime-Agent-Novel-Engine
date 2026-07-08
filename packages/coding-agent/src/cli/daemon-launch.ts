@@ -148,15 +148,12 @@ export interface DaemonSessionRestoreResult {
 
 export function hasSessionVolatileWorkForDaemonStop(summary: SessionSummary): boolean {
 	// These states live in daemon memory and cannot be reconstructed by reopening
-	// the JSONL session file after the daemon restarts. Older daemons do not expose
-	// child-agent state separately, so an otherwise-unexplained working summary is
-	// treated as volatile rather than risking orphaned child work.
+	// the JSONL session file after the daemon restarts.
 	return (
 		summary.isStreaming ||
 		summary.isCompacting ||
 		summary.isBashRunning === true ||
 		summary.hasRunningRlmChildren === true ||
-		(summary.hasRunningRlmChildren === undefined && summary.activity === "working") ||
 		summary.pendingMessageCount > 0
 	);
 }
