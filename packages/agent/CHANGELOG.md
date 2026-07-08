@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed abort settling for provider streams and tool executions that ignore cancellation ([ENG-4490](https://linear.app/primeintellect/issue/ENG-4490)).
+
 ## [0.2.2] - 2026-06-25
 
 ## [0.2.1] - 2026-06-23

@@ -2532,14 +2532,21 @@ export class AgentSession {
 		return this._resourceLoader;
 	}
 
+	requestAbort(): void {
+		this.abortRetry();
+		this.abortCompaction();
+		this.abortBranchSummary();
+		this.abortBash();
+		this.agent.abort();
+	}
+
 	/**
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
-		this.abortRetry();
+		this.requestAbort();
 		this._cancelActiveRlmChildRuns("Parent session aborted");
 		this._goalAbortInProgress = this._goalState.status === "active";
-		this.agent.abort();
 		try {
 			await this.agent.waitForIdle();
 			await this._agentEventQueue;

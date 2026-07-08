@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed Ctrl+C canceling the active turn, bash command, and IPython kernel execution deterministically ([ENG-4490](https://linear.app/primeintellect/issue/ENG-4490)).
+
 ## [0.2.2] - 2026-06-25
 
 - Added a bundled `websearch` skill (Google search via the Serper API) that loads by default. Add a Serper key via `/login` ("Serper (web search)"); it is stored with your other credentials and supplied to the skill automatically. The skill can be disabled with `bundledSkills.websearch: false` and overridden by a same-named skill in any user, project, package, or `--skill` location ([#86](https://github.com/PrimeIntellect-ai/prime-agent/issues/86)).

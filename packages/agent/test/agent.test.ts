@@ -1,6 +1,7 @@
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { Agent } from "../src/index.js";
+import { Agent, type AgentTool } from "../src/index.js";
 
 // Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -33,6 +34,14 @@ function createAssistantMessage(text: string): AssistantMessage {
 		},
 		stopReason: "stop",
 		timestamp: Date.now(),
+	};
+}
+
+function createToolUseMessage(toolName: string): AssistantMessage {
+	return {
+		...createAssistantMessage(""),
+		content: [{ type: "toolCall", id: "tool-call-1", name: toolName, arguments: {} }],
+		stopReason: "toolUse",
 	};
 }
 
@@ -275,6 +284,86 @@ describe("Agent", () => {
 
 		// Should not throw even if nothing is running
 		expect(() => agent.abort()).not.toThrow();
+	});
+
+	it("should settle when aborting a stream that ignores the abort signal", async () => {
+		let streamStarted = () => {};
+		const streamStartedPromise = new Promise<void>((resolve) => {
+			streamStarted = resolve;
+		});
+		const agent = new Agent({
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					streamStarted();
+				});
+				return stream;
+			},
+		});
+
+		const promptPromise = agent.prompt("hello");
+		await streamStartedPromise;
+
+		agent.abort();
+		await agent.waitForIdle();
+		await promptPromise;
+
+		expect(agent.state.isStreaming).toBe(false);
+		const lastMessage = agent.state.messages.at(-1);
+		expect(lastMessage?.role).toBe("assistant");
+		if (lastMessage?.role === "assistant") {
+			expect(lastMessage.stopReason).toBe("aborted");
+		}
+	});
+
+	it("should settle when aborting a tool that ignores the abort signal", async () => {
+		let toolStarted = () => {};
+		const toolStartedPromise = new Promise<void>((resolve) => {
+			toolStarted = resolve;
+		});
+		const schema = Type.Object({});
+		const hangingTool: AgentTool<typeof schema, Record<string, never>> = {
+			name: "hang",
+			label: "hang",
+			description: "Never resolves",
+			parameters: schema,
+			execute: () => new Promise(() => {}),
+		};
+		const agent = new Agent({
+			initialState: {
+				tools: [hangingTool],
+			},
+			toolExecution: "sequential",
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "toolUse", message: createToolUseMessage("hang") });
+				});
+				return stream;
+			},
+		});
+		agent.subscribe((event) => {
+			if (event.type === "tool_execution_start") {
+				toolStarted();
+			}
+		});
+
+		const promptPromise = agent.prompt("hello");
+		await toolStartedPromise;
+
+		agent.abort();
+		await agent.waitForIdle();
+		await promptPromise;
+
+		const toolResult = agent.state.messages.find((message) => message.role === "toolResult");
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") {
+			expect(toolResult.isError).toBe(true);
+			expect(toolResult.content).toEqual([{ type: "text", text: "Tool execution aborted" }]);
+		}
+		expect(agent.state.pendingToolCalls.size).toBe(0);
+		expect(agent.state.isStreaming).toBe(false);
 	});
 
 	it("should throw when prompt() called while streaming", async () => {

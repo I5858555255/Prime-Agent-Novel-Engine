@@ -124,6 +124,52 @@ const ipythonSchema = Type.Object({
 	}),
 });
 
+function createAbortError(): Error {
+	return new Error("IPython execution aborted");
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbort?: () => void): Promise<T> {
+	if (!signal) {
+		return promise;
+	}
+	if (signal.aborted) {
+		onAbort?.();
+		return Promise.reject(createAbortError());
+	}
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => signal.removeEventListener("abort", abort);
+		const abort = () => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			cleanup();
+			onAbort?.();
+			reject(createAbortError());
+		};
+		signal.addEventListener("abort", abort, { once: true });
+		promise.then(
+			(value) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
+				resolve(value);
+			},
+			(error: unknown) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
+				reject(error);
+			},
+		);
+	});
+}
+
 export type IpythonToolInput = Static<typeof ipythonSchema>;
 
 export interface IpythonToolDetails {
@@ -231,7 +277,7 @@ export class IpythonKernelProvisioner {
 		}
 	}
 
-	ensure(onProgress?: KernelBootstrapProgressHandler): Promise<KernelManager> {
+	ensure(onProgress?: KernelBootstrapProgressHandler, signal?: AbortSignal): Promise<KernelManager> {
 		if (onProgress && !this.startedManager) {
 			this.startupListeners.add(onProgress);
 			// Joining an in-flight startup: replay the current stage.
@@ -240,7 +286,7 @@ export class IpythonKernelProvisioner {
 			}
 		}
 		if (!this.managerPromise) {
-			const startup = this.startKernel();
+			const startup = this.startKernel(signal);
 			this.managerPromise = startup;
 			startup.then(
 				(m) => {
@@ -259,7 +305,7 @@ export class IpythonKernelProvisioner {
 				},
 			);
 		}
-		return this.managerPromise;
+		return raceWithAbort(this.managerPromise, signal);
 	}
 
 	private settleStartup(): void {
@@ -274,13 +320,16 @@ export class IpythonKernelProvisioner {
 		}
 	}
 
-	private async startKernel(): Promise<KernelManager> {
+	private async startKernel(signal?: AbortSignal): Promise<KernelManager> {
 		// Wait for a previous provisioner (e.g. on /reload) to finish disposing — and
 		// flushing its final snapshot — before we read that snapshot back, so the two
 		// kernels can't race over the same on-disk file. Guarded so the common
 		// no-gate path stays synchronous (callers rely on prompt startup progress).
 		if (this.options?.readyGate) {
-			await this.options.readyGate.catch(() => {});
+			await raceWithAbort(
+				this.options.readyGate.catch(() => {}),
+				signal,
+			);
 		}
 		const snapshotDir = this.options?.snapshotDir;
 		const m = new KernelManager({
@@ -296,7 +345,7 @@ export class IpythonKernelProvisioner {
 				: undefined,
 		});
 		this.emitStartupProgress("Starting IPython kernel...");
-		await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
+		await m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message), signal });
 		// Whether a snapshot existed decides if we notify the model on success.
 		let pendingRestore: RestoreResult | undefined;
 		try {
@@ -311,7 +360,7 @@ export class IpythonKernelProvisioner {
 				}
 			}
 			this.emitStartupProgress("Preparing IPython runtime...");
-			const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills));
+			const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills), { signal });
 			if (bootstrap.status !== "ok") {
 				const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
 				throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
@@ -369,7 +418,7 @@ export function createIpythonToolDefinition(
 			};
 
 			try {
-				const m = await provisioner.ensure(reportStartupProgress);
+				const m = await provisioner.ensure(reportStartupProgress, signal);
 				const r = await m.execute(params.code, {
 					signal,
 					onStream: (chunk) => {

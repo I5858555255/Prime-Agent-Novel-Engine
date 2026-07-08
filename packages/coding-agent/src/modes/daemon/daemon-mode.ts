@@ -1028,7 +1028,7 @@ export class AgentDaemon {
 
 			case "abort": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.abort();
+				state.runtime.session.requestAbort();
 				return success(command.id, "abort");
 			}
 

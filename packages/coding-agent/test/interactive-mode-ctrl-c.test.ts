@@ -18,12 +18,14 @@ type FakeInteractiveMode = {
 	connectionState: {
 		isStreaming: boolean;
 		isCompacting: boolean;
+		isBashRunning: boolean;
 		retryAttempt: number;
 	};
 	agentConnection: {
 		abortRetry: Mock;
 		abortCompaction: Mock;
 		abortBranchSummary: Mock;
+		abortBash: Mock;
 	};
 	childAgentSummary: { invalidate: Mock };
 	ui: { requestRender: Mock; onDebug?: () => void };
@@ -62,6 +64,7 @@ function createInteractiveFake(options: {
 	editorText?: string;
 	streaming?: boolean;
 	compacting?: boolean;
+	bashRunning?: boolean;
 	retryAttempt?: number;
 }): FakeInteractiveMode {
 	const editor = createEditor(options.editorText ?? "");
@@ -73,12 +76,14 @@ function createInteractiveFake(options: {
 		connectionState: {
 			isStreaming: options.streaming ?? false,
 			isCompacting: options.compacting ?? false,
+			isBashRunning: options.bashRunning ?? false,
 			retryAttempt: options.retryAttempt ?? 0,
 		},
 		agentConnection: {
 			abortRetry: vi.fn(),
 			abortCompaction: vi.fn(),
 			abortBranchSummary: vi.fn(),
+			abortBash: vi.fn(),
 		},
 		childAgentSummary: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() },
@@ -111,6 +116,16 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		expect(Reflect.get(InteractiveMode.prototype, "getTrayOverrideLabel").call(mode)).toBe(
 			"Press Ctrl+C again to exit",
 		);
+	});
+
+	it("interrupts bash and streaming on the same Ctrl+C", () => {
+		const mode = createInteractiveFake({ streaming: true, bashRunning: true });
+
+		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
+
+		expect(mode.agentConnection.abortBash).toHaveBeenCalledTimes(1);
+		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
+		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
 
 	it("exits on the second Ctrl+C while the hint is visible", () => {
@@ -172,6 +187,7 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		expect(mode.agentConnection.abortRetry).not.toHaveBeenCalled();
 		expect(mode.agentConnection.abortCompaction).not.toHaveBeenCalled();
 		expect(mode.agentConnection.abortBranchSummary).not.toHaveBeenCalled();
+		expect(mode.agentConnection.abortBash).not.toHaveBeenCalled();
 		expect(mode.restoreQueuedMessagesToEditor).not.toHaveBeenCalled();
 	});
 });
