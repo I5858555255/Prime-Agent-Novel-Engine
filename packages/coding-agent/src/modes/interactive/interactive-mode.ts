@@ -76,9 +76,14 @@ import type {
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
-import { emptyGoalState, formatGoalUsage, type GoalState } from "../../core/goals.js";
+import { emptyGoalState, formatGoalUsage, GOAL_CONTEXT_PREVIEW_LABEL, type GoalState } from "../../core/goals.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
-import { createCompactionSummaryMessage } from "../../core/messages.js";
+import {
+	createCompactionSummaryMessage,
+	createHeartbeatPromptMessage,
+	HEARTBEAT_PROMPT_CUSTOM_TYPE,
+	HEARTBEAT_PROMPT_PREVIEW_LABEL,
+} from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
@@ -153,6 +158,7 @@ import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
+import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
 import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
@@ -211,6 +217,15 @@ interface PendingToolCallRenderInput {
 	id: string;
 	name: string;
 	arguments: ToolCall["arguments"];
+}
+
+const HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS = 15_000;
+const HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS = 120_000;
+
+function isLabeledQueuedPreview(message: string): boolean {
+	return (
+		message.startsWith(`${HEARTBEAT_PROMPT_PREVIEW_LABEL}: `) || message.startsWith(`${GOAL_CONTEXT_PREVIEW_LABEL}: `)
+	);
 }
 
 function isExpandable(obj: unknown): obj is Expandable {
@@ -380,6 +395,14 @@ const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	xhigh: "Very deep reasoning",
 	max: "Maximum reasoning",
 };
+
+const HEARTBEAT_ARGUMENT_COMPLETIONS: AutocompleteItem[] = [
+	{
+		value: "every ",
+		label: "every <duration> <instruction>",
+		description: "Set an interval, then add an instruction: /heartbeat every 10s Scan the logs",
+	},
+];
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 
@@ -864,6 +887,12 @@ export class InteractiveMode {
 			if (levels.length > 0) {
 				effortCommand.argumentHint = `[${levels.join("/")}]`;
 			}
+		}
+
+		const heartbeatCommand = slashCommands.find((command) => command.name === "heartbeat");
+		if (heartbeatCommand) {
+			heartbeatCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
+				this.getHeartbeatArgumentCompletions(prefix);
 		}
 
 		const connectionCommands = this.connectionCommands;
@@ -2191,6 +2220,18 @@ export class InteractiveMode {
 		return this.connectionState?.sessionName ?? this.uiServices.getInitialSessionName();
 	}
 
+	private applyAuthStaleEvent(event: Extract<AgentConnectionSessionEvent, { type: "auth_stale" }>): void {
+		let marked = false;
+		for (const token of event.sourceTokens ?? []) {
+			marked = this.modelRegistry.markProviderAuthSourceStale(token) || marked;
+		}
+		if (!marked) {
+			this.modelRegistry.markProviderAuthStale(event.provider);
+		}
+		this.footer.invalidate();
+		this.updateEditorBorderColor();
+	}
+
 	private getCurrentModel(): AgentConnectionModel | undefined {
 		return this.connectionState?.model;
 	}
@@ -2805,6 +2846,12 @@ export class InteractiveMode {
 			this.recapContainer.addChild(new Spacer(1));
 		}
 		this.ui.requestRender();
+	}
+
+	private clearStaleRecapForPromptTurn(): void {
+		this.sessionRecap = undefined;
+		this.renderRecap();
+		this.updatePendingMessagesDisplay();
 	}
 
 	private renderWidgetContainer(
@@ -4130,13 +4177,13 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
+					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
+						this.clearStaleRecapForPromptTurn();
+					}
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
-					// A new turn makes the recap stale; clear it until the summarizer pushes a fresh one.
-					this.sessionRecap = undefined;
-					this.renderRecap();
-					this.updatePendingMessagesDisplay();
+					this.clearStaleRecapForPromptTurn();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					this.startAssistantStreamingMessage(event.message);
@@ -4279,7 +4326,9 @@ export class InteractiveMode {
 				const label =
 					event.reason === "manual"
 						? `Compacting context${focus}... ${cancelHint}`
-						: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
+						: event.reason === "requested"
+							? `Agent requested compaction, compacting context${focus}... ${cancelHint}`
+							: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
 				this.autoCompactionLoader = new Loader(
 					this.ui,
 					(spinner) => theme.fg("muted", spinner),
@@ -4381,6 +4430,12 @@ export class InteractiveMode {
 				if (!event.success) {
 					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 				}
+				this.ui.requestRender();
+				break;
+			}
+
+			case "auth_stale": {
+				this.applyAuthStaleEvent(event);
 				this.ui.requestRender();
 				break;
 			}
@@ -4704,12 +4759,40 @@ export class InteractiveMode {
 
 	private getTrayContextLabel(): string | undefined {
 		const goalLabel = this.getTrayGoalLabel();
+		const heartbeatLabel = this.getTrayHeartbeatLabel();
 		const usage = this.getConnectionContextUsage();
 		const contextLabel =
 			usage && typeof usage.tokens === "number" && typeof usage.percent === "number"
 				? `${formatTokenCount(usage.tokens)} (${Math.round(usage.percent)}%)`
 				: undefined;
-		return [goalLabel, contextLabel].filter((label) => label !== undefined).join(" · ") || undefined;
+		return [goalLabel, heartbeatLabel, contextLabel].filter((label) => label !== undefined).join(" · ") || undefined;
+	}
+
+	private getTrayHeartbeatLabel(): string | undefined {
+		const heartbeat = this.connectionState?.heartbeat;
+		if (!heartbeat) {
+			return undefined;
+		}
+		const schedule = this.formatHeartbeatScheduleLabel(heartbeat);
+		const suffix = schedule ? ` (${schedule})` : "";
+		switch (heartbeat.status) {
+			case "active":
+				return `Heartbeat active${suffix}`;
+			case "paused":
+				return `Heartbeat paused${suffix}`;
+			case "completed":
+			case "cancelled":
+				return undefined;
+			default: {
+				const _exhaustive: never = heartbeat.status;
+				return _exhaustive;
+			}
+		}
+	}
+
+	private formatHeartbeatScheduleLabel(heartbeat: AgentCronJob): string | undefined {
+		const schedule = heartbeat.schedule.expression.trim().replace(/^every\s+/i, "");
+		return schedule || undefined;
 	}
 
 	private getTrayGoalLabel(): string | undefined {
@@ -4974,6 +5057,56 @@ export class InteractiveMode {
 		return textBlocks.map((c) => (c as { text: string }).text).join("");
 	}
 
+	private createLegacyHeartbeatPromptMessage(
+		message: Message,
+		textContent: string,
+	): ReturnType<typeof createHeartbeatPromptMessage> | undefined {
+		const heartbeat = this.connectionState?.heartbeat;
+		if (
+			message.role !== "user" ||
+			!heartbeat ||
+			!this.isTextOnlyUserMessage(message) ||
+			textContent.trim() !== heartbeat.prompt.trim() ||
+			!this.isLikelyHeartbeatPromptTimestamp(heartbeat, message.timestamp)
+		) {
+			return undefined;
+		}
+
+		return createHeartbeatPromptMessage(heartbeat, message.timestamp);
+	}
+
+	private isTextOnlyUserMessage(message: Message): boolean {
+		if (message.role !== "user") {
+			return false;
+		}
+		if (typeof message.content === "string") {
+			return true;
+		}
+		return message.content.every((content) => content.type === "text");
+	}
+
+	private isLikelyHeartbeatPromptTimestamp(job: AgentCronJob, timestamp: number): boolean {
+		const directRunTimes = [job.lastRunAt, job.nextRunAt]
+			.map((value) => (value ? Date.parse(value) : Number.NaN))
+			.filter((value) => Number.isFinite(value));
+		const tolerance = this.heartbeatLegacyPromptToleranceMs(job);
+		if (directRunTimes.some((runAt) => Math.abs(timestamp - runAt) <= tolerance)) {
+			return true;
+		}
+		return false;
+	}
+
+	private heartbeatLegacyPromptToleranceMs(job: AgentCronJob): number {
+		const intervalMs = job.schedule.intervalMs;
+		if (!intervalMs || intervalMs <= 0) {
+			return HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS;
+		}
+		return Math.min(
+			HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS,
+			Math.max(HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS, intervalMs / 3),
+		);
+	}
+
 	/**
 	 * Show a status message in the chat.
 	 *
@@ -5029,10 +5162,15 @@ export class InteractiveMode {
 			}
 			case "custom": {
 				if (message.display) {
-					const renderer = this.bindLocalSessionExtensions
-						? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
-						: undefined;
-					const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
+					const component = isInjectedPromptMessage(message)
+						? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
+						: new CustomMessageComponent(
+								message,
+								this.bindLocalSessionExtensions
+									? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
+									: undefined,
+								this.getMarkdownThemeWithSettings(),
+							);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}
@@ -5055,6 +5193,20 @@ export class InteractiveMode {
 			case "user": {
 				const textContent = this.getUserMessageText(message);
 				if (textContent) {
+					const heartbeatMessage = this.createLegacyHeartbeatPromptMessage(message, textContent);
+					if (heartbeatMessage) {
+						if (this.chatContainer.children.length > 0) {
+							this.chatContainer.addChild(new Spacer(1));
+						}
+						const component = new InjectedPromptMessageComponent(
+							heartbeatMessage,
+							this.getMarkdownThemeWithSettings(),
+						);
+						component.setExpanded(this.toolOutputExpanded);
+						this.chatContainer.addChild(component);
+						break;
+					}
+
 					if (this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
 					}
@@ -5806,11 +5958,11 @@ export class InteractiveMode {
 		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
 			this.queuedMessagesContainer.addChild(new Spacer(1));
 			for (const message of steeringMessages) {
-				const text = theme.fg("dim", `Steering: ${message}`);
+				const text = theme.fg("dim", isLabeledQueuedPreview(message) ? message : `Steering: ${message}`);
 				this.queuedMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
 			for (const message of followUpMessages) {
-				const text = theme.fg("dim", `Follow-up: ${message}`);
+				const text = theme.fg("dim", isLabeledQueuedPreview(message) ? message : `Follow-up: ${message}`);
 				this.queuedMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
 			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
@@ -6278,6 +6430,16 @@ export class InteractiveMode {
 			description:
 				level === current ? `${THINKING_LEVEL_DESCRIPTIONS[level]} (current)` : THINKING_LEVEL_DESCRIPTIONS[level],
 		}));
+	}
+
+	private getHeartbeatArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+		const term = prefix.trim().toLowerCase();
+		const filtered = term
+			? HEARTBEAT_ARGUMENT_COMPLETIONS.filter(
+					(item) => item.value.toLowerCase().startsWith(term) || item.label.toLowerCase().startsWith(term),
+				)
+			: HEARTBEAT_ARGUMENT_COMPLETIONS;
+		return filtered.length === 0 ? null : filtered;
 	}
 
 	private handleEffortCommand(arg: string): void {
@@ -7532,11 +7694,13 @@ export class InteractiveMode {
 			switch (command.type) {
 				case "status": {
 					const heartbeat = await this.agentConnection.getHeartbeat();
+					this.patchConnectionState({ heartbeat: heartbeat ?? null });
 					this.showHeartbeat(heartbeat);
 					return;
 				}
 				case "set": {
 					const heartbeat = await this.agentConnection.setHeartbeat(command.schedule, command.instruction);
+					this.patchConnectionState({ heartbeat });
 					this.showStatus(`Heartbeat set\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
 					return;
 				}
@@ -7546,6 +7710,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
+					this.patchConnectionState({ heartbeat });
 					this.showStatus("Heartbeat paused");
 					return;
 				}
@@ -7555,6 +7720,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
+					this.patchConnectionState({ heartbeat });
 					this.showStatus(`Heartbeat resumed\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
 					return;
 				}
@@ -7564,6 +7730,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
+					this.patchConnectionState({ heartbeat });
 					this.showStatus("Heartbeat cleared");
 					return;
 				}
