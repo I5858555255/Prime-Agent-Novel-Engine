@@ -1883,13 +1883,15 @@ export class AgentSession {
 			}
 
 			const compactionWillRetry = await this._checkCompaction(msg);
-			if (compactionWillRetry) {
+			if (compactionWillRetry && this._retryAttempt > 0) {
 				return;
 			}
 			this._finishActiveRetryWithFailure(msg);
 			this._resolveRetry();
-			this._finishGoalForTerminalAssistantMessage(msg);
-			this._scheduleAutoRefineAfterAgentEnd();
+			if (!compactionWillRetry) {
+				this._finishGoalForTerminalAssistantMessage(msg);
+				this._scheduleAutoRefineAfterAgentEnd();
+			}
 		}
 	}
 
@@ -5628,11 +5630,19 @@ export class AgentSession {
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
 
+		if (this._isFauxProviderQueueExhausted(message)) {
+			return false;
+		}
+
 		if (this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message)) {
 			return false;
 		}
 
 		return true;
+	}
+
+	private _isFauxProviderQueueExhausted(message: AssistantMessage): boolean {
+		return message.provider === "faux" && message.errorMessage === "No more faux responses queued";
 	}
 
 	private _getProviderStreamFailureDetails(message: AssistantMessage): Record<string, unknown> | undefined {
