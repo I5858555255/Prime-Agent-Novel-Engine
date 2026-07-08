@@ -245,6 +245,50 @@ describe("issue #4257 update restart resume", () => {
 		agentAbortSpy.mockRestore();
 	});
 
+	it("rejects new daemon sessions after update restart preparation starts", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		const createRuntime = vi.fn(async () => {
+			throw new Error("unexpected runtime creation");
+		});
+		const daemon = new AgentDaemon(`${harness.tempDir}/daemon.sock`, {
+			defaultSessionConfig: { cwd: harness.tempDir, agentDir: harness.tempDir },
+			createRuntime,
+		});
+		const internals = daemon as unknown as AgentDaemonUpdateInternals;
+		internals.sessions.set(
+			"active-1",
+			createState(harness, "active-1", { kind: "top-level", createdAt: Date.now() }),
+		);
+
+		await internals.prepareUpdateRestart();
+		const writes: string[] = [];
+		const client: DaemonSocketClient = {
+			id: "client-1",
+			socket: {
+				destroyed: false,
+				write: vi.fn((chunk: string) => {
+					writes.push(chunk);
+					return true;
+				}),
+			} as unknown as DaemonSocketClient["socket"],
+			attachedActiveSessionIds: new Set(),
+			detachInput: vi.fn(),
+			supportsExtensionUi: false,
+			capabilities: new Set(),
+		};
+
+		await internals.handleLine(client, JSON.stringify({ id: "late-create", type: "create" }));
+
+		expect(createRuntime).not.toHaveBeenCalled();
+		expect(JSON.parse(writes.join("").trim())).toMatchObject({
+			id: "late-create",
+			type: "response",
+			command: "create",
+			success: false,
+		});
+	});
+
 	it("keeps queued draft sessions and subagents resumable", async () => {
 		const parentHarness = await createHarness({ persistSession: true });
 		const childHarness = await createHarness({ persistSession: true });

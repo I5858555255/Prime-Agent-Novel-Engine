@@ -245,6 +245,7 @@ export async function runDaemonMode(options: DaemonModeOptions): Promise<never> 
 export class AgentDaemon {
 	private server?: Server;
 	private shuttingDown = false;
+	private updateRestartPreparing = false;
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
@@ -599,8 +600,11 @@ export class AgentDaemon {
 	}
 
 	private async runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> {
+		if (this.updateRestartPreparing) {
+			return "skipped";
+		}
 		const state = await this.getOrCreateCronJobSession(job);
-		if (!state) {
+		if (!state || this.updateRestartPreparing) {
 			return "skipped";
 		}
 		const session = state.runtime.session;
@@ -889,6 +893,9 @@ export class AgentDaemon {
 	}
 
 	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState | undefined> {
+		if (this.updateRestartPreparing) {
+			return undefined;
+		}
 		const current = this.sessions.get(job.activeSessionId) ?? this.findSessionBySessionFile(job.sessionFile);
 		// A half-bound match falls through to createRuntime, which awaits the
 		// pending create for the same session file instead of prompting mid-bind.
@@ -1233,6 +1240,9 @@ export class AgentDaemon {
 		client: DaemonSocketClient,
 		command: DaemonCommand,
 	): Promise<DaemonResponse | undefined> {
+		if (this.updateRestartPreparing && command.type !== "shutdown") {
+			throw new Error("Daemon is preparing an update restart");
+		}
 		switch (command.type) {
 			case "list": {
 				const activeSessions = Array.from(this.sessions.values());
@@ -2405,37 +2415,53 @@ export class AgentDaemon {
 	}
 
 	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
-		const states = [...this.sessions.values()];
-		const restartSessions = states
-			.map((state) => [state, this.createUpdateRestartSession(state)] as const)
-			.filter((entry): entry is readonly [ActiveSessionState, DaemonUpdateRestartSession] => entry[1] !== undefined)
-			.sort(([left], [right]) => this.getUpdateRestartSessionDepth(left) - this.getUpdateRestartSessionDepth(right));
-		const manifest = {
-			createdAt: new Date().toISOString(),
-			sessions: restartSessions.map(([, restartSession]) => restartSession),
-		};
-
-		this.writeUpdateRestartManifest(manifest);
+		if (this.updateRestartPreparing) {
+			throw new Error("Daemon is already preparing an update restart");
+		}
+		this.updateRestartPreparing = true;
 		// Keep persisted jobs for the replacement daemon, but stop this daemon from firing them after sessions detach.
 		this.cronScheduler.stop();
+		try {
+			const states = [...this.sessions.values()];
+			const restartSessions = states
+				.map((state) => [state, this.createUpdateRestartSession(state)] as const)
+				.filter(
+					(entry): entry is readonly [ActiveSessionState, DaemonUpdateRestartSession] => entry[1] !== undefined,
+				)
+				.sort(
+					([left], [right]) => this.getUpdateRestartSessionDepth(left) - this.getUpdateRestartSessionDepth(right),
+				);
+			const manifest = {
+				createdAt: new Date().toISOString(),
+				sessions: restartSessions.map(([, restartSession]) => restartSession),
+			};
 
-		for (const [state, restartSession] of restartSessions) {
-			this.appendUpdateRestartMarker(state, restartSession);
-		}
-		const restoredActiveSessionIds = new Set(restartSessions.map(([state]) => state.activeSessionId));
-		const closeStates = [...states].sort(
-			(left, right) => this.getUpdateRestartSessionDepth(right) - this.getUpdateRestartSessionDepth(left),
-		);
-		for (const state of closeStates) {
-			if (this.sessions.has(state.activeSessionId)) {
-				await this.closeSession(state, restoredActiveSessionIds.has(state.activeSessionId) ? "update" : "killed");
+			this.writeUpdateRestartManifest(manifest);
+
+			for (const [state, restartSession] of restartSessions) {
+				this.appendUpdateRestartMarker(state, restartSession);
 			}
-		}
-		for (const state of [...this.sessions.values()]) {
-			await this.closeSession(state, "killed");
-		}
+			const restoredActiveSessionIds = new Set(restartSessions.map(([state]) => state.activeSessionId));
+			const closeStates = [...states].sort(
+				(left, right) => this.getUpdateRestartSessionDepth(right) - this.getUpdateRestartSessionDepth(left),
+			);
+			for (const state of closeStates) {
+				if (this.sessions.has(state.activeSessionId)) {
+					await this.closeSession(
+						state,
+						restoredActiveSessionIds.has(state.activeSessionId) ? "update" : "killed",
+					);
+				}
+			}
+			for (const state of [...this.sessions.values()]) {
+				await this.closeSession(state, "killed");
+			}
 
-		return manifest;
+			return manifest;
+		} catch (error) {
+			this.updateRestartPreparing = false;
+			throw error;
+		}
 	}
 
 	private hasScheduledJobsForSession(activeSessionId: string): boolean {
