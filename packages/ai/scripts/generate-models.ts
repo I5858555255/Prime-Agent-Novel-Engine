@@ -632,6 +632,17 @@ function createPrimeInferenceModel(
 	openRouter: PrimeInferenceOpenRouterMetadata | undefined,
 ): Model<"openai-completions"> {
 	const vision = override?.vision ?? openRouter?.vision ?? false;
+	const contextWindow =
+		entry.contextWindow ??
+		override?.contextWindow ??
+		openRouter?.contextWindow ??
+		PRIME_INFERENCE_DEFAULT_CONTEXT_WINDOW;
+	// Sources are independent, so an OpenRouter output cap can exceed a
+	// gateway-measured window override; clamp to keep the pair coherent.
+	const maxTokens = Math.min(
+		entry.maxTokens ?? override?.maxTokens ?? openRouter?.maxTokens ?? PRIME_INFERENCE_DEFAULT_MAX_TOKENS,
+		contextWindow,
+	);
 	return {
 		id: entry.id,
 		...(PRIME_INFERENCE_FEATURED_MODELS.has(entry.id.toLowerCase()) ? { featured: true } : {}),
@@ -647,12 +658,8 @@ function createPrimeInferenceModel(
 			cacheRead: 0,
 			cacheWrite: 0,
 		},
-		contextWindow:
-			entry.contextWindow ??
-			override?.contextWindow ??
-			openRouter?.contextWindow ??
-			PRIME_INFERENCE_DEFAULT_CONTEXT_WINDOW,
-		maxTokens: entry.maxTokens ?? override?.maxTokens ?? openRouter?.maxTokens ?? PRIME_INFERENCE_DEFAULT_MAX_TOKENS,
+		contextWindow,
+		maxTokens,
 		compat: getPrimeInferenceCompat(entry.id),
 	};
 }

@@ -14213,7 +14213,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 80000,
-			maxTokens: 131072,
+			maxTokens: 80000,
 		} satisfies Model<"openai-completions">,
 		"meta-llama/llama-3.3-70b-instruct": {
 			id: "meta-llama/llama-3.3-70b-instruct",
@@ -14430,7 +14430,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 98304,
-			maxTokens: 100352,
+			maxTokens: 98304,
 		} satisfies Model<"openai-completions">,
 		"moonshotai/kimi-k2.5": {
 			id: "moonshotai/kimi-k2.5",
