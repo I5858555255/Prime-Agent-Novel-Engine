@@ -181,6 +181,7 @@ describe("daemon mode helpers", () => {
 				targetSelector: string;
 				message: string;
 				fromState?: ActiveSessionState;
+				deliveryMode?: "auto" | "steer" | "follow_up";
 				origin: "agent" | "cli";
 			}): Promise<unknown>;
 		};
@@ -198,6 +199,22 @@ describe("daemon mode helpers", () => {
 			deliveryStatus: "queued",
 			target: { activeSessionId: targetState.activeSessionId },
 		});
+		expect(acceptAgentMessagePrompt.mock.calls[0]?.[1]).toMatchObject({ streamingBehavior: "steer" });
+
+		acceptAgentMessagePrompt.mockClear();
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: targetState.activeSessionId,
+				message: "please continue later",
+				fromState,
+				deliveryMode: "follow_up",
+				origin: "agent",
+			}),
+		).resolves.toMatchObject({
+			deliveryStatus: "queued",
+			target: { activeSessionId: targetState.activeSessionId },
+		});
+		expect(acceptAgentMessagePrompt.mock.calls[0]?.[1]).toMatchObject({ streamingBehavior: "followUp" });
 	});
 
 	it("rate limits agent messages per sender and target pair", async () => {
