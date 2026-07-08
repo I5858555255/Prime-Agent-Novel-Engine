@@ -1920,11 +1920,11 @@ export class AgentSession {
 				this._lastAssistantMessage = event.message;
 
 				const assistantMsg = event.message as AssistantMessage;
-				const assistantCompletedSuccessfully =
-					assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "aborted";
-				if (assistantCompletedSuccessfully) {
-					this._assistantTurnsSinceAutoRefine++;
+				if (assistantMsg.stopReason !== "error") {
 					addAutonomousUsage(this._autonomousState, assistantMsg.usage);
+				}
+				if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "aborted") {
+					this._assistantTurnsSinceAutoRefine++;
 				}
 				if (assistantMsg.stopReason !== "error") {
 					this._overflowRecoveryAttempted = false;
@@ -2474,12 +2474,18 @@ export class AgentSession {
 		try {
 			let currentText = text;
 
-			if (expandPromptTemplates) {
+			const shouldHandleBuiltInSlashCommands = !isInternalPrompt && !options?.skipPrePromptWork;
+			if (
+				shouldHandleBuiltInSlashCommands &&
+				(currentText === "/autonomous" || currentText.startsWith("/autonomous "))
+			) {
 				const handledAutonomousCommand = await this._handleAutonomousSlashCommand(currentText);
 				if (handledAutonomousCommand) {
 					reportPreflight(true);
 					return;
 				}
+			}
+			if (shouldHandleBuiltInSlashCommands && (currentText === "/goal" || currentText.startsWith("/goal "))) {
 				const handledGoalCommand = await this._handleGoalSlashCommand(currentText, currentImages);
 				if (handledGoalCommand) {
 					reportPreflight(true);

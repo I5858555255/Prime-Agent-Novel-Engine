@@ -379,6 +379,47 @@ describe("parseArgs", () => {
 			expect(result.autonomousMaxTurns).toBe(1);
 			expect(result.autonomousGates).toEqual(["npm test"]);
 		});
+
+		test("reports missing autonomous option values", () => {
+			const result = parseArgs(["--autonomous-max-turns", "--autonomous-gate", "npm test"]);
+
+			expect(result.autonomous).toBe(true);
+			expect(result.autonomousMaxTurns).toBeUndefined();
+			expect(result.autonomousGates).toEqual(["npm test"]);
+			expect(result.unknownFlags.size).toBe(0);
+			expect(result.diagnostics).toContainEqual({
+				type: "error",
+				message: "--autonomous-max-turns requires a value",
+			});
+		});
+
+		test("does not consume another autonomous flag as a gate value", () => {
+			const result = parseArgs(["--autonomous-gate", "--autonomous-max-turns", "3"]);
+
+			expect(result.autonomous).toBe(true);
+			expect(result.autonomousGates).toBeUndefined();
+			expect(result.autonomousMaxTurns).toBe(3);
+			expect(result.diagnostics).toContainEqual({
+				type: "error",
+				message: "--autonomous-gate requires a value",
+			});
+		});
+
+		test.each([
+			"--autonomous-gate",
+			"--autonomous-gate-retries",
+			"--autonomous-gate-timeout-ms",
+			"--autonomous-max-continuations",
+			"--autonomous-max-turns",
+			"--autonomous-max-tokens",
+			"--autonomous-timeout-ms",
+		])("reports when %s has no value", (flag) => {
+			const result = parseArgs([flag]);
+
+			expect(result.autonomous).toBe(true);
+			expect(result.unknownFlags.size).toBe(0);
+			expect(result.diagnostics).toContainEqual({ type: "error", message: `${flag} requires a value` });
+		});
 	});
 
 	describe("tool flags", () => {

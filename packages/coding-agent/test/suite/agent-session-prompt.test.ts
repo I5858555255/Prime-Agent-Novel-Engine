@@ -768,6 +768,41 @@ stale extension instructions`,
 		).toBeUndefined();
 	});
 
+	it("handles autonomous slash commands when template expansion is disabled", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await harness.session.prompt("/autonomous on", { expandPromptTemplates: false });
+
+		expect(harness.session.getAutonomousStatus().enabled).toBe(true);
+		expect(harness.getPendingResponseCount()).toBe(0);
+		expect(harness.session.messages.some((message) => message.role === "custom")).toBe(true);
+	});
+
+	it("handles goal slash commands when template expansion is disabled", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await harness.session.prompt("/goal status", { expandPromptTemplates: false });
+
+		expect(harness.eventsOfType("goal_update")).toHaveLength(1);
+		expect(harness.getPendingResponseCount()).toBe(0);
+		expect(getAssistantTexts(harness)).toEqual([]);
+	});
+
+	it("keeps built-in slash commands literal for accepted agent messages", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("literal")]);
+
+		await harness.session.acceptAgentMessagePrompt("/autonomous on", { expandPromptTemplates: false });
+		await harness.session.agent.waitForIdle();
+
+		expect(harness.session.getAutonomousStatus().enabled).toBe(false);
+		expect(getUserTexts(harness)).toEqual(["/autonomous on"]);
+		expect(getAssistantTexts(harness)).toEqual(["literal"]);
+	});
+
 	it("queues accepted agent messages without expanding slash commands or prompt templates", async () => {
 		const template: PromptTemplate = {
 			name: "review",
