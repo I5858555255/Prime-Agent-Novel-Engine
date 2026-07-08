@@ -75,7 +75,7 @@ describe("Prime Inference models", () => {
 		const model = getModel("prime-inference", "internal/glm-5.2-fast");
 
 		expect(model).toBeDefined();
-		expect(model.name).toBe("GLM 5.2 Fast (Prime internal)");
+		expect(model.name).toBe("GLM 5.2 Fast");
 		expect(model.api).toBe("openai-completions");
 		expect(model.provider).toBe("prime-inference");
 		expect(model.baseUrl).toBe("https://api.pinference.ai/api/v1");

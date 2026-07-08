@@ -141,7 +141,7 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"internal/glm-5.2-fast": {
 		contextWindow: 400000,
 		maxTokens: 131072,
-		name: "GLM 5.2 Fast (Prime internal)",
+		name: "GLM 5.2 Fast",
 	},
 	"minimax/minimax-m3": { contextWindow: 204800, maxTokens: 131072 },
 	"moonshotai/kimi-k2.7-code": { contextWindow: 262144, maxTokens: 16000, vision: true },

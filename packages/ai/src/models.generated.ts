@@ -13829,7 +13829,7 @@ export const MODELS = {
 		} satisfies Model<"openai-completions">,
 		"internal/glm-5.2-fast": {
 			id: "internal/glm-5.2-fast",
-			name: "GLM 5.2 Fast (Prime internal)",
+			name: "GLM 5.2 Fast",
 			api: "openai-completions",
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
