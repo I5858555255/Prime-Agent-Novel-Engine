@@ -118,6 +118,7 @@ interface PrimeInferenceModelMetadata {
 	contextWindow: number;
 	maxTokens: number;
 	vision?: boolean;
+	name?: string;
 }
 
 // Prime Inference intentionally exposes a curated subset of the catalog in the
@@ -137,6 +138,11 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"deepseek/deepseek-v3.2": { contextWindow: 128000, maxTokens: 8000 },
 	"deepseek/deepseek-v4-flash": { contextWindow: 1000000, maxTokens: 384000 },
 	"deepseek/deepseek-v4-pro": { contextWindow: 1000000, maxTokens: 384000 },
+	"internal/glm-5.2-fast": {
+		contextWindow: 400000,
+		maxTokens: 131072,
+		name: "GLM 5.2 Fast (Prime internal)",
+	},
 	"minimax/minimax-m3": { contextWindow: 204800, maxTokens: 131072 },
 	"moonshotai/kimi-k2.7-code": { contextWindow: 262144, maxTokens: 16000, vision: true },
 	"nvidia/nemotron-3-nano-30b-a3b": { contextWindow: 1000000, maxTokens: 228000 },
@@ -158,6 +164,15 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"z-ai/glm-5.1": { contextWindow: 202800, maxTokens: 131072 },
 	"z-ai/glm-5.2": { contextWindow: 202800, maxTokens: 131072 },
 };
+
+const PRIME_INFERENCE_MANUAL_CATALOG_ENTRIES: PrimeInferenceCatalogEntry[] = [
+	{
+		id: "internal/glm-5.2-fast",
+		input: 0,
+		output: 0,
+		reasoning: true,
+	},
+];
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
@@ -346,6 +361,7 @@ function isPrimeInferenceReasoningModel(modelId: string, catalogReasoning?: bool
 	return (
 		id.includes("thinking") ||
 		id.includes("deepseek-v4") ||
+		id.startsWith("internal/glm-") ||
 		id.startsWith("minimax/minimax-m") ||
 		id.startsWith("moonshotai/kimi") ||
 		id.startsWith("x-ai/grok-4") ||
@@ -363,7 +379,7 @@ function getPrimeInferenceCompat(modelId: string): OpenAICompletionsCompat {
 			...DEEPSEEK_V4_COMPAT,
 		};
 	}
-	if (id.startsWith("z-ai/glm-")) {
+	if (id.startsWith("z-ai/glm-") || id.startsWith("internal/glm-")) {
 		return {
 			...PRIME_INFERENCE_COMPAT,
 			...ZAI_THINKING_COMPAT,
@@ -404,8 +420,22 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 	});
 }
 
+function mergePrimeInferenceCatalogEntries(catalog: PrimeInferenceCatalogEntry[]): PrimeInferenceCatalogEntry[] {
+	const entries = new Map<string, PrimeInferenceCatalogEntry>();
+	for (const entry of catalog) {
+		entries.set(entry.id.toLowerCase(), entry);
+	}
+	for (const entry of PRIME_INFERENCE_MANUAL_CATALOG_ENTRIES) {
+		if (!entries.has(entry.id.toLowerCase())) {
+			entries.set(entry.id.toLowerCase(), entry);
+		}
+	}
+	return Array.from(entries.values());
+}
+
 async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
 	const apiKey = process.env.PRIME_API_KEY;
+	let catalog: PrimeInferenceCatalogEntry[] = [];
 
 	try {
 		console.log("Fetching models from Prime Inference API...");
@@ -413,20 +443,17 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 		const response = await fetch(`${PRIME_INFERENCE_BASE_URL}/models`, {
 			headers,
 		});
-		const catalog = parsePrimeInferenceCatalog(await response.json());
-		if (catalog.length > 0) {
-			const models = catalog.flatMap((entry): Model<"openai-completions">[] => {
-				const metadata = PRIME_INFERENCE_MODEL_METADATA[entry.id.toLowerCase()];
-				return metadata === undefined ? [] : [createPrimeInferenceModel(entry, metadata)];
-			});
-			console.log(`Fetched ${models.length} curated models from Prime Inference`);
-			return models;
-		}
+		catalog = parsePrimeInferenceCatalog(await response.json());
 	} catch (error) {
 		console.error("Failed to fetch Prime Inference models:", error);
 	}
 
-	return [];
+	const models = mergePrimeInferenceCatalogEntries(catalog).flatMap((entry): Model<"openai-completions">[] => {
+		const metadata = PRIME_INFERENCE_MODEL_METADATA[entry.id.toLowerCase()];
+		return metadata === undefined ? [] : [createPrimeInferenceModel(entry, metadata)];
+	});
+	console.log(`Loaded ${models.length} curated models from Prime Inference`);
+	return models;
 }
 
 function createPrimeInferenceModel(
@@ -435,7 +462,7 @@ function createPrimeInferenceModel(
 ): Model<"openai-completions"> {
 	return {
 		id: entry.id,
-		name: getPrimeInferenceDisplayName(entry.id),
+		name: metadata.name ?? getPrimeInferenceDisplayName(entry.id),
 		api: "openai-completions",
 		provider: "prime-inference",
 		baseUrl: PRIME_INFERENCE_BASE_URL,
