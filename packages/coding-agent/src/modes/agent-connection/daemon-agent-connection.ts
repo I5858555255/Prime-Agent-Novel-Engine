@@ -310,10 +310,17 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async abortAndClearQueue(): Promise<AgentConnectionQueueState> {
-		return this.requestData<AgentConnectionQueueState>({
-			type: "abort_and_clear_queue",
-			activeSessionId: this.activeSessionId,
-		});
+		try {
+			return await this.requestData<AgentConnectionQueueState>({
+				type: "abort_and_clear_queue",
+				activeSessionId: this.activeSessionId,
+			});
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "abort_and_clear_queue")) {
+				throw new Error("the daemon is running an older build; restart the daemon and try again");
+			}
+			throw error;
+		}
 	}
 
 	async listCronJobs(options: { includeInactive?: boolean } = {}): Promise<AgentCronJob[]> {
