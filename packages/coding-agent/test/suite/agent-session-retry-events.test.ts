@@ -41,8 +41,12 @@ type SessionRetryCompactionInternals = {
 	_retryAttempt: number;
 	_retryPromise: Promise<void> | undefined;
 	_retryResolve: (() => void) | undefined;
+	_autoCompactionAbortController: AbortController | undefined;
+	_postCompactionContinuationScheduled: boolean;
 	_processAgentEvent: (event: AgentEvent) => Promise<void>;
 	_checkCompaction: (message: AssistantMessage) => Promise<boolean>;
+	_schedulePostCompactionContinue: () => void;
+	_cancelPostCompactionContinue: () => void;
 };
 
 describe("AgentSession retry and event characterization", () => {
@@ -239,6 +243,38 @@ describe("AgentSession retry and event characterization", () => {
 		} finally {
 			internals._checkCompaction = originalCheckCompaction;
 			harness.session.abortRetry();
+		}
+	});
+
+	it("cancels overflow-compaction retry continuation when abortRetry is called", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SessionRetryCompactionInternals;
+		const compactionAbortController = new AbortController();
+		internals._retryAttempt = 1;
+		internals._retryPromise = new Promise<void>((resolve) => {
+			internals._retryResolve = resolve;
+		});
+		internals._autoCompactionAbortController = compactionAbortController;
+		internals._schedulePostCompactionContinue();
+
+		try {
+			expect(internals._postCompactionContinuationScheduled).toBe(true);
+
+			harness.session.abortRetry();
+
+			expect(compactionAbortController.signal.aborted).toBe(true);
+			expect(internals._postCompactionContinuationScheduled).toBe(false);
+			expect(internals._retryAttempt).toBe(0);
+			expect(harness.session.isRetrying).toBe(false);
+			expect(harness.eventsOfType("auto_retry_end").at(-1)).toMatchObject({
+				success: false,
+				attempt: 1,
+				finalError: "Retry cancelled",
+			});
+		} finally {
+			internals._autoCompactionAbortController = undefined;
+			internals._cancelPostCompactionContinue();
 		}
 	});
 

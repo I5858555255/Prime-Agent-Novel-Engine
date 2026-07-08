@@ -5619,6 +5619,17 @@ export class AgentSession {
 			this._retryAbortController.abort();
 			return;
 		}
+		if (this._retryAttempt > 0) {
+			this._autoCompactionAbortController?.abort();
+			this._cancelPostCompactionContinue();
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt: this._retryAttempt,
+				finalError: "Retry cancelled",
+			});
+			this._retryAttempt = 0;
+		}
 		this._retryAuthFailureSources = [];
 		this._resolveRetry();
 	}
