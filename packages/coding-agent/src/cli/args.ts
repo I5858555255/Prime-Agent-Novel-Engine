@@ -18,13 +18,13 @@ export interface Args {
 	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
 	continue?: boolean;
-	resume?: boolean;
+	resume?: true | string;
+	resumeSelectorFallback?: string;
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
 	daemonSocket?: string;
 	noSession?: boolean;
-	session?: string;
 	fork?: string;
 	sessionDir?: string;
 	models?: string[];
@@ -54,7 +54,7 @@ export interface Args {
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
-const BUILTIN_TOOL_NAMES = ["ipython", "bash", "edit"];
+const BUILTIN_TOOL_NAMES = ["ipython"];
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
@@ -98,7 +98,27 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
-			result.resume = true;
+			const next = args[i + 1];
+			if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+				if (next === "") {
+					result.resume = true;
+					i++;
+				} else {
+					result.resume = next;
+					result.resumeSelectorFallback = next;
+					i++;
+				}
+			} else {
+				result.resume = true;
+			}
+		} else if (arg.startsWith("--resume=")) {
+			const value = arg.slice("--resume=".length);
+			if (!value) {
+				result.resume = true;
+			} else {
+				result.resume = value;
+				result.resumeSelectorFallback = value;
+			}
 		} else if (arg === "--provider" && i + 1 < args.length) {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
@@ -114,8 +134,6 @@ export function parseArgs(args: string[]): Args {
 			result.appendSystemPrompt.push(args[++i]);
 		} else if (arg === "--no-session") {
 			result.noSession = true;
-		} else if (arg === "--session" && i + 1 < args.length) {
-			result.session = args[++i];
 		} else if (arg === "--fork" && i + 1 < args.length) {
 			result.fork = args[++i];
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
@@ -254,8 +272,7 @@ ${chalk.bold("Options:")}
   --daemon-socket <path>         Socket path for daemon mode
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
-  --resume, -r                   Select a session to resume
-  --session <path|id>            Use specific session file or partial UUID
+  --resume, -r [path|id]         Resume specific session, or browse when omitted
   --fork <path|id>               Fork specific session file or partial UUID into a new session
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
@@ -328,9 +345,6 @@ ${chalk.bold("Examples:")}
   # Start with a specific thinking level
   ${APP_NAME} --thinking high "Solve this complex problem"
 
-  # Use only the bash tool
-  ${APP_NAME} --tools bash -p "Run the project checks"
-
   # Export a session file to HTML
   ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
@@ -388,7 +402,5 @@ ${chalk.bold("Environment Variables:")}
 
 ${chalk.bold("Built-in Tool Names:")}
   ipython - Execute Python in a persistent IPython kernel
-  bash    - Execute bash commands (off by default)
-  edit    - Edit files with find/replace (off by default)
 `);
 }

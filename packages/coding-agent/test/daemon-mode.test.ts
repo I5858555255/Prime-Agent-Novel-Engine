@@ -825,6 +825,52 @@ describe("daemon mode helpers", () => {
 		expect(internals.createAgentMessageListResult(targetState).agents[0]?.pendingMessageCount).toBe(3);
 	});
 
+	it("hides heartbeat-only pending counts in agent-observe summaries while reporting busy", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const targetState = makeState("target");
+		targetState.runtime = {
+			...targetState.runtime,
+			cwd: "/tmp",
+			diagnostics: [],
+			modelFallbackMessage: undefined,
+			session: {
+				sessionId: "session-target",
+				sessionName: "Target",
+				sessionFile: undefined,
+				sessionManager: { getCwd: () => "/tmp" },
+				model: undefined,
+				thinkingLevel: "off",
+				isStreaming: false,
+				isCompacting: false,
+				isBashRunning: false,
+				isRetrying: false,
+				hasAcceptedPromptInFlight: false,
+				pendingMessageCount: 1,
+				visiblePendingMessageCount: 0,
+				messages: [],
+				state: { pendingToolCalls: new Set(), streamingMessage: undefined },
+				hasRunningRlmChildren: () => false,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAgentObserveListResult(current: ActiveSessionState): {
+				current: { status: string; pendingMessageCount: number };
+			};
+		};
+		internals.sessions.set(targetState.activeSessionId, targetState);
+
+		expect(internals.createAgentObserveListResult(targetState).current).toMatchObject({
+			status: "busy",
+			pendingMessageCount: 0,
+		});
+	});
+
 	it("reports non-streaming busy sessions as active in agent-observe summaries", () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
@@ -2163,6 +2209,53 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("adopts client env on session reuse only when the session has none", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-env-"));
+		try {
+			const sessionPath = join(tempDir, "session.jsonl");
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => {
+				return {
+					session: makeRuntimeSession(options.sessionManager),
+					extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["extensionsResult"],
+					services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["services"],
+					diagnostics: [],
+				};
+			});
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir: tempDir },
+				createRuntime,
+			});
+			const create = (
+				daemon as unknown as {
+					createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				}
+			).createRuntime.bind(daemon);
+
+			// Created env-less (e.g. by a cron job), then opened by an env-carrying
+			// client: the session adopts the client's allowlisted identity.
+			const state = await create({ type: "create", sessionPath });
+			expect(state.clientEnv).toBeUndefined();
+			const adopted = await create({
+				type: "create",
+				sessionPath,
+				env: { HERDR_PANE_ID: "w1:p1", PATH: "/evil" },
+			});
+			expect(adopted).toBe(state);
+			expect(state.clientEnv).toEqual({ HERDR_PANE_ID: "w1:p1" });
+
+			// A later client with a different env must not rebind the identity
+			// that extensions already captured.
+			await create({ type: "create", sessionPath, env: { HERDR_PANE_ID: "w2:p9" } });
+			expect(state.clientEnv).toEqual({ HERDR_PANE_ID: "w1:p1" });
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("makes daemon host controllers available during session_start extension binding", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-controller-race-"));
 		try {
@@ -2512,6 +2605,43 @@ describe("daemon mode helpers", () => {
 		expect(result).toBe("skipped");
 		expect(followUp).not.toHaveBeenCalled();
 		expect(removeQueuedFollowUp).not.toHaveBeenCalled();
+	});
+
+	it("retries an already queued heartbeat when no visible work is pending", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const runHeartbeatContext = vi.fn(async () => true);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isBashRunning: boolean;
+					pendingMessageCount: number;
+					visiblePendingMessageCount: number;
+					runHeartbeatContext: typeof runHeartbeatContext;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			isBashRunning: false,
+			pendingMessageCount: 1,
+			visiblePendingMessageCount: 0,
+			runHeartbeatContext,
+		} as never;
+		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
+		const job = makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId });
+
+		const result = await (
+			daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }
+		).runCronJob(job);
+
+		expect(result).toBeUndefined();
+		expect(runHeartbeatContext).toHaveBeenCalledWith(job);
 	});
 
 	it("defers heartbeat cron jobs while the target is accepting an agent message", async () => {
@@ -2892,6 +3022,7 @@ function makeRuntimeSession(
 		setSubagentRuntimeHost: vi.fn(),
 		subscribe: vi.fn(() => vi.fn()),
 		bindExtensions: vi.fn(async () => {}),
+		setExecEnvProvider: vi.fn(),
 		setSessionName: vi.fn(),
 		dispose: vi.fn(),
 		abort: vi.fn(async () => {}),

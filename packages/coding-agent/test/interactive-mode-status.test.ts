@@ -480,6 +480,7 @@ describe("InteractiveMode pending bash components", () => {
 			queuedMessagesContainer: new Container(),
 			compactionQueuedMessages: [],
 			pastedImages: new Map(),
+			liveImageMarkerIds: () => new Set(),
 			defaultEditor: editorStub,
 			editor: editorStub,
 			streamingComponent: undefined,
@@ -1485,7 +1486,11 @@ describe("InteractiveMode.setToolsExpanded", () => {
 			builtInHeader: header,
 			chatContainer: { children: [chatChild] },
 			childAgentDetail,
-			ui: { requestRender: vi.fn(), requestRenderPreservingViewport: vi.fn() },
+			ui: {
+				requestRender: vi.fn(),
+				requestRenderPreservingViewport: vi.fn(),
+				isFullscreen: vi.fn().mockReturnValue(false),
+			},
 		};
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
