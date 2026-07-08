@@ -78,7 +78,11 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { emptyGoalState, formatGoalUsage, type GoalState } from "../../core/goals.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
-import { createCompactionSummaryMessage, createHeartbeatPromptMessage } from "../../core/messages.js";
+import {
+	createCompactionSummaryMessage,
+	createHeartbeatPromptMessage,
+	HEARTBEAT_PROMPT_CUSTOM_TYPE,
+} from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
@@ -2823,6 +2827,12 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private clearStaleRecapForPromptTurn(): void {
+		this.sessionRecap = undefined;
+		this.renderRecap();
+		this.updatePendingMessagesDisplay();
+	}
+
 	private renderWidgetContainer(
 		container: Container,
 		widgets: Map<string, Component & { dispose?(): void }>,
@@ -4146,13 +4156,13 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
+					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
+						this.clearStaleRecapForPromptTurn();
+					}
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
-					// A new turn makes the recap stale; clear it until the summarizer pushes a fresh one.
-					this.sessionRecap = undefined;
-					this.renderRecap();
-					this.updatePendingMessagesDisplay();
+					this.clearStaleRecapForPromptTurn();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					this.startAssistantStreamingMessage(event.message);

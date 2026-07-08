@@ -30,6 +30,24 @@ type LegacyHeartbeatRenderMode = {
 	getMarkdownThemeWithSettings: () => MarkdownTheme;
 };
 
+type MessageStartHandleMode = {
+	isInitialized: boolean;
+	footer: { invalidate: () => void };
+	updateConnectionStateFromEvent: (event: unknown) => void;
+	contextUsageTokenBaseline: number;
+	activityTracker: { handleEvent: (event: unknown) => void };
+	updateWorkingLoaderMessage: () => void;
+	addMessageToChat: (message: AgentMessage) => void;
+	ui: { requestRender: () => void };
+	sessionRecap?: string;
+	renderRecap: () => void;
+	updatePendingMessagesDisplay: () => void;
+};
+
+type MessageStartHandleHost = {
+	handleEvent(this: MessageStartHandleMode, event: { type: "message_start"; message: AgentMessage }): Promise<void>;
+};
+
 function stripAnsi(text: string): string {
 	return text.replace(/\u001b\[[0-9;]*m/g, "");
 }
@@ -54,6 +72,29 @@ function createHeartbeat(): AgentCronJob {
 		nextRunAt: "2026-01-01T00:05:00.000Z",
 		runCount: 2,
 	};
+}
+
+function createMessageStartMode(sessionRecap = "previous recap"): MessageStartHandleMode {
+	return Object.assign(Object.create(InteractiveMode.prototype), {
+		isInitialized: true,
+		footer: { invalidate: vi.fn() },
+		updateConnectionStateFromEvent: vi.fn(),
+		contextUsageTokenBaseline: 12,
+		activityTracker: { handleEvent: vi.fn() },
+		updateWorkingLoaderMessage: vi.fn(),
+		addMessageToChat: vi.fn(),
+		ui: { requestRender: vi.fn() },
+		sessionRecap,
+		renderRecap: vi.fn(),
+		updatePendingMessagesDisplay: vi.fn(),
+	}) as MessageStartHandleMode;
+}
+
+async function handleMessageStart(mode: MessageStartHandleMode, message: AgentMessage): Promise<void> {
+	await (InteractiveMode.prototype as unknown as MessageStartHandleHost).handleEvent.call(mode, {
+		type: "message_start",
+		message,
+	});
 }
 
 describe("ENG-4482 heartbeat injected prompt UI", () => {
@@ -220,6 +261,36 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 		const expanded = render(component);
 		expect(expanded).toContain("Heartbeat prompt");
 		expect(expanded).toContain("Check whether the long-running task needs another step.");
+	});
+
+	it("clears stale recaps when heartbeat prompt turns start", async () => {
+		const heartbeatMode = createMessageStartMode();
+		const heartbeatMessage = createHeartbeatPromptMessage(createHeartbeat());
+
+		await handleMessageStart(heartbeatMode, heartbeatMessage);
+
+		expect(heartbeatMode.addMessageToChat).toHaveBeenCalledWith(heartbeatMessage);
+		expect(heartbeatMode.sessionRecap).toBeUndefined();
+		expect(heartbeatMode.renderRecap).toHaveBeenCalled();
+		expect(heartbeatMode.updatePendingMessagesDisplay).toHaveBeenCalled();
+
+		const goalMode = createMessageStartMode();
+		const goal: GoalState = {
+			active: true,
+			status: "active",
+			goalId: "goal-1",
+			objective: "Finish the implementation plan",
+			tokensUsed: 10,
+			timeUsedSeconds: 20,
+			continuationsUsed: 1,
+		};
+		const goalMessage = createGoalContextMessage(goal, "continuation");
+
+		await handleMessageStart(goalMode, goalMessage);
+
+		expect(goalMode.sessionRecap).toBe("previous recap");
+		expect(goalMode.renderRecap).not.toHaveBeenCalled();
+		expect(goalMode.updatePendingMessagesDisplay).not.toHaveBeenCalled();
 	});
 
 	it("renders expanded injected prompt images as placeholders", () => {
