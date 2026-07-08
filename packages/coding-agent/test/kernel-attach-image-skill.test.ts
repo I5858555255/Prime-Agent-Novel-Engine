@@ -151,8 +151,19 @@ print(await attach_image(${JSON.stringify(imagePath)}))
 
 		const manager = await provisioner.ensure();
 		const result = await manager.execute(`
-from PIL import Image
-Image.new("RGB", (6001, 6001), "white").save(${JSON.stringify(imagePath)})
+import struct
+import zlib
+
+
+def png_chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+
+png = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+png += png_chunk(b"IHDR", struct.pack(">IIBBBBB", 6001, 6001, 8, 2, 0, 0, 0))
+png += png_chunk(b"IEND", b"")
+with open(${JSON.stringify(imagePath)}, "wb") as file:
+    file.write(png)
 try:
     await attach_image(${JSON.stringify(imagePath)})
 except ValueError as error:
