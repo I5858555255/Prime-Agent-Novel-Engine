@@ -860,10 +860,16 @@ async function executePreparedToolCall(
 			signal,
 		);
 		acceptingUpdates = false;
-		await raceWithAbort(
-			Promise.all(updateEvents).then(() => undefined),
-			signal,
-		);
+		try {
+			await raceWithAbort(
+				Promise.all(updateEvents).then(() => undefined),
+				signal,
+			);
+		} catch (error) {
+			if (!signal?.aborted || !isAbortError(error)) {
+				throw error;
+			}
+		}
 		return { result, isError: false };
 	} catch (error) {
 		acceptingUpdates = false;

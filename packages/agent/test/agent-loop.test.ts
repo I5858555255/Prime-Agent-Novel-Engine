@@ -412,6 +412,70 @@ describe("agentLoop with AgentMessage", () => {
 		expect(toolExecute).not.toHaveBeenCalled();
 	});
 
+	it("should preserve a successful tool result when abort fires during update flush", async () => {
+		const controller = new AbortController();
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, _params, _signal, onUpdate) => {
+				onUpdate?.({ content: [{ type: "text", text: "progress" }], details: {} });
+				return {
+					content: [{ type: "text", text: "done" }],
+					details: {},
+				};
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "toolUse", message: assistantMessage });
+			});
+			return stream;
+		};
+		const events: AgentEvent[] = [];
+
+		const messages = await runAgentLoop(
+			[createUserMessage("Hello")],
+			context,
+			config,
+			(event) => {
+				events.push(event);
+				if (event.type === "tool_execution_update") {
+					return new Promise<void>(() => {
+						setTimeout(() => controller.abort(), 0);
+					});
+				}
+			},
+			controller.signal,
+			streamFn,
+		);
+
+		const toolResult = messages.find((message) => message.role === "toolResult");
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") {
+			expect(toolResult.isError).toBe(false);
+			expect(toolResult.content).toEqual([{ type: "text", text: "done" }]);
+		}
+		expect(events.some((event) => event.type === "agent_end")).toBe(true);
+	});
+
 	it("should freeze synthetic aborted messages against later partial mutation", async () => {
 		const context: AgentContext = {
 			systemPrompt: "You are helpful.",
