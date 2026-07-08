@@ -5042,17 +5042,7 @@ export class InteractiveMode {
 		if (directRunTimes.some((runAt) => Math.abs(timestamp - runAt) <= tolerance)) {
 			return true;
 		}
-
-		const intervalMs = job.schedule.intervalMs;
-		const nextRunAt = job.nextRunAt ? Date.parse(job.nextRunAt) : Number.NaN;
-		if (job.schedule.kind !== "interval" || !intervalMs || intervalMs <= 0 || !Number.isFinite(nextRunAt)) {
-			return false;
-		}
-
-		const distanceFromReference = Math.abs(timestamp - nextRunAt);
-		const remainder = distanceFromReference % intervalMs;
-		const nearestRunDistance = Math.min(remainder, intervalMs - remainder);
-		return nearestRunDistance <= Math.min(tolerance, intervalMs / 2);
+		return false;
 	}
 
 	private heartbeatLegacyPromptToleranceMs(job: AgentCronJob): number {

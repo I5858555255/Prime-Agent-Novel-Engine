@@ -270,6 +270,28 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 		},
 	);
 
+	it("does not render matching user messages at interval phases as heartbeat panels", () => {
+		const heartbeat = createHeartbeat();
+		const chatContainer = new Container();
+		const mode = Object.create(InteractiveMode.prototype) as LegacyHeartbeatRenderMode;
+		mode.connectionState = { heartbeat };
+		mode.chatContainer = chatContainer;
+		mode.toolOutputExpanded = false;
+		mode.editor = {};
+		mode.getMarkdownThemeWithSettings = () => getMarkdownTheme();
+		const message: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: heartbeat.prompt }],
+			timestamp: Date.parse("2026-01-01T00:15:00.000Z"),
+		};
+
+		(InteractiveMode.prototype as unknown as AddMessageToChatHost).addMessageToChat.call(mode, message);
+
+		const rendered = stripAnsi(chatContainer.render(120).join("\n"));
+		expect(rendered).not.toContain("Heartbeat prompt");
+		expect(rendered).toContain("Check whether the long-running task needs another step.");
+	});
+
 	it("renders goal continuation prompts as injected prompt panels", () => {
 		const goal: GoalState = {
 			active: true,
