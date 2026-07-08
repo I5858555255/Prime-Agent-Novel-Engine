@@ -50,6 +50,13 @@ export function createActiveSessionId(existingIds?: ActiveSessionIdIndex): strin
 	}
 }
 
+export function createActiveSessionIdFromSeed(seed: string, existingIds?: ActiveSessionIdIndex): string {
+	if (!existingIds?.has(seed)) {
+		return seed;
+	}
+	return createActiveSessionId(existingIds);
+}
+
 export function resolveActiveSessionState(
 	sessions: ReadonlyMap<string, ActiveSessionState>,
 	selector: string,

@@ -14,8 +14,10 @@ import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.js";
 import { handleDaemonCommand, normalizeDaemonStartArgs } from "./cli/daemon-command.js";
 import {
+	type DaemonSessionRestoreResult,
 	ensureInteractiveDaemonRunning,
 	isDaemonSessionSummary,
+	isRunningDaemonProbeAtRiskFromStop,
 	listActiveDaemonSessionSummaries,
 	probeRunningDaemonSessions,
 	relaunchDaemonAndRestoreSessions,
@@ -382,6 +384,20 @@ const STARTUP_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
 	nonTtyHint: 'Run "prime-agent daemon shutdown" to stop it, then retry.',
 };
 
+function reportDaemonSessionRestoreWarnings(result: DaemonSessionRestoreResult): void {
+	if (result.failed.length === 0) {
+		return;
+	}
+	console.error(
+		chalk.yellow(
+			`Warning: restored ${result.restored}/${result.total} daemon session(s), but ${result.failed.length} session(s) failed to reopen.`,
+		),
+	);
+	for (const failure of result.failed) {
+		console.error(chalk.dim(`  ${failure.sessionFile}: ${failure.error}`));
+	}
+}
+
 // The promise to keep after awaiting readiness. Wrapped in an object so it
 // survives `await` (which would otherwise flatten a returned Promise to void).
 type DaemonReadyResult = { ready: Promise<void> | undefined };
@@ -400,7 +416,13 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 		process.exit(1);
 	}
 	try {
-		await relaunchDaemonAndRestoreSessions(socketPath, probe.reachable ? (probe.activeSessions ?? []) : []);
+		const restoreResult = await relaunchDaemonAndRestoreSessions(
+			socketPath,
+			probe.reachable ? (probe.activeSessions ?? []) : [],
+			undefined,
+			{ allowAtRiskSessions: isRunningDaemonProbeAtRiskFromStop(probe) },
+		);
+		reportDaemonSessionRestoreWarnings(restoreResult);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Could not restart the daemon: ${message}`));

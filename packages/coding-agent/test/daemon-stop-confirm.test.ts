@@ -77,6 +77,13 @@ describe("confirmDaemonSessionLoss", () => {
 		expect(console.error).not.toHaveBeenCalled();
 	});
 
+	it("aborts without prompting when background child sessions are running", async () => {
+		setTTY(false);
+		const probe: RunningDaemonProbe = { reachable: true, activeSessions: [session({ hasRunningRlmChildren: true })] };
+		expect(await confirmDaemonSessionLoss(probe, { force: false, copy: COPY })).toBe(false);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("at-risk:1"));
+	});
+
 	it("aborts without prompting when not at a TTY and a live active session cannot be restored", async () => {
 		setTTY(false);
 		const probe: RunningDaemonProbe = {
@@ -103,13 +110,14 @@ describe("confirmDaemonSessionLoss", () => {
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("unlistable"));
 	});
 
-	it("treats compacting, pending-message, streaming, and bash-running sessions as at risk", async () => {
+	it("treats compacting, pending-message, streaming, bash-running, and child sessions as at risk", async () => {
 		setTTY(false);
 		for (const overrides of [
 			{ isCompacting: true },
 			{ pendingMessageCount: 1 },
 			{ isStreaming: true },
 			{ isBashRunning: true },
+			{ hasRunningRlmChildren: true },
 		] satisfies Partial<SessionSummary>[]) {
 			vi.mocked(console.error).mockClear();
 			const probe: RunningDaemonProbe = { reachable: true, activeSessions: [session(overrides)] };

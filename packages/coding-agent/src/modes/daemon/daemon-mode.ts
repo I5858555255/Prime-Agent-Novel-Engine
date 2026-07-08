@@ -82,6 +82,7 @@ import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import {
 	type ActiveSessionState,
 	createActiveSessionId,
+	createActiveSessionIdFromSeed,
 	type DaemonSocketClient,
 	resolveActiveSessionState,
 } from "./active-session-state.js";
@@ -373,9 +374,10 @@ export class AgentDaemon {
 		name?: string,
 		clientEnv?: Record<string, string>,
 		onStateCreated?: (state: ActiveSessionState) => void,
+		activeSessionId?: string,
 	): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
-			activeSessionId: createActiveSessionId(this.sessions),
+			activeSessionId: activeSessionId ?? createActiveSessionId(this.sessions),
 			runtime,
 			clients: new Set(),
 			extensionUiRequests: new Map(),
@@ -436,6 +438,10 @@ export class AgentDaemon {
 		const sessionPath = command.sessionPath
 			? await resolveDaemonSessionPath(command.sessionPath, cwd, config.sessionDir)
 			: undefined;
+		const restoredActiveSessionId =
+			command.activeSessionId && sessionPath
+				? createActiveSessionIdFromSeed(command.activeSessionId, this.sessions)
+				: undefined;
 		const sessionManager = sessionPath
 			? await SessionManager.openAsync(sessionPath, config.sessionDir, cwdOverride)
 			: command.continueRecent
@@ -528,9 +534,15 @@ export class AgentDaemon {
 					},
 				}),
 			);
-			return this.addRuntime(runtime, command.name, clientEnv, (state) => {
-				stateRef = state;
-			});
+			return this.addRuntime(
+				runtime,
+				command.name,
+				clientEnv,
+				(state) => {
+					stateRef = state;
+				},
+				restoredActiveSessionId,
+			);
 		};
 
 		const sessionFile = sessionManager.getSessionFile();

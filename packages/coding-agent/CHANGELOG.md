@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Fixed daemon self-updates reopening previous restorable live sessions after relaunch.
+- Fixed daemon updates and stale-daemon takeovers preserving restorable live sessions while blocking volatile child-agent work.
 
 ## [0.2.6] - 2026-07-06
 

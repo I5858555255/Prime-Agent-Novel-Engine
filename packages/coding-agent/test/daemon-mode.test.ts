@@ -2163,6 +2163,40 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("restores a requested active session id when reopening a session file", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-restore-id-"));
+		try {
+			const sessionPath = join(tempDir, "session.jsonl");
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => {
+				return {
+					session: makeRuntimeSession(options.sessionManager),
+					extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["extensionsResult"],
+					services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["services"],
+					diagnostics: [],
+				};
+			});
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir: tempDir },
+				createRuntime,
+			});
+			const create = (
+				daemon as unknown as {
+					createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				}
+			).createRuntime.bind(daemon);
+
+			const state = await create({ type: "create", activeSessionId: "live-idle", sessionPath });
+
+			expect(state.activeSessionId).toBe("live-idle");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("adopts client env on session reuse only when the session has none", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-env-"));
 		try {

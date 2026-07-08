@@ -148,9 +148,16 @@ export interface DaemonSessionRestoreResult {
 
 export function hasSessionVolatileWorkForDaemonStop(summary: SessionSummary): boolean {
 	// These states live in daemon memory and cannot be reconstructed by reopening
-	// the JSONL session file after the daemon restarts.
+	// the JSONL session file after the daemon restarts. Older daemons do not expose
+	// child-agent state separately, so an otherwise-unexplained working summary is
+	// treated as volatile rather than risking orphaned child work.
 	return (
-		summary.isStreaming || summary.isCompacting || summary.isBashRunning === true || summary.pendingMessageCount > 0
+		summary.isStreaming ||
+		summary.isCompacting ||
+		summary.isBashRunning === true ||
+		summary.hasRunningRlmChildren === true ||
+		(summary.hasRunningRlmChildren === undefined && summary.activity === "working") ||
+		summary.pendingMessageCount > 0
 	);
 }
 
@@ -171,11 +178,18 @@ export function isSessionAtRiskFromDaemonStop(summary: SessionSummary): boolean 
 	return !isSessionRestorableAfterDaemonStop(summary);
 }
 
+export function isRunningDaemonProbeAtRiskFromStop(probe: RunningDaemonProbe): boolean {
+	if (!probe.reachable) {
+		return false;
+	}
+	return probe.activeSessions === undefined || probe.activeSessions.some(isSessionAtRiskFromDaemonStop);
+}
+
 function restoreCandidateSessionFiles(sessions: readonly SessionSummary[]): string[] {
 	return [
 		...new Set(
 			sessions
-				.filter(isSessionReopenableAfterDaemonStop)
+				.filter(isSessionRestorableAfterDaemonStop)
 				.map((session) => session.sessionFile)
 				.filter((sessionFile): sessionFile is string => sessionFile !== undefined)
 				.map((sessionFile) => resolve(sessionFile)),
@@ -198,8 +212,15 @@ export async function restoreDaemonSessionSummaries(
 	const failed: DaemonSessionRestoreFailure[] = [];
 	try {
 		for (const sessionFile of sessionFiles) {
+			const sourceSummary = sessions.find(
+				(session) =>
+					isSessionRestorableAfterDaemonStop(session) &&
+					session.sessionFile &&
+					resolve(session.sessionFile) === sessionFile,
+			);
 			const response = await client.request({
 				type: "create",
+				...(sourceSummary?.activeSessionId ? { activeSessionId: sourceSummary.activeSessionId } : {}),
 				sessionPath: sessionFile,
 				config: {
 					sessionDir: dirname(sessionFile),
@@ -315,13 +336,20 @@ export async function relaunchDaemonAndRestoreSessions(
 	socketPath: string,
 	sessions: readonly SessionSummary[],
 	spawnCwd?: string,
+	options: { allowAtRiskSessions?: boolean } = {},
 ): Promise<DaemonSessionRestoreResult> {
+	const latestProbe = await probeRunningDaemonSessions(socketPath);
+	const sessionsToRestore = latestProbe.reachable ? (latestProbe.activeSessions ?? sessions) : sessions;
+	const atRiskSessions = sessionsToRestore.filter(isSessionAtRiskFromDaemonStop);
+	if (atRiskSessions.length > 0 && !options.allowAtRiskSessions) {
+		throw new Error(`Cannot stop daemon on ${socketPath}: unrestorable live session(s) present`);
+	}
 	const stopped = await shutdownDaemonAndWait(socketPath);
 	if (!stopped) {
 		throw new Error(`Could not stop daemon on ${socketPath}`);
 	}
 	await spawnDaemonAndWait(socketPath, spawnCwd);
-	return restoreDaemonSessionSummaries(socketPath, sessions);
+	return restoreDaemonSessionSummaries(socketPath, sessionsToRestore);
 }
 
 export async function spawnDaemonAndRestoreSessions(

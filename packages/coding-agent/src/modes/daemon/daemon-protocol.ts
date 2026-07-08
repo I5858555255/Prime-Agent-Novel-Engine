@@ -191,6 +191,7 @@ export type DaemonCommand =
 	| ({
 			id?: string;
 			type: "create";
+			activeSessionId?: string;
 			sessionPath?: string;
 			continueRecent?: boolean;
 			name?: string;

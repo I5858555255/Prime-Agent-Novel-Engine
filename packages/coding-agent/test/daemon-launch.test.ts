@@ -50,10 +50,12 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 				if (!line.trim()) {
 					continue;
 				}
-				const command = JSON.parse(line) as { type: string; id: string; sessionPath?: string } & Record<
-					string,
-					unknown
-				>;
+				const command = JSON.parse(line) as {
+					type: string;
+					id: string;
+					activeSessionId?: string;
+					sessionPath?: string;
+				} & Record<string, unknown>;
 				if (command.type === "list") {
 					send(socket, {
 						type: "response",
@@ -190,6 +192,7 @@ describe("daemon stop session classification", () => {
 			{ isStreaming: true },
 			{ isCompacting: true },
 			{ isBashRunning: true },
+			{ hasRunningRlmChildren: true },
 			{ pendingMessageCount: 1 },
 		] satisfies Partial<SessionSummary>[]) {
 			expect(isSessionAtRiskFromDaemonStop(session({ activeSessionId: "busy", ...overrides }))).toBe(true);
@@ -207,7 +210,7 @@ describe("restoreDaemonSessionSummaries", () => {
 		await Promise.all(cleanups.splice(0).map((fn) => fn()));
 	});
 
-	it("reopens each distinct top-level session file", async () => {
+	it("reopens each distinct restorable top-level session file", async () => {
 		const createCommands: Array<Record<string, unknown>> = [];
 		const daemon = await startFakeDaemon({ createCommands });
 		cleanups.push(daemon.close);
@@ -227,17 +230,15 @@ describe("restoreDaemonSessionSummaries", () => {
 					runtimeKind: "subagent",
 				}),
 			]),
-		).resolves.toEqual({ restored: 3, total: 3, failed: [] });
+		).resolves.toEqual({ restored: 2, total: 2, failed: [] });
 
-		expect(createCommands.map((command) => command.sessionPath)).toEqual([
-			firstSessionFile,
-			secondSessionFile,
-			busySessionFile,
+		expect(createCommands.map((command) => [command.sessionPath, command.activeSessionId])).toEqual([
+			[firstSessionFile, "a"],
+			[secondSessionFile, "b"],
 		]);
 		expect(createCommands.map((command) => command.config)).toEqual([
 			{ sessionDir: dirname(firstSessionFile) },
 			{ sessionDir: dirname(secondSessionFile) },
-			{ sessionDir: dirname(busySessionFile) },
 		]);
 	});
 

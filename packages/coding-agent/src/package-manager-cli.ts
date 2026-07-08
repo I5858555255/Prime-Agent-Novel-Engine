@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import { selectConfig } from "./cli/config-selector.js";
 import {
 	type DaemonSessionRestoreResult,
+	isRunningDaemonProbeAtRiskFromStop,
 	probeRunningDaemonSessions,
 	type RunningDaemonProbe,
 	relaunchDaemonAndRestoreSessions,
@@ -386,12 +387,29 @@ function reportDaemonSessionRestoreWarnings(result: DaemonSessionRestoreResult):
 	}
 }
 
-async function restartDaemonAfterSelfUpdate(socketPath: string, daemonProbe: RunningDaemonProbe): Promise<void> {
+async function restartDaemonAfterSelfUpdate(
+	socketPath: string,
+	daemonProbe: RunningDaemonProbe,
+	force: boolean,
+): Promise<void> {
 	if (!daemonProbe.reachable) {
 		return;
 	}
 	try {
-		const restoreResult = await relaunchDaemonAndRestoreSessions(socketPath, daemonProbe.activeSessions ?? []);
+		const latestProbe = await probeRunningDaemonSessions(socketPath);
+		const latestProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(latestProbe);
+		if (latestProbeAtRisk && !(await confirmDaemonSessionLossBeforeUpdate(latestProbe, force))) {
+			console.error(
+				chalk.yellow("Warning: updated, but left the running daemon in place to avoid terminating live sessions."),
+			);
+			return;
+		}
+		const restoreSessions = latestProbe.reachable
+			? (latestProbe.activeSessions ?? daemonProbe.activeSessions ?? [])
+			: (daemonProbe.activeSessions ?? []);
+		const restoreResult = await relaunchDaemonAndRestoreSessions(socketPath, restoreSessions, undefined, {
+			allowAtRiskSessions: latestProbeAtRisk,
+		});
 		reportDaemonSessionRestoreWarnings(restoreResult);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -591,7 +609,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME}`));
-					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe);
+					await restartDaemonAfterSelfUpdate(daemonSocketPath, daemonProbe, options.force);
 				}
 				return true;
 			}

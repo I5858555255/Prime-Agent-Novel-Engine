@@ -11,7 +11,14 @@ import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js"
 const daemonLaunchMock = vi.hoisted(() => ({
 	probeRunningDaemonSessions: vi.fn<() => Promise<RunningDaemonProbe>>(),
 	relaunchDaemonAndRestoreSessions:
-		vi.fn<(socketPath: string, sessions: readonly SessionSummary[]) => Promise<DaemonSessionRestoreResult>>(),
+		vi.fn<
+			(
+				socketPath: string,
+				sessions: readonly SessionSummary[],
+				spawnCwd?: string,
+				options?: { allowAtRiskSessions?: boolean },
+			) => Promise<DaemonSessionRestoreResult>
+		>(),
 }));
 
 vi.mock("../src/cli/daemon-launch.js", async (importOriginal) => {
@@ -229,15 +236,20 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 		}
 	});
 
-	it("relaunches the daemon and restores previous open sessions after self-update", async () => {
+	it("relaunches the daemon and restores sessions from a post-update probe", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
-		const restorableSession = sessionSummary({
+		const preUpdateSession = sessionSummary({
 			activeSessionId: "active-1",
 			sessionId: "session-1",
 			sessionFile: join(tempDir, "sessions", "session-1.jsonl"),
+		});
+		const postUpdateSession = sessionSummary({
+			activeSessionId: "active-2",
+			sessionId: "session-2",
+			sessionFile: join(tempDir, "sessions", "session-2.jsonl"),
 		});
 		mkdirSync(selfPackageDir, { recursive: true });
 		writeFileSync(
@@ -260,10 +272,15 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			"fetch",
 			vi.fn(async () => Response.json({ version: getNewerPatchVersion() })),
 		);
-		daemonLaunchMock.probeRunningDaemonSessions.mockResolvedValue({
-			reachable: true,
-			activeSessions: [restorableSession],
-		});
+		daemonLaunchMock.probeRunningDaemonSessions
+			.mockResolvedValueOnce({
+				reachable: true,
+				activeSessions: [preUpdateSession],
+			})
+			.mockResolvedValueOnce({
+				reachable: true,
+				activeSessions: [postUpdateSession],
+			});
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -274,10 +291,14 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
 			expect(existsSync(recordPath)).toBe(true);
+			expect(daemonLaunchMock.probeRunningDaemonSessions).toHaveBeenCalledTimes(2);
 			expect(daemonLaunchMock.relaunchDaemonAndRestoreSessions).toHaveBeenCalledOnce();
-			expect(daemonLaunchMock.relaunchDaemonAndRestoreSessions).toHaveBeenCalledWith(expect.any(String), [
-				restorableSession,
-			]);
+			expect(daemonLaunchMock.relaunchDaemonAndRestoreSessions).toHaveBeenCalledWith(
+				expect.any(String),
+				[postUpdateSession],
+				undefined,
+				{ allowAtRiskSessions: false },
+			);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
