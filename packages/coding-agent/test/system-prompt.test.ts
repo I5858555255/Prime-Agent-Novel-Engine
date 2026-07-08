@@ -332,6 +332,8 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("Default to non-blocking subagents");
 		expect(prompt).toContain("agent_observe.list_agents");
 		expect(prompt).toContain('runtimeKind == "subagent"');
+		expect(prompt).toContain("parentSessionId");
+		expect(prompt).toContain("parentActiveSessionId");
 		expect(prompt).toContain("agent_observe.recent_messages");
 		expect(prompt).toContain("agent_message.list_agents");
 		expect(prompt).toContain("agent_message.send");
@@ -387,6 +389,22 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("Available tools:");
 		expect(prompt).not.toContain("## Worked example:");
 		expect(prompt).not.toContain("## Anti-patterns");
+	});
+
+	test("omits ipython-only subagent guidance when ipython is inactive", () => {
+		const prompt = buildSystemPrompt({
+			selectedTools: ["bash"],
+			contextFiles: [],
+			skills: [],
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+		});
+
+		expect(prompt).toContain("You are a general purpose agent that uses code to solve tasks.");
+		expect(prompt).not.toContain("IPython is the agent's long-lived notebook");
+		expect(prompt).not.toContain("Default to non-blocking subagents");
+		expect(prompt).not.toContain("agent_observe.list_agents");
+		expect(prompt).not.toContain("asyncio.create_task");
 	});
 
 	test("custom prompt override bypasses the rlm harness body", () => {

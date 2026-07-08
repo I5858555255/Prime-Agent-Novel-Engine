@@ -38,6 +38,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	const installedSkills = options.installedSkills ?? [];
 	const allowRecursion = options.allowRecursion ?? true;
 	const activeTools = options.activeTools ?? [];
+	const hasIpython = options.activeTools === undefined ? true : activeTools.includes("ipython");
 	const parts = [
 		"You are a general purpose agent that uses code to solve tasks.",
 		"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating one step at a time.",
@@ -53,7 +54,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	if (skillsDir) {
 		skillLines.push(`Local skills live under ${skillsDir}. Read their SKILL.md files when helpful.`);
 	}
-	if (installedSkills.length > 0) {
+	if (installedSkills.length > 0 && hasIpython) {
 		const installed = installedSkills.map((skill) => `\`${skill}\``).join(", ");
 		skillLines.push(`Installed skills (pre-imported): ${installed}.`);
 		skillLines.push(
@@ -72,7 +73,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		parts.push("", ...skillLines);
 	}
 
-	if (allowRecursion) {
+	if (allowRecursion && hasIpython) {
 		parts.push(
 			"",
 			"A callable `rlm` is already in your global namespace. It returns an `RLMResult` with `.answer` (string), `.usage`, `.turns`, and `.session_dir`. A direct `await rlm('sub-task')` is valid only when the result is immediately required.",
@@ -104,7 +105,7 @@ export function buildSubagentGuidance(): string {
 		"You already have `rlm` in scope. This is about *when* to spawn one — which matters as much as how.",
 		"",
 		"Default to non-blocking subagents: create an `asyncio` task, keep the handle, continue independent work, and await only at the collection point where the result is needed.",
-		'If the `agent_observe` skill is installed, use it like the agents view to inspect live subagents without awaiting them: list agents with `await agent_observe.list_agents()`, filter `runtimeKind == "subagent"` or matching parent ids, and read bounded previews with `await agent_observe.recent_messages(target, limit=...)`.',
+		'If the `agent_observe` skill is installed, use it like the agents view to inspect live subagents without awaiting them: list agents with `await agent_observe.list_agents()`, filter `runtimeKind == "subagent"` and `parentSessionId` or `parentActiveSessionId`, and read bounded previews with `await agent_observe.recent_messages(target, limit=...)`.',
 		"If the `agent_message` skill is installed, live subagents are addressable like other active agents: list targets with `await agent_message.list_agents()` and send concise coordination or steering messages with `await agent_message.send(target, message, mode='auto')`; use `mode='steer'` only when you intend to interrupt current work.",
 		"",
 		"Reach for sub-agents when:",
