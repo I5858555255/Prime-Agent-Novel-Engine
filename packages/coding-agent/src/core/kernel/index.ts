@@ -38,6 +38,15 @@ const SNAPSHOT_DISPOSE_TIMEOUT_MS = 5000;
 const KERNEL_ABORT_GRACE_MS = 1000;
 const KERNEL_BUSY_REUSE_WAIT_MS = 5000;
 const KERNEL_BUSY_INTERRUPT_INTERVAL_MS = 500;
+const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE =
+	"IPython kernel is still running the previously interrupted cell. Wait and try again, or kill the IPython kernel to start fresh.";
+
+export class KernelBusyAfterInterruptError extends Error {
+	constructor() {
+		super(KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE);
+		this.name = "KernelBusyAfterInterruptError";
+	}
+}
 
 /** Comm target the kernel-side `rlm.host_request` shim opens for typed host requests. */
 export const HOST_COMM_TARGET = "host.request";
@@ -957,9 +966,7 @@ export class KernelManager {
 			}
 		}
 		if (this.activeExecution) {
-			throw new Error(
-				"IPython kernel is still running the previously interrupted cell. Wait a moment and try again.",
-			);
+			throw new KernelBusyAfterInterruptError();
 		}
 	}
 
@@ -1062,7 +1069,7 @@ export class KernelManager {
 		await this.control.send(encode(msg, this.connection.key));
 	}
 
-	private cleanupResources(): void {
+	private cleanupResources(killSignal: NodeJS.Signals = "SIGTERM"): void {
 		this.clearSnapshotTimer();
 		this.rejectActiveExecution(new Error("Kernel has been shut down"));
 		this.shell?.close();
@@ -1073,7 +1080,7 @@ export class KernelManager {
 		this.control = undefined;
 		this.iopubPumpPromise = undefined;
 		try {
-			this.kernel?.kill("SIGTERM");
+			this.kernel?.kill(killSignal);
 		} catch {}
 		this.kernel = undefined;
 		this.connection = undefined;
@@ -1147,6 +1154,12 @@ export class KernelManager {
 		} finally {
 			resolveNext();
 		}
+	}
+
+	async kill(): Promise<void> {
+		this.state = "shutdown";
+		liveKernels.delete(this);
+		this.cleanupResources("SIGKILL");
 	}
 
 	/**

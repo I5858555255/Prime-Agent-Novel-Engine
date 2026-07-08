@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KernelManager } from "../src/core/kernel/index.js";
-import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
+import type { ExtensionContext } from "../src/core/extensions/types.js";
+import { type ExecuteResult, KernelBusyAfterInterruptError, KernelManager } from "../src/core/kernel/index.js";
+import { createIpythonToolDefinition, IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
 let tempDir = "";
 
@@ -30,6 +31,25 @@ function writeFakePython(opts: { sleepSeconds?: number } = {}): { python: string
 		}
 	};
 	return { python, countRuns };
+}
+
+function okExecuteResult(): ExecuteResult {
+	return { stdout: "ok", stderr: "", status: "ok", durationMs: 1 };
+}
+
+function createBusyKernelContext(select: (title: string, options: string[]) => Promise<string | undefined>): {
+	ctx: ExtensionContext;
+	setWorkingMessage: ReturnType<typeof vi.fn>;
+} {
+	const setWorkingMessage = vi.fn();
+	const ctx = {
+		hasUI: true,
+		ui: {
+			select,
+			setWorkingMessage,
+		},
+	} as unknown as ExtensionContext;
+	return { ctx, setWorkingMessage };
 }
 
 describe("IpythonKernelProvisioner", () => {
@@ -139,6 +159,59 @@ describe("IpythonKernelProvisioner", () => {
 		await expect(provisioner.ensure(undefined, controller.signal)).rejects.toThrow("IPython execution aborted");
 		expect(dispose).not.toHaveBeenCalled();
 		expect(provisioner.manager).toBe(manager);
+	});
+
+	it("lets the user wait when an interrupted kernel is still busy", async () => {
+		const execute = vi
+			.fn<KernelManager["execute"]>()
+			.mockRejectedValueOnce(new KernelBusyAfterInterruptError())
+			.mockResolvedValueOnce(okExecuteResult());
+		const manager = { execute } as unknown as KernelManager;
+		const ensure = vi.fn(async () => manager);
+		const kill = vi.fn(async () => {});
+		const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
+		const select = vi.fn(async () => "Wait");
+		const { ctx, setWorkingMessage } = createBusyKernelContext(select);
+		const tool = createIpythonToolDefinition(tempDir, { provisioner });
+
+		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, ctx);
+
+		expect(result.details.status).toBe("ok");
+		expect(ensure).toHaveBeenCalledTimes(2);
+		expect(kill).not.toHaveBeenCalled();
+		expect(select).toHaveBeenCalledWith(
+			expect.stringContaining("previous interrupted cell"),
+			["Wait", "Kill kernel"],
+			{
+				signal: undefined,
+			},
+		);
+		expect(setWorkingMessage).toHaveBeenCalledWith("Waiting for IPython kernel...");
+	});
+
+	it("lets the user kill and restart a busy interrupted kernel", async () => {
+		const busyManager = {
+			execute: vi.fn<KernelManager["execute"]>().mockRejectedValueOnce(new KernelBusyAfterInterruptError()),
+		} as unknown as KernelManager;
+		const freshManager = {
+			execute: vi.fn<KernelManager["execute"]>().mockResolvedValueOnce(okExecuteResult()),
+		} as unknown as KernelManager;
+		const ensure = vi.fn(async () => {
+			return ensure.mock.calls.length === 1 ? busyManager : freshManager;
+		});
+		const kill = vi.fn(async () => {});
+		const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
+		const select = vi.fn(async () => "Kill kernel");
+		const { ctx, setWorkingMessage } = createBusyKernelContext(select);
+		const tool = createIpythonToolDefinition(tempDir, { provisioner });
+
+		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, ctx);
+
+		expect(result.details.status).toBe("ok");
+		expect(ensure).toHaveBeenCalledTimes(2);
+		expect(kill).toHaveBeenCalledTimes(1);
+		expect(freshManager.execute).toHaveBeenCalledWith("x = 1", expect.objectContaining({ signal: undefined }));
+		expect(setWorkingMessage).toHaveBeenCalledWith("Restarting IPython kernel...");
 	});
 
 	it("does not delete the on-disk snapshot (the kernel survives compaction)", async () => {
