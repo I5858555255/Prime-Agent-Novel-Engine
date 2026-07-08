@@ -26,6 +26,14 @@ import type {
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 const ABORT_ERROR_MESSAGE = "Request was aborted";
+const EMPTY_USAGE: AssistantMessage["usage"] = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 
 function createAbortError(): Error {
 	return new Error(ABORT_ERROR_MESSAGE);
@@ -88,6 +96,23 @@ function maybePromiseWithAbort<T>(
 	onAbort?: () => void,
 ): Promise<T> {
 	return raceWithAbort(Promise.resolve(operation), signal, onAbort);
+}
+
+function createAbortedAssistantMessage(
+	config: AgentLoopConfig,
+	partialMessage: AssistantMessage | null,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: partialMessage?.content ?? [{ type: "text", text: "" }],
+		api: partialMessage?.api ?? config.model.api,
+		provider: partialMessage?.provider ?? config.model.provider,
+		model: partialMessage?.model ?? config.model.id,
+		usage: partialMessage?.usage ?? EMPTY_USAGE,
+		stopReason: "aborted",
+		errorMessage: ABORT_ERROR_MESSAGE,
+		timestamp: Date.now(),
+	};
 }
 
 function endAgentStreamOnError(
@@ -411,67 +436,89 @@ async function streamAssistantResponse(
 	const closeIterator = () => {
 		void Promise.resolve(iterator.return?.()).catch(() => undefined);
 	};
-
-	while (true) {
-		const next = await raceWithAbort<IteratorResult<AssistantMessageEvent>>(iterator.next(), signal, closeIterator);
-		if (next.done) {
-			break;
+	const finishAbortedMessage = async () => {
+		const finalMessage = createAbortedAssistantMessage(config, partialMessage);
+		if (addedPartial) {
+			context.messages[context.messages.length - 1] = finalMessage;
+		} else {
+			context.messages.push(finalMessage);
+			await emit({ type: "message_start", message: { ...finalMessage } });
 		}
-		const event = next.value;
-		switch (event.type) {
-			case "start":
-				partialMessage = event.partial;
-				context.messages.push(partialMessage);
-				addedPartial = true;
-				await emit({ type: "message_start", message: { ...partialMessage } });
-				break;
+		await emit({ type: "message_end", message: finalMessage });
+		return finalMessage;
+	};
 
-			case "text_start":
-			case "text_delta":
-			case "text_end":
-			case "thinking_start":
-			case "thinking_delta":
-			case "thinking_end":
-			case "toolcall_start":
-			case "toolcall_delta":
-			case "toolcall_end":
-				if (partialMessage) {
+	try {
+		while (true) {
+			const next = await raceWithAbort<IteratorResult<AssistantMessageEvent>>(
+				iterator.next(),
+				signal,
+				closeIterator,
+			);
+			if (next.done) {
+				break;
+			}
+			const event = next.value;
+			switch (event.type) {
+				case "start":
 					partialMessage = event.partial;
-					context.messages[context.messages.length - 1] = partialMessage;
-					await emit({
-						type: "message_update",
-						assistantMessageEvent: event,
-						message: { ...partialMessage },
-					});
-				}
-				break;
+					context.messages.push(partialMessage);
+					addedPartial = true;
+					await emit({ type: "message_start", message: { ...partialMessage } });
+					break;
 
-			case "done":
-			case "error": {
-				const finalMessage = await maybePromiseWithAbort(response.result(), signal);
-				if (addedPartial) {
-					context.messages[context.messages.length - 1] = finalMessage;
-				} else {
-					context.messages.push(finalMessage);
+				case "text_start":
+				case "text_delta":
+				case "text_end":
+				case "thinking_start":
+				case "thinking_delta":
+				case "thinking_end":
+				case "toolcall_start":
+				case "toolcall_delta":
+				case "toolcall_end":
+					if (partialMessage) {
+						partialMessage = event.partial;
+						context.messages[context.messages.length - 1] = partialMessage;
+						await emit({
+							type: "message_update",
+							assistantMessageEvent: event,
+							message: { ...partialMessage },
+						});
+					}
+					break;
+
+				case "done":
+				case "error": {
+					const finalMessage = await maybePromiseWithAbort(response.result(), signal);
+					if (addedPartial) {
+						context.messages[context.messages.length - 1] = finalMessage;
+					} else {
+						context.messages.push(finalMessage);
+					}
+					if (!addedPartial) {
+						await emit({ type: "message_start", message: { ...finalMessage } });
+					}
+					await emit({ type: "message_end", message: finalMessage });
+					return finalMessage;
 				}
-				if (!addedPartial) {
-					await emit({ type: "message_start", message: { ...finalMessage } });
-				}
-				await emit({ type: "message_end", message: finalMessage });
-				return finalMessage;
 			}
 		}
-	}
 
-	const finalMessage = await maybePromiseWithAbort(response.result(), signal);
-	if (addedPartial) {
-		context.messages[context.messages.length - 1] = finalMessage;
-	} else {
-		context.messages.push(finalMessage);
-		await emit({ type: "message_start", message: { ...finalMessage } });
+		const finalMessage = await maybePromiseWithAbort(response.result(), signal);
+		if (addedPartial) {
+			context.messages[context.messages.length - 1] = finalMessage;
+		} else {
+			context.messages.push(finalMessage);
+			await emit({ type: "message_start", message: { ...finalMessage } });
+		}
+		await emit({ type: "message_end", message: finalMessage });
+		return finalMessage;
+	} catch (error) {
+		if (signal?.aborted) {
+			return finishAbortedMessage();
+		}
+		throw error;
 	}
-	await emit({ type: "message_end", message: finalMessage });
-	return finalMessage;
 }
 
 /**
