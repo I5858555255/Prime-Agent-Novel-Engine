@@ -146,7 +146,7 @@ function getDefaultAgentDir(): string {
  * await loader.reload();
  * const { session } = await createAgentSession({
  *   model: myModel,
- *   tools: ["ipython", "bash"],
+ *   tools: ["ipython"],
  *   resourceLoader: loader,
  *   sessionManager: SessionManager.inMemory(),
  * });

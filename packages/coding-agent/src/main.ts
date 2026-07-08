@@ -44,6 +44,7 @@ import { AuthStorage } from "./core/auth-storage.js";
 import { exportFromFile } from "./core/export-html/index.js";
 import type { ExtensionFactory } from "./core/extensions/types.js";
 import { KeybindingsManager } from "./core/keybindings.js";
+import { installFileLogSink, setLogContext } from "./core/logging.js";
 import type { ModelRegistry } from "./core/model-registry.js";
 import { findInitialModel, resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
@@ -58,6 +59,7 @@ import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
+import { collectDaemonClientEnv } from "./modes/daemon/daemon-protocol.js";
 import {
 	type AgentConnection,
 	createInteractiveModeLocalSessionHost,
@@ -179,8 +181,7 @@ export interface AgentsViewStartupDecision {
 	useDaemonInteractive: boolean;
 	needsOnboarding: boolean;
 	explicitAgentsView?: boolean;
-	session?: string;
-	resume?: boolean;
+	resume?: true | string;
 	continue?: boolean;
 	fork?: string;
 }
@@ -195,7 +196,6 @@ export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStar
 		// direct session path; the agents view would otherwise require creating
 		// an agent before the onboarding splash ever renders.
 		!options.needsOnboarding &&
-		!options.session &&
 		!options.resume &&
 		!options.continue &&
 		!options.fork
@@ -203,8 +203,7 @@ export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStar
 }
 
 export interface DaemonInteractiveSessionManagerDecision {
-	session?: string;
-	resume?: boolean;
+	resume?: true | string;
 	continue?: boolean;
 	fork?: string;
 	hasActiveDaemonSession?: boolean;
@@ -213,16 +212,20 @@ export interface DaemonInteractiveSessionManagerDecision {
 export function shouldUseEphemeralSessionManagerForDaemonInteractive(
 	options: DaemonInteractiveSessionManagerDecision,
 ): boolean {
-	return !options.hasActiveDaemonSession && !options.session && !options.resume && !options.continue && !options.fork;
+	return !options.hasActiveDaemonSession && !options.resume && !options.continue && !options.fork;
 }
 
 export interface DaemonActiveSessionLookupDecision {
 	useDaemonInteractive: boolean;
-	session?: string;
+	resumeSelector?: string;
 }
 
 export function shouldEnsureDaemonBeforeActiveSessionLookup(options: DaemonActiveSessionLookupDecision): boolean {
-	return options.useDaemonInteractive && options.session !== undefined && !looksLikeSessionPath(options.session);
+	return (
+		options.useDaemonInteractive &&
+		options.resumeSelector !== undefined &&
+		!looksLikeSessionPath(options.resumeSelector)
+	);
 }
 
 type ActiveDaemonSessionSummaryLookup = (socketPath: string, selector: string) => Promise<SessionSummary | undefined>;
@@ -439,7 +442,6 @@ function validateForkFlags(parsed: Args): void {
 	if (!parsed.fork) return;
 
 	const conflictingFlags = [
-		parsed.session ? "--session" : undefined,
 		parsed.continue ? "--continue" : undefined,
 		parsed.resume ? "--resume" : undefined,
 		parsed.noSession ? "--no-session" : undefined,
@@ -459,6 +461,18 @@ function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string)
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
 	}
+}
+
+function getResumeSelector(parsed: Pick<Args, "resume">): string | undefined {
+	return typeof parsed.resume === "string" ? parsed.resume : undefined;
+}
+
+export function restoreResumeSelectorFallback(parsed: Args, selector: string): boolean {
+	if (parsed.resumeSelectorFallback !== selector) return false;
+	delete parsed.resume;
+	delete parsed.resumeSelectorFallback;
+	parsed.messages.unshift(selector);
+	return true;
 }
 
 export async function createSessionManager(
@@ -483,13 +497,15 @@ export async function createSessionManager(
 				return forkSessionOrExit(resolved.path, cwd, sessionDir);
 
 			case "not_found":
+				if (restoreResumeSelectorFallback(parsed, resolved.arg)) break;
 				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
 				process.exit(1);
 		}
 	}
 
-	if (parsed.session) {
-		const resolved = await resolveSessionPath(parsed.session, cwd, sessionDir);
+	const resumeSelector = getResumeSelector(parsed);
+	if (resumeSelector) {
+		const resolved = await resolveSessionPath(resumeSelector, cwd, sessionDir);
 
 		switch (resolved.type) {
 			case "path":
@@ -507,6 +523,7 @@ export async function createSessionManager(
 			}
 
 			case "not_found":
+				if (restoreResumeSelectorFallback(parsed, resolved.arg)) break;
 				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
 				process.exit(1);
 		}
@@ -942,7 +959,7 @@ async function normalizeDaemonRichTuiAttachArgs(args: string[]): Promise<string[
 		return undefined;
 	}
 
-	return ["--daemon-socket", shortcut.socketPath, "--session", getDaemonSummaryActiveSessionId(summary)];
+	return ["--daemon-socket", shortcut.socketPath, "--resume", getDaemonSummaryActiveSessionId(summary)];
 }
 
 function createSessionManagerForActiveDaemonSummary(summary: SessionSummary, fallbackCwd: string): SessionManager {
@@ -958,7 +975,7 @@ function createSessionManagerForActiveDaemonSummary(summary: SessionSummary, fal
 }
 
 function getInteractiveDaemonSessionPath(parsed: Args, sessionManager: SessionManager): string | undefined {
-	if (!parsed.session && !parsed.resume && !parsed.continue && !parsed.fork) {
+	if (!parsed.resume && !parsed.continue && !parsed.fork) {
 		return undefined;
 	}
 	return sessionManager.getSessionFile();
@@ -992,6 +1009,7 @@ async function createDaemonInteractiveConnection(options: {
 		const attach = async (summary: SessionSummary) => {
 			const connection = await DaemonAgentConnection.attach(client, getDaemonSummaryActiveSessionId(summary), {
 				closeClientOnDispose: true,
+				sendClientEnv: true,
 			});
 			return { connection, summary };
 		};
@@ -1016,6 +1034,7 @@ async function createDaemonInteractiveConnection(options: {
 			config: options.config,
 			sessionPath: options.sessionPath,
 			continueRecent: options.continueRecent,
+			env: collectDaemonClientEnv(),
 		});
 		if (!response.success) {
 			throw new Error(response.error);
@@ -1051,6 +1070,7 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	installFileLogSink();
 	// Client and daemon are separate processes; both need these in their registry.
 	registerBuiltinMcpOAuthProviders();
 	args = normalizeDaemonStartArgs(args) ?? args;
@@ -1097,6 +1117,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("parseArgs");
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY);
+	setLogContext({ mode: appMode });
 	const shouldTakeOverStdout = appMode !== "interactive";
 	if (shouldTakeOverStdout) {
 		takeOverStdout();
@@ -1160,7 +1181,7 @@ export async function main(args: string[], options?: MainOptions) {
 	});
 
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
-	// --session and --resume may select a session from another project, so project-local
+	// --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
@@ -1175,16 +1196,17 @@ export async function main(args: string[], options?: MainOptions) {
 	// Errors are rethrown at the await sites below; this only avoids an unhandled
 	// rejection if startup exits before reaching them.
 	daemonReady?.catch(() => {});
+	const resumeSelector = getResumeSelector(parsed);
 	const shouldLookupDaemonActiveSession = shouldEnsureDaemonBeforeActiveSessionLookup({
 		useDaemonInteractive,
-		session: parsed.session,
+		resumeSelector,
 	});
 	if (shouldLookupDaemonActiveSession && daemonReady) {
 		daemonReady = (await awaitDaemonReady(daemonReady)).ready;
 	}
 	const activeDaemonSessionSummary =
-		shouldLookupDaemonActiveSession && parsed.session
-			? await findActiveDaemonSessionSummaryForInteractiveStartup(daemonSocketPath, parsed.session)
+		shouldLookupDaemonActiveSession && resumeSelector
+			? await findActiveDaemonSessionSummaryForInteractiveStartup(daemonSocketPath, resumeSelector)
 			: undefined;
 	let sessionManager: SessionManager;
 	if (activeDaemonSessionSummary) {
@@ -1192,7 +1214,6 @@ export async function main(args: string[], options?: MainOptions) {
 	} else if (
 		useDaemonInteractive &&
 		shouldUseEphemeralSessionManagerForDaemonInteractive({
-			session: parsed.session,
 			resume: parsed.resume,
 			continue: parsed.continue,
 			fork: parsed.fork,
@@ -1362,7 +1383,6 @@ export async function main(args: string[], options?: MainOptions) {
 					modelRegistry: services.modelRegistry,
 					model: startupModel.model,
 				}),
-				session: parsed.session,
 				resume: parsed.resume,
 				continue: parsed.continue,
 				fork: parsed.fork,

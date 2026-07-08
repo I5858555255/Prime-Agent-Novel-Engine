@@ -64,7 +64,13 @@ import {
 	ORCHESTRATION_HEARTBEAT_SKILL_NAME,
 } from "./agent-observe.js";
 import { flushAgentTraceUpload } from "./agent-traces.js";
-import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
+import {
+	addLoginGuidanceToAuthError,
+	formatAuthenticationFailedMessage,
+	formatNoApiKeyFoundMessage,
+	formatNoModelSelectedMessage,
+	isLikelyAuthenticationError,
+} from "./auth-guidance.js";
 import {
 	type AgentAutonomousConfig,
 	type AgentAutonomousStatus,
@@ -619,6 +625,7 @@ export class AgentSession {
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
+	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
 
 	private _resourceLoader: ResourceLoader;
@@ -770,11 +777,7 @@ export class AgentSession {
 
 		const isOAuth = this._modelRegistry.isUsingOAuth(model);
 		if (isOAuth) {
-			throw new Error(
-				`Authentication failed for "${model.provider}". ` +
-					`Credentials may have expired or network is unavailable. ` +
-					`Run '/login ${model.provider}' to re-authenticate.`,
-			);
+			throw new Error(formatAuthenticationFailedMessage(model.provider));
 		}
 		throw new Error(formatNoApiKeyFoundMessage(model.provider));
 	}
@@ -1166,11 +1169,7 @@ export class AgentSession {
 		if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
 			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
 			if (isOAuth) {
-				throw new Error(
-					`Authentication failed for "${this.model.provider}". ` +
-						`Credentials may have expired or network is unavailable. ` +
-						`Run '/login ${this.model.provider}' to re-authenticate.`,
-				);
+				throw new Error(formatAuthenticationFailedMessage(this.model.provider));
 			}
 			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 		}
@@ -1805,6 +1804,22 @@ export class AgentSession {
 		return undefined;
 	}
 
+	private _addLoginGuidanceToAuthError(event: AgentEvent): void {
+		const message =
+			event.type === "message_end" && event.message.role === "assistant"
+				? (event.message as AssistantMessage)
+				: event.type === "agent_end"
+					? this._findLastAssistantInMessages(event.messages)
+					: undefined;
+		if (!message || message.stopReason !== "error" || !message.errorMessage) {
+			return;
+		}
+		if (!isLikelyAuthenticationError(message.errorMessage)) {
+			return;
+		}
+		message.errorMessage = addLoginGuidanceToAuthError(message.errorMessage);
+	}
+
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
 		const acceptedPrompt = this._acceptedAgentMessagePrompt;
 		if (acceptedPrompt && (event.type === "message_start" || event.type === "message_end")) {
@@ -1873,6 +1888,8 @@ export class AgentSession {
 			);
 			return;
 		}
+
+		this._addLoginGuidanceToAuthError(event);
 
 		// Notify all listeners
 		this._emit(event);
@@ -2252,9 +2269,14 @@ export class AgentSession {
 	setActiveToolsByName(toolNames: string[]): void {
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
+		const seenToolNames = new Set<string>();
 		for (const name of toolNames) {
+			if (seenToolNames.has(name)) {
+				continue;
+			}
 			const tool = this._toolRegistry.get(name);
 			if (tool) {
+				seenToolNames.add(name);
 				tools.push(tool);
 				validToolNames.push(name);
 			}
@@ -2553,11 +2575,7 @@ export class AgentSession {
 			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
 				const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
 				if (isOAuth) {
-					throw new Error(
-						`Authentication failed for "${this.model.provider}". ` +
-							`Credentials may have expired or network is unavailable. ` +
-							`Run '/login ${this.model.provider}' to re-authenticate.`,
-					);
+					throw new Error(formatAuthenticationFailedMessage(this.model.provider));
 				}
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
@@ -4478,6 +4496,17 @@ export class AgentSession {
 		return this.settingsManager.getCompactionEnabled();
 	}
 
+	/**
+	 * Set the provider for extra env vars merged over process.env in extension
+	 * pi.exec() subprocesses. The function is read at exec time, so a host (e.g.
+	 * the daemon) can update the underlying value per attach without rebinding.
+	 */
+	setExecEnvProvider(provider: (() => Record<string, string | undefined> | undefined) | undefined): void {
+		this._execEnvProvider = provider;
+		const extensions = this._resourceLoader.getExtensions();
+		extensions.runtime.getExecEnv = provider;
+	}
+
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
@@ -4685,8 +4714,6 @@ export class AgentSession {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
-		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
-
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools = [
 			...registeredTools,
@@ -4694,7 +4721,9 @@ export class AgentSession {
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
-		].filter((tool) => isAllowedTool(tool.definition.name));
+		];
+		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
+		const allowedCustomTools = allCustomTools.filter((tool) => isAllowedTool(tool.definition.name));
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 			Array.from(this._baseToolDefinitions.entries())
 				.filter(([name]) => isAllowedTool(name))
@@ -4706,7 +4735,7 @@ export class AgentSession {
 					},
 				]),
 		);
-		for (const tool of allCustomTools) {
+		for (const tool of allowedCustomTools) {
 			definitionRegistry.set(tool.definition.name, {
 				definition: tool.definition,
 				sourceInfo: tool.sourceInfo,
@@ -4730,7 +4759,7 @@ export class AgentSession {
 				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
 		);
 		const runner = this._extensionRunner;
-		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
+		const wrappedExtensionTools = wrapRegisteredTools(allowedCustomTools, runner);
 		// Resolve the runner at call time so a rebuild/reload rebinds built-in tools to the
 		// live runner instead of wedging them on the invalidated one's stale-ctx guard.
 		const wrappedBuiltInTools = wrapRegisteredTools(
@@ -4779,8 +4808,6 @@ export class AgentSession {
 		flagValues?: Map<string, boolean | string>;
 		includeAllExtensionTools?: boolean;
 	}): void {
-		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
-		const shellPath = this.settingsManager.getShellPath();
 		const pythonSkills = getPythonSkillRuntimeInfo(this._modelVisibleSkills());
 		let configuredBaseToolDefinitions: Record<string, ToolDefinition>;
 		if (this._baseToolsOverride) {
@@ -4811,8 +4838,11 @@ export class AgentSession {
 				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
-				ipython: { provisioner: this._ipythonKernelProvisioner },
-				bash: { commandPrefix: shellCommandPrefix, shellPath },
+				ipython: {
+					provisioner: this._ipythonKernelProvisioner,
+					commandPrefix: this.settingsManager.getShellCommandPrefix(),
+					shellPath: this.settingsManager.getShellPath(),
+				},
 			});
 		}
 
@@ -4825,6 +4855,12 @@ export class AgentSession {
 			for (const [name, value] of options.flagValues) {
 				extensionsResult.runtime.flagValues.set(name, value);
 			}
+		}
+		// Re-apply on (re)build so the provider survives /reload. Guarded: the
+		// runtime object can be shared across sessions from one ResourceLoader
+		// (RLM children), so a provider-less session must not wipe the owner's.
+		if (this._execEnvProvider) {
+			extensionsResult.runtime.getExecEnv = this._execEnvProvider;
 		}
 
 		this._extensionRunner = new ExtensionRunner(
@@ -5557,6 +5593,14 @@ export class AgentSession {
 		// Context overflow is handled by compaction, not retry
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
+
+		// Structured classification from the provider (stream-failure.ts) beats
+		// message-text matching. Safety/malformed/unknown kinds fall through to
+		// the regex, which distinguishes transient content_filter cases.
+		const failure = message.diagnostics?.find((d) => d.type === "provider_stream_failure");
+		const kind = failure?.details?.kind;
+		if (kind === "overloaded" || kind === "rate_limit" || kind === "server_error") return true;
+		if (kind === "refusal" || kind === "auth" || kind === "invalid_request") return false;
 
 		const err = message.errorMessage;
 		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded, transient content_filter finish_reason, provider policy-flag prose, and prose-form transient 5xx ("an error occurred while processing your request. you can retry")
