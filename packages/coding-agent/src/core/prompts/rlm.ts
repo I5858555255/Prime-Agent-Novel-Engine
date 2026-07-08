@@ -39,6 +39,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	const allowRecursion = options.allowRecursion ?? true;
 	const activeTools = options.activeTools ?? [];
 	const hasIpython = options.activeTools === undefined ? true : activeTools.includes("ipython");
+	const canRunShellSkills = hasIpython || activeTools.includes("bash");
 	const parts = [
 		"You are a general purpose agent that uses code to solve tasks.",
 		"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating one step at a time.",
@@ -54,16 +55,22 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	if (skillsDir) {
 		skillLines.push(`Local skills live under ${skillsDir}. Read their SKILL.md files when helpful.`);
 	}
-	if (installedSkills.length > 0 && hasIpython) {
+	if (installedSkills.length > 0) {
 		const installed = installedSkills.map((skill) => `\`${skill}\``).join(", ");
-		skillLines.push(`Installed skills (pre-imported): ${installed}.`);
-		skillLines.push(
-			"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
-		);
-		skillLines.push(
-			"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
-		);
-		if (installedSkills.includes("edit")) {
+		if (hasIpython) {
+			skillLines.push(`Installed skills (pre-imported): ${installed}.`);
+			skillLines.push(
+				"Each skill is an async function by the same name. Inspect with `help(<skill>)` or `inspect.signature(<skill>.run)`.",
+			);
+		} else if (canRunShellSkills) {
+			skillLines.push(`Installed skills available as shell commands: ${installed}.`);
+		}
+		if (canRunShellSkills) {
+			skillLines.push(
+				"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
+			);
+		}
+		if (hasIpython && installedSkills.includes("edit")) {
 			skillLines.push(
 				"For targeted existing-file edits, prefer the pre-imported async `edit` skill from IPython: `old = '''...'''; new = '''...'''; await edit(path=\"pkg/file.py\", old_str=old, new_str=new)`. Use exact old/new strings; if the text contains triple double quotes, use triple single-quoted variables or build `old`/`new` from inspected file slices.",
 			);

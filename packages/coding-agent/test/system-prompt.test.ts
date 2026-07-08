@@ -97,6 +97,22 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).not.toContain("IPython is the agent's long-lived notebook");
 	});
 
+	test("keeps shell skill command guidance when ipython is inactive", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["websearch"],
+			activeTools: ["bash"],
+			allowRecursion: false,
+		});
+
+		expect(prompt).toContain("Installed skills available as shell commands: `websearch`.");
+		expect(prompt).toContain("Each skill is also available as a shell command");
+		expect(prompt).toContain("`<skill> --help`");
+		expect(prompt).not.toContain("Installed skills (pre-imported)");
+		expect(prompt).not.toContain("Each skill is an async function");
+	});
+
 	test("documents the %%bash first-line rule when ipython is active", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
