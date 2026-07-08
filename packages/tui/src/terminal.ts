@@ -25,7 +25,7 @@ export interface Terminal {
 	start(onInput: (data: string) => void, onResize: () => void): void;
 
 	// Stop the terminal and restore state
-	stop(): void;
+	stop(options?: TerminalStopOptions): void;
 
 	/**
 	 * Drain stdin before exiting to prevent Kitty key release events from
@@ -74,6 +74,10 @@ export interface Terminal {
 
 	// Progress indicator (OSC 9;4)
 	setProgress(active: boolean): void;
+}
+
+export interface TerminalStopOptions {
+	preserveAltScreen?: boolean;
 }
 
 /**
@@ -341,19 +345,18 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
-	stop(): void {
+	stop(options: TerminalStopOptions = {}): void {
 		this.finishDefaultColorProbe();
 
 		if (this.clearProgressInterval()) {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 
-		// never strand the user on the alt screen or with mouse tracking on
 		if (this._mouseTrackingActive) {
 			process.stdout.write("\x1b[?1006l\x1b[?1002l");
 			this._mouseTrackingActive = false;
 		}
-		if (this._altScreenActive) {
+		if (this._altScreenActive && !options.preserveAltScreen) {
 			process.stdout.write("\x1b[?1049l");
 			this._altScreenActive = false;
 		}

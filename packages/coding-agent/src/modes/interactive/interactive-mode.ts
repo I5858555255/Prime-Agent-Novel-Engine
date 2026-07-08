@@ -5547,9 +5547,9 @@ export class InteractiveMode {
 	 * leak into the parent UI, then stops the renderer and theme watcher. Safe to
 	 * call from a crash path too; idempotent via stop().
 	 */
-	async teardownSessionUi(): Promise<void> {
+	async teardownSessionUi(options: { preserveAltScreen?: boolean } = {}): Promise<void> {
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
-		this.stop();
+		this.stop({ preserveAltScreen: options.preserveAltScreen });
 		stopThemeWatcher();
 	}
 
@@ -5559,7 +5559,7 @@ export class InteractiveMode {
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
 
-		await this.teardownSessionUi();
+		await this.teardownSessionUi({ preserveAltScreen: true });
 		try {
 			await this.agentConnection.dispose();
 		} finally {
@@ -8114,7 +8114,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 		}
 	}
 
-	stop(): void {
+	stop(options: { preserveAltScreen?: boolean } = {}): void {
 		this.unregisterSignalHandlers();
 		this.clearCtrlCExitHint({ render: false });
 		if (this.settingsManager.getShowTerminalProgress()) {
@@ -8130,7 +8130,10 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			this.ui.stop();
+			this.ui.stop({
+				preserveAltScreen: options.preserveAltScreen,
+				flushFullscreen: options.preserveAltScreen ? false : undefined,
+			});
 			this.isInitialized = false;
 		}
 	}

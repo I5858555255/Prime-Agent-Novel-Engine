@@ -352,7 +352,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				// Tear down the session TUI exactly as a normal back-navigation would
 				// (drain input, stop renderer + theme watcher) so it doesn't fight the
 				// agents-view UI for the terminal, then drop the daemon connection.
-				await interactiveMode.teardownSessionUi();
+				await interactiveMode.teardownSessionUi({ preserveAltScreen: true });
 				await opened.connection.dispose().catch(() => undefined);
 			}
 		} catch (error) {
@@ -369,6 +369,7 @@ class AgentsViewMode implements Component, Focusable {
 	private readonly ui: TUI;
 	private readonly editor: CustomEditor;
 	private readonly splash: BrandSplashHeader;
+	private readonly fullscreenDock: Component;
 	private readonly keybindings: KeybindingsManager;
 	private client: DaemonClient | undefined;
 	private resolveRun: ((result: AgentsViewRunResult) => void) | undefined;
@@ -445,6 +446,12 @@ class AgentsViewMode implements Component, Focusable {
 			this.setReplyTarget(undefined);
 			return true;
 		};
+		this.fullscreenDock = {
+			render: (width) => this.renderDock(width),
+			invalidate: () => {
+				this.editor.invalidate();
+			},
+		};
 		this.splash = new BrandSplashHeader(
 			VERSION,
 			() => this.getSplashModelId(),
@@ -463,6 +470,12 @@ class AgentsViewMode implements Component, Focusable {
 		this.ui.addChild(this);
 		this.ui.setFocus(this);
 		this.ui.start();
+		this.ui.enterFullscreen({
+			scroll: [this],
+			dock: this.fullscreenDock,
+			mouse: false,
+			viewportControls: false,
+		});
 		const startupStatusMessage = this.persistentState.statusMessage;
 		this.persistentState.statusMessage = undefined;
 		if (startupStatusMessage) {
@@ -549,14 +562,8 @@ class AgentsViewMode implements Component, Focusable {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const height = Math.max(1, this.ui.terminal.rows);
-		const promptLines = [...this.renderPrompt(safeWidth), this.renderHints(safeWidth)];
-		const contentHeight = Math.max(0, height - promptLines.length);
-		const lines = this.renderContent(safeWidth, contentHeight).slice(0, contentHeight);
-		while (lines.length < contentHeight) {
-			lines.push("");
-		}
-		lines.push(...promptLines.slice(0, Math.max(0, height - lines.length)));
+		const height = this.contentHeight(safeWidth);
+		const lines = this.renderContent(safeWidth, height).slice(0, height);
 		while (lines.length < height) {
 			lines.push("");
 		}
@@ -1794,10 +1801,10 @@ class AgentsViewMode implements Component, Focusable {
 		this.clearCtrlCExitHint({ render: false });
 		this.clearDeleteConfirmation({ render: false });
 		this.setStatusMessage(undefined, { render: false });
-		this.ui.stop();
-		if (result.type === "open") {
-			this.ui.terminal.clearScreen();
-		}
+		this.ui.stop({
+			preserveAltScreen: result.type === "open",
+			flushFullscreen: false,
+		});
 		stopThemeWatcher();
 		this.client?.close();
 		this.client = undefined;
@@ -1966,6 +1973,13 @@ class AgentsViewMode implements Component, Focusable {
 		return this.editor.render(width);
 	}
 
+	private renderDock(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		return [...this.renderPrompt(safeWidth), this.renderHints(safeWidth)].map((line) =>
+			this.finalizeRenderedLine(line, safeWidth),
+		);
+	}
+
 	private renderHints(width: number): string {
 		if (this.isCtrlCExitHintVisible()) {
 			const clearKey = keyText("app.clear");
@@ -2002,6 +2016,10 @@ class AgentsViewMode implements Component, Focusable {
 
 	private visibleListRows(): number {
 		return Math.max(4, this.ui.terminal.rows - 9);
+	}
+
+	private contentHeight(width: number): number {
+		return Math.max(0, this.ui.terminal.rows - this.renderDock(width).length);
 	}
 
 	private getSplashModelId(): string | undefined {
