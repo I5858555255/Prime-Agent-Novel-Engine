@@ -802,6 +802,10 @@ export class AgentDaemon {
 		}
 	}
 
+	private deleteSavedSessionFile(sessionPath: string): ReturnType<typeof deleteSessionFile> {
+		return deleteSessionFile(sessionPath);
+	}
+
 	private removeQueuedHeartbeatFollowUp(state: ActiveSessionState, job: AgentCronJob): void {
 		if (!isHeartbeatCronJob(job)) {
 			return;
@@ -1283,8 +1287,11 @@ export class AgentDaemon {
 				if (this.findActiveSessionByFile(command.sessionPath)) {
 					throw new Error("Cannot delete the currently active session");
 				}
-				this.cancelScheduledJobsForSessionFile(command.sessionPath);
-				return success(command.id, "delete_saved_session", await deleteSessionFile(command.sessionPath));
+				const result = await this.deleteSavedSessionFile(command.sessionPath);
+				if (result.ok) {
+					this.cancelScheduledJobsForSessionFile(command.sessionPath);
+				}
+				return success(command.id, "delete_saved_session", result);
 			}
 
 			case "prompt": {
