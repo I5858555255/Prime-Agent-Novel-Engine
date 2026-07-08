@@ -107,6 +107,52 @@ describe("issue #4491 provider stale after repeated 401", () => {
 		});
 	});
 
+	it("classifies bare status-code auth failures before login guidance is appended", async () => {
+		const harness = await createHarness({
+			provider: "prime-inference",
+			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		const message = bareProvider401Message();
+		const event = { type: "agent_end", messages: [message] } as AgentEvent;
+		const session = harness.session as unknown as {
+			_createRetryPromiseForAgentEnd(event: AgentEvent): void;
+		};
+
+		session._createRetryPromiseForAgentEnd(event);
+
+		expect(harness.session.isRetrying).toBe(true);
+		harness.session.abortRetry();
+	});
+
+	it("marks captured auth failures stale when retry backoff is cancelled", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100 } },
+		});
+		harnesses.push(harness);
+		harness.setResponses([provider401Message(), provider401Message()]);
+
+		const sawRetryStart = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "auto_retry_start") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+
+		const promptPromise = harness.session.prompt("hello");
+		await sawRetryStart;
+		harness.session.abortRetry();
+		await promptPromise;
+
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.eventsOfType("auth_stale")).toHaveLength(1);
+		expect(harness.eventsOfType("auto_retry_end").map((event) => event.finalError)).toContain("Retry cancelled");
+		expect(harness.authStorage.hasAuth(harness.getModel().provider)).toBe(false);
+		await expect(harness.authStorage.getApiKey(harness.getModel().provider)).resolves.toBeUndefined();
+	});
+
 	it("marks each failed auth source stale when credentials change during retry backoff", async () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 5 } },

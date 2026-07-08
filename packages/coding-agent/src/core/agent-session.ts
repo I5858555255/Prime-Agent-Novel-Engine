@@ -5399,6 +5399,10 @@ export class AgentSession {
 			return true;
 		}
 
+		if (/\b(?:401|403)\b/.test(message.errorMessage) && /\bstatus code\b/i.test(message.errorMessage)) {
+			return true;
+		}
+
 		return (
 			/\b(?:401|403)\b/.test(message.errorMessage) &&
 			/auth|unauthori[sz]ed|forbidden|api.?key|token|credential/i.test(message.errorMessage)
@@ -5522,6 +5526,7 @@ export class AgentSession {
 		} catch {
 			// Aborted during sleep - emit end event so UI can clean up
 			const attempt = this._retryAttempt;
+			this._markProviderAuthStaleForRetryFailure(message, options);
 			this._retryAttempt = 0;
 			this._retryAbortController = undefined;
 			this._emit({
@@ -5550,8 +5555,10 @@ export class AgentSession {
 	 * Cancel in-progress retry.
 	 */
 	abortRetry(): void {
-		this._retryAbortController?.abort();
-		// Note: _retryAttempt is reset in the catch block of _autoRetry
+		if (this._retryAbortController) {
+			this._retryAbortController.abort();
+			return;
+		}
 		this._retryAuthFailureSources = [];
 		this._resolveRetry();
 	}
