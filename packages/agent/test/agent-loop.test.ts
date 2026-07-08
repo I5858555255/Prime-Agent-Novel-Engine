@@ -290,6 +290,37 @@ describe("agentLoop with AgentMessage", () => {
 		).toBe(false);
 	});
 
+	it("should return an aborted assistant when abort fires before the stream starts", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const controller = new AbortController();
+		const streamFn = vi.fn(() => new MockAssistantStream());
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: (messages) => {
+				controller.abort();
+				return identityConverter(messages);
+			},
+		};
+
+		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
+		for await (const _event of stream) {
+			// consume
+		}
+
+		const messages = await stream.result();
+		const assistant = messages.find((message) => message.role === "assistant");
+		expect(streamFn).not.toHaveBeenCalled();
+		expect(assistant?.role).toBe("assistant");
+		if (assistant?.role === "assistant") {
+			expect(assistant.stopReason).toBe("aborted");
+			expect(assistant.errorMessage).toBe("Request was aborted");
+		}
+	});
+
 	it("should end without adding an aborted assistant when abort fires after turn completion", async () => {
 		const context: AgentContext = {
 			systemPrompt: "You are helpful.",

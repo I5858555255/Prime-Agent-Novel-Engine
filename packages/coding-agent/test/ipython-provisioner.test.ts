@@ -144,6 +144,25 @@ describe("IpythonKernelProvisioner", () => {
 		expect(countRuns()).toBe(0); // disposed boot must never spawn a kernel
 	});
 
+	it("aborting the startup owner before the boot slot prevents the kernel from spawning", async () => {
+		const { python, countRuns } = writeFakePython();
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const provisioner = new IpythonKernelProvisioner(tempDir, { python, readyGate: gate });
+		const controller = new AbortController();
+
+		const started = provisioner.ensure(undefined, controller.signal);
+		controller.abort();
+		await expect(started).rejects.toThrow("IPython execution aborted");
+		release();
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(countRuns()).toBe(0);
+		expect(provisioner.manager).toBeUndefined();
+	});
+
 	it("waits for readyGate before starting the kernel", async () => {
 		const { python, countRuns } = writeFakePython();
 		let release: () => void = () => {};

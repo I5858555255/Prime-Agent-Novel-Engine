@@ -462,45 +462,8 @@ async function streamAssistantResponse(
 	emit: AgentEventSink,
 	streamFn?: StreamFn,
 ): Promise<AssistantMessage> {
-	throwIfAborted(signal);
-	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
-	let messages = context.messages;
-	if (config.transformContext) {
-		messages = await maybePromiseWithAbort(config.transformContext(messages, signal), signal);
-	}
-
-	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const llmMessages = await maybePromiseWithAbort(config.convertToLlm(messages), signal);
-
-	// Build LLM context
-	const llmContext: Context = {
-		systemPrompt: context.systemPrompt,
-		messages: llmMessages,
-		tools: context.tools,
-	};
-
-	const streamFunction = streamFn || streamSimple;
-
-	// Resolve API key (important for expiring tokens)
-	const resolvedApiKey =
-		(config.getApiKey ? await maybePromiseWithAbort(config.getApiKey(config.model.provider), signal) : undefined) ||
-		config.apiKey;
-
-	const response = await maybePromiseWithAbort(
-		streamFunction(config.model, llmContext, {
-			...config,
-			apiKey: resolvedApiKey,
-			signal,
-		}),
-		signal,
-	);
-
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
-	const iterator = response[Symbol.asyncIterator]();
-	const closeIterator = () => {
-		void Promise.resolve(iterator.return?.()).catch(() => undefined);
-	};
 	const finishAbortedMessage = async () => {
 		const finalMessage = createAbortedAssistantMessage(config, partialMessage);
 		if (addedPartial) {
@@ -514,6 +477,43 @@ async function streamAssistantResponse(
 	};
 
 	try {
+		throwIfAborted(signal);
+		// Apply context transform if configured (AgentMessage[] → AgentMessage[])
+		let messages = context.messages;
+		if (config.transformContext) {
+			messages = await maybePromiseWithAbort(config.transformContext(messages, signal), signal);
+		}
+
+		// Convert to LLM-compatible messages (AgentMessage[] → Message[])
+		const llmMessages = await maybePromiseWithAbort(config.convertToLlm(messages), signal);
+
+		// Build LLM context
+		const llmContext: Context = {
+			systemPrompt: context.systemPrompt,
+			messages: llmMessages,
+			tools: context.tools,
+		};
+
+		const streamFunction = streamFn || streamSimple;
+
+		// Resolve API key (important for expiring tokens)
+		const resolvedApiKey =
+			(config.getApiKey
+				? await maybePromiseWithAbort(config.getApiKey(config.model.provider), signal)
+				: undefined) || config.apiKey;
+
+		const response = await maybePromiseWithAbort(
+			streamFunction(config.model, llmContext, {
+				...config,
+				apiKey: resolvedApiKey,
+				signal,
+			}),
+			signal,
+		);
+		const iterator = response[Symbol.asyncIterator]();
+		const closeIterator = () => {
+			void Promise.resolve(iterator.return?.()).catch(() => undefined);
+		};
 		while (true) {
 			const next = await raceWithAbort<IteratorResult<AssistantMessageEvent>>(
 				iterator.next(),

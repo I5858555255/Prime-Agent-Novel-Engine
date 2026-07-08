@@ -178,6 +178,35 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, 
 	});
 }
 
+function createLinkedAbortSignal(sources: readonly (AbortSignal | undefined)[]): {
+	signal: AbortSignal;
+	cleanup: () => void;
+} {
+	const controller = new AbortController();
+	const cleanups: Array<() => void> = [];
+	const abort = () => controller.abort();
+	for (const source of sources) {
+		if (!source) {
+			continue;
+		}
+		if (source.aborted) {
+			controller.abort();
+			continue;
+		}
+		const listener = () => abort();
+		source.addEventListener("abort", listener, { once: true });
+		cleanups.push(() => source.removeEventListener("abort", listener));
+	}
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			for (const cleanup of cleanups) {
+				cleanup();
+			}
+		},
+	};
+}
+
 export type IpythonToolInput = Static<typeof ipythonSchema>;
 
 export interface IpythonToolDetails {
@@ -356,7 +385,7 @@ export class IpythonKernelProvisioner {
 			}
 		}
 		if (!this.managerPromise) {
-			const startup = this.startKernel();
+			const startup = this.startKernel(signal);
 			this.managerPromise = startup;
 			startup.then(
 				(m) => {
@@ -392,79 +421,87 @@ export class IpythonKernelProvisioner {
 		}
 	}
 
-	private async startKernel(): Promise<KernelManager> {
-		const disposeSignal = this.disposeController.signal;
+	private async startKernel(signal?: AbortSignal): Promise<KernelManager> {
+		const startupAbort = createLinkedAbortSignal([this.disposeController.signal, signal]);
+		const startupSignal = startupAbort.signal;
 		// Wait for a previous provisioner (e.g. on /reload) to finish disposing — and
 		// flushing its final snapshot — before we read that snapshot back, so the two
 		// kernels can't race over the same on-disk file. Guarded so the common
 		// no-gate path stays synchronous (callers rely on prompt startup progress).
-		if (this.options?.readyGate) {
-			await raceWithAbort(
-				this.options.readyGate.catch(() => {}),
-				disposeSignal,
-			);
-		}
-		const snapshotDir = this.options?.snapshotDir;
-		const m = new KernelManager({
-			python: this.options?.python,
-			cwd: this.cwd,
-			env: this.options?.env,
-			sessionId: this.options?.sessionId,
-			hostHandlers: this.options?.hostHandlers,
-			pythonSkills: this.options?.pythonSkills,
-			// Only persistent sessions (which have an artifact dir) get a revivable snapshot.
-			snapshot: snapshotDir
-				? { path: snapshotPathIn(snapshotDir), manifestPath: manifestPathIn(snapshotDir) }
-				: undefined,
-		});
-		// Emitted synchronously (before the permit await) so a listener attaching
-		// mid-flight can replay the current stage.
-		this.emitStartupProgress("Starting IPython kernel...");
-		// Only the process spawn + port resolve contends for OS resources under a
-		// fan-out, and it is bounded by start()'s own timeouts — so the permit
-		// covers only start(). Restore/bootstrap run per-kernel afterwards and are
-		// unbounded execute()s; holding the global permit across them could pin it
-		// forever on a wedged bootstrap and starve every other session's boot.
-		await withKernelBootPermit(() => {
-			// Disposed while queued for the permit — don't spawn a kernel nobody wants.
-			if (disposeSignal.aborted) throw new Error("Kernel provisioner disposed before start");
-			return m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
-		}, disposeSignal);
-		let pendingRestore: RestoreResult | undefined;
 		try {
-			// Revive a prior session's namespace before the bootstrap, so the bootstrap
-			// then overwrites live handles (rlm, skills) on top of anything restored.
-			if (snapshotDir) {
-				const snapshotExisted = existsSync(snapshotPathIn(snapshotDir));
-				this.emitStartupProgress("Restoring IPython state...");
-				const restore = await m.restoreState();
-				if (snapshotExisted) {
-					pendingRestore = restore ?? { restored: [], failed: [], path: snapshotPathIn(snapshotDir) };
-				}
+			if (this.options?.readyGate) {
+				await raceWithAbort(
+					this.options.readyGate.catch(() => {}),
+					startupSignal,
+				);
 			}
-			this.emitStartupProgress("Preparing IPython runtime...");
-			const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills), {
-				signal: disposeSignal,
+			const snapshotDir = this.options?.snapshotDir;
+			const m = new KernelManager({
+				python: this.options?.python,
+				cwd: this.cwd,
+				env: this.options?.env,
+				sessionId: this.options?.sessionId,
+				hostHandlers: this.options?.hostHandlers,
+				pythonSkills: this.options?.pythonSkills,
+				// Only persistent sessions (which have an artifact dir) get a revivable snapshot.
+				snapshot: snapshotDir
+					? { path: snapshotPathIn(snapshotDir), manifestPath: manifestPathIn(snapshotDir) }
+					: undefined,
 			});
-			if (bootstrap.status !== "ok") {
-				const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
-				throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+			let pendingRestore: RestoreResult | undefined;
+			try {
+				// Emitted synchronously (before the permit await) so a listener attaching
+				// mid-flight can replay the current stage.
+				this.emitStartupProgress("Starting IPython kernel...");
+				// Only the process spawn + port resolve contends for OS resources under a
+				// fan-out, and it is bounded by start()'s own timeouts — so the permit
+				// covers only start(). Restore/bootstrap run per-kernel afterwards and are
+				// unbounded execute()s; holding the global permit across them could pin it
+				// forever on a wedged bootstrap and starve every other session's boot.
+				await withKernelBootPermit(() => {
+					// Disposed while queued for the permit — don't spawn a kernel nobody wants.
+					if (startupSignal.aborted) throw new Error("Kernel provisioner disposed before start");
+					return m.start({
+						onBootstrapProgress: (message) => this.emitStartupProgress(message),
+						signal: startupSignal,
+					});
+				}, startupSignal);
+				// Revive a prior session's namespace before the bootstrap, so the bootstrap
+				// then overwrites live handles (rlm, skills) on top of anything restored.
+				if (snapshotDir) {
+					const snapshotExisted = existsSync(snapshotPathIn(snapshotDir));
+					this.emitStartupProgress("Restoring IPython state...");
+					const restore = await raceWithAbort(m.restoreState(), startupSignal);
+					if (snapshotExisted) {
+						pendingRestore = restore ?? { restored: [], failed: [], path: snapshotPathIn(snapshotDir) };
+					}
+				}
+				this.emitStartupProgress("Preparing IPython runtime...");
+				const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills), {
+					signal: startupSignal,
+				});
+				if (bootstrap.status !== "ok") {
+					const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
+					throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);
+				}
+			} catch (error) {
+				// Never leak the kernel's ZMQ sockets / temp dir if startup fails after spawn.
+				void m.dispose();
+				throw error;
 			}
-		} catch (error) {
-			// Never leak the kernel's ZMQ sockets / temp dir if startup fails after spawn.
-			void m.dispose();
-			throw error;
+			// Only tell the model what was revived once the kernel is actually usable —
+			// a notice claiming restored state must never outlive a failed bootstrap.
+			if (pendingRestore) {
+				this._lastRestore = pendingRestore;
+				this.options?.onRestore?.(pendingRestore);
+			}
+			if (this.options?.kernelManagerRef) {
+				this.options.kernelManagerRef.current = m;
+			}
+			return m;
+		} finally {
+			startupAbort.cleanup();
 		}
-		// Only tell the model what was revived once the kernel is actually usable —
-		// a notice claiming restored state must never outlive a failed bootstrap.
-		if (pendingRestore) {
-			this._lastRestore = pendingRestore;
-			this.options?.onRestore?.(pendingRestore);
-		}
-		if (this.options?.kernelManagerRef) {
-			this.options.kernelManagerRef.current = m;
-		}
-		return m;
 	}
 }
 
