@@ -87,6 +87,31 @@ print(await attach_image(${JSON.stringify(imagePath)}))
 		expect(result.attachments?.[0]?.data.length).toBeLessThanOrEqual(350_000);
 	});
 
+	it("reports when compressed animated images are flattened to their first frame", async () => {
+		const imagePath = join(tempDir, "animated.gif");
+
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledAttachImageSkill()],
+			hostHandlers: {
+				"model.info": async () => ({ id: "anthropic/claude-haiku-4.5", input: ["text", "image"] }),
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		const result = await manager.execute(`
+from PIL import Image
+frames = [Image.new("RGB", (1300, 10), color) for color in ("red", "blue")]
+frames[0].save(${JSON.stringify(imagePath)}, save_all=True, append_images=frames[1:], duration=50, loop=0)
+print(await attach_image(${JSON.stringify(imagePath)}))
+`);
+
+		expect(result.status).toBe("ok");
+		expect(result.stdout).toContain("animated image flattened to first frame");
+		expect(result.attachments).toHaveLength(1);
+		expect(result.attachments?.[0]?.mimeType).toBe("image/jpeg");
+		expect(result.attachments?.[0]?.data.length).toBeLessThanOrEqual(350_000);
+	});
+
 	it("errors without emitting an attachment when the model is not vision-capable", async () => {
 		const imagePath = join(tempDir, "sample.png");
 		writeFileSync(imagePath, Buffer.from(PNG_BASE64, "base64"));

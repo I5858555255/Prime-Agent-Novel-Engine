@@ -65,16 +65,18 @@ def _load_image_for_attachment(data: bytes):
     from PIL import Image, ImageOps
 
     image = Image.open(io.BytesIO(data))
-    image = ImageOps.exif_transpose(image)
-    if getattr(image, "is_animated", False):
+    is_animated = getattr(image, "is_animated", False)
+    if is_animated:
         image.seek(0)
+    image = ImageOps.exif_transpose(image)
+    conversion_note = "animated image flattened to first frame" if is_animated else None
 
     if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
         rgba = image.convert("RGBA")
         background = Image.new("RGB", rgba.size, "white")
         background.paste(rgba, mask=rgba.split()[-1])
-        return background
-    return image.convert("RGB")
+        return background, conversion_note
+    return image.convert("RGB"), conversion_note
 
 
 def _encode_jpeg(image, quality: int) -> bytes:
@@ -108,7 +110,7 @@ def _resize_image(filepath: Path, mime_type: str, size: int) -> tuple[str, str, 
             "attach_image needs Pillow to resize this image before loading it into context."
         ) from error
 
-    image = _load_image_for_attachment(data)
+    image, conversion_note = _load_image_for_attachment(data)
     original_width, original_height = image.size
 
     scale = min(1.0, _MAX_ATTACHMENT_DIMENSION / max(original_width, original_height))
@@ -130,6 +132,8 @@ def _resize_image(filepath: Path, mime_type: str, size: int) -> tuple[str, str, 
                     f"original {original_width}x{original_height}; attached "
                     f"{target_width}x{target_height} JPEG at quality {quality}"
                 )
+                if conversion_note:
+                    note += f"; {conversion_note}"
                 return base64.b64encode(candidate).decode("ascii"), "image/jpeg", note
 
         next_width = max(1, int(target_width * 0.75))
