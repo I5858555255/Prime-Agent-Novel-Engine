@@ -56,6 +56,14 @@ describe("Prime Inference models", () => {
 		expect(modelIds.filter((id) => id.includes(":"))).toEqual([]);
 	});
 
+	it("marks flagship models as featured so pickers can pin them above the long tail", () => {
+		expect(getModel("prime-inference", "openai/gpt-5.5").featured).toBe(true);
+		expect(getModel("prime-inference", "z-ai/glm-5.2").featured).toBe(true);
+		expect(getModel("prime-inference", "internal/glm-5.2-fast").featured).toBe(true);
+		expect(getModel("prime-inference", "google/gemini-2.5-pro").featured).toBeUndefined();
+		expect(getModel("prime-inference", "openai/gpt-4o").featured).toBeUndefined();
+	});
+
 	it("borrows OpenRouter metadata for non-curated catalog models", () => {
 		const gemini = getModel("prime-inference", "google/gemini-2.5-pro");
 		expect(gemini.contextWindow).toBe(1048576);

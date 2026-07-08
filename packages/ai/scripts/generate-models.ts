@@ -159,6 +159,41 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"z-ai/glm-5": { maxTokens: 131072 },
 };
 
+// Flagship models pinned above the long tail in the model picker, so the full
+// catalog doesn't flood /model. Everything else stays selectable via search.
+const PRIME_INFERENCE_FEATURED_MODELS = new Set([
+	"anthropic/claude-fable-5",
+	"anthropic/claude-haiku-4.5",
+	"anthropic/claude-opus-4.6",
+	"anthropic/claude-opus-4.7",
+	"anthropic/claude-opus-4.8",
+	"anthropic/claude-sonnet-4.5",
+	"anthropic/claude-sonnet-4.6",
+	"anthropic/claude-sonnet-5",
+	"deepseek/deepseek-v3.2",
+	"deepseek/deepseek-v4-flash",
+	"deepseek/deepseek-v4-pro",
+	"internal/glm-5.2-fast",
+	"minimax/minimax-m3",
+	"moonshotai/kimi-k2.7-code",
+	"nvidia/nemotron-3-nano-30b-a3b",
+	"nvidia/nemotron-3-super-120b-a12b",
+	"openai/gpt-5.3-codex",
+	"openai/gpt-5.4",
+	"openai/gpt-5.4-mini",
+	"openai/gpt-5.4-pro",
+	"openai/gpt-5.5",
+	"qwen/qwen3-30b-a3b-instruct-2507",
+	"qwen/qwen3-coder-next",
+	"qwen/qwen3-max",
+	"qwen/qwen3-vl-235b-a22b-thinking",
+	"x-ai/grok-4.20",
+	"x-ai/grok-4.20-multi-agent",
+	"z-ai/glm-5",
+	"z-ai/glm-5.1",
+	"z-ai/glm-5.2",
+]);
+
 // Prime ids whose OpenRouter listing uses a different id. internal/glm-5.2-fast
 // serves the same underlying model as z-ai/glm-5.2, so it borrows its metadata.
 const PRIME_INFERENCE_OPENROUTER_ALIASES: Record<string, string> = {
@@ -589,6 +624,7 @@ function createPrimeInferenceModel(
 	const vision = override?.vision ?? openRouter?.vision ?? false;
 	return {
 		id: entry.id,
+		...(PRIME_INFERENCE_FEATURED_MODELS.has(entry.id.toLowerCase()) ? { featured: true } : {}),
 		name: override?.name ?? getPrimeInferenceDisplayName(entry.id),
 		api: "openai-completions",
 		provider: "prime-inference",
@@ -2234,6 +2270,9 @@ export const MODELS = {
 			output += `\t\t\t},\n`;
 			output += `\t\t\tcontextWindow: ${model.contextWindow},\n`;
 			output += `\t\t\tmaxTokens: ${model.maxTokens},\n`;
+			if (model.featured) {
+				output += `\t\t\tfeatured: true,\n`;
+			}
 			output += `\t\t} satisfies Model<"${model.api}">,\n`;
 		}
 

@@ -13673,6 +13673,7 @@ export const MODELS = {
 			},
 			contextWindow: 1000000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-haiku-4.5": {
 			id: "anthropic/claude-haiku-4.5",
@@ -13691,6 +13692,7 @@ export const MODELS = {
 			},
 			contextWindow: 200000,
 			maxTokens: 64000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-opus-4.1": {
 			id: "anthropic/claude-opus-4.1",
@@ -13746,6 +13748,7 @@ export const MODELS = {
 			},
 			contextWindow: 1000000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-opus-4.7": {
 			id: "anthropic/claude-opus-4.7",
@@ -13765,6 +13768,7 @@ export const MODELS = {
 			},
 			contextWindow: 1000000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-opus-4.8": {
 			id: "anthropic/claude-opus-4.8",
@@ -13784,6 +13788,7 @@ export const MODELS = {
 			},
 			contextWindow: 1000000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-sonnet-4": {
 			id: "anthropic/claude-sonnet-4",
@@ -13820,6 +13825,7 @@ export const MODELS = {
 			},
 			contextWindow: 200000,
 			maxTokens: 64000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-sonnet-4.6": {
 			id: "anthropic/claude-sonnet-4.6",
@@ -13839,6 +13845,7 @@ export const MODELS = {
 			},
 			contextWindow: 1000000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"anthropic/claude-sonnet-5": {
 			id: "anthropic/claude-sonnet-5",
@@ -13858,6 +13865,7 @@ export const MODELS = {
 			},
 			contextWindow: 1000000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"arcee-ai/trinity-mini": {
 			id: "arcee-ai/trinity-mini",
@@ -13966,6 +13974,7 @@ export const MODELS = {
 			},
 			contextWindow: 131072,
 			maxTokens: 64000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"deepseek/deepseek-v3.2-exp": {
 			id: "deepseek/deepseek-v3.2-exp",
@@ -14003,6 +14012,7 @@ export const MODELS = {
 			},
 			contextWindow: 1048576,
 			maxTokens: 65536,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"deepseek/deepseek-v4-pro": {
 			id: "deepseek/deepseek-v4-pro",
@@ -14022,6 +14032,7 @@ export const MODELS = {
 			},
 			contextWindow: 1048576,
 			maxTokens: 384000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"google/gemini-2.5-flash": {
 			id: "google/gemini-2.5-flash",
@@ -14166,6 +14177,7 @@ export const MODELS = {
 			},
 			contextWindow: 1048576,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"meta-llama/Llama-3.2-1B-Instruct": {
 			id: "meta-llama/Llama-3.2-1B-Instruct",
@@ -14292,6 +14304,7 @@ export const MODELS = {
 			},
 			contextWindow: 524288,
 			maxTokens: 512000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"mistralai/mistral-large-2512": {
 			id: "mistralai/mistral-large-2512",
@@ -14472,6 +14485,7 @@ export const MODELS = {
 			},
 			contextWindow: 262144,
 			maxTokens: 16384,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
 			id: "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
@@ -14508,6 +14522,7 @@ export const MODELS = {
 			},
 			contextWindow: 262144,
 			maxTokens: 228000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"nvidia/nemotron-3-super-120b-a12b": {
 			id: "nvidia/nemotron-3-super-120b-a12b",
@@ -14526,6 +14541,7 @@ export const MODELS = {
 			},
 			contextWindow: 262144,
 			maxTokens: 4096,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-4.1": {
 			id: "openai/gpt-4.1",
@@ -14800,6 +14816,7 @@ export const MODELS = {
 			},
 			contextWindow: 400000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-5.4": {
 			id: "openai/gpt-5.4",
@@ -14819,6 +14836,7 @@ export const MODELS = {
 			},
 			contextWindow: 1050000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-5.4-mini": {
 			id: "openai/gpt-5.4-mini",
@@ -14838,6 +14856,7 @@ export const MODELS = {
 			},
 			contextWindow: 400000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-5.4-nano": {
 			id: "openai/gpt-5.4-nano",
@@ -14876,6 +14895,7 @@ export const MODELS = {
 			},
 			contextWindow: 1050000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-5.5": {
 			id: "openai/gpt-5.5",
@@ -14895,6 +14915,7 @@ export const MODELS = {
 			},
 			contextWindow: 1050000,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-oss-120b": {
 			id: "openai/gpt-oss-120b",
@@ -14985,6 +15006,7 @@ export const MODELS = {
 			},
 			contextWindow: 262144,
 			maxTokens: 32000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3-8b": {
 			id: "qwen/qwen3-8b",
@@ -15039,6 +15061,7 @@ export const MODELS = {
 			},
 			contextWindow: 262144,
 			maxTokens: 262144,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3-max": {
 			id: "qwen/qwen3-max",
@@ -15057,6 +15080,7 @@ export const MODELS = {
 			},
 			contextWindow: 262144,
 			maxTokens: 32768,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3-vl-235b-a22b-instruct": {
 			id: "qwen/qwen3-vl-235b-a22b-instruct",
@@ -15093,6 +15117,7 @@ export const MODELS = {
 			},
 			contextWindow: 131072,
 			maxTokens: 32768,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3-vl-30b-a3b-instruct": {
 			id: "qwen/qwen3-vl-30b-a3b-instruct",
@@ -15219,6 +15244,7 @@ export const MODELS = {
 			},
 			contextWindow: 2000000,
 			maxTokens: 30000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"x-ai/grok-4.20-multi-agent": {
 			id: "x-ai/grok-4.20-multi-agent",
@@ -15237,6 +15263,7 @@ export const MODELS = {
 			},
 			contextWindow: 2000000,
 			maxTokens: 30000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"xiaomi/mimo-v2.5": {
 			id: "xiaomi/mimo-v2.5",
@@ -15381,6 +15408,7 @@ export const MODELS = {
 			},
 			contextWindow: 202752,
 			maxTokens: 131072,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"z-ai/glm-5.1": {
 			id: "z-ai/glm-5.1",
@@ -15399,6 +15427,7 @@ export const MODELS = {
 			},
 			contextWindow: 202752,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 		"z-ai/glm-5.2": {
 			id: "z-ai/glm-5.2",
@@ -15417,6 +15446,7 @@ export const MODELS = {
 			},
 			contextWindow: 1048576,
 			maxTokens: 128000,
+			featured: true,
 		} satisfies Model<"openai-completions">,
 	},
 	"vercel-ai-gateway": {
