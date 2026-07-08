@@ -18,8 +18,10 @@ import {
 	ensureInteractiveDaemonRunning,
 	isDaemonSessionSummary,
 	isRunningDaemonProbeAtRiskFromStop,
+	isSessionAtRiskFromDaemonStop,
 	listActiveDaemonSessionSummaries,
 	probeRunningDaemonSessions,
+	type RunningDaemonProbe,
 	relaunchDaemonAndRestoreSessions,
 	StaleDaemonError,
 } from "./cli/daemon-launch.js";
@@ -398,6 +400,31 @@ function reportDaemonSessionRestoreWarnings(result: DaemonSessionRestoreResult):
 	}
 }
 
+function atRiskDaemonSessionKeys(probe: RunningDaemonProbe): Set<string> | undefined {
+	if (!probe.reachable || probe.activeSessions === undefined) {
+		return undefined;
+	}
+	return new Set(
+		probe.activeSessions
+			.filter(isSessionAtRiskFromDaemonStop)
+			.map((session) => session.activeSessionId ?? session.sessionFile ?? session.sessionId),
+	);
+}
+
+function hasNewAtRiskDaemonSessions(before: RunningDaemonProbe, after: RunningDaemonProbe): boolean {
+	if (!after.reachable) {
+		return false;
+	}
+	const previousKeys = atRiskDaemonSessionKeys(before);
+	if (previousKeys === undefined) {
+		return false;
+	}
+	if (after.activeSessions === undefined) {
+		return true;
+	}
+	return [...atRiskDaemonSessionKeys(after)!].some((key) => !previousKeys.has(key));
+}
+
 // The promise to keep after awaiting readiness. Wrapped in an object so it
 // survives `await` (which would otherwise flatten a returned Promise to void).
 type DaemonReadyResult = { ready: Promise<void> | undefined };
@@ -417,8 +444,12 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 	}
 	try {
 		const latestProbe = await probeRunningDaemonSessions(socketPath);
-		let allowAtRiskSessions = isRunningDaemonProbeAtRiskFromStop(probe);
-		if (isRunningDaemonProbeAtRiskFromStop(latestProbe) && !allowAtRiskSessions) {
+		const initialProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(probe);
+		const latestProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(latestProbe);
+		const shouldPromptForLatestProbe =
+			latestProbeAtRisk && (!initialProbeAtRisk || hasNewAtRiskDaemonSessions(probe, latestProbe));
+		let allowAtRiskSessions = initialProbeAtRisk;
+		if (shouldPromptForLatestProbe) {
 			const confirmedLatest = await confirmDaemonSessionLoss(latestProbe, {
 				force: false,
 				copy: STARTUP_SESSION_LOSS_COPY,
