@@ -60,6 +60,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const skills = providedSkills ?? [];
 	const tools = selectedTools ?? ["ipython"];
 	const hasIpython = tools.includes("ipython");
+	const hasBash = tools.includes("bash");
 	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
 
 	if (customPrompt) {
@@ -86,7 +87,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		prompt += `\nCurrent working directory: ${promptCwd}`;
 
 		if (harnessState) {
-			prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython })}`;
+			prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython, includeShellExamples: hasBash })}`;
 		}
 
 		if (appendSection) {
@@ -112,7 +113,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	}
 
 	if (harnessState) {
-		prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython })}`;
+		prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython, includeShellExamples: hasBash })}`;
 	}
 
 	const guidelines = formatPromptGuidelines(promptGuidelines);

@@ -392,6 +392,7 @@ export function formatHarnessStateForPrompt(
 		maxRefinements?: number;
 		maxContentLength?: number;
 		includeIpythonExamples?: boolean;
+		includeShellExamples?: boolean;
 	} = {},
 ): string {
 	const maxEntriesPerKind = options.maxEntriesPerKind ?? DEFAULT_OVERVIEW_ENTRY_LIMIT;
@@ -410,7 +411,9 @@ export function formatHarnessStateForPrompt(
 		"",
 		includeIpythonExamples
 			? "Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Continual harness subagent entries are invoked by composing a concise task prompt and starting `asyncio.create_task(rlm('sub-task'))` by default, then awaiting only when the result is needed; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Use direct `await rlm('sub-task')` only when the result is immediately required. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries."
-			: "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without IPython; do not use Python `await`, `asyncio`, or `rlm` examples unless the prompt also documents an IPython kernel.",
+			: options.includeShellExamples
+				? "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without IPython; do not use Python `await`, `asyncio`, or `rlm` examples unless the prompt also documents an IPython kernel."
+				: "Call contract: continual harness entries are routing/context hints only in sessions without IPython or shell access; do not use Python `await`, `asyncio`, `rlm`, or shell skill commands unless the prompt also documents those interfaces.",
 		"",
 	];
 

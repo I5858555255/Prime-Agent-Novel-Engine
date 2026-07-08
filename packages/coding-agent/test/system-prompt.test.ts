@@ -139,7 +139,9 @@ describe("buildRlmPrompt", () => {
 			activeTools: ["ipython"],
 		});
 
-		expect(withoutObserve).toContain("Write a small disk registry under `RLM_SESSION_DIR`");
+		expect(withoutObserve).toContain(
+			"Write a small disk registry under `os.environ.get('RLM_SESSION_DIR')` when set",
+		);
 		expect(withoutObserve).not.toContain("recover status later with `agent_observe`");
 		expect(withObserve).toContain("recover status later with `agent_observe`");
 	});
@@ -381,7 +383,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("RLM_SESSION_DIR");
 		expect(prompt).toContain("from pathlib import Path");
 		expect(prompt).toContain("import os");
-		expect(prompt).toContain("kernel restart or compaction");
+		expect(prompt).toContain("kernel restarts, state restore, or compaction");
 		expect(prompt).toContain("agent_observe.list_agents");
 		expect(prompt).toContain('runtimeKind == "subagent"');
 		expect(prompt).toContain("parentSessionId");
@@ -485,6 +487,49 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("IPython is the agent's long-lived notebook");
 		expect(prompt).not.toContain("Default to non-blocking subagents");
 		expect(prompt).not.toContain("agent_observe.list_agents");
+		expect(prompt).not.toContain("asyncio.create_task");
+		expect(prompt).not.toContain("await <skill_import>");
+	});
+
+	test("omits shell guidance from harness state when shell is inactive", () => {
+		const harnessState: HarnessState = {
+			schema: 1,
+			entries: {
+				prompt: {},
+				memory: {},
+				skill: {},
+				subagent: {
+					worker: {
+						id: "worker",
+						kind: "subagent",
+						title: "Worker",
+						content: "Review a self-contained task and report findings.",
+						path: "review",
+						reference: {},
+						arguments: {},
+						metadata: {},
+						source: "refine",
+						created_at: "2026-06-08T00:00:00.000Z",
+						updated_at: "2026-06-08T00:00:00.000Z",
+						version: 1,
+					},
+				},
+			},
+			refinements: [],
+		};
+		const prompt = buildSystemPrompt({
+			selectedTools: ["edit"],
+			contextFiles: [],
+			skills: [],
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			harnessState,
+		});
+
+		expect(prompt).toContain("# Continual Harness State");
+		expect(prompt).toContain("without IPython or shell access");
+		expect(prompt).not.toContain("use installed skills as shell commands");
+		expect(prompt).not.toContain("<skill_import> ...");
 		expect(prompt).not.toContain("asyncio.create_task");
 		expect(prompt).not.toContain("await <skill_import>");
 	});
