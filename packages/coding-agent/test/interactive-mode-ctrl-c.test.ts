@@ -22,6 +22,7 @@ type FakeInteractiveMode = {
 		retryAttempt: number;
 	};
 	agentConnection: {
+		abort: Mock;
 		abortRetry: Mock;
 		abortCompaction: Mock;
 		abortBranchSummary: Mock;
@@ -80,6 +81,7 @@ function createInteractiveFake(options: {
 			retryAttempt: options.retryAttempt ?? 0,
 		},
 		agentConnection: {
+			abort: vi.fn().mockResolvedValue(undefined),
 			abortRetry: vi.fn(),
 			abortCompaction: vi.fn(),
 			abortBranchSummary: vi.fn(),
@@ -111,7 +113,8 @@ describe("InteractiveMode Ctrl+C flow", () => {
 
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
 
-		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
+		expect(mode.agentConnection.abort).toHaveBeenCalledTimes(1);
+		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith();
 		expect(mode.shutdown).not.toHaveBeenCalled();
 		expect(Reflect.get(InteractiveMode.prototype, "getTrayOverrideLabel").call(mode)).toBe(
 			"Press Ctrl+C again to exit",
@@ -124,7 +127,8 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
 
 		expect(mode.agentConnection.abortBash).toHaveBeenCalledTimes(1);
-		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
+		expect(mode.agentConnection.abort).toHaveBeenCalledTimes(1);
+		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith();
 		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
 

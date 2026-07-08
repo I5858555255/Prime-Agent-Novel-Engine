@@ -5328,7 +5328,10 @@ export class InteractiveMode {
 			void this.agentConnection.abortBash();
 		}
 		if (this.isAgentStreaming()) {
-			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
+			void this.agentConnection.abort().catch((error) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
+			void this.restoreQueuedMessagesToEditor().catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
 		}

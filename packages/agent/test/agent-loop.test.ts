@@ -175,6 +175,49 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("should end without adding an aborted assistant when abort fires after turn completion", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const controller = new AbortController();
+		const finalMessage = createAssistantMessage([{ type: "text", text: "complete" }]);
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			shouldStopAfterTurn: async () => {
+				controller.abort();
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				return false;
+			},
+		};
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "stop", message: finalMessage });
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messages = await stream.result();
+		const assistantMessages = messages.filter((message) => message.role === "assistant");
+
+		expect(assistantMessages).toHaveLength(1);
+		expect(assistantMessages[0]?.role).toBe("assistant");
+		if (assistantMessages[0]?.role === "assistant") {
+			expect(assistantMessages[0].stopReason).toBe("stop");
+			expect(assistantMessages[0].content).toEqual([{ type: "text", text: "complete" }]);
+		}
+		expect(events.filter((event) => event.type === "agent_end")).toHaveLength(1);
+	});
+
 	it("should freeze synthetic aborted messages against later partial mutation", async () => {
 		const context: AgentContext = {
 			systemPrompt: "You are helpful.",

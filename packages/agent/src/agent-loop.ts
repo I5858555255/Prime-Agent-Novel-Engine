@@ -98,6 +98,23 @@ function maybePromiseWithAbort<T>(
 	return raceWithAbort(Promise.resolve(operation), signal, onAbort);
 }
 
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && (error.message === ABORT_ERROR_MESSAGE || error.name === "AbortError");
+}
+
+type PostTurnResult<T> = { status: "completed"; value: T } | { status: "aborted" };
+
+async function settlePostTurn<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<PostTurnResult<T>> {
+	try {
+		return { status: "completed", value: await operation };
+	} catch (error) {
+		if (signal?.aborted && isAbortError(error)) {
+			return { status: "aborted" };
+		}
+		throw error;
+	}
+}
+
 function cloneAssistantContent(content: AssistantMessage["content"]): AssistantMessage["content"] {
 	return content.map((part) => {
 		if (part.type === "toolCall") {
@@ -358,8 +375,8 @@ async function runLoop(
 				newMessages,
 			};
 
-			if (
-				await maybePromiseWithAbort(
+			const shouldStopResult = await settlePostTurn(
+				maybePromiseWithAbort(
 					config.shouldStopAfterTurn?.({
 						message,
 						toolResults,
@@ -367,26 +384,56 @@ async function runLoop(
 						newMessages,
 					}) ?? false,
 					signal,
-				)
-			) {
+				),
+				signal,
+			);
+			if (shouldStopResult.status === "aborted") {
+				await emit({ type: "agent_end", messages: newMessages });
+				return;
+			}
+			if (shouldStopResult.value) {
 				await emit({ type: "agent_end", messages: newMessages });
 				return;
 			}
 
-			pendingMessages = await pollMessagesUnlessAborted(config.getSteeringMessages, signal);
+			const steeringMessagesResult = await settlePostTurn(
+				pollMessagesUnlessAborted(config.getSteeringMessages, signal),
+				signal,
+			);
+			if (steeringMessagesResult.status === "aborted") {
+				await emit({ type: "agent_end", messages: newMessages });
+				return;
+			}
+			pendingMessages = steeringMessagesResult.value;
 		}
 
 		// Agent would stop here. Check for follow-up messages.
-		const followUpMessages = await pollMessagesUnlessAborted(config.getFollowUpMessages, signal);
+		const followUpMessagesResult = await settlePostTurn(
+			pollMessagesUnlessAborted(config.getFollowUpMessages, signal),
+			signal,
+		);
+		if (followUpMessagesResult.status === "aborted") {
+			await emit({ type: "agent_end", messages: newMessages });
+			return;
+		}
+		const followUpMessages = followUpMessagesResult.value;
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
 			continue;
 		}
 
-		const continuationMessages = lastTurn
-			? (await maybePromiseWithAbort(config.getContinuationMessages?.(lastTurn, signal) ?? [], signal)) || []
-			: [];
+		const continuationMessagesResult = lastTurn
+			? await settlePostTurn(
+					maybePromiseWithAbort(config.getContinuationMessages?.(lastTurn, signal) ?? [], signal),
+					signal,
+				)
+			: ({ status: "completed", value: [] } satisfies PostTurnResult<AgentMessage[]>);
+		if (continuationMessagesResult.status === "aborted") {
+			await emit({ type: "agent_end", messages: newMessages });
+			return;
+		}
+		const continuationMessages = continuationMessagesResult.value || [];
 		if (continuationMessages.length > 0) {
 			pendingMessages = continuationMessages;
 			continue;
