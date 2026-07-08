@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
-import { agentLoop, agentLoopContinue } from "../src/agent-loop.js";
+import { agentLoop, agentLoopContinue, runAgentLoop } from "../src/agent-loop.js";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.js";
 
 // Mock stream for testing - mimics MockAssistantStream
@@ -32,6 +32,26 @@ class DelayedResultStream extends MockAssistantStream {
 
 	override result(): Promise<AssistantMessage> {
 		return this.getDelayedResult();
+	}
+}
+
+class ThrowingResultStream extends MockAssistantStream {
+	constructor(
+		private readonly onResult: () => void,
+		private readonly error: Error,
+	) {
+		super();
+	}
+
+	override [Symbol.asyncIterator](): AsyncIterator<AssistantMessageEvent> {
+		return {
+			next: async () => ({ done: true, value: undefined as never }),
+		};
+	}
+
+	override result(): Promise<AssistantMessage> {
+		this.onResult();
+		throw this.error;
 	}
 }
 
@@ -229,6 +249,45 @@ describe("agentLoop with AgentMessage", () => {
 			expect(assistant.content).toEqual([{ type: "text", text: "complete" }]);
 		}
 		expect(events.some((event) => event.type === "agent_end")).toBe(true);
+	});
+
+	it("should not mask stream result errors when abort is already signaled", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const controller = new AbortController();
+		const providerError = new Error("provider parse failed");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+		const events: AgentEvent[] = [];
+
+		await expect(
+			runAgentLoop(
+				[createUserMessage("Hello")],
+				context,
+				config,
+				(event) => {
+					events.push(event);
+				},
+				controller.signal,
+				() =>
+					new ThrowingResultStream(() => {
+						controller.abort();
+					}, providerError),
+			),
+		).rejects.toThrow("provider parse failed");
+		expect(
+			events.some(
+				(event) =>
+					event.type === "message_end" &&
+					event.message.role === "assistant" &&
+					event.message.stopReason === "aborted",
+			),
+		).toBe(false);
 	});
 
 	it("should end without adding an aborted assistant when abort fires after turn completion", async () => {

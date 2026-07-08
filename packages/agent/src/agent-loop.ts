@@ -586,7 +586,7 @@ async function streamAssistantResponse(
 		await emit({ type: "message_end", message: finalMessage });
 		return finalMessage;
 	} catch (error) {
-		if (signal?.aborted) {
+		if (signal?.aborted && isAbortError(error)) {
 			return finishAbortedMessage();
 		}
 		throw error;

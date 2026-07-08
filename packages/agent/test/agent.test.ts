@@ -373,6 +373,36 @@ describe("Agent", () => {
 		expect(agent.state.isStreaming).toBe(false);
 	});
 
+	it("should still emit agent_end when failure recovery message listeners throw", async () => {
+		const agent = new Agent({
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+				});
+				return stream;
+			},
+		});
+		const events: string[] = [];
+		agent.subscribe((event) => {
+			events.push(event.type);
+			if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "assistant") {
+				throw new Error("listener failed");
+			}
+		});
+
+		await expect(agent.prompt("hello")).resolves.toBeUndefined();
+
+		expect(events).toContain("agent_end");
+		const lastMessage = agent.state.messages.at(-1);
+		expect(lastMessage?.role).toBe("assistant");
+		if (lastMessage?.role === "assistant") {
+			expect(lastMessage.stopReason).toBe("error");
+			expect(lastMessage.errorMessage).toBe("listener failed");
+		}
+		expect(agent.state.isStreaming).toBe(false);
+	});
+
 	it("should not drain steering messages when aborting before a queued poll", async () => {
 		const controller = new AbortController();
 		controller.abort();
