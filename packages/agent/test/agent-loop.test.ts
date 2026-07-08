@@ -25,6 +25,16 @@ class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMe
 	}
 }
 
+class DelayedResultStream extends MockAssistantStream {
+	constructor(private readonly getDelayedResult: () => Promise<AssistantMessage>) {
+		super();
+	}
+
+	override result(): Promise<AssistantMessage> {
+		return this.getDelayedResult();
+	}
+}
+
 function createUsage() {
 	return {
 		input: 0,
@@ -126,6 +136,87 @@ describe("agentLoop with AgentMessage", () => {
 		expect(eventTypes).toContain("message_end");
 		expect(eventTypes).toContain("turn_end");
 		expect(eventTypes).toContain("agent_end");
+	});
+
+	it("should preserve a terminal response when abort fires after done", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const controller = new AbortController();
+		const finalMessage = createAssistantMessage([{ type: "text", text: "complete" }]);
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+		const streamFn = () => {
+			const stream = new DelayedResultStream(() => {
+				controller.abort();
+				return Promise.resolve(finalMessage);
+			});
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "stop", message: finalMessage });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
+		for await (const _event of stream) {
+			// consume
+		}
+
+		const messages = await stream.result();
+		const assistant = messages.find((message) => message.role === "assistant");
+		expect(assistant?.role).toBe("assistant");
+		if (assistant?.role === "assistant") {
+			expect(assistant.stopReason).toBe("stop");
+			expect(assistant.content).toEqual([{ type: "text", text: "complete" }]);
+		}
+	});
+
+	it("should freeze synthetic aborted messages against later partial mutation", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const controller = new AbortController();
+		const partialMessage = createAssistantMessage([{ type: "text", text: "partial" }]);
+		partialMessage.usage.cost.total = 1;
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: partialMessage });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
+		for await (const event of stream) {
+			if (event.type === "message_start" && event.message.role === "assistant") {
+				controller.abort();
+			}
+		}
+
+		const messages = await stream.result();
+		const assistant = messages.find((message) => message.role === "assistant");
+		const text = partialMessage.content[0];
+		if (text?.type === "text") {
+			text.text = "mutated";
+		}
+		partialMessage.usage.cost.total = 99;
+
+		expect(assistant?.role).toBe("assistant");
+		if (assistant?.role === "assistant") {
+			expect(assistant.stopReason).toBe("aborted");
+			expect(assistant.content).toEqual([{ type: "text", text: "partial" }]);
+			expect(assistant.usage.cost.total).toBe(1);
+		}
 	});
 
 	it("should handle custom message types via convertToLlm", async () => {

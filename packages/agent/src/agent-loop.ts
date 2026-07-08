@@ -98,17 +98,30 @@ function maybePromiseWithAbort<T>(
 	return raceWithAbort(Promise.resolve(operation), signal, onAbort);
 }
 
+function cloneAssistantContent(content: AssistantMessage["content"]): AssistantMessage["content"] {
+	return content.map((part) => {
+		if (part.type === "toolCall") {
+			return { ...part, arguments: { ...part.arguments } };
+		}
+		return { ...part };
+	});
+}
+
+function cloneUsage(usage: AssistantMessage["usage"]): AssistantMessage["usage"] {
+	return { ...usage, cost: { ...usage.cost } };
+}
+
 function createAbortedAssistantMessage(
 	config: AgentLoopConfig,
 	partialMessage: AssistantMessage | null,
 ): AssistantMessage {
 	return {
 		role: "assistant",
-		content: partialMessage?.content ?? [{ type: "text", text: "" }],
+		content: partialMessage ? cloneAssistantContent(partialMessage.content) : [{ type: "text", text: "" }],
 		api: partialMessage?.api ?? config.model.api,
 		provider: partialMessage?.provider ?? config.model.provider,
 		model: partialMessage?.model ?? config.model.id,
-		usage: partialMessage?.usage ?? EMPTY_USAGE,
+		usage: cloneUsage(partialMessage?.usage ?? EMPTY_USAGE),
 		stopReason: "aborted",
 		errorMessage: ABORT_ERROR_MESSAGE,
 		timestamp: Date.now(),
@@ -489,7 +502,7 @@ async function streamAssistantResponse(
 
 				case "done":
 				case "error": {
-					const finalMessage = await maybePromiseWithAbort(response.result(), signal);
+					const finalMessage = await response.result();
 					if (addedPartial) {
 						context.messages[context.messages.length - 1] = finalMessage;
 					} else {
