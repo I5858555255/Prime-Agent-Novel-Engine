@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.js";
+import type { KernelBootstrapProgressHandler } from "../src/core/kernel/bootstrap.js";
 import { type ExecuteResult, KernelBusyAfterInterruptError, KernelManager } from "../src/core/kernel/index.js";
 import { createIpythonToolDefinition, IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
@@ -185,6 +186,29 @@ describe("IpythonKernelProvisioner", () => {
 		await expect(provisioner.ensure(undefined, controller.signal)).rejects.toThrow("IPython execution aborted");
 		expect(dispose).not.toHaveBeenCalled();
 		expect(provisioner.manager).toBe(manager);
+	});
+
+	it("removes startup progress listeners when an ensure caller is aborted", async () => {
+		const provisioner = new IpythonKernelProvisioner(tempDir, {});
+		Object.assign(
+			provisioner as unknown as {
+				managerPromise: Promise<KernelManager>;
+			},
+			{
+				managerPromise: new Promise<KernelManager>(() => {}),
+			},
+		);
+		const controller = new AbortController();
+		const onProgress = vi.fn();
+
+		const ensurePromise = provisioner.ensure(onProgress, controller.signal).catch(() => undefined);
+		controller.abort();
+		await ensurePromise;
+
+		const internals = provisioner as unknown as {
+			startupListeners: Set<KernelBootstrapProgressHandler>;
+		};
+		expect(internals.startupListeners.has(onProgress)).toBe(false);
 	});
 
 	it("lets the user wait when an interrupted kernel is still busy", async () => {

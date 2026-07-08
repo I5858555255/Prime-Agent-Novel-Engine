@@ -339,15 +339,24 @@ export class IpythonKernelProvisioner {
 	}
 
 	ensure(onProgress?: KernelBootstrapProgressHandler, signal?: AbortSignal): Promise<KernelManager> {
+		if (signal?.aborted) {
+			return Promise.reject(createAbortError());
+		}
+		let cleanupProgressListener: (() => void) | undefined;
 		if (onProgress && !this.startedManager) {
 			this.startupListeners.add(onProgress);
+			cleanupProgressListener = () => {
+				this.startupListeners.delete(onProgress);
+				signal?.removeEventListener("abort", cleanupProgressListener!);
+			};
+			signal?.addEventListener("abort", cleanupProgressListener, { once: true });
 			// Joining an in-flight startup: replay the current stage.
 			if (this.managerPromise && this.lastStartupMessage) {
 				onProgress(this.lastStartupMessage);
 			}
 		}
 		if (!this.managerPromise) {
-			const startup = this.startKernel(signal);
+			const startup = this.startKernel();
 			this.managerPromise = startup;
 			startup.then(
 				(m) => {
@@ -366,7 +375,9 @@ export class IpythonKernelProvisioner {
 				},
 			);
 		}
-		return raceWithAbort(this.managerPromise, signal);
+		return raceWithAbort(this.managerPromise, signal).finally(() => {
+			cleanupProgressListener?.();
+		});
 	}
 
 	private settleStartup(): void {
@@ -381,7 +392,8 @@ export class IpythonKernelProvisioner {
 		}
 	}
 
-	private async startKernel(signal?: AbortSignal): Promise<KernelManager> {
+	private async startKernel(): Promise<KernelManager> {
+		const disposeSignal = this.disposeController.signal;
 		// Wait for a previous provisioner (e.g. on /reload) to finish disposing — and
 		// flushing its final snapshot — before we read that snapshot back, so the two
 		// kernels can't race over the same on-disk file. Guarded so the common
@@ -389,7 +401,7 @@ export class IpythonKernelProvisioner {
 		if (this.options?.readyGate) {
 			await raceWithAbort(
 				this.options.readyGate.catch(() => {}),
-				signal,
+				disposeSignal,
 			);
 		}
 		const snapshotDir = this.options?.snapshotDir;
@@ -413,11 +425,10 @@ export class IpythonKernelProvisioner {
 		// covers only start(). Restore/bootstrap run per-kernel afterwards and are
 		// unbounded execute()s; holding the global permit across them could pin it
 		// forever on a wedged bootstrap and starve every other session's boot.
-		const disposeSignal = this.disposeController.signal;
 		await withKernelBootPermit(() => {
 			// Disposed while queued for the permit — don't spawn a kernel nobody wants.
 			if (disposeSignal.aborted) throw new Error("Kernel provisioner disposed before start");
-			return m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message), signal });
+			return m.start({ onBootstrapProgress: (message) => this.emitStartupProgress(message) });
 		}, disposeSignal);
 		let pendingRestore: RestoreResult | undefined;
 		try {
@@ -432,7 +443,9 @@ export class IpythonKernelProvisioner {
 				}
 			}
 			this.emitStartupProgress("Preparing IPython runtime...");
-			const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills), { signal });
+			const bootstrap = await m.execute(buildRlmBootstrapCode(this.options?.pythonSkills), {
+				signal: disposeSignal,
+			});
 			if (bootstrap.status !== "ok") {
 				const details = [bootstrap.stderr, bootstrap.error?.traceback.join("\n")].filter(Boolean).join("\n");
 				throw new Error(`Failed to initialize rlm runtime in the IPython kernel:\n${details}`);

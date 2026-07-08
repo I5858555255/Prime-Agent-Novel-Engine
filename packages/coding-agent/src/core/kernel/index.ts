@@ -182,6 +182,50 @@ function parseAttachmentDisplay(payload: unknown): KernelAttachment | "oversized
 	return { mimeType, data, path: typeof path === "string" ? path : undefined };
 }
 
+function createKernelStartupAbortError(): Error {
+	return new Error("Kernel startup aborted");
+}
+
+function raceStartupWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (!signal) {
+		return promise;
+	}
+	if (signal.aborted) {
+		return Promise.reject(createKernelStartupAbortError());
+	}
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => signal.removeEventListener("abort", abort);
+		const abort = () => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			cleanup();
+			reject(createKernelStartupAbortError());
+		};
+		signal.addEventListener("abort", abort, { once: true });
+		promise.then(
+			(value) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
+				resolve(value);
+			},
+			(error: unknown) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
+				reject(error);
+			},
+		);
+	});
+}
+
 interface ConnectionInfo {
 	ip: string;
 	transport: "tcp";
@@ -474,26 +518,25 @@ export class KernelManager {
 	}
 
 	async start(options: KernelStartOptions = {}): Promise<void> {
-		if (!this.startPromise) {
-			this.startPromise = this.doStart(options);
+		if (options.signal?.aborted) {
+			throw createKernelStartupAbortError();
 		}
-		return this.startPromise;
+		if (!this.startPromise) {
+			this.startPromise = this.doStart({ onBootstrapProgress: options.onBootstrapProgress }).catch((error) => {
+				this.startPromise = undefined;
+				throw error;
+			});
+		}
+		return raceStartupWithAbort(this.startPromise, options.signal);
 	}
 
 	private async doStart(startOptions: KernelStartOptions): Promise<void> {
-		if (startOptions.signal?.aborted) {
-			throw new Error("Kernel startup aborted");
-		}
 		if (this.state !== "idle") return;
 		this.state = "starting";
 		installSignalHandlersOnce();
 		// Tracked from the moment startup begins so session cleanup and signal
 		// handlers can dispose a kernel that is still booting.
 		liveKernels.add(this);
-		const onAbort = () => {
-			void this.shutdown();
-		};
-		startOptions.signal?.addEventListener("abort", onAbort, { once: true });
 
 		let python: string;
 		try {
@@ -507,12 +550,10 @@ export class KernelManager {
 		} catch (error) {
 			liveKernels.delete(this);
 			if ((this.state as string) !== "shutdown") this.state = "idle";
-			startOptions.signal?.removeEventListener("abort", onAbort);
 			throw error;
 		}
 
 		if ((this.state as string) === "shutdown") {
-			startOptions.signal?.removeEventListener("abort", onAbort);
 			throw new Error("Kernel was disposed during startup");
 		}
 
@@ -570,6 +611,7 @@ export class KernelManager {
 				this.appendKernelDiagnostic(`spawn error: ${err.message}`);
 				this.state = "shutdown";
 				liveKernels.delete(this);
+				this.cleanupResources();
 			});
 
 			kernel.on("exit", (code, signal) => {
@@ -579,6 +621,7 @@ export class KernelManager {
 				}
 				this.state = "shutdown";
 				liveKernels.delete(this);
+				this.cleanupResources();
 			});
 		}
 
@@ -591,7 +634,6 @@ export class KernelManager {
 			const canRetryStartup = (this.state as string) !== "shutdown";
 			await this.shutdown();
 			if (canRetryStartup) this.state = "idle";
-			startOptions.signal?.removeEventListener("abort", onAbort);
 			throw e;
 		}
 
@@ -613,12 +655,10 @@ export class KernelManager {
 			const canRetryStartup = (this.state as string) !== "shutdown";
 			await this.shutdown();
 			if (canRetryStartup) this.state = "idle";
-			startOptions.signal?.removeEventListener("abort", onAbort);
 			throw e;
 		}
 
 		this.state = "running";
-		startOptions.signal?.removeEventListener("abort", onAbort);
 		this.startForkedLivenessMonitor();
 	}
 
@@ -832,7 +872,7 @@ export class KernelManager {
 				const sendPromise = shell.send(encode(msg, conn.key));
 				sendPromise.catch(() => undefined);
 				await Promise.race([sendPromise, result.promise.then(() => undefined)]);
-				if (this.activeExecution === execution) {
+				if (this.activeExecution === execution && execution.status !== "aborted") {
 					await sendPromise;
 				}
 			} catch (error) {
@@ -1030,6 +1070,9 @@ export class KernelManager {
 	private async waitForActiveExecutionToClearForReuse(signal?: AbortSignal): Promise<void> {
 		const started = Date.now();
 		while (this.activeExecution && Date.now() - started < KERNEL_BUSY_REUSE_WAIT_MS) {
+			if ((this.state as string) === "shutdown") {
+				throw new Error("Kernel has been shut down");
+			}
 			void this.interrupt().catch(() => undefined);
 			const remaining = KERNEL_BUSY_REUSE_WAIT_MS - (Date.now() - started);
 			const cleared = await this.waitForActiveExecutionToClear(

@@ -16,6 +16,56 @@ describe("KernelManager abort handling", () => {
 		vi.useRealTimers();
 	});
 
+	it("does not poison startup after a caller starts with an aborted signal", async () => {
+		const manager = new KernelManager({ cwd: process.cwd() });
+		let startCount = 0;
+		Object.assign(
+			manager as unknown as {
+				doStart: () => Promise<void>;
+			},
+			{
+				doStart: async () => {
+					startCount++;
+				},
+			},
+		);
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(manager.start({ signal: controller.signal })).rejects.toThrow("Kernel startup aborted");
+		await expect(manager.start()).resolves.toBeUndefined();
+		expect(startCount).toBe(1);
+	});
+
+	it("does not cancel shared startup when one waiting caller aborts", async () => {
+		const manager = new KernelManager({ cwd: process.cwd() });
+		let releaseStart: () => void = () => {};
+		let startCount = 0;
+		Object.assign(
+			manager as unknown as {
+				doStart: () => Promise<void>;
+			},
+			{
+				doStart: async () => {
+					startCount++;
+					await new Promise<void>((resolve) => {
+						releaseStart = resolve;
+					});
+				},
+			},
+		);
+		const controller = new AbortController();
+
+		const firstStart = manager.start({ signal: controller.signal });
+		const secondStart = manager.start();
+		controller.abort();
+
+		await expect(firstStart).rejects.toThrow("Kernel startup aborted");
+		releaseStart();
+		await expect(secondStart).resolves.toBeUndefined();
+		expect(startCount).toBe(1);
+	});
+
 	it("settles an aborted execution when the kernel never reports idle", async () => {
 		vi.useFakeTimers();
 		const manager = new KernelManager({ cwd: process.cwd() });
@@ -117,6 +167,60 @@ describe("KernelManager abort handling", () => {
 
 		manager.disposeSync();
 		expect(kernelKill).toHaveBeenCalledWith("SIGTERM");
+	});
+
+	it("settles an aborted execution when shell send never resolves", async () => {
+		vi.useFakeTimers();
+		const manager = new KernelManager({ cwd: process.cwd() });
+		const shellSend = vi.fn((_frames: Buffer[]) => new Promise<void>(() => {}));
+		const controlSend = vi.fn(async (_frames: Buffer[]) => {});
+		Object.assign(
+			manager as unknown as {
+				state: "running";
+				connection: {
+					ip: "127.0.0.1";
+					transport: "tcp";
+					shell_port: number;
+					iopub_port: number;
+					stdin_port: number;
+					control_port: number;
+					hb_port: number;
+					signature_scheme: "hmac-sha256";
+					key: string;
+					kernel_name: string;
+				};
+				shell: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
+				control: { send: (frames: Buffer[]) => Promise<void>; close: () => void };
+				start: () => Promise<void>;
+			},
+			{
+				state: "running",
+				connection: {
+					ip: "127.0.0.1",
+					transport: "tcp",
+					shell_port: 1,
+					iopub_port: 2,
+					stdin_port: 3,
+					control_port: 4,
+					hb_port: 5,
+					signature_scheme: "hmac-sha256",
+					key: "test-key",
+					kernel_name: "python3",
+				},
+				shell: { send: shellSend, close: vi.fn() },
+				control: { send: controlSend, close: vi.fn() },
+				start: async () => {},
+			},
+		);
+		const controller = new AbortController();
+
+		const executePromise = manager.execute("while True: pass", { signal: controller.signal });
+		await waitForCalls(shellSend, 1);
+		controller.abort();
+		await vi.advanceTimersByTimeAsync(1000);
+
+		await expect(executePromise).resolves.toMatchObject({ status: "aborted" });
+		expect(controlSend).toHaveBeenCalled();
 	});
 
 	it("fails a later execution fast when the interrupted cell never idles", async () => {

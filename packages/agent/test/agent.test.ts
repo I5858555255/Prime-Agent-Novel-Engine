@@ -1,7 +1,14 @@
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
-import { Agent, type AgentTool } from "../src/index.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+	Agent,
+	type AgentContext,
+	type AgentLoopConfig,
+	type AgentMessage,
+	type AgentTool,
+	agentLoop,
+} from "../src/index.js";
 
 // Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -364,6 +371,60 @@ describe("Agent", () => {
 		}
 		expect(agent.state.pendingToolCalls.size).toBe(0);
 		expect(agent.state.isStreaming).toBe(false);
+	});
+
+	it("should not drain steering messages when aborting before a queued poll", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const queuedMessage: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "queued" }],
+			timestamp: Date.now(),
+		};
+		const getSteeringMessages = vi.fn(async () => [queuedMessage]);
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+		const config: AgentLoopConfig = {
+			model: getModel("openai", "gpt-4o-mini"),
+			convertToLlm: () => [],
+			getSteeringMessages,
+		};
+
+		const stream = agentLoop(
+			[{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() }],
+			context,
+			config,
+			controller.signal,
+		);
+		for await (const _event of stream) {
+			// Drain the stream.
+		}
+
+		expect(await stream.result()).toEqual([]);
+		expect(getSteeringMessages).not.toHaveBeenCalled();
+	});
+
+	it("should end the event stream when abort rejects the loop", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+		const config: AgentLoopConfig = {
+			model: getModel("openai", "gpt-4o-mini"),
+			convertToLlm: () => [],
+		};
+
+		const events: unknown[] = [];
+		const stream = agentLoop(
+			[{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() }],
+			context,
+			config,
+			controller.signal,
+		);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		await expect(stream.result()).resolves.toEqual([]);
+		expect(events.some((event) => (event as { type?: string }).type === "agent_end")).toBe(false);
 	});
 
 	it("should throw when prompt() called while streaming", async () => {

@@ -587,12 +587,14 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
+	private _compactionOperation: Promise<void> | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
+	private _branchSummaryOperation: Promise<void> | undefined = undefined;
 
 	// Retry state
 	private _retryAbortController: AbortController | undefined = undefined;
@@ -3112,12 +3114,18 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		const compactionOperation = this._compactionOperation;
+		const branchSummaryOperation = this._branchSummaryOperation;
 		this.requestAbort();
 		this._cancelActiveRlmChildRuns("Parent session aborted");
 		this._goalAbortInProgress = this._goalState.status === "active";
 		try {
-			await this.agent.waitForIdle();
-			await this._agentEventQueue;
+			await Promise.allSettled([
+				this.agent.waitForIdle(),
+				this._agentEventQueue,
+				...(compactionOperation ? [compactionOperation] : []),
+				...(branchSummaryOperation ? [branchSummaryOperation] : []),
+			]);
 		} finally {
 			this._goalAbortInProgress = false;
 		}
@@ -3430,6 +3438,11 @@ export class AgentSession {
 		await this.abort();
 		let didCompact = false;
 		this._compactionAbortController = new AbortController();
+		let resolveCompactionOperation: () => void = () => {};
+		const compactionOperation = new Promise<void>((resolve) => {
+			resolveCompactionOperation = resolve;
+		});
+		this._compactionOperation = compactionOperation;
 		this._emit({ type: "compaction_start", reason: "manual", customInstructions });
 
 		try {
@@ -3477,6 +3490,10 @@ export class AgentSession {
 		} finally {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
+			if (this._compactionOperation === compactionOperation) {
+				this._compactionOperation = undefined;
+			}
+			resolveCompactionOperation();
 			if (didCompact) {
 				this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 				if (hadPostCompactionContinue) {
@@ -5967,6 +5984,11 @@ export class AgentSession {
 
 		// Set up abort controller for summarization
 		this._branchSummaryAbortController = new AbortController();
+		let resolveBranchSummaryOperation: () => void = () => {};
+		const branchSummaryOperation = new Promise<void>((resolve) => {
+			resolveBranchSummaryOperation = resolve;
+		});
+		this._branchSummaryOperation = branchSummaryOperation;
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown } | undefined;
@@ -6105,6 +6127,10 @@ export class AgentSession {
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
 			this._branchSummaryAbortController = undefined;
+			if (this._branchSummaryOperation === branchSummaryOperation) {
+				this._branchSummaryOperation = undefined;
+			}
+			resolveBranchSummaryOperation();
 		}
 	}
 

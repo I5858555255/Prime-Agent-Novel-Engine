@@ -90,6 +90,30 @@ function maybePromiseWithAbort<T>(
 	return raceWithAbort(Promise.resolve(operation), signal, onAbort);
 }
 
+function endAgentStreamOnError(
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	promise: Promise<AgentMessage[]>,
+): void {
+	void promise.then(
+		(messages) => {
+			stream.end(messages);
+		},
+		() => {
+			stream.end([]);
+		},
+	);
+}
+
+async function pollMessagesUnlessAborted(
+	poll: (() => AgentMessage[] | Promise<AgentMessage[]>) | undefined,
+	signal: AbortSignal | undefined,
+): Promise<AgentMessage[]> {
+	if (!poll || signal?.aborted) {
+		return [];
+	}
+	return (await maybePromiseWithAbort(poll(), signal)) || [];
+}
+
 /**
  * Start an agent loop with a new prompt message.
  * The prompt is added to the context and events are emitted for it.
@@ -103,18 +127,19 @@ export function agentLoop(
 ): EventStream<AgentEvent, AgentMessage[]> {
 	const stream = createAgentStream();
 
-	void runAgentLoop(
-		prompts,
-		context,
-		config,
-		async (event) => {
-			stream.push(event);
-		},
-		signal,
-		streamFn,
-	).then((messages) => {
-		stream.end(messages);
-	});
+	endAgentStreamOnError(
+		stream,
+		runAgentLoop(
+			prompts,
+			context,
+			config,
+			async (event) => {
+				stream.push(event);
+			},
+			signal,
+			streamFn,
+		),
+	);
 
 	return stream;
 }
@@ -143,17 +168,18 @@ export function agentLoopContinue(
 
 	const stream = createAgentStream();
 
-	void runAgentLoopContinue(
-		context,
-		config,
-		async (event) => {
-			stream.push(event);
-		},
-		signal,
-		streamFn,
-	).then((messages) => {
-		stream.end(messages);
-	});
+	endAgentStreamOnError(
+		stream,
+		runAgentLoopContinue(
+			context,
+			config,
+			async (event) => {
+				stream.push(event);
+			},
+			signal,
+			streamFn,
+		),
+	);
 
 	return stream;
 }
@@ -229,8 +255,7 @@ async function runLoop(
 	let firstTurn = true;
 	let lastTurn: Parameters<NonNullable<AgentLoopConfig["getContinuationMessages"]>>[0] | undefined;
 	// Check for steering messages at start (user may have typed while waiting)
-	let pendingMessages: AgentMessage[] =
-		(await maybePromiseWithAbort(config.getSteeringMessages?.() ?? [], signal)) || [];
+	let pendingMessages: AgentMessage[] = await pollMessagesUnlessAborted(config.getSteeringMessages, signal);
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
@@ -310,11 +335,11 @@ async function runLoop(
 				return;
 			}
 
-			pendingMessages = (await maybePromiseWithAbort(config.getSteeringMessages?.() ?? [], signal)) || [];
+			pendingMessages = await pollMessagesUnlessAborted(config.getSteeringMessages, signal);
 		}
 
 		// Agent would stop here. Check for follow-up messages.
-		const followUpMessages = (await maybePromiseWithAbort(config.getFollowUpMessages?.() ?? [], signal)) || [];
+		const followUpMessages = await pollMessagesUnlessAborted(config.getFollowUpMessages, signal);
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
