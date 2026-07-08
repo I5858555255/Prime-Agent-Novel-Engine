@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed fullscreen dock selection so prompt text can be copied ([#342](https://github.com/PrimeIntellect-ai/prime-agent/pull/342)).
+
 ## [0.2.6] - 2026-07-06
 
 - Fixed fullscreen overlay selection so login URLs can be copied.
