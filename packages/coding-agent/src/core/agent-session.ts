@@ -1857,6 +1857,7 @@ export class AgentSession {
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
 
+			this._finishActiveRetryWithFailure(msg);
 			this._resolveRetry();
 			const compactionWillRetry = await this._checkCompaction(msg);
 			if (!compactionWillRetry) {
@@ -5386,22 +5387,44 @@ export class AgentSession {
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
 
+		if (this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message)) {
+			return false;
+		}
+
 		return true;
 	}
 
-	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
+	private _getProviderStreamFailureDetails(message: AssistantMessage): Record<string, unknown> | undefined {
 		const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
 		const details = failure?.details;
 		if (!details || typeof details !== "object") {
 			return undefined;
 		}
+		return details;
+	}
 
-		const kind = "kind" in details ? details.kind : undefined;
+	private _getProviderStreamFailureKind(message: AssistantMessage): string | undefined {
+		const kind = this._getProviderStreamFailureDetails(message)?.kind;
+		return typeof kind === "string" ? kind : undefined;
+	}
+
+	private _isStructuredPermanentProviderFailure(message: AssistantMessage): boolean {
+		const kind = this._getProviderStreamFailureKind(message);
+		return kind === "auth" || kind === "invalid_request" || kind === "refusal";
+	}
+
+	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
+		const details = this._getProviderStreamFailureDetails(message);
+		if (!details) {
+			return undefined;
+		}
+
+		const kind = details.kind;
 		if (kind !== "auth") {
 			return undefined;
 		}
 
-		const status = "status" in details ? details.status : undefined;
+		const status = details.status;
 		if (typeof status === "number") {
 			return status;
 		}
@@ -5481,6 +5504,21 @@ export class AgentSession {
 			return marked;
 		}
 		return false;
+	}
+
+	private _finishActiveRetryWithFailure(message: AssistantMessage): void {
+		if (this._retryAttempt === 0) {
+			return;
+		}
+		this._markProviderAuthStaleForRetryFailure(message);
+		this._emit({
+			type: "auto_retry_end",
+			success: false,
+			attempt: this._retryAttempt,
+			finalError: message.errorMessage,
+		});
+		this._retryAttempt = 0;
+		this._retryAuthFailureSources = [];
 	}
 
 	/**
