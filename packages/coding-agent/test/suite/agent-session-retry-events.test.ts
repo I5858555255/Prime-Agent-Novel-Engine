@@ -196,6 +196,32 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
+	it("does not retry local agent lifecycle listener failures", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		let unsubscribe = () => {};
+		unsubscribe = harness.session.agent.subscribe((event) => {
+			if (event.type === "message_start" && event.message.role === "assistant") {
+				unsubscribe();
+				throw new Error("local listener failed");
+			}
+		});
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("retry should not happen")]);
+
+		await harness.session.prompt("test");
+
+		const lastMessage = harness.session.messages.at(-1);
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.eventsOfType("auto_retry_start")).toEqual([]);
+		expect(harness.session.isRetrying).toBe(false);
+		expect(lastMessage?.role).toBe("assistant");
+		if (lastMessage?.role === "assistant") {
+			expect(lastMessage.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure")).toBe(
+				true,
+			);
+		}
+	});
+
 	it("retries generic provider errors", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
 		harnesses.push(harness);
