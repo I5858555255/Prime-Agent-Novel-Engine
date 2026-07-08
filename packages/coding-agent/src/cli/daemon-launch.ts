@@ -336,7 +336,7 @@ export async function relaunchDaemonAndRestoreSessions(
 	options: { allowAtRiskSessions?: boolean } = {},
 ): Promise<DaemonSessionRestoreResult> {
 	const latestProbe = await probeRunningDaemonSessions(socketPath);
-	if (latestProbe.reachable && latestProbe.activeSessions === undefined) {
+	if (latestProbe.reachable && latestProbe.activeSessions === undefined && !options.allowAtRiskSessions) {
 		throw new Error(`Cannot stop daemon on ${socketPath}: live session list unavailable`);
 	}
 	const sessionsToRestore = latestProbe.reachable ? (latestProbe.activeSessions ?? sessions) : sessions;

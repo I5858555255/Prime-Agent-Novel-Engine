@@ -400,12 +400,15 @@ function atRiskDaemonSessionKeys(probe: RunningDaemonProbe): Set<string> | undef
 }
 
 function hasNewAtRiskDaemonSessions(before: RunningDaemonProbe, after: RunningDaemonProbe): boolean {
-	if (!after.reachable || after.activeSessions === undefined) {
+	if (!after.reachable) {
 		return false;
 	}
 	const previousKeys = atRiskDaemonSessionKeys(before);
 	if (previousKeys === undefined) {
 		return false;
+	}
+	if (after.activeSessions === undefined) {
+		return true;
 	}
 	return [...atRiskDaemonSessionKeys(after)!].some((key) => !previousKeys.has(key));
 }
@@ -420,6 +423,7 @@ async function restartDaemonAfterSelfUpdate(
 	}
 	try {
 		const latestProbe = await probeRunningDaemonSessions(socketPath);
+		const initialProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(daemonProbe);
 		const latestProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(latestProbe);
 		const shouldPromptForLatestProbe = latestProbeAtRisk && hasNewAtRiskDaemonSessions(daemonProbe, latestProbe);
 		if (shouldPromptForLatestProbe && !(await confirmDaemonSessionLossBeforeUpdate(latestProbe, force))) {
@@ -432,7 +436,7 @@ async function restartDaemonAfterSelfUpdate(
 			? (latestProbe.activeSessions ?? daemonProbe.activeSessions ?? [])
 			: (daemonProbe.activeSessions ?? []);
 		const restoreResult = await relaunchDaemonAndRestoreSessions(socketPath, restoreSessions, undefined, {
-			allowAtRiskSessions: latestProbeAtRisk,
+			allowAtRiskSessions: initialProbeAtRisk || latestProbeAtRisk,
 		});
 		reportDaemonSessionRestoreWarnings(restoreResult);
 	} catch (error: unknown) {
