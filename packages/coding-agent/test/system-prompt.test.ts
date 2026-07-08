@@ -86,6 +86,19 @@ describe("buildRlmPrompt", () => {
 		);
 	});
 
+	test("defaults omitted activeTools to ipython guidance", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["websearch"],
+		});
+
+		expect(prompt).toContain("Installed skills (pre-imported): `websearch`.");
+		expect(prompt).toContain("A callable `rlm` is already in your global namespace");
+		expect(prompt).toContain("IPython is the agent's long-lived notebook");
+		expect(prompt).toContain("Each `%%bash` cell runs in a throw-away subshell");
+	});
+
 	test("only documents ipython shell prefixes when ipython is active", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",

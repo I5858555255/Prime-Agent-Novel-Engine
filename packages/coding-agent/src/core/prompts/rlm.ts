@@ -90,7 +90,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		);
 	}
 
-	if (activeTools.includes("ipython")) {
+	if (hasIpython) {
 		parts.push("", IPYTHON_CONTROL_PROMPT);
 	}
 
