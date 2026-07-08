@@ -1689,7 +1689,10 @@ export class AgentSession {
 		}
 
 		const lastAssistant = this._findLastAssistantInMessages(event.messages);
-		const concreteAuthFailure = lastAssistant ? this._isConcreteProviderAuthFailure(lastAssistant) : false;
+		const concreteAuthFailure =
+			lastAssistant !== undefined &&
+			this._isConcreteProviderAuthFailure(lastAssistant) &&
+			!this._isStructuredPermanentProviderRetryExhausted(lastAssistant);
 		if (!lastAssistant || (!this._isRetryableError(lastAssistant) && !concreteAuthFailure)) {
 			return;
 		}
@@ -1871,13 +1874,15 @@ export class AgentSession {
 
 			// Check for retryable errors first (overloaded, rate limit, server errors)
 			const concreteAuthFailure = this._isConcreteProviderAuthFailure(msg);
-			if (this._isRetryableError(msg) || concreteAuthFailure) {
-				if (concreteAuthFailure) {
+			const retryConcreteAuthFailure =
+				concreteAuthFailure && !this._isStructuredPermanentProviderRetryExhausted(msg);
+			if (this._isRetryableError(msg) || retryConcreteAuthFailure) {
+				if (retryConcreteAuthFailure) {
 					this._captureRetryAuthFailureSource(msg);
 				}
 				const didRetry = await this._handleRetryableError(msg, {
-					markAuthStaleOnFailure: concreteAuthFailure,
-					authSourceTokens: concreteAuthFailure ? this._retryAuthFailureSources : undefined,
+					markAuthStaleOnFailure: retryConcreteAuthFailure,
+					authSourceTokens: retryConcreteAuthFailure ? this._retryAuthFailureSources : undefined,
 				});
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
@@ -5638,7 +5643,7 @@ export class AgentSession {
 			return false;
 		}
 
-		if (this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message)) {
+		if (this._isStructuredPermanentProviderRetryExhausted(message)) {
 			return false;
 		}
 
@@ -5670,6 +5675,10 @@ export class AgentSession {
 	private _isStructuredPermanentProviderFailure(message: AssistantMessage): boolean {
 		const kind = this._getProviderStreamFailureKind(message);
 		return kind === "auth" || kind === "invalid_request" || kind === "refusal";
+	}
+
+	private _isStructuredPermanentProviderRetryExhausted(message: AssistantMessage): boolean {
+		return this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message);
 	}
 
 	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
