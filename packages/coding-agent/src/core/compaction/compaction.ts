@@ -995,13 +995,19 @@ async function generateTurnPrefixSummary(
 		},
 	];
 
-	const response = await completeSimple(
+	let response = await completeSimple(
 		model,
 		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		model.reasoning && thinkingLevel && thinkingLevel !== "off"
-			? { maxTokens, signal, apiKey, headers, reasoning: thinkingLevel }
-			: { maxTokens, signal, apiKey, headers },
+		buildSummaryCompletionOptions(model, maxTokens, apiKey, headers, signal, thinkingLevel),
 	);
+
+	if (shouldRetrySummaryWithoutReasoning(response, thinkingLevel)) {
+		response = await completeSimple(
+			model,
+			{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+			buildSummaryCompletionOptions(model, maxTokens, apiKey, headers, signal, "off"),
+		);
+	}
 
 	if (response.stopReason === "error") {
 		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
