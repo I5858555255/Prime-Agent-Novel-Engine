@@ -416,11 +416,26 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 		process.exit(1);
 	}
 	try {
+		const latestProbe = await probeRunningDaemonSessions(socketPath);
+		let allowAtRiskSessions = isRunningDaemonProbeAtRiskFromStop(probe);
+		if (isRunningDaemonProbeAtRiskFromStop(latestProbe) && !allowAtRiskSessions) {
+			const confirmedLatest = await confirmDaemonSessionLoss(latestProbe, {
+				force: false,
+				copy: STARTUP_SESSION_LOSS_COPY,
+			});
+			if (!confirmedLatest) {
+				if (process.stdin.isTTY) {
+					console.error(chalk.dim("Cancelled."));
+				}
+				process.exit(1);
+			}
+			allowAtRiskSessions = true;
+		}
 		const restoreResult = await relaunchDaemonAndRestoreSessions(
 			socketPath,
-			probe.reachable ? (probe.activeSessions ?? []) : [],
+			latestProbe.reachable ? (latestProbe.activeSessions ?? []) : [],
 			undefined,
-			{ allowAtRiskSessions: isRunningDaemonProbeAtRiskFromStop(probe), latestProbe: probe },
+			{ allowAtRiskSessions, latestProbe },
 		);
 		reportDaemonSessionRestoreWarnings(restoreResult);
 	} catch (error) {
