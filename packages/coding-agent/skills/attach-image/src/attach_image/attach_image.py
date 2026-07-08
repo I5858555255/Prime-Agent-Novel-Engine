@@ -53,6 +53,20 @@ def _image_dimensions(filepath: Path) -> tuple[int, int]:
         ) from error
 
 
+def _validate_decodable_image(filepath: Path) -> None:
+    try:
+        from PIL import Image
+
+        with Image.open(filepath) as image:
+            if getattr(image, "is_animated", False):
+                image.seek(0)
+            image.load()
+    except Exception as error:
+        raise ValueError(
+            f"{filepath} is not a readable supported image (PNG, JPEG, GIF, WebP)."
+        ) from error
+
+
 def _validate_image(path: str) -> tuple[Path, str, int, tuple[int, int]]:
     filepath = Path(path).expanduser()
     if not filepath.is_file():
@@ -81,6 +95,7 @@ def _validate_image(path: str) -> tuple[Path, str, int, tuple[int, int]]:
             f"{path} is {dimensions[0]}x{dimensions[1]} ({pixel_count // 1_000_000}MP); "
             f"images must be at most {_MAX_SOURCE_IMAGE_PIXELS // 1_000_000}MP. Resize it first."
         )
+    _validate_decodable_image(filepath)
 
     return filepath, mime, size, dimensions
 
