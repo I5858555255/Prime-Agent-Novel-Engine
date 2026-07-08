@@ -4,12 +4,14 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
-import type { ToolDefinition } from "../extensions/types.js";
+import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import {
+	type ExecuteResult,
 	type HostRequestHandlers,
 	type KernelAttachment,
+	KernelBusyAfterInterruptError,
 	type KernelDiffDisplay,
 	KernelManager,
 } from "../kernel/index.js";
@@ -126,6 +128,9 @@ const ipythonSchema = Type.Object({
 			"Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports.",
 	}),
 });
+
+const BUSY_KERNEL_WAIT_CHOICE = "Wait";
+const BUSY_KERNEL_KILL_CHOICE = "Kill kernel";
 
 function createAbortError(): Error {
 	return new Error("IPython execution aborted");
@@ -305,10 +310,29 @@ export class IpythonKernelProvisioner {
 		const pending = this.managerPromise;
 		this.managerPromise = undefined;
 		this.startedManager = undefined;
+		if (this.options?.kernelManagerRef) {
+			this.options.kernelManagerRef.current = undefined;
+		}
 		if (!pending) return;
 		try {
 			const m = await pending;
 			await m.dispose();
+		} catch {
+			// a failed startup already cleaned up after itself
+		}
+	}
+
+	async kill(): Promise<void> {
+		const pending = this.managerPromise;
+		this.managerPromise = undefined;
+		this.startedManager = undefined;
+		if (this.options?.kernelManagerRef) {
+			this.options.kernelManagerRef.current = undefined;
+		}
+		if (!pending) return;
+		try {
+			const m = await pending;
+			await m.kill();
 		} catch {
 			// a failed startup already cleaned up after itself
 		}
@@ -431,6 +455,58 @@ export class IpythonKernelProvisioner {
 	}
 }
 
+async function chooseBusyKernelAction(
+	ctx: ExtensionContext | undefined,
+	signal: AbortSignal | undefined,
+): Promise<"wait" | "kill" | "cancel"> {
+	if (!ctx?.hasUI) {
+		return "cancel";
+	}
+	const choice = await ctx.ui.select(
+		"IPython kernel is still running\nThe previous interrupted cell has not stopped. Waiting preserves kernel state. Killing restarts IPython and may lose unsaved state.",
+		[BUSY_KERNEL_WAIT_CHOICE, BUSY_KERNEL_KILL_CHOICE],
+		{ signal },
+	);
+	if (choice === BUSY_KERNEL_WAIT_CHOICE) {
+		return "wait";
+	}
+	if (choice === BUSY_KERNEL_KILL_CHOICE) {
+		return "kill";
+	}
+	return "cancel";
+}
+
+async function executeWithBusyKernelChoice(
+	provisioner: IpythonKernelProvisioner,
+	reportStartupProgress: KernelBootstrapProgressHandler,
+	code: string,
+	signal: AbortSignal | undefined,
+	onStream: (chunk: string, name: "stdout" | "stderr") => void,
+	ctx: ExtensionContext | undefined,
+): Promise<ExecuteResult> {
+	while (true) {
+		const m = await provisioner.ensure(reportStartupProgress, signal);
+		try {
+			return await m.execute(code, { signal, onStream });
+		} catch (error) {
+			if (!(error instanceof KernelBusyAfterInterruptError) || signal?.aborted) {
+				throw error;
+			}
+			const action = await chooseBusyKernelAction(ctx, signal);
+			if (action === "wait") {
+				ctx?.ui.setWorkingMessage("Waiting for IPython kernel...");
+				continue;
+			}
+			if (action === "kill") {
+				ctx?.ui.setWorkingMessage("Restarting IPython kernel...");
+				await provisioner.kill();
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
 /** Turn kernel image attachments into `ImageContent` blocks; non-image types are dropped. */
 export function imageBlocksFromAttachments(attachments: readonly KernelAttachment[] | undefined): ImageContent[] {
 	if (!attachments) return [];
@@ -474,17 +550,20 @@ export function createIpythonToolDefinition(
 			};
 
 			try {
-				const m = await provisioner.ensure(reportStartupProgress, signal);
 				const code = applyShellSettingsToBashMagicCell(params.code, options);
-				const r = await m.execute(code, {
+				const r = await executeWithBusyKernelChoice(
+					provisioner,
+					reportStartupProgress,
+					code,
 					signal,
-					onStream: (chunk) => {
+					(chunk) => {
 						onUpdate?.({
 							content: [{ type: "text", text: chunk }],
 							details: { status: "ok" },
 						});
 					},
-				});
+					ctx,
+				);
 
 				let text = r.stdout;
 				if (r.stderr) text += (text ? "\n" : "") + r.stderr;
