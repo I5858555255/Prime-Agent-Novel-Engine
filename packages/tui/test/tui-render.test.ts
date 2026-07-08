@@ -721,6 +721,57 @@ describe("TUI viewport-preserving render", () => {
 		tui.stop();
 	});
 
+	it("only deletes visible Kitty images during screen-clearing redraws", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		const aboveImage = encodeKitty("AAAA", { columns: 2, rows: 1, imageId: 101, moveCursor: false });
+		const visibleImage = encodeKitty("BBBB", { columns: 2, rows: 1, imageId: 202, moveCursor: false });
+		const lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		lines[2] = aboveImage;
+		lines[25] = visibleImage;
+		component.lines = lines;
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		terminal.resize(60, 10);
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(writes.includes("\x1b[2J"), "Width change should clear the screen before repainting");
+		assert.ok(writes.includes(deleteKittyImage(202)), "Visible image is deleted before the screen repaint");
+		assert.ok(!writes.includes(deleteKittyImage(101)), "Image in scrollback above the viewport must not be deleted");
+
+		tui.stop();
+	});
+
+	it("repaints only the visible window during screen-clearing redraws", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 30 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		terminal.resize(60, 10);
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		assert.ok(writes.includes("\x1b[2J"), "Width change should clear the screen before repainting");
+		assert.ok(!writes.includes("Line 0"), "Screen-clearing redraw must not replay scrollback lines");
+		assert.ok(!writes.includes("Line 19"), "Screen-clearing redraw must not replay lines above the viewport");
+		assert.ok(writes.includes("Line 20"), "Screen-clearing redraw should repaint the top visible line");
+		assert.ok(writes.includes("Line 29"), "Screen-clearing redraw should repaint the bottom visible line");
+
+		tui.stop();
+	});
+
 	it("does not leave maxLinesRendered inflated after a preserving collapse", async () => {
 		const terminal = new LoggingVirtualTerminal(40, 10);
 		const tui = new TUI(terminal);

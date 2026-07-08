@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed full TUI redraws to preserve terminal scrollback on resize and shrink redraws ([#331](https://github.com/PrimeIntellect-ai/prime-agent/pull/331) by [@sethkarten](https://github.com/sethkarten)).
+
 ## [0.2.6] - 2026-07-06
 
 - Fixed fullscreen overlay selection so login URLs can be copied.

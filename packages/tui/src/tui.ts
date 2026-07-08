@@ -539,13 +539,12 @@ export class TUI extends Container {
 	requestRender(force = false): void {
 		if (force) {
 			this.fullscreen?.viewport.reset();
-			this.previousLines = [];
+			// Keep the previous frame metadata so the forced full repaint can
+			// clean up only the visible viewport and avoid touching scrollback.
 			this.previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
-			this.previousHeight = -1; // -1 triggers heightChanged, forcing a full clear
 			this.cursorRow = 0;
 			this.hardwareCursorRow = 0;
 			this.maxLinesRendered = 0;
-			this.previousViewportTop = 0;
 			if (this.renderTimer) {
 				clearTimeout(this.renderTimer);
 				this.renderTimer = undefined;
@@ -1315,8 +1314,8 @@ export class TUI extends Container {
 
 		newLines = this.applyLineResets(newLines);
 
-		// Helper to clear the viewport and render all new lines. Do not clear
-		// terminal scrollback: users rely on it to read long prior messages.
+		// Helper to clear the viewport and repaint the current screen. Do not
+		// clear terminal scrollback: users rely on it to read long prior messages.
 		const fullRender = (clear: boolean, preserveViewport = false): void => {
 			this.fullRedrawCount += 1;
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
@@ -1382,12 +1381,14 @@ export class TUI extends Container {
 				return;
 			}
 
+			const renderStart = clear ? Math.max(0, newLines.length - height) : 0;
 			if (clear) {
-				buffer += this.deleteKittyImages(this.previousKittyImageIds);
+				const previousVisibleBottom = Math.min(this.previousLines.length - 1, prevViewportTop + height - 1);
+				buffer += this.deleteChangedKittyImages(prevViewportTop, previousVisibleBottom);
 				buffer += "\x1b[2J\x1b[H"; // Clear screen and home while preserving scrollback
 			}
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
+			for (let i = renderStart; i < newLines.length; i++) {
+				if (i > renderStart) buffer += "\r\n";
 				buffer += newLines[i];
 			}
 			buffer += "\x1b[?2026l"; // End synchronized output
