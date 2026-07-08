@@ -1381,7 +1381,7 @@ export class TUI extends Container {
 				return;
 			}
 
-			const renderStart = clear ? Math.max(0, newLines.length - height) : 0;
+			const renderStart = clear && this.previousLines.length > 0 ? Math.max(0, newLines.length - height) : 0;
 			if (clear) {
 				const previousVisibleBottom = Math.min(this.previousLines.length - 1, prevViewportTop + height - 1);
 				buffer += this.deleteChangedKittyImages(prevViewportTop, previousVisibleBottom);
