@@ -2008,6 +2008,45 @@ describe("AgentSession queue characterization", () => {
 			}
 		});
 
+		it("defers heartbeat context delivery while bash is running and drains it on retry", async () => {
+			const harness = await createHarness();
+			try {
+				const job = {
+					id: "heartbeat-1",
+					status: "active" as const,
+					source: "heartbeat" as const,
+					activeSessionId: "active-1",
+					sessionId: "session-1",
+					sessionFile: "/tmp/session.jsonl",
+					cwd: "/tmp",
+					prompt: "check progress",
+					schedule: { kind: "interval" as const, expression: "every 5m", intervalMs: 300_000 },
+					createdAt: "2026-01-01T12:00:00.000Z",
+					updatedAt: "2026-01-01T12:00:00.000Z",
+					nextRunAt: "2026-01-01T12:05:00.000Z",
+					runCount: 0,
+				};
+				const sessionInternals = harness.session as unknown as { _userBashRunning?: boolean };
+				sessionInternals._userBashRunning = true;
+
+				await expect(harness.session.runHeartbeatContext(job)).resolves.toBe(false);
+
+				expect(harness.session.pendingMessageCount).toBe(1);
+				expect(harness.session.messages.filter((message) => message.role === "custom")).toEqual([]);
+
+				harness.setResponses([fauxAssistantMessage("heartbeat handled")]);
+				sessionInternals._userBashRunning = false;
+
+				await expect(harness.session.runHeartbeatContext(job)).resolves.toBe(true);
+
+				expect(harness.session.pendingMessageCount).toBe(0);
+				expect(getAssistantTexts(harness)).toEqual(["heartbeat handled"]);
+				expect(harness.session.messages.filter((message) => message.role === "custom")).toHaveLength(1);
+			} finally {
+				harness.cleanup();
+			}
+		});
+
 		it("delivers heartbeat contexts as hidden custom messages", async () => {
 			const harness = await createHarness();
 			try {

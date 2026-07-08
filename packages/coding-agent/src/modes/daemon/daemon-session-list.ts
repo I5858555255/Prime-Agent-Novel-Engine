@@ -114,14 +114,21 @@ export function buildSessionList(
 	return entries;
 }
 
-function effectivePendingMessageCount(session: ActiveSessionState["runtime"]["session"]): number {
-	const visiblePendingMessageCount = session.visiblePendingMessageCount ?? session.pendingMessageCount;
-	return visiblePendingMessageCount + (session.hasAcceptedPromptInFlight ? 1 : 0);
+function visiblePendingMessageCount(session: ActiveSessionState["runtime"]["session"]): number {
+	return session.visiblePendingMessageCount ?? session.pendingMessageCount;
+}
+
+function displayPendingMessageCount(session: ActiveSessionState["runtime"]["session"]): number {
+	return visiblePendingMessageCount(session) + (session.hasAcceptedPromptInFlight ? 1 : 0);
+}
+
+function activePendingMessageCount(session: ActiveSessionState["runtime"]["session"]): number {
+	return session.pendingMessageCount + (session.hasAcceptedPromptInFlight ? 1 : 0);
 }
 
 export function summaryForActiveSession(activeSession: ActiveSessionState, savedSession?: SessionInfo): SessionSummary {
 	const session = activeSession.runtime.session;
-	const pendingMessageCount = effectivePendingMessageCount(session);
+	const pendingMessageCount = displayPendingMessageCount(session);
 	const metadata = activeSession.runtime.metadata ?? { kind: "top-level" as const };
 	let modified = savedSession?.modified.toISOString();
 	if (!modified && session.sessionFile) {
@@ -272,7 +279,7 @@ function rlmChildSnapshotForActiveSession(
 	const runStatus = metadata.rlmChildId
 		? parent?.runtime.session.getRlmChildRunStatus(metadata.rlmChildId)
 		: undefined;
-	const status = runStatus ?? (session.isStreaming || effectivePendingMessageCount(session) > 0 ? "running" : "done");
+	const status = runStatus ?? (session.isStreaming || activePendingMessageCount(session) > 0 ? "running" : "done");
 	return {
 		id: metadata.rlmChildId ?? activeSession.activeSessionId,
 		parentId: parentNodeId,
@@ -325,7 +332,7 @@ export function isActiveSessionBusy(activeSession: ActiveSessionState): boolean 
 	return (
 		session.isStreaming ||
 		session.isCompacting ||
-		effectivePendingMessageCount(session) > 0 ||
+		activePendingMessageCount(session) > 0 ||
 		session.hasRunningRlmChildren()
 	);
 }

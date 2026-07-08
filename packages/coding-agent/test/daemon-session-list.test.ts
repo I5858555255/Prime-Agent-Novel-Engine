@@ -88,6 +88,22 @@ describe("buildSessionList", () => {
 		expect(summary.activity).toBe("working");
 	});
 
+	it("hides heartbeat-only pending counts while keeping the session working", () => {
+		const oneMessage = [{ role: "user", content: "hi" }] as unknown as AgentMessage[];
+		const summary = summaryForActiveSession(
+			makeState({
+				activeSessionId: "heartbeat-pending",
+				messages: oneMessage,
+				summaryState: { basedOnMessageCount: 1 } as ActiveSessionState["summaryState"],
+				pendingMessageCount: 1,
+				visiblePendingMessageCount: 0,
+			}),
+		);
+
+		expect(summary.pendingMessageCount).toBe(0);
+		expect(summary.activity).toBe("working");
+	});
+
 	it("marks a finished subagent idle instead of holding it at working", () => {
 		const oneMessage = [{ role: "user", content: "hi" }] as unknown as AgentMessage[];
 		const entries = buildSessionList(
@@ -386,6 +402,28 @@ describe("buildRlmChildSnapshots", () => {
 		expect(snapshots.map((snapshot) => [snapshot.id, snapshot.status])).toEqual([["sub-aaa", "running"]]);
 	});
 
+	it("keeps heartbeat-only pending subagents running without showing a queue count", () => {
+		const parent = makeState({ activeSessionId: "parent", sessionFile: "/tmp/parent.jsonl" });
+		const child = makeState({
+			activeSessionId: "child",
+			pendingMessageCount: 1,
+			visiblePendingMessageCount: 0,
+			metadata: {
+				kind: "subagent",
+				createdAt: 1,
+				parentActiveSessionId: "parent",
+				rlmChildId: "sub-aaa",
+				prompt: "Check CI",
+			},
+		});
+
+		const snapshots = buildRlmChildSnapshots("parent", [parent, child]);
+		const summary = summaryForActiveSession(child);
+
+		expect(summary.pendingMessageCount).toBe(0);
+		expect(snapshots[0]).toMatchObject({ id: "sub-aaa", status: "running" });
+	});
+
 	it("returns no snapshots for sessions without children", () => {
 		const solo = makeState({ activeSessionId: "solo" });
 		expect(buildRlmChildSnapshots("solo", [solo])).toEqual([]);
@@ -441,6 +479,8 @@ interface StateOptions {
 	childRunStatuses?: Record<string, "queued" | "running" | "done" | "error" | "cancelled">;
 	hasRunningRlmChildren?: boolean;
 	hasAcceptedPromptInFlight?: boolean;
+	pendingMessageCount?: number;
+	visiblePendingMessageCount?: number;
 	metadata?: {
 		kind: "top-level" | "subagent";
 		createdAt: number;
@@ -486,7 +526,8 @@ function makeState(options: StateOptions): ActiveSessionState {
 				hasRunningRlmChildren: () => options.hasRunningRlmChildren ?? false,
 				hasAcceptedPromptInFlight: options.hasAcceptedPromptInFlight ?? false,
 				getCurrentRecap: () => undefined,
-				pendingMessageCount: 0,
+				pendingMessageCount: options.pendingMessageCount ?? 0,
+				visiblePendingMessageCount: options.visiblePendingMessageCount,
 				state: {
 					streamingMessage: undefined,
 					pendingToolCalls: new Set(options.pendingToolCalls ?? []),
