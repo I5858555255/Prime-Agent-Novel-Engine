@@ -1857,13 +1857,14 @@ export class AgentSession {
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
 
+			const compactionWillRetry = await this._checkCompaction(msg);
+			if (compactionWillRetry) {
+				return;
+			}
 			this._finishActiveRetryWithFailure(msg);
 			this._resolveRetry();
-			const compactionWillRetry = await this._checkCompaction(msg);
-			if (!compactionWillRetry) {
-				this._finishGoalForTerminalAssistantMessage(msg);
-				this._scheduleAutoRefineAfterAgentEnd();
-			}
+			this._finishGoalForTerminalAssistantMessage(msg);
+			this._scheduleAutoRefineAfterAgentEnd();
 		}
 	}
 
