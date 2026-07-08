@@ -4,6 +4,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getDaemonUpdateRestartManifestPath } from "../../../src/config.js";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.js";
+import type { AgentCronJobStore, AgentCronScheduler } from "../../../src/core/cron-jobs.js";
 import type { CustomMessage } from "../../../src/core/messages.js";
 import type { BashOperations } from "../../../src/core/tools/bash.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
@@ -14,6 +15,8 @@ import { createHarness, getUserTexts, type Harness } from "../harness.js";
 
 type AgentDaemonUpdateInternals = {
 	sessions: Map<string, ActiveSessionState>;
+	cronStore: AgentCronJobStore;
+	cronScheduler: AgentCronScheduler;
 	prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest>;
 	handleLine(client: DaemonSocketClient, line: string): Promise<void>;
 };
@@ -77,6 +80,16 @@ function hasArchivedState(harness: Harness): boolean {
 	return harness.sessionManager
 		.getEntries()
 		.some((entry) => entry.type === "session_state" && entry.state.status === "archived");
+}
+
+async function waitForCondition(predicate: () => boolean): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		if (predicate()) {
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	throw new Error("condition was not met");
 }
 
 function createCustomMessage(content: string): CustomMessage {
@@ -147,6 +160,26 @@ describe("issue #4257 update restart resume", () => {
 		});
 		const internals = daemon as unknown as AgentDaemonUpdateInternals;
 		internals.sessions.set(state.activeSessionId, state);
+		const schedulerStopSpy = vi.spyOn(internals.cronScheduler, "stop");
+		const now = new Date("2026-01-01T12:00:00.000Z");
+		const cron = internals.cronStore.create({
+			activeSessionId: state.activeSessionId,
+			sessionId: harness.session.sessionId,
+			sessionFile: harness.session.sessionFile ?? "",
+			cwd: harness.tempDir,
+			scheduleText: "in 1h",
+			prompt: "check long run",
+			now,
+		});
+		const heartbeat = internals.cronStore.createHeartbeat({
+			activeSessionId: state.activeSessionId,
+			sessionId: harness.session.sessionId,
+			sessionFile: harness.session.sessionFile ?? "",
+			cwd: harness.tempDir,
+			scheduleText: "every 5m",
+			prompt: "keep working",
+			now,
+		});
 
 		const manifest = await internals.prepareUpdateRestart();
 		const bashResult = await bashPromise;
@@ -157,6 +190,10 @@ describe("issue #4257 update restart resume", () => {
 		expect(abortedBeforeDispose).toBe(true);
 		expect(disposed).toBe(true);
 		expect(internals.sessions.size).toBe(0);
+		expect(schedulerStopSpy).toHaveBeenCalledOnce();
+		for (const id of [cron.id, heartbeat.id]) {
+			expect(internals.cronStore.list().find((job) => job.id === id)).toMatchObject({ status: "active" });
+		}
 		expect(manifest.sessions).toHaveLength(1);
 		expect(manifest.sessions[0]).toMatchObject({
 			activeSessionId: "active-1",
@@ -179,6 +216,32 @@ describe("issue #4257 update restart resume", () => {
 				.some((entry) => entry.type === "custom_message" && entry.customType === "prime-agent.update_restart"),
 		).toBe(true);
 		abortSpy.mockRestore();
+		agentAbortSpy.mockRestore();
+		schedulerStopSpy.mockRestore();
+	});
+
+	it("keeps active goal abort state until update restart abort settles", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		harness.session.handleGoalHostRequest("goal.create", { objective: "finish the update-safe task" });
+		let releaseIdle: (() => void) | undefined;
+		const idlePromise = new Promise<void>((resolve) => {
+			releaseIdle = resolve;
+		});
+		const waitForIdleSpy = vi.spyOn(harness.session.agent, "waitForIdle").mockReturnValue(idlePromise);
+		const agentAbortSpy = vi.spyOn(harness.session.agent, "abort");
+		const internals = harness.session as unknown as { _goalAbortInProgress: boolean };
+
+		harness.session.abortForUpdateRestart();
+
+		expect(agentAbortSpy).toHaveBeenCalledOnce();
+		expect(internals._goalAbortInProgress).toBe(true);
+
+		releaseIdle?.();
+		await waitForCondition(() => !internals._goalAbortInProgress);
+
+		expect(internals._goalAbortInProgress).toBe(false);
+		waitForIdleSpy.mockRestore();
 		agentAbortSpy.mockRestore();
 	});
 

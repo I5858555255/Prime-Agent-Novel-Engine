@@ -3512,7 +3512,17 @@ export class AgentSession {
 	abortForUpdateRestart(): void {
 		this.abortRetry();
 		this._cancelActiveRlmChildRuns("Parent session aborted for update restart");
+		this._goalAbortInProgress = this._goalState.status === "active";
 		this.agent.abort();
+		if (this._goalAbortInProgress) {
+			void this.agent
+				.waitForIdle()
+				.then(() => this._agentEventQueue)
+				.catch(() => undefined)
+				.finally(() => {
+					this._goalAbortInProgress = false;
+				});
+		}
 	}
 
 	// =========================================================================

@@ -2416,6 +2416,8 @@ export class AgentDaemon {
 		};
 
 		this.writeUpdateRestartManifest(manifest);
+		// Keep persisted jobs for the replacement daemon, but stop this daemon from firing them after sessions detach.
+		this.cronScheduler.stop();
 
 		for (const [state, restartSession] of restartSessions) {
 			this.appendUpdateRestartMarker(state, restartSession);
