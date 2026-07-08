@@ -115,4 +115,57 @@ describe("generateSummary reasoning options", () => {
 		});
 		expect(completeSimpleMock.mock.calls[0][2]).not.toHaveProperty("reasoning");
 	});
+
+	it("chunks very large summarization inputs before calling the provider", async () => {
+		const largeMessages: AgentMessage[] = Array.from({ length: 4 }, (_, index) => ({
+			role: "user" as const,
+			content: `message ${index} ${"x".repeat(100_000)}`,
+			timestamp: Date.now() + index,
+		}));
+
+		await generateSummary(
+			largeMessages,
+			createModel(true),
+			2000,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"medium",
+		);
+
+		expect(completeSimpleMock.mock.calls.length).toBeGreaterThan(1);
+		for (const call of completeSimpleMock.mock.calls) {
+			const promptText = call[1].messages[0].content[0].text;
+			expect(promptText.length).toBeLessThan(260_000);
+		}
+	});
+
+	it("retries summarization without reasoning when the provider rejects reasoning options", async () => {
+		completeSimpleMock
+			.mockResolvedValueOnce({
+				...mockSummaryResponse,
+				content: [],
+				stopReason: "error",
+				errorMessage: "400 Invalid request.",
+			})
+			.mockResolvedValueOnce(mockSummaryResponse);
+
+		await generateSummary(
+			messages,
+			createModel(true),
+			2000,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"medium",
+		);
+
+		expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+		expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({ reasoning: "medium" });
+		expect(completeSimpleMock.mock.calls[1][2]).not.toHaveProperty("reasoning");
+	});
 });

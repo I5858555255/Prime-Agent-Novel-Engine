@@ -547,6 +547,167 @@ export function buildSummarizationPrompt(customInstructions?: string, previousSu
 	return `${basePrompt}\n\n${KERNEL_PERSIST_SUMMARY_NOTE}`;
 }
 
+const SUMMARY_CHUNK_TARGET_TOKENS = 80_000;
+const SUMMARY_CHUNK_CONTEXT_SAFETY_TOKENS = 8_192;
+const SUMMARY_CHUNK_CHARS_PER_TOKEN = 3;
+const SUMMARY_CHUNK_MIN_CHARS = 48_000;
+
+function buildSummaryPromptText(
+	conversationText: string,
+	customInstructions?: string,
+	previousSummary?: string,
+): string {
+	let promptText = `<conversation>
+${conversationText}
+</conversation>
+
+`;
+	if (previousSummary) {
+		promptText += `<previous-summary>
+${previousSummary}
+</previous-summary>
+
+`;
+	}
+	promptText += buildSummarizationPrompt(customInstructions, previousSummary);
+	return promptText;
+}
+
+function getSummaryConversationCharBudget(model: Model<any>, maxTokens: number, previousSummary?: string): number {
+	const contextWindow = typeof model.contextWindow === "number" ? model.contextWindow : 0;
+	const targetTokens =
+		contextWindow > 0
+			? Math.min(
+					SUMMARY_CHUNK_TARGET_TOKENS,
+					Math.max(16_000, contextWindow - maxTokens - SUMMARY_CHUNK_CONTEXT_SAFETY_TOKENS),
+				)
+			: SUMMARY_CHUNK_TARGET_TOKENS;
+	const previousSummaryChars = previousSummary?.length ?? 0;
+	return Math.max(SUMMARY_CHUNK_MIN_CHARS, targetTokens * SUMMARY_CHUNK_CHARS_PER_TOKEN - previousSummaryChars);
+}
+
+function truncateConversationPiece(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	const marker = `
+
+[... ${text.length - maxChars} more characters truncated to keep the compaction request within provider context]`;
+	const keepChars = Math.max(0, maxChars - marker.length);
+	return `${text.slice(0, keepChars)}${marker}`;
+}
+
+function serializeConversationChunks(messages: AgentMessage[], maxChars: number): string[] {
+	if (messages.length === 0) return [""];
+
+	const chunks: string[] = [];
+	let currentParts: string[] = [];
+	let currentChars = 0;
+
+	for (const message of messages) {
+		const serialized = serializeConversation(convertToLlm([message]));
+		if (!serialized) continue;
+		const piece = truncateConversationPiece(serialized, maxChars);
+		const separatorChars = currentParts.length > 0 ? 2 : 0;
+		if (currentParts.length > 0 && currentChars + separatorChars + piece.length > maxChars) {
+			chunks.push(currentParts.join("\n\n"));
+			currentParts = [];
+			currentChars = 0;
+		}
+		currentParts.push(piece);
+		currentChars += (currentParts.length > 1 ? 2 : 0) + piece.length;
+	}
+
+	if (currentParts.length > 0) {
+		chunks.push(currentParts.join("\n\n"));
+	}
+	return chunks.length > 0 ? chunks : [""];
+}
+
+function buildSummaryCompletionOptions(
+	model: Model<any>,
+	maxTokens: number,
+	apiKey: string,
+	headers?: Record<string, string>,
+	signal?: AbortSignal,
+	thinkingLevel?: ThinkingLevel,
+): {
+	maxTokens: number;
+	signal?: AbortSignal;
+	apiKey: string;
+	headers?: Record<string, string>;
+	reasoning?: Exclude<ThinkingLevel, "off">;
+} {
+	return model.reasoning && thinkingLevel && thinkingLevel !== "off"
+		? { maxTokens, signal, apiKey, headers, reasoning: thinkingLevel }
+		: { maxTokens, signal, apiKey, headers };
+}
+
+function shouldRetrySummaryWithoutReasoning(response: AssistantMessage, thinkingLevel?: ThinkingLevel): boolean {
+	if (!thinkingLevel || thinkingLevel === "off") return false;
+	if (response.stopReason !== "error") return false;
+	return /400|invalid request|reasoning|effort/i.test(response.errorMessage ?? "");
+}
+
+async function requestSummaryForConversationText(
+	conversationText: string,
+	model: Model<any>,
+	maxTokens: number,
+	apiKey: string,
+	headers?: Record<string, string>,
+	signal?: AbortSignal,
+	customInstructions?: string,
+	previousSummary?: string,
+	thinkingLevel?: ThinkingLevel,
+): Promise<string> {
+	const summarizationMessages = [
+		{
+			role: "user" as const,
+			content: [
+				{
+					type: "text" as const,
+					text: buildSummaryPromptText(conversationText, customInstructions, previousSummary),
+				},
+			],
+			timestamp: Date.now(),
+		},
+	];
+
+	let response = await completeSimple(
+		model,
+		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+		buildSummaryCompletionOptions(model, maxTokens, apiKey, headers, signal, thinkingLevel),
+	);
+
+	if (shouldRetrySummaryWithoutReasoning(response, thinkingLevel)) {
+		response = await completeSimple(
+			model,
+			{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+			buildSummaryCompletionOptions(model, maxTokens, apiKey, headers, signal, "off"),
+		);
+	}
+
+	if (response.stopReason === "error") {
+		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+	}
+
+	return response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n");
+}
+
+function buildChunkedSummaryInstructions(
+	customInstructions: string | undefined,
+	chunkIndex: number,
+	chunkCount: number,
+): string {
+	const chunkInstruction = `Internal compaction note: the conversation was too large for one summarization request. This is chunk ${chunkIndex + 1} of ${chunkCount}. Produce one concise cumulative summary; do not grow the summary linearly with each chunk.`;
+	return customInstructions
+		? `${customInstructions}
+
+${chunkInstruction}`
+		: chunkInstruction;
+}
+
 /**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
@@ -563,50 +724,38 @@ export async function generateSummary(
 	thinkingLevel?: ThinkingLevel,
 ): Promise<string> {
 	const maxTokens = Math.floor(0.8 * reserveTokens);
+	const maxConversationChars = getSummaryConversationCharBudget(model, maxTokens, previousSummary);
+	const conversationChunks = serializeConversationChunks(currentMessages, maxConversationChars);
 
-	const basePrompt = buildSummarizationPrompt(customInstructions, previousSummary);
-
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
-
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const completionOptions =
-		model.reasoning && thinkingLevel && thinkingLevel !== "off"
-			? { maxTokens, signal, apiKey, headers, reasoning: thinkingLevel }
-			: { maxTokens, signal, apiKey, headers };
-
-	const response = await completeSimple(
-		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		completionOptions,
-	);
-
-	if (response.stopReason === "error") {
-		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+	if (conversationChunks.length <= 1) {
+		return requestSummaryForConversationText(
+			conversationChunks[0] ?? "",
+			model,
+			maxTokens,
+			apiKey,
+			headers,
+			signal,
+			customInstructions,
+			previousSummary,
+			thinkingLevel,
+		);
 	}
 
-	const textContent = response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
-
-	return textContent;
+	let rollingSummary = previousSummary;
+	for (let i = 0; i < conversationChunks.length; i++) {
+		rollingSummary = await requestSummaryForConversationText(
+			conversationChunks[i]!,
+			model,
+			maxTokens,
+			apiKey,
+			headers,
+			signal,
+			buildChunkedSummaryInstructions(customInstructions, i, conversationChunks.length),
+			rollingSummary,
+			thinkingLevel,
+		);
+	}
+	return rollingSummary ?? "";
 }
 
 // ============================================================================
