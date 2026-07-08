@@ -3509,6 +3509,12 @@ export class AgentSession {
 		}
 	}
 
+	abortForUpdateRestart(): void {
+		this.abortRetry();
+		this._cancelActiveRlmChildRuns("Parent session aborted for update restart");
+		this.agent.abort();
+	}
+
 	// =========================================================================
 	// Model Management
 	// =========================================================================

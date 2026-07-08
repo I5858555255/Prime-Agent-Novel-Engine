@@ -2522,6 +2522,9 @@ export class AgentDaemon {
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced" || reason === "update") {
 			await this.abortBashForClose(state);
 		}
+		if (reason === "update") {
+			state.runtime.session.abortForUpdateRestart();
+		}
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
 			await state.runtime.session.abort().catch(() => undefined);
 		}

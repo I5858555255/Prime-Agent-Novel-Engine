@@ -4779,7 +4779,10 @@ export class InteractiveMode {
 		}
 		if (this.keybindings.matches(data, "app.thinking.toggle")) {
 			this.toggleThinkingBlockVisibility();
+			return;
 		}
+		this.focusEditor();
+		this.editor.handleInput(data);
 	}
 
 	private getTrayOverrideLabel(): string | undefined {

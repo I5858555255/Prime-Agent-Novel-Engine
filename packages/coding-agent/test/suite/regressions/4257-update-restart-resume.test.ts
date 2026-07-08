@@ -124,14 +124,17 @@ describe("issue #4257 update restart resume", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(harness.session.isBashRunning).toBe(true);
 		const abortSpy = vi.spyOn(harness.session, "abort");
+		const agentAbortSpy = vi.spyOn(harness.session.agent, "abort");
 
 		let disposed = false;
+		let abortedBeforeDispose = false;
 		const state = createState(
 			harness,
 			"active-1",
 			{ kind: "top-level", createdAt: Date.now() },
 			{
 				onDispose: () => {
+					abortedBeforeDispose = agentAbortSpy.mock.calls.length > 0;
 					disposed = true;
 				},
 			},
@@ -150,6 +153,8 @@ describe("issue #4257 update restart resume", () => {
 
 		expect(bashResult.cancelled).toBe(true);
 		expect(abortSpy).not.toHaveBeenCalled();
+		expect(agentAbortSpy).toHaveBeenCalledOnce();
+		expect(abortedBeforeDispose).toBe(true);
 		expect(disposed).toBe(true);
 		expect(internals.sessions.size).toBe(0);
 		expect(manifest.sessions).toHaveLength(1);
@@ -174,6 +179,7 @@ describe("issue #4257 update restart resume", () => {
 				.some((entry) => entry.type === "custom_message" && entry.customType === "prime-agent.update_restart"),
 		).toBe(true);
 		abortSpy.mockRestore();
+		agentAbortSpy.mockRestore();
 	});
 
 	it("keeps queued draft sessions and subagents resumable", async () => {
