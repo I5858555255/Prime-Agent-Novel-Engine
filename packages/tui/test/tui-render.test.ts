@@ -153,6 +153,34 @@ describe("TUI Kitty image cleanup", () => {
 
 		tui.stop();
 	});
+
+	it("deletes bottom visible Kitty images when height shrink clamps the previous viewport", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = [
+			"Line 0",
+			"Line 1",
+			encodeKitty("AAAA", { columns: 2, rows: 1, imageId: 303, moveCursor: false }),
+		];
+		tui.start();
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		terminal.resize(40, 2);
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		const deleteIndex = writes.indexOf(deleteKittyImage(303));
+		const clearIndex = writes.indexOf("\x1b[2J");
+		assert.ok(deleteIndex >= 0, "Bottom visible image should be deleted during the height-shrink redraw");
+		assert.ok(clearIndex >= 0, "Height shrink should clear the screen");
+		assert.ok(deleteIndex < clearIndex, "Visible image should be deleted before the screen is cleared");
+
+		tui.stop();
+	});
 });
 
 describe("TUI resize handling", () => {

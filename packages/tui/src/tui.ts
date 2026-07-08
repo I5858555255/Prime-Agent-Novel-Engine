@@ -1383,8 +1383,9 @@ export class TUI extends Container {
 
 			const renderStart = clear && this.previousLines.length > 0 ? Math.max(0, newLines.length - height) : 0;
 			if (clear) {
-				const previousVisibleBottom = Math.min(this.previousLines.length - 1, prevViewportTop + height - 1);
-				buffer += this.deleteChangedKittyImages(prevViewportTop, previousVisibleBottom);
+				const previousVisibleTop = Math.min(prevViewportTop, Math.max(0, this.previousLines.length - height));
+				const previousVisibleBottom = Math.min(this.previousLines.length - 1, previousVisibleTop + height - 1);
+				buffer += this.deleteChangedKittyImages(previousVisibleTop, previousVisibleBottom);
 				buffer += "\x1b[2J\x1b[H"; // Clear screen and home while preserving scrollback
 			}
 			for (let i = renderStart; i < newLines.length; i++) {
