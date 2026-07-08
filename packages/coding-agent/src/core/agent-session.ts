@@ -1788,9 +1788,7 @@ export class AgentSession {
 
 	private _isPromptTurnStartMessage(message: AgentMessage): boolean {
 		return (
-			message.role === "user" ||
-			(message.role === "custom" &&
-				(message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE || message.customType === GOAL_CONTEXT_CUSTOM_TYPE))
+			message.role === "user" || (message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE)
 		);
 	}
 

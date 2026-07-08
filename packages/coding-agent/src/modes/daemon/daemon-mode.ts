@@ -392,6 +392,7 @@ export class AgentDaemon {
 			await bindActiveSessionState(state, {
 				broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
 				createConnectionState: (targetSessionState) => this.createConnectionState(targetSessionState),
+				sessionReplaced: (targetSessionState) => this.refreshReplacedSessionState(targetSessionState),
 				shutdown: () => {
 					void this.shutdown(0);
 				},
@@ -419,6 +420,18 @@ export class AgentDaemon {
 		// Restore the last persisted status so it shows before the first sweep.
 		this.summarizer.seed(state);
 		return state;
+	}
+
+	private refreshReplacedSessionState(state: ActiveSessionState): void {
+		this.summarizer.forget(state.activeSessionId);
+		state.summaryState = undefined;
+		state.runtime.session.setCurrentRecap(undefined);
+		this.summarizer.seed(state);
+		if (state.runtime.metadata.kind === "subagent") {
+			const summaryState = state.summaryState as ActiveSessionState["summaryState"];
+			state.runtime.session.setCurrentRecap(summaryState?.summary);
+		}
+		this.rebindCronJobsToState(state);
 	}
 
 	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState> {

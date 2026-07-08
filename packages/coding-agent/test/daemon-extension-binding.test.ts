@@ -194,6 +194,7 @@ describe("daemon extension binding", () => {
 			clients: new Set(),
 			extensionUiRequests: new Map(),
 			lastEventSequence: 0,
+			summaryState: { summary: "old recap", taskState: "completed", basedOnMessageCount: 2 },
 		};
 		await bindActiveSessionState(state, {
 			broadcast: (_state, message) => {
@@ -202,10 +203,18 @@ describe("daemon extension binding", () => {
 					phases.push("broadcast:session_replaced");
 				}
 			},
-			createConnectionState: (targetState) => ({
-				...createAgentConnectionState(targetState.runtime, targetState.activeSessionId),
-				heartbeat,
-			}),
+			createConnectionState: (targetState) => {
+				const connectionState = createAgentConnectionState(targetState.runtime, targetState.activeSessionId);
+				if (targetState.summaryState?.summary) {
+					connectionState.recap = targetState.summaryState.summary;
+				}
+				connectionState.heartbeat = heartbeat;
+				return connectionState;
+			},
+			sessionReplaced: (targetState) => {
+				phases.push("sessionReplaced");
+				targetState.summaryState = undefined;
+			},
 			shutdown: () => {
 				phases.push("shutdown");
 			},
@@ -217,6 +226,7 @@ describe("daemon extension binding", () => {
 		const withSessionIndex = phases.indexOf("withSession");
 		expect(replacementIndex).toBeGreaterThan(-1);
 		expect(withSessionIndex).toBeGreaterThan(-1);
+		expect(phases.indexOf("sessionReplaced")).toBeLessThan(replacementIndex);
 		expect(replacementIndex).toBeLessThan(withSessionIndex);
 		expect(replacementSessionFile).toBeDefined();
 		expect(replacementSessionFile).not.toBe(oldSessionFile);
@@ -229,6 +239,11 @@ describe("daemon extension binding", () => {
 				}),
 			}),
 		);
+		const replaced = outbound.find(
+			(message): message is Extract<DaemonOutbound, { type: "session_replaced" }> =>
+				message.type === "session_replaced",
+		);
+		expect(replaced?.state.recap).toBeUndefined();
 		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
 			"user:daemon replacement message",
 			"assistant:replacement reply",
