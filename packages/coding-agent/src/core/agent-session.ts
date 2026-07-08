@@ -2307,8 +2307,13 @@ export class AgentSession {
 		if (!queued && !wasQueued) {
 			return false;
 		}
-		const didDrain = await this._drainQueuedMessagesAfterBash();
-		return didDrain && !this.hasQueuedFollowUp(queueKey);
+		const heartbeatMessages = new Set<AgentMessage>(
+			this._queuedHeartbeatContexts
+				.filter((message) => message.queueKey === queueKey)
+				.map((message) => message.message),
+		);
+		const drainedMessages = await this._drainQueuedMessagesAfterBash();
+		return drainedMessages.some((message) => heartbeatMessages.has(message));
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
@@ -5610,7 +5615,7 @@ export class AgentSession {
 		void this._drainQueuedMessagesAfterBash().catch(() => undefined);
 	}
 
-	private async _drainQueuedMessagesAfterBash(): Promise<boolean> {
+	private async _drainQueuedMessagesAfterBash(): Promise<AgentMessage[]> {
 		await this.agent.waitForIdle();
 		if (
 			this.isStreaming ||
@@ -5620,7 +5625,7 @@ export class AgentSession {
 			this.hasAcceptedPromptInFlight ||
 			this.pendingMessageCount === 0
 		) {
-			return false;
+			return [];
 		}
 
 		const steeringMessages = [...this._steeringMessages];
@@ -5636,7 +5641,7 @@ export class AgentSession {
 			...drainedHeartbeatMessages.map((message) => message.message),
 		];
 		if (queuedMessages.length === 0) {
-			return false;
+			return [];
 		}
 
 		const queuedMessageSet = new Set<AgentMessage>(queuedMessages);
@@ -5647,7 +5652,7 @@ export class AgentSession {
 		try {
 			await this.agent.prompt([...nextTurnMessages, ...queuedMessages]);
 			await this.waitForRetry();
-			return true;
+			return queuedMessages;
 		} catch {
 			this._pendingNextTurnMessages.unshift(...nextTurnMessages.map((message) => ({ ...message })));
 			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
@@ -5668,7 +5673,7 @@ export class AgentSession {
 					this.agent.followUp(queued.message);
 				}
 			}
-			return false;
+			return [];
 		}
 	}
 

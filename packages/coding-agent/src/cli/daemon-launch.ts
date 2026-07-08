@@ -136,9 +136,9 @@ export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean
 export type RunningDaemonProbe = { reachable: false } | { reachable: true; activeSessions?: SessionSummary[] };
 
 export function isSessionBusy(summary: SessionSummary): boolean {
-	// pendingMessageCount covers queued steering/follow-ups, which live only in
-	// memory and would be lost if the daemon were stopped.
-	return summary.isStreaming || summary.isCompacting || summary.pendingMessageCount > 0;
+	// isBusy covers hidden in-memory work such as heartbeat contexts, while
+	// pendingMessageCount remains the user-visible queued prompt count.
+	return summary.isBusy === true || summary.isStreaming || summary.isCompacting || summary.pendingMessageCount > 0;
 }
 
 export async function probeRunningDaemonSessions(socketPath: string): Promise<RunningDaemonProbe> {

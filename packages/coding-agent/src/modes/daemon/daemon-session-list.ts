@@ -27,6 +27,8 @@ export interface SessionSummary {
 	id: string;
 	lifecycle: SessionLifecycle;
 	activity: SessionActivity;
+	/** True when the live daemon holds in-memory work that should not be interrupted. */
+	isBusy?: boolean;
 	runtimeKind?: "top-level" | "subagent";
 	activeSessionId?: string;
 	sessionId: string;
@@ -139,10 +141,12 @@ export function summaryForActiveSession(activeSession: ActiveSessionState, saved
 		}
 	}
 
+	const isBusy = isActiveSessionBusy(activeSession);
 	return {
 		id: activeSession.activeSessionId,
 		lifecycle: activeLifecycleForSession(activeSession),
 		activity: activeActivityForSession(activeSession),
+		isBusy,
 		runtimeKind: metadata.kind,
 		activeSessionId: activeSession.activeSessionId,
 		sessionId: session.sessionId,
@@ -198,6 +202,7 @@ export function summaryForInactiveSession(session: SessionInfo): SessionSummary 
 		id: session.id,
 		lifecycle: inactiveLifecycleForSession(session),
 		activity: "idle",
+		isBusy: false,
 		sessionId: session.id,
 		sessionFile: session.path,
 		sessionName: session.name,

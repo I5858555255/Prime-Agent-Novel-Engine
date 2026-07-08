@@ -102,6 +102,7 @@ describe("buildSessionList", () => {
 
 		expect(summary.pendingMessageCount).toBe(0);
 		expect(summary.activity).toBe("working");
+		expect(summary.isBusy).toBe(true);
 	});
 
 	it("marks a finished subagent idle instead of holding it at working", () => {
@@ -438,6 +439,7 @@ describe("resolveAttachModelFallbackMessage", () => {
 			id: "active-1",
 			lifecycle: "draft",
 			activity: "idle",
+			isBusy: false,
 			sessionId: "session-1",
 			cwd: "/tmp/project",
 			isStreaming: false,
