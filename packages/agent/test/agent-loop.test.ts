@@ -175,6 +175,62 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("should not wait for a pending terminal result after abort", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const controller = new AbortController();
+		const finalMessage = createAssistantMessage([{ type: "text", text: "complete" }]);
+		let resolveResult: ((message: AssistantMessage) => void) | undefined;
+		const pendingResult = new Promise<AssistantMessage>((resolve) => {
+			resolveResult = resolve;
+		});
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+		const streamFn = () => {
+			const stream = new DelayedResultStream(() => {
+				controller.abort();
+				return pendingResult;
+			});
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "stop", message: finalMessage });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
+		const events: AgentEvent[] = [];
+		const consume = (async () => {
+			for await (const event of stream) {
+				events.push(event);
+			}
+			return stream.result();
+		})();
+		const result = await Promise.race([
+			consume,
+			new Promise<"timeout">((resolve) => {
+				setTimeout(() => resolve("timeout"), 50);
+			}),
+		]);
+		if (result === "timeout") {
+			resolveResult?.(finalMessage);
+			await consume;
+			throw new Error("agent loop waited for a pending terminal result after abort");
+		}
+
+		const assistant = result.find((message) => message.role === "assistant");
+		expect(assistant?.role).toBe("assistant");
+		if (assistant?.role === "assistant") {
+			expect(assistant.stopReason).toBe("stop");
+			expect(assistant.content).toEqual([{ type: "text", text: "complete" }]);
+		}
+		expect(events.some((event) => event.type === "agent_end")).toBe(true);
+	});
+
 	it("should end without adding an aborted assistant when abort fires after turn completion", async () => {
 		const context: AgentContext = {
 			systemPrompt: "You are helpful.",

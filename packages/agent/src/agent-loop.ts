@@ -146,6 +146,10 @@ function createAbortedAssistantMessage(
 	};
 }
 
+function getTerminalMessage(event: Extract<AssistantMessageEvent, { type: "done" | "error" }>): AssistantMessage {
+	return event.type === "done" ? event.message : event.error;
+}
+
 function endAgentStreamOnError(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	promise: Promise<AgentMessage[]>,
@@ -550,7 +554,14 @@ async function streamAssistantResponse(
 
 				case "done":
 				case "error": {
-					const finalMessage = await response.result();
+					let finalMessage = getTerminalMessage(event);
+					try {
+						finalMessage = await maybePromiseWithAbort(response.result(), signal);
+					} catch (error) {
+						if (!signal?.aborted || !isAbortError(error)) {
+							throw error;
+						}
+					}
 					if (addedPartial) {
 						context.messages[context.messages.length - 1] = finalMessage;
 					} else {
