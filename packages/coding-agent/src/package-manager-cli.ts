@@ -323,9 +323,9 @@ interface SelfUpdatePlan {
 	shouldRun: boolean;
 }
 
-function setSelfUpdateNotAttemptedExitCode(fallbackExitCode?: number): void {
+function setSelfUpdateNoChangeExitCode(): void {
 	process.exitCode =
-		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] === "1" ? SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE : fallbackExitCode;
+		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] === "1" ? SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE : undefined;
 }
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
@@ -505,6 +505,15 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 	const content = readOptionalMessageContent(value.content, "queue.content");
 	const images = readOptionalImages(value.images, "queue.images");
 	const queueKey = readOptionalString(value.queueKey, "queue.queueKey");
+	const customMessage =
+		value.customMessage === undefined
+			? undefined
+			: isCustomMessage(value.customMessage)
+				? value.customMessage
+				: undefined;
+	if (value.customMessage !== undefined && !customMessage) {
+		throw new Error("Daemon update restart response contains an invalid custom queued message");
+	}
 	const agentMessageId =
 		readOptionalString(value.agentMessageId, "queue.agentMessageId") ?? parseAgentSessionMessagePromptId(message);
 	return {
@@ -513,6 +522,7 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 		...(images ? { images } : {}),
 		...(queueKey ? { queueKey } : {}),
 		...(agentMessageId ? { agentMessageId } : {}),
+		...(customMessage ? { customMessage } : {}),
 	};
 }
 
@@ -827,6 +837,7 @@ async function restoreDaemonUpdateRestartSession(
 				images: queued.images,
 				expandPromptTemplates: false,
 				agentMessageId: queued.agentMessageId,
+				customMessage: queued.customMessage,
 			},
 			30000,
 		);
@@ -851,6 +862,7 @@ async function restoreDaemonUpdateRestartSession(
 				queueKey: queued.queueKey,
 				expandPromptTemplates: false,
 				agentMessageId: queued.agentMessageId,
+				customMessage: queued.customMessage,
 			},
 			30000,
 		);
@@ -1178,7 +1190,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 				if (updateTargetIncludesSelf(target)) {
 					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
 					if (!selfUpdatePlan.shouldRun) {
-						setSelfUpdateNotAttemptedExitCode();
+						setSelfUpdateNoChangeExitCode();
 						return true;
 					}
 					const selfUpdateCommand = getSelfUpdateCommand(
@@ -1193,7 +1205,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 							selfUpdatePlan.installSpec,
 							selfUpdatePlan.packageName,
 						);
-						setSelfUpdateNotAttemptedExitCode(1);
+						process.exitCode = 1;
 						return true;
 					}
 					// Confirm before the install, since upgrading the daemon afterward stops and resumes busy work.
@@ -1203,7 +1215,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 						if (process.stdin.isTTY) {
 							console.log(chalk.dim("Update cancelled."));
 						}
-						setSelfUpdateNotAttemptedExitCode(1);
+						process.exitCode = 1;
 						return true;
 					}
 					try {

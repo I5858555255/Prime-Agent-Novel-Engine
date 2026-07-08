@@ -2,7 +2,12 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_AGENT_DIR, PACKAGE_NAME } from "../src/config.js";
+import {
+	ENV_AGENT_DIR,
+	PACKAGE_NAME,
+	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
+	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
+} from "../src/config.js";
 import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
 import { handlePackageCommand } from "../src/package-manager-cli.js";
 
@@ -30,6 +35,8 @@ interface MockQueuedMessage {
 	message: string;
 	content?: Array<{ type: "text"; text: string }>;
 	agentMessageId?: string;
+	queueKey?: string;
+	customMessage?: MockCustomMessage;
 }
 
 interface MockUpdateRestartSession {
@@ -64,8 +71,10 @@ interface MockDaemonRequest {
 	activeSessionId?: string;
 	message?: string;
 	agentMessageId?: string;
+	customMessage?: MockCustomMessage;
 	content?: unknown;
 	messages?: MockCustomMessage[];
+	queueKey?: string;
 	sessionPath?: string;
 	runtimeMetadata?: AgentSessionRuntimeMetadata;
 }
@@ -243,8 +252,48 @@ describe("self-update daemon restart", () => {
 		} else {
 			process.env.PI_PACKAGE_DIR = originalPiPackageDir;
 		}
+		delete process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
 		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("uses the interactive no-change sentinel only when self-update is unchanged", async () => {
+		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] = "1";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ version: "0.2.6" })),
+		);
+
+		await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+
+		expect(process.exitCode).toBe(SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE);
+		expect(mockState.calls.some((call) => call.startsWith("spawn:npm "))).toBe(false);
+	});
+
+	it("does not use the no-change sentinel when interactive self-update is cancelled", async () => {
+		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] = "1";
+		mockState.daemonProbe = {
+			reachable: true,
+			activeSessions: [
+				{
+					id: "busy",
+					activeSessionId: "busy",
+					isStreaming: true,
+					isCompacting: false,
+					pendingMessageCount: 0,
+				},
+			],
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+
+			expect(process.exitCode).toBe(1);
+			expect(mockState.calls.some((call) => call.startsWith("spawn:npm "))).toBe(false);
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	it("does not prepare or stop the daemon when the package update fails", async () => {
@@ -497,6 +546,67 @@ describe("self-update daemon restart", () => {
 					prompt: "child task",
 				},
 			});
+		} finally {
+			errorSpy.mockRestore();
+			logSpy.mockRestore();
+		}
+	});
+
+	it("preserves queued custom messages when restoring update restart queues", async () => {
+		const customMessage: MockCustomMessage = {
+			role: "custom",
+			customType: "heartbeat_prompt",
+			content: "heartbeat body",
+			display: true,
+			timestamp: Date.now(),
+		};
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "old-active",
+					sessionId: "session-1",
+					sessionFile: join(projectDir, "session.jsonl"),
+					cwd: projectDir,
+					config: { cwd: projectDir, agentDir },
+					queue: {
+						steering: [],
+						followUp: [
+							{
+								message: "heartbeat body",
+								queueKey: "heartbeat:job-1",
+								agentMessageId: "agentmsg_followup",
+								customMessage,
+							},
+						],
+						nextTurn: [],
+					},
+					shouldResume: true,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+
+			expect(mockState.requestPayloads).toContainEqual(
+				expect.objectContaining({
+					type: "follow_up",
+					activeSessionId: "restored-active",
+					message: "heartbeat body",
+					queueKey: "heartbeat:job-1",
+					agentMessageId: "agentmsg_followup",
+					customMessage,
+				}),
+			);
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();

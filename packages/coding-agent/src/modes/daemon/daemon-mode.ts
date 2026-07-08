@@ -1414,6 +1414,7 @@ export class AgentDaemon {
 					await state.runtime.session.restoreSteeringMessage(command.message, command.images, {
 						agentMessageId: command.agentMessageId,
 						content: command.content,
+						customMessage: command.customMessage,
 					});
 				} else {
 					await state.runtime.session.steer(command.message, command.images);
@@ -1429,6 +1430,7 @@ export class AgentDaemon {
 						queueKey: command.queueKey,
 						agentMessageId: command.agentMessageId,
 						content: command.content,
+						customMessage: command.customMessage,
 					});
 				} else {
 					queued = await state.runtime.session.followUp(command.message, command.images, {
@@ -2280,6 +2282,7 @@ export class AgentDaemon {
 				...(message.content ? { content: message.content } : {}),
 				...(message.images ? { images: message.images } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
+				...(message.customMessage ? { customMessage: message.customMessage } : {}),
 			})),
 			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
 				message: message.text,
@@ -2287,6 +2290,7 @@ export class AgentDaemon {
 				...(message.images ? { images: message.images } : {}),
 				...(message.queueKey ? { queueKey: message.queueKey } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
+				...(message.customMessage ? { customMessage: message.customMessage } : {}),
 			})),
 			nextTurn: [...session.getPendingNextTurnMessageSnapshots()],
 		};

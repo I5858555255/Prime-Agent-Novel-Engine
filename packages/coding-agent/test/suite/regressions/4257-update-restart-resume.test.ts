@@ -19,8 +19,13 @@ type AgentDaemonUpdateInternals = {
 };
 
 type QueueInternals = {
-	_steeringMessages: Array<{ text: string; agentMessageId?: string; message: UserMessage }>;
-	_followUpMessages: Array<{ text: string; queueKey?: string; agentMessageId?: string; message: UserMessage }>;
+	_steeringMessages: Array<{ text: string; agentMessageId?: string; message: UserMessage | CustomMessage }>;
+	_followUpMessages: Array<{
+		text: string;
+		queueKey?: string;
+		agentMessageId?: string;
+		message: UserMessage | CustomMessage;
+	}>;
 	_pendingNextTurnMessages: CustomMessage[];
 	_acceptedAgentMessagePrompt?: {
 		text: string;
@@ -192,6 +197,7 @@ describe("issue #4257 update restart resume", () => {
 			content: followUpContent,
 			timestamp: Date.now(),
 		};
+		const customFollowUp = createCustomMessage("custom heartbeat");
 		const queueInternals = parentHarness.session as unknown as QueueInternals;
 		queueInternals._steeringMessages = [{ text: "queued work", agentMessageId: "agentmsg_steer", message }];
 		queueInternals._followUpMessages = [
@@ -200,6 +206,12 @@ describe("issue #4257 update restart resume", () => {
 				queueKey: "heartbeat:job-1",
 				agentMessageId: "agentmsg_followup",
 				message: followUpMessage,
+			},
+			{
+				text: "custom heartbeat",
+				queueKey: "heartbeat:custom",
+				agentMessageId: "agentmsg_custom",
+				message: customFollowUp,
 			},
 		];
 		childHarness.session.recordBashResult("echo child", {
@@ -253,6 +265,12 @@ describe("issue #4257 update restart resume", () => {
 						content: followUpContent,
 						queueKey: "heartbeat:job-1",
 						agentMessageId: "agentmsg_followup",
+					},
+					{
+						message: "custom heartbeat",
+						queueKey: "heartbeat:custom",
+						agentMessageId: "agentmsg_custom",
+						customMessage: customFollowUp,
 					},
 				],
 			},
