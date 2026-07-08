@@ -16,7 +16,7 @@ const daemonLaunchMock = vi.hoisted(() => ({
 				socketPath: string,
 				sessions: readonly SessionSummary[],
 				spawnCwd?: string,
-				options?: { allowAtRiskSessions?: boolean },
+				options?: { allowAtRiskSessions?: boolean; latestProbe?: RunningDaemonProbe },
 			) => Promise<DaemonSessionRestoreResult>
 		>(),
 }));
@@ -297,7 +297,10 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 				expect.any(String),
 				[postUpdateSession],
 				undefined,
-				{ allowAtRiskSessions: false },
+				{
+					allowAtRiskSessions: false,
+					latestProbe: { reachable: true, activeSessions: [postUpdateSession] },
+				},
 			);
 		} finally {
 			logSpy.mockRestore();
@@ -354,7 +357,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 				expect.any(String),
 				[atRiskSession],
 				undefined,
-				{ allowAtRiskSessions: true },
+				{ allowAtRiskSessions: true, latestProbe: { reachable: true } },
 			);
 		} finally {
 			logSpy.mockRestore();

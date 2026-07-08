@@ -437,6 +437,7 @@ async function restartDaemonAfterSelfUpdate(
 			: (daemonProbe.activeSessions ?? []);
 		const restoreResult = await relaunchDaemonAndRestoreSessions(socketPath, restoreSessions, undefined, {
 			allowAtRiskSessions: initialProbeAtRisk || latestProbeAtRisk,
+			latestProbe,
 		});
 		reportDaemonSessionRestoreWarnings(restoreResult);
 	} catch (error: unknown) {

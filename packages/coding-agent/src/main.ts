@@ -420,7 +420,7 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 			socketPath,
 			probe.reachable ? (probe.activeSessions ?? []) : [],
 			undefined,
-			{ allowAtRiskSessions: isRunningDaemonProbeAtRiskFromStop(probe) },
+			{ allowAtRiskSessions: isRunningDaemonProbeAtRiskFromStop(probe), latestProbe: probe },
 		);
 		reportDaemonSessionRestoreWarnings(restoreResult);
 	} catch (error) {
