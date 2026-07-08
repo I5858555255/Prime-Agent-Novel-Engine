@@ -68,8 +68,8 @@ export async function bindActiveSessionState(
 	});
 
 	state.runtime.setRebindSession(async () => {
-		callbacks.sessionReplaced?.(state);
 		await bindActiveSessionState(state, callbacks);
+		callbacks.sessionReplaced?.(state);
 		callbacks.broadcast(state, {
 			type: "session_replaced",
 			activeSessionId: state.activeSessionId,
