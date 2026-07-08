@@ -125,6 +125,7 @@ import {
 	createGoalContextMessage,
 	emptyGoalState,
 	GOAL_CONTEXT_CUSTOM_TYPE,
+	GOAL_CONTEXT_PREVIEW_LABEL,
 	GOAL_SKILL_NAME,
 	GOAL_STATE_CUSTOM_TYPE,
 	type GoalHostResponse,
@@ -140,7 +141,13 @@ import {
 import type { HostRequestHandlers } from "./kernel/index.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { McpManager } from "./mcp/mcp-manager.js";
-import type { BashExecutionMessage, CustomMessage } from "./messages.js";
+import {
+	type BashExecutionMessage,
+	type CustomMessage,
+	createHeartbeatPromptMessage,
+	HEARTBEAT_PROMPT_CUSTOM_TYPE,
+	HEARTBEAT_PROMPT_PREVIEW_LABEL,
+} from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
@@ -402,15 +409,32 @@ interface InternalPromptOptions extends PromptOptions {
 
 interface QueuedSteeringMessage {
 	text: string;
+	previewLabel?: string;
 	agentMessageId?: string;
 	message: AgentMessage;
 }
 
 interface QueuedFollowUpMessage {
 	text: string;
+	previewLabel?: string;
 	queueKey?: string;
 	agentMessageId?: string;
 	message: AgentMessage;
+}
+
+function queuedMessagePreview(message: { text: string; previewLabel?: string }): string {
+	return message.previewLabel ? `${message.previewLabel}: ${message.text}` : message.text;
+}
+
+function injectedMessagePreviewLabel(message: CustomMessage): string | undefined {
+	switch (message.customType) {
+		case HEARTBEAT_PROMPT_CUSTOM_TYPE:
+			return HEARTBEAT_PROMPT_PREVIEW_LABEL;
+		case GOAL_CONTEXT_CUSTOM_TYPE:
+			return GOAL_CONTEXT_PREVIEW_LABEL;
+		default:
+			return undefined;
+	}
 }
 
 interface AcceptedAgentMessagePrompt {
@@ -852,8 +876,8 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: this._steeringMessages.map((message) => message.text),
-			followUp: this._followUpMessages.map((message) => message.text),
+			steering: this._steeringMessages.map(queuedMessagePreview),
+			followUp: this._followUpMessages.map(queuedMessagePreview),
 		});
 	}
 
@@ -1743,10 +1767,11 @@ export class AgentSession {
 			this._resolveRetry();
 		}
 
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
-		// This ensures the UI sees the updated queue state
-		if (event.type === "message_start" && event.message.role === "user") {
-			this._overflowRecoveryAttempted = false;
+		// Remove queued messages before emitting so the UI sees the updated queue.
+		if (event.type === "message_start") {
+			if (this._isPromptTurnStartMessage(event.message)) {
+				this._overflowRecoveryAttempted = false;
+			}
 			const steeringIndex = this._steeringMessages.findIndex((message) => message.message === event.message);
 			if (steeringIndex !== -1) {
 				const [removed] = this._steeringMessages.splice(steeringIndex, 1);
@@ -1848,24 +1873,36 @@ export class AgentSession {
 
 			// Check for retryable errors first (overloaded, rate limit, server errors)
 			const concreteAuthFailure = this._isConcreteProviderAuthFailure(msg);
-			if (this._isRetryableError(msg) || concreteAuthFailure) {
-				if (concreteAuthFailure) {
+			const retryConcreteAuthFailure =
+				concreteAuthFailure && !this._isStructuredPermanentProviderRetryExhausted(msg);
+			if (this._isRetryableError(msg) || retryConcreteAuthFailure) {
+				if (retryConcreteAuthFailure) {
 					this._captureRetryAuthFailureSource(msg);
 				}
 				const didRetry = await this._handleRetryableError(msg, {
-					markAuthStaleOnFailure: concreteAuthFailure,
-					authSourceTokens: concreteAuthFailure ? this._retryAuthFailureSources : undefined,
+					markAuthStaleOnFailure: retryConcreteAuthFailure,
+					authSourceTokens: retryConcreteAuthFailure ? this._retryAuthFailureSources : undefined,
 				});
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
 
-			this._resolveRetry();
 			const compactionWillRetry = await this._checkCompaction(msg);
+			if (compactionWillRetry && this._retryAttempt > 0) {
+				return;
+			}
+			this._finishActiveRetryWithFailure(msg);
+			this._resolveRetry();
 			if (!compactionWillRetry) {
 				this._finishGoalForTerminalAssistantMessage(msg);
 				this._scheduleAutoRefineAfterAgentEnd();
 			}
 		}
+	}
+
+	private _isPromptTurnStartMessage(message: AgentMessage): boolean {
+		return (
+			message.role === "user" || (message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE)
+		);
 	}
 
 	/** Resolve the pending retry promise */
@@ -2342,6 +2379,158 @@ export class AgentSession {
 			return true;
 		}
 		return this._queueFollowUp(text, undefined, { agentMessageId });
+	}
+
+	async promptHeartbeat(job: AgentCronJob, options?: PromptOptions): Promise<void> {
+		const message = createHeartbeatPromptMessage(job);
+		await this._promptInjectedMessage(job.prompt, message, {
+			...options,
+			followUpQueueKey: options?.followUpQueueKey ?? `heartbeat:${job.id}`,
+		});
+	}
+
+	private async _promptInjectedMessage(
+		text: string,
+		message: CustomMessage,
+		options?: InternalPromptOptions,
+	): Promise<void> {
+		const preflightResult = options?.preflightResult;
+		let preflightSettled = false;
+		const reportPreflight = (success: boolean, queued = false) => {
+			if (!preflightSettled) {
+				preflightSettled = true;
+				preflightResult?.(success, queued);
+			}
+		};
+
+		let messages: AgentMessage[] | undefined;
+		let drainedNextTurnMessages: CustomMessage[] = [];
+		const previewLabel = injectedMessagePreviewLabel(message);
+		try {
+			const shouldQueueForStreaming = this.isStreaming;
+			const shouldQueueForPendingWork =
+				options?.queueIfBusy === true &&
+				(this.pendingMessageCount > 0 ||
+					this.isCompacting ||
+					this.isRetrying ||
+					this.isBashRunning ||
+					this.hasAcceptedPromptInFlight);
+			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
+				if (!options?.streamingBehavior) {
+					const stateDescription = shouldQueueForStreaming
+						? "Agent is already processing"
+						: "Agent has queued work";
+					throw new Error(
+						`${stateDescription}. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`,
+					);
+				}
+				const queued = await this._queueInjectedMessageWithPendingNextTurnMessages(
+					text,
+					message,
+					options.streamingBehavior,
+					{ queueKey: options.followUpQueueKey, previewLabel },
+				);
+				if (!queued) {
+					reportPreflight(false);
+					return;
+				}
+				reportPreflight(true, true);
+				return;
+			}
+
+			await this._waitForRefineIdle();
+			this._flushPendingBashMessages();
+			if (!this.model) {
+				throw new Error(formatNoModelSelectedMessage());
+			}
+			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+				const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+				if (isOAuth) {
+					throw new Error(formatAuthenticationFailedMessage(this.model.provider));
+				}
+				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			}
+
+			const lastAssistant = this._findLastAssistantMessage();
+			if (lastAssistant) {
+				await this._checkCompaction(lastAssistant, false);
+			}
+
+			drainedNextTurnMessages = this._pendingNextTurnMessages;
+			this._pendingNextTurnMessages = [];
+			messages = [...drainedNextTurnMessages, message];
+
+			const result = await this._extensionRunner.emitBeforeAgentStart(
+				text,
+				undefined,
+				this._baseSystemPrompt,
+				this._baseSystemPromptOptions,
+			);
+			if (result?.messages) {
+				for (const msg of result.messages) {
+					messages.push({
+						role: "custom",
+						customType: msg.customType,
+						content: msg.content,
+						display: msg.display,
+						details: msg.details,
+						timestamp: Date.now(),
+					});
+				}
+			}
+			this.agent.state.systemPrompt = result?.systemPrompt ?? this._baseSystemPrompt;
+		} catch (error) {
+			reportPreflight(false);
+			throw error;
+		}
+
+		if (!messages) {
+			return;
+		}
+
+		if (this._refineInFlight) {
+			await this._waitForRefineIdle();
+		}
+		const shouldQueueAtHandoff =
+			options?.queueIfBusy === true &&
+			(this.isStreaming ||
+				this.pendingMessageCount > 0 ||
+				this.isCompacting ||
+				this.isRetrying ||
+				this.isBashRunning ||
+				this._acceptedPromptCompletions.size > 0 ||
+				this._acceptedAgentMessagePrompt !== undefined);
+		if (shouldQueueAtHandoff) {
+			if (!options?.streamingBehavior) {
+				this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+				reportPreflight(false);
+				throw new Error(
+					"Agent became busy before prompt delivery. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+				);
+			}
+			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+			const queued = await this._queueInjectedMessageWithPendingNextTurnMessages(
+				text,
+				message,
+				options.streamingBehavior,
+				{ queueKey: options.followUpQueueKey, previewLabel },
+			);
+			if (!queued) {
+				reportPreflight(false);
+				return;
+			}
+			reportPreflight(true, true);
+			return;
+		}
+
+		try {
+			await this.agent.prompt(messages);
+		} catch (error) {
+			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+			throw error;
+		}
+		reportPreflight(true);
+		await this.waitForRetry();
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
@@ -2832,22 +3021,62 @@ export class AgentSession {
 		}
 	}
 
+	private async _queueInjectedMessageWithPendingNextTurnMessages(
+		text: string,
+		message: CustomMessage,
+		streamingBehavior: "steer" | "followUp",
+		options: { queueKey?: string; previewLabel?: string } = {},
+	): Promise<boolean> {
+		const pendingNextTurnMessages = this._pendingNextTurnMessages;
+		this._pendingNextTurnMessages = [];
+		const queuedMessage: CustomMessage = {
+			...message,
+			content: this._buildPromptContent(text, undefined, pendingNextTurnMessages),
+		};
+		try {
+			if (streamingBehavior === "followUp") {
+				const queued = await this._queueFollowUp(text, undefined, {
+					queueKey: options.queueKey,
+					message: queuedMessage,
+					previewLabel: options.previewLabel,
+				});
+				if (!queued) {
+					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+				}
+				return queued;
+			}
+			await this._queueSteer(text, undefined, { message: queuedMessage, previewLabel: options.previewLabel });
+			return true;
+		} catch (error) {
+			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+			throw error;
+		}
+	}
+
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(
 		text: string,
 		images?: ImageContent[],
-		options: { agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
+		options: {
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			message?: AgentMessage;
+			previewLabel?: string;
+		} = {},
 	): Promise<void> {
 		const content = options.content ?? this._buildPromptContent(text, images);
-		const message: AgentMessage = {
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		};
+		const message: AgentMessage =
+			options.message ??
+			({
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			} satisfies AgentMessage);
 		this._steeringMessages.push({
 			text,
+			previewLabel: options.previewLabel,
 			agentMessageId: options.agentMessageId,
 			message,
 		});
@@ -2861,19 +3090,28 @@ export class AgentSession {
 	private async _queueFollowUp(
 		text: string,
 		images?: ImageContent[],
-		options: { queueKey?: string; agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
+		options: {
+			queueKey?: string;
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			message?: AgentMessage;
+			previewLabel?: string;
+		} = {},
 	): Promise<boolean> {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
 			return false;
 		}
 		const content = options.content ?? this._buildPromptContent(text, images);
-		const message: AgentMessage = {
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		};
+		const message: AgentMessage =
+			options.message ??
+			({
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			} satisfies AgentMessage);
 		this._followUpMessages.push({
 			text,
+			previewLabel: options.previewLabel,
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			message,
@@ -3071,9 +3309,17 @@ export class AgentSession {
 		return this._steeringMessages.map((message) => message.text);
 	}
 
+	getSteeringMessagePreviews(): readonly string[] {
+		return this._steeringMessages.map(queuedMessagePreview);
+	}
+
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
 		return this._followUpMessages.map((message) => message.text);
+	}
+
+	getFollowUpMessagePreviews(): readonly string[] {
+		return this._followUpMessages.map(queuedMessagePreview);
 	}
 
 	hasQueuedFollowUp(queueKey: string): boolean {
@@ -5410,34 +5656,64 @@ export class AgentSession {
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
 
-		// Structured classification from the provider (stream-failure.ts) beats
-		// message-text matching. Safety/malformed/unknown kinds fall through to
-		// the regex, which distinguishes transient content_filter cases.
-		const failure = message.diagnostics?.find((d) => d.type === "provider_stream_failure");
-		const kind = failure?.details?.kind;
-		if (kind === "overloaded" || kind === "rate_limit" || kind === "server_error") return true;
-		if (kind === "refusal" || kind === "auth" || kind === "invalid_request") return false;
+		if (this._isFauxProviderQueueExhausted(message)) {
+			return false;
+		}
 
-		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded, transient content_filter finish_reason, provider policy-flag prose, and prose-form transient 5xx ("an error occurred while processing your request. you can retry")
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay|content.?filter|flagged .*(cybersecurity|usage polic|violat)|error occurred while processing|you can retry/i.test(
-			err,
-		);
+		if (this._isAgentLifecycleFailure(message)) {
+			return false;
+		}
+
+		if (this._isStructuredPermanentProviderRetryExhausted(message)) {
+			return false;
+		}
+
+		return true;
 	}
 
-	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
+	private _isFauxProviderQueueExhausted(message: AssistantMessage): boolean {
+		return message.provider === "faux" && message.errorMessage === "No more faux responses queued";
+	}
+
+	private _isAgentLifecycleFailure(message: AssistantMessage): boolean {
+		return message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure") ?? false;
+	}
+
+	private _getProviderStreamFailureDetails(message: AssistantMessage): Record<string, unknown> | undefined {
 		const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
 		const details = failure?.details;
 		if (!details || typeof details !== "object") {
 			return undefined;
 		}
+		return details;
+	}
 
-		const kind = "kind" in details ? details.kind : undefined;
+	private _getProviderStreamFailureKind(message: AssistantMessage): string | undefined {
+		const kind = this._getProviderStreamFailureDetails(message)?.kind;
+		return typeof kind === "string" ? kind : undefined;
+	}
+
+	private _isStructuredPermanentProviderFailure(message: AssistantMessage): boolean {
+		const kind = this._getProviderStreamFailureKind(message);
+		return kind === "auth" || kind === "invalid_request" || kind === "refusal";
+	}
+
+	private _isStructuredPermanentProviderRetryExhausted(message: AssistantMessage): boolean {
+		return this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message);
+	}
+
+	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
+		const details = this._getProviderStreamFailureDetails(message);
+		if (!details) {
+			return undefined;
+		}
+
+		const kind = details.kind;
 		if (kind !== "auth") {
 			return undefined;
 		}
 
-		const status = "status" in details ? details.status : undefined;
+		const status = details.status;
 		if (typeof status === "number") {
 			return status;
 		}
@@ -5517,6 +5793,21 @@ export class AgentSession {
 			return marked;
 		}
 		return false;
+	}
+
+	private _finishActiveRetryWithFailure(message: AssistantMessage): void {
+		if (this._retryAttempt === 0) {
+			return;
+		}
+		this._markProviderAuthStaleForRetryFailure(message);
+		this._emit({
+			type: "auto_retry_end",
+			success: false,
+			attempt: this._retryAttempt,
+			finalError: message.errorMessage,
+		});
+		this._retryAttempt = 0;
+		this._retryAuthFailureSources = [];
 	}
 
 	/**
@@ -5615,6 +5906,17 @@ export class AgentSession {
 		if (this._retryAbortController) {
 			this._retryAbortController.abort();
 			return;
+		}
+		if (this._retryAttempt > 0) {
+			this._autoCompactionAbortController?.abort();
+			this._cancelPostCompactionContinue();
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt: this._retryAttempt,
+				finalError: "Retry cancelled",
+			});
+			this._retryAttempt = 0;
 		}
 		this._retryAuthFailureSources = [];
 		this._resolveRetry();
