@@ -2575,7 +2575,9 @@ describe("daemon mode helpers", () => {
 			});
 
 			expect(response).toMatchObject({ data: { ok: false, error: "delete failed" } });
-			expect(deleteSavedSessionFile).toHaveBeenCalledWith(sessionFile);
+			expect(deleteSavedSessionFile).toHaveBeenCalledWith(sessionFile, {
+				afterFileRemoved: expect.any(Function),
+			});
 			expect(internals.cronStore.list().find((job) => job.id === cron.id)).toMatchObject({ status: "active" });
 			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
 				status: "active",
