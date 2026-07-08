@@ -5634,6 +5634,10 @@ export class AgentSession {
 			return false;
 		}
 
+		if (this._isAgentLifecycleFailure(message)) {
+			return false;
+		}
+
 		if (this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message)) {
 			return false;
 		}
@@ -5643,6 +5647,10 @@ export class AgentSession {
 
 	private _isFauxProviderQueueExhausted(message: AssistantMessage): boolean {
 		return message.provider === "faux" && message.errorMessage === "No more faux responses queued";
+	}
+
+	private _isAgentLifecycleFailure(message: AssistantMessage): boolean {
+		return message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure") ?? false;
 	}
 
 	private _getProviderStreamFailureDetails(message: AssistantMessage): Record<string, unknown> | undefined {
