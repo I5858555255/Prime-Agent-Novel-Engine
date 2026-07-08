@@ -15070,7 +15070,7 @@ export const MODELS = {
 			provider: "prime-inference",
 			baseUrl: "https://api.pinference.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
-			reasoning: true,
+			reasoning: false,
 			input: ["text"],
 			cost: {
 				input: 1.2,

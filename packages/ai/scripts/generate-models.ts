@@ -207,10 +207,6 @@ const PRIME_INFERENCE_OPENROUTER_ALIASES: Record<string, string> = {
 const PRIME_INFERENCE_DEFAULT_CONTEXT_WINDOW = 128000;
 const PRIME_INFERENCE_DEFAULT_MAX_TOKENS = 8192;
 
-// Models that no longer serve (404 from the gateway) and must not be revived
-// from the previous generated snapshot.
-const PRIME_INFERENCE_RETIRED_MODELS = new Set(["prime-intellect/intellect-3"]);
-
 // Raw checkpoints and duplicate routes that would clutter the picker: BF16
 // exports, fine-tune outputs, zai-org/ and HF-cased twins of canonical ids.
 function isPrimeInferenceRawVariant(modelId: string): boolean {
@@ -394,9 +390,7 @@ function getPrimeInferenceHeaders(apiKey: string | undefined, teamId: string | u
 function getExistingPrimeInferenceModels(): Model<"openai-completions">[] {
 	const models = EXISTING_MODELS["prime-inference"] as unknown as Record<string, Model<"openai-completions">>;
 	return Object.values(models)
-		.filter(
-			(model) => !isPrimeInferenceRawVariant(model.id) && !PRIME_INFERENCE_RETIRED_MODELS.has(model.id.toLowerCase()),
-		)
+		.filter((model) => !isPrimeInferenceRawVariant(model.id))
 		.map((model) => ({
 			...model,
 			input: [...model.input],
@@ -555,11 +549,15 @@ function buildPrimeInferenceOpenRouterIndex(catalog: unknown[]): Map<string, Pri
 		const topProvider = isRecord(item.top_provider) ? item.top_provider : {};
 		const architecture = isRecord(item.architecture) ? item.architecture : {};
 		const modalities = Array.isArray(architecture.input_modalities) ? architecture.input_modalities : [];
+		const supportedParameters = Array.isArray(item.supported_parameters) ? item.supported_parameters : [];
 		index.set(item.id.toLowerCase(), {
 			contextWindow: getOptionalNumber(item.context_length) ?? getOptionalNumber(topProvider.context_length),
 			maxTokens: getOptionalNumber(topProvider.max_completion_tokens),
 			vision: modalities.includes("image"),
-			reasoning: item.reasoning !== null && item.reasoning !== undefined,
+			// Same signal the OpenRouter provider path uses; the top-level
+			// `reasoning` object over-reports (e.g. qwen3-max carries one despite
+			// not accepting reasoning params).
+			reasoning: supportedParameters.includes("reasoning"),
 		});
 	}
 	return index;
@@ -611,7 +609,19 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 				getPrimeInferenceOpenRouterMetadata(openRouterIndex, entry.id),
 			),
 		);
-	const models = mergePrimeInferenceModels(getExistingPrimeInferenceModels(), catalogModels);
+	let snapshotModels = getExistingPrimeInferenceModels();
+	if (catalog.length > 0) {
+		// A successful fetch is authoritative for public routes, so delisted
+		// models drop out automatically. Snapshot-only entries survive just for
+		// the team-gated internal/ namespace, which vanishes from the catalog
+		// when the fetch runs without team credentials. (Retiring an internal
+		// route therefore requires pruning it from models.generated.ts by hand.)
+		const liveIds = new Set(catalog.map((entry) => entry.id.toLowerCase()));
+		snapshotModels = snapshotModels.filter(
+			(model) => liveIds.has(model.id.toLowerCase()) || model.id.toLowerCase().startsWith("internal/"),
+		);
+	}
+	const models = mergePrimeInferenceModels(snapshotModels, catalogModels);
 	console.log(`Loaded ${models.length} Prime Inference models (${catalogModels.length} from the live catalog)`);
 	return models;
 }
