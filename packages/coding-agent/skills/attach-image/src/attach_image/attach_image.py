@@ -12,8 +12,10 @@ _ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json"
 # Keep emitted attachments small enough that daemon clients can render and replay
 # image-heavy sessions without compressing megabytes of base64 on every update.
 _MAX_SOURCE_IMAGE_BYTES = 20_000_000
+_MAX_SOURCE_IMAGE_PIXELS = 36_000_000
 _MAX_ATTACHMENT_DATA_CHARS = 350_000
 _MAX_ATTACHMENT_DIMENSION = 1200
+_TRANSPARENCY_BACKGROUND = "#888888"
 _JPEG_QUALITIES = (82, 72, 60, 48, 36)
 
 # Matches IMAGE_MIME_TYPES in src/utils/mime.ts.
@@ -34,7 +36,24 @@ def _detect_image_mime(data: bytes) -> str | None:
     return None
 
 
-def _validate_image(path: str) -> tuple[Path, str, int]:
+def _image_dimensions(filepath: Path) -> tuple[int, int]:
+    try:
+        from PIL import Image
+    except ImportError as error:
+        raise RuntimeError(
+            "attach_image needs Pillow to inspect this image before loading it into context."
+        ) from error
+
+    try:
+        with Image.open(filepath) as image:
+            return image.size
+    except Exception as error:
+        raise ValueError(
+            f"{filepath} is not a readable supported image (PNG, JPEG, GIF, WebP)."
+        ) from error
+
+
+def _validate_image(path: str) -> tuple[Path, str, int, tuple[int, int]]:
     filepath = Path(path).expanduser()
     if not filepath.is_file():
         raise FileNotFoundError(f"{path} is not an existing regular file")
@@ -54,7 +73,16 @@ def _validate_image(path: str) -> tuple[Path, str, int]:
             f"{path} is not a supported image (PNG, JPEG, GIF, WebP). "
             "Only images can be loaded into context; open other files in the kernel instead."
         )
-    return filepath, mime, size
+
+    dimensions = _image_dimensions(filepath)
+    pixel_count = dimensions[0] * dimensions[1]
+    if pixel_count > _MAX_SOURCE_IMAGE_PIXELS:
+        raise ValueError(
+            f"{path} is {dimensions[0]}x{dimensions[1]} ({pixel_count // 1_000_000}MP); "
+            f"images must be at most {_MAX_SOURCE_IMAGE_PIXELS // 1_000_000}MP. Resize it first."
+        )
+
+    return filepath, mime, size, dimensions
 
 
 def _base64_chars(data: bytes) -> int:
@@ -69,11 +97,17 @@ def _load_image_for_attachment(data: bytes):
     if is_animated:
         image.seek(0)
     image = ImageOps.exif_transpose(image)
-    conversion_note = "animated image flattened to first frame" if is_animated else None
+    is_transparent = image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info)
+    conversion_notes = []
+    if is_animated:
+        conversion_notes.append("animated image flattened to first frame")
+    if is_transparent:
+        conversion_notes.append(f"transparent pixels composited on {_TRANSPARENCY_BACKGROUND} background")
+    conversion_note = "; ".join(conversion_notes) or None
 
-    if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+    if is_transparent:
         rgba = image.convert("RGBA")
-        background = Image.new("RGB", rgba.size, "white")
+        background = Image.new("RGB", rgba.size, _TRANSPARENCY_BACKGROUND)
         background.paste(rgba, mask=rgba.split()[-1])
         return background, conversion_note
     return image.convert("RGB"), conversion_note
@@ -85,23 +119,16 @@ def _encode_jpeg(image, quality: int) -> bytes:
     return buffer.getvalue()
 
 
-def _resize_image(filepath: Path, mime_type: str, size: int) -> tuple[str, str, str | None]:
+def _resize_image(filepath: Path, mime_type: str, size: int, dimensions: tuple[int, int]) -> tuple[str, str, str | None]:
     data = filepath.read_bytes()
     encoded_chars = _base64_chars(data)
 
-    try:
-        from PIL import Image
-
-        with Image.open(io.BytesIO(data)) as image:
-            if (
-                size <= _MAX_ATTACHMENT_DATA_CHARS * 3 // 4
-                and max(image.size) <= _MAX_ATTACHMENT_DIMENSION
-                and encoded_chars <= _MAX_ATTACHMENT_DATA_CHARS
-            ):
-                return base64.b64encode(data).decode("ascii"), mime_type, None
-    except Exception:
-        if encoded_chars <= _MAX_ATTACHMENT_DATA_CHARS:
-            return base64.b64encode(data).decode("ascii"), mime_type, None
+    if (
+        size <= _MAX_ATTACHMENT_DATA_CHARS * 3 // 4
+        and max(dimensions) <= _MAX_ATTACHMENT_DIMENSION
+        and encoded_chars <= _MAX_ATTACHMENT_DATA_CHARS
+    ):
+        return base64.b64encode(data).decode("ascii"), mime_type, None
 
     try:
         from PIL import Image
@@ -149,10 +176,10 @@ def _resize_image(filepath: Path, mime_type: str, size: int) -> tuple[str, str, 
     )
 
 
-def _emit_attachment(filepath: Path, mime_type: str, size: int) -> str | None:
+def _emit_attachment(filepath: Path, mime_type: str, size: int, dimensions: tuple[int, int]) -> str | None:
     from IPython.display import display
 
-    data_b64, emitted_mime_type, resize_note = _resize_image(filepath, mime_type, size)
+    data_b64, emitted_mime_type, resize_note = _resize_image(filepath, mime_type, size, dimensions)
     display(
         {
             _ATTACHMENT_DISPLAY_MIME: {"mime_type": emitted_mime_type, "data": data_b64, "path": str(filepath)},
@@ -205,8 +232,8 @@ async def run(*paths: str) -> str:
     # leaves a partial subset injected.
     validated = [_validate_image(path) for path in paths]
     resize_notes = []
-    for filepath, mime, size in validated:
-        note = _emit_attachment(filepath, mime, size)
+    for filepath, mime, size, dimensions in validated:
+        note = _emit_attachment(filepath, mime, size, dimensions)
         if note:
             resize_notes.append(f"{filepath}: {note}")
 

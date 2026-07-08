@@ -112,6 +112,58 @@ print(await attach_image(${JSON.stringify(imagePath)}))
 		expect(result.attachments?.[0]?.data.length).toBeLessThanOrEqual(350_000);
 	});
 
+	it("uses a neutral background when compressing transparent images", async () => {
+		const imagePath = join(tempDir, "transparent.png");
+
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledAttachImageSkill()],
+			hostHandlers: {
+				"model.info": async () => ({ id: "anthropic/claude-haiku-4.5", input: ["text", "image"] }),
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		const result = await manager.execute(`
+from PIL import Image, ImageDraw
+img = Image.new("RGBA", (1300, 10), (0, 0, 0, 0))
+draw = ImageDraw.Draw(img)
+draw.rectangle((0, 0, 1299, 9), fill=(255, 255, 255, 255))
+img.save(${JSON.stringify(imagePath)})
+print(await attach_image(${JSON.stringify(imagePath)}))
+`);
+
+		expect(result.status).toBe("ok");
+		expect(result.stdout).toContain("transparent pixels composited on #888888 background");
+		expect(result.attachments).toHaveLength(1);
+		expect(result.attachments?.[0]?.mimeType).toBe("image/jpeg");
+		expect(result.attachments?.[0]?.data.length).toBeLessThanOrEqual(350_000);
+	});
+
+	it("rejects oversized pixel counts before loading an image into context", async () => {
+		const imagePath = join(tempDir, "huge.png");
+
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledAttachImageSkill()],
+			hostHandlers: {
+				"model.info": async () => ({ id: "anthropic/claude-haiku-4.5", input: ["text", "image"] }),
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		const result = await manager.execute(`
+from PIL import Image
+Image.new("RGB", (6001, 6001), "white").save(${JSON.stringify(imagePath)})
+try:
+    await attach_image(${JSON.stringify(imagePath)})
+except ValueError as error:
+    print(f"ValueError: {error}")
+`);
+
+		expect(result.status).toBe("ok");
+		expect(result.stdout).toContain("images must be at most 36MP");
+		expect(result.attachments).toBeUndefined();
+	});
+
 	it("errors without emitting an attachment when the model is not vision-capable", async () => {
 		const imagePath = join(tempDir, "sample.png");
 		writeFileSync(imagePath, Buffer.from(PNG_BASE64, "base64"));
