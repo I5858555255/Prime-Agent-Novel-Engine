@@ -145,6 +145,28 @@ describe("IpythonKernelProvisioner", () => {
 		expect(await provisioner.listNamespaceNames()).toBeNull();
 	});
 
+	it("does not dispose a running kernel when an ensure caller is aborted", async () => {
+		const provisioner = new IpythonKernelProvisioner(tempDir, {});
+		const dispose = vi.fn(async () => {});
+		const manager = { dispose, isRunning: true } as unknown as KernelManager;
+		Object.assign(
+			provisioner as unknown as {
+				managerPromise: Promise<KernelManager>;
+				startedManager: KernelManager;
+			},
+			{
+				managerPromise: Promise.resolve(manager),
+				startedManager: manager,
+			},
+		);
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(provisioner.ensure(undefined, controller.signal)).rejects.toThrow("IPython execution aborted");
+		expect(dispose).not.toHaveBeenCalled();
+		expect(provisioner.manager).toBe(manager);
+	});
+
 	it("does not delete the on-disk snapshot (the kernel survives compaction)", async () => {
 		const snapshotDir = join(tempDir, "artifacts");
 		const provisioner = new IpythonKernelProvisioner(tempDir, { snapshotDir });

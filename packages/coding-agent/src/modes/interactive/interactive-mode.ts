@@ -5319,24 +5319,18 @@ export class InteractiveMode {
 	private interruptOrClearInput(): void {
 		if (this.getRetryAttempt() > 0) {
 			void this.agentConnection.abortRetry();
-			return;
 		}
 		if (this.isAgentCompacting()) {
 			void this.agentConnection.abortCompaction();
 			void this.agentConnection.abortBranchSummary();
-			return;
 		}
-		// Bash outranks the agent stream: the already-running warning tells the user
-		// this key cancels the bash command, and the stream stays one press away.
 		if (this.isBashRunning()) {
 			void this.agentConnection.abortBash();
-			return;
 		}
 		if (this.isAgentStreaming()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
-			return;
 		}
 	}
 
