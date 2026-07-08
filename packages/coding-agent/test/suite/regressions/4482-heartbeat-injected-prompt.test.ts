@@ -134,6 +134,19 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 		).toBe(true);
 	});
 
+	it("resets overflow recovery state when heartbeat prompt turns start", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as { _overflowRecoveryAttempted: boolean };
+		sessionInternals._overflowRecoveryAttempted = true;
+		harness.setResponses([fauxAssistantMessage("heartbeat handled")]);
+
+		await harness.session.promptHeartbeat(createHeartbeat());
+		await harness.session.agent.waitForIdle();
+
+		expect(sessionInternals._overflowRecoveryAttempted).toBe(false);
+	});
+
 	it("folds pending nextTurn context into queued heartbeat prompts", async () => {
 		let releaseToolExecution: (() => void) | undefined;
 		const toolRelease = new Promise<void>((resolve) => {

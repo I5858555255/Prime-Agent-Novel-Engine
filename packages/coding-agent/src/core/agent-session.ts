@@ -138,7 +138,12 @@ import {
 import type { HostRequestHandlers } from "./kernel/index.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { McpManager } from "./mcp/mcp-manager.js";
-import { type BashExecutionMessage, type CustomMessage, createHeartbeatPromptMessage } from "./messages.js";
+import {
+	type BashExecutionMessage,
+	type CustomMessage,
+	createHeartbeatPromptMessage,
+	HEARTBEAT_PROMPT_CUSTOM_TYPE,
+} from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
@@ -1674,7 +1679,7 @@ export class AgentSession {
 
 		// Remove queued messages before emitting so the UI sees the updated queue.
 		if (event.type === "message_start") {
-			if (event.message.role === "user") {
+			if (this._isPromptTurnStartMessage(event.message)) {
 				this._overflowRecoveryAttempted = false;
 			}
 			const steeringIndex = this._steeringMessages.findIndex((message) => message.message === event.message);
@@ -1779,6 +1784,14 @@ export class AgentSession {
 				this._scheduleAutoRefineAfterAgentEnd();
 			}
 		}
+	}
+
+	private _isPromptTurnStartMessage(message: AgentMessage): boolean {
+		return (
+			message.role === "user" ||
+			(message.role === "custom" &&
+				(message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE || message.customType === GOAL_CONTEXT_CUSTOM_TYPE))
+		);
 	}
 
 	/** Resolve the pending retry promise */
