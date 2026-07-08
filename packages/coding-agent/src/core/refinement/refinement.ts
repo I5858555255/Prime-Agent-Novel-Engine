@@ -391,11 +391,13 @@ export function formatHarnessStateForPrompt(
 		maxEntriesPerKind?: number;
 		maxRefinements?: number;
 		maxContentLength?: number;
+		includeIpythonExamples?: boolean;
 	} = {},
 ): string {
 	const maxEntriesPerKind = options.maxEntriesPerKind ?? DEFAULT_OVERVIEW_ENTRY_LIMIT;
 	const maxRefinements = options.maxRefinements ?? DEFAULT_OVERVIEW_REFINEMENT_LIMIT;
 	const maxContentLength = options.maxContentLength ?? DEFAULT_OVERVIEW_CONTENT_LIMIT;
+	const includeIpythonExamples = options.includeIpythonExamples ?? true;
 	const lines = [
 		"# Continual Harness State",
 		"",
@@ -406,7 +408,9 @@ export function formatHarnessStateForPrompt(
 		"",
 		"When to call `/refine`: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `/refine` continual harness edits small and evidence-backed.",
 		"",
-		"Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Continual harness subagent entries are invoked by composing a concise task prompt and starting `asyncio.create_task(rlm('sub-task'))` by default, then awaiting only when the result is needed; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Use direct `await rlm('sub-task')` only when the result is immediately required. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.",
+		includeIpythonExamples
+			? "Call contract: use installed Python skills as `await <skill_import>(...)` in IPython, or `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Continual harness subagent entries are invoked by composing a concise task prompt and starting `asyncio.create_task(rlm('sub-task'))` by default, then awaiting only when the result is needed; use `await asyncio.gather(rlm('task1'), rlm('task2'))` for independent parallel subagents. Use direct `await rlm('sub-task')` only when the result is immediately required. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries."
+			: "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without IPython; do not use Python `await`, `asyncio`, or `rlm` examples unless the prompt also documents an IPython kernel.",
 		"",
 	];
 
@@ -417,9 +421,9 @@ export function formatHarnessStateForPrompt(
 		);
 		totalEntries += entries.length;
 		// Render subagent specs as a task-shaped roster the model can match against — the
-		// analogue of Claude Code's agent-type menu — rather than a bare count. The
-		// invocation hint makes clear each spec is reached through the single `rlm` entrypoint.
-		if (kind === "subagent" && entries.length > 0) {
+		// analogue of Claude Code's agent-type menu — rather than a bare count. In
+		// IPython sessions, include the native `rlm` invocation hint.
+		if (kind === "subagent" && entries.length > 0 && includeIpythonExamples) {
 			lines.push(
 				`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and starting \`asyncio.create_task(rlm('<task>'))\` by default)`,
 			);
