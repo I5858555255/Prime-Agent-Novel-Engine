@@ -63,6 +63,11 @@ describe("parseHeartbeatCommand", () => {
 			schedule: "every 30s",
 			instruction: "check on me",
 		});
+		expect(parseHeartbeatCommand("/heartbeat every 10m check status")).toEqual({
+			type: "set",
+			schedule: "every 10m",
+			instruction: "check status",
+		});
 		expect(parseHeartbeatCommand("/heartbeat every 10m -- check status")).toEqual({
 			type: "set",
 			schedule: "every 10m",
@@ -230,6 +235,7 @@ describe("AgentCronJobStore", () => {
 			status: "cancelled",
 		});
 		expect(store.getHeartbeat("active-1")).toBeUndefined();
+		expect(store.getLatestHeartbeat("active-1")).toMatchObject({ id: job.id, status: "cancelled" });
 	});
 
 	it("rejects one-shot heartbeat schedules", () => {
