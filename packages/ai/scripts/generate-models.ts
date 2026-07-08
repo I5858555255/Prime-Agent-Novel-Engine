@@ -1,7 +1,8 @@
 #!/usr/bin/env tsx
 
-import { writeFileSync } from "fs";
-import { join, dirname } from "path";
+import { readFileSync, writeFileSync } from "fs";
+import { homedir } from "os";
+import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
@@ -165,15 +166,6 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"z-ai/glm-5.2": { contextWindow: 202800, maxTokens: 131072 },
 };
 
-const PRIME_INFERENCE_MANUAL_CATALOG_ENTRIES: PrimeInferenceCatalogEntry[] = [
-	{
-		id: "internal/glm-5.2-fast",
-		input: 0,
-		output: 0,
-		reasoning: true,
-	},
-];
-
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.1",
 	"gpt-5.2",
@@ -302,6 +294,47 @@ function getOptionalBoolean(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
 }
 
+function readPrimeCliConfig(): Record<string, unknown> {
+	try {
+		const parsed = JSON.parse(readFileSync(join(homedir(), ".prime", "config.json"), "utf8"));
+		return isRecord(parsed) ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
+function getPrimeInferenceConfigValue(
+	envName: "PRIME_API_KEY" | "PRIME_TEAM_ID",
+	config: Record<string, unknown>,
+	configKeys: readonly string[],
+): string | undefined {
+	const fromEnv = process.env[envName]?.trim();
+	if (fromEnv) {
+		return fromEnv;
+	}
+
+	for (const key of configKeys) {
+		const value = config[key];
+		if (typeof value === "string" && value.trim()) {
+			return value.trim();
+		}
+	}
+
+	return undefined;
+}
+
+function getPrimeInferenceHeaders(apiKey: string | undefined, teamId: string | undefined): Record<string, string> | undefined {
+	const headers: Record<string, string> = {};
+	if (apiKey) {
+		headers.Authorization = `Bearer ${apiKey}`;
+	}
+	if (teamId) {
+		headers["X-Prime-Team-ID"] = teamId;
+	}
+
+	return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
 function includesCatalogCapability(value: unknown, capabilities: readonly string[]): boolean {
 	if (!Array.isArray(value)) {
 		return false;
@@ -420,35 +453,23 @@ function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[]
 	});
 }
 
-function mergePrimeInferenceCatalogEntries(catalog: PrimeInferenceCatalogEntry[]): PrimeInferenceCatalogEntry[] {
-	const entries = new Map<string, PrimeInferenceCatalogEntry>();
-	for (const entry of catalog) {
-		entries.set(entry.id.toLowerCase(), entry);
-	}
-	for (const entry of PRIME_INFERENCE_MANUAL_CATALOG_ENTRIES) {
-		if (!entries.has(entry.id.toLowerCase())) {
-			entries.set(entry.id.toLowerCase(), entry);
-		}
-	}
-	return Array.from(entries.values());
-}
-
 async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
-	const apiKey = process.env.PRIME_API_KEY;
+	const primeConfig = readPrimeCliConfig();
+	const apiKey = getPrimeInferenceConfigValue("PRIME_API_KEY", primeConfig, ["api_key", "apiKey"]);
+	const teamId = getPrimeInferenceConfigValue("PRIME_TEAM_ID", primeConfig, ["team_id", "teamId", "teamID"]);
 	let catalog: PrimeInferenceCatalogEntry[] = [];
 
 	try {
 		console.log("Fetching models from Prime Inference API...");
-		const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
 		const response = await fetch(`${PRIME_INFERENCE_BASE_URL}/models`, {
-			headers,
+			headers: getPrimeInferenceHeaders(apiKey, teamId),
 		});
 		catalog = parsePrimeInferenceCatalog(await response.json());
 	} catch (error) {
 		console.error("Failed to fetch Prime Inference models:", error);
 	}
 
-	const models = mergePrimeInferenceCatalogEntries(catalog).flatMap((entry): Model<"openai-completions">[] => {
+	const models = catalog.flatMap((entry): Model<"openai-completions">[] => {
 		const metadata = PRIME_INFERENCE_MODEL_METADATA[entry.id.toLowerCase()];
 		return metadata === undefined ? [] : [createPrimeInferenceModel(entry, metadata)];
 	});
