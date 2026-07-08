@@ -125,6 +125,7 @@ import {
 	createGoalContextMessage,
 	emptyGoalState,
 	GOAL_CONTEXT_CUSTOM_TYPE,
+	GOAL_CONTEXT_PREVIEW_LABEL,
 	GOAL_SKILL_NAME,
 	GOAL_STATE_CUSTOM_TYPE,
 	type GoalHostResponse,
@@ -145,6 +146,7 @@ import {
 	type CustomMessage,
 	createHeartbeatPromptMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
+	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -427,9 +429,9 @@ function queuedMessagePreview(message: { text: string; previewLabel?: string }):
 function injectedMessagePreviewLabel(message: CustomMessage): string | undefined {
 	switch (message.customType) {
 		case HEARTBEAT_PROMPT_CUSTOM_TYPE:
-			return "Heartbeat prompt";
+			return HEARTBEAT_PROMPT_PREVIEW_LABEL;
 		case GOAL_CONTEXT_CUSTOM_TYPE:
-			return "Goal context";
+			return GOAL_CONTEXT_PREVIEW_LABEL;
 		default:
 			return undefined;
 	}

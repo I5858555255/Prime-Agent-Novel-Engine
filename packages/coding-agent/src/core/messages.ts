@@ -25,6 +25,7 @@ export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch tha
 export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
 
 export const HEARTBEAT_PROMPT_CUSTOM_TYPE = "heartbeat_prompt";
+export const HEARTBEAT_PROMPT_PREVIEW_LABEL = "Heartbeat prompt";
 
 /**
  * Message type for bash executions via the ! command.

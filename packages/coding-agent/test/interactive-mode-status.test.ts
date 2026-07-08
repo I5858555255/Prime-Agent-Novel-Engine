@@ -412,6 +412,31 @@ describe("InteractiveMode pending bash components", () => {
 		expect(pendingMessagesContainer.children).toContain(component);
 	});
 
+	test("does not double-prefix labeled injected follow-up previews", () => {
+		const queuedMessagesContainer = new Container();
+		const fakeThis = {
+			pendingMessagesContainer: new Container(),
+			queuedMessagesContainer,
+			pendingBashComponents: [],
+			getAllQueuedMessages: () => ({
+				steering: [],
+				followUp: ["Heartbeat prompt: check status", "Goal context: continue goal", "plain follow-up"],
+			}),
+			getAppKeyDisplay: () => "Ctrl+Q",
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as { updatePendingMessagesDisplay(this: unknown): void }
+		).updatePendingMessagesDisplay.call(fakeThis);
+
+		const rendered = normalizeRenderedOutput(queuedMessagesContainer);
+		expect(rendered).toContain("Heartbeat prompt: check status");
+		expect(rendered).not.toContain("Follow-up: Heartbeat prompt");
+		expect(rendered).toContain("Goal context: continue goal");
+		expect(rendered).not.toContain("Follow-up: Goal context");
+		expect(rendered).toContain("Follow-up: plain follow-up");
+	});
+
 	test("flushes pending bash components from the pending area to chat", () => {
 		const pendingMessagesContainer = new Container();
 		const chatContainer = new Container();
