@@ -19,12 +19,14 @@ describe("Prime Inference models", () => {
 		// Lower bound, not an exact count — the catalog grows with each release and an
 		// exact number breaks on every routine addition. The membership checks below
 		// are the meaningful assertions.
-		expect(modelIds.length).toBeGreaterThanOrEqual(28);
+		expect(modelIds.length).toBeGreaterThanOrEqual(29);
 		expect(modelIds).toEqual(
 			expect.arrayContaining([
 				"anthropic/claude-opus-4.7",
 				"anthropic/claude-opus-4.8",
+				"anthropic/claude-sonnet-5",
 				"deepseek/deepseek-v4-pro",
+				"internal/glm-5.2-fast",
 				"minimax/minimax-m3",
 				"moonshotai/kimi-k2.7-code",
 				"nvidia/nemotron-3-super-120b-a12b",
@@ -69,12 +71,55 @@ describe("Prime Inference models", () => {
 		});
 	});
 
+	it("registers the internal GLM 5.2 Fast route", () => {
+		const model = getModel("prime-inference", "internal/glm-5.2-fast");
+
+		expect(model).toBeDefined();
+		expect(model.name).toBe("GLM 5.2 Fast");
+		expect(model.api).toBe("openai-completions");
+		expect(model.provider).toBe("prime-inference");
+		expect(model.baseUrl).toBe("https://api.pinference.ai/api/v1");
+		expect(model.reasoning).toBe(true);
+		expect(model.input).toEqual(["text"]);
+		expect(model.contextWindow).toBe(400000);
+		expect(model.maxTokens).toBe(131072);
+		expect(model.cost).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		});
+		expect(model.compat).toEqual({
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: false,
+			maxTokensField: "max_tokens",
+			supportsStrictMode: false,
+			thinkingFormat: "zai",
+		});
+	});
+
 	it("marks known reasoning-capable Prime Inference model families", () => {
 		const opus48 = getModel("prime-inference", "anthropic/claude-opus-4.8");
 		expect(opus48.reasoning).toBe(true);
 		expect(opus48.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
 		expect(getSupportedThinkingLevels(opus48)).toContain("xhigh");
 		expect(getSupportedThinkingLevels(opus48)).toContain("max");
+
+		const sonnet5 = getModel("prime-inference", "anthropic/claude-sonnet-5");
+		expect(sonnet5.reasoning).toBe(true);
+		expect(sonnet5.thinkingLevelMap).toEqual({ xhigh: "xhigh", max: "max" });
+		expect(sonnet5.input).toEqual(["text", "image"]);
+		expect(sonnet5.contextWindow).toBe(1000000);
+		expect(sonnet5.maxTokens).toBe(128000);
+		expect(sonnet5.cost).toEqual({
+			input: 2,
+			output: 10,
+			cacheRead: 0,
+			cacheWrite: 0,
+		});
+		expect(getSupportedThinkingLevels(sonnet5)).toContain("xhigh");
+		expect(getSupportedThinkingLevels(sonnet5)).toContain("max");
 
 		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").reasoning).toBe(true);
 		const deepseekV4Flash = getModel("prime-inference", "deepseek/deepseek-v4-flash");
@@ -99,6 +144,17 @@ describe("Prime Inference models", () => {
 		expect(getModel("prime-inference", "x-ai/grok-4.20").reasoning).toBe(true);
 		expect(getModel("prime-inference", "minimax/minimax-m3").reasoning).toBe(true);
 		expect(getModel("prime-inference", "moonshotai/kimi-k2.7-code").reasoning).toBe(true);
+	});
+
+	it("uses route-specific context windows for Prime Inference Claude routes", () => {
+		expect(getModel("prime-inference", "anthropic/claude-fable-5").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-opus-4.6").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-opus-4.7").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-opus-4.8").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-sonnet-4.6").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-sonnet-5").contextWindow).toBe(1000000);
+		expect(getModel("prime-inference", "anthropic/claude-haiku-4.5").contextWindow).toBe(200000);
+		expect(getModel("prime-inference", "anthropic/claude-sonnet-4.5").contextWindow).toBe(1000000);
 	});
 
 	it("resolves PRIME_API_KEY from the environment", () => {

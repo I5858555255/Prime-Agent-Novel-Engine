@@ -192,6 +192,12 @@ export class AgentCronJobStore {
 			.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
 	}
 
+	getLatestHeartbeat(activeSessionId: string): AgentCronJob | undefined {
+		return this.readJobs()
+			.filter((job) => job.activeSessionId === activeSessionId && job.source === "heartbeat")
+			.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+	}
+
 	createHeartbeat(input: CreateAgentCronJobInput): AgentCronJob {
 		const now = input.now ?? new Date();
 		const parsed = parseAgentCronSchedule(input.scheduleText, now);
@@ -364,6 +370,30 @@ export class AgentCronJobStore {
 				job.source !== "rlm_heartbeat" ||
 				(job.status !== "active" && job.status !== "paused")
 			) {
+				return job;
+			}
+			const cancelledJob = withoutNextRunAt({ ...job, status: "cancelled", updatedAt: now.toISOString() });
+			cancelled.push(cancelledJob);
+			return cancelledJob;
+		});
+		if (cancelled.length > 0) {
+			this.writeJobs(jobs);
+		}
+		return cancelled;
+	}
+
+	cancelJobsForSession(
+		input: { activeSessionId?: string; sessionId?: string; sessionFile?: string },
+		now = new Date(),
+	): AgentCronJob[] {
+		const targetSessionFile = input.sessionFile ? resolve(input.sessionFile) : undefined;
+		const cancelled: AgentCronJob[] = [];
+		const jobs = this.readJobs().map((job) => {
+			const matches =
+				(input.activeSessionId !== undefined && job.activeSessionId === input.activeSessionId) ||
+				(input.sessionId !== undefined && job.sessionId === input.sessionId) ||
+				(targetSessionFile !== undefined && resolve(job.sessionFile) === targetSessionFile);
+			if (!matches || (job.status !== "active" && job.status !== "paused")) {
 				return job;
 			}
 			const cancelledJob = withoutNextRunAt({ ...job, status: "cancelled", updatedAt: now.toISOString() });
