@@ -2197,6 +2197,51 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("deduplicates restored active session ids across different session files", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-restore-id-dupe-"));
+		try {
+			const firstSessionPath = join(tempDir, "first.jsonl");
+			const secondSessionPath = join(tempDir, "second.jsonl");
+			let releaseCreate: () => void = () => {};
+			const createBarrier = new Promise<void>((resolve) => {
+				releaseCreate = resolve;
+			});
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => {
+				await createBarrier;
+				return {
+					session: makeRuntimeSession(options.sessionManager),
+					extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["extensionsResult"],
+					services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["services"],
+					diagnostics: [],
+				};
+			});
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir: tempDir },
+				createRuntime,
+			});
+			const create = (
+				daemon as unknown as {
+					createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				}
+			).createRuntime.bind(daemon);
+
+			const first = create({ type: "create", activeSessionId: "same-active", sessionPath: firstSessionPath });
+			const second = create({ type: "create", activeSessionId: "same-active", sessionPath: secondSessionPath });
+			releaseCreate();
+			const [firstState, secondState] = await Promise.all([first, second]);
+
+			expect(firstState.activeSessionId).toBe("same-active");
+			expect(secondState.activeSessionId).not.toBe("same-active");
+			expect(secondState.activeSessionId).not.toBe(firstState.activeSessionId);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("adopts client env on session reuse only when the session has none", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-env-"));
 		try {

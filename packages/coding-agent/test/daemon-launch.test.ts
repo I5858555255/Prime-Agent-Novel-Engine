@@ -7,6 +7,7 @@ import {
 	isSessionAtRiskFromDaemonStop,
 	isSessionRestorableAfterDaemonStop,
 	probeRunningDaemonSessions,
+	relaunchDaemonAndRestoreSessions,
 	restoreDaemonSessionSummaries,
 	shutdownDaemonAndWait,
 } from "../src/cli/daemon-launch.js";
@@ -263,6 +264,20 @@ describe("restoreDaemonSessionSummaries", () => {
 			failed: [{ sessionFile: failedSessionFile, error: "restore failed" }],
 		});
 		expect(createCommands.map((command) => command.sessionPath)).toEqual([failedSessionFile, restoredSessionFile]);
+	});
+});
+
+describe("relaunchDaemonAndRestoreSessions", () => {
+	const cleanups: Array<() => Promise<void>> = [];
+	afterEach(async () => {
+		await Promise.all(cleanups.splice(0).map((fn) => fn()));
+	});
+
+	it("refuses to stop a daemon when the latest session list is unavailable", async () => {
+		const daemon = await startFakeDaemon({ failList: true });
+		cleanups.push(daemon.close);
+
+		await expect(relaunchDaemonAndRestoreSessions(daemon.socketPath, [])).rejects.toThrow("session list unavailable");
 	});
 });
 

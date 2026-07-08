@@ -377,7 +377,9 @@ export class AgentDaemon {
 		activeSessionId?: string,
 	): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
-			activeSessionId: activeSessionId ?? createActiveSessionId(this.sessions),
+			activeSessionId: activeSessionId
+				? createActiveSessionIdFromSeed(activeSessionId, this.sessions)
+				: createActiveSessionId(this.sessions),
 			runtime,
 			clients: new Set(),
 			extensionUiRequests: new Map(),
@@ -438,10 +440,7 @@ export class AgentDaemon {
 		const sessionPath = command.sessionPath
 			? await resolveDaemonSessionPath(command.sessionPath, cwd, config.sessionDir)
 			: undefined;
-		const restoredActiveSessionId =
-			command.activeSessionId && sessionPath
-				? createActiveSessionIdFromSeed(command.activeSessionId, this.sessions)
-				: undefined;
+		const restoredActiveSessionId = command.activeSessionId && sessionPath ? command.activeSessionId : undefined;
 		const sessionManager = sessionPath
 			? await SessionManager.openAsync(sessionPath, config.sessionDir, cwdOverride)
 			: command.continueRecent
