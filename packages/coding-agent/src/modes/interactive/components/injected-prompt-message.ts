@@ -128,13 +128,6 @@ export class InjectedPromptMessageComponent extends Container {
 
 	private metaText(): string {
 		const details = this.message.details;
-		if (this.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
-			const heartbeat = details as HeartbeatPromptDetails | undefined;
-			if (!heartbeat?.schedule) {
-				return "";
-			}
-			return theme.fg("muted", ` · ${heartbeat.schedule}`);
-		}
 		const goal = details as GoalContextDetails | undefined;
 		if (!goal?.objective) {
 			return "";

@@ -209,6 +209,12 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 		const harness = await createHarness({ tools: [waitTool] });
 		harnesses.push(harness);
 		let queuedHeartbeatText = "";
+		const queueEvents: Array<{ steering: readonly string[]; followUp: readonly string[] }> = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "queue_update") {
+				queueEvents.push({ steering: event.steering, followUp: event.followUp });
+			}
+		});
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("original turn complete"),
@@ -245,6 +251,11 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 
 		expect(queuedHeartbeatText).toContain("pending heartbeat context");
 		expect(queuedHeartbeatText).toContain("Check whether the long-running task needs another step.");
+		expect(
+			queueEvents.some((event) =>
+				event.followUp.includes("Heartbeat prompt: Check whether the long-running task needs another step."),
+			),
+		).toBe(true);
 	});
 
 	it("renders heartbeat prompts as expandable injected prompt panels", () => {

@@ -424,6 +424,17 @@ function queuedMessagePreview(message: { text: string; previewLabel?: string }):
 	return message.previewLabel ? `${message.previewLabel}: ${message.text}` : message.text;
 }
 
+function injectedMessagePreviewLabel(message: CustomMessage): string | undefined {
+	switch (message.customType) {
+		case HEARTBEAT_PROMPT_CUSTOM_TYPE:
+			return "Heartbeat prompt";
+		case GOAL_CONTEXT_CUSTOM_TYPE:
+			return "Goal context";
+		default:
+			return undefined;
+	}
+}
+
 interface AcceptedAgentMessagePrompt {
 	text: string;
 	agentMessageId: string;
@@ -2384,6 +2395,7 @@ export class AgentSession {
 
 		let messages: AgentMessage[] | undefined;
 		let drainedNextTurnMessages: CustomMessage[] = [];
+		const previewLabel = injectedMessagePreviewLabel(message);
 		try {
 			const shouldQueueForStreaming = this.isStreaming;
 			const shouldQueueForPendingWork =
@@ -2406,7 +2418,7 @@ export class AgentSession {
 					text,
 					message,
 					options.streamingBehavior,
-					{ queueKey: options.followUpQueueKey, previewLabel: "Heartbeat" },
+					{ queueKey: options.followUpQueueKey, previewLabel },
 				);
 				if (!queued) {
 					reportPreflight(false);
@@ -2491,7 +2503,7 @@ export class AgentSession {
 				text,
 				message,
 				options.streamingBehavior,
-				{ queueKey: options.followUpQueueKey, previewLabel: "Heartbeat" },
+				{ queueKey: options.followUpQueueKey, previewLabel },
 			);
 			if (!queued) {
 				reportPreflight(false);
