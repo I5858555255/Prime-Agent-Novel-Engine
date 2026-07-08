@@ -5,6 +5,21 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "../../src/index.js";
 import { createHarness, getAssistantTexts, type Harness } from "./harness.js";
 
+function createDeferred<T = void>(): {
+	promise: Promise<T>;
+	resolve(value: T): void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((nextResolve) => {
+		resolve = nextResolve;
+	});
+	return { promise, resolve };
+}
+
+async function flushAsyncWork(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("AgentSession model and extension characterization", () => {
 	const harnesses: Harness[] = [];
 
@@ -42,6 +57,40 @@ describe("AgentSession model and extension characterization", () => {
 				.filter((entry) => entry.type === "model_change")
 				.map((entry) => `${entry.provider}/${entry.modelId}`),
 		).toEqual([`${nextModel.provider}/${nextModel.id}`]);
+	});
+
+	it("can save the model before slow model_select handlers finish", async () => {
+		const handlerStarted = createDeferred();
+		const finishHandler = createDeferred();
+		let handlerCompleted = false;
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async () => {
+						handlerStarted.resolve();
+						await finishHandler.promise;
+						handlerCompleted = true;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const nextModel = harness.getModel("faux-2")!;
+
+		await harness.session.setModel(nextModel, { waitForExtensions: false });
+		await handlerStarted.promise;
+
+		expect(harness.session.model?.id).toBe("faux-2");
+		expect(handlerCompleted).toBe(false);
+
+		finishHandler.resolve();
+		await flushAsyncWork();
+
+		expect(handlerCompleted).toBe(true);
 	});
 
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {

@@ -1595,7 +1595,7 @@ export class AgentDaemon {
 				if (!model) {
 					throw new Error(`Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				await session.setModel(model, { waitForExtensions: !(session.isStreaming || session.isCompacting) });
 				return success(command.id, "set_model", model);
 			}
 

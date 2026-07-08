@@ -3379,7 +3379,7 @@ export class AgentSession {
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, options: { waitForExtensions?: boolean } = {}): Promise<void> {
 		if (!this._modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -3393,7 +3393,20 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(model, previousModel, "set");
+		const emitPromise = this._emitModelSelect(model, previousModel, "set");
+		if (options.waitForExtensions === false) {
+			void emitPromise.catch((error) => {
+				this._extensionRunner.emitError({
+					extensionPath: "<internal>",
+					event: "model_select",
+					error: error instanceof Error ? error.message : String(error),
+					stack: error instanceof Error ? error.stack : undefined,
+				});
+			});
+			return;
+		}
+
+		await emitPromise;
 	}
 
 	/**

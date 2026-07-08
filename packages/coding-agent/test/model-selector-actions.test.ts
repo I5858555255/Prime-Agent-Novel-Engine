@@ -105,6 +105,41 @@ describe("ModelSelectorComponent provider actions", () => {
 		expect(output).not.toContain("Local One");
 	});
 
+	it("updates injected models without clearing the current search", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "alpha", name: "Alpha", reasoning: true },
+				{ id: "beta", name: "Beta", reasoning: true },
+			],
+		});
+		harnesses.push(harness);
+
+		const alpha = harness.getModel("alpha")!;
+		const beta = harness.getModel("beta")!;
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			undefined,
+			harness.session.modelRegistry,
+			[],
+			() => {},
+			() => {},
+			"beta",
+			{
+				availableModels: [alpha],
+			},
+		);
+
+		await waitForAsyncRender();
+		expect(stripAnsi(selector.render(120).join("\n"))).not.toContain("Beta");
+
+		await selector.updateAvailableModels([beta]);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(selector.getSearchInput().getValue()).toBe("beta");
+		expect(output).toContain("beta");
+		expect(output).toContain("Beta");
+	});
+
 	it("keeps the model menu within a short terminal viewport", async () => {
 		const harness = await createHarness({
 			models: Array.from({ length: 12 }, (_, index) => ({

@@ -179,8 +179,28 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		});
 	}
 
+	async updateAvailableModels(availableModels: ReadonlyArray<Model<any>>): Promise<void> {
+		this.availableModels = availableModels;
+		const query = this.searchInput.getValue();
+		const selectedKey = this.getSelectedModelKey();
+
+		await this.loadModels();
+		this.filterModels(query);
+
+		if (selectedKey) {
+			const selectedIndex = this.filteredModels.findIndex((item) => this.getModelKey(item) === selectedKey);
+			if (selectedIndex >= 0) {
+				this.selectedIndex = selectedIndex;
+				this.updateList();
+			}
+		}
+
+		this.tui.requestRender();
+	}
+
 	private async loadModels(): Promise<void> {
 		let models: ModelItem[];
+		this.errorMessage = undefined;
 
 		// Refresh to pick up any changes to models.json
 		this.modelRegistry.refresh();
@@ -233,6 +253,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
 		this.selectedIndex =
 			currentIndex >= 0 ? currentIndex : Math.min(this.selectedIndex, Math.max(0, this.getSelectableCount() - 1));
+	}
+
+	private getModelKey(item: ModelItem): string {
+		return `${item.provider}/${item.id}`;
+	}
+
+	private getSelectedModelKey(): string | undefined {
+		const selected = this.filteredModels[this.selectedIndex];
+		return selected ? this.getModelKey(selected) : undefined;
 	}
 
 	private recentRankOf(item: ModelItem): number {

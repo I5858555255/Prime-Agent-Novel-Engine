@@ -3,9 +3,11 @@ import * as path from "node:path";
 import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
+	type Component,
 	Container,
 	resetCapabilitiesCache,
 	setCapabilities,
+	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
@@ -14,6 +16,7 @@ import type { AuthStatus } from "../src/core/auth-storage.js";
 import type { AgentCronJob } from "../src/core/cron-jobs.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
+import type { ModelRegistry } from "../src/core/model-registry.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
 import type {
 	AgentConnectionExtensionUiRequest,
@@ -27,6 +30,7 @@ import type {
 } from "../src/modes/agent-connection/types.js";
 import { AgentActivityTracker } from "../src/modes/interactive/agent-activity.js";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
+import type { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.js";
 import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -49,6 +53,24 @@ function normalizeRenderedOutput(container: Container, width = 220): string {
 		.map((line) => line.replace(/\s+$/g, ""))
 		.join("\n")
 		.trim();
+}
+
+function createDeferred<T>(): {
+	promise: Promise<T>;
+	resolve(value: T): void;
+	reject(error: unknown): void;
+} {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((nextResolve, nextReject) => {
+		resolve = nextResolve;
+		reject = nextReject;
+	});
+	return { promise, resolve, reject };
+}
+
+async function flushAsyncWork(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function createConnectionState(overrides: Partial<AgentConnectionState> = {}): AgentConnectionState {
@@ -950,6 +972,43 @@ describe("InteractiveMode model selection persistence", () => {
 		completeOnboardingIfCurrentModelReady(): void;
 		setupAutocompleteProvider(): void;
 	};
+	type ModelSelectorOverlayHarness = {
+		agentConnection: {
+			getAvailableModels(): Promise<AgentConnectionModel[]>;
+			setModel(provider: string, modelId: string): Promise<void>;
+		};
+		connectionModels: AgentConnectionModel[];
+		connectionModelsFetchedAt: number;
+		connectionModelsRefreshVersion: number;
+		connectionModelsRefreshInFlight: { version: number; promise: Promise<AgentConnectionModel[]> } | undefined;
+		ui: TUI;
+		uiServices: {
+			modelRegistry: ModelRegistry;
+			settingsManager: {
+				getRecentModels(): string[];
+				setDefaultModelAndProvider(provider: string, modelId: string): void;
+			};
+		};
+		footer: { invalidate(): void };
+		patchConnectionState(patch: Partial<AgentConnectionState>): void;
+		updateEditorBorderColor(): void;
+		showStatus(message: string): void;
+		showError(message: string): void;
+		getScopedModelState(): AgentConnectionState["scopedModels"];
+		getCurrentModel(): AgentConnectionModel | undefined;
+		getConnectionAvailableModels(): Promise<AgentConnectionModel[]>;
+		getCachedModelCandidates(): AgentConnectionModel[];
+		applySelectedModel(model: AgentConnectionModel): Promise<void>;
+		showFullPaneOverlay(component: Component, maxContentWidth?: number): { hide(): void };
+		showModelSelectorAsync(
+			initialSearchInput?: string,
+			options?: { actions?: ReadonlyArray<unknown>; subtitle?: string },
+		): Promise<{ status: string; actionId?: string }>;
+		completeOnboardingIfCurrentModelReady(): void;
+		maybeWarnAboutAnthropicSubscriptionAuth(model: AgentConnectionModel): Promise<void>;
+		checkDaxnutsEasterEgg(model: AgentConnectionModel): void;
+		setupAutocompleteProvider(): void;
+	};
 
 	const createModel = (provider: string, id: string): AgentConnectionModel =>
 		({
@@ -957,6 +1016,81 @@ describe("InteractiveMode model selection persistence", () => {
 			id,
 			name: id,
 		}) as AgentConnectionModel;
+	const overlayPrototype = InteractiveMode.prototype as unknown as ModelSelectorOverlayHarness;
+
+	function createSelectorOverlayHarness(options: {
+		connectionModels: AgentConnectionModel[];
+		getAvailableModels?: () => Promise<AgentConnectionModel[]>;
+		applySelectedModel?: (model: AgentConnectionModel) => Promise<void>;
+		currentModel?: AgentConnectionModel;
+		connectionModelsFetchedAt?: number;
+	}) {
+		let overlayComponent: Component | undefined;
+		const hide = vi.fn();
+		const registryModels = [...options.connectionModels];
+		const modelRegistry = {
+			refresh: vi.fn(),
+			getError: vi.fn(() => undefined),
+			getAvailable: vi.fn(() => registryModels),
+			find: vi.fn((provider: string, modelId: string) =>
+				registryModels.find((model) => model.provider === provider && model.id === modelId),
+			),
+		} as unknown as ModelRegistry;
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectorOverlayHarness;
+		fakeThis.agentConnection = {
+			getAvailableModels: options.getAvailableModels ?? vi.fn(async () => options.connectionModels),
+			setModel: vi.fn(async () => {}),
+		};
+		fakeThis.connectionModels = [...options.connectionModels];
+		fakeThis.connectionModelsFetchedAt = options.connectionModelsFetchedAt ?? 0;
+		fakeThis.connectionModelsRefreshVersion = 0;
+		fakeThis.connectionModelsRefreshInFlight = undefined;
+		fakeThis.ui = {
+			requestRender: vi.fn(),
+			terminal: { rows: 24 },
+		} as unknown as TUI;
+		fakeThis.uiServices = {
+			modelRegistry,
+			settingsManager: {
+				getRecentModels: vi.fn(() => []),
+				setDefaultModelAndProvider: vi.fn(),
+			},
+		};
+		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.patchConnectionState = vi.fn();
+		fakeThis.updateEditorBorderColor = vi.fn();
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showError = vi.fn();
+		fakeThis.getScopedModelState = vi.fn(() => []);
+		fakeThis.getCurrentModel = vi.fn(() => options.currentModel);
+		fakeThis.getConnectionAvailableModels = overlayPrototype.getConnectionAvailableModels;
+		fakeThis.getCachedModelCandidates = overlayPrototype.getCachedModelCandidates;
+		fakeThis.applySelectedModel = options.applySelectedModel ?? vi.fn(async () => {});
+		fakeThis.showFullPaneOverlay = vi.fn((component: Component) => {
+			overlayComponent = component;
+			return { hide };
+		});
+		fakeThis.showModelSelectorAsync = overlayPrototype.showModelSelectorAsync;
+		fakeThis.completeOnboardingIfCurrentModelReady = vi.fn();
+		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn(async () => {});
+		fakeThis.checkDaxnutsEasterEgg = vi.fn();
+		fakeThis.setupAutocompleteProvider = vi.fn();
+
+		return {
+			fakeThis,
+			hide,
+			getSelector: () => {
+				if (!overlayComponent) {
+					throw new Error("Expected model selector overlay to be shown");
+				}
+				return overlayComponent as ModelSelectorComponent;
+			},
+		};
+	}
+
+	beforeAll(() => {
+		initTheme("dark");
+	});
 
 	test("persists local default only after the connection accepts the model", async () => {
 		const order: string[] = [];
@@ -1042,6 +1176,99 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
 		expect(fakeThis.showError).not.toHaveBeenCalled();
 		expect(fakeThis.completeOnboardingIfCurrentModelReady).toHaveBeenCalledTimes(1);
+	});
+
+	test("opens the model selector before live model refresh resolves", async () => {
+		const cachedModel = createModel("openai", "gpt-5.5");
+		const liveModels = createDeferred<AgentConnectionModel[]>();
+		const getAvailableModels = vi.fn(() => liveModels.promise);
+		const { fakeThis, getSelector } = createSelectorOverlayHarness({
+			connectionModels: [cachedModel],
+			getAvailableModels,
+		});
+
+		const result = fakeThis.showModelSelectorAsync();
+
+		expect(fakeThis.showFullPaneOverlay).toHaveBeenCalledTimes(1);
+		expect(getAvailableModels).toHaveBeenCalledTimes(1);
+
+		getSelector().handleInput("\x1b");
+		liveModels.resolve([cachedModel]);
+
+		await expect(result).resolves.toEqual({ status: "cancelled" });
+	});
+
+	test("uses a fresh cached model catalog without starting another refresh", async () => {
+		const cachedModel = createModel("openai", "gpt-5.5");
+		const getAvailableModels = vi.fn(async () => [cachedModel]);
+		const { fakeThis, getSelector } = createSelectorOverlayHarness({
+			connectionModels: [cachedModel],
+			connectionModelsFetchedAt: Date.now(),
+			getAvailableModels,
+		});
+
+		const result = fakeThis.showModelSelectorAsync();
+
+		expect(fakeThis.showFullPaneOverlay).toHaveBeenCalledTimes(1);
+		expect(getAvailableModels).not.toHaveBeenCalled();
+
+		getSelector().handleInput("\x1b");
+		await expect(result).resolves.toEqual({ status: "cancelled" });
+	});
+
+	test("closes the model selector before the selected model finishes applying", async () => {
+		const model = createModel("openai", "gpt-5.5");
+		const apply = createDeferred<void>();
+		const { fakeThis, getSelector, hide } = createSelectorOverlayHarness({
+			connectionModels: [model],
+			applySelectedModel: vi.fn(() => apply.promise),
+		});
+
+		const result = fakeThis.showModelSelectorAsync();
+		await flushAsyncWork();
+
+		let resolved: { status: string } | undefined;
+		void result.then((nextResult) => {
+			resolved = nextResult;
+		});
+
+		getSelector().handleInput("\r");
+		await flushAsyncWork();
+
+		expect(hide).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Switching model: gpt-5.5");
+		expect(resolved).toBeUndefined();
+
+		apply.resolve();
+
+		await expect(result).resolves.toEqual({ status: "selected" });
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
+	});
+
+	test("refreshes model selector results in the background without clearing search", async () => {
+		const alpha = createModel("openai", "alpha");
+		const beta = { ...createModel("openai", "beta"), name: "Beta Model" };
+		const liveModels = createDeferred<AgentConnectionModel[]>();
+		const { fakeThis, getSelector } = createSelectorOverlayHarness({
+			connectionModels: [alpha],
+			getAvailableModels: vi.fn(() => liveModels.promise),
+		});
+
+		const result = fakeThis.showModelSelectorAsync("beta");
+		await flushAsyncWork();
+
+		const selector = getSelector();
+		expect(selector.getSearchInput().getValue()).toBe("beta");
+		expect(selector.render(120).join("\n")).not.toContain("Beta");
+
+		liveModels.resolve([beta]);
+		await flushAsyncWork();
+
+		expect(selector.getSearchInput().getValue()).toBe("beta");
+		expect(selector.render(120).join("\n")).toContain("Beta");
+
+		selector.handleInput("\x1b");
+		await expect(result).resolves.toEqual({ status: "cancelled" });
 	});
 });
 
