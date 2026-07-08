@@ -412,14 +412,14 @@ describe("InteractiveMode pending bash components", () => {
 		expect(pendingMessagesContainer.children).toContain(component);
 	});
 
-	test("does not double-prefix labeled injected follow-up previews", () => {
+	test("does not double-prefix labeled injected queue previews", () => {
 		const queuedMessagesContainer = new Container();
 		const fakeThis = {
 			pendingMessagesContainer: new Container(),
 			queuedMessagesContainer,
 			pendingBashComponents: [],
 			getAllQueuedMessages: () => ({
-				steering: [],
+				steering: ["Heartbeat prompt: check steering", "Goal context: steer goal", "plain steering"],
 				followUp: ["Heartbeat prompt: check status", "Goal context: continue goal", "plain follow-up"],
 			}),
 			getAppKeyDisplay: () => "Ctrl+Q",
@@ -430,6 +430,11 @@ describe("InteractiveMode pending bash components", () => {
 		).updatePendingMessagesDisplay.call(fakeThis);
 
 		const rendered = normalizeRenderedOutput(queuedMessagesContainer);
+		expect(rendered).toContain("Heartbeat prompt: check steering");
+		expect(rendered).not.toContain("Steering: Heartbeat prompt");
+		expect(rendered).toContain("Goal context: steer goal");
+		expect(rendered).not.toContain("Steering: Goal context");
+		expect(rendered).toContain("Steering: plain steering");
 		expect(rendered).toContain("Heartbeat prompt: check status");
 		expect(rendered).not.toContain("Follow-up: Heartbeat prompt");
 		expect(rendered).toContain("Goal context: continue goal");
