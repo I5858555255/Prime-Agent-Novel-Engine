@@ -359,6 +359,9 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("asyncio.create_task");
 		expect(prompt).toContain("Sub-agents should not block Prime Agent by default");
 		expect(prompt).toContain("Default to non-blocking subagents");
+		expect(prompt).toContain("disk-backed registry");
+		expect(prompt).toContain("RLM_SESSION_DIR");
+		expect(prompt).toContain("kernel restart or compaction");
 		expect(prompt).toContain("agent_observe.list_agents");
 		expect(prompt).toContain('runtimeKind == "subagent"');
 		expect(prompt).toContain("parentSessionId");
