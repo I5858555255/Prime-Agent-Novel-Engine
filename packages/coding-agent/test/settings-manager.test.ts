@@ -212,6 +212,24 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("autoRefine", () => {
+		it("defaults to enabled while preserving explicit opt-out", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getAutoRefineSettings()).toEqual({
+				enabled: true,
+				turnInterval: 25,
+				compact: true,
+				cooldownMs: 20 * 60_000,
+			});
+
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ autoRefine: { enabled: false } }));
+			const optedOut = SettingsManager.create(projectDir, agentDir);
+
+			expect(optedOut.getAutoRefineSettings().enabled).toBe(false);
+		});
+	});
+
 	describe("recentModels", () => {
 		it("records most-recently-used first, dedupes, and persists", async () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
