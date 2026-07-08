@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
+import { type AssistantMessage, fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
@@ -19,6 +19,22 @@ function normalizeEventOrder(events: Harness["events"]): string[] {
 		normalized.push(label);
 	}
 	return normalized;
+}
+
+function structuredProviderFailure(kind: "auth" | "invalid_request" | "refusal"): AssistantMessage {
+	return {
+		...fauxAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: `provider ${kind} failure`,
+		}),
+		diagnostics: [
+			{
+				type: "provider_stream_failure",
+				timestamp: Date.now(),
+				details: { kind },
+			},
+		],
+	};
 }
 
 describe("AgentSession retry and event characterization", () => {
@@ -171,6 +187,25 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.eventsOfType("auto_retry_start").map((event) => event.attempt)).toEqual([1]);
 		expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([true]);
 	});
+
+	for (const kind of ["auth", "invalid_request", "refusal"] as const) {
+		it(`retries structured permanent provider ${kind} failures once`, async () => {
+			const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+			harnesses.push(harness);
+			harness.setResponses([
+				structuredProviderFailure(kind),
+				structuredProviderFailure(kind),
+				fauxAssistantMessage("unused"),
+			]);
+
+			await harness.session.prompt("test");
+
+			expect(harness.faux.state.callCount).toBe(2);
+			expect(harness.eventsOfType("auto_retry_start").map((event) => event.attempt)).toEqual([1]);
+			expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([false]);
+			expect(harness.session.isRetrying).toBe(false);
+		});
+	}
 
 	it("cancels retry sleep when abortRetry is called", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100 } } });
