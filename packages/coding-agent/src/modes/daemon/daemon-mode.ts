@@ -567,26 +567,32 @@ export class AgentDaemon {
 			return "skipped";
 		}
 		const session = state.runtime.session;
-		const isAgentMessagePromptInProgress =
+		const hasAgentMessagePromptInProgress = (): boolean =>
 			this.agentMessageAcceptingTargets.has(state.activeSessionId) ||
 			this.agentMessagePreparingTargets.has(state.activeSessionId);
+		const isAgentMessagePromptInProgress = hasAgentMessagePromptInProgress();
 		if (isHeartbeatCronJob(job)) {
-			const visiblePendingMessageCount = session.visiblePendingMessageCount ?? session.pendingMessageCount;
-			if (
-				isAgentMessagePromptInProgress ||
-				shouldDeferHeartbeatCronJob(job, {
-					isStreaming: session.isStreaming,
-					isCompacting: session.isCompacting,
-					isRetrying: session.isRetrying,
-					isBashRunning: session.isBashRunning,
-					hasAcceptedPromptInFlight: session.hasAcceptedPromptInFlight,
-					pendingMessageCount: visiblePendingMessageCount,
-				})
-			) {
+			if (isAgentMessagePromptInProgress || this.agentMessageTargetLocks.has(state.activeSessionId)) {
 				return "skipped";
 			}
-			const didRun = await session.runHeartbeatContext(job);
-			return didRun ? undefined : "skipped";
+			return this.withAgentMessageTargetLock(state.activeSessionId, async () => {
+				const visiblePendingMessageCount = session.visiblePendingMessageCount ?? session.pendingMessageCount;
+				if (
+					hasAgentMessagePromptInProgress() ||
+					shouldDeferHeartbeatCronJob(job, {
+						isStreaming: session.isStreaming,
+						isCompacting: session.isCompacting,
+						isRetrying: session.isRetrying,
+						isBashRunning: session.isBashRunning,
+						hasAcceptedPromptInFlight: session.hasAcceptedPromptInFlight,
+						pendingMessageCount: visiblePendingMessageCount,
+					})
+				) {
+					return "skipped";
+				}
+				const didRun = await session.runHeartbeatContext(job);
+				return didRun ? undefined : "skipped";
+			});
 		}
 		const shouldQueueCronPrompt =
 			isAgentMessagePromptInProgress ||

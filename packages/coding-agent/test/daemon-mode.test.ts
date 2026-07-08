@@ -2607,7 +2607,7 @@ describe("daemon mode helpers", () => {
 		expect(removeQueuedFollowUp).not.toHaveBeenCalled();
 	});
 
-	it("retries an already queued heartbeat when no visible work is pending", async () => {
+	it("defers heartbeat cron jobs while the target has an agent-message lock", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -2633,15 +2633,20 @@ describe("daemon mode helpers", () => {
 			visiblePendingMessageCount: 0,
 			runHeartbeatContext,
 		} as never;
-		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
-		const job = makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId });
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			agentMessageTargetLocks: Map<string, Promise<void>>;
+			runCronJob(job: AgentCronJob): Promise<"skipped" | undefined>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+		internals.agentMessageTargetLocks.set(state.activeSessionId, new Promise(() => undefined));
 
-		const result = await (
-			daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }
-		).runCronJob(job);
+		const result = await internals.runCronJob(
+			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+		);
 
-		expect(result).toBeUndefined();
-		expect(runHeartbeatContext).toHaveBeenCalledWith(job);
+		expect(result).toBe("skipped");
+		expect(runHeartbeatContext).not.toHaveBeenCalled();
 	});
 
 	it("defers heartbeat cron jobs while the target is accepting an agent message", async () => {
