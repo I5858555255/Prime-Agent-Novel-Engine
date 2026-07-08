@@ -2195,6 +2195,18 @@ export class InteractiveMode {
 		return this.connectionState?.sessionName ?? this.uiServices.getInitialSessionName();
 	}
 
+	private applyAuthStaleEvent(event: Extract<AgentConnectionSessionEvent, { type: "auth_stale" }>): void {
+		let marked = false;
+		for (const token of event.sourceTokens ?? []) {
+			marked = this.modelRegistry.markProviderAuthSourceStale(token) || marked;
+		}
+		if (!marked) {
+			this.modelRegistry.markProviderAuthStale(event.provider);
+		}
+		this.footer.invalidate();
+		this.updateEditorBorderColor();
+	}
+
 	private getCurrentModel(): AgentConnectionModel | undefined {
 		return this.connectionState?.model;
 	}
@@ -4283,7 +4295,9 @@ export class InteractiveMode {
 				const label =
 					event.reason === "manual"
 						? `Compacting context${focus}... ${cancelHint}`
-						: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
+						: event.reason === "requested"
+							? `Agent requested compaction, compacting context${focus}... ${cancelHint}`
+							: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
 				this.autoCompactionLoader = new Loader(
 					this.ui,
 					(spinner) => theme.fg("muted", spinner),
@@ -4385,6 +4399,12 @@ export class InteractiveMode {
 				if (!event.success) {
 					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 				}
+				this.ui.requestRender();
+				break;
+			}
+
+			case "auth_stale": {
+				this.applyAuthStaleEvent(event);
 				this.ui.requestRender();
 				break;
 			}
