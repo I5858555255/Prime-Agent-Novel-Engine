@@ -35,6 +35,20 @@ function logDaemonLaunch(message: string): void {
 	appendRotatingLog(getClientErrorLogPath(), `[${new Date().toISOString()}] daemon-launch: ${message}`);
 }
 
+function reportDaemonLaunchRestoreWarnings(result: DaemonSessionRestoreResult): void {
+	if (result.failed.length === 0) {
+		return;
+	}
+	const message = `Warning: restored ${result.restored}/${result.total} daemon session(s), but ${result.failed.length} session(s) failed to reopen after daemon replacement.`;
+	logDaemonLaunch(message);
+	console.error(message);
+	for (const failure of result.failed) {
+		const detail = `  ${failure.sessionFile}: ${failure.error}`;
+		logDaemonLaunch(detail);
+		console.error(detail);
+	}
+}
+
 async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
 	try {
@@ -376,12 +390,7 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 	}
 
 	const restoreResult = await spawnDaemonAndRestoreSessions(socketPath, restoreSessions, spawnCwd);
-	if (restoreResult.failed.length > 0) {
-		logDaemonLaunch(
-			`restored ${restoreResult.restored}/${restoreSessions.length} session(s) after daemon replacement; ` +
-				`${restoreResult.failed.length} failed`,
-		);
-	}
+	reportDaemonLaunchRestoreWarnings(restoreResult);
 }
 
 const ensurePromises = new Map<string, Promise<void>>();
