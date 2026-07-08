@@ -17,6 +17,7 @@ import {
 	Model,
 	type OpenAICompletionsCompat,
 } from "../src/types.js";
+import { MODELS as EXISTING_MODELS } from "../src/models.generated.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -335,6 +336,34 @@ function getPrimeInferenceHeaders(apiKey: string | undefined, teamId: string | u
 	return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+function getExistingPrimeInferenceModels(): Model<"openai-completions">[] {
+	const models = EXISTING_MODELS["prime-inference"] as unknown as Record<string, Model<"openai-completions">>;
+	return Object.values(models)
+		.filter((model) => PRIME_INFERENCE_MODEL_METADATA[model.id.toLowerCase()] !== undefined)
+		.map((model) => ({
+			...model,
+			input: [...model.input],
+			cost: { ...model.cost },
+			...(model.compat ? { compat: { ...model.compat } } : {}),
+			...(model.thinkingLevelMap ? { thinkingLevelMap: { ...model.thinkingLevelMap } } : {}),
+			...(model.headers ? { headers: { ...model.headers } } : {}),
+		}));
+}
+
+function mergePrimeInferenceModels(
+	snapshotModels: Model<"openai-completions">[],
+	catalogModels: Model<"openai-completions">[],
+): Model<"openai-completions">[] {
+	const models = new Map<string, Model<"openai-completions">>();
+	for (const model of snapshotModels) {
+		models.set(model.id.toLowerCase(), model);
+	}
+	for (const model of catalogModels) {
+		models.set(model.id.toLowerCase(), model);
+	}
+	return Array.from(models.values());
+}
+
 function includesCatalogCapability(value: unknown, capabilities: readonly string[]): boolean {
 	if (!Array.isArray(value)) {
 		return false;
@@ -469,10 +498,11 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 		console.error("Failed to fetch Prime Inference models:", error);
 	}
 
-	const models = catalog.flatMap((entry): Model<"openai-completions">[] => {
+	const catalogModels = catalog.flatMap((entry): Model<"openai-completions">[] => {
 		const metadata = PRIME_INFERENCE_MODEL_METADATA[entry.id.toLowerCase()];
 		return metadata === undefined ? [] : [createPrimeInferenceModel(entry, metadata)];
 	});
+	const models = mergePrimeInferenceModels(getExistingPrimeInferenceModels(), catalogModels);
 	console.log(`Loaded ${models.length} curated models from Prime Inference`);
 	return models;
 }
