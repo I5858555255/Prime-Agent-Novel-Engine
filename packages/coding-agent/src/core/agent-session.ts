@@ -3226,8 +3226,8 @@ export class AgentSession {
 	 * @returns Object with steering and followUp arrays
 	 */
 	clearQueue(): { steering: string[]; followUp: string[] } {
-		const steering = this._steeringMessages.map(queuedMessagePreview);
-		const followUp = this._followUpMessages.map(queuedMessagePreview);
+		const steering = this._steeringMessages.map((message) => message.text);
+		const followUp = this._followUpMessages.map((message) => message.text);
 		this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
 		this._steeringMessages = [];
 		this._followUpMessages = [];
