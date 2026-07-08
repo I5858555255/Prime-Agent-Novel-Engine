@@ -382,16 +382,11 @@ const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 };
 
 const HEARTBEAT_ARGUMENT_COMPLETIONS: AutocompleteItem[] = [
-	{ value: "status", label: "status", description: "Show the current heartbeat" },
-	{ value: "stop", label: "stop", description: "Stop and clear the heartbeat" },
-	{ value: "pause", label: "pause", description: "Pause the heartbeat" },
-	{ value: "resume", label: "resume", description: "Resume the heartbeat" },
 	{
 		value: "every ",
 		label: "every <duration> <instruction>",
 		description: "Set an interval, then add an instruction: /heartbeat every 10s Scan the logs",
 	},
-	{ value: "clear", label: "clear", description: "Clear the heartbeat" },
 ];
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);

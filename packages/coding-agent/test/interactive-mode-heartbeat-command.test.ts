@@ -10,17 +10,10 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
 
 describe("InteractiveMode /heartbeat", () => {
 	describe("argument autocomplete", () => {
-		it("lists lifecycle commands and the interval syntax starter for an empty prefix", () => {
+		it("lists the interval syntax starter for an empty prefix", () => {
 			const items = interactiveModePrototype.getHeartbeatArgumentCompletions("");
 
-			expect(items?.map((item) => item.label)).toEqual([
-				"status",
-				"stop",
-				"pause",
-				"resume",
-				"every <duration> <instruction>",
-				"clear",
-			]);
+			expect(items?.map((item) => item.label)).toEqual(["every <duration> <instruction>"]);
 			const everyItem = items?.find((item) => item.label === "every <duration> <instruction>");
 			expect(everyItem?.value).toBe("every ");
 			expect(everyItem?.description).toBe(
@@ -28,10 +21,10 @@ describe("InteractiveMode /heartbeat", () => {
 			);
 		});
 
-		it("filters lifecycle commands by prefix", () => {
+		it("does not autocomplete lifecycle commands over free-form instructions", () => {
 			const items = interactiveModePrototype.getHeartbeatArgumentCompletions("st");
 
-			expect(items?.map((item) => item.label)).toEqual(["status", "stop"]);
+			expect(items).toBeNull();
 		});
 
 		it("filters interval syntax by keyword", () => {
