@@ -51,6 +51,7 @@ function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal | undefined
 	}
 	if (signal.aborted) {
 		onAbort?.();
+		void operation.catch(() => undefined);
 		return Promise.reject(createAbortError());
 	}
 
@@ -827,6 +828,7 @@ async function executePreparedToolCall(
 	let acceptingUpdates = true;
 
 	try {
+		throwIfAborted(signal);
 		const result = await raceWithAbort(
 			prepared.tool.execute(prepared.toolCall.id, prepared.args as never, signal, (partialResult) => {
 				if (!acceptingUpdates || signal?.aborted) {

@@ -7,7 +7,7 @@ import {
 	type UserMessage,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentLoop, agentLoopContinue } from "../src/agent-loop.js";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.js";
 
@@ -216,6 +216,54 @@ describe("agentLoop with AgentMessage", () => {
 			expect(assistantMessages[0].content).toEqual([{ type: "text", text: "complete" }]);
 		}
 		expect(events.filter((event) => event.type === "agent_end")).toHaveLength(1);
+	});
+
+	it("should not invoke tools when the signal aborts before tool execution", async () => {
+		const controller = new AbortController();
+		const toolExecute: AgentTool["execute"] = vi.fn(async () => ({
+			content: [{ type: "text" as const, text: "should not run" }],
+			details: {},
+		}));
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [
+				{
+					name: "wait",
+					label: "Wait",
+					description: "Wait",
+					parameters: Type.Object({}),
+					execute: toolExecute,
+				},
+			],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeToolCall: async () => {
+				controller.abort();
+				return undefined;
+			},
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "wait", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "toolUse", message: assistantMessage });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
+		for await (const _event of stream) {
+			// consume
+		}
+		await stream.result();
+
+		expect(toolExecute).not.toHaveBeenCalled();
 	});
 
 	it("should freeze synthetic aborted messages against later partial mutation", async () => {
