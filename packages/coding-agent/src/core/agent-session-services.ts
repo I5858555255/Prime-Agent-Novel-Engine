@@ -181,7 +181,11 @@ export async function createAgentSessionServices(
 	// reporters would race on the same pane. The factory re-checks on every
 	// session load and /reload, using the same dirs the loader scans so
 	// agentDir overrides are honored.
-	const discoveredExtensionDirs = [join(cwd, CONFIG_DIR_NAME, "extensions"), join(agentDir, "extensions")];
+	// With noExtensions the loader skips these dirs entirely, so a file-based
+	// reporter there never loads; the built-in must not defer to it.
+	const discoveredExtensionDirs = options.resourceLoaderOptions?.noExtensions
+		? []
+		: [join(cwd, CONFIG_DIR_NAME, "extensions"), join(agentDir, "extensions")];
 	const builtinExtensionFactories = options.noBuiltinHerdrReporter
 		? []
 		: [createHerdrAgentStateExtension(discoveredExtensionDirs)];
