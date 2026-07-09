@@ -416,6 +416,7 @@ type QueuedAgentMessage = UserMessage | CustomMessage;
 interface QueuedSteeringMessage {
 	text: string;
 	previewLabel?: string;
+	queueKey?: string;
 	agentMessageId?: string;
 	message: QueuedAgentMessage;
 }
@@ -3130,7 +3131,11 @@ export class AgentSession {
 				}
 				return queued;
 			}
-			await this._queueSteer(text, undefined, { agentMessageId: options.agentMessageId, content });
+			await this._queueSteer(text, undefined, {
+				agentMessageId: options.agentMessageId,
+				queueKey: options.queueKey,
+				content,
+			});
 			return true;
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
@@ -3162,7 +3167,11 @@ export class AgentSession {
 				}
 				return queued;
 			}
-			await this._queueSteer(text, undefined, { message: queuedMessage, previewLabel: options.previewLabel });
+			await this._queueSteer(text, undefined, {
+				message: queuedMessage,
+				previewLabel: options.previewLabel,
+				queueKey: options.queueKey,
+			});
 			return true;
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
@@ -3178,6 +3187,7 @@ export class AgentSession {
 		images?: ImageContent[],
 		options: {
 			agentMessageId?: string;
+			queueKey?: string;
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
 			previewLabel?: string;
@@ -3194,6 +3204,7 @@ export class AgentSession {
 		this._steeringMessages.push({
 			text,
 			previewLabel: options.previewLabel,
+			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			message,
 		});
@@ -3479,13 +3490,18 @@ export class AgentSession {
 	}
 
 	removeQueuedFollowUp(queueKey: string): boolean {
-		const removed = this._followUpMessages.filter((message) => message.queueKey === queueKey);
-		if (removed.length === 0) {
+		const removedSteering = this._steeringMessages.filter((message) => message.queueKey === queueKey);
+		const removedFollowUp = this._followUpMessages.filter((message) => message.queueKey === queueKey);
+		if (removedSteering.length === 0 && removedFollowUp.length === 0) {
 			return false;
 		}
+		this._steeringMessages = this._steeringMessages.filter((message) => message.queueKey !== queueKey);
 		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
-		const removedMessages = new Set<AgentMessage>(removed.map((message) => message.message));
-		for (const message of removed) {
+		const removedMessages = new Set<AgentMessage>([
+			...removedSteering.map((message) => message.message),
+			...removedFollowUp.map((message) => message.message),
+		]);
+		for (const message of [...removedSteering, ...removedFollowUp]) {
 			this._rejectAgentMessageDelivery(
 				message.agentMessageId,
 				new Error("Queued agent message was cleared before delivery."),

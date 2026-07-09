@@ -3124,8 +3124,7 @@ describe("daemon mode helpers", () => {
 				source: "rpc",
 			}),
 		);
-		// Steering delivery does not coalesce per job, so no follow-up queue key is set.
-		expect(promptHeartbeat.mock.calls[0]?.[1]).not.toHaveProperty("followUpQueueKey");
+		expect(promptHeartbeat.mock.calls[0]?.[1]).toMatchObject({ followUpQueueKey: "heartbeat:heartbeat-1" });
 		expect(prompt).not.toHaveBeenCalled();
 		expect(followUp).not.toHaveBeenCalled();
 	});

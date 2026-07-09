@@ -636,8 +636,7 @@ export class AgentDaemon {
 			const streamingBehavior = resolveHeartbeatStreamingBehavior(job.deliveryMode);
 			await this.promptHeartbeatWithAgentMessagePreparingGuard(state, job, {
 				streamingBehavior,
-				// Only follow-up delivery coalesces per job; steering interrupts immediately.
-				...(streamingBehavior === "followUp" ? { followUpQueueKey: `heartbeat:${job.id}` } : {}),
+				followUpQueueKey: `heartbeat:${job.id}`,
 				source: "rpc",
 			});
 			return;
