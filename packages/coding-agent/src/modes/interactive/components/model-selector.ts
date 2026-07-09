@@ -214,10 +214,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Load available models (built-in models still work even if models.json failed)
 		let availableModels: ReadonlyArray<Model<any>>;
 		try {
-			// An empty snapshot may predate login; prefer a live query.
-			availableModels = this.availableModels?.length
-				? this.availableModels
-				: await this.modelRegistry.getAvailable();
+			availableModels =
+				this.availableModels !== undefined ? this.availableModels : await this.modelRegistry.getAvailable();
 			models = availableModels.map((model: Model<any>) => ({
 				provider: model.provider,
 				id: model.id,
@@ -238,7 +236,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const scopedModelId = `${scoped.model.provider}/${scoped.model.id}`;
 			const refreshed =
 				availableModelsById.get(scopedModelId) ??
-				(this.availableModels?.length
+				(this.availableModels !== undefined
 					? undefined
 					: this.modelRegistry.find(scoped.model.provider, scoped.model.id));
 			return refreshed ? { ...scoped, model: refreshed } : scoped;

@@ -640,6 +640,7 @@ export class AgentSession {
 	private _extensionRunner!: ExtensionRunner;
 	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
+	private _modelSelectEmitQueue: Promise<void> = Promise.resolve();
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -2711,6 +2712,8 @@ export class AgentSession {
 				};
 				messages.push(userMessage);
 
+				await this._modelSelectEmitQueue;
+
 				// Emit before_agent_start extension event
 				const result = await this._extensionRunner.emitBeforeAgentStart(
 					expandedText,
@@ -3374,6 +3377,17 @@ export class AgentSession {
 		});
 	}
 
+	private _queueModelSelectEmit(
+		nextModel: Model<any>,
+		previousModel: Model<any> | undefined,
+		source: "set" | "cycle" | "restore",
+	): Promise<void> {
+		const emit = () => this._emitModelSelect(nextModel, previousModel, source);
+		const promise = this._modelSelectEmitQueue.then(emit, emit);
+		this._modelSelectEmitQueue = promise.catch(() => {});
+		return promise;
+	}
+
 	/**
 	 * Set model directly.
 	 * Validates that auth is configured, saves to session and settings.
@@ -3393,7 +3407,7 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
-		const emitPromise = this._emitModelSelect(model, previousModel, "set");
+		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
 		if (options.waitForExtensions === false) {
 			void emitPromise.catch((error) => {
 				this._extensionRunner.emitError({

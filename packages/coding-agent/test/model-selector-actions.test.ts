@@ -140,6 +140,36 @@ describe("ModelSelectorComponent provider actions", () => {
 		expect(output).toContain("Beta");
 	});
 
+	it("keeps an empty injected model snapshot empty instead of falling back to local models", async () => {
+		const harness = await createHarness({
+			models: [{ id: "alpha", name: "Alpha", reasoning: true }],
+		});
+		harnesses.push(harness);
+
+		const alpha = harness.getModel("alpha")!;
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			undefined,
+			harness.session.modelRegistry,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			{
+				availableModels: [alpha],
+			},
+		);
+
+		await waitForAsyncRender();
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain("Alpha");
+
+		await selector.updateAvailableModels([]);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).not.toContain("Alpha");
+		expect(output).toContain("No matching models");
+	});
+
 	it("keeps the model menu within a short terminal viewport", async () => {
 		const harness = await createHarness({
 			models: Array.from({ length: 12 }, (_, index) => ({

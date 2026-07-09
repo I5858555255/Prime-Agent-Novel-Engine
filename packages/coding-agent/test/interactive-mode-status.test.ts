@@ -998,6 +998,7 @@ describe("InteractiveMode model selection persistence", () => {
 		getCurrentModel(): AgentConnectionModel | undefined;
 		getConnectionAvailableModels(): Promise<AgentConnectionModel[]>;
 		getCachedModelCandidates(): AgentConnectionModel[];
+		getModelSelectorRefreshPromise(): Promise<AgentConnectionModel[]> | undefined;
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
 		showFullPaneOverlay(component: Component, maxContentWidth?: number): { hide(): void };
 		showModelSelectorAsync(
@@ -1065,6 +1066,7 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.getCurrentModel = vi.fn(() => options.currentModel);
 		fakeThis.getConnectionAvailableModels = overlayPrototype.getConnectionAvailableModels;
 		fakeThis.getCachedModelCandidates = overlayPrototype.getCachedModelCandidates;
+		fakeThis.getModelSelectorRefreshPromise = overlayPrototype.getModelSelectorRefreshPromise;
 		fakeThis.applySelectedModel = options.applySelectedModel ?? vi.fn(async () => {});
 		fakeThis.showFullPaneOverlay = vi.fn((component: Component) => {
 			overlayComponent = component;
@@ -1198,6 +1200,33 @@ describe("InteractiveMode model selection persistence", () => {
 		await expect(result).resolves.toEqual({ status: "cancelled" });
 	});
 
+	test("updates the model selector from an already in-flight refresh", async () => {
+		const alpha = createModel("openai", "alpha");
+		const beta = { ...createModel("openai", "beta"), name: "Beta Model" };
+		const liveModels = createDeferred<AgentConnectionModel[]>();
+		const getAvailableModels = vi.fn(async () => [alpha]);
+		const { fakeThis, getSelector } = createSelectorOverlayHarness({
+			connectionModels: [alpha],
+			connectionModelsFetchedAt: Date.now(),
+			getAvailableModels,
+		});
+		fakeThis.connectionModelsRefreshInFlight = { version: 0, promise: liveModels.promise };
+
+		const result = fakeThis.showModelSelectorAsync("beta");
+		await flushAsyncWork();
+
+		expect(getAvailableModels).not.toHaveBeenCalled();
+		expect(getSelector().render(120).join("\n")).not.toContain("Beta");
+
+		liveModels.resolve([beta]);
+		await flushAsyncWork();
+
+		expect(getSelector().render(120).join("\n")).toContain("Beta");
+
+		getSelector().handleInput("\x1b");
+		await expect(result).resolves.toEqual({ status: "cancelled" });
+	});
+
 	test("uses a fresh cached model catalog without starting another refresh", async () => {
 		const cachedModel = createModel("openai", "gpt-5.5");
 		const getAvailableModels = vi.fn(async () => [cachedModel]);
@@ -1270,6 +1299,50 @@ describe("InteractiveMode model selection persistence", () => {
 		selector.handleInput("\x1b");
 		await expect(result).resolves.toEqual({ status: "cancelled" });
 	});
+
+	test("does not let a stale model refresh overwrite a newer catalog refresh", async () => {
+		const oldModel = createModel("openai", "old");
+		const freshModel = createModel("openai", "fresh");
+		const oldModels = createDeferred<AgentConnectionModel[]>();
+		const getAvailableModels = vi
+			.fn<() => Promise<AgentConnectionModel[]>>()
+			.mockImplementationOnce(() => oldModels.promise)
+			.mockImplementationOnce(async () => [freshModel]);
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectorOverlayHarness & {
+			connectionCommands: unknown[];
+			connectionResourceSnapshot: unknown;
+			refreshConnectionCatalog(): Promise<void>;
+			applyConnectionStateSnapshot(state: AgentConnectionState): void;
+			invalidateConnectionModels(): void;
+		};
+		fakeThis.agentConnection = {
+			getAvailableModels,
+			getState: vi.fn(async () => createConnectionState()),
+			getCommands: vi.fn(async () => []),
+			getResourceSnapshot: vi.fn(async () => ({})),
+			setModel: vi.fn(async () => {}),
+		} as never;
+		fakeThis.connectionModels = [];
+		fakeThis.connectionModelsFetchedAt = 0;
+		fakeThis.connectionModelsRefreshVersion = 0;
+		fakeThis.connectionModelsRefreshInFlight = undefined;
+		fakeThis.getScopedModelState = vi.fn(() => []);
+		fakeThis.getConnectionAvailableModels = overlayPrototype.getConnectionAvailableModels;
+		fakeThis.refreshConnectionCatalog = (
+			InteractiveMode.prototype as unknown as { refreshConnectionCatalog(): Promise<void> }
+		).refreshConnectionCatalog;
+		fakeThis.invalidateConnectionModels = (
+			InteractiveMode.prototype as unknown as { invalidateConnectionModels(): void }
+		).invalidateConnectionModels;
+		fakeThis.applyConnectionStateSnapshot = vi.fn();
+
+		const staleRefresh = fakeThis.getConnectionAvailableModels();
+		await fakeThis.refreshConnectionCatalog();
+		oldModels.resolve([oldModel]);
+		await staleRefresh;
+
+		expect(fakeThis.connectionModels).toEqual([freshModel]);
+	});
 });
 
 describe("InteractiveMode Prime CLI onboarding", () => {
@@ -1309,6 +1382,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		checkDaxnutsEasterEgg?: (model: { provider: string; id: string }) => void;
 		findExactModelMatch?: (searchTerm: string) => Promise<AgentConnectionModel | undefined>;
 		showOnboardingModelSelectionSplash?: () => Promise<boolean>;
+		showOnboardingPrimeLogin?: () => Promise<{ status: string }>;
 		promptForModelSelection?: (options?: { allowProviderSetup?: boolean }) => Promise<boolean>;
 		completeOnboardingIfCurrentModelReady?: () => void;
 		getModelCandidates?: () => Promise<AgentConnectionModel[]>;
@@ -1428,6 +1502,20 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
 		expect(fakeThis.uiServices.settingsManager.setOnboardingCompleted).not.toHaveBeenCalled();
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model selection required. Use /model to continue.");
+	});
+
+	test("uses live connection models before falling back to Prime login during onboarding", async () => {
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.connectionState = createConnectionState({ model: undefined });
+		fakeThis.getModelCandidates = vi.fn(async () => [primeModel]);
+		fakeThis.promptForModelSelection = vi.fn(async () => true);
+		fakeThis.showOnboardingPrimeLogin = vi.fn(async () => ({ status: "success" }));
+
+		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBe(true);
+
+		expect(fakeThis.getModelCandidates).toHaveBeenCalledTimes(1);
+		expect(fakeThis.promptForModelSelection).toHaveBeenCalledWith({ allowProviderSetup: true });
+		expect(fakeThis.showOnboardingPrimeLogin).not.toHaveBeenCalled();
 	});
 
 	test("cancelled model picker continues when current model is ready outside Prime CLI onboarding", async () => {

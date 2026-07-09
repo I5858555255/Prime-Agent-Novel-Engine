@@ -1345,7 +1345,7 @@ export class InteractiveMode {
 			return false;
 		}
 
-		const availableModels = this.getCachedModelCandidates();
+		const availableModels = await this.getModelCandidates();
 		if (availableModels.length > 0) {
 			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
 			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
@@ -2107,6 +2107,7 @@ export class InteractiveMode {
 	}
 
 	private async refreshConnectionCatalog(): Promise<void> {
+		this.invalidateConnectionModels();
 		const [state, commands, models, resources] = await Promise.all([
 			this.agentConnection.getState(),
 			this.agentConnection.getCommands(),
@@ -6393,14 +6394,17 @@ export class InteractiveMode {
 		}
 	}
 
-	private shouldRefreshConnectionModels(): boolean {
+	private getModelSelectorRefreshPromise(): Promise<AgentConnectionModel[]> | undefined {
 		if (this.connectionModelsRefreshInFlight) {
-			return false;
+			return this.getConnectionAvailableModels();
 		}
 		if (this.connectionModelsFetchedAt === 0) {
-			return true;
+			return this.getConnectionAvailableModels();
 		}
-		return Date.now() - this.connectionModelsFetchedAt > MODEL_CATALOG_REFRESH_TTL_MS;
+		if (Date.now() - this.connectionModelsFetchedAt > MODEL_CATALOG_REFRESH_TTL_MS) {
+			return this.getConnectionAvailableModels();
+		}
+		return undefined;
 	}
 
 	private invalidateConnectionModels(): void {
@@ -6640,8 +6644,9 @@ export class InteractiveMode {
 			);
 			handle = this.showFullPaneOverlay(selector, 96);
 
-			if (this.shouldRefreshConnectionModels()) {
-				void this.getConnectionAvailableModels()
+			const refreshPromise = this.getModelSelectorRefreshPromise();
+			if (refreshPromise) {
+				void refreshPromise
 					.then((models) => {
 						if (settled || !selector) {
 							return undefined;

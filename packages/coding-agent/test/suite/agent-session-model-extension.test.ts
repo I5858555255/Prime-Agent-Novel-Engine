@@ -93,6 +93,80 @@ describe("AgentSession model and extension characterization", () => {
 		expect(handlerCompleted).toBe(true);
 	});
 
+	it("serializes nonblocking model_select handlers across quick switches", async () => {
+		const firstHandlerStarted = createDeferred();
+		const finishFirstHandler = createDeferred();
+		const events: string[] = [];
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+				{ id: "faux-3", name: "Three", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async (event) => {
+						events.push(`start:${event.model.id}`);
+						if (event.model.id === "faux-2") {
+							firstHandlerStarted.resolve();
+							await finishFirstHandler.promise;
+						}
+						events.push(`end:${event.model.id}`);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.setModel(harness.getModel("faux-2")!, { waitForExtensions: false });
+		await firstHandlerStarted.promise;
+		await harness.session.setModel(harness.getModel("faux-3")!, { waitForExtensions: false });
+		await flushAsyncWork();
+
+		expect(harness.session.model?.id).toBe("faux-3");
+		expect(events).toEqual(["start:faux-2"]);
+
+		finishFirstHandler.resolve();
+		await flushAsyncWork();
+		await flushAsyncWork();
+
+		expect(events).toEqual(["start:faux-2", "end:faux-2", "start:faux-3", "end:faux-3"]);
+	});
+
+	it("waits for pending model_select handlers before starting the next prompt", async () => {
+		const handlerStarted = createDeferred();
+		const finishHandler = createDeferred();
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async () => {
+						handlerStarted.resolve();
+						await finishHandler.promise;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("after model select")]);
+
+		await harness.session.setModel(harness.getModel("faux-2")!, { waitForExtensions: false });
+		await handlerStarted.promise;
+
+		const prompt = harness.session.prompt("hi");
+		await flushAsyncWork();
+
+		expect(getAssistantTexts(harness)).not.toContain("after model select");
+
+		finishHandler.resolve();
+		await prompt;
+
+		expect(getAssistantTexts(harness)).toContain("after model select");
+	});
+
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {
 		const harness = await createHarness({
 			models: [
