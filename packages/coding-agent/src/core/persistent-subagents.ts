@@ -118,29 +118,41 @@ export function savePersistentSubagentRecord(dir: string, record: PersistentSuba
 }
 
 /**
- * Resolve the existing session file for a persistent subagent, preferring the
- * sidecar pointer and falling back to the newest `.jsonl` in its directory (so a
- * sidecar written before the session file materialized still reopens).
+ * Resolve the existing session file for a persistent subagent. Considers the sidecar
+ * pointer alongside every `.jsonl` in the directory and prefers the newest file that
+ * actually has conversation history, so a stale sidecar pointer (e.g. to a
+ * metadata-only file) can't permanently shadow a newer session with real history.
+ * Falls back to the newest existing file when none has history yet (so a sidecar
+ * written before its session materialized still resolves).
  */
 export function findPersistentSubagentSessionFile(
 	dir: string,
 	record: PersistentSubagentRecord | undefined,
 ): string | undefined {
+	const candidates = new Set<string>();
 	if (record?.sessionFile && existsSync(record.sessionFile)) {
-		return resolve(record.sessionFile);
+		candidates.add(resolve(record.sessionFile));
 	}
-	if (!existsSync(dir)) {
-		return undefined;
+	if (existsSync(dir)) {
+		for (const name of readdirSync(dir)) {
+			if (name.endsWith(".jsonl")) {
+				candidates.add(resolve(join(dir, name)));
+			}
+		}
 	}
-	const candidates = readdirSync(dir)
-		.filter((name) => name.endsWith(".jsonl"))
-		.map((name) => join(dir, name));
-	if (candidates.length === 0) {
+	if (candidates.size === 0) {
 		return undefined;
 	}
 	// Newest by name: session ids are uuidv7 (time-ordered), so lexical max is newest.
-	candidates.sort();
-	return resolve(candidates[candidates.length - 1]);
+	const sorted = [...candidates].sort();
+	// Prefer the newest file that has real conversation history.
+	for (let i = sorted.length - 1; i >= 0; i--) {
+		if (persistentSubagentSessionHasHistory(sorted[i])) {
+			return sorted[i];
+		}
+	}
+	// None has history yet: fall back to the newest existing file.
+	return sorted[sorted.length - 1];
 }
 
 /**
@@ -218,7 +230,10 @@ export function planPersistentSubagentRun(options: {
 	const nextRecord: PersistentSubagentRecord = {
 		schema: SIDECAR_SCHEMA,
 		id: options.id,
-		sessionFile: existingSessionFile ?? record?.sessionFile,
+		// When reopening, point at the reopened file. When starting fresh (no usable
+		// history), drop any stale pointer so it can't shadow the new session that this run
+		// creates; the run's success path rewrites it with the actual session file.
+		sessionFile: existingSessionFile,
 		systemPrompt,
 		createdAt: record?.createdAt ?? now,
 		updatedAt: now,

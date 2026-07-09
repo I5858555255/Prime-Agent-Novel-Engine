@@ -992,7 +992,9 @@ export class AgentDaemon {
 				if (!childState) {
 					return false;
 				}
-				await this.closeSession(childState, "completed");
+				// "reopened" tears the resident session down without archiving/discarding its
+				// JSONL, since the next run immediately reopens and continues that same file.
+				await this.closeSession(childState, "reopened");
 				return true;
 			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
@@ -2607,10 +2609,14 @@ export class AgentDaemon {
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
 		const keepsResumeEntry = reason === "shutdown" || reason === "update";
-		const isEmptyDraftSession = !keepsResumeEntry && this.isEmptyDraftContent(state);
+		// A reopen closes the prior resident session only to hand its file to the next run,
+		// which continues that same history — so it must not be archived (or discarded as an
+		// empty draft) here.
+		const keepsSessionForReopen = reason === "reopened";
+		const isEmptyDraftSession = !keepsResumeEntry && !keepsSessionForReopen && this.isEmptyDraftContent(state);
 		let persistError: unknown;
 		// Clean shutdown leaves the session un-archived so it stays in the resume list.
-		if (!keepsResumeEntry && !isEmptyDraftSession) {
+		if (!keepsResumeEntry && !keepsSessionForReopen && !isEmptyDraftSession) {
 			try {
 				state.runtime.session.sessionManager.appendSessionState({ status: "archived" });
 			} catch (error) {
@@ -2641,10 +2647,10 @@ export class AgentDaemon {
 				await deleteSessionFile(sessionFile).catch(() => undefined);
 			}
 		}
-		if (persistError && !keepsResumeEntry && reason !== "completed") {
+		if (persistError && !keepsResumeEntry && reason !== "completed" && reason !== "reopened") {
 			throw persistError;
 		}
-		if (cascadeError && !keepsResumeEntry && reason !== "completed") {
+		if (cascadeError && !keepsResumeEntry && reason !== "completed" && reason !== "reopened") {
 			throw cascadeError;
 		}
 	}

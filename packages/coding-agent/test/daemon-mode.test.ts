@@ -2491,6 +2491,54 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("does not archive the session file when closing a subagent for reopen", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-reopen-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const dispose = vi.fn(async () => {});
+			const appendSessionState = vi.fn();
+			const state = makeState("child-1", "parent-1") as ActiveSessionState;
+			state.extensionUiRequests = new Map();
+			state.runtime = {
+				metadata: {
+					kind: "subagent",
+					createdAt: 1,
+					parentActiveSessionId: "parent-1",
+					rlmChildId: "persist-reviewer",
+				},
+				cwd: tempDir,
+				dispose,
+				session: {
+					sessionId: "child-session-1",
+					sessionFile: join(tempDir, "child.jsonl"),
+					messages: ["user message"],
+					sessionManager: { appendSessionState, hasUserContent: () => true },
+					abort: vi.fn(async () => {}),
+					removeQueuedFollowUp: vi.fn(),
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				closeSession(state: ActiveSessionState, reason: string): Promise<void>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+
+			await internals.closeSession(state, "reopened");
+
+			// The session file is handed to the next run, so it must not be archived.
+			expect(appendSessionState).not.toHaveBeenCalledWith({ status: "archived" });
+			expect(dispose).toHaveBeenCalledOnce();
+			expect(internals.sessions.has(state.activeSessionId)).toBe(false);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("cancels scheduled jobs when a live session is killed", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-cron-"));
 		try {

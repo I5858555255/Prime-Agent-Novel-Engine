@@ -417,7 +417,7 @@ export type DaemonErrorInfo =
 	| { code: "missing_session_cwd"; issue: SessionCwdIssue }
 	| { code: "session_import_file_not_found"; filePath: string };
 
-export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced" | "update";
+export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced" | "update" | "reopened";
 
 export type DaemonExtensionUIResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
 

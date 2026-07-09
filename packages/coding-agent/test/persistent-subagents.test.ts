@@ -143,6 +143,28 @@ describe("persistent subagents store", () => {
 		expect(findPersistentSubagentSessionFile(dir, undefined)).toBe(sessionFile);
 	});
 
+	it("prefers a newer file with history over a stale sidecar pointer to a metadata-only file", () => {
+		const dir = persistentSubagentDir(tempDir, "reviewer");
+		mkdirSync(dir, { recursive: true });
+		// An older, metadata-only leftover the stale sidecar still points at.
+		const stale = join(dir, "0192aaaa-0000-7000-8000-000000000000.jsonl");
+		const header = {
+			type: "session",
+			version: 3,
+			id: "0192aaaa-0000-7000-8000-000000000000",
+			timestamp: new Date().toISOString(),
+			cwd: tempDir,
+		};
+		writeFileSync(stale, `${JSON.stringify(header)}\n`);
+		// A newer session with actual conversation history.
+		const withHistory = writeSubagentSession(tempDir, dir);
+		expect(withHistory > stale).toBe(true);
+
+		const staleRecord = { schema: 1, id: "reviewer", sessionFile: stale, createdAt: "", updatedAt: "", runCount: 1 };
+		// The stale pointer must not shadow the newer file that actually has history.
+		expect(findPersistentSubagentSessionFile(dir, staleRecord)).toBe(withHistory);
+	});
+
 	it("createSubagentSessionManager reopens an existing session and hydrates history", () => {
 		const dir = persistentSubagentDir(tempDir, "reviewer");
 		const sessionFile = writeSubagentSession(tempDir, dir);
