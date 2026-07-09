@@ -341,6 +341,49 @@ describe("herdrAgentStateExtension", () => {
 		expect(requests[1]?.params.state).toBe("idle");
 	});
 
+	it("settles the retry hold when a blocked event interrupts it", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server, requests, waitForRequests } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+		process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "10";
+
+		const { pi, handlers, busHandlers } = createMockPi();
+		herdrAgentStateExtension(pi);
+
+		const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "s" } };
+		handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, ctx);
+		// End with a retryable provider error: enters the retry hold (working).
+		handlers.get("agent_end")?.[0]?.(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "error", errorMessage: "rate limit exceeded" }],
+			},
+			ctx,
+		);
+		// A blocked event lands during the hold, cancelling the retry timer...
+		const blocked = busHandlers.get("herdr:blocked")?.[0];
+		blocked?.({ active: true, label: "permission needed" });
+		// ...and when the block lifts, the pane must settle to blocked (failed
+		// retry), not stick at working forever. Intermediate states coalesce in
+		// the latest-wins queue, so assert on the settled final report.
+		blocked?.({ active: false });
+
+		await waitForRequests(2);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const finalState = requests.at(-1)?.params.state;
+		expect(finalState).toBe("blocked");
+		expect(requests.at(-1)?.params.message).toContain("rate limit");
+	});
+
 	it("sends no reports after quit release", async () => {
 		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
 		mkdirSync(tempDir, { recursive: true });

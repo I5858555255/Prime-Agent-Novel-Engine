@@ -379,6 +379,13 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[])
 		}
 
 		clearPendingTimers();
+		// clearPendingTimers cancelled the retry timer; settle the hold the way
+		// the timer would have, or retryHoldActive keeps desiredState() at
+		// "working" forever once the block lifts.
+		if (retryHoldActive) {
+			retryHoldActive = false;
+			failureBlocked = true;
+		}
 		blockedCount += 1;
 		blockedMessage = data.label;
 		publishState();
