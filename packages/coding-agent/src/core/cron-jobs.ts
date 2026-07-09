@@ -887,20 +887,60 @@ export function createAgentHeartbeatToolDefinitions(controller: AgentCronToolCon
 }
 
 function consumeDeliveryOption(text: string): { deliveryMode: AgentHeartbeatDeliveryMode | undefined; rest: string } {
+	let rest = text.trim();
 	let deliveryMode: AgentHeartbeatDeliveryMode | undefined;
-	// Accept --deliver <mode>, --deliver=<mode>, --steer, or --follow-up in any position.
-	// Later flags win so an explicit later choice overrides an earlier one.
-	const flag =
-		/(^|\s)--(?:(?:deliver)(?:=(steer|follow[-_]up)|\s+(steer|follow[-_]up))|(steer)|(follow[-_]up))(?=\s|$)/gi;
-	const rest = text.replace(
-		flag,
-		(_match, prefix: string, equalsMode: string, spaceMode: string, steer: string, followUp: string) => {
-			const mode = (equalsMode ?? spaceMode ?? steer ?? followUp ?? "").toLowerCase().replace("-", "_");
-			deliveryMode = mode === "follow_up" ? "follow_up" : "steer";
-			return prefix;
-		},
-	);
-	return { deliveryMode, rest: rest.trim() };
+	let leading = consumeLeadingDeliveryFlag(rest);
+	while (leading) {
+		deliveryMode = leading.deliveryMode;
+		rest = leading.rest.trim();
+		leading = consumeLeadingDeliveryFlag(rest);
+	}
+
+	let trailing = consumeTrailingDeliveryFlag(rest);
+	let trailingDeliveryMode: AgentHeartbeatDeliveryMode | undefined;
+	while (trailing) {
+		// Consume all trailing flags, but keep the rightmost flag's mode because it
+		// is textually latest and should win over earlier flags.
+		trailingDeliveryMode ??= trailing.deliveryMode;
+		rest = trailing.rest.trim();
+		trailing = consumeTrailingDeliveryFlag(rest);
+	}
+	return { deliveryMode: trailingDeliveryMode ?? deliveryMode, rest };
+}
+
+function consumeLeadingDeliveryFlag(
+	text: string,
+): { deliveryMode: AgentHeartbeatDeliveryMode; rest: string } | undefined {
+	const match = /^--(?:deliver(?:=|\s+)(steer|follow[-_]up)|(steer)|(follow[-_]up))(?:\s+|$)([\s\S]*)$/i.exec(text);
+	if (!match) {
+		return undefined;
+	}
+	return {
+		deliveryMode: parseDeliveryModeToken(match[1] ?? match[2] ?? match[3] ?? ""),
+		rest: match[4]?.trim() ?? "",
+	};
+}
+
+function consumeTrailingDeliveryFlag(
+	text: string,
+): { deliveryMode: AgentHeartbeatDeliveryMode; rest: string } | undefined {
+	const deliverWithSpace = /^([\s\S]*?)\s+--deliver\s+(steer|follow[-_]up)$/i.exec(text);
+	if (deliverWithSpace) {
+		return { deliveryMode: parseDeliveryModeToken(deliverWithSpace[2] ?? ""), rest: deliverWithSpace[1] ?? "" };
+	}
+	const deliverWithEquals = /^([\s\S]*?)\s+--deliver=(steer|follow[-_]up)$/i.exec(text);
+	if (deliverWithEquals) {
+		return { deliveryMode: parseDeliveryModeToken(deliverWithEquals[2] ?? ""), rest: deliverWithEquals[1] ?? "" };
+	}
+	const shorthand = /^([\s\S]*?)\s+--(steer|follow[-_]up)$/i.exec(text);
+	if (shorthand) {
+		return { deliveryMode: parseDeliveryModeToken(shorthand[2] ?? ""), rest: shorthand[1] ?? "" };
+	}
+	return undefined;
+}
+
+function parseDeliveryModeToken(token: string): AgentHeartbeatDeliveryMode {
+	return token.toLowerCase().replace("-", "_") === "follow_up" ? "follow_up" : "steer";
 }
 
 function consumeEveryOption(text: string): { interval: string; rest: string } | undefined {

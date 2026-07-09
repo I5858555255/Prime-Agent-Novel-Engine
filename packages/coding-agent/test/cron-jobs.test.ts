@@ -120,6 +120,15 @@ describe("parseHeartbeatCommand", () => {
 		});
 	});
 
+	it("keeps delivery-like flags in the middle of an instruction as instruction text", () => {
+		expect(parseHeartbeatCommand("/heartbeat remind me to mention --follow-up in docs")).toEqual({
+			type: "set",
+			schedule: "every 5m",
+			instruction: "remind me to mention --follow-up in docs",
+			deliveryMode: "steer",
+		});
+	});
+
 	it("accepts an explicit --steer flag that keeps the default delivery mode", () => {
 		expect(parseHeartbeatCommand("/heartbeat --steer check on me")).toEqual({
 			type: "set",
