@@ -72,7 +72,7 @@ export async function selectSession(
 			() => options?.cwd ?? process.cwd(),
 		);
 		ui.addChild(new SessionPickerScreen(ui, splash, selector));
-		ui.setFocus(selector.getSessionList());
+		ui.setFocus(selector);
 		ui.start();
 	});
 }
