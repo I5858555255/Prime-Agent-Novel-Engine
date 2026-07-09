@@ -406,6 +406,16 @@ const HEARTBEAT_ARGUMENT_COMPLETIONS: AutocompleteItem[] = [
 		label: "every <duration> <instruction>",
 		description: "Set an interval, then add an instruction: /heartbeat every 10s Scan the logs",
 	},
+	{
+		value: "--steer ",
+		label: "--steer <instruction>",
+		description: "Deliver by interrupting the current turn (default)",
+	},
+	{
+		value: "--follow-up ",
+		label: "--follow-up <instruction>",
+		description: "Deliver as a follow-up after the current turn finishes",
+	},
 ];
 
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
@@ -7862,9 +7872,15 @@ export class InteractiveMode {
 					return;
 				}
 				case "set": {
-					const heartbeat = await this.agentConnection.setHeartbeat(command.schedule, command.instruction);
+					const heartbeat = await this.agentConnection.setHeartbeat(
+						command.schedule,
+						command.instruction,
+						command.deliveryMode,
+					);
 					this.patchConnectionState({ heartbeat });
-					this.showStatus(`Heartbeat set\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
+					this.showStatus(
+						`Heartbeat set\nDelivery: ${command.deliveryMode}\nNext run: ${heartbeat.nextRunAt ?? "-"}`,
+					);
 					return;
 				}
 				case "pause": {
@@ -7915,6 +7931,7 @@ export class InteractiveMode {
 			"",
 			`${theme.fg("dim", "Status:")} ${job.status}`,
 			`${theme.fg("dim", "Every:")} ${job.schedule.expression}`,
+			`${theme.fg("dim", "Delivery:")} ${job.deliveryMode ?? "steer"}`,
 			`${theme.fg("dim", "Instruction:")} ${job.prompt}`,
 			`${theme.fg("dim", "Next:")} ${next}`,
 			`${theme.fg("dim", "Last:")} ${last}`,

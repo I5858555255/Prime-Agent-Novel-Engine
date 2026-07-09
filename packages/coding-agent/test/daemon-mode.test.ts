@@ -2768,7 +2768,12 @@ describe("daemon mode helpers", () => {
 		).runCronJob.bind(daemon);
 
 		const result = await runCronJob(
-			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "heartbeat-1",
+				source: "heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 
 		expect(result).toBe("skipped");
@@ -2818,10 +2823,20 @@ describe("daemon mode helpers", () => {
 		).runCronJob.bind(daemon);
 
 		const first = await runCronJob(
-			makeCronJob({ id: "rlm-1", source: "rlm_heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "rlm-1",
+				source: "rlm_heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 		const second = await runCronJob(
-			makeCronJob({ id: "rlm-2", source: "rlm_heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "rlm-2",
+				source: "rlm_heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 
 		expect(first).toBe("skipped");
@@ -3060,7 +3075,62 @@ describe("daemon mode helpers", () => {
 		expect(prompt).not.toHaveBeenCalled();
 	});
 
-	it("prompts idle sessions with a followUp streaming behavior to survive a mid-call stream start", async () => {
+	it("delivers heartbeats with a steering behavior by default", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const prompt = vi.fn(async () => {});
+		const promptHeartbeat = vi.fn(
+			async (
+				_job: AgentCronJob,
+				_options?: { streamingBehavior?: "steer" | "followUp"; followUpQueueKey?: string },
+			) => {},
+		);
+		const followUp = vi.fn(async () => true);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isBashRunning: boolean;
+					pendingMessageCount: number;
+					prompt: typeof prompt;
+					promptHeartbeat: typeof promptHeartbeat;
+					followUp: typeof followUp;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			isBashRunning: false,
+			pendingMessageCount: 0,
+			prompt,
+			promptHeartbeat,
+			followUp,
+		} as never;
+		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
+
+		await (daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }).runCronJob(
+			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+		);
+
+		// The preparing guard adds an internal preflightResult hook.
+		expect(promptHeartbeat).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "heartbeat-1", prompt: "heartbeat prompt" }),
+			expect.objectContaining({
+				streamingBehavior: "steer",
+				source: "rpc",
+			}),
+		);
+		// Steering delivery does not coalesce per job, so no follow-up queue key is set.
+		expect(promptHeartbeat.mock.calls[0]?.[1]).not.toHaveProperty("followUpQueueKey");
+		expect(prompt).not.toHaveBeenCalled();
+		expect(followUp).not.toHaveBeenCalled();
+	});
+
+	it("delivers follow-up heartbeats with a followUp behavior and coalescing key", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -3093,7 +3163,12 @@ describe("daemon mode helpers", () => {
 		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
 
 		await (daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }).runCronJob(
-			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "heartbeat-1",
+				source: "heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 
 		// The preparing guard adds an internal preflightResult hook.
@@ -3232,11 +3307,17 @@ describe("daemon mode helpers", () => {
 	});
 });
 
-function makeCronJob(input: { id: string; source: AgentCronJob["source"]; activeSessionId: string }): AgentCronJob {
+function makeCronJob(input: {
+	id: string;
+	source: AgentCronJob["source"];
+	activeSessionId: string;
+	deliveryMode?: AgentCronJob["deliveryMode"];
+}): AgentCronJob {
 	return {
 		id: input.id,
 		status: "active",
 		source: input.source,
+		...(input.deliveryMode ? { deliveryMode: input.deliveryMode } : {}),
 		activeSessionId: input.activeSessionId,
 		sessionId: "session-1",
 		sessionFile: "/tmp/session.jsonl",

@@ -92,6 +92,7 @@ import {
 	loadContextTreeChildrenFromDisk,
 } from "./context-tree.js";
 import type { AgentCronJob, AgentRlmHeartbeatController, AgentRlmHeartbeatStatusUpdate } from "./cron-jobs.js";
+import { normalizeHeartbeatDeliveryMode } from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
@@ -1467,12 +1468,14 @@ export class AgentSession {
 				if (payload.label !== undefined && typeof payload.label !== "string") {
 					throw new Error("rlm_heartbeat.create label must be a string when provided");
 				}
+				const deliveryMode = normalizeHeartbeatDeliveryMode(payload.delivery_mode ?? payload.deliveryMode);
 				return {
 					heartbeat: rlmHeartbeatHostResponse(
 						controller.createRlmHeartbeat({
 							instruction: payload.instruction,
 							interval: payload.interval,
 							label: payload.label,
+							deliveryMode,
 						}),
 					),
 				};
@@ -1493,11 +1496,14 @@ export class AgentSession {
 				if (payload.status !== undefined && !isRlmHeartbeatStatusUpdate(payload.status)) {
 					throw new Error('rlm_heartbeat.update status must be "pause" or "resume" when provided');
 				}
+				const rawDeliveryMode = payload.delivery_mode ?? payload.deliveryMode;
+				const deliveryMode = normalizeHeartbeatDeliveryMode(rawDeliveryMode);
 				if (
 					payload.instruction === undefined &&
 					payload.interval === undefined &&
 					payload.label === undefined &&
-					payload.status === undefined
+					payload.status === undefined &&
+					rawDeliveryMode === undefined
 				) {
 					throw new Error("rlm_heartbeat.update requires at least one field to update");
 				}
@@ -1507,6 +1513,7 @@ export class AgentSession {
 					interval: payload.interval,
 					label: payload.label,
 					status: payload.status,
+					deliveryMode,
 				});
 				return { heartbeat: heartbeat ? rlmHeartbeatHostResponse(heartbeat) : null };
 			}
@@ -6874,6 +6881,7 @@ function rlmHeartbeatHostResponse(job: AgentCronJob): Record<string, unknown> {
 		id: job.id,
 		status: job.status,
 		label: job.label ?? null,
+		delivery_mode: job.deliveryMode ?? "steer",
 		instruction: job.prompt,
 		schedule: job.schedule,
 		created_at: job.createdAt,

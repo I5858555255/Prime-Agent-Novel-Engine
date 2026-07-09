@@ -91,7 +91,7 @@ describe("RLM heartbeat skill over the kernel host bridge", () => {
 		const manager = await provisioner.ensure();
 		const result = await manager.execute(`
 import json
-created = await rlm_heartbeat.create("check tests", interval="5m", label="tests")
+created = await rlm_heartbeat.create("check tests", interval="5m", label="tests", delivery_mode="follow_up")
 listed = await rlm_heartbeat.list(include_inactive=True)
 updated = await rlm_heartbeat.update(created["heartbeat"]["id"], status="pause")
 deleted = await rlm_heartbeat.delete(created["heartbeat"]["id"])
@@ -121,6 +121,7 @@ print(json.dumps({
 			instruction: "check tests",
 			interval: "5m",
 			label: "tests",
+			delivery_mode: "follow_up",
 		});
 		expect(requests[1].payload).toMatchObject({ type: "rlm_heartbeat.list", include_inactive: true });
 		expect(requests[2].payload).toMatchObject({ type: "rlm_heartbeat.update", id: "job-1", status: "pause" });

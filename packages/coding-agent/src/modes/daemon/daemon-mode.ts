@@ -64,11 +64,13 @@ import {
 	type AgentCronJob,
 	AgentCronJobStore,
 	AgentCronScheduler,
+	type AgentHeartbeatDeliveryMode,
 	type AgentHeartbeatUpdateAction,
 	createAgentHeartbeatToolDefinitions,
 	DEFAULT_HEARTBEAT_SCHEDULE,
 	isHeartbeatCronJob,
 	normalizeHeartbeatSchedule,
+	resolveHeartbeatStreamingBehavior,
 	shouldDeferHeartbeatCronJob,
 } from "../../core/cron-jobs.js";
 import type {
@@ -630,9 +632,11 @@ export class AgentDaemon {
 			return;
 		}
 		if (isHeartbeatCronJob(job)) {
+			const streamingBehavior = resolveHeartbeatStreamingBehavior(job.deliveryMode);
 			await this.promptHeartbeatWithAgentMessagePreparingGuard(state, job, {
-				streamingBehavior: "followUp",
-				followUpQueueKey: `heartbeat:${job.id}`,
+				streamingBehavior,
+				// Only follow-up delivery coalesces per job; steering interrupts immediately.
+				...(streamingBehavior === "followUp" ? { followUpQueueKey: `heartbeat:${job.id}` } : {}),
 				source: "rpc",
 			});
 			return;
@@ -731,7 +735,12 @@ export class AgentDaemon {
 		return job;
 	}
 
-	private createHeartbeatForState(state: ActiveSessionState, schedule: string, instruction: string): AgentCronJob {
+	private createHeartbeatForState(
+		state: ActiveSessionState,
+		schedule: string,
+		instruction: string,
+		deliveryMode?: AgentHeartbeatDeliveryMode,
+	): AgentCronJob {
 		const session = state.runtime.session;
 		const sessionFile = session.sessionFile;
 		if (!sessionFile) {
@@ -746,6 +755,7 @@ export class AgentDaemon {
 			runtimeKind: state.runtime.metadata.kind,
 			scheduleText: normalizeHeartbeatSchedule(schedule),
 			prompt: instruction,
+			deliveryMode,
 		});
 		if (previousHeartbeat) {
 			this.removeQueuedHeartbeatFollowUp(state, previousHeartbeat);
@@ -773,7 +783,7 @@ export class AgentDaemon {
 
 	private createRlmHeartbeatForState(
 		state: ActiveSessionState,
-		input: { instruction: string; interval?: string; label?: string },
+		input: { instruction: string; interval?: string; label?: string; deliveryMode?: AgentHeartbeatDeliveryMode },
 	): AgentCronJob {
 		const session = state.runtime.session;
 		const sessionFile = session.sessionFile;
@@ -789,6 +799,7 @@ export class AgentDaemon {
 			label: input.label,
 			scheduleText: normalizeHeartbeatSchedule(input.interval ?? DEFAULT_HEARTBEAT_SCHEDULE),
 			prompt: input.instruction,
+			deliveryMode: input.deliveryMode,
 		});
 		this.cronScheduler.wake();
 		return job;
@@ -796,13 +807,21 @@ export class AgentDaemon {
 
 	private updateRlmHeartbeatForState(
 		state: ActiveSessionState,
-		input: { id: string; instruction?: string; interval?: string; label?: string; status?: "pause" | "resume" },
+		input: {
+			id: string;
+			instruction?: string;
+			interval?: string;
+			label?: string;
+			status?: "pause" | "resume";
+			deliveryMode?: AgentHeartbeatDeliveryMode;
+		},
 	): AgentCronJob | undefined {
 		const job = this.cronStore.updateRlmHeartbeat(state.activeSessionId, input.id, {
 			label: input.label,
 			prompt: input.instruction,
 			scheduleText: input.interval ? normalizeHeartbeatSchedule(input.interval) : undefined,
 			status: input.status,
+			deliveryMode: input.deliveryMode,
 		});
 		if (job) {
 			if (input.instruction !== undefined || input.interval !== undefined || input.status === "pause") {
@@ -1666,7 +1685,12 @@ export class AgentDaemon {
 
 			case "heartbeat_set": {
 				const state = this.getSessionState(command.activeSessionId);
-				const heartbeat = this.createHeartbeatForState(state, command.schedule, command.prompt);
+				const heartbeat = this.createHeartbeatForState(
+					state,
+					command.schedule,
+					command.prompt,
+					command.deliveryMode,
+				);
 				return success(command.id, "heartbeat_set", { heartbeat });
 			}
 

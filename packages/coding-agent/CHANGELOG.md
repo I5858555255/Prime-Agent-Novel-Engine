@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Changed scheduled heartbeat prompts to steer (interrupt the current turn) by default, with a `steer`/`follow_up` delivery mode selectable via `/heartbeat --steer|--follow-up` and the `rlm_heartbeat` skill's `delivery_mode` argument.
 - Changed automatic harness refinement to be enabled by default while keeping `autoRefine.enabled: false` as the opt-out.
 - Fixed non-numeric `autoRefine.turnInterval` and `autoRefine.cooldownMs` settings falling back to defaults instead of silently enabling a noisy auto-refine loop.
 
