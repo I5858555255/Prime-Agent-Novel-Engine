@@ -204,7 +204,7 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
 
-	it("interrupts streaming on first Escape and opens the tree on second Escape", () => {
+	it("cancels the tree repeat when typing after interrupting streaming", () => {
 		const actionHandlers = new Map<string, () => void>();
 		const mode = createInteractiveFake({ editorText: "draft", streaming: true });
 		const defaultEditor: NonNullable<FakeInteractiveMode["defaultEditor"]> = {
@@ -223,12 +223,39 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		defaultEditor.onEscape?.();
 		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
 		expect(mode.editor.getText()).toBe("draft");
+		mode.editor.setText("queued draft");
 		defaultEditor.onChange?.("queued draft");
 
 		defaultEditor.onEscape?.();
 
-		expect(mode.showTreeSelector).toHaveBeenCalledTimes(1);
+		expect(mode.showTreeSelector).not.toHaveBeenCalled();
 		expect(mode.shutdown).not.toHaveBeenCalled();
+	});
+
+	it("preserves the tree repeat while restoring queued messages", async () => {
+		const mode = createInteractiveFake({});
+		const defaultEditor: NonNullable<FakeInteractiveMode["defaultEditor"]> = {
+			onAction: vi.fn(),
+		};
+		Object.assign(mode, {
+			defaultEditor,
+			keybindings: new KeybindingsManager(),
+			handleDebugCommand: vi.fn(),
+		});
+		Reflect.get(InteractiveMode.prototype, "setupKeyHandlers").call(mode);
+		const setText = mode.editor.setText.bind(mode.editor);
+		mode.editor.setText = (text) => {
+			setText(text);
+			defaultEditor.onChange?.(text);
+		};
+		mode.escapeRepeatAction = "tree";
+		mode.escapeRepeatExpiresAt = Date.now() + 500;
+		mode.agentConnection.abortAndClearQueue.mockResolvedValue({ steering: ["queued"], followUp: [] });
+
+		const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor");
+		await restoreQueuedMessagesToEditor.call(mode, { abort: true });
+
+		expect(mode.escapeRepeatAction).toBe("tree");
 	});
 
 	it("clears an idle draft on double Escape", () => {
@@ -264,6 +291,27 @@ describe("InteractiveMode interrupt shortcuts", () => {
 
 		expect(mode.showTreeSelector).toHaveBeenCalledTimes(1);
 		expect(mode.editor.getText()).toBe("");
+	});
+
+	it("clears a whitespace draft on double Escape", () => {
+		const mode = createInteractiveFake({ editorText: "   " });
+		const handleEscape = Reflect.get(InteractiveMode.prototype, "handleEscape");
+
+		handleEscape.call(mode);
+		handleEscape.call(mode);
+
+		expect(mode.showTreeSelector).not.toHaveBeenCalled();
+		expect(mode.editor.getText()).toBe("");
+	});
+
+	it("clears the Escape repeat before a separate interrupt", () => {
+		const mode = createInteractiveFake({});
+		mode.escapeRepeatAction = "tree";
+		mode.escapeRepeatExpiresAt = Date.now() + 500;
+
+		Reflect.get(InteractiveMode.prototype, "handleInterruptKey").call(mode);
+
+		expect(mode.escapeRepeatAction).toBeUndefined();
 	});
 
 	it("expires the Escape repeat window", async () => {

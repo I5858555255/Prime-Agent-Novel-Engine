@@ -68,6 +68,21 @@ describe("CustomEditor", () => {
 		expect(editor.getText()).toBe("/");
 	});
 
+	it("routes Escape through its handler while dismissing autocomplete", async () => {
+		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
+		const handler = vi.fn();
+
+		editor.setAutocompleteProvider(autocompleteProvider);
+		editor.onEscape = handler;
+		editor.handleInput("/");
+		await vi.waitFor(() => expect(editor.isShowingAutocomplete()).toBe(true));
+
+		editor.handleInput("\x1b");
+
+		expect(editor.isShowingAutocomplete()).toBe(false);
+		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
 	it("handles the question-mark shortcut as an app action", () => {
 		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
 		const handler = vi.fn();
@@ -99,6 +114,16 @@ describe("CustomEditor", () => {
 		editor.handleInput("\x1b\x1b");
 
 		expect(handler).toHaveBeenCalledTimes(2);
+	});
+
+	it("splits arbitrary terminal-batched clear-input repeats", () => {
+		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
+		const handler = vi.fn();
+		editor.onEscape = handler;
+
+		editor.handleInput("\x1b\x1b\x1b");
+
+		expect(handler).toHaveBeenCalledTimes(3);
 	});
 
 	it("uses custom clear-input bindings when splitting batched repeats", () => {

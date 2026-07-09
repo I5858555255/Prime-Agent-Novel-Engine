@@ -627,6 +627,7 @@ export class InteractiveMode {
 	private escapeRepeatAction: "tree" | "clear" | undefined;
 	private escapeRepeatExpiresAt = 0;
 	private escapeRepeatTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+	private isRestoringQueuedEditorText = false;
 	private anthropicSubscriptionWarningShown = false;
 
 	// Status line tracking (for mutating immediately-sequential status updates)
@@ -3514,7 +3515,7 @@ export class InteractiveMode {
 		this.defaultEditor.onMoveBelowPrompt = () => this.focusChildAgentSummary();
 
 		this.defaultEditor.onChange = (text: string) => {
-			if (this.escapeRepeatAction === "clear") {
+			if (this.escapeRepeatAction && !this.isRestoringQueuedEditorText) {
 				this.clearEscapeRepeat();
 			}
 			if (text.length > 0) {
@@ -5562,7 +5563,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		this.armEscapeRepeat(this.isAgentStreaming() || !this.editor.getText().trim() ? "tree" : "clear");
+		this.armEscapeRepeat(this.isAgentStreaming() || this.editor.getText().length === 0 ? "tree" : "clear");
 		this.interruptOrClearInput();
 	}
 
@@ -5605,6 +5606,7 @@ export class InteractiveMode {
 	}
 
 	private handleInterruptKey(): void {
+		this.clearEscapeRepeat();
 		this.interruptOrClearInput();
 		this.showCtrlCExitHint();
 	}
@@ -6175,7 +6177,12 @@ export class InteractiveMode {
 		const combinedText = [queuedText, currentText].filter((t) => t.trim()).join("\n\n");
 		// The image registry persists, so the restored `[image #N]` markers resolve
 		// on resubmit without any re-registration here.
-		this.editor.setText(combinedText);
+		this.isRestoringQueuedEditorText = true;
+		try {
+			this.editor.setText(combinedText);
+		} finally {
+			this.isRestoringQueuedEditorText = false;
+		}
 		this.updatePendingMessagesDisplay();
 		return allQueued.length;
 	}

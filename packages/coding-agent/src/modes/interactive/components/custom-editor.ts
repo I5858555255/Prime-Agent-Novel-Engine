@@ -169,17 +169,20 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		// Clear input - only if autocomplete is NOT active
+		// Clear input
 		if (this.keybindings.matches(data, "app.input.clear")) {
-			if (!this.isShowingAutocomplete()) {
-				// Use dynamic onEscape if set, otherwise registered handler
-				const handler = this.onEscape ?? this.actionHandlers.get("app.input.clear");
-				if (handler) {
-					handler();
-					return;
-				}
+			const hadAutocomplete = this.isShowingAutocomplete();
+			if (hadAutocomplete) {
+				this.cancelAutocomplete();
 			}
-			// Let parent handle escape for autocomplete cancellation
+			const handler = this.onEscape ?? this.actionHandlers.get("app.input.clear");
+			if (handler) {
+				handler();
+				return;
+			}
+			if (hadAutocomplete) {
+				return;
+			}
 			super.handleInput(data);
 			return;
 		}
@@ -224,15 +227,27 @@ export class CustomEditor extends Editor {
 		super.handleInput(data);
 	}
 
-	private splitRepeatedKeybinding(data: string, keybinding: AppKeybinding): [string, string] | undefined {
-		for (let index = 1; index < data.length; index++) {
-			const first = data.slice(0, index);
-			const second = data.slice(index);
-			if (this.keybindings.matches(first, keybinding) && this.keybindings.matches(second, keybinding)) {
-				return [first, second];
+	private splitRepeatedKeybinding(data: string, keybinding: AppKeybinding): string[] | undefined {
+		const inputs: string[] = [];
+		let offset = 0;
+
+		while (offset < data.length) {
+			let match: string | undefined;
+			for (let end = offset + 1; end <= data.length; end++) {
+				const candidate = data.slice(offset, end);
+				if (this.keybindings.matches(candidate, keybinding)) {
+					match = candidate;
+					offset = end;
+					break;
+				}
 			}
+			if (!match) {
+				return undefined;
+			}
+			inputs.push(match);
 		}
-		return undefined;
+
+		return inputs.length > 1 ? inputs : undefined;
 	}
 
 	private getEffectivePaddingX(width: number): number {
