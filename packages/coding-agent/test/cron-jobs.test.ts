@@ -120,6 +120,18 @@ describe("parseHeartbeatCommand", () => {
 		});
 	});
 
+	it("rejects invalid delivery mode values in delivery flag positions", () => {
+		expect(() => parseHeartbeatCommand("/heartbeat --deliver later check status")).toThrow(
+			'Heartbeat delivery mode must be "steer" or "follow_up"',
+		);
+		expect(() => parseHeartbeatCommand("/heartbeat check status --deliver=later")).toThrow(
+			'Heartbeat delivery mode must be "steer" or "follow_up"',
+		);
+		expect(() => parseHeartbeatCommand("/heartbeat every 10m --deliver later check status")).toThrow(
+			'Heartbeat delivery mode must be "steer" or "follow_up"',
+		);
+	});
+
 	it("keeps delivery-like flags in the middle of an instruction as instruction text", () => {
 		expect(parseHeartbeatCommand("/heartbeat remind me to mention --follow-up in docs")).toEqual({
 			type: "set",

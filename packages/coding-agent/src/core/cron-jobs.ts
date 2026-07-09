@@ -911,7 +911,7 @@ function consumeDeliveryOption(text: string): { deliveryMode: AgentHeartbeatDeli
 function consumeLeadingDeliveryFlag(
 	text: string,
 ): { deliveryMode: AgentHeartbeatDeliveryMode; rest: string } | undefined {
-	const match = /^--(?:deliver(?:=|\s+)(steer|follow[-_]up)|(steer)|(follow[-_]up))(?:\s+|$)([\s\S]*)$/i.exec(text);
+	const match = /^--(?:deliver(?:=|\s+)(\S+)|(steer)|(follow[-_]up))(?:\s+|$)([\s\S]*)$/i.exec(text);
 	if (!match) {
 		return undefined;
 	}
@@ -924,11 +924,11 @@ function consumeLeadingDeliveryFlag(
 function consumeTrailingDeliveryFlag(
 	text: string,
 ): { deliveryMode: AgentHeartbeatDeliveryMode; rest: string } | undefined {
-	const deliverWithSpace = /^([\s\S]*?)\s+--deliver\s+(steer|follow[-_]up)$/i.exec(text);
+	const deliverWithSpace = /^([\s\S]*?)\s+--deliver\s+(\S+)$/i.exec(text);
 	if (deliverWithSpace) {
 		return { deliveryMode: parseDeliveryModeToken(deliverWithSpace[2] ?? ""), rest: deliverWithSpace[1] ?? "" };
 	}
-	const deliverWithEquals = /^([\s\S]*?)\s+--deliver=(steer|follow[-_]up)$/i.exec(text);
+	const deliverWithEquals = /^([\s\S]*?)\s+--deliver=(\S+)$/i.exec(text);
 	if (deliverWithEquals) {
 		return { deliveryMode: parseDeliveryModeToken(deliverWithEquals[2] ?? ""), rest: deliverWithEquals[1] ?? "" };
 	}
@@ -940,7 +940,11 @@ function consumeTrailingDeliveryFlag(
 }
 
 function parseDeliveryModeToken(token: string): AgentHeartbeatDeliveryMode {
-	return token.toLowerCase().replace("-", "_") === "follow_up" ? "follow_up" : "steer";
+	const normalized = token.toLowerCase().replace("-", "_");
+	if (normalized === "steer" || normalized === "follow_up") {
+		return normalized;
+	}
+	throw new Error('Heartbeat delivery mode must be "steer" or "follow_up"');
 }
 
 function consumeEveryOption(text: string): { interval: string; rest: string } | undefined {
