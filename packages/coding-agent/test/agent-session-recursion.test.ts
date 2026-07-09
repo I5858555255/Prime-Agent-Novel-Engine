@@ -1369,6 +1369,20 @@ describe("AgentSession persistent subagents", () => {
 		expect(child?.thinkingLevel).toBe("high");
 	});
 
+	it("refuses to reopen while the retained session has running nested subagents", async () => {
+		const root = createPersistentSession();
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+
+		// The finished, retained child still has an in-flight nested subagent.
+		const retained = root.getRlmChildSession(persistentSubagentNodeId("reviewer"));
+		expect(retained).toBeDefined();
+		vi.spyOn(retained as AgentSession, "hasRunningRlmChildren").mockReturnValue(true);
+
+		await expect(root.runRlmChild("second", { persist: true, persistent_id: "reviewer" })).rejects.toThrow(
+			"nested subagents still running",
+		);
+	});
+
 	it("routes retained-session eviction through the host on reopen", async () => {
 		const root = createPersistentSession();
 

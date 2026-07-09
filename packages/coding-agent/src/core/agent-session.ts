@@ -5893,6 +5893,15 @@ export class AgentSession {
 			if (this._activeRlmChildRuns.has(persistentPlan.nodeId)) {
 				throw new Error(`Persistent subagent ${persistence.persistentId} is already running`);
 			}
+			// Reopen replaces the prior resident session for this id, disposing it. A finished
+			// retained child can still have nested subagents running; refuse the reopen rather
+			// than silently killing that in-flight work.
+			const retained = this._retainedRlmChildSessions.get(persistentPlan.nodeId);
+			if (retained?.hasRunningRlmChildren()) {
+				throw new Error(
+					`Persistent subagent ${persistence.persistentId} has nested subagents still running; wait for them to finish before reopening`,
+				);
+			}
 		}
 
 		const childSessionDir = persistentPlan
