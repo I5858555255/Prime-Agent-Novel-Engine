@@ -11,6 +11,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	agentCallable?: boolean; // default: true - expose the compact skill so the model can request compaction
 }
 
 export interface BranchSummarySettings {
@@ -19,7 +20,7 @@ export interface BranchSummarySettings {
 }
 
 export interface AutoRefineSettings {
-	enabled?: boolean; // default: false
+	enabled?: boolean; // default: true
 	turnInterval?: number; // default: 25 assistant turns
 	compact?: boolean; // default: true
 	cooldownMs?: number; // default: 20 minutes
@@ -763,6 +764,10 @@ export class SettingsManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
+	getCompactionAgentCallable(): boolean {
+		return this.settings.compaction?.agentCallable ?? true;
+	}
+
 	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
 		return {
 			enabled: this.getCompactionEnabled(),
@@ -772,11 +777,19 @@ export class SettingsManager {
 	}
 
 	getAutoRefineSettings(): { enabled: boolean; turnInterval: number; compact: boolean; cooldownMs: number } {
+		const turnInterval = this.settings.autoRefine?.turnInterval;
+		const cooldownMs = this.settings.autoRefine?.cooldownMs;
 		return {
-			enabled: this.settings.autoRefine?.enabled ?? false,
-			turnInterval: Math.max(1, this.settings.autoRefine?.turnInterval ?? 25),
+			enabled: this.settings.autoRefine?.enabled ?? true,
+			turnInterval: Math.max(
+				1,
+				typeof turnInterval === "number" && Number.isFinite(turnInterval) ? turnInterval : 25,
+			),
 			compact: this.settings.autoRefine?.compact ?? true,
-			cooldownMs: Math.max(0, this.settings.autoRefine?.cooldownMs ?? 20 * 60_000),
+			cooldownMs: Math.max(
+				0,
+				typeof cooldownMs === "number" && Number.isFinite(cooldownMs) ? cooldownMs : 20 * 60_000,
+			),
 		};
 	}
 

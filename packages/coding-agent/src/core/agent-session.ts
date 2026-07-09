@@ -28,7 +28,7 @@ import {
 	type ShouldStopAfterTurnContext,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Model, TextContent, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, Model, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -71,6 +71,7 @@ import {
 	formatNoModelSelectedMessage,
 	isLikelyAuthenticationError,
 } from "./auth-guidance.js";
+import type { AuthSourceToken } from "./auth-storage.js";
 import {
 	type AgentAutonomousConfig,
 	type AgentAutonomousStatus,
@@ -84,6 +85,7 @@ import {
 } from "./autonomous.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
+	COMPACT_SKILL_NAME,
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -134,6 +136,7 @@ import {
 	createGoalContextMessage,
 	emptyGoalState,
 	GOAL_CONTEXT_CUSTOM_TYPE,
+	GOAL_CONTEXT_PREVIEW_LABEL,
 	GOAL_SKILL_NAME,
 	GOAL_STATE_CUSTOM_TYPE,
 	type GoalHostResponse,
@@ -149,7 +152,13 @@ import {
 import type { HostRequestHandlers } from "./kernel/index.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { McpManager } from "./mcp/mcp-manager.js";
-import type { BashExecutionMessage, CustomMessage } from "./messages.js";
+import {
+	type BashExecutionMessage,
+	type CustomMessage,
+	createHeartbeatPromptMessage,
+	HEARTBEAT_PROMPT_CUSTOM_TYPE,
+	HEARTBEAT_PROMPT_PREVIEW_LABEL,
+} from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
@@ -233,6 +242,8 @@ export interface RlmChildAgentSnapshot {
 	error?: string;
 }
 
+export type CompactionReason = "manual" | "threshold" | "overflow" | "requested";
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
@@ -241,12 +252,12 @@ export type AgentSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow"; customInstructions?: string }
+	| { type: "compaction_start"; reason: CompactionReason; customInstructions?: string }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
-			reason: "manual" | "threshold" | "overflow";
+			reason: CompactionReason;
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
@@ -257,6 +268,7 @@ export type AgentSessionEvent =
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "auth_stale"; provider: string; sourceTokens?: readonly AuthSourceToken[] }
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
@@ -320,6 +332,11 @@ export interface AgentSessionConfig {
 	agentMessageController?: AgentSessionMessageController;
 	/** Daemon-backed read-only active-session observation bridge. Omitted for local-only sessions. */
 	agentObserveController?: AgentObserveController;
+	/**
+	 * Whether the bundled compact skill and its compact.* host handlers are
+	 * available to the model. Default: the compaction.agentCallable setting.
+	 */
+	includeCompactSkill?: boolean;
 	/**
 	 * Optional host-side controller for the bundled rlm-heartbeat Python skill.
 	 * When omitted, rlm_heartbeat.* host requests are unavailable.
@@ -396,40 +413,114 @@ export interface PromptOptions {
 	queueIfBusy?: boolean;
 	/** Host-generated prompt that must bypass extension/slash/template input interception. */
 	internalPrompt?: boolean;
+	/** Skip extension input handlers for replaying already-accepted input. */
+	skipInputHandlers?: boolean;
+	agentMessageId?: string;
+	content?: (TextContent | ImageContent)[];
 }
 
 interface InternalPromptOptions extends PromptOptions {
 	skipPrePromptWork?: boolean;
-	skipInputHandlers?: boolean;
 	returnAfterAccepted?: boolean;
 	agentMessageId?: string;
 }
 
+type QueuedAgentMessage = UserMessage | CustomMessage;
+
 interface QueuedSteeringMessage {
 	text: string;
+	previewLabel?: string;
 	agentMessageId?: string;
-	message: AgentMessage;
+	message: QueuedAgentMessage;
 }
 
 interface QueuedFollowUpMessage {
 	text: string;
+	previewLabel?: string;
 	queueKey?: string;
 	agentMessageId?: string;
-	message: AgentMessage;
+	message: QueuedAgentMessage;
+}
+
+export interface QueuedAgentInputSnapshot {
+	text: string;
+	content?: (TextContent | ImageContent)[];
+	images?: ImageContent[];
+	queueKey?: string;
+	agentMessageId?: string;
+	customMessage?: CustomMessage;
+}
+
+export interface AcceptedAgentInputSnapshot extends QueuedAgentInputSnapshot {
+	nextTurn: CustomMessage[];
+}
+
+function cloneCustomMessage(message: CustomMessage): CustomMessage {
+	return {
+		...message,
+		content: Array.isArray(message.content) ? message.content.map((block) => ({ ...block })) : message.content,
+	};
+}
+
+function createQueuedAgentInputSnapshotFromUserMessage(
+	text: string,
+	message: QueuedAgentMessage,
+): QueuedAgentInputSnapshot {
+	if (message.role === "custom") {
+		return { text, customMessage: cloneCustomMessage(message) };
+	}
+	const messageContent = message.content;
+	if (!Array.isArray(messageContent)) {
+		return { text };
+	}
+	const content = messageContent.map((block) => ({ ...block }));
+	const images = content.filter((block): block is ImageContent => block.type === "image");
+	return { text, content, ...(images.length > 0 ? { images } : {}) };
+}
+
+function createQueuedAgentInputSnapshot(
+	message: QueuedSteeringMessage | QueuedFollowUpMessage,
+): QueuedAgentInputSnapshot {
+	const snapshot = createQueuedAgentInputSnapshotFromUserMessage(message.text, message.message);
+	return {
+		...snapshot,
+		...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
+		...("queueKey" in message && message.queueKey ? { queueKey: message.queueKey } : {}),
+	};
+}
+
+function queuedMessagePreview(message: { text: string; previewLabel?: string }): string {
+	return message.previewLabel ? `${message.previewLabel}: ${message.text}` : message.text;
+}
+
+function injectedMessagePreviewLabel(message: CustomMessage): string | undefined {
+	switch (message.customType) {
+		case HEARTBEAT_PROMPT_CUSTOM_TYPE:
+			return HEARTBEAT_PROMPT_PREVIEW_LABEL;
+		case GOAL_CONTEXT_CUSTOM_TYPE:
+			return GOAL_CONTEXT_PREVIEW_LABEL;
+		default:
+			return undefined;
+	}
 }
 
 interface AcceptedAgentMessagePrompt {
 	text: string;
 	agentMessageId: string;
-	message: AgentMessage;
+	message: UserMessage;
 	messages: Set<AgentMessage>;
 	/** Pending nextTurn messages drained into this prompt; restored to the queue if the prompt is cleared. */
 	pendingNextTurnMessages: CustomMessage[];
+	deliveredPendingNextTurnMessages: Set<CustomMessage>;
 	accepted: Promise<void>;
 	resolveAccepted: () => void;
 	rejectAccepted: (error: Error) => void;
 	turnStarted: boolean;
 	cleared: boolean;
+}
+
+function undeliveredPendingNextTurnMessages(accepted: AcceptedAgentMessagePrompt): CustomMessage[] {
+	return accepted.pendingNextTurnMessages.filter((message) => !accepted.deliveredPendingNextTurnMessages.has(message));
 }
 
 interface AgentMessageDeliveryWaiter {
@@ -602,6 +693,7 @@ export class AgentSession {
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
 	private _continueAfterThresholdCompaction = false;
+	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -611,6 +703,7 @@ export class AgentSession {
 	private _retryAttempt = 0;
 	private _retryPromise: Promise<void> | undefined = undefined;
 	private _retryResolve: (() => void) | undefined = undefined;
+	private _retryAuthFailureSources: AuthSourceToken[] = [];
 	private _acceptedPromptCompletions = new Set<Promise<void>>();
 	private _acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined = undefined;
 	private _agentMessageDeliveryWaiters = new Map<string, AgentMessageDeliveryWaiter>();
@@ -637,6 +730,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _includeGoals: boolean;
+	private _includeCompactSkill: boolean;
 	private _rlmHeartbeatController?: AgentRlmHeartbeatController;
 	private _agentMessageController?: AgentSessionMessageController;
 	private _agentObserveController?: AgentObserveController;
@@ -719,6 +813,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._includeGoals = config.includeGoals ?? true;
+		this._includeCompactSkill = config.includeCompactSkill ?? this.settingsManager.getCompactionAgentCallable();
 		this._rlmHeartbeatController = config.rlmHeartbeatController;
 		this._agentMessageController = config.agentMessageController;
 		this._agentObserveController = config.agentObserveController;
@@ -864,8 +959,8 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: this._steeringMessages.map((message) => message.text),
-			followUp: this._followUpMessages.map((message) => message.text),
+			steering: this._steeringMessages.map(queuedMessagePreview),
+			followUp: this._followUpMessages.map(queuedMessagePreview),
 		});
 	}
 
@@ -1324,6 +1419,16 @@ export class AgentSession {
 
 	private _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): boolean {
 		this._continueAfterThresholdCompaction = false;
+		if (this._pendingRequestedCompaction === undefined && !this._thresholdCompactionNeeded(context)) {
+			return false;
+		}
+
+		const lastMessage = this.agent.state.messages[this.agent.state.messages.length - 1];
+		this._continueAfterThresholdCompaction = lastMessage !== undefined && lastMessage.role !== "assistant";
+		return true;
+	}
+
+	private _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): boolean {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 
@@ -1341,11 +1446,7 @@ export class AgentSession {
 
 		if (this._queueAutonomousContinuationForThresholdCompaction(context.message)) {
 			this._continueAfterThresholdCompaction = true;
-			return true;
 		}
-
-		const lastMessage = this.agent.state.messages[this.agent.state.messages.length - 1];
-		this._continueAfterThresholdCompaction = lastMessage !== undefined && lastMessage.role !== "assistant";
 		return true;
 	}
 
@@ -1462,6 +1563,59 @@ export class AgentSession {
 				return goalHostResponse(this._completeGoalFromHost(), true);
 			default:
 				throw new Error(`unknown goal request type "${type}"`);
+		}
+	}
+
+	/**
+	 * Handle a compact.* request from the kernel host bridge. Compaction would
+	 * abort the run executing the requesting cell, so compact.run only schedules
+	 * it; _checkCompaction consumes the request at the turn boundary.
+	 */
+	handleCompactHostRequest(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
+		if (!this._includeCompactSkill) {
+			throw new Error("the compact skill is disabled in this session");
+		}
+		switch (type) {
+			case "compact.status": {
+				const usage = this.getContextUsage();
+				return {
+					tokens: usage?.tokens ?? null,
+					context_window: usage?.contextWindow ?? null,
+					percent: usage?.percent ?? null,
+					scheduled: this._pendingRequestedCompaction !== undefined,
+				};
+			}
+			case "compact.run": {
+				const instructions = payload.instructions;
+				if (instructions !== undefined && typeof instructions !== "string") {
+					throw new Error("compact.run instructions must be a string when provided");
+				}
+				// "status" is reserved by the host-request reply protocol; don't use it as a key.
+				if (!this.isStreaming) {
+					return {
+						scheduled: false,
+						reason: "no active turn; compaction can only be requested while a turn is running",
+					};
+				}
+				const preparation = prepareCompaction(
+					this.sessionManager.getBranch(),
+					this.settingsManager.getCompactionSettings(),
+				);
+				if (!preparation) {
+					const lastEntry = this.sessionManager.getBranch().at(-1);
+					return {
+						scheduled: false,
+						reason: lastEntry?.type === "compaction" ? "already compacted" : "session is too short to compact",
+					};
+				}
+				this._pendingRequestedCompaction = { customInstructions: instructions };
+				return {
+					scheduled: true,
+					note: "Compaction runs when the current turn ends; you resume automatically afterwards. Continue working normally.",
+				};
+			}
+			default:
+				throw new Error(`unknown compact request type "${type}"`);
 		}
 	}
 
@@ -1785,8 +1939,12 @@ export class AgentSession {
 		}
 
 		const lastAssistant = this._findLastAssistantInMessages(event.messages);
-		if (!lastAssistant || !this._isRetryableError(lastAssistant)) {
+		const concreteAuthFailure = lastAssistant ? this._isConcreteProviderAuthFailure(lastAssistant) : false;
+		if (!lastAssistant || (!this._isRetryableError(lastAssistant) && !concreteAuthFailure)) {
 			return;
+		}
+		if (concreteAuthFailure) {
+			this._captureRetryAuthFailureSource(lastAssistant);
 		}
 
 		this._retryPromise = new Promise((resolve) => {
@@ -1831,6 +1989,13 @@ export class AgentSession {
 			} else if (acceptedPrompt.turnStarted) {
 				acceptedPrompt.messages.add(event.message);
 			}
+			if (
+				event.type === "message_end" &&
+				event.message.role === "custom" &&
+				acceptedPrompt.pendingNextTurnMessages.includes(event.message)
+			) {
+				acceptedPrompt.deliveredPendingNextTurnMessages.add(event.message);
+			}
 			if (acceptedPrompt.cleared && acceptedPrompt.messages.has(event.message)) {
 				// Membership filter, not a positional slice: newer prompts or compaction may
 				// have rewritten state.messages since the clear.
@@ -1857,10 +2022,11 @@ export class AgentSession {
 			this._resolveRetry();
 		}
 
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
-		// This ensures the UI sees the updated queue state
-		if (event.type === "message_start" && event.message.role === "user") {
-			this._overflowRecoveryAttempted = false;
+		// Remove queued messages before emitting so the UI sees the updated queue.
+		if (event.type === "message_start") {
+			if (this._isPromptTurnStartMessage(event.message)) {
+				this._overflowRecoveryAttempted = false;
+			}
 			const steeringIndex = this._steeringMessages.findIndex((message) => message.message === event.message);
 			if (steeringIndex !== -1) {
 				const [removed] = this._steeringMessages.splice(steeringIndex, 1);
@@ -1929,6 +2095,9 @@ export class AgentSession {
 				if (assistantMsg.stopReason !== "error") {
 					this._overflowRecoveryAttempted = false;
 				}
+				if (this._isConcreteProviderAuthFailure(assistantMsg)) {
+					this._captureRetryAuthFailureSource(assistantMsg);
+				}
 
 				// Reset retry counter immediately on successful assistant response
 				// This prevents accumulation across multiple LLM calls within a turn
@@ -1939,6 +2108,7 @@ export class AgentSession {
 						attempt: this._retryAttempt,
 					});
 					this._retryAttempt = 0;
+					this._retryAuthFailureSources = [];
 				}
 				if (this._accountGoalUsageForAssistantMessage(assistantMsg)) {
 					this.agent.steer(createGoalContextMessage(this._goalState, "budget_limit"));
@@ -1951,23 +2121,48 @@ export class AgentSession {
 		}
 
 		// Check auto-retry and auto-compaction after agent completes
-		if (event.type === "agent_end" && this._lastAssistantMessage) {
-			const msg = this._lastAssistantMessage;
+		if (event.type === "agent_end") {
+			const msg =
+				this._lastAssistantMessage ??
+				(this._retryPromise ? this._findLastAssistantInMessages(event.messages) : undefined);
 			this._lastAssistantMessage = undefined;
+			if (!msg) {
+				this._resolveRetry();
+				return;
+			}
 
 			// Check for retryable errors first (overloaded, rate limit, server errors)
-			if (this._isRetryableError(msg)) {
-				const didRetry = await this._handleRetryableError(msg);
+			const concreteAuthFailure = this._isConcreteProviderAuthFailure(msg);
+			const retryConcreteAuthFailure =
+				concreteAuthFailure && !this._isStructuredPermanentProviderRetryExhausted(msg);
+			if (this._isRetryableError(msg) || retryConcreteAuthFailure) {
+				if (retryConcreteAuthFailure) {
+					this._captureRetryAuthFailureSource(msg);
+				}
+				const didRetry = await this._handleRetryableError(msg, {
+					markAuthStaleOnFailure: retryConcreteAuthFailure,
+					authSourceTokens: retryConcreteAuthFailure ? this._retryAuthFailureSources : undefined,
+				});
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
 
-			this._resolveRetry();
 			const compactionWillRetry = await this._checkCompaction(msg);
+			if (compactionWillRetry && this._retryAttempt > 0) {
+				return;
+			}
+			this._finishActiveRetryWithFailure(msg);
+			this._resolveRetry();
 			if (!compactionWillRetry) {
 				this._finishGoalForTerminalAssistantMessage(msg);
 				this._scheduleAutoRefineAfterAgentEnd();
 			}
 		}
+	}
+
+	private _isPromptTurnStartMessage(message: AgentMessage): boolean {
+		return (
+			message.role === "user" || (message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE)
+		);
 	}
 
 	/** Resolve the pending retry promise */
@@ -2441,7 +2636,7 @@ export class AgentSession {
 			skipInputHandlers: true,
 			skipPrePromptWork: true,
 			returnAfterAccepted: true,
-			agentMessageId: parseAgentSessionMessagePromptId(text),
+			agentMessageId: options?.agentMessageId ?? parseAgentSessionMessagePromptId(text),
 		});
 	}
 
@@ -2452,6 +2647,158 @@ export class AgentSession {
 			return true;
 		}
 		return this._queueFollowUp(text, undefined, { agentMessageId });
+	}
+
+	async promptHeartbeat(job: AgentCronJob, options?: PromptOptions): Promise<void> {
+		const message = createHeartbeatPromptMessage(job);
+		await this._promptInjectedMessage(job.prompt, message, {
+			...options,
+			followUpQueueKey: options?.followUpQueueKey ?? `heartbeat:${job.id}`,
+		});
+	}
+
+	private async _promptInjectedMessage(
+		text: string,
+		message: CustomMessage,
+		options?: InternalPromptOptions,
+	): Promise<void> {
+		const preflightResult = options?.preflightResult;
+		let preflightSettled = false;
+		const reportPreflight = (success: boolean, queued = false) => {
+			if (!preflightSettled) {
+				preflightSettled = true;
+				preflightResult?.(success, queued);
+			}
+		};
+
+		let messages: AgentMessage[] | undefined;
+		let drainedNextTurnMessages: CustomMessage[] = [];
+		const previewLabel = injectedMessagePreviewLabel(message);
+		try {
+			const shouldQueueForStreaming = this.isStreaming;
+			const shouldQueueForPendingWork =
+				options?.queueIfBusy === true &&
+				(this.pendingMessageCount > 0 ||
+					this.isCompacting ||
+					this.isRetrying ||
+					this.isBashRunning ||
+					this.hasAcceptedPromptInFlight);
+			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
+				if (!options?.streamingBehavior) {
+					const stateDescription = shouldQueueForStreaming
+						? "Agent is already processing"
+						: "Agent has queued work";
+					throw new Error(
+						`${stateDescription}. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`,
+					);
+				}
+				const queued = await this._queueInjectedMessageWithPendingNextTurnMessages(
+					text,
+					message,
+					options.streamingBehavior,
+					{ queueKey: options.followUpQueueKey, previewLabel },
+				);
+				if (!queued) {
+					reportPreflight(false);
+					return;
+				}
+				reportPreflight(true, true);
+				return;
+			}
+
+			await this._waitForRefineIdle();
+			this._flushPendingBashMessages();
+			if (!this.model) {
+				throw new Error(formatNoModelSelectedMessage());
+			}
+			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+				const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+				if (isOAuth) {
+					throw new Error(formatAuthenticationFailedMessage(this.model.provider));
+				}
+				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			}
+
+			const lastAssistant = this._findLastAssistantMessage();
+			if (lastAssistant) {
+				await this._checkCompaction(lastAssistant, false);
+			}
+
+			drainedNextTurnMessages = this._pendingNextTurnMessages;
+			this._pendingNextTurnMessages = [];
+			messages = [...drainedNextTurnMessages, message];
+
+			const result = await this._extensionRunner.emitBeforeAgentStart(
+				text,
+				undefined,
+				this._baseSystemPrompt,
+				this._baseSystemPromptOptions,
+			);
+			if (result?.messages) {
+				for (const msg of result.messages) {
+					messages.push({
+						role: "custom",
+						customType: msg.customType,
+						content: msg.content,
+						display: msg.display,
+						details: msg.details,
+						timestamp: Date.now(),
+					});
+				}
+			}
+			this.agent.state.systemPrompt = result?.systemPrompt ?? this._baseSystemPrompt;
+		} catch (error) {
+			reportPreflight(false);
+			throw error;
+		}
+
+		if (!messages) {
+			return;
+		}
+
+		if (this._refineInFlight) {
+			await this._waitForRefineIdle();
+		}
+		const shouldQueueAtHandoff =
+			options?.queueIfBusy === true &&
+			(this.isStreaming ||
+				this.pendingMessageCount > 0 ||
+				this.isCompacting ||
+				this.isRetrying ||
+				this.isBashRunning ||
+				this._acceptedPromptCompletions.size > 0 ||
+				this._acceptedAgentMessagePrompt !== undefined);
+		if (shouldQueueAtHandoff) {
+			if (!options?.streamingBehavior) {
+				this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+				reportPreflight(false);
+				throw new Error(
+					"Agent became busy before prompt delivery. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+				);
+			}
+			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+			const queued = await this._queueInjectedMessageWithPendingNextTurnMessages(
+				text,
+				message,
+				options.streamingBehavior,
+				{ queueKey: options.followUpQueueKey, previewLabel },
+			);
+			if (!queued) {
+				reportPreflight(false);
+				return;
+			}
+			reportPreflight(true, true);
+			return;
+		}
+
+		try {
+			await this.agent.prompt(messages);
+		} catch (error) {
+			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
+			throw error;
+		}
+		reportPreflight(true);
+		await this.waitForRetry();
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
@@ -2593,8 +2940,10 @@ export class AgentSession {
 					messages.push(msg);
 				}
 				this._pendingNextTurnMessages = [];
-				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-				if (currentImages) {
+				const userContent: (TextContent | ImageContent)[] = options?.content
+					? options.content.map((block) => ({ ...block }))
+					: [{ type: "text", text: expandedText }];
+				if (!options?.content && currentImages) {
 					userContent.push(...currentImages);
 				}
 				const userMessage: AgentMessage = {
@@ -2616,6 +2965,7 @@ export class AgentSession {
 						message: userMessage,
 						messages: new Set<AgentMessage>([...drainedNextTurnMessages, userMessage]),
 						pendingNextTurnMessages: drainedNextTurnMessages,
+						deliveredPendingNextTurnMessages: new Set(),
 						accepted,
 						resolveAccepted,
 						rejectAccepted,
@@ -2641,8 +2991,10 @@ export class AgentSession {
 				this._pendingNextTurnMessages = [];
 
 				// Add user message
-				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-				if (currentImages) {
+				const userContent: (TextContent | ImageContent)[] = options?.content
+					? options.content.map((block) => ({ ...block }))
+					: [{ type: "text", text: expandedText }];
+				if (!options?.content && currentImages) {
 					userContent.push(...currentImages);
 				}
 				const userMessage: AgentMessage = {
@@ -2772,7 +3124,9 @@ export class AgentSession {
 				// The prompt was never accepted, so next-turn context drained for it
 				// was not consumed by the model and must remain available to retry.
 				this._pendingNextTurnMessages.unshift(
-					...acceptedAgentMessagePrompt.pendingNextTurnMessages.map((message) => ({ ...message })),
+					...undeliveredPendingNextTurnMessages(acceptedAgentMessagePrompt).map((message) => ({
+						...message,
+					})),
 				);
 			}
 			reportPreflight(false);
@@ -2896,7 +3250,11 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[], options: { queueKey?: string } = {}): Promise<boolean> {
+	async followUp(
+		text: string,
+		images?: ImageContent[],
+		options: { queueKey?: string; agentMessageId?: string } = {},
+	): Promise<boolean> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2906,7 +3264,44 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		return this._queueFollowUp(expandedText, images, { queueKey: options.queueKey });
+		return this._queueFollowUp(expandedText, images, {
+			queueKey: options.queueKey,
+			agentMessageId: options.agentMessageId,
+		});
+	}
+
+	async restoreSteeringMessage(
+		text: string,
+		images?: ImageContent[],
+		options: {
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			customMessage?: CustomMessage;
+		} = {},
+	): Promise<void> {
+		await this._queueSteer(text, images, {
+			agentMessageId: options.agentMessageId,
+			content: options.content,
+			message: options.customMessage,
+		});
+	}
+
+	async restoreFollowUpMessage(
+		text: string,
+		images?: ImageContent[],
+		options: {
+			queueKey?: string;
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			customMessage?: CustomMessage;
+		} = {},
+	): Promise<boolean> {
+		return this._queueFollowUp(text, images, {
+			queueKey: options.queueKey,
+			agentMessageId: options.agentMessageId,
+			content: options.content,
+			message: options.customMessage,
+		});
 	}
 
 	private _buildPromptContent(
@@ -2954,22 +3349,62 @@ export class AgentSession {
 		}
 	}
 
+	private async _queueInjectedMessageWithPendingNextTurnMessages(
+		text: string,
+		message: CustomMessage,
+		streamingBehavior: "steer" | "followUp",
+		options: { queueKey?: string; previewLabel?: string } = {},
+	): Promise<boolean> {
+		const pendingNextTurnMessages = this._pendingNextTurnMessages;
+		this._pendingNextTurnMessages = [];
+		const queuedMessage: CustomMessage = {
+			...message,
+			content: this._buildPromptContent(text, undefined, pendingNextTurnMessages),
+		};
+		try {
+			if (streamingBehavior === "followUp") {
+				const queued = await this._queueFollowUp(text, undefined, {
+					queueKey: options.queueKey,
+					message: queuedMessage,
+					previewLabel: options.previewLabel,
+				});
+				if (!queued) {
+					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+				}
+				return queued;
+			}
+			await this._queueSteer(text, undefined, { message: queuedMessage, previewLabel: options.previewLabel });
+			return true;
+		} catch (error) {
+			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
+			throw error;
+		}
+	}
+
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(
 		text: string,
 		images?: ImageContent[],
-		options: { agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
+		options: {
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			message?: QueuedAgentMessage;
+			previewLabel?: string;
+		} = {},
 	): Promise<void> {
 		const content = options.content ?? this._buildPromptContent(text, images);
-		const message: AgentMessage = {
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		};
+		const message: QueuedAgentMessage =
+			options.message ??
+			({
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			} satisfies UserMessage);
 		this._steeringMessages.push({
 			text,
+			previewLabel: options.previewLabel,
 			agentMessageId: options.agentMessageId,
 			message,
 		});
@@ -2983,19 +3418,28 @@ export class AgentSession {
 	private async _queueFollowUp(
 		text: string,
 		images?: ImageContent[],
-		options: { queueKey?: string; agentMessageId?: string; content?: (TextContent | ImageContent)[] } = {},
+		options: {
+			queueKey?: string;
+			agentMessageId?: string;
+			content?: (TextContent | ImageContent)[];
+			message?: QueuedAgentMessage;
+			previewLabel?: string;
+		} = {},
 	): Promise<boolean> {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
 			return false;
 		}
 		const content = options.content ?? this._buildPromptContent(text, images);
-		const message: AgentMessage = {
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		};
+		const message: QueuedAgentMessage =
+			options.message ??
+			({
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			} satisfies UserMessage);
 		this._followUpMessages.push({
 			text,
+			previewLabel: options.previewLabel,
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			message,
@@ -3172,7 +3616,9 @@ export class AgentSession {
 			this.agent.state.messages = this.agent.state.messages.filter((message) => !accepted.messages.has(message));
 			// Restore drained nextTurn messages the model never saw. Clones, so the cleared
 			// run's late-event cleanup cannot strip the restored copies from a newer run.
-			this._pendingNextTurnMessages.unshift(...accepted.pendingNextTurnMessages.map((message) => ({ ...message })));
+			this._pendingNextTurnMessages.unshift(
+				...undeliveredPendingNextTurnMessages(accepted).map((message) => ({ ...message })),
+			);
 			const error = new Error("Accepted agent message was cleared before delivery.");
 			this._rejectAgentMessageDelivery(accepted.agentMessageId, error);
 			accepted.rejectAccepted(error);
@@ -3193,9 +3639,50 @@ export class AgentSession {
 		return this._steeringMessages.map((message) => message.text);
 	}
 
+	getSteeringMessagePreviews(): readonly string[] {
+		return this._steeringMessages.map(queuedMessagePreview);
+	}
+
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
 		return this._followUpMessages.map((message) => message.text);
+	}
+
+	getFollowUpMessagePreviews(): readonly string[] {
+		return this._followUpMessages.map(queuedMessagePreview);
+	}
+
+	getSteeringQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
+		return this._steeringMessages.map((message) => createQueuedAgentInputSnapshot(message));
+	}
+
+	getFollowUpQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
+		return this._followUpMessages.map((message) => createQueuedAgentInputSnapshot(message));
+	}
+
+	getPendingNextTurnMessageSnapshots(): readonly CustomMessage[] {
+		const messages = this._pendingNextTurnMessages.map((message) => cloneCustomMessage(message));
+		const accepted = this._acceptedAgentMessagePrompt;
+		if (accepted && !accepted.cleared && accepted.turnStarted) {
+			messages.push(...undeliveredPendingNextTurnMessages(accepted).map((message) => cloneCustomMessage(message)));
+		}
+		return messages;
+	}
+
+	getAcceptedPromptSnapshot(): AcceptedAgentInputSnapshot | undefined {
+		const accepted = this._acceptedAgentMessagePrompt;
+		if (!accepted || accepted.cleared || accepted.turnStarted) {
+			return undefined;
+		}
+		return {
+			...createQueuedAgentInputSnapshotFromUserMessage(accepted.text, accepted.message),
+			agentMessageId: accepted.agentMessageId,
+			nextTurn: undeliveredPendingNextTurnMessages(accepted).map((message) => cloneCustomMessage(message)),
+		};
+	}
+
+	restorePendingNextTurnMessages(messages: readonly CustomMessage[]): void {
+		this._pendingNextTurnMessages.push(...messages.map((message) => cloneCustomMessage(message)));
 	}
 
 	hasQueuedFollowUp(queueKey: string): boolean {
@@ -3208,7 +3695,7 @@ export class AgentSession {
 			return false;
 		}
 		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
-		const removedMessages = new Set(removed.map((message) => message.message));
+		const removedMessages = new Set<AgentMessage>(removed.map((message) => message.message));
 		for (const message of removed) {
 			this._rejectAgentMessageDelivery(
 				message.agentMessageId,
@@ -3237,6 +3724,22 @@ export class AgentSession {
 			await this._agentEventQueue;
 		} finally {
 			this._goalAbortInProgress = false;
+		}
+	}
+
+	abortForUpdateRestart(): void {
+		this.abortRetry();
+		this._cancelActiveRlmChildRuns("Parent session aborted for update restart");
+		this._goalAbortInProgress = this._goalState.status === "active";
+		this.agent.abort();
+		if (this._goalAbortInProgress) {
+			void this.agent
+				.waitForIdle()
+				.then(() => this._agentEventQueue)
+				.catch(() => undefined)
+				.finally(() => {
+					this._goalAbortInProgress = false;
+				});
 		}
 	}
 
@@ -3555,116 +4058,27 @@ export class AgentSession {
 			}
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
-
-			const pathEntries = this.sessionManager.getBranch();
-			const settings = this.settingsManager.getCompactionSettings();
-
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
-				// Check why we can't compact
-				const lastEntry = pathEntries[pathEntries.length - 1];
-				if (lastEntry?.type === "compaction") {
-					throw new CompactionSkippedError("Already compacted");
-				}
-				throw new CompactionSkippedError("Session is too short to compact — try again once it grows");
-			}
-
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
-
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const result = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions,
-					signal: this._compactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (result?.cancel) {
-					throw new Error("Compaction cancelled");
-				}
-
-				if (result?.compaction) {
-					extensionCompaction = result.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const result = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					customInstructions,
-					this._compactionAbortController.signal,
-					this.thinkingLevel,
-				);
-				summary = result.summary;
-				firstKeptEntryId = result.firstKeptEntryId;
-				tokensBefore = result.tokensBefore;
-				details = result.details;
-			}
-
-			if (this._compactionAbortController.signal.aborted) {
-				throw new Error("Compaction cancelled");
-			}
-
-			this.sessionManager.appendCompaction(
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-				fromExtension,
+			const result = await this._performCompaction({
+				model: this.model,
+				apiKey,
+				headers,
 				customInstructions,
-			);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
+				signal: this._compactionAbortController.signal,
+			});
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-			await this._notifyKernelStateAfterCompaction();
-
-			const compactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
 			this._emit({
 				type: "compaction_end",
 				reason: "manual",
-				result: compactionResult,
+				result,
 				aborted: false,
 				willRetry: false,
 				customInstructions,
 			});
 			didCompact = true;
-			return compactionResult;
+			// A manual compaction satisfies any pending model request; on failure the
+			// request stays scheduled for the next turn boundary.
+			this._pendingRequestedCompaction = undefined;
+			return result;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
@@ -3691,6 +4105,88 @@ export class AgentSession {
 				this._scheduleAutoRefine("compact");
 			}
 		}
+	}
+
+	/**
+	 * Shared compaction core behind /compact, auto-compaction, and the compact
+	 * skill. Throws CompactionSkippedError when there is nothing to compact and
+	 * Error("Compaction cancelled") on abort or extension cancel.
+	 */
+	private async _performCompaction(options: {
+		model: Model<any>;
+		apiKey: string;
+		headers?: Record<string, string>;
+		customInstructions?: string;
+		signal: AbortSignal;
+	}): Promise<CompactionResult> {
+		const { model, apiKey, headers, customInstructions, signal } = options;
+		const pathEntries = this.sessionManager.getBranch();
+		const settings = this.settingsManager.getCompactionSettings();
+
+		const preparation = prepareCompaction(pathEntries, settings);
+		if (!preparation) {
+			const lastEntry = pathEntries[pathEntries.length - 1];
+			if (lastEntry?.type === "compaction") {
+				throw new CompactionSkippedError("Already compacted");
+			}
+			throw new CompactionSkippedError("Session is too short to compact — try again once it grows");
+		}
+
+		let extensionCompaction: CompactionResult | undefined;
+		let fromExtension = false;
+
+		if (this._extensionRunner.hasHandlers("session_before_compact")) {
+			const result = (await this._extensionRunner.emit({
+				type: "session_before_compact",
+				preparation,
+				branchEntries: pathEntries,
+				customInstructions,
+				signal,
+			})) as SessionBeforeCompactResult | undefined;
+
+			if (result?.cancel) {
+				throw new Error("Compaction cancelled");
+			}
+
+			if (result?.compaction) {
+				extensionCompaction = result.compaction;
+				fromExtension = true;
+			}
+		}
+
+		const { summary, firstKeptEntryId, tokensBefore, details } =
+			extensionCompaction ??
+			(await compact(preparation, model, apiKey, headers, customInstructions, signal, this.thinkingLevel));
+
+		if (signal.aborted) {
+			throw new Error("Compaction cancelled");
+		}
+
+		this.sessionManager.appendCompaction(
+			summary,
+			firstKeptEntryId,
+			tokensBefore,
+			details,
+			fromExtension,
+			customInstructions,
+		);
+		const newEntries = this.sessionManager.getEntries();
+		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+
+		// Get the saved compaction entry for the extension event
+		const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
+			| CompactionEntry
+			| undefined;
+		if (savedCompactionEntry) {
+			await this._extensionRunner.emit({
+				type: "session_compact",
+				compactionEntry: savedCompactionEntry,
+				fromExtension,
+			});
+		}
+		await this._notifyKernelStateAfterCompaction();
+
+		return { summary, firstKeptEntryId, tokensBefore, details };
 	}
 
 	/**
@@ -4211,12 +4707,14 @@ export class AgentSession {
 		skipAbortedCheck = true,
 		queueAutonomousContinuation = true,
 	): Promise<boolean> {
+		// An abort drops any compaction the model requested this turn, even on the
+		// pre-prompt path (skipAbortedCheck=false) which continues to threshold checks.
+		if (assistantMessage.stopReason === "aborted") {
+			this._pendingRequestedCompaction = undefined;
+			if (skipAbortedCheck) return false;
+		}
+
 		const settings = this.settingsManager.getCompactionSettings();
-		if (!settings.enabled) return false;
-
-		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
-
 		const contextWindow = this.model?.contextWindow ?? 0;
 
 		// Skip overflow check if the message came from a different model.
@@ -4226,19 +4724,22 @@ export class AgentSession {
 		const sameModel =
 			this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
 
-		// Skip compaction checks if this assistant message is older than the latest
-		// compaction boundary. This prevents a stale pre-compaction usage/error
+		// Skip overflow/threshold checks if this assistant message is older than the
+		// latest compaction boundary. This prevents a stale pre-compaction usage/error
 		// from retriggering compaction on the first prompt after compaction.
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const compactionTimestamp = compactionEntry ? new Date(compactionEntry.timestamp).getTime() : undefined;
 		const assistantIsFromBeforeCompaction =
 			compactionTimestamp !== undefined && assistantMessage.timestamp <= compactionTimestamp;
-		if (assistantIsFromBeforeCompaction) {
-			return false;
-		}
 
-		// Case 1: Overflow - LLM returned context overflow error
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
+		// Case 1: Overflow - takes priority over a pending model request so the error
+		// strip + retry still happen; the compaction it runs consumes the request.
+		if (
+			!assistantIsFromBeforeCompaction &&
+			(settings.enabled || this._pendingRequestedCompaction !== undefined) &&
+			sameModel &&
+			isContextOverflow(assistantMessage, contextWindow)
+		) {
 			if (this._overflowRecoveryAttempted) {
 				this._emit({
 					type: "compaction_end",
@@ -4262,7 +4763,14 @@ export class AgentSession {
 			return await this._runAutoCompaction("overflow", true);
 		}
 
-		// Case 2: Threshold - context is getting large.
+		// Case 2: Model-requested (compact skill); runs even with auto-compaction off.
+		if (this._pendingRequestedCompaction !== undefined) {
+			return await this._runAutoCompaction("requested", false);
+		}
+
+		if (!settings.enabled || assistantIsFromBeforeCompaction) return false;
+
+		// Case 3: Threshold - context is getting large.
 		// Use the full-session estimate so messages appended after the last successful
 		// assistant usage are included, matching the /usage context display.
 		const contextTokens = this._getThresholdContextTokens(assistantMessage, compactionTimestamp);
@@ -4277,17 +4785,34 @@ export class AgentSession {
 	}
 
 	/**
-	 * Internal: Run auto-compaction with events.
+	 * Internal: Run automatic (threshold/overflow) or model-requested compaction
+	 * with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
-		const settings = this.settingsManager.getCompactionSettings();
-		const shouldContinueAfterThreshold = reason === "threshold" && this._continueAfterThresholdCompaction;
-		const queuedAutonomousContinuationsForThisCompaction = shouldContinueAfterThreshold
-			? this._pendingThresholdCompactionAutonomousMessages.splice(0)
-			: [];
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold" | "requested",
+		willRetry: boolean,
+	): Promise<boolean> {
+		// Any compaction consumes a pending model request and honors its instructions
+		// (overflow recovery can fire first and take the request with it).
+		const pending = this._pendingRequestedCompaction;
+		this._pendingRequestedCompaction = undefined;
+		const customInstructions = pending?.customInstructions;
+		const shouldContinueAfterCompaction =
+			(reason === "threshold" || reason === "requested") && this._continueAfterThresholdCompaction;
+		const queuedAutonomousContinuationsForThisCompaction =
+			reason === "threshold" && shouldContinueAfterCompaction
+				? this._pendingThresholdCompactionAutonomousMessages.splice(0)
+				: [];
 		this._continueAfterThresholdCompaction = false;
 
-		this._emit({ type: "compaction_start", reason });
+		// A requested compaction stopped the loop on purpose; don't stall if it fails.
+		const resumeAfterFailure = () => {
+			if (reason === "requested" && (shouldContinueAfterCompaction || this.agent.hasQueuedMessages())) {
+				this._schedulePostCompactionContinue();
+			}
+		};
+
+		this._emit({ type: "compaction_start", reason, customInstructions });
 		this._autoCompactionAbortController = new AbortController();
 
 		try {
@@ -4300,9 +4825,10 @@ export class AgentSession {
 					willRetry: false,
 				});
 				this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
-					shouldContinueAfterThreshold,
+					reason === "threshold" && shouldContinueAfterCompaction,
 					queuedAutonomousContinuationsForThisCompaction,
 				);
+				resumeAfterFailure();
 				return false;
 			}
 
@@ -4316,137 +4842,24 @@ export class AgentSession {
 					willRetry: false,
 				});
 				this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
-					shouldContinueAfterThreshold,
+					reason === "threshold" && shouldContinueAfterCompaction,
 					queuedAutonomousContinuationsForThisCompaction,
 				);
-				return false;
-			}
-			const { apiKey, headers } = authResult;
-
-			const pathEntries = this.sessionManager.getBranch();
-
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
-				this._emit({
-					type: "compaction_end",
-					reason,
-					result: undefined,
-					aborted: false,
-					willRetry: false,
-					errorMessage: "Auto-compaction skipped: nothing to summarize outside the recent-context window",
-					errorSeverity: "warning",
-				});
-				this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
-					shouldContinueAfterThreshold,
-					queuedAutonomousContinuationsForThisCompaction,
-				);
+				resumeAfterFailure();
 				return false;
 			}
 
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
+			const result = await this._performCompaction({
+				model: this.model,
+				apiKey: authResult.apiKey,
+				headers: authResult.headers,
+				customInstructions,
+				signal: this._autoCompactionAbortController.signal,
+			});
 
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const extensionResult = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions: undefined,
-					signal: this._autoCompactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (extensionResult?.cancel) {
-					this._emit({
-						type: "compaction_end",
-						reason,
-						result: undefined,
-						aborted: true,
-						willRetry: false,
-					});
-					this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
-						shouldContinueAfterThreshold,
-						queuedAutonomousContinuationsForThisCompaction,
-					);
-					return false;
-				}
-
-				if (extensionResult?.compaction) {
-					extensionCompaction = extensionResult.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const compactResult = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					undefined,
-					this._autoCompactionAbortController.signal,
-					this.thinkingLevel,
-				);
-				summary = compactResult.summary;
-				firstKeptEntryId = compactResult.firstKeptEntryId;
-				tokensBefore = compactResult.tokensBefore;
-				details = compactResult.details;
-			}
-
-			if (this._autoCompactionAbortController.signal.aborted) {
-				this._emit({
-					type: "compaction_end",
-					reason,
-					result: undefined,
-					aborted: true,
-					willRetry: false,
-				});
-				this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
-					shouldContinueAfterThreshold,
-					queuedAutonomousContinuationsForThisCompaction,
-				);
-				return false;
-			}
-
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-			await this._notifyKernelStateAfterCompaction();
-
-			const result: CompactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
-			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry, customInstructions });
 			const hasQueuedMessages = this.agent.hasQueuedMessages();
-			const willContinueAfterCompaction = willRetry || shouldContinueAfterThreshold || hasQueuedMessages;
+			const willContinueAfterCompaction = willRetry || shouldContinueAfterCompaction || hasQueuedMessages;
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;
@@ -4458,8 +4871,8 @@ export class AgentSession {
 				this._schedulePostCompactionContinue();
 				this._scheduleAutoRefineAfterCompaction(willContinueAfterCompaction);
 				return true;
-			} else if (shouldContinueAfterThreshold || hasQueuedMessages) {
-				// Threshold compaction can intentionally stop a tool loop between turns.
+			} else if (shouldContinueAfterCompaction || hasQueuedMessages) {
+				// Compaction can intentionally stop a tool loop between turns.
 				// Queued follow-up/steering/custom messages can also be waiting.
 				this._schedulePostCompactionContinue();
 				this._scheduleAutoRefineAfterCompaction(willContinueAfterCompaction);
@@ -4469,10 +4882,40 @@ export class AgentSession {
 			return false;
 		} catch (error) {
 			this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
-				shouldContinueAfterThreshold,
+				reason === "threshold" && shouldContinueAfterCompaction,
 				queuedAutonomousContinuationsForThisCompaction,
 			);
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+			const aborted =
+				errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+			if (aborted) {
+				this._emit({
+					type: "compaction_end",
+					reason,
+					result: undefined,
+					aborted: true,
+					willRetry: false,
+					customInstructions,
+				});
+				return false;
+			}
+			if (error instanceof CompactionSkippedError) {
+				this._emit({
+					type: "compaction_end",
+					reason,
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						reason === "requested"
+							? `Requested compaction skipped: ${errorMessage}`
+							: `Auto-compaction skipped: ${errorMessage}`,
+					errorSeverity: "warning",
+					customInstructions,
+				});
+				resumeAfterFailure();
+				return false;
+			}
 			this._emit({
 				type: "compaction_end",
 				reason,
@@ -4482,8 +4925,12 @@ export class AgentSession {
 				errorMessage:
 					reason === "overflow"
 						? `Context overflow recovery failed: ${errorMessage}`
-						: `Auto-compaction failed: ${errorMessage}`,
+						: reason === "requested"
+							? `Requested compaction failed: ${errorMessage}`
+							: `Auto-compaction failed: ${errorMessage}`,
+				customInstructions,
 			});
+			resumeAfterFailure();
 			return false;
 		} finally {
 			this._autoCompactionAbortController = undefined;
@@ -4909,12 +5356,15 @@ export class AgentSession {
 
 	/**
 	 * Skills exposed to the model (system prompt + kernel). The bundled goal
-	 * skill is withheld when goals are disabled for this session.
+	 * and compact skills are withheld when disabled for this session.
 	 */
 	private _modelVisibleSkills(): Skill[] {
 		let skills = this._resourceLoader.getSkills().skills;
 		if (!this._includeGoals) {
 			skills = skills.filter((skill) => skill.name !== GOAL_SKILL_NAME);
+		}
+		if (!this._includeCompactSkill) {
+			skills = skills.filter((skill) => skill.name !== COMPACT_SKILL_NAME);
 		}
 		if (!this._agentMessageController) {
 			skills = skills.filter((skill) => skill.name !== AGENT_MESSAGE_SKILL_NAME);
@@ -4943,6 +5393,11 @@ export class AgentSession {
 		if (this._includeGoals) {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
 				handlers[type] = async (payload) => this.handleGoalHostRequest(type, payload);
+			}
+		}
+		if (this._includeCompactSkill) {
+			for (const type of ["compact.run", "compact.status"]) {
+				handlers[type] = async (payload) => this.handleCompactHostRequest(type, payload);
 			}
 		}
 		if (this._rlmHeartbeatController) {
@@ -5189,6 +5644,7 @@ export class AgentSession {
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
 			customTools: [...this._customTools],
 			includeGoals: this._includeGoals,
+			includeCompactSkill: this._includeCompactSkill,
 			rlmDepth: this._rlmDepth + 1,
 			rlmMaxDepth: this._rlmMaxDepth,
 			rlmParentNodeId: options.id,
@@ -5269,6 +5725,7 @@ export class AgentSession {
 			initialActiveToolNames: options.activeToolNames,
 			allowedToolNames: options.allowedToolNames,
 			includeGoals: options.includeGoals,
+			includeCompactSkill: options.includeCompactSkill,
 			rlmDepth: options.rlmDepth,
 			rlmMaxDepth: options.rlmMaxDepth,
 			rlmSessionDir: options.sessionDir,
@@ -5600,28 +6057,172 @@ export class AgentSession {
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
 
-		// Structured classification from the provider (stream-failure.ts) beats
-		// message-text matching. Safety/malformed/unknown kinds fall through to
-		// the regex, which distinguishes transient content_filter cases.
-		const failure = message.diagnostics?.find((d) => d.type === "provider_stream_failure");
-		const kind = failure?.details?.kind;
-		if (kind === "overloaded" || kind === "rate_limit" || kind === "server_error") return true;
-		if (kind === "refusal" || kind === "auth" || kind === "invalid_request") return false;
+		if (this._isFauxProviderQueueExhausted(message)) {
+			return false;
+		}
 
-		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, request ended without sending chunks, HTTP/2 closed before response, terminated, retry delay exceeded, transient content_filter finish_reason, provider policy-flag prose, and prose-form transient 5xx ("an error occurred while processing your request. you can retry")
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay|content.?filter|flagged .*(cybersecurity|usage polic|violat)|error occurred while processing|you can retry/i.test(
-			err,
+		if (this._isAgentLifecycleFailure(message)) {
+			return false;
+		}
+
+		if (this._isStructuredPermanentProviderRetryExhausted(message)) {
+			return false;
+		}
+
+		return true;
+	}
+
+	private _isFauxProviderQueueExhausted(message: AssistantMessage): boolean {
+		return message.provider === "faux" && message.errorMessage === "No more faux responses queued";
+	}
+
+	private _isAgentLifecycleFailure(message: AssistantMessage): boolean {
+		return message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure") ?? false;
+	}
+
+	private _getProviderStreamFailureDetails(message: AssistantMessage): Record<string, unknown> | undefined {
+		const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
+		const details = failure?.details;
+		if (!details || typeof details !== "object") {
+			return undefined;
+		}
+		return details;
+	}
+
+	private _getProviderStreamFailureKind(message: AssistantMessage): string | undefined {
+		const kind = this._getProviderStreamFailureDetails(message)?.kind;
+		return typeof kind === "string" ? kind : undefined;
+	}
+
+	private _isStructuredPermanentProviderFailure(message: AssistantMessage): boolean {
+		const kind = this._getProviderStreamFailureKind(message);
+		return kind === "auth" || kind === "invalid_request" || kind === "refusal";
+	}
+
+	private _isStructuredPermanentProviderRetryExhausted(message: AssistantMessage): boolean {
+		return this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message);
+	}
+
+	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
+		const details = this._getProviderStreamFailureDetails(message);
+		if (!details) {
+			return undefined;
+		}
+
+		const kind = details.kind;
+		if (kind !== "auth") {
+			return undefined;
+		}
+
+		const status = details.status;
+		if (typeof status === "number") {
+			return status;
+		}
+		if (typeof status === "string") {
+			const parsed = Number(status);
+			return Number.isInteger(parsed) ? parsed : undefined;
+		}
+		return undefined;
+	}
+
+	private _isConcreteProviderAuthFailure(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error" || !message.errorMessage) return false;
+
+		const structuredStatus = this._getProviderStreamFailureAuthStatus(message);
+		if (structuredStatus === 401 || structuredStatus === 403) {
+			return true;
+		}
+
+		if (/\b(?:401|403)\b/.test(message.errorMessage) && /\bstatus code\b/i.test(message.errorMessage)) {
+			return true;
+		}
+
+		return (
+			/\b(?:401|403)\b/.test(message.errorMessage) &&
+			/auth|unauthori[sz]ed|forbidden|api.?key|token|credential/i.test(message.errorMessage)
 		);
+	}
+
+	private _captureRetryAuthFailureSource(message: AssistantMessage): AuthSourceToken | undefined {
+		const token = this._modelRegistry.getCurrentProviderAuthSourceToken(message.provider);
+		if (!token) {
+			return undefined;
+		}
+		if (
+			!this._retryAuthFailureSources.some(
+				(existing) =>
+					existing.provider === token.provider &&
+					existing.source === token.source &&
+					existing.identityFingerprint === token.identityFingerprint &&
+					existing.valueFingerprint === token.valueFingerprint,
+			)
+		) {
+			this._retryAuthFailureSources.push(token);
+		}
+		return token;
+	}
+
+	private _markProviderAuthStale(message: AssistantMessage, authSourceTokens?: readonly AuthSourceToken[]): boolean {
+		if (authSourceTokens && authSourceTokens.length > 0) {
+			let marked = false;
+			for (const token of authSourceTokens) {
+				marked = this._modelRegistry.markProviderAuthSourceStale(token) || marked;
+			}
+			if (marked) {
+				this._emit({ type: "auth_stale", provider: message.provider, sourceTokens: authSourceTokens });
+			}
+			return marked;
+		}
+		const marked = this._modelRegistry.markProviderAuthStale(message.provider);
+		if (marked) {
+			this._emit({ type: "auth_stale", provider: message.provider });
+		}
+		return marked;
+	}
+
+	private _markProviderAuthStaleForRetryFailure(
+		message: AssistantMessage,
+		options?: { markAuthStaleOnFailure?: boolean; authSourceTokens?: readonly AuthSourceToken[] },
+	): boolean {
+		const authSourceTokens =
+			this._retryAuthFailureSources.length > 0 ? this._retryAuthFailureSources : options?.authSourceTokens;
+		if ((authSourceTokens?.length ?? 0) > 0 || options?.markAuthStaleOnFailure) {
+			const marked = this._markProviderAuthStale(message, authSourceTokens);
+			if (marked && message.errorMessage) {
+				message.errorMessage = addLoginGuidanceToAuthError(message.errorMessage);
+			}
+			return marked;
+		}
+		return false;
+	}
+
+	private _finishActiveRetryWithFailure(message: AssistantMessage): void {
+		if (this._retryAttempt === 0) {
+			return;
+		}
+		this._markProviderAuthStaleForRetryFailure(message);
+		this._emit({
+			type: "auto_retry_end",
+			success: false,
+			attempt: this._retryAttempt,
+			finalError: message.errorMessage,
+		});
+		this._retryAttempt = 0;
+		this._retryAuthFailureSources = [];
 	}
 
 	/**
 	 * Handle retryable errors with exponential backoff.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
 	 */
-	private async _handleRetryableError(message: AssistantMessage): Promise<boolean> {
+	private async _handleRetryableError(
+		message: AssistantMessage,
+		options?: { markAuthStaleOnFailure?: boolean; authSourceTokens?: readonly AuthSourceToken[] },
+	): Promise<boolean> {
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled) {
+			this._markProviderAuthStaleForRetryFailure(message, options);
+			this._retryAuthFailureSources = [];
 			this._resolveRetry();
 			return false;
 		}
@@ -5637,6 +6238,7 @@ export class AgentSession {
 		this._retryAttempt++;
 
 		if (this._retryAttempt > settings.maxRetries) {
+			this._markProviderAuthStaleForRetryFailure(message, options);
 			// Max retries exceeded, emit final failure and reset
 			this._emit({
 				type: "auto_retry_end",
@@ -5645,6 +6247,7 @@ export class AgentSession {
 				finalError: message.errorMessage,
 			});
 			this._retryAttempt = 0;
+			this._retryAuthFailureSources = [];
 			this._resolveRetry(); // Resolve so waitForRetry() completes
 			return false;
 		}
@@ -5672,6 +6275,7 @@ export class AgentSession {
 		} catch {
 			// Aborted during sleep - emit end event so UI can clean up
 			const attempt = this._retryAttempt;
+			this._markProviderAuthStaleForRetryFailure(message, options);
 			this._retryAttempt = 0;
 			this._retryAbortController = undefined;
 			this._emit({
@@ -5681,6 +6285,7 @@ export class AgentSession {
 				finalError: "Retry cancelled",
 			});
 			this._resolveRetry();
+			this._retryAuthFailureSources = [];
 			return false;
 		}
 		this._retryAbortController = undefined;
@@ -5699,8 +6304,22 @@ export class AgentSession {
 	 * Cancel in-progress retry.
 	 */
 	abortRetry(): void {
-		this._retryAbortController?.abort();
-		// Note: _retryAttempt is reset in the catch block of _autoRetry
+		if (this._retryAbortController) {
+			this._retryAbortController.abort();
+			return;
+		}
+		if (this._retryAttempt > 0) {
+			this._autoCompactionAbortController?.abort();
+			this._cancelPostCompactionContinue();
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt: this._retryAttempt,
+				finalError: "Retry cancelled",
+			});
+			this._retryAttempt = 0;
+		}
+		this._retryAuthFailureSources = [];
 		this._resolveRetry();
 	}
 

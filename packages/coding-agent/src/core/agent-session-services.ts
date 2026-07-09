@@ -56,6 +56,7 @@ export interface AgentSessionCreationOptions {
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
 	includeGoals?: boolean;
+	includeCompactSkill?: boolean;
 	agentMessageController?: AgentSessionMessageController;
 	agentObserveController?: AgentObserveController;
 	rlmDepth?: number;
@@ -237,6 +238,7 @@ export async function createAgentSessionFromServices(
 		initialActiveToolNames: options.initialActiveToolNames,
 		allowedToolNames: options.allowedToolNames,
 		includeGoals: options.includeGoals,
+		includeCompactSkill: options.includeCompactSkill,
 		agentMessageController: options.agentMessageController,
 		agentObserveController: options.agentObserveController,
 		rlmDepth: options.rlmDepth,

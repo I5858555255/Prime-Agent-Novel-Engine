@@ -6,10 +6,17 @@
  * disposing the underlying agent loop.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { getLogger } from "@earendil-works/pi-ai";
-import { appendRotatingLog, getCronJobsPath, getDaemonLogPath, VERSION } from "../../config.js";
+import {
+	appendRotatingLog,
+	getCronJobsPath,
+	getDaemonLogPath,
+	getDaemonUpdateRestartManifestPath,
+	VERSION,
+} from "../../config.js";
 import {
 	AGENT_MESSAGE_SOURCE,
 	type AgentSessionMessageAgentSummary,
@@ -44,10 +51,11 @@ import {
 	normalizeObserveLimit,
 	normalizeObserveMaxChars,
 } from "../../core/agent-observe.js";
-import type { PromptOptions } from "../../core/agent-session.js";
+import type { AgentSession, PromptOptions } from "../../core/agent-session.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
 	AgentSessionRuntime,
+	type AgentSessionRuntimeMetadata,
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntime,
 } from "../../core/agent-session-runtime.js";
@@ -101,6 +109,8 @@ import {
 	type DaemonSavedSessionInfo,
 	type DaemonSessionClosedReason,
 	type DaemonSessionSnapshot,
+	type DaemonUpdateRestartManifest,
+	type DaemonUpdateRestartSession,
 	failure,
 	isDaemonDialogExtensionUiRequest,
 	success,
@@ -142,6 +152,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"prompt",
 	"steer",
 	"follow_up",
+	"restore_next_turn",
+	"resume_queue",
 	"send_message",
 	"agent_messages_status",
 	"agent_messages_pause",
@@ -201,6 +213,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_tool_definition",
 	"set_session_entry_label",
 	"extension_ui_response",
+	"prepare_update_restart",
 	"shutdown",
 ]);
 
@@ -212,6 +225,15 @@ const DAEMON_SERVER_CAPABILITIES: readonly DaemonClientCapability[] = [
 ];
 
 const DAEMON_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SERVER_CAPABILITIES);
+const UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS = 5000;
+const UPDATE_RESTART_MARKER =
+	"<prime_agent_update_interrupted>\n" +
+	"Prime Agent was updated and intentionally interrupted this session. Continue from the saved transcript and restored tool/kernel state. Any running model, tool, bash, or child-agent work may have been partially completed.\n" +
+	"</prime_agent_update_interrupted>";
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
 
 export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
@@ -223,6 +245,7 @@ export async function runDaemonMode(options: DaemonModeOptions): Promise<never> 
 export class AgentDaemon {
 	private server?: Server;
 	private shuttingDown = false;
+	private updateRestartPreparing = false;
 	private ownsSocketPath = false;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
@@ -391,6 +414,8 @@ export class AgentDaemon {
 		try {
 			await bindActiveSessionState(state, {
 				broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
+				createConnectionState: (targetSessionState) => this.createConnectionState(targetSessionState),
+				sessionReplaced: (targetSessionState) => this.refreshReplacedSessionState(targetSessionState),
 				shutdown: () => {
 					void this.shutdown(0);
 				},
@@ -418,6 +443,18 @@ export class AgentDaemon {
 		// Restore the last persisted status so it shows before the first sweep.
 		this.summarizer.seed(state);
 		return state;
+	}
+
+	private refreshReplacedSessionState(state: ActiveSessionState): void {
+		this.summarizer.forget(state.activeSessionId);
+		state.summaryState = undefined;
+		state.runtime.session.setCurrentRecap(undefined);
+		this.summarizer.seed(state);
+		if (state.runtime.metadata.kind === "subagent") {
+			const summaryState = state.summaryState as ActiveSessionState["summaryState"];
+			state.runtime.session.setCurrentRecap(summaryState?.summary);
+		}
+		this.rebindCronJobsToState(state);
 	}
 
 	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState> {
@@ -467,6 +504,7 @@ export class AgentDaemon {
 					agentDir,
 					sessionManager,
 					sessionConfig: config,
+					runtimeMetadata: command.runtimeMetadata,
 					sessionOptions: {
 						customTools: [
 							...createAgentHeartbeatToolDefinitions({
@@ -562,8 +600,11 @@ export class AgentDaemon {
 	}
 
 	private async runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> {
+		if (this.updateRestartPreparing) {
+			return "skipped";
+		}
 		const state = await this.getOrCreateCronJobSession(job);
-		if (!state) {
+		if (!state || this.updateRestartPreparing) {
 			return "skipped";
 		}
 		const session = state.runtime.session;
@@ -588,9 +629,16 @@ export class AgentDaemon {
 			await session.followUp(job.prompt);
 			return;
 		}
+		if (isHeartbeatCronJob(job)) {
+			await this.promptHeartbeatWithAgentMessagePreparingGuard(state, job, {
+				streamingBehavior: "followUp",
+				followUpQueueKey: `heartbeat:${job.id}`,
+				source: "rpc",
+			});
+			return;
+		}
 		await this.promptWithAgentMessagePreparingGuard(state, job.prompt, {
 			streamingBehavior: "followUp",
-			followUpQueueKey: isHeartbeatCronJob(job) ? `heartbeat:${job.id}` : undefined,
 			source: "rpc",
 		});
 	}
@@ -603,6 +651,39 @@ export class AgentDaemon {
 		state: ActiveSessionState,
 		message: string,
 		options?: PromptOptions,
+	): Promise<void> {
+		await this.withAgentMessagePreparingGuard(state, (session) => {
+			const prompt =
+				options?.agentMessageId === undefined
+					? session.prompt.bind(session)
+					: session.acceptAgentMessagePrompt.bind(session);
+			return prompt(message, {
+				...options,
+				preflightResult: (didSucceed) => {
+					options?.preflightResult?.(didSucceed);
+				},
+			});
+		});
+	}
+
+	private async promptHeartbeatWithAgentMessagePreparingGuard(
+		state: ActiveSessionState,
+		job: AgentCronJob,
+		options?: PromptOptions,
+	): Promise<void> {
+		await this.withAgentMessagePreparingGuard(state, (session) =>
+			session.promptHeartbeat(job, {
+				...options,
+				preflightResult: (didSucceed) => {
+					options?.preflightResult?.(didSucceed);
+				},
+			}),
+		);
+	}
+
+	private async withAgentMessagePreparingGuard(
+		state: ActiveSessionState,
+		run: (session: AgentSession) => Promise<void>,
 	): Promise<void> {
 		const activeSessionId = state.activeSessionId;
 		const session = state.runtime.session;
@@ -625,12 +706,7 @@ export class AgentDaemon {
 		};
 		try {
 			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
-			await session.prompt(message, {
-				...options,
-				preflightResult: (didSucceed) => {
-					options?.preflightResult?.(didSucceed);
-				},
-			});
+			await run(session);
 		} finally {
 			clearPreparing();
 		}
@@ -775,6 +851,40 @@ export class AgentDaemon {
 		}
 	}
 
+	private cancelScheduledJobsForSession(state: ActiveSessionState): void {
+		const session = state.runtime.session;
+		const target: { activeSessionId: string; sessionId?: string; sessionFile?: string } = {
+			activeSessionId: state.activeSessionId,
+		};
+		if (session?.sessionId) {
+			target.sessionId = session.sessionId;
+		}
+		if (session?.sessionFile) {
+			target.sessionFile = session.sessionFile;
+		}
+		const cancelled = this.cronStore.cancelJobsForSession(target);
+		for (const job of cancelled) {
+			this.removeQueuedHeartbeatFollowUp(state, job);
+		}
+		if (cancelled.length > 0) {
+			this.cronScheduler.wake();
+		}
+	}
+
+	private cancelScheduledJobsForSessionFile(sessionFile: string): void {
+		const cancelled = this.cronStore.cancelJobsForSession({ sessionFile });
+		if (cancelled.length > 0) {
+			this.cronScheduler.wake();
+		}
+	}
+
+	private deleteSavedSessionFile(
+		sessionPath: string,
+		options?: Parameters<typeof deleteSessionFile>[1],
+	): ReturnType<typeof deleteSessionFile> {
+		return deleteSessionFile(sessionPath, options);
+	}
+
 	private removeQueuedHeartbeatFollowUp(state: ActiveSessionState, job: AgentCronJob): void {
 		if (!isHeartbeatCronJob(job)) {
 			return;
@@ -783,6 +893,9 @@ export class AgentDaemon {
 	}
 
 	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState | undefined> {
+		if (this.updateRestartPreparing) {
+			return undefined;
+		}
 		const current = this.sessions.get(job.activeSessionId) ?? this.findSessionBySessionFile(job.sessionFile);
 		// A half-bound match falls through to createRuntime, which awaits the
 		// pending create for the same session file instead of prompting mid-bind.
@@ -902,6 +1015,7 @@ export class AgentDaemon {
 					allowedToolNames: options.allowedToolNames,
 					customTools: options.customTools,
 					includeGoals: options.includeGoals,
+					includeCompactSkill: options.includeCompactSkill,
 					rlmHeartbeatController: {
 						listRlmHeartbeats: (listOptions) => {
 							if (!stateRef) {
@@ -1126,6 +1240,9 @@ export class AgentDaemon {
 		client: DaemonSocketClient,
 		command: DaemonCommand,
 	): Promise<DaemonResponse | undefined> {
+		if (this.updateRestartPreparing && command.type !== "shutdown") {
+			throw new Error("Daemon is preparing an update restart");
+		}
 		switch (command.type) {
 			case "list": {
 				const activeSessions = Array.from(this.sessions.values());
@@ -1256,7 +1373,12 @@ export class AgentDaemon {
 				if (this.findActiveSessionByFile(command.sessionPath)) {
 					throw new Error("Cannot delete the currently active session");
 				}
-				return success(command.id, "delete_saved_session", await deleteSessionFile(command.sessionPath));
+				const result = await this.deleteSavedSessionFile(command.sessionPath, {
+					afterFileRemoved: () => {
+						this.cancelScheduledJobsForSessionFile(command.sessionPath);
+					},
+				});
+				return success(command.id, "delete_saved_session", result);
 			}
 
 			case "prompt": {
@@ -1270,8 +1392,12 @@ export class AgentDaemon {
 					this.write(client, success(command.id, "prompt"));
 				};
 				void this.promptWithAgentMessagePreparingGuard(state, command.message, {
+					content: command.content,
 					images: command.images,
 					streamingBehavior: command.streamingBehavior,
+					expandPromptTemplates: command.expandPromptTemplates,
+					agentMessageId: command.agentMessageId,
+					skipInputHandlers: command.expandPromptTemplates === false ? true : undefined,
 					source: "rpc",
 					preflightResult: (didSucceed) => {
 						if (didSucceed) {
@@ -1294,14 +1420,64 @@ export class AgentDaemon {
 
 			case "steer": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.steer(command.message, command.images);
+				if (command.expandPromptTemplates === false) {
+					await state.runtime.session.restoreSteeringMessage(command.message, command.images, {
+						agentMessageId: command.agentMessageId,
+						content: command.content,
+						customMessage: command.customMessage,
+					});
+				} else {
+					await state.runtime.session.steer(command.message, command.images);
+				}
 				return success(command.id, "steer");
 			}
 
 			case "follow_up": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.followUp(command.message, command.images);
-				return success(command.id, "follow_up");
+				let queued: boolean;
+				if (command.expandPromptTemplates === false) {
+					queued = await state.runtime.session.restoreFollowUpMessage(command.message, command.images, {
+						queueKey: command.queueKey,
+						agentMessageId: command.agentMessageId,
+						content: command.content,
+						customMessage: command.customMessage,
+					});
+				} else {
+					queued = await state.runtime.session.followUp(command.message, command.images, {
+						queueKey: command.queueKey,
+						agentMessageId: command.agentMessageId,
+					});
+				}
+				return success(command.id, "follow_up", { queued });
+			}
+
+			case "restore_next_turn": {
+				const state = this.getSessionState(command.activeSessionId);
+				state.runtime.session.restorePendingNextTurnMessages(command.messages);
+				return success(command.id, "restore_next_turn");
+			}
+
+			case "resume_queue": {
+				const state = this.getSessionState(command.activeSessionId);
+				let checkedStart = false;
+				let startError: unknown;
+				void state.runtime.session.agent.continue().then(undefined, (error: unknown) => {
+					if (checkedStart) {
+						this.broadcastToSession(
+							state,
+							failure(undefined, "resume_queue", error, serializeDaemonError(error)),
+						);
+					} else {
+						startError = error;
+					}
+				});
+				// Self-update restore must acknowledge that queued work restarted without waiting for it to finish.
+				await Promise.resolve();
+				checkedStart = true;
+				if (startError !== undefined) {
+					return failure(command.id, "resume_queue", startError, serializeDaemonError(startError));
+				}
+				return success(command.id, "resume_queue");
 			}
 
 			case "send_message": {
@@ -1394,11 +1570,7 @@ export class AgentDaemon {
 
 			case "get_connection_state": {
 				const state = this.getSessionState(command.activeSessionId);
-				return success(
-					command.id,
-					"get_connection_state",
-					createAgentConnectionState(state.runtime, state.activeSessionId),
-				);
+				return success(command.id, "get_connection_state", this.createConnectionState(state));
 			}
 
 			case "get_messages": {
@@ -1444,8 +1616,8 @@ export class AgentDaemon {
 			case "get_queue": {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "get_queue", {
-					steering: [...state.runtime.session.getSteeringMessages()],
-					followUp: [...state.runtime.session.getFollowUpMessages()],
+					steering: [...state.runtime.session.getSteeringMessagePreviews()],
+					followUp: [...state.runtime.session.getFollowUpMessagePreviews()],
 				});
 			}
 
@@ -1736,6 +1908,12 @@ export class AgentDaemon {
 				return success(command.id, "extension_ui_response");
 			}
 
+			case "prepare_update_restart":
+				this.log(
+					`prepare_update_restart command received over socket; ${this.sessions.size} active session(s) will be closed`,
+				);
+				return success(command.id, "prepare_update_restart", await this.prepareUpdateRestart());
+
 			case "shutdown":
 				this.log(`shutdown command received over socket; ${this.sessions.size} active session(s) will be closed`);
 				setImmediate(() => {
@@ -1789,11 +1967,7 @@ export class AgentDaemon {
 					}
 				: undefined;
 		const children = buildRlmChildSnapshots(state.activeSessionId, [...this.sessions.values()]);
-		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
-		// Prefer the live in-memory recap over the persisted baseline.
-		if (state.summaryState?.summary) {
-			connectionState.recap = state.summaryState.summary;
-		}
+		const connectionState = this.createConnectionState(state);
 		return {
 			activeSessionId: state.activeSessionId,
 			summary: summaryForActiveSession(state),
@@ -1806,6 +1980,15 @@ export class AgentDaemon {
 			...(parent ? { parent } : {}),
 			...(children.length > 0 ? { children } : {}),
 		};
+	}
+
+	private createConnectionState(state: ActiveSessionState): ReturnType<typeof createAgentConnectionState> {
+		const connectionState = createAgentConnectionState(state.runtime, state.activeSessionId);
+		connectionState.heartbeat = this.cronStore.getLatestHeartbeat(state.activeSessionId) ?? null;
+		if (state.summaryState?.summary) {
+			connectionState.recap = state.summaryState.summary;
+		}
+		return connectionState;
 	}
 
 	private createAgentSessionMessageEndpoint(state: ActiveSessionState): AgentSessionMessageEndpoint {
@@ -2014,7 +2197,7 @@ export class AgentDaemon {
 			session.pendingMessageCount > 0;
 		const streamingBehavior =
 			resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
-			(payload.deliveryMode === "steer" ? "steer" : "followUp");
+			(payload.deliveryMode === "follow_up" ? "followUp" : "steer");
 		const prompt = createAgentSessionMessagePrompt(payload);
 
 		if (shouldQueue) {
@@ -2101,6 +2284,186 @@ export class AgentDaemon {
 		return !this.hasScheduledJobsForSession(state.activeSessionId);
 	}
 
+	private createUpdateRestartSession(state: ActiveSessionState): DaemonUpdateRestartSession | undefined {
+		const session = state.runtime.session;
+		const queue = {
+			steering: [...session.getSteeringQueueSnapshots()].map((message) => ({
+				message: message.text,
+				...(message.content ? { content: message.content } : {}),
+				...(message.images ? { images: message.images } : {}),
+				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
+				...(message.customMessage ? { customMessage: message.customMessage } : {}),
+			})),
+			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
+				message: message.text,
+				...(message.content ? { content: message.content } : {}),
+				...(message.images ? { images: message.images } : {}),
+				...(message.queueKey ? { queueKey: message.queueKey } : {}),
+				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
+				...(message.customMessage ? { customMessage: message.customMessage } : {}),
+			})),
+			nextTurn: [...session.getPendingNextTurnMessageSnapshots()],
+		};
+		const acceptedPrompt = session.getAcceptedPromptSnapshot();
+		const restartQueue = {
+			...queue,
+			...(acceptedPrompt
+				? {
+						acceptedPrompt: {
+							message: acceptedPrompt.text,
+							...(acceptedPrompt.content ? { content: acceptedPrompt.content } : {}),
+							...(acceptedPrompt.images ? { images: acceptedPrompt.images } : {}),
+							agentMessageId: acceptedPrompt.agentMessageId,
+							nextTurn: acceptedPrompt.nextTurn,
+						},
+					}
+				: {}),
+		};
+		const hasQueuedMessages =
+			restartQueue.steering.length > 0 ||
+			restartQueue.followUp.length > 0 ||
+			restartQueue.nextTurn.length > 0 ||
+			restartQueue.acceptedPrompt !== undefined;
+		const wasStreaming = session.isStreaming;
+		const wasCompacting = session.isCompacting;
+		const wasBashRunning = session.isBashRunning;
+		const hadRunningRlmChildren = session.hasRunningRlmChildren();
+		const wasRetrying = session.isRetrying;
+		const hadAcceptedPromptInFlight = session.hasAcceptedPromptInFlight;
+		const shouldResume =
+			wasStreaming ||
+			wasCompacting ||
+			wasBashRunning ||
+			hadRunningRlmChildren ||
+			wasRetrying ||
+			hadAcceptedPromptInFlight ||
+			restartQueue.steering.length > 0 ||
+			restartQueue.followUp.length > 0 ||
+			restartQueue.acceptedPrompt !== undefined;
+		const sessionFile =
+			session.sessionFile ??
+			(hasQueuedMessages || shouldResume
+				? session.sessionManager.materializeSessionFile(
+						state.runtime.runtimeConfig?.sessionDir ?? this.options.defaultSessionConfig.sessionDir,
+					)
+				: undefined);
+		if (!sessionFile || (this.isEmptyDraftContent(state) && !hasQueuedMessages && !shouldResume)) {
+			return undefined;
+		}
+		return {
+			activeSessionId: state.activeSessionId,
+			sessionId: session.sessionId,
+			sessionFile,
+			cwd: session.sessionManager.getCwd(),
+			config: {
+				...state.runtime.runtimeConfig,
+				cwd: session.sessionManager.getCwd(),
+			},
+			runtimeMetadata: state.runtime.metadata,
+			...(state.clientEnv ? { clientEnv: { ...state.clientEnv } } : {}),
+			queue: restartQueue,
+			shouldResume,
+			wasStreaming,
+			wasCompacting,
+			wasBashRunning,
+			hadRunningRlmChildren,
+			wasRetrying,
+			hadAcceptedPromptInFlight,
+		};
+	}
+
+	private appendUpdateRestartMarker(state: ActiveSessionState, restartSession: DaemonUpdateRestartSession): void {
+		if (!restartSession.shouldResume) {
+			return;
+		}
+		state.runtime.session.sessionManager.appendCustomMessageEntry(
+			"prime-agent.update_restart",
+			UPDATE_RESTART_MARKER,
+			false,
+			{
+				activeSessionId: restartSession.activeSessionId,
+				wasStreaming: restartSession.wasStreaming,
+				wasCompacting: restartSession.wasCompacting,
+				wasBashRunning: restartSession.wasBashRunning,
+				hadRunningRlmChildren: restartSession.hadRunningRlmChildren,
+				wasRetrying: restartSession.wasRetrying,
+				hadAcceptedPromptInFlight: restartSession.hadAcceptedPromptInFlight,
+			},
+		);
+	}
+
+	private writeUpdateRestartManifest(manifest: DaemonUpdateRestartManifest): void {
+		const path = getDaemonUpdateRestartManifestPath(this.options.defaultSessionConfig.agentDir);
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify(manifest)}\n`);
+	}
+
+	private getUpdateRestartSessionDepth(state: ActiveSessionState): number {
+		let depth = 0;
+		let metadata: AgentSessionRuntimeMetadata = state.runtime.metadata;
+		const seen = new Set<string>([state.activeSessionId]);
+		while (metadata.parentActiveSessionId && !seen.has(metadata.parentActiveSessionId)) {
+			const parent = this.sessions.get(metadata.parentActiveSessionId);
+			if (!parent) {
+				break;
+			}
+			seen.add(parent.activeSessionId);
+			depth++;
+			metadata = parent.runtime.metadata;
+		}
+		return depth;
+	}
+
+	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
+		if (this.updateRestartPreparing) {
+			throw new Error("Daemon is already preparing an update restart");
+		}
+		this.updateRestartPreparing = true;
+		// Keep persisted jobs for the replacement daemon, but stop this daemon from firing them after sessions detach.
+		this.cronScheduler.stop();
+		try {
+			const states = [...this.sessions.values()];
+			const restartSessions = states
+				.map((state) => [state, this.createUpdateRestartSession(state)] as const)
+				.filter(
+					(entry): entry is readonly [ActiveSessionState, DaemonUpdateRestartSession] => entry[1] !== undefined,
+				)
+				.sort(
+					([left], [right]) => this.getUpdateRestartSessionDepth(left) - this.getUpdateRestartSessionDepth(right),
+				);
+			const manifest = {
+				createdAt: new Date().toISOString(),
+				sessions: restartSessions.map(([, restartSession]) => restartSession),
+			};
+
+			this.writeUpdateRestartManifest(manifest);
+
+			for (const [state, restartSession] of restartSessions) {
+				this.appendUpdateRestartMarker(state, restartSession);
+			}
+			const restoredActiveSessionIds = new Set(restartSessions.map(([state]) => state.activeSessionId));
+			const closeStates = [...states].sort(
+				(left, right) => this.getUpdateRestartSessionDepth(right) - this.getUpdateRestartSessionDepth(left),
+			);
+			for (const state of closeStates) {
+				if (this.sessions.has(state.activeSessionId)) {
+					await this.closeSession(
+						state,
+						restoredActiveSessionIds.has(state.activeSessionId) ? "update" : "killed",
+					);
+				}
+			}
+			for (const state of [...this.sessions.values()]) {
+				await this.closeSession(state, "killed");
+			}
+
+			return manifest;
+		} catch (error) {
+			this.updateRestartPreparing = false;
+			throw error;
+		}
+	}
+
 	private hasScheduledJobsForSession(activeSessionId: string): boolean {
 		return this.cronStore
 			.list()
@@ -2145,11 +2508,26 @@ export class AgentDaemon {
 		}
 	}
 
+	private async abortBashForClose(state: ActiveSessionState): Promise<void> {
+		if (!state.runtime.session.isBashRunning) {
+			return;
+		}
+		state.runtime.session.abortBash();
+		const deadline = Date.now() + UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS;
+		while (state.runtime.session.isBashRunning && Date.now() < deadline) {
+			await delay(50);
+		}
+	}
+
 	private async closeSessionOnce(state: ActiveSessionState, reason: DaemonSessionClosedReason): Promise<void> {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
 		}
-		this.cancelSubagentRlmHeartbeats(state);
+		if (reason === "killed") {
+			this.cancelScheduledJobsForSession(state);
+		} else {
+			this.cancelSubagentRlmHeartbeats(state);
+		}
 		// Abort in-flight status work before any await/dispose so it can't write
 		// agent_status to a session being torn down.
 		this.summarizer.forget(state.activeSessionId);
@@ -2157,10 +2535,11 @@ export class AgentDaemon {
 		// Empty draft (no messages, config, or jobs): discard rather than persist an
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
-		const isEmptyDraftSession = reason !== "shutdown" && this.isEmptyDraftContent(state);
+		const keepsResumeEntry = reason === "shutdown" || reason === "update";
+		const isEmptyDraftSession = !keepsResumeEntry && this.isEmptyDraftContent(state);
 		let persistError: unknown;
 		// Clean shutdown leaves the session un-archived so it stays in the resume list.
-		if (reason !== "shutdown" && !isEmptyDraftSession) {
+		if (!keepsResumeEntry && !isEmptyDraftSession) {
 			try {
 				state.runtime.session.sessionManager.appendSessionState({ status: "archived" });
 			} catch (error) {
@@ -2168,6 +2547,12 @@ export class AgentDaemon {
 			}
 		}
 		cancelPendingExtensionUiRequests(state);
+		if (reason === "killed" || reason === "shutdown" || reason === "replaced" || reason === "update") {
+			await this.abortBashForClose(state);
+		}
+		if (reason === "update") {
+			state.runtime.session.abortForUpdateRestart();
+		}
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
 			await state.runtime.session.abort().catch(() => undefined);
 		}
@@ -2185,10 +2570,10 @@ export class AgentDaemon {
 				await deleteSessionFile(sessionFile).catch(() => undefined);
 			}
 		}
-		if (persistError && reason !== "shutdown" && reason !== "completed") {
+		if (persistError && !keepsResumeEntry && reason !== "completed") {
 			throw persistError;
 		}
-		if (cascadeError && reason !== "shutdown" && reason !== "completed") {
+		if (cascadeError && !keepsResumeEntry && reason !== "completed") {
 			throw cascadeError;
 		}
 	}

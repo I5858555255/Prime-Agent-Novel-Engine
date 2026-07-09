@@ -20,15 +20,19 @@ receipt = await agent_message.send("worker", "Please inspect the latest result."
 
 - `await agent_message.list_agents()` — returns `current` and `agents`, where
   each agent includes active session id, session id, optional name, runtime
-  kind, cwd, streaming state, and pending message count.
+  kind, cwd, streaming state, and pending message count. This includes live
+  subagents; filter by `runtimeKind == "subagent"`, `parentActiveSessionId`,
+  or `rlmChildId` before messaging a specific subagent.
 - `await agent_message.send(target, message, mode="auto")` — sends one direct
   text message to an active session. `target` is resolved by the daemon like
   other live-session selectors. `mode` is `"auto"`, `"follow_up"`, or
-  `"steer"`. Returns a receipt with a `deliveryStatus` field: `"delivered"`
-  means the message reached an idle target's context; `"queued"` means it was
-  accepted and will deliver when the target's current work allows (`send`
-  does not block waiting for that). Delivered receipts carry `deliveredAt`,
-  queued receipts carry `queuedAt`.
+  `"steer"`. In `auto` mode, messages to busy sessions are queued as steering
+  messages so the target sees them during the active run; use `"follow_up"` for
+  intentionally delayed delivery. Returns a receipt with a `deliveryStatus`
+  field: `"delivered"` means the message reached an idle target's context;
+  `"queued"` means it was accepted and will deliver when the target's current
+  work allows (`send` does not block waiting for that). Delivered receipts
+  carry `deliveredAt`, queued receipts carry `queuedAt`.
 
 ## Safety
 
