@@ -582,9 +582,6 @@ class AgentsViewMode implements Component, Focusable {
 			return [];
 		}
 		const lines: string[] = [];
-		// Match the in-session header inset so the shared splash does not jump
-		// when opening an agent from this view.
-		lines.push("");
 		lines.push(...this.splash.render(width));
 		const noticeLines = this.renderStartupNotices(width);
 		if (noticeLines.length > 0) {
