@@ -264,6 +264,7 @@ describe("IpythonKernelProvisioner", () => {
 			},
 		);
 		expect(setWorkingMessage).toHaveBeenCalledWith("Waiting for IPython kernel...");
+		expect(setWorkingMessage).toHaveBeenLastCalledWith(undefined);
 	});
 
 	it("lets the user kill and restart a busy interrupted kernel", async () => {
@@ -294,6 +295,7 @@ describe("IpythonKernelProvisioner", () => {
 		expect(kill).toHaveBeenCalledTimes(1);
 		expect(freshManager.execute).toHaveBeenCalledWith("x = 1", expect.objectContaining({ signal: undefined }));
 		expect(setWorkingMessage).toHaveBeenCalledWith("Restarting IPython kernel...");
+		expect(setWorkingMessage).toHaveBeenLastCalledWith(undefined);
 	});
 
 	it("does not delete the on-disk snapshot (the kernel survives compaction)", async () => {

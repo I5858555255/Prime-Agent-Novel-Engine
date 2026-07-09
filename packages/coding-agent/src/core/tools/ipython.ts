@@ -550,6 +550,7 @@ async function executeWithBusyKernelChoice(
 	code: string,
 	signal: AbortSignal | undefined,
 	onStream: (chunk: string, name: "stdout" | "stderr") => void,
+	onWorkingMessage: (message?: string) => void,
 	ctx: ExtensionContext | undefined,
 ): Promise<{ result: ExecuteResult; kernelRestarted: boolean }> {
 	let kernelRestarted = false;
@@ -563,11 +564,11 @@ async function executeWithBusyKernelChoice(
 			}
 			const action = await chooseBusyKernelAction(ctx, signal);
 			if (action === "wait") {
-				setWorkingMessage(ctx, "Waiting for IPython kernel...");
+				onWorkingMessage("Waiting for IPython kernel...");
 				continue;
 			}
 			if (action === "kill") {
-				setWorkingMessage(ctx, "Restarting IPython kernel...");
+				onWorkingMessage("Restarting IPython kernel...");
 				await provisioner.kill();
 				kernelRestarted = true;
 				continue;
@@ -601,10 +602,13 @@ export function createIpythonToolDefinition(
 		executionMode: "sequential",
 		parameters: ipythonSchema,
 		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
-			let reportedStartupProgress = false;
-			const reportStartupProgress: KernelBootstrapProgressHandler = (message) => {
-				reportedStartupProgress = true;
+			let hasWorkingMessage = false;
+			const setToolWorkingMessage = (message?: string) => {
 				setWorkingMessage(ctx, message);
+				hasWorkingMessage = message !== undefined;
+			};
+			const reportStartupProgress: KernelBootstrapProgressHandler = (message) => {
+				setToolWorkingMessage(message);
 				onUpdate?.({
 					content: [{ type: "text", text: message }],
 					details: { status: "starting" },
@@ -624,6 +628,7 @@ export function createIpythonToolDefinition(
 							details: { status: "ok" },
 						});
 					},
+					setToolWorkingMessage,
 					ctx,
 				);
 
@@ -657,8 +662,8 @@ export function createIpythonToolDefinition(
 					isError: r.status === "error" || r.status === "aborted",
 				};
 			} finally {
-				if (reportedStartupProgress) {
-					setWorkingMessage(ctx);
+				if (hasWorkingMessage) {
+					setToolWorkingMessage();
 				}
 			}
 		},
