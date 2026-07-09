@@ -3,7 +3,10 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { herdrAgentStateExtension } from "../src/core/extensions/builtin/herdr-agent-state.js";
+import {
+	hasFileBasedHerdrIntegration,
+	herdrAgentStateExtension,
+} from "../src/core/extensions/builtin/herdr-agent-state.js";
 import type { ExtensionAPI } from "../src/core/extensions/types.js";
 
 interface RecordedRequest {
@@ -25,6 +28,13 @@ function createMockPi() {
 				const list = busHandlers.get(event) ?? [];
 				list.push(handler);
 				busHandlers.set(event, list);
+				return () => {
+					const current = busHandlers.get(event) ?? [];
+					const index = current.indexOf(handler);
+					if (index !== -1) {
+						current.splice(index, 1);
+					}
+				};
 			},
 		},
 	} as unknown as ExtensionAPI;
@@ -135,23 +145,16 @@ describe("herdrAgentStateExtension", () => {
 		expect(busHandlers.size).toBe(0);
 	});
 
-	it("registers no handlers when the file-based herdr integration is installed", () => {
+	it("detects the file-based herdr integration only in the given extension dirs", () => {
 		const tempDir = join(tmpdir(), `pi-herdr-filebased-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		const extDir = join(tempDir, "extensions");
 		mkdirSync(extDir, { recursive: true });
 		writeFileSync(join(extDir, "herdr-agent-state.ts"), "// installed by herdr\n");
 		cleanupPaths.push(tempDir);
 
-		process.env.PRIME_AGENT_CODING_AGENT_DIR = tempDir;
-		process.env.HERDR_ENV = "1";
-		process.env.HERDR_SOCKET_PATH = join(tempDir, "herdr.sock");
-		process.env.HERDR_PANE_ID = "w1:p1";
-
-		const { pi, handlers, busHandlers } = createMockPi();
-		herdrAgentStateExtension(pi);
-
-		expect(handlers.size).toBe(0);
-		expect(busHandlers.size).toBe(0);
+		expect(hasFileBasedHerdrIntegration([extDir])).toBe(true);
+		expect(hasFileBasedHerdrIntegration([join(tempDir, "other")])).toBe(false);
+		expect(hasFileBasedHerdrIntegration([])).toBe(false);
 	});
 
 	it("reports lifecycle state to the herdr socket", async () => {
@@ -212,6 +215,30 @@ describe("herdrAgentStateExtension", () => {
 		await waitForRequests(4);
 		expect(requests[3]?.method).toBe("pane.release_agent");
 		expect(requests[3]?.params.agent).toBe("prime-agent");
+	});
+
+	it("unsubscribes the shared-bus herdr:blocked listener on shutdown", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+
+		const { pi, handlers, busHandlers } = createMockPi();
+		herdrAgentStateExtension(pi);
+		expect(busHandlers.get("herdr:blocked")).toHaveLength(1);
+
+		const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "s" } };
+		// Replacement shutdowns must also unsubscribe, or every /reload and /new
+		// stacks another live listener on the shared bus.
+		await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "new" }, ctx);
+		expect(busHandlers.get("herdr:blocked")).toHaveLength(0);
 	});
 
 	it("keeps seq monotonically increasing across extension instances", async () => {

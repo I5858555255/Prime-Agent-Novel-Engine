@@ -1,13 +1,13 @@
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { getAgentDir } from "../config.js";
+import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import type { AgentSessionMessageController } from "./agent-messages.js";
 import type { AgentObserveController } from "./agent-observe.js";
 import { installAgentTraceUpload } from "./agent-traces.js";
 import { AuthStorage } from "./auth-storage.js";
 import type { AgentRlmHeartbeatController } from "./cron-jobs.js";
-import { herdrAgentStateExtension } from "./extensions/builtin/herdr-agent-state.js";
+import { hasFileBasedHerdrIntegration, herdrAgentStateExtension } from "./extensions/builtin/herdr-agent-state.js";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { McpManager } from "./mcp/mcp-manager.js";
 import { ModelRegistry } from "./model-registry.js";
@@ -169,9 +169,17 @@ export async function createAgentSessionServices(
 	modelRegistry.setOnOAuthProvidersReset(() => mcpManager.registerUserProviders());
 
 	const userExtensionFactories = options.resourceLoaderOptions?.extensionFactories ?? [];
+	// Skip the built-in Herdr reporter when the user installed Herdr's own
+	// file-based integration in a directory the loader discovers from; two
+	// reporters would race on the same pane. Checked against the same dirs the
+	// loader scans so agentDir overrides are honored.
+	const discoveredExtensionDirs = [join(cwd, CONFIG_DIR_NAME, "extensions"), join(agentDir, "extensions")];
+	const builtinExtensionFactories = hasFileBasedHerdrIntegration(discoveredExtensionDirs)
+		? []
+		: [herdrAgentStateExtension];
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
-		extensionFactories: [herdrAgentStateExtension, ...userExtensionFactories],
+		extensionFactories: [...builtinExtensionFactories, ...userExtensionFactories],
 		cwd,
 		agentDir,
 		settingsManager,

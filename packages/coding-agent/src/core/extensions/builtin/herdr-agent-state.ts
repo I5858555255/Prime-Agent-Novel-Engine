@@ -18,26 +18,27 @@
 
 import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { getAgentDir } from "../../../config.js";
 import type { ExtensionAPI, ExtensionFactory } from "../types.js";
 
 type AgentState = "working" | "blocked" | "idle";
 
 /**
- * True when the user has installed Herdr's own file-based Pi integration
- * (`herdr integration install pi`). That extension is discovered and loaded
- * from the extensions directory like any other, and reports with the same
- * `herdr:pi` source but its own seq counter and agent label. Running both
- * reporters against one pane would make them race, so the built-in defers.
+ * True when Herdr's own file-based Pi integration (`herdr integration
+ * install pi`) is present in an extensions directory the resource loader
+ * actually discovers from. That extension loads like any other and reports
+ * with the same `herdr:pi` source but its own seq counter, so running the
+ * built-in alongside it would make the two reporters race on one pane.
+ *
+ * The caller passes the exact directories the loader uses (project-local
+ * config dir and the effective agent dir), so overrides via env or options
+ * are honored. Paths Prime Agent never loads from (e.g. the legacy
+ * `~/.pi/agent/extensions/`) are deliberately not checked: a file there
+ * never becomes an active reporter, so deferring to it would leave the pane
+ * with no reporter at all.
  */
-function fileBasedIntegrationInstalled(): boolean {
-	const candidates = [
-		join(getAgentDir(), "extensions", "herdr-agent-state.ts"),
-		join(homedir(), ".pi", "agent", "extensions", "herdr-agent-state.ts"),
-	];
-	return candidates.some((path) => existsSync(path));
+export function hasFileBasedHerdrIntegration(extensionDirs: string[]): boolean {
+	return extensionDirs.some((dir) => existsSync(join(dir, "herdr-agent-state.ts")));
 }
 
 interface QueuedState {
@@ -104,7 +105,7 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 	const socketPath = process.env.HERDR_SOCKET_PATH;
 	const paneId = process.env.HERDR_PANE_ID;
 	const enabled = process.env.HERDR_ENV === "1" && !!socketPath && !!paneId;
-	if (!enabled || fileBasedIntegrationInstalled()) {
+	if (!enabled) {
 		return;
 	}
 
@@ -303,7 +304,7 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 		publishState(true);
 	});
 
-	pi.events.on("herdr:blocked", (data: any) => {
+	const unsubscribeBlocked = pi.events.on("herdr:blocked", (data: any) => {
 		if (!data?.active) {
 			blockedCount = Math.max(0, blockedCount - 1);
 			if (blockedCount === 0) {
@@ -357,6 +358,10 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 
 	pi.on("session_shutdown", async (event) => {
 		clearPendingTimers();
+		// The event bus is shared across reloads and session replacements, so a
+		// listener left behind would keep this stale instance reporting with a
+		// captured (possibly wrong) pane identity forever.
+		unsubscribeBlocked();
 		// On session replacement (new/resume/fork) or reload, a successor
 		// instance in this same pane re-reports immediately. Releasing here
 		// races that report: two independent socket writes with no ordering,
