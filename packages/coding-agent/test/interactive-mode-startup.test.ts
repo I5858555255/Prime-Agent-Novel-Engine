@@ -14,11 +14,11 @@ describe("InteractiveMode startup hints", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	function createMode(sessionHasMessages = false) {
+	function createMode(sessionHasMessages = false, returnToAgentsView = false) {
 		const mode = {
 			childAgentPanelMode: undefined,
 			sessionHasMessages,
-			options: { returnToAgentsView: false },
+			options: { returnToAgentsView },
 			editor: { getText: () => "" },
 			connectionState: {
 				model: { name: "test-model", reasoning: true },
@@ -56,6 +56,13 @@ describe("InteractiveMode startup hints", () => {
 		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
 		expect(stripAnsi(label)).toBe("test-model • high  ? or /hotkeys");
+	});
+
+	it("places the Agents View hint before the model and fresh-chat help", () => {
+		const mode = createMode(false, true);
+		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
+
+		expect(stripAnsi(label)).toBe("← agents view  test-model • high  ? or /hotkeys");
 	});
 
 	it("hides startup shortcut guidance for chats with history", () => {

@@ -4824,7 +4824,7 @@ export class InteractiveMode {
 		const modelLabel = this.getModelTrayLabel();
 		const shortcutsHint = this.getShortcutsTrayHint();
 		const agentsHint = this.getAgentsViewTrayHint();
-		return [modelLabel, shortcutsHint, agentsHint].filter((label): label is string => label !== undefined).join("  ");
+		return [agentsHint, modelLabel, shortcutsHint].filter((label): label is string => label !== undefined).join("  ");
 	}
 
 	private getStartupMetadata(): BrandSplashMetadataLine[] {
@@ -4882,7 +4882,7 @@ export class InteractiveMode {
 		if (this.editor.getText().trim()) {
 			return undefined;
 		}
-		return keyHint("app.agents.back", "manage sessions");
+		return keyHint("app.agents.back", "agents view");
 	}
 
 	private getTrayContextLabel(): string | undefined {

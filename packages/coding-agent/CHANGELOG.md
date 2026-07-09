@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - Changed Escape to interrupt active work with a visible abort notice, double Escape to rewind or clear an idle prompt, and `?` to show shortcuts ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
-- Changed new-chat guidance to show concise shell, command, file, and shortcut hints, with help placed after the model and effort ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
+- Changed new-chat guidance to show concise shell, command, file, and shortcut hints, with Agents View first and help after the model and effort ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
 - Changed shortcut help to appear as a temporary panel below the transcript instead of a persistent chat entry ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
 - Changed automatic harness refinement to be enabled by default while keeping `autoRefine.enabled: false` as the opt-out.
 - Fixed non-numeric `autoRefine.turnInterval` and `autoRefine.cooldownMs` settings falling back to defaults instead of silently enabling a noisy auto-refine loop.
