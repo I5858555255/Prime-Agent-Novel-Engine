@@ -49,9 +49,6 @@ interface QueuedState {
 	seq: number;
 }
 
-const RETRYABLE_ERROR_PATTERN =
-	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
-
 function parseDurationEnv(name: string, fallback: number): number {
 	const raw = process.env[name];
 	if (!raw) {
@@ -74,18 +71,23 @@ function lastAssistantMessage(messages: unknown[]): any | undefined {
 	return undefined;
 }
 
-function retryableErrorMessage(event: any): string | undefined {
+/**
+ * Error message of the turn's final assistant message, if it ended in error.
+ *
+ * The agent's auto-retry treats nearly every provider error as retryable and
+ * kicks in after extension agent_end fires, so any error end may be followed
+ * by a retry. Rather than second-guessing the agent's classification with a
+ * pattern list, hold "working" for every error through the retry grace
+ * window: if a retry starts, agent_start keeps the pane working; if none
+ * does, the hold settles to blocked with the error message.
+ */
+function errorHoldMessage(event: any): string | undefined {
 	const messages = Array.isArray(event?.messages) ? event.messages : [];
 	const assistant = lastAssistantMessage(messages);
 	if (assistant?.stopReason !== "error") {
 		return undefined;
 	}
-
-	const errorMessage = String(assistant.errorMessage ?? "");
-	if (!RETRYABLE_ERROR_PATTERN.test(errorMessage)) {
-		return undefined;
-	}
-	return errorMessage || "retryable provider error";
+	return String(assistant.errorMessage ?? "") || "provider error";
 }
 
 // Monotonic across all extension instances in this process. Herdr guards
@@ -414,9 +416,9 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[])
 
 		agentActive = false;
 
-		const retryableMessage = retryableErrorMessage(event);
-		if (retryableMessage) {
-			holdForRetry(retryableMessage);
+		const holdMessage = errorHoldMessage(event);
+		if (holdMessage) {
+			holdForRetry(holdMessage);
 			return;
 		}
 

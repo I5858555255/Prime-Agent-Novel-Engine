@@ -107,6 +107,7 @@ describe("herdrAgentStateExtension", () => {
 		"HERDR_SOCKET_PATH",
 		"HERDR_PANE_ID",
 		"HERDR_PI_IDLE_DEBOUNCE_MS",
+		"HERDR_PI_RETRY_GRACE_MS",
 		"PRIME_AGENT_CODING_AGENT_DIR",
 	];
 
@@ -382,6 +383,45 @@ describe("herdrAgentStateExtension", () => {
 		const finalState = requests.at(-1)?.params.state;
 		expect(finalState).toBe("blocked");
 		expect(requests.at(-1)?.params.message).toContain("rate limit");
+	});
+
+	it("holds working through any error end until the retry grace settles", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server, requests, waitForRequests } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+		process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "10";
+		process.env.HERDR_PI_RETRY_GRACE_MS = "30";
+
+		const { pi, handlers } = createMockPi();
+		herdrAgentStateExtension(pi);
+
+		const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "s" } };
+		handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, ctx);
+		// The agent's auto-retry classifies almost every provider error as
+		// retryable, so an error the old pattern list missed must still hold
+		// working (not flip idle) while a retry may be pending.
+		handlers.get("agent_end")?.[0]?.(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "error", errorMessage: "unexpected provider failure xyz" }],
+			},
+			ctx,
+		);
+
+		// No retry arrives: after the grace window the pane settles to blocked
+		// with the error message, never reporting idle in between.
+		await waitForRequests(3);
+		expect(requests.map((r) => r.params.state)).toEqual(["idle", "working", "blocked"]);
+		expect(requests.at(-1)?.params.message).toContain("unexpected provider failure");
 	});
 
 	it("sends no reports after quit release", async () => {
