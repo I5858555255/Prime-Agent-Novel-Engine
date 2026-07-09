@@ -69,6 +69,7 @@ import {
 	createAgentHeartbeatToolDefinitions,
 	DEFAULT_HEARTBEAT_SCHEDULE,
 	isHeartbeatCronJob,
+	normalizeHeartbeatDeliveryMode,
 	normalizeHeartbeatSchedule,
 	resolveHeartbeatStreamingBehavior,
 	shouldDeferHeartbeatCronJob,
@@ -824,7 +825,12 @@ export class AgentDaemon {
 			deliveryMode: input.deliveryMode,
 		});
 		if (job) {
-			if (input.instruction !== undefined || input.interval !== undefined || input.status === "pause") {
+			if (
+				input.instruction !== undefined ||
+				input.interval !== undefined ||
+				input.status === "pause" ||
+				input.deliveryMode !== undefined
+			) {
 				this.removeQueuedHeartbeatFollowUp(state, job);
 			}
 			this.cronScheduler.wake();
@@ -1685,12 +1691,8 @@ export class AgentDaemon {
 
 			case "heartbeat_set": {
 				const state = this.getSessionState(command.activeSessionId);
-				const heartbeat = this.createHeartbeatForState(
-					state,
-					command.schedule,
-					command.prompt,
-					command.deliveryMode,
-				);
+				const deliveryMode = normalizeHeartbeatDeliveryMode(command.deliveryMode);
+				const heartbeat = this.createHeartbeatForState(state, command.schedule, command.prompt, deliveryMode);
 				return success(command.id, "heartbeat_set", { heartbeat });
 			}
 

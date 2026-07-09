@@ -887,19 +887,20 @@ export function createAgentHeartbeatToolDefinitions(controller: AgentCronToolCon
 }
 
 function consumeDeliveryOption(text: string): { deliveryMode: AgentHeartbeatDeliveryMode | undefined; rest: string } {
-	let rest = text;
 	let deliveryMode: AgentHeartbeatDeliveryMode | undefined;
-	// Accept --deliver <mode>, --deliver=<mode>, --steer, or --follow-up in any leading position.
+	// Accept --deliver <mode>, --deliver=<mode>, --steer, or --follow-up in any position.
 	// Later flags win so an explicit later choice overrides an earlier one.
-	const flag = /^--(?:deliver(?:=|\s+)(steer|follow[-_]up)|(steer)|(follow[-_]up))(?:\s+|$)([\s\S]*)$/i;
-	let match = flag.exec(rest);
-	while (match) {
-		const mode = (match[1] ?? match[2] ?? match[3] ?? "").toLowerCase().replace("-", "_");
-		deliveryMode = mode === "follow_up" ? "follow_up" : "steer";
-		rest = match[4]?.trim() ?? "";
-		match = flag.exec(rest);
-	}
-	return { deliveryMode, rest };
+	const flag =
+		/(^|\s)--(?:(?:deliver)(?:=(steer|follow[-_]up)|\s+(steer|follow[-_]up))|(steer)|(follow[-_]up))(?=\s|$)/gi;
+	const rest = text.replace(
+		flag,
+		(_match, prefix: string, equalsMode: string, spaceMode: string, steer: string, followUp: string) => {
+			const mode = (equalsMode ?? spaceMode ?? steer ?? followUp ?? "").toLowerCase().replace("-", "_");
+			deliveryMode = mode === "follow_up" ? "follow_up" : "steer";
+			return prefix;
+		},
+	);
+	return { deliveryMode, rest: rest.trim() };
 }
 
 function consumeEveryOption(text: string): { interval: string; rest: string } | undefined {

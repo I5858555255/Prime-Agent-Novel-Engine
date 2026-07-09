@@ -3234,6 +3234,103 @@ describe("daemon mode helpers", () => {
 		expect(followUp).not.toHaveBeenCalled();
 	});
 
+	it("rejects invalid heartbeat delivery modes before persisting", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-delivery-mode-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const sessionFile = join(tempDir, "session.jsonl");
+			const state = makeState("active-1") as ActiveSessionState & {
+				runtime: ActiveSessionState["runtime"] & {
+					session: ActiveSessionState["runtime"]["session"] & {
+						sessionFile: string;
+						sessionId: string;
+					};
+				};
+			};
+			state.runtime = {
+				...state.runtime,
+				cwd: tempDir,
+				session: {
+					sessionFile,
+					sessionId: "session-1",
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				sessions: Map<string, ActiveSessionState>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+
+			await expect(
+				internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+					id: "command-1",
+					type: "heartbeat_set",
+					activeSessionId: state.activeSessionId,
+					schedule: "every 5m",
+					prompt: "check the run",
+					deliveryMode: "followup" as never,
+				}),
+			).rejects.toThrow('Heartbeat delivery mode must be "steer" or "follow_up"');
+			expect(internals.cronStore.getHeartbeat(state.activeSessionId)).toBeUndefined();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("removes queued RLM heartbeat follow-ups when only delivery mode changes", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-rlm-delivery-mode-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const removeQueuedFollowUp = vi.fn(() => true);
+			const state = makeState("active-1") as ActiveSessionState & {
+				runtime: ActiveSessionState["runtime"] & {
+					session: ActiveSessionState["runtime"]["session"] & {
+						removeQueuedFollowUp: typeof removeQueuedFollowUp;
+					};
+				};
+			};
+			state.runtime.session = { removeQueuedFollowUp } as never;
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				updateRlmHeartbeatForState(
+					state: ActiveSessionState,
+					input: { id: string; deliveryMode: "steer" | "follow_up" },
+				): AgentCronJob | undefined;
+			};
+			const rlmHeartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: state.activeSessionId,
+				sessionId: "session-1",
+				sessionFile: join(tempDir, "session.jsonl"),
+				cwd: tempDir,
+				scheduleText: "every 5m",
+				prompt: "check internal state",
+				deliveryMode: "follow_up",
+				now: new Date("2026-01-01T12:00:00.000Z"),
+			});
+
+			const updated = internals.updateRlmHeartbeatForState(state, {
+				id: rlmHeartbeat.id,
+				deliveryMode: "steer",
+			});
+
+			expect(updated).toMatchObject({ id: rlmHeartbeat.id, deliveryMode: "steer" });
+			expect(removeQueuedFollowUp).toHaveBeenCalledWith(`heartbeat:${rlmHeartbeat.id}`);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("removes queued heartbeat follow-ups when a heartbeat is cleared", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-clear-"));
 		try {

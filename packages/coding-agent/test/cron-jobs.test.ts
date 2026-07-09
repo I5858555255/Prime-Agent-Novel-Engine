@@ -82,6 +82,12 @@ describe("parseHeartbeatCommand", () => {
 	});
 
 	it("opts into follow-up delivery via --follow-up before or after the interval", () => {
+		expect(parseHeartbeatCommand("/heartbeat check on me --follow-up")).toEqual({
+			type: "set",
+			schedule: "every 5m",
+			instruction: "check on me",
+			deliveryMode: "follow_up",
+		});
 		expect(parseHeartbeatCommand("/heartbeat --follow-up check on me")).toEqual({
 			type: "set",
 			schedule: "every 5m",
@@ -101,6 +107,12 @@ describe("parseHeartbeatCommand", () => {
 			deliveryMode: "follow_up",
 		});
 		expect(parseHeartbeatCommand("/heartbeat --deliver follow_up check status")).toEqual({
+			type: "set",
+			schedule: "every 5m",
+			instruction: "check status",
+			deliveryMode: "follow_up",
+		});
+		expect(parseHeartbeatCommand("/heartbeat check status --deliver=follow_up")).toEqual({
 			type: "set",
 			schedule: "every 5m",
 			instruction: "check status",
