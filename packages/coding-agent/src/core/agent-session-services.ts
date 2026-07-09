@@ -7,6 +7,7 @@ import type { AgentObserveController } from "./agent-observe.js";
 import { installAgentTraceUpload } from "./agent-traces.js";
 import { AuthStorage } from "./auth-storage.js";
 import type { AgentRlmHeartbeatController } from "./cron-jobs.js";
+import { herdrAgentStateExtension } from "./extensions/builtin/herdr-agent-state.js";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { McpManager } from "./mcp/mcp-manager.js";
 import { ModelRegistry } from "./model-registry.js";
@@ -167,8 +168,10 @@ export async function createAgentSessionServices(
 	// refresh() resets the OAuth registry to built-ins; re-add user MCP providers too.
 	modelRegistry.setOnOAuthProvidersReset(() => mcpManager.registerUserProviders());
 
+	const userExtensionFactories = options.resourceLoaderOptions?.extensionFactories ?? [];
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
+		extensionFactories: [herdrAgentStateExtension, ...userExtensionFactories],
 		cwd,
 		agentDir,
 		settingsManager,
