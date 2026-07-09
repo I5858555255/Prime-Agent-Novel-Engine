@@ -149,6 +149,14 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
+		const repeatedClearInput = this.splitRepeatedKeybinding(data, "app.input.clear");
+		if (repeatedClearInput) {
+			for (const input of repeatedClearInput) {
+				this.handleInput(input);
+			}
+			return;
+		}
+
 		// Check for paste image keybinding
 		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
 			this.onPasteImage?.();
@@ -209,6 +217,17 @@ export class CustomEditor extends Editor {
 
 		// Pass to parent for editor handling
 		super.handleInput(data);
+	}
+
+	private splitRepeatedKeybinding(data: string, keybinding: AppKeybinding): [string, string] | undefined {
+		for (let index = 1; index < data.length; index++) {
+			const first = data.slice(0, index);
+			const second = data.slice(index);
+			if (this.keybindings.matches(first, keybinding) && this.keybindings.matches(second, keybinding)) {
+				return [first, second];
+			}
+		}
+		return undefined;
 	}
 
 	private getEffectivePaddingX(width: number): number {

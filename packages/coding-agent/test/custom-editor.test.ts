@@ -79,6 +79,27 @@ describe("CustomEditor", () => {
 		expect(editor.getText()).toBe("");
 	});
 
+	it("splits terminal-batched repeats for the configured clear-input binding", () => {
+		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
+		const handler = vi.fn();
+		editor.onEscape = handler;
+
+		editor.handleInput("\x1b\x1b");
+
+		expect(handler).toHaveBeenCalledTimes(2);
+	});
+
+	it("uses custom clear-input bindings when splitting batched repeats", () => {
+		const keybindings = new KeybindingsManager({ "app.input.clear": "ctrl+x" });
+		const editor = new CustomEditor(fakeTui, editorTheme, keybindings);
+		const handler = vi.fn();
+		editor.onEscape = handler;
+
+		editor.handleInput("\x18\x18");
+
+		expect(handler).toHaveBeenCalledTimes(2);
+	});
+
 	it("renders a header line and blank spacer inside the top of the editor box", () => {
 		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
 		const withoutHeader = editor.render(40);
