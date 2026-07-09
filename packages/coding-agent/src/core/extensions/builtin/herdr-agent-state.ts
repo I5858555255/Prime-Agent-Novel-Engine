@@ -353,6 +353,18 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[])
 			boundSessionManager = ctx.sessionManager;
 		}
 		updateSessionRef(ctx);
+		// A reload can re-create this reporter mid-turn (daemon-driven reloads
+		// and extension ctx.reload() are not gated on idle). Seed the active
+		// flag from the session so the fresh instance does not report idle
+		// while the agent is still streaming, which would also make the guard
+		// in agent_end swallow the turn's real end transition.
+		if (typeof ctx?.isIdle === "function") {
+			try {
+				agentActive = !ctx.isIdle();
+			} catch {
+				agentActive = false;
+			}
+		}
 		publishState(true);
 	});
 

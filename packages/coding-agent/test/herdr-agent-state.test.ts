@@ -309,6 +309,38 @@ describe("herdrAgentStateExtension", () => {
 		expect(busHandlers.get("herdr:blocked")).toHaveLength(0);
 	});
 
+	it("reports working when the session starts mid-turn (reload)", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server, requests, waitForRequests } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+		process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "10";
+
+		const { pi, handlers } = createMockPi();
+		herdrAgentStateExtension(pi);
+
+		// Reload mid-turn: the fresh reporter's session_start sees a busy session.
+		const ctx = {
+			sessionManager: { getSessionFile: () => undefined, getSessionId: () => "s" },
+			isIdle: () => false,
+		};
+		handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "reload" }, ctx);
+		await waitForRequests(1);
+		expect(requests[0]?.params.state).toBe("working");
+
+		// The turn's real end must still be honored (agentActive was seeded).
+		handlers.get("agent_end")?.[0]?.({ type: "agent_end", messages: [] }, ctx);
+		await waitForRequests(2);
+		expect(requests[1]?.params.state).toBe("idle");
+	});
+
 	it("sends no reports after quit release", async () => {
 		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
 		mkdirSync(tempDir, { recursive: true });
