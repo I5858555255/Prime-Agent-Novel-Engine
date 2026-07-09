@@ -18,13 +18,13 @@ const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 
 // A preserved alternate screen is adopted by the next ProcessTerminal during in-process handoff.
-let pendingAltScreenHandoff = false;
+let pendingAltScreenHandoff: symbol | undefined;
 
 function consumeAltScreenHandoff(): boolean {
 	if (!pendingAltScreenHandoff) {
 		return false;
 	}
-	pendingAltScreenHandoff = false;
+	pendingAltScreenHandoff = undefined;
 	return true;
 }
 
@@ -100,6 +100,7 @@ export class ProcessTerminal implements Terminal {
 	private resizeHandler?: () => void;
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
+	private readonly altScreenHandoffToken = Symbol("altScreenHandoff");
 	private _altScreenActive = consumeAltScreenHandoff();
 	private _mouseTrackingActive = false;
 	private stdinBuffer?: StdinBuffer;
@@ -369,13 +370,13 @@ export class ProcessTerminal implements Terminal {
 		}
 		if (this._altScreenActive) {
 			if (options.preserveAltScreen) {
-				pendingAltScreenHandoff = true;
+				pendingAltScreenHandoff = this.altScreenHandoffToken;
 				this._altScreenActive = false;
 			} else {
-				process.stdout.write("\x1b[?1049l");
-				this._altScreenActive = false;
-				pendingAltScreenHandoff = false;
+				this.releaseAltScreen();
 			}
+		} else if (!options.preserveAltScreen) {
+			this.releaseAltScreen();
 		}
 
 		// Disable bracketed paste mode
@@ -472,19 +473,35 @@ export class ProcessTerminal implements Terminal {
 
 	enterAltScreen(): void {
 		if (this._altScreenActive) return;
+		if (this.ownsPendingAltScreenHandoff()) {
+			pendingAltScreenHandoff = undefined;
+			this._altScreenActive = true;
+			return;
+		}
 		this._altScreenActive = true;
 		this.write("\x1b[?1049h");
 	}
 
 	leaveAltScreen(): void {
-		if (!this._altScreenActive) return;
+		this.releaseAltScreen();
+	}
+
+	private releaseAltScreen(): void {
+		const ownsPendingHandoff = this.ownsPendingAltScreenHandoff();
+		if (!this._altScreenActive && !ownsPendingHandoff) return;
 		this._altScreenActive = false;
-		pendingAltScreenHandoff = false;
+		if (ownsPendingHandoff) {
+			pendingAltScreenHandoff = undefined;
+		}
 		this.write("\x1b[?1049l");
 	}
 
 	get altScreenActive(): boolean {
 		return this._altScreenActive;
+	}
+
+	private ownsPendingAltScreenHandoff(): boolean {
+		return pendingAltScreenHandoff === this.altScreenHandoffToken;
 	}
 
 	setMouseTracking(enabled: boolean): void {

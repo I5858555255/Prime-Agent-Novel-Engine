@@ -112,6 +112,38 @@ describe("ProcessTerminal alternate screen handoff", () => {
 		}
 	});
 
+	it("lets the preserving terminal cancel a handoff before it is consumed", () => {
+		const originalWrite = process.stdout.write;
+		const writes: string[] = [];
+		const patchedWrite = ((...args: Parameters<typeof process.stdout.write>): boolean => {
+			const chunk = args[0];
+			writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+			const callback = args.find((arg): arg is (error?: Error | null) => void => typeof arg === "function");
+			callback?.();
+			return true;
+		}) as typeof process.stdout.write;
+
+		process.stdout.write = patchedWrite;
+		try {
+			const first = new ProcessTerminal();
+			first.enterAltScreen();
+			first.stop({ preserveAltScreen: true });
+			assert.equal(first.altScreenActive, false);
+
+			first.leaveAltScreen();
+			assert.equal(writes.filter((write) => write === "\x1b[?1049l").length, 1);
+
+			const second = new ProcessTerminal();
+			assert.equal(second.altScreenActive, false);
+		} finally {
+			const cleanup = new ProcessTerminal();
+			if (cleanup.altScreenActive) {
+				cleanup.stop();
+			}
+			process.stdout.write = originalWrite;
+		}
+	});
+
 	it("only hands a preserved alternate screen to one terminal instance", () => {
 		const originalWrite = process.stdout.write;
 		const writes: string[] = [];
