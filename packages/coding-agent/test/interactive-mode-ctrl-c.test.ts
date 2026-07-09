@@ -304,6 +304,23 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		expect(mode.editor.getText()).toBe("");
 	});
 
+	for (const [label, options] of [
+		["a retry", { retryAttempt: 1 }],
+		["compaction", { compacting: true }],
+		["a bash command", { bashRunning: true }],
+	] as const) {
+		it(`opens the tree after cancelling ${label} without clearing the draft`, () => {
+			const mode = createInteractiveFake({ editorText: "draft", ...options });
+			const handleEscape = Reflect.get(InteractiveMode.prototype, "handleEscape");
+
+			handleEscape.call(mode);
+			handleEscape.call(mode);
+
+			expect(mode.showTreeSelector).toHaveBeenCalledTimes(1);
+			expect(mode.editor.getText()).toBe("draft");
+		});
+	}
+
 	it("clears the Escape repeat before a separate interrupt", () => {
 		const mode = createInteractiveFake({});
 		mode.escapeRepeatAction = "tree";

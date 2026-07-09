@@ -2317,6 +2317,10 @@ export class InteractiveMode {
 		return this.connectionState?.isBashRunning ?? false;
 	}
 
+	private hasInterruptibleWork(): boolean {
+		return this.isAgentStreaming() || this.isAgentCompacting() || this.isBashRunning() || this.getRetryAttempt() > 0;
+	}
+
 	private getRetryAttempt(): number {
 		return this.connectionState?.retryAttempt ?? 0;
 	}
@@ -5563,7 +5567,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		this.armEscapeRepeat(this.isAgentStreaming() || this.editor.getText().length === 0 ? "tree" : "clear");
+		this.armEscapeRepeat(this.hasInterruptibleWork() || this.editor.getText().length === 0 ? "tree" : "clear");
 		this.interruptOrClearInput();
 	}
 
