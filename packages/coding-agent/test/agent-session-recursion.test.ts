@@ -1249,6 +1249,30 @@ describe("AgentSession persistent subagents", () => {
 		);
 	});
 
+	it("persists the sidecar with the system prompt even when the run fails", async () => {
+		const root = createPersistentSession();
+		// Force the run to fail before any model work, after the sidecar is written up front.
+		toolsManagerMock.ensureTool.mockResolvedValueOnce(undefined);
+
+		await expect(
+			root.runRlmChild("first", {
+				persist: true,
+				persistent_id: "reviewer",
+				system_prompt: "You are the code reviewer subagent.",
+			}),
+		).rejects.toThrow(MISSING_RIPGREP_MESSAGE);
+
+		// The sidecar exists with the stored role, so a later reopen keeps the role even
+		// though the first run never reached its success path.
+		const dir = join(
+			root.sessionManager.getSessionArtifactDir()!,
+			"persistent-subagents",
+			slugifyPersistentSubagentId("reviewer"),
+		);
+		const record = loadPersistentSubagentRecord(dir);
+		expect(record?.systemPrompt).toBe("You are the code reviewer subagent.");
+	});
+
 	it("does not report a reopen when the prior session has no chat turns", async () => {
 		const root = createPersistentSession((_model, context) => {
 			// Answer with no assistant text is still a turn, so force a real turn only on the

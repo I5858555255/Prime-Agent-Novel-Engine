@@ -5775,6 +5775,12 @@ export class AgentSession {
 			? this._ensurePersistentSubagentSessionDir(persistentPlan.dir)
 			: this._createChildRlmSessionDir();
 		const childNodeId = persistentPlan?.nodeId ?? basename(childSessionDir);
+		// Persist the sidecar (id, system prompt, run count) up front, before the run can
+		// fail. Otherwise a cancelled/errored first run would leave a session JSONL with no
+		// sidecar, and a later reopen would recover the history but lose the stored role.
+		if (persistentPlan) {
+			savePersistentSubagentRecord(persistentPlan.dir, persistentPlan.record);
+		}
 		// Reopening a persistent subagent replaces any still-resident finished session for
 		// the same id, so its saved history is reopened from disk instead of two sessions
 		// sharing one file. Detach it synchronously here (so nothing disposes it twice) and
