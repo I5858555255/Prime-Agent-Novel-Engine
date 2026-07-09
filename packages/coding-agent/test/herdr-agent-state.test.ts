@@ -457,6 +457,37 @@ describe("herdrAgentStateExtension", () => {
 		expect(requests.filter((r) => r.method === "pane.release_agent")).toHaveLength(1);
 	});
 
+	it("silences a replaced instance without releasing the pane", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server, requests, waitForRequests } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+
+		const { pi, handlers } = createMockPi();
+		herdrAgentStateExtension(pi);
+
+		const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "s" } };
+		handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		await waitForRequests(1);
+
+		// Replacement shutdown: no release (the successor re-reports), and the
+		// old instance must go quiet - a late report with its process-wide seq
+		// would outrank and stomp the successor's state.
+		await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "new" }, ctx);
+		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		expect(requests).toHaveLength(1);
+		expect(requests.some((r) => r.method === "pane.release_agent")).toBe(false);
+	});
+
 	it("keeps seq monotonically increasing across extension instances", async () => {
 		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
 		mkdirSync(tempDir, { recursive: true });

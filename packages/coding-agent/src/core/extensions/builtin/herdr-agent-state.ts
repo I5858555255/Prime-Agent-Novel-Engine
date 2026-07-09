@@ -448,8 +448,11 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[])
 		// instance in this same pane re-reports immediately. Releasing here
 		// races that report: two independent socket writes with no ordering,
 		// and a release that lands after the successor's report clears the
-		// pane. Only a real quit should release.
+		// pane. Only a real quit should release; every shutdown silences this
+		// instance so no stale queued report lands around the successor's.
 		if (event?.reason !== "quit") {
+			released = true;
+			queuedState = undefined;
 			return;
 		}
 		await releaseAgent();
