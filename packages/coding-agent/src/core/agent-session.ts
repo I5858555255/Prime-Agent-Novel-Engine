@@ -466,6 +466,10 @@ export interface ModelCycleResult {
 	isScoped: boolean;
 }
 
+interface ModelSelectOptions {
+	waitForExtensions?: boolean;
+}
+
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
@@ -3398,7 +3402,7 @@ export class AgentSession {
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>, options: { waitForExtensions?: boolean } = {}): Promise<void> {
+	async setModel(model: Model<any>, options: ModelSelectOptions = {}): Promise<void> {
 		if (!this._modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -3414,18 +3418,22 @@ export class AgentSession {
 
 		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
 		if (options.waitForExtensions === false) {
-			void emitPromise.catch((error) => {
-				this._extensionRunner.emitError({
-					extensionPath: "<internal>",
-					event: "model_select",
-					error: error instanceof Error ? error.message : String(error),
-					stack: error instanceof Error ? error.stack : undefined,
-				});
-			});
+			this._trackModelSelectEmitError(emitPromise);
 			return;
 		}
 
 		await emitPromise;
+	}
+
+	private _trackModelSelectEmitError(emitPromise: Promise<void>): void {
+		void emitPromise.catch((error) => {
+			this._extensionRunner.emitError({
+				extensionPath: "<internal>",
+				event: "model_select",
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+		});
 	}
 
 	/**
@@ -3434,14 +3442,20 @@ export class AgentSession {
 	 * @param direction - "forward" (default) or "backward"
 	 * @returns The new model info, or undefined if only one model available
 	 */
-	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+	async cycleModel(
+		direction: "forward" | "backward" = "forward",
+		options: ModelSelectOptions = {},
+	): Promise<ModelCycleResult | undefined> {
 		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction);
+			return this._cycleScopedModel(direction, options);
 		}
-		return this._cycleAvailableModel(direction);
+		return this._cycleAvailableModel(direction, options);
 	}
 
-	private async _cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleScopedModel(
+		direction: "forward" | "backward",
+		options: ModelSelectOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const scopedModels = this._scopedModels.filter((scoped) => this._modelRegistry.hasConfiguredAuth(scoped.model));
 		if (scopedModels.length <= 1) return undefined;
 
@@ -3465,12 +3479,20 @@ export class AgentSession {
 		// setThinkingLevel clamps to model capabilities.
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._queueModelSelectEmit(next.model, currentModel, "cycle");
+		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
+		if (options.waitForExtensions === false) {
+			this._trackModelSelectEmitError(emitPromise);
+		} else {
+			await emitPromise;
+		}
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
-	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleAvailableModel(
+		direction: "forward" | "backward",
+		options: ModelSelectOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const availableModels = await this._modelRegistry.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
@@ -3490,7 +3512,12 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._queueModelSelectEmit(nextModel, currentModel, "cycle");
+		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
+		if (options.waitForExtensions === false) {
+			this._trackModelSelectEmitError(emitPromise);
+		} else {
+			await emitPromise;
+		}
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 	}

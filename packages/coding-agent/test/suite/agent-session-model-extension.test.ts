@@ -178,6 +178,40 @@ describe("AgentSession model and extension characterization", () => {
 		expect(events).toEqual(["start:faux-2", "end:faux-2", "start:faux-3", "end:faux-3"]);
 	});
 
+	it("can cycle models before slow model_select handlers finish", async () => {
+		const handlerStarted = createDeferred();
+		const finishHandler = createDeferred();
+		let handlerCompleted = false;
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async () => {
+						handlerStarted.resolve();
+						await finishHandler.promise;
+						handlerCompleted = true;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const result = await harness.session.cycleModel("forward", { waitForExtensions: false });
+		await handlerStarted.promise;
+
+		expect(result?.model.id).toBe("faux-2");
+		expect(harness.session.model?.id).toBe("faux-2");
+		expect(handlerCompleted).toBe(false);
+
+		finishHandler.resolve();
+		await flushAsyncWork();
+
+		expect(handlerCompleted).toBe(true);
+	});
+
 	it("waits for pending model_select handlers before starting the next prompt", async () => {
 		const handlerStarted = createDeferred();
 		const finishHandler = createDeferred();

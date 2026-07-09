@@ -1601,7 +1601,10 @@ export class AgentDaemon {
 
 			case "cycle_model": {
 				const state = this.getSessionState(command.activeSessionId);
-				const result = await state.runtime.session.cycleModel(command.direction);
+				const session = state.runtime.session;
+				const result = await session.cycleModel(command.direction, {
+					waitForExtensions: !(session.isStreaming || session.isCompacting),
+				});
 				return success(command.id, "cycle_model", result ?? null);
 			}
 

@@ -3229,6 +3229,113 @@ describe("daemon mode helpers", () => {
 		expect(setModel).toHaveBeenCalledWith(model, { waitForExtensions: true });
 	});
 
+	it("cycles models without waiting for model_select extension handlers while running", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const cycleResult = { model, thinkingLevel: "off" as const, isScoped: false };
+		const cycleModel = vi.fn(async () => cycleResult);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isCompacting: boolean;
+					cycleModel(
+						direction?: "forward" | "backward",
+						options?: { waitForExtensions?: boolean },
+					): Promise<typeof cycleResult | undefined>;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: true,
+			isCompacting: false,
+			cycleModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "cycle_model",
+			activeSessionId: state.activeSessionId,
+			direction: "backward",
+		});
+
+		expect(cycleModel).toHaveBeenCalledWith("backward", { waitForExtensions: false });
+	});
+
+	it("waits for model_select extension handlers when cycling models while idle", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const cycleResult = { model, thinkingLevel: "off" as const, isScoped: false };
+		const cycleModel = vi.fn(async () => cycleResult);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isCompacting: boolean;
+					cycleModel(
+						direction?: "forward" | "backward",
+						options?: { waitForExtensions?: boolean },
+					): Promise<typeof cycleResult | undefined>;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			isCompacting: false,
+			cycleModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "cycle_model",
+			activeSessionId: state.activeSessionId,
+		});
+
+		expect(cycleModel).toHaveBeenCalledWith(undefined, { waitForExtensions: true });
+	});
+
 	it("validates active sessions before reading a heartbeat", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: {
