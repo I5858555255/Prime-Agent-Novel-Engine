@@ -646,6 +646,7 @@ export class AgentSession {
 	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
 	private _modelSelectEmitQueue: Promise<void> = Promise.resolve();
+	private _modelSelectEmitQueueIdle = true;
 	private _modelSelectEmitContext = new AsyncLocalStorage<boolean>();
 
 	private _resourceLoader: ResourceLoader;
@@ -2455,7 +2456,10 @@ export class AgentSession {
 				await this._checkCompaction(lastAssistant, false);
 			}
 
-			await this._waitForPendingModelSelectEmit();
+			const pendingModelSelectEmit = this._pendingModelSelectEmit();
+			if (pendingModelSelectEmit) {
+				await pendingModelSelectEmit;
+			}
 
 			drainedNextTurnMessages = this._pendingNextTurnMessages;
 			this._pendingNextTurnMessages = [];
@@ -2654,7 +2658,10 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
-			await this._waitForPendingModelSelectEmit();
+			const pendingModelSelectEmit = this._pendingModelSelectEmit();
+			if (pendingModelSelectEmit) {
+				await pendingModelSelectEmit;
+			}
 			if (options?.skipPrePromptWork) {
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 				messages = [];
@@ -3392,8 +3399,15 @@ export class AgentSession {
 	): Promise<void> {
 		const emit = () =>
 			this._modelSelectEmitContext.run(true, () => this._emitModelSelect(nextModel, previousModel, source));
+		this._modelSelectEmitQueueIdle = false;
 		const promise = this._modelSelectEmitQueue.then(emit, emit);
-		this._modelSelectEmitQueue = promise.catch(() => {});
+		const queued = promise.catch(() => {});
+		this._modelSelectEmitQueue = queued;
+		void queued.finally(() => {
+			if (this._modelSelectEmitQueue === queued) {
+				this._modelSelectEmitQueueIdle = true;
+			}
+		});
 		return promise;
 	}
 
@@ -3439,10 +3453,11 @@ export class AgentSession {
 		return options.waitForExtensions !== false && !this._modelSelectEmitContext.getStore();
 	}
 
-	private async _waitForPendingModelSelectEmit(): Promise<void> {
-		if (!this._modelSelectEmitContext.getStore()) {
-			await this._modelSelectEmitQueue;
+	private _pendingModelSelectEmit(): Promise<void> | undefined {
+		if (!this._modelSelectEmitContext.getStore() && !this._modelSelectEmitQueueIdle) {
+			return this._modelSelectEmitQueue;
 		}
+		return undefined;
 	}
 
 	/**
