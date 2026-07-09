@@ -246,6 +246,7 @@ describe("IpythonKernelProvisioner", () => {
 		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, ctx);
 
 		expect(result.details.status).toBe("ok");
+		expect(result.details.kernelRestarted).toBe(false);
 		expect(ensure).toHaveBeenCalledTimes(2);
 		expect(kill).not.toHaveBeenCalled();
 		expect(select).toHaveBeenCalledWith(
@@ -275,8 +276,13 @@ describe("IpythonKernelProvisioner", () => {
 		const tool = createIpythonToolDefinition(tempDir, { provisioner });
 
 		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, ctx);
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
 		expect(result.details.status).toBe("ok");
+		expect(result.details.kernelRestarted).toBe(true);
+		expect(text).toContain("<ipython_kernel_reset>");
+		expect(text).toContain("Variables, imports, async tasks, and open resources");
+		expect(text).toContain("ok");
 		expect(ensure).toHaveBeenCalledTimes(2);
 		expect(kill).toHaveBeenCalledTimes(1);
 		expect(freshManager.execute).toHaveBeenCalledWith("x = 1", expect.objectContaining({ signal: undefined }));

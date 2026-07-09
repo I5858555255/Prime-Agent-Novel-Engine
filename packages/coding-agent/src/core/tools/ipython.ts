@@ -136,6 +136,11 @@ const BUSY_KERNEL_PROMPT = [
 	"Ctrl+C sent an interrupt, but the previous cell has not stopped yet. A new IPython command cannot start until it finishes.",
 	"Waiting preserves the current kernel state. Killing restarts IPython and loses in-memory variables, imports, and running tasks.",
 ].join("\n");
+const KERNEL_RESTART_NOTICE = [
+	"<ipython_kernel_reset>",
+	"The IPython kernel was restarted after a previous interrupted cell kept running. Variables, imports, async tasks, and open resources from before the restart are no longer available; recreate them before using them.",
+	"</ipython_kernel_reset>",
+].join("\n");
 
 function createAbortError(): Error {
 	return new Error("IPython execution aborted");
@@ -225,6 +230,8 @@ export interface IpythonToolDetails {
 	diffs?: KernelDiffDisplay[];
 	/** Media attachments loaded into context (e.g. by the attach-image skill). */
 	attachments?: KernelAttachment[];
+	/** True when this result came after killing and restarting a busy kernel. */
+	kernelRestarted?: boolean;
 	error?: {
 		ename: string;
 		evalue: string;
@@ -536,11 +543,12 @@ async function executeWithBusyKernelChoice(
 	signal: AbortSignal | undefined,
 	onStream: (chunk: string, name: "stdout" | "stderr") => void,
 	ctx: ExtensionContext | undefined,
-): Promise<ExecuteResult> {
+): Promise<{ result: ExecuteResult; kernelRestarted: boolean }> {
+	let kernelRestarted = false;
 	while (true) {
 		const m = await provisioner.ensure(reportStartupProgress, signal);
 		try {
-			return await m.execute(code, { signal, onStream });
+			return { result: await m.execute(code, { signal, onStream }), kernelRestarted };
 		} catch (error) {
 			if (!(error instanceof KernelBusyAfterInterruptError) || signal?.aborted) {
 				throw error;
@@ -553,6 +561,7 @@ async function executeWithBusyKernelChoice(
 			if (action === "kill") {
 				ctx?.ui.setWorkingMessage("Restarting IPython kernel...");
 				await provisioner.kill();
+				kernelRestarted = true;
 				continue;
 			}
 			throw error;
@@ -604,7 +613,7 @@ export function createIpythonToolDefinition(
 
 			try {
 				const code = applyShellSettingsToBashMagicCell(params.code, options);
-				const r = await executeWithBusyKernelChoice(
+				const { result: r, kernelRestarted } = await executeWithBusyKernelChoice(
 					provisioner,
 					reportStartupProgress,
 					code,
@@ -624,6 +633,9 @@ export function createIpythonToolDefinition(
 				if (r.status === "error" && r.error) {
 					text += (text ? "\n" : "") + r.error.traceback.join("\n");
 				}
+				if (kernelRestarted) {
+					text = text ? `${KERNEL_RESTART_NOTICE}\n\n${text}` : KERNEL_RESTART_NOTICE;
+				}
 
 				const imageBlocks = imageBlocksFromAttachments(r.attachments);
 				const content: (TextContent | ImageContent)[] = [{ type: "text", text: text || "" }, ...imageBlocks];
@@ -639,6 +651,7 @@ export function createIpythonToolDefinition(
 						result: r.result,
 						diffs: r.diffs,
 						attachments: r.attachments,
+						kernelRestarted,
 						error: r.error,
 					},
 					isError: r.status === "error" || r.status === "aborted",
