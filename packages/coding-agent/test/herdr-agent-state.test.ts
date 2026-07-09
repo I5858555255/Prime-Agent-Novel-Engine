@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -147,44 +147,35 @@ describe("herdrAgentStateExtension", () => {
 		expect(busHandlers.size).toBe(0);
 	});
 
-	it("detects the file-based herdr integration only in the given extension dirs", () => {
-		const tempDir = join(tmpdir(), `pi-herdr-filebased-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		const extDir = join(tempDir, "extensions");
-		mkdirSync(extDir, { recursive: true });
-		writeFileSync(join(extDir, "herdr-agent-state.ts"), "// installed by herdr\n");
-		cleanupPaths.push(tempDir);
-
-		expect(hasFileBasedHerdrIntegration([extDir])).toBe(true);
-		expect(hasFileBasedHerdrIntegration([join(tempDir, "other")])).toBe(false);
+	it("detects the file-based herdr integration among loaded extension paths", () => {
+		expect(hasFileBasedHerdrIntegration(["/x/extensions/herdr-agent-state.ts"])).toBe(true);
+		expect(hasFileBasedHerdrIntegration(["/x/extensions/herdr-agent-state.js"])).toBe(true);
+		expect(hasFileBasedHerdrIntegration(["/x/extensions/other.ts"])).toBe(false);
 		expect(hasFileBasedHerdrIntegration([])).toBe(false);
-
-		const jsDir = join(tempDir, "js-ext");
-		mkdirSync(jsDir, { recursive: true });
-		writeFileSync(join(jsDir, "herdr-agent-state.js"), "// compiled install\n");
-		expect(hasFileBasedHerdrIntegration([jsDir])).toBe(true);
 	});
 
-	it("defers to the file-based integration when created with matching extension dirs", () => {
+	it("defers only to a file-based integration that actually loaded", () => {
 		const tempDir = join(tmpdir(), `pi-herdr-defer-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		const extDir = join(tempDir, "extensions");
-		mkdirSync(extDir, { recursive: true });
-		writeFileSync(join(extDir, "herdr-agent-state.ts"), "// installed by herdr\n");
+		mkdirSync(tempDir, { recursive: true });
 		cleanupPaths.push(tempDir);
 
 		process.env.HERDR_ENV = "1";
 		process.env.HERDR_SOCKET_PATH = join(tempDir, "h.sock");
 		process.env.HERDR_PANE_ID = "w1:p1";
 
+		// The loader reports the file-based integration as loaded: defer.
+		let loadedPaths = [join(tempDir, "extensions", "herdr-agent-state.ts")];
+		const factory = createHerdrAgentStateExtension(() => loadedPaths);
 		const { pi, handlers, busHandlers } = createMockPi();
-		createHerdrAgentStateExtension([extDir])(pi);
+		factory(pi);
 		expect(handlers.size).toBe(0);
 		expect(busHandlers.size).toBe(0);
 
-		// The check runs per factory invocation, so removing the file and
-		// re-invoking (as /reload does) re-enables the built-in reporter.
-		rmSync(join(extDir, "herdr-agent-state.ts"));
+		// Loaded paths are consulted per invocation, so a /reload after the
+		// file-based integration is removed or disabled re-enables the built-in.
+		loadedPaths = [];
 		const second = createMockPi();
-		createHerdrAgentStateExtension([extDir])(second.pi);
+		factory(second.pi);
 		expect(second.handlers.size).toBeGreaterThan(0);
 	});
 

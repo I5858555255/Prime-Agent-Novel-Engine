@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import { getAgentDir } from "../config.js";
 import type { AgentSessionMessageController } from "./agent-messages.js";
 import type { AgentObserveController } from "./agent-observe.js";
 import { installAgentTraceUpload } from "./agent-traces.js";
@@ -177,16 +177,17 @@ export async function createAgentSessionServices(
 
 	const userExtensionFactories = options.resourceLoaderOptions?.extensionFactories ?? [];
 	// The built-in Herdr reporter defers to Herdr's own file-based integration
-	// when it is present in a directory the loader discovers from; two
-	// reporters would race on the same pane. The factory re-checks on every
-	// session load and /reload, using the same dirs the loader scans so
-	// agentDir overrides are honored.
+	// when the loader actually loaded it; two reporters would race on the same
+	// pane. Deferral is late-bound to the loader's loaded paths (inline
+	// factories run after file extensions load), so a file that exists but is
+	// disabled or never discovered does not silence the built-in.
 	// noExtensions is a full opt-out: it disables the built-in reporter too,
 	// not just discovered extension files.
 	const skipHerdrReporter = options.noBuiltinHerdrReporter || options.resourceLoaderOptions?.noExtensions;
-	const discoveredExtensionDirs = [join(cwd, CONFIG_DIR_NAME, "extensions"), join(agentDir, "extensions")];
-	const builtinExtensionFactories = skipHerdrReporter ? [] : [createHerdrAgentStateExtension(discoveredExtensionDirs)];
-	const resourceLoader = new DefaultResourceLoader({
+	const builtinExtensionFactories = skipHerdrReporter
+		? []
+		: [createHerdrAgentStateExtension(() => resourceLoader.getLoadedExtensionPaths())];
+	const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		extensionFactories: [...builtinExtensionFactories, ...userExtensionFactories],
 		cwd,

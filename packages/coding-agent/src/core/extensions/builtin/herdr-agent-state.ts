@@ -16,31 +16,30 @@
  * not running inside a Herdr pane), so it is safe to always load.
  */
 
-import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
-import { join } from "node:path";
+import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "../types.js";
 
 type AgentState = "working" | "blocked" | "idle";
 
 /**
  * True when Herdr's own file-based Pi integration (`herdr integration
- * install pi`) is present in an extensions directory the resource loader
- * actually discovers from. That extension loads like any other and reports
- * with the same `herdr:pi` source but its own seq counter, so running the
- * built-in alongside it would make the two reporters race on one pane.
+ * install pi`) is among the extension files the loader actually loaded this
+ * cycle. That extension reports with the same `herdr:pi` source but its own
+ * seq counter, so running the built-in alongside it would make the two
+ * reporters race on one pane.
  *
- * The caller passes the exact directories the loader uses (project-local
- * config dir and the effective agent dir), so overrides via env or options
- * are honored. Paths Prime Agent never loads from (e.g. the legacy
- * `~/.pi/agent/extensions/`) are deliberately not checked: a file there
- * never becomes an active reporter, so deferring to it would leave the pane
- * with no reporter at all.
+ * Loaded paths — not raw disk existence — are the deferral source of truth:
+ * a file that exists but never loads (settings `!` overrides, noExtensions,
+ * paths outside the discovery dirs such as the legacy `~/.pi/agent/`) never
+ * becomes an active reporter, and deferring to it would leave the pane with
+ * no reporter at all.
  */
-export function hasFileBasedHerdrIntegration(extensionDirs: string[]): boolean {
-	return extensionDirs.some(
-		(dir) => existsSync(join(dir, "herdr-agent-state.ts")) || existsSync(join(dir, "herdr-agent-state.js")),
-	);
+export function hasFileBasedHerdrIntegration(loadedExtensionPaths: string[]): boolean {
+	return loadedExtensionPaths.some((path) => {
+		const base = basename(path);
+		return base === "herdr-agent-state.ts" || base === "herdr-agent-state.js";
+	});
 }
 
 interface QueuedState {
@@ -103,31 +102,33 @@ function nextReportSeq(): number {
 }
 
 /**
- * Build the built-in Herdr reporter factory. `extensionDirs` are the
- * directories the resource loader discovers file-based extensions from; they
- * are re-checked on every factory invocation (i.e. on every session load and
- * `/reload`), so installing Herdr's own file-based integration and reloading
- * hands the pane over to it without also keeping the built-in active.
+ * Build the built-in Herdr reporter factory. `getLoadedExtensionPaths`
+ * returns the extension files the resource loader actually loaded in the
+ * current cycle; it is re-checked on every factory invocation (i.e. on every
+ * session load and `/reload`), so installing Herdr's own file-based
+ * integration and reloading hands the pane over to it without also keeping
+ * the built-in active — while a file that exists but never loads (settings
+ * overrides, legacy paths) does not silence the built-in.
  */
-export function createHerdrAgentStateExtension(extensionDirs: string[]): ExtensionFactory {
+export function createHerdrAgentStateExtension(getLoadedExtensionPaths: () => string[]): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
-		herdrAgentStateExtensionImpl(pi, extensionDirs);
+		herdrAgentStateExtensionImpl(pi, getLoadedExtensionPaths);
 	};
 }
 
 /** Built-in reporter with no file-based deferral, for tests and embedders. */
 export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => {
-	herdrAgentStateExtensionImpl(pi, []);
+	herdrAgentStateExtensionImpl(pi, () => []);
 };
 
-function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[]): void {
+function herdrAgentStateExtensionImpl(pi: ExtensionAPI, getLoadedExtensionPaths: () => string[]): void {
 	// Captured per factory invocation: the resource loader runs this during
 	// session load, inside the daemon's client-env window, so these reflect the
 	// session's own Herdr pane rather than the daemon's startup environment.
 	const socketPath = process.env.HERDR_SOCKET_PATH;
 	const paneId = process.env.HERDR_PANE_ID;
 	const enabled = process.env.HERDR_ENV === "1" && !!socketPath && !!paneId;
-	if (!enabled || hasFileBasedHerdrIntegration(extensionDirs)) {
+	if (!enabled || hasFileBasedHerdrIntegration(getLoadedExtensionPaths())) {
 		return;
 	}
 
