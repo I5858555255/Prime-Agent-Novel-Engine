@@ -202,9 +202,47 @@ describe("herdrAgentStateExtension", () => {
 		await waitForRequests(3);
 		expect(requests[2]?.params.state).toBe("idle");
 
+		// Session replacement must not release: the successor session re-reports,
+		// and a racing release could clear the successor's fresh report.
+		await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "new" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(requests).toHaveLength(3);
+
 		await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
 		await waitForRequests(4);
 		expect(requests[3]?.method).toBe("pane.release_agent");
 		expect(requests[3]?.params.agent).toBe("prime-agent");
+	});
+
+	it("keeps seq monotonically increasing across extension instances", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server, requests, waitForRequests } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = tempDir;
+
+		const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "s" } };
+
+		// Two instances, as after a session replacement: the successor's seq must
+		// exceed everything the predecessor sent, or herdr drops its reports.
+		const first = createMockPi();
+		herdrAgentStateExtension(first.pi);
+		first.handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		await waitForRequests(1);
+
+		const second = createMockPi();
+		herdrAgentStateExtension(second.pi);
+		second.handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "new" }, ctx);
+		await waitForRequests(2);
+
+		const seqs = requests.map((r) => r.params.seq as number);
+		expect(seqs[1]).toBeGreaterThan(seqs[0]);
 	});
 });

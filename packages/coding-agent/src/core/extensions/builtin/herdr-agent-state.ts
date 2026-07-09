@@ -85,6 +85,18 @@ function retryableErrorMessage(event: any): string | undefined {
 	return errorMessage || "retryable provider error";
 }
 
+// Monotonic across all extension instances in this process. Herdr guards
+// pane.report_agent with a per-source seq and silently drops lower-seq
+// reports, so a successor session instance (after /new, resume, fork, or
+// reload) must never restart below a seq the previous instance already used —
+// otherwise its idle reports are dropped and the pane sticks at "working".
+let reportSeq = Date.now() * 1000;
+
+function nextReportSeq(): number {
+	reportSeq = Math.max(reportSeq + 1, Date.now() * 1000);
+	return reportSeq;
+}
+
 export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	// Captured per factory invocation: the resource loader runs this during
 	// session load, inside the daemon's client-env window, so these reflect the
@@ -101,7 +113,6 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 	const idleDebounceMs = parseDurationEnv("HERDR_PI_IDLE_DEBOUNCE_MS", 250);
 	const retryGraceMs = parseDurationEnv("HERDR_PI_RETRY_GRACE_MS", 2500);
 
-	let reportSeq = Date.now() * 1000;
 	let currentAgentSessionId: string | undefined;
 	let currentAgentSessionPath: string | undefined;
 	let sendInFlight = false;
@@ -117,11 +128,6 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 	let lastMessage: string | undefined;
 	let idleTimer: ReturnType<typeof setTimeout> | undefined;
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
-
-	function nextReportSeq(): number {
-		reportSeq += 1;
-		return reportSeq;
-	}
 
 	function sendRequest(request: unknown): Promise<void> {
 		return new Promise((resolve) => {
@@ -320,7 +326,7 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 		publishState();
 	});
 
-	pi.on("agent_end", (event) => {
+	pi.on("agent_end", (event, ctx) => {
 		if (!agentActive) {
 			// Duplicate/late end events can arrive while auto-retry is already
 			// holding the pane in Working. Do not let an unqualified duplicate end
@@ -336,11 +342,29 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 			return;
 		}
 
-		scheduleIdle();
+		// Queued follow-up/steer messages start another loop right away; debounce
+		// so the pane does not flicker done -> working. With nothing queued,
+		// report idle immediately so Herdr flips to done as streaming finishes.
+		if (typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages()) {
+			scheduleIdle();
+			return;
+		}
+
+		clearPendingTimers();
+		clearFailureState();
+		publishState();
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (event) => {
 		clearPendingTimers();
+		// On session replacement (new/resume/fork) or reload, a successor
+		// instance in this same pane re-reports immediately. Releasing here
+		// races that report: two independent socket writes with no ordering,
+		// and a release that lands after the successor's report clears the
+		// pane. Only a real quit should release.
+		if (event?.reason !== "quit") {
+			return;
+		}
 		await releaseAgent();
 	});
 };
