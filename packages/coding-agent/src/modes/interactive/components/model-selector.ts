@@ -167,24 +167,21 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.panel.addChild(this.listContainer);
 		this.updateResponsiveLayout();
 
-		// Load models and do initial render
-		this.loadModels().then(() => {
-			if (initialSearchInput) {
-				this.filterModels(initialSearchInput);
-			} else {
-				this.updateList();
-			}
-			// Request re-render after models are loaded
-			this.tui.requestRender();
-		});
+		this.loadModels();
+		if (initialSearchInput) {
+			this.filterModels(initialSearchInput);
+		} else {
+			this.updateList();
+		}
+		this.tui.requestRender();
 	}
 
-	async updateAvailableModels(availableModels: ReadonlyArray<Model<any>>): Promise<void> {
+	updateAvailableModels(availableModels: ReadonlyArray<Model<any>>): void {
 		this.availableModels = availableModels;
 		const query = this.searchInput.getValue();
 		const selectedKey = this.getSelectedModelKey();
 
-		await this.loadModels();
+		this.loadModels();
 		this.filterModels(query);
 
 		if (selectedKey) {
@@ -198,24 +195,23 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.tui.requestRender();
 	}
 
-	private async loadModels(): Promise<void> {
+	private loadModels(): void {
 		let models: ModelItem[];
 		this.errorMessage = undefined;
 
-		// Refresh to pick up any changes to models.json
-		this.modelRegistry.refresh();
-
-		// Check for models.json errors
-		const loadError = this.modelRegistry.getError();
-		if (loadError) {
-			this.errorMessage = loadError;
+		if (this.availableModels === undefined) {
+			this.modelRegistry.refresh();
+			const loadError = this.modelRegistry.getError();
+			if (loadError) {
+				this.errorMessage = loadError;
+			}
 		}
 
 		// Load available models (built-in models still work even if models.json failed)
 		let availableModels: ReadonlyArray<Model<any>>;
 		try {
 			availableModels =
-				this.availableModels !== undefined ? this.availableModels : await this.modelRegistry.getAvailable();
+				this.availableModels !== undefined ? this.availableModels : this.modelRegistry.getAvailable();
 			models = availableModels.map((model: Model<any>) => ({
 				provider: model.provider,
 				id: model.id,
