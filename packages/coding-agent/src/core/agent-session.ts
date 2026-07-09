@@ -5359,10 +5359,26 @@ export class AgentSession {
 		return { model, thinkingLevel };
 	}
 
-	private _usageForCurrentMessages(): RlmUsage {
-		const usage = emptyRlmUsage();
+	/**
+	 * Snapshot the assistant messages already present in this session, so a reopened
+	 * persistent subagent can measure only the usage and turns produced by the current
+	 * run. Without this, the hydrated prior turns would be summed again, making
+	 * `RLMResult.usage`/`turns` cumulative and re-attributing earlier runs to the parent.
+	 */
+	_snapshotAssistantMessages(): ReadonlySet<AgentMessage> {
+		const seen = new Set<AgentMessage>();
 		for (const message of this.agent.state.messages) {
 			if (message.role === "assistant") {
+				seen.add(message);
+			}
+		}
+		return seen;
+	}
+
+	private _usageForCurrentMessages(exclude?: ReadonlySet<AgentMessage>): RlmUsage {
+		const usage = emptyRlmUsage();
+		for (const message of this.agent.state.messages) {
+			if (message.role === "assistant" && !exclude?.has(message)) {
 				addUsage(usage, (message as AssistantMessage).usage);
 			}
 		}
@@ -5387,10 +5403,10 @@ export class AgentSession {
 		return this._currentRecap;
 	}
 
-	private _assistantUsageForCurrentMessages(): Usage {
+	private _assistantUsageForCurrentMessages(exclude?: ReadonlySet<AgentMessage>): Usage {
 		const usage = emptyUsage();
 		for (const message of this.agent.state.messages) {
-			if (message.role === "assistant") {
+			if (message.role === "assistant" && !exclude?.has(message)) {
 				addAssistantUsage(usage, (message as AssistantMessage).usage);
 			}
 		}
@@ -5417,8 +5433,9 @@ export class AgentSession {
 		}
 	}
 
-	private _assistantTurnCount(): number {
-		return this.agent.state.messages.filter((message) => message.role === "assistant").length;
+	private _assistantTurnCount(exclude?: ReadonlySet<AgentMessage>): number {
+		return this.agent.state.messages.filter((message) => message.role === "assistant" && !exclude?.has(message))
+			.length;
 	}
 
 	private _createRlmSubagentRuntimeOptions(options: {
@@ -5865,6 +5882,10 @@ export class AgentSession {
 				const child = childRuntime.session;
 				childSession = child;
 				run.session = child;
+				// Assistant turns hydrated from a reopened persistent subagent's history are
+				// excluded from this run's usage/turns so they aren't counted twice or
+				// re-attributed to the parent.
+				const priorAssistantMessages = child._snapshotAssistantMessages();
 				run.abort = () => {
 					void child.abort();
 				};
@@ -5918,8 +5939,8 @@ export class AgentSession {
 					throw new Error(run.error ?? "RLM child cancelled");
 				}
 				const answer = child.getLastAssistantText() ?? "";
-				const usage = child._usageForCurrentMessages();
-				const assistantUsage = child._assistantUsageForCurrentMessages();
+				const usage = child._usageForCurrentMessages(priorAssistantMessages);
+				const assistantUsage = child._assistantUsageForCurrentMessages(priorAssistantMessages);
 				this._attributeRlmChildUsageToParent(assistantUsage, parentAssistantForUsage);
 				run.status = "done";
 				durationMs = Date.now() - startedAt;
@@ -5942,7 +5963,7 @@ export class AgentSession {
 				const result: RlmRunResult = {
 					answer,
 					usage,
-					turns: child._assistantTurnCount(),
+					turns: child._assistantTurnCount(priorAssistantMessages),
 					session_dir: childSessionDir,
 					persistent_id: persistentPlan?.id,
 					reopened: persistentPlan?.reopened,

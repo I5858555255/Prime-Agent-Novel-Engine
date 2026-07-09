@@ -1200,6 +1200,37 @@ describe("AgentSession persistent subagents", () => {
 		expect(sidecar.runCount).toBe(2);
 	});
 
+	it("reports only the current run's usage and turns on reopen, not cumulative", async () => {
+		const root = createPersistentSession();
+
+		const first = await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		const second = await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+
+		expect(second.reopened).toBe(true);
+		// Each run is a single assistant turn; the reopened run must not double-count the
+		// hydrated prior turn.
+		expect(first.turns).toBe(1);
+		expect(second.turns).toBe(1);
+		expect(second.usage).toEqual(first.usage);
+	});
+
+	it("does not re-attribute a reopened subagent's prior usage to the parent", async () => {
+		const root = createPersistentSession();
+		const parentAssistant = assistantMessage("running ipython", usage(0, 0));
+		root.agent.state.messages.push(parentAssistant);
+		root.sessionManager.appendMessage(parentAssistant);
+
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		const afterFirst = root.getSessionStats();
+		await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+		const afterSecond = root.getSessionStats();
+
+		// The reopen adds only its own single turn's usage to the parent aggregate, not the
+		// hydrated prior turn as well.
+		expect(afterSecond.tokens.input - afterFirst.tokens.input).toBe(7);
+		expect(afterSecond.tokens.output - afterFirst.tokens.output).toBe(3);
+	});
+
 	it("applies and re-applies the subagent system prompt across reopen", async () => {
 		const seenSystemPrompts: Array<string | undefined> = [];
 		const root = createPersistentSession((_model, context) => {
