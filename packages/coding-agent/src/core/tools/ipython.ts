@@ -129,8 +129,13 @@ const ipythonSchema = Type.Object({
 	}),
 });
 
-const BUSY_KERNEL_WAIT_CHOICE = "Wait";
-const BUSY_KERNEL_KILL_CHOICE = "Kill kernel";
+const BUSY_KERNEL_WAIT_CHOICE = "Wait and preserve state";
+const BUSY_KERNEL_KILL_CHOICE = "Kill kernel and restart";
+const BUSY_KERNEL_PROMPT = [
+	"Interrupted IPython cell is still running",
+	"Ctrl+C sent an interrupt, but the previous cell has not stopped yet. A new IPython command cannot start until it finishes.",
+	"Waiting preserves the current kernel state. Killing restarts IPython and loses in-memory variables, imports, and running tasks.",
+].join("\n");
 
 function createAbortError(): Error {
 	return new Error("IPython execution aborted");
@@ -512,11 +517,9 @@ async function chooseBusyKernelAction(
 	if (!ctx?.hasUI) {
 		return "cancel";
 	}
-	const choice = await ctx.ui.select(
-		"IPython kernel is still running\nThe previous interrupted cell has not stopped. Waiting preserves kernel state. Killing restarts IPython and may lose unsaved state.",
-		[BUSY_KERNEL_WAIT_CHOICE, BUSY_KERNEL_KILL_CHOICE],
-		{ signal },
-	);
+	const choice = await ctx.ui.select(BUSY_KERNEL_PROMPT, [BUSY_KERNEL_WAIT_CHOICE, BUSY_KERNEL_KILL_CHOICE], {
+		signal,
+	});
 	if (choice === BUSY_KERNEL_WAIT_CHOICE) {
 		return "wait";
 	}

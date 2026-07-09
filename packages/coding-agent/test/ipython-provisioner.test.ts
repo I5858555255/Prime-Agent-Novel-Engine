@@ -239,7 +239,7 @@ describe("IpythonKernelProvisioner", () => {
 		const ensure = vi.fn(async () => manager);
 		const kill = vi.fn(async () => {});
 		const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
-		const select = vi.fn(async () => "Wait");
+		const select = vi.fn(async () => "Wait and preserve state");
 		const { ctx, setWorkingMessage } = createBusyKernelContext(select);
 		const tool = createIpythonToolDefinition(tempDir, { provisioner });
 
@@ -249,8 +249,8 @@ describe("IpythonKernelProvisioner", () => {
 		expect(ensure).toHaveBeenCalledTimes(2);
 		expect(kill).not.toHaveBeenCalled();
 		expect(select).toHaveBeenCalledWith(
-			expect.stringContaining("previous interrupted cell"),
-			["Wait", "Kill kernel"],
+			expect.stringContaining("previous cell has not stopped"),
+			["Wait and preserve state", "Kill kernel and restart"],
 			{
 				signal: undefined,
 			},
@@ -270,7 +270,7 @@ describe("IpythonKernelProvisioner", () => {
 		});
 		const kill = vi.fn(async () => {});
 		const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
-		const select = vi.fn(async () => "Kill kernel");
+		const select = vi.fn(async () => "Kill kernel and restart");
 		const { ctx, setWorkingMessage } = createBusyKernelContext(select);
 		const tool = createIpythonToolDefinition(tempDir, { provisioner });
 
