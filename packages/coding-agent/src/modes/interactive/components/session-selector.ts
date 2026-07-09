@@ -856,7 +856,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 				const sessions = this.scope === "all" ? (this.allSessions ?? []) : (this.currentSessions ?? []);
 				const showCwd = this.scope === "all";
-				this.sessionList.setSessions(sessions, showCwd);
+				const streaming = this.scope === "all" ? this.allLoading : this.currentLoading;
+				this.sessionList.setSessions(sessions, showCwd, streaming);
 
 				const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
 				try {
@@ -985,7 +986,13 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		const onSession = (session: AgentConnectionSavedSessionInfo) => {
 			if (reason === "refresh" || !isLatestLoad() || !isCurrentView()) return;
 			streamedSessions.set(session.path, session);
-			this.sessionList.setSessions([...streamedSessions.values()], showCwd, true);
+			const sessions = [...streamedSessions.values()];
+			if (scope === "current") {
+				this.currentSessions = sessions;
+			} else {
+				this.allSessions = sessions;
+			}
+			this.sessionList.setSessions(sessions, showCwd, true);
 			this.requestRender();
 		};
 
@@ -1060,8 +1067,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.header.setScope(this.scope);
 
 			if (this.allSessions !== null) {
-				this.header.setLoading(false);
-				this.sessionList.setSessions(this.allSessions, true);
+				this.header.setLoading(this.allLoading);
+				this.sessionList.setSessions(this.allSessions, true, this.allLoading);
 				this.requestRender();
 				return;
 			}

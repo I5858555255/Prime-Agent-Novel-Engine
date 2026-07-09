@@ -332,6 +332,48 @@ describe("session selector path/delete interactions", () => {
 		expect(onSelect).toHaveBeenCalledWith(child.path);
 	});
 
+	it("keeps other streamed rows visible when deleting before loading completes", async () => {
+		const first = makeSession({ id: "first", name: "First streamed session" });
+		const second = makeSession({ id: "second", name: "Second streamed session" });
+		const initialLoad = createDeferred<AgentConnectionSavedSessionInfo[]>();
+		const refreshLoad = createDeferred<AgentConnectionSavedSessionInfo[]>();
+		const deleteSession = vi.fn(async () => ({ ok: true as const, method: "unlink" as const }));
+		let loadCalls = 0;
+
+		const selector = new SessionSelectorComponent(
+			async (callbacks) => {
+				loadCalls++;
+				if (loadCalls === 1) {
+					callbacks?.onSession?.(first);
+					callbacks?.onSession?.(second);
+					return initialLoad.promise;
+				}
+				return refreshLoad.promise;
+			},
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, deleteSession },
+		);
+		await flushPromises();
+
+		const list = selector.getSessionList();
+		list.handleInput(CTRL_X);
+		list.handleInput(CTRL_X);
+		await flushPromises();
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(deleteSession).toHaveBeenCalledWith(first.path);
+		expect(output).not.toContain("First streamed session");
+		expect(output).toContain("Second streamed session");
+
+		refreshLoad.resolve([second]);
+		initialLoad.resolve([first, second]);
+		await flushPromises();
+	});
+
 	it("does not switch scope back to All when All load resolves after toggling back to Current", async () => {
 		const currentSessions = [makeSession({ id: "current" })];
 		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
