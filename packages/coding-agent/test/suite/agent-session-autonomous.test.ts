@@ -10,6 +10,7 @@ import {
 	nextAutonomousContinuation,
 	shouldAutonomouslyContinue,
 } from "../../src/core/autonomous.js";
+import type { AgentCronJob } from "../../src/core/cron-jobs.js";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
 
 describe("AgentSession autonomous mode", () => {
@@ -256,6 +257,50 @@ describe("AgentSession autonomous mode", () => {
 		expect(getUserTexts(harness)).toEqual(["host gate follow-up"]);
 		expect(getAssistantTexts(harness)).toEqual(["Still failing."]);
 		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(1);
+	});
+
+	it("suppresses autonomous continuation injection for queued host-driven prompts", async () => {
+		const harness = await createHarness({
+			autonomous: {
+				enabled: true,
+				maxContinuations: 2,
+				gates: {
+					commands: [`${process.execPath} -e "console.error('gate failed'); process.exit(1)"`],
+					maxRetries: 2,
+				},
+			},
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("Still failing.")]);
+		const sessionInternals = harness.session as unknown as {
+			_compactionAbortController?: AbortController;
+		};
+		sessionInternals._compactionAbortController = new AbortController();
+		const heartbeatJob = {
+			id: "heartbeat-test",
+			status: "active",
+			activeSessionId: "active-test",
+			sessionId: harness.session.sessionId,
+			sessionFile: harness.session.sessionFile ?? "session.jsonl",
+			cwd: harness.tempDir,
+			prompt: "host gate follow-up",
+			schedule: { kind: "interval", expression: "every 5m", intervalMs: 300_000 },
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+			runCount: 0,
+		} satisfies AgentCronJob;
+
+		await harness.session.promptHeartbeat(heartbeatJob, {
+			queueIfBusy: true,
+			streamingBehavior: "followUp",
+			suppressAutonomousContinuation: true,
+		});
+		sessionInternals._compactionAbortController = undefined;
+		await harness.session.agent.continue();
+
+		expect(getAssistantTexts(harness)).toEqual(["Still failing."]);
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(0);
+		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
 	it("advances retry budget without rerunning a failed autonomous gate until the workspace changes", () => {

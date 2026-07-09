@@ -690,6 +690,7 @@ export class AgentSession {
 	private _goalAbortInProgress = false;
 	private _autonomousState: AutonomousRuntimeState;
 	private _autonomousContinuationSuppressionDepth = 0;
+	private _autonomousContinuationSuppressedMessages = new WeakSet<AgentMessage>();
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -1845,7 +1846,10 @@ export class AgentSession {
 		if (goalMessages.length > 0 || signal?.aborted) {
 			return goalMessages;
 		}
-		if (this._autonomousContinuationSuppressionDepth > 0) {
+		if (
+			this._autonomousContinuationSuppressionDepth > 0 ||
+			context.newMessages.some((message) => this._autonomousContinuationSuppressedMessages.has(message))
+		) {
 			return [];
 		}
 		const autonomousMessage = nextAutonomousContinuation(this._autonomousState, context.message, { cwd: this._cwd });
@@ -2549,6 +2553,10 @@ export class AgentSession {
 		}
 	}
 
+	private _markAutonomousContinuationSuppressed(message: AgentMessage): void {
+		this._autonomousContinuationSuppressedMessages.add(message);
+	}
+
 	/** Scoped models for cycling (from --models flag) */
 	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
 		return this._scopedModels;
@@ -2711,7 +2719,11 @@ export class AgentSession {
 					text,
 					message,
 					options.streamingBehavior,
-					{ queueKey: options.followUpQueueKey, previewLabel },
+					{
+						queueKey: options.followUpQueueKey,
+						previewLabel,
+						suppressAutonomousContinuation: options.suppressAutonomousContinuation,
+					},
 				);
 				if (!queued) {
 					reportPreflight(false);
@@ -2796,7 +2808,11 @@ export class AgentSession {
 				text,
 				message,
 				options.streamingBehavior,
-				{ queueKey: options.followUpQueueKey, previewLabel },
+				{
+					queueKey: options.followUpQueueKey,
+					previewLabel,
+					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
+				},
 			);
 			if (!queued) {
 				reportPreflight(false);
@@ -2808,6 +2824,7 @@ export class AgentSession {
 
 		try {
 			if (options?.suppressAutonomousContinuation) {
+				this._markAutonomousContinuationSuppressed(message);
 				await this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(messages));
 			} else {
 				await this.agent.prompt(messages);
@@ -2933,6 +2950,7 @@ export class AgentSession {
 					{
 						queueKey: options.followUpQueueKey,
 						agentMessageId: options.agentMessageId,
+						suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 					},
 				);
 				if (!queued) {
@@ -3115,6 +3133,7 @@ export class AgentSession {
 				{
 					queueKey: options.followUpQueueKey,
 					agentMessageId: options.agentMessageId,
+					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 				},
 			);
 			if (!queued) {
@@ -3123,6 +3142,11 @@ export class AgentSession {
 			}
 			reportPreflight(true, true);
 			return;
+		}
+		if (options?.suppressAutonomousContinuation) {
+			for (const message of messages) {
+				this._markAutonomousContinuationSuppressed(message);
+			}
 		}
 		const promptPromise = options?.suppressAutonomousContinuation
 			? this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(messages))
@@ -3360,7 +3384,7 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		streamingBehavior: "steer" | "followUp",
-		options: { queueKey?: string; agentMessageId?: string } = {},
+		options: { queueKey?: string; agentMessageId?: string; suppressAutonomousContinuation?: boolean } = {},
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
@@ -3373,7 +3397,11 @@ export class AgentSession {
 				}
 				return queued;
 			}
-			await this._queueSteer(text, undefined, { agentMessageId: options.agentMessageId, content });
+			await this._queueSteer(text, undefined, {
+				agentMessageId: options.agentMessageId,
+				content,
+				suppressAutonomousContinuation: options.suppressAutonomousContinuation,
+			});
 			return true;
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
@@ -3385,7 +3413,7 @@ export class AgentSession {
 		text: string,
 		message: CustomMessage,
 		streamingBehavior: "steer" | "followUp",
-		options: { queueKey?: string; previewLabel?: string } = {},
+		options: { queueKey?: string; previewLabel?: string; suppressAutonomousContinuation?: boolean } = {},
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
@@ -3399,13 +3427,18 @@ export class AgentSession {
 					queueKey: options.queueKey,
 					message: queuedMessage,
 					previewLabel: options.previewLabel,
+					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 				});
 				if (!queued) {
 					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
 				}
 				return queued;
 			}
-			await this._queueSteer(text, undefined, { message: queuedMessage, previewLabel: options.previewLabel });
+			await this._queueSteer(text, undefined, {
+				message: queuedMessage,
+				previewLabel: options.previewLabel,
+				suppressAutonomousContinuation: options.suppressAutonomousContinuation,
+			});
 			return true;
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
@@ -3424,6 +3457,7 @@ export class AgentSession {
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
 			previewLabel?: string;
+			suppressAutonomousContinuation?: boolean;
 		} = {},
 	): Promise<void> {
 		const content = options.content ?? this._buildPromptContent(text, images);
@@ -3434,6 +3468,9 @@ export class AgentSession {
 				content,
 				timestamp: Date.now(),
 			} satisfies UserMessage);
+		if (options.suppressAutonomousContinuation) {
+			this._markAutonomousContinuationSuppressed(message);
+		}
 		this._steeringMessages.push({
 			text,
 			previewLabel: options.previewLabel,
@@ -3456,6 +3493,7 @@ export class AgentSession {
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
 			previewLabel?: string;
+			suppressAutonomousContinuation?: boolean;
 		} = {},
 	): Promise<boolean> {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
@@ -3469,6 +3507,9 @@ export class AgentSession {
 				content,
 				timestamp: Date.now(),
 			} satisfies UserMessage);
+		if (options.suppressAutonomousContinuation) {
+			this._markAutonomousContinuationSuppressed(message);
+		}
 		this._followUpMessages.push({
 			text,
 			previewLabel: options.previewLabel,
