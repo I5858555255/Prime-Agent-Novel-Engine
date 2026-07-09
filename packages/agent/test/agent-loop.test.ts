@@ -412,6 +412,74 @@ describe("agentLoop with AgentMessage", () => {
 		expect(toolExecute).not.toHaveBeenCalled();
 	});
 
+	it("should stop a sequential tool batch after aborting a tool call", async () => {
+		const controller = new AbortController();
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, params) => {
+				executed.push(params.value);
+				if (params.value === "first") {
+					controller.abort();
+				}
+				return {
+					content: [{ type: "text", text: `done:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[
+				{ type: "toolCall", id: "tool_1", name: "work", arguments: { value: "first" } },
+				{ type: "toolCall", id: "tool_2", name: "work", arguments: { value: "second" } },
+			],
+			"toolUse",
+		);
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "toolUse", message: assistantMessage });
+			});
+			return stream;
+		};
+		const events: AgentEvent[] = [];
+
+		await runAgentLoop(
+			[createUserMessage("Hello")],
+			context,
+			config,
+			(event) => {
+				events.push(event);
+			},
+			controller.signal,
+			streamFn,
+		);
+
+		const toolStartIds = events.flatMap((event) => (event.type === "tool_execution_start" ? [event.toolCallId] : []));
+		const toolResultIds = events.flatMap((event) =>
+			event.type === "message_end" && event.message.role === "toolResult" ? [event.message.toolCallId] : [],
+		);
+
+		expect(executed).toEqual(["first"]);
+		expect(toolStartIds).toEqual(["tool_1"]);
+		expect(toolResultIds).toEqual(["tool_1"]);
+		expect(events.some((event) => event.type === "agent_end")).toBe(true);
+	});
+
 	it("should preserve a successful tool result when abort fires during update flush", async () => {
 		const controller = new AbortController();
 		const toolSchema = Type.Object({});

@@ -630,6 +630,10 @@ async function executeToolCallsSequential(
 	const messages: ToolResultMessage[] = [];
 
 	for (const toolCall of toolCalls) {
+		if (signal?.aborted) {
+			break;
+		}
+
 		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
@@ -662,6 +666,10 @@ async function executeToolCallsSequential(
 		await emitToolResultMessage(toolResultMessage, emit);
 		finalizedCalls.push(finalized);
 		messages.push(toolResultMessage);
+
+		if (signal?.aborted) {
+			break;
+		}
 	}
 
 	return {
