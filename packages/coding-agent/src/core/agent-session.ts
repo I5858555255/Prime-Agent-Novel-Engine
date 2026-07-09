@@ -2124,6 +2124,16 @@ export class AgentSession {
 	}
 
 	/**
+	 * Await the async event-processing queue that drives subscribe() listeners.
+	 * agent.waitForIdle() can resolve before this queue drains, so callers that read
+	 * state accumulated by subscribe() listeners (e.g. an RLM parent tallying a child's
+	 * message_end events) must await this after waitForIdle() to avoid a race.
+	 */
+	async waitForEventQueueIdle(): Promise<void> {
+		await this._agentEventQueue.catch(() => undefined);
+	}
+
+	/**
 	 * Temporarily disconnect from agent events.
 	 * User listeners are preserved and will receive events again after resubscribe().
 	 * Used internally during operations that need to pause event processing.
@@ -6058,6 +6068,9 @@ export class AgentSession {
 				}
 				await child.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
 				await child.agent.waitForIdle();
+				// waitForIdle can resolve before the child's event queue drains; wait for it so
+				// every message_end has been tallied before we read this run's usage/turns/answer.
+				await child.waitForEventQueueIdle();
 				if (isRlmChildRunCancelled(run)) {
 					throw new Error(run.error ?? "RLM child cancelled");
 				}
