@@ -1263,6 +1263,17 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(getAvailableModels).toHaveBeenCalledTimes(1);
 	});
 
+	test("keeps a fetched empty daemon catalog empty", () => {
+		const localOnly = createModel("openai", "local-only");
+		const { fakeThis } = createSelectorOverlayHarness({
+			connectionModels: [],
+			connectionModelsFetchedAt: Date.now(),
+			registryModels: [localOnly],
+		});
+
+		expect(fakeThis.getCachedModelCandidates()).toEqual([]);
+	});
+
 	test("uses a fresh cached model catalog without starting another refresh", async () => {
 		const cachedModel = createModel("openai", "gpt-5.5");
 		const getAvailableModels = vi.fn(async () => [cachedModel]);

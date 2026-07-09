@@ -322,6 +322,39 @@ describe("AgentSession model and extension characterization", () => {
 		expect(getAssistantTexts(harness)).toContain("queued from hook");
 	});
 
+	it("allows model_select handlers to switch models without waiting on themselves", async () => {
+		const events: string[] = [];
+		let harness: Harness;
+		harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+				{ id: "faux-3", name: "Three", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async (event) => {
+						events.push(`start:${event.model.id}`);
+						if (event.model.id === "faux-2") {
+							await harness.session.setModel(harness.getModel("faux-3")!);
+							events.push("nested-returned");
+						}
+						events.push(`end:${event.model.id}`);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.setModel(harness.getModel("faux-2")!);
+		for (let i = 0; i < 5 && !events.includes("end:faux-3"); i++) {
+			await flushAsyncWork();
+		}
+
+		expect(harness.session.model?.id).toBe("faux-3");
+		expect(events).toEqual(["start:faux-2", "nested-returned", "end:faux-2", "start:faux-3", "end:faux-3"]);
+	});
+
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {
 		const harness = await createHarness({
 			models: [

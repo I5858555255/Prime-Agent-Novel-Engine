@@ -3417,12 +3417,11 @@ export class AgentSession {
 		this.setThinkingLevel(thinkingLevel);
 
 		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
-		if (options.waitForExtensions === false) {
+		if (this._shouldWaitForModelSelectEmit(options)) {
+			await emitPromise;
+		} else {
 			this._trackModelSelectEmitError(emitPromise);
-			return;
 		}
-
-		await emitPromise;
 	}
 
 	private _trackModelSelectEmitError(emitPromise: Promise<void>): void {
@@ -3434,6 +3433,10 @@ export class AgentSession {
 				stack: error instanceof Error ? error.stack : undefined,
 			});
 		});
+	}
+
+	private _shouldWaitForModelSelectEmit(options: ModelSelectOptions): boolean {
+		return options.waitForExtensions !== false && !this._modelSelectEmitContext.getStore();
 	}
 
 	/**
@@ -3480,10 +3483,10 @@ export class AgentSession {
 		this.setThinkingLevel(thinkingLevel);
 
 		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
-		if (options.waitForExtensions === false) {
-			this._trackModelSelectEmitError(emitPromise);
-		} else {
+		if (this._shouldWaitForModelSelectEmit(options)) {
 			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
 		}
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
@@ -3513,10 +3516,10 @@ export class AgentSession {
 		this.setThinkingLevel(thinkingLevel);
 
 		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
-		if (options.waitForExtensions === false) {
-			this._trackModelSelectEmitError(emitPromise);
-		} else {
+		if (this._shouldWaitForModelSelectEmit(options)) {
 			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
 		}
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };

@@ -6402,6 +6402,9 @@ export class InteractiveMode {
 		if (this.connectionModels.length > 0) {
 			return [...this.connectionModels];
 		}
+		if (this.connectionModelsFetchedAt > 0) {
+			return [];
+		}
 
 		try {
 			this.modelRegistry.refresh();
