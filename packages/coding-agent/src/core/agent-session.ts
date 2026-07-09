@@ -2721,7 +2721,7 @@ export class AgentSession {
 
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) {
-				await this._checkCompaction(lastAssistant, false);
+				await this._checkCompaction(lastAssistant, false, false);
 			}
 
 			drainedNextTurnMessages = this._pendingNextTurnMessages;
@@ -2820,8 +2820,25 @@ export class AgentSession {
 
 		try {
 			let currentText = text;
+			const hasQueueIfBusyBackpressure = () =>
+				options?.queueIfBusy === true &&
+				(this.pendingMessageCount > 0 ||
+					this.isCompacting ||
+					this.isRetrying ||
+					this.isBashRunning ||
+					this.hasAcceptedPromptInFlight);
 
 			const shouldHandleBuiltInSlashCommands = !isInternalPrompt && !options?.skipPrePromptWork;
+			const isBuiltInSlashCommand =
+				shouldHandleBuiltInSlashCommands &&
+				(currentText === "/autonomous" ||
+					currentText.startsWith("/autonomous ") ||
+					currentText === "/goal" ||
+					currentText.startsWith("/goal "));
+			if (!this.isStreaming && isBuiltInSlashCommand && hasQueueIfBusyBackpressure()) {
+				reportPreflight(false);
+				throw new Error("Agent has queued work. Retry the slash command after pending work finishes.");
+			}
 			if (
 				shouldHandleBuiltInSlashCommands &&
 				(currentText === "/autonomous" || currentText.startsWith("/autonomous "))
@@ -2880,13 +2897,7 @@ export class AgentSession {
 			// If streaming, or a caller explicitly asked to respect existing queued work,
 			// enqueue according to the requested behavior.
 			const shouldQueueForStreaming = this.isStreaming;
-			const shouldQueueForPendingWork =
-				options?.queueIfBusy === true &&
-				(this.pendingMessageCount > 0 ||
-					this.isCompacting ||
-					this.isRetrying ||
-					this.isBashRunning ||
-					this.hasAcceptedPromptInFlight);
+			const shouldQueueForPendingWork = hasQueueIfBusyBackpressure();
 			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
 				if (!options?.streamingBehavior) {
 					const stateDescription = shouldQueueForStreaming
