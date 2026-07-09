@@ -999,7 +999,7 @@ describe("InteractiveMode model selection persistence", () => {
 		findExactModelMatch(searchTerm: string): Promise<AgentConnectionModel | undefined>;
 		getConnectionAvailableModels(): Promise<AgentConnectionModel[]>;
 		getCachedModelCandidates(): AgentConnectionModel[];
-		getModelSelectorRefreshPromise(): Promise<AgentConnectionModel[]> | undefined;
+		getModelSelectorRefreshPromise(options?: { force?: boolean }): Promise<AgentConnectionModel[]> | undefined;
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
 		showFullPaneOverlay(component: Component, maxContentWidth?: number): { hide(): void };
 		showModelSelectorAsync(
@@ -1233,13 +1233,13 @@ describe("InteractiveMode model selection persistence", () => {
 		await expect(result).resolves.toEqual({ status: "cancelled" });
 	});
 
-	test("refreshes stale cached candidates for exact model matches", async () => {
+	test("refreshes cached candidates for exact model misses", async () => {
 		const alpha = createModel("openai", "alpha");
 		const beta = createModel("openai", "beta");
 		const getAvailableModels = vi.fn(async () => [beta]);
 		const { fakeThis } = createSelectorOverlayHarness({
 			connectionModels: [alpha],
-			connectionModelsFetchedAt: Date.now() - 120_000,
+			connectionModelsFetchedAt: Date.now(),
 			getAvailableModels,
 		});
 
@@ -1321,6 +1321,26 @@ describe("InteractiveMode model selection persistence", () => {
 		await expect(result).resolves.toEqual({ status: "cancelled" });
 	});
 
+	test("refreshes fresh cached selector results when opened with a search", async () => {
+		const alpha = createModel("openai", "alpha");
+		const beta = { ...createModel("openai", "beta"), name: "Beta Model" };
+		const getAvailableModels = vi.fn(async () => [beta]);
+		const { fakeThis, getSelector } = createSelectorOverlayHarness({
+			connectionModels: [alpha],
+			connectionModelsFetchedAt: Date.now(),
+			getAvailableModels,
+		});
+
+		const result = fakeThis.showModelSelectorAsync("beta");
+		await flushAsyncWork();
+
+		expect(getAvailableModels).toHaveBeenCalledTimes(1);
+		expect(getSelector().render(120).join("\n")).toContain("Beta");
+
+		getSelector().handleInput("\x1b");
+		await expect(result).resolves.toEqual({ status: "cancelled" });
+	});
+
 	test("does not let a stale model refresh overwrite a newer catalog refresh", async () => {
 		const oldModel = createModel("openai", "old");
 		const freshModel = createModel("openai", "fresh");
@@ -1335,6 +1355,7 @@ describe("InteractiveMode model selection persistence", () => {
 			refreshConnectionCatalog(): Promise<void>;
 			applyConnectionStateSnapshot(state: AgentConnectionState): void;
 			invalidateConnectionModels(): void;
+			invalidateConnectionModelRefresh(): void;
 		};
 		fakeThis.agentConnection = {
 			getAvailableModels,
@@ -1355,14 +1376,71 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.invalidateConnectionModels = (
 			InteractiveMode.prototype as unknown as { invalidateConnectionModels(): void }
 		).invalidateConnectionModels;
+		fakeThis.invalidateConnectionModelRefresh = (
+			InteractiveMode.prototype as unknown as { invalidateConnectionModelRefresh(): void }
+		).invalidateConnectionModelRefresh;
 		fakeThis.applyConnectionStateSnapshot = vi.fn();
 
 		const staleRefresh = fakeThis.getConnectionAvailableModels();
 		await fakeThis.refreshConnectionCatalog();
 		oldModels.resolve([oldModel]);
-		await staleRefresh;
+
+		await expect(staleRefresh).resolves.toEqual([freshModel]);
 
 		expect(fakeThis.connectionModels).toEqual([freshModel]);
+	});
+
+	test("keeps the cached model catalog when a catalog refresh fails", async () => {
+		const cachedModel = createModel("openai", "cached");
+		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectorOverlayHarness & {
+			connectionCommands: unknown[];
+			connectionResourceSnapshot: unknown;
+			refreshConnectionCatalog(): Promise<void>;
+			applyConnectionStateSnapshot(state: AgentConnectionState): void;
+			invalidateConnectionModelRefresh(): void;
+		};
+		fakeThis.agentConnection = {
+			getAvailableModels: vi.fn(async () => [createModel("openai", "fresh")]),
+			getState: vi.fn(async () => createConnectionState()),
+			getCommands: vi.fn(async () => {
+				throw new Error("commands unavailable");
+			}),
+			getResourceSnapshot: vi.fn(async () => ({})),
+			setModel: vi.fn(async () => {}),
+		} as never;
+		fakeThis.connectionModels = [cachedModel];
+		fakeThis.connectionModelsFetchedAt = Date.now();
+		fakeThis.connectionModelsRefreshVersion = 0;
+		fakeThis.connectionModelsRefreshInFlight = undefined;
+		fakeThis.refreshConnectionCatalog = (
+			InteractiveMode.prototype as unknown as { refreshConnectionCatalog(): Promise<void> }
+		).refreshConnectionCatalog;
+		fakeThis.invalidateConnectionModelRefresh = (
+			InteractiveMode.prototype as unknown as { invalidateConnectionModelRefresh(): void }
+		).invalidateConnectionModelRefresh;
+		fakeThis.applyConnectionStateSnapshot = vi.fn();
+
+		await expect(fakeThis.refreshConnectionCatalog()).rejects.toThrow("commands unavailable");
+
+		expect(fakeThis.connectionModels).toEqual([cachedModel]);
+		expect(fakeThis.connectionModelsFetchedAt).toBeGreaterThan(0);
+	});
+
+	test("closes an empty model selector when the background refresh fails", async () => {
+		const getAvailableModels = vi.fn(async () => {
+			throw new Error("models unavailable");
+		});
+		const { fakeThis, hide } = createSelectorOverlayHarness({
+			connectionModels: [],
+			getAvailableModels,
+		});
+
+		const result = fakeThis.showModelSelectorAsync();
+		await flushAsyncWork();
+
+		await expect(result).resolves.toEqual({ status: "cancelled" });
+		expect(fakeThis.showError).toHaveBeenCalledWith("models unavailable");
+		expect(hide).toHaveBeenCalledTimes(1);
 	});
 });
 

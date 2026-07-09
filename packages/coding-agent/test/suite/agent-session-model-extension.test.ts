@@ -212,6 +212,31 @@ describe("AgentSession model and extension characterization", () => {
 		expect(getAssistantTexts(harness)).toContain("after model select");
 	});
 
+	it("allows model_select handlers to enqueue user messages without waiting on themselves", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", () => {
+						pi.sendUserMessage("from model_select");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("queued from hook")]);
+
+		await harness.session.setModel(harness.getModel("faux-2")!, { waitForExtensions: false });
+		for (let i = 0; i < 5 && !getAssistantTexts(harness).includes("queued from hook"); i++) {
+			await flushAsyncWork();
+		}
+
+		expect(getAssistantTexts(harness)).toContain("queued from hook");
+	});
+
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {
 		const harness = await createHarness({
 			models: [

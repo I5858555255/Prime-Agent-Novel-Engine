@@ -2107,7 +2107,7 @@ export class InteractiveMode {
 	}
 
 	private async refreshConnectionCatalog(): Promise<void> {
-		this.invalidateConnectionModels();
+		this.invalidateConnectionModelRefresh();
 		const [state, commands, models, resources] = await Promise.all([
 			this.agentConnection.getState(),
 			this.agentConnection.getCommands(),
@@ -6339,7 +6339,7 @@ export class InteractiveMode {
 			return cachedMatch;
 		}
 
-		const refreshPromise = this.getModelSelectorRefreshPromise();
+		const refreshPromise = this.getModelSelectorRefreshPromise({ force: true });
 		if (!refreshPromise) {
 			return undefined;
 		}
@@ -6373,10 +6373,11 @@ export class InteractiveMode {
 		const version = this.connectionModelsRefreshVersion;
 		const promise = this.agentConnection.getAvailableModels().then((models) => {
 			const nextModels = [...models];
-			if (version === this.connectionModelsRefreshVersion) {
-				this.connectionModels = nextModels;
-				this.connectionModelsFetchedAt = Date.now();
+			if (version !== this.connectionModelsRefreshVersion) {
+				return [...this.connectionModels];
 			}
+			this.connectionModels = nextModels;
+			this.connectionModelsFetchedAt = Date.now();
 			return nextModels;
 		});
 		this.connectionModelsRefreshInFlight = { version, promise };
@@ -6408,11 +6409,13 @@ export class InteractiveMode {
 		}
 	}
 
-	private getModelSelectorRefreshPromise(): Promise<AgentConnectionModel[]> | undefined {
+	private getModelSelectorRefreshPromise(
+		options: { force?: boolean } = {},
+	): Promise<AgentConnectionModel[]> | undefined {
 		if (this.connectionModelsRefreshInFlight) {
 			return this.getConnectionAvailableModels();
 		}
-		if (this.connectionModelsFetchedAt === 0) {
+		if (options.force || this.connectionModelsFetchedAt === 0) {
 			return this.getConnectionAvailableModels();
 		}
 		if (Date.now() - this.connectionModelsFetchedAt > MODEL_CATALOG_REFRESH_TTL_MS) {
@@ -6421,11 +6424,15 @@ export class InteractiveMode {
 		return undefined;
 	}
 
+	private invalidateConnectionModelRefresh(): void {
+		this.connectionModelsRefreshVersion++;
+		this.connectionModelsRefreshInFlight = undefined;
+	}
+
 	private invalidateConnectionModels(): void {
 		this.connectionModels = [];
 		this.connectionModelsFetchedAt = 0;
-		this.connectionModelsRefreshVersion++;
-		this.connectionModelsRefreshInFlight = undefined;
+		this.invalidateConnectionModelRefresh();
 	}
 
 	private async getModelCandidates(): Promise<AgentConnectionModel[]> {
@@ -6658,7 +6665,7 @@ export class InteractiveMode {
 			);
 			handle = this.showFullPaneOverlay(selector, 96);
 
-			const refreshPromise = this.getModelSelectorRefreshPromise();
+			const refreshPromise = this.getModelSelectorRefreshPromise({ force: initialSearchInput !== undefined });
 			if (refreshPromise) {
 				void refreshPromise
 					.then((models) => {
@@ -6670,6 +6677,10 @@ export class InteractiveMode {
 					.catch((error) => {
 						if (!settled) {
 							this.showError(error instanceof Error ? error.message : String(error));
+							if (availableModels.length === 0) {
+								close();
+								settle({ status: "cancelled" });
+							}
 						}
 					});
 			}

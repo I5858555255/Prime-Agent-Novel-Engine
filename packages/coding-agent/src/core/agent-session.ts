@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -641,6 +642,7 @@ export class AgentSession {
 	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
 	private _modelSelectEmitQueue: Promise<void> = Promise.resolve();
+	private _modelSelectEmitContext = new AsyncLocalStorage<boolean>();
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -2712,7 +2714,9 @@ export class AgentSession {
 				};
 				messages.push(userMessage);
 
-				await this._modelSelectEmitQueue;
+				if (!this._modelSelectEmitContext.getStore()) {
+					await this._modelSelectEmitQueue;
+				}
 
 				// Emit before_agent_start extension event
 				const result = await this._extensionRunner.emitBeforeAgentStart(
@@ -3382,7 +3386,8 @@ export class AgentSession {
 		previousModel: Model<any> | undefined,
 		source: "set" | "cycle" | "restore",
 	): Promise<void> {
-		const emit = () => this._emitModelSelect(nextModel, previousModel, source);
+		const emit = () =>
+			this._modelSelectEmitContext.run(true, () => this._emitModelSelect(nextModel, previousModel, source));
 		const promise = this._modelSelectEmitQueue.then(emit, emit);
 		this._modelSelectEmitQueue = promise.catch(() => {});
 		return promise;
