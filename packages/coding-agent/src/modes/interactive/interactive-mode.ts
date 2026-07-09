@@ -4843,12 +4843,12 @@ export class InteractiveMode {
 		if (!this.isNewChat()) {
 			return undefined;
 		}
-		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "or /hotkeys") : "/hotkeys";
+		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : "/hotkeys for shortcuts";
 	}
 
 	private getShortcutHelpHint(): string {
 		const shortcuts = keyText("app.shortcuts");
-		return shortcuts ? `${shortcuts} or /hotkeys` : "/hotkeys";
+		return shortcuts ? `${shortcuts} for shortcuts` : "/hotkeys for shortcuts";
 	}
 
 	private isNewChat(): boolean {

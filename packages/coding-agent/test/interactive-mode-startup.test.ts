@@ -47,7 +47,7 @@ describe("InteractiveMode startup hints", () => {
 
 		expect(output).toContain("! shell · / commands");
 		expect(output).toContain("@ file paths");
-		expect(output).toContain("? or /hotkeys");
+		expect(output).toContain("? for shortcuts");
 		expect(output).toContain('Try "refactor @<filepath>"');
 	});
 
@@ -55,14 +55,14 @@ describe("InteractiveMode startup hints", () => {
 		const mode = createMode();
 		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(label)).toBe("test-model • high  ? or /hotkeys");
+		expect(stripAnsi(label)).toBe("test-model • high  ? for shortcuts");
 	});
 
 	it("places the Agents View hint before the model and fresh-chat help", () => {
 		const mode = createMode(false, true);
 		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(label)).toBe("← agents view  test-model • high  ? or /hotkeys");
+		expect(stripAnsi(label)).toBe("← agents view  test-model • high  ? for shortcuts");
 	});
 
 	it("hides startup shortcut guidance for chats with history", () => {
