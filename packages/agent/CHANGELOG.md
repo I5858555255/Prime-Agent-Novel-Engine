@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-09
+
+- Fixed abort settling for provider streams and tool executions that ignore cancellation ([ENG-4490](https://linear.app/primeintellect/issue/ENG-4490)).
+
 ## [0.2.7] - 2026-07-08
 
 - Fixed run-lifecycle failures carrying no diagnostics, so hosts can distinguish local failures from provider failures.

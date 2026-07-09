@@ -7,7 +7,11 @@ import {
 	DAEMON_REFINE_REQUEST_TIMEOUT_MS,
 	DaemonAgentConnection,
 } from "../src/modes/agent-connection/daemon-agent-connection.js";
-import type { AgentConnectionEvent, AgentConnectionState } from "../src/modes/agent-connection/types.js";
+import type {
+	AgentConnectionEvent,
+	AgentConnectionSavedSessionInfo,
+	AgentConnectionState,
+} from "../src/modes/agent-connection/types.js";
 import type {
 	DaemonClient,
 	DaemonClientCloseListener,
@@ -28,6 +32,7 @@ class FakeDaemonClient {
 	attachResultFactory: ((command: Extract<DaemonCommand, { type: "attach" }>) => DaemonAttachResult) | undefined;
 	closeCount = 0;
 	abortBashUnknownCommand = false;
+	abortAndClearQueueUnknownCommand = false;
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 
@@ -167,20 +172,53 @@ class FakeDaemonClient {
 					success: true,
 					data: { steering: ["cleared"], followUp: [] },
 				};
-			case "list_saved_sessions":
+			case "abort_and_clear_queue":
+				if (this.abortAndClearQueueUnknownCommand) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Unknown daemon command: abort_and_clear_queue",
+					};
+				}
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { steering: ["aborted"], followUp: ["cleared"] },
+				};
+			case "list_saved_sessions": {
+				const activeSessionId = "activeSessionId" in command ? command.activeSessionId : undefined;
 				options.onProgress?.({
 					id: "daemon_test",
 					type: "session_list_progress",
 					command: "list_saved_sessions",
-					activeSessionId: command.activeSessionId,
+					...(activeSessionId ? { activeSessionId } : {}),
 					loaded: 1,
 					total: 2,
 				});
 				options.onProgress?.({
 					id: "daemon_test",
+					type: "session_list_item",
+					command: "list_saved_sessions",
+					...(activeSessionId ? { activeSessionId } : {}),
+					session: {
+						path: "/tmp/session-a.jsonl",
+						id: "session-a",
+						cwd: "/tmp",
+						name: "Saved session",
+						created: "2026-01-01T00:00:00.000Z",
+						modified: "2026-01-02T00:00:00.000Z",
+						messageCount: 2,
+						firstMessage: "hello",
+						allMessagesText: "hello world",
+					},
+				});
+				options.onProgress?.({
+					id: "daemon_test",
 					type: "session_list_progress",
 					command: "list_saved_sessions",
-					activeSessionId: command.activeSessionId,
+					...(activeSessionId ? { activeSessionId } : {}),
 					loaded: 2,
 					total: 2,
 				});
@@ -204,6 +242,7 @@ class FakeDaemonClient {
 						],
 					},
 				};
+			}
 			case "wait_for_idle":
 			case "set_scoped_models":
 			case "rename_saved_session":
@@ -764,6 +803,7 @@ describe("DaemonAgentConnection", () => {
 
 		await expect(connection.getQueue()).resolves.toEqual({ steering: ["steer"], followUp: ["follow"] });
 		await expect(connection.clearQueue()).resolves.toEqual({ steering: ["cleared"], followUp: [] });
+		await expect(connection.abortAndClearQueue()).resolves.toEqual({ steering: ["aborted"], followUp: ["cleared"] });
 		await connection.waitForIdle();
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
@@ -775,17 +815,24 @@ describe("DaemonAgentConnection", () => {
 			"attach",
 			"get_queue",
 			"clear_queue",
+			"abort_and_clear_queue",
 			"wait_for_idle",
 			"set_scoped_models",
 		]);
 		expect(fakeClient.requests[1]).toMatchObject({ type: "get_queue", activeSessionId: "active-1" });
 		expect(fakeClient.requests[2]).toMatchObject({ type: "clear_queue", activeSessionId: "active-1" });
-		expect(fakeClient.requests[3]).toMatchObject({ type: "wait_for_idle", activeSessionId: "active-1" });
-		expect(fakeClient.requests[4]).toMatchObject({
+		expect(fakeClient.requests[3]).toMatchObject({ type: "abort_and_clear_queue", activeSessionId: "active-1" });
+		expect(fakeClient.requests[4]).toMatchObject({ type: "wait_for_idle", activeSessionId: "active-1" });
+		expect(fakeClient.requests[5]).toMatchObject({
 			type: "set_scoped_models",
 			activeSessionId: "active-1",
 			scopedModels: [{ model, thinkingLevel: "high" }],
 		});
+
+		fakeClient.abortAndClearQueueUnknownCommand = true;
+		await expect(connection.abortAndClearQueue()).rejects.toThrow(
+			"the daemon is running an older build; restart the daemon and try again",
+		);
 	});
 
 	it("cancels rlm child runs through the daemon protocol", async () => {
@@ -1100,9 +1147,15 @@ describe("DaemonAgentConnection", () => {
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
 		await connection.attach();
 		const progress: Array<[number, number]> = [];
+		const discovered: AgentConnectionSavedSessionInfo[] = [];
 
-		const sessions = await connection.listSavedSessions("current", (loaded, total) => {
-			progress.push([loaded, total]);
+		const sessions = await connection.listSavedSessions("current", {
+			onProgress: (loaded, total) => {
+				progress.push([loaded, total]);
+			},
+			onSession: (session) => {
+				discovered.push(session);
+			},
 		});
 		await connection.renameSavedSession("/tmp/session-a.jsonl", "Next name");
 		await expect(connection.deleteSavedSession("/tmp/session-a.jsonl")).resolves.toEqual({
@@ -1127,6 +1180,7 @@ describe("DaemonAgentConnection", () => {
 			[1, 2],
 			[2, 2],
 		]);
+		expect(discovered).toEqual(sessions);
 		expect(fakeClient.requests[1]).toMatchObject({
 			type: "list_saved_sessions",
 			activeSessionId: "active-1",

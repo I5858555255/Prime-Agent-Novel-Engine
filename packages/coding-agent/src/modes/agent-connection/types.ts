@@ -67,6 +67,12 @@ export interface AgentConnectionSavedSessionState {
 	status: AgentConnectionSavedSessionStateStatus;
 }
 
+export interface AgentConnectionAgentStatus {
+	summary: string;
+	taskState?: "needs_input" | "completed";
+	basedOnMessageCount: number;
+}
+
 /**
  * Saved-session registry row for the current local TUI migration.
  *
@@ -88,9 +94,15 @@ export interface AgentConnectionSavedSessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+	agentStatus?: AgentConnectionAgentStatus;
 }
 
 export type AgentConnectionSessionListProgress = (loaded: number, total: number) => void;
+
+export interface AgentConnectionSessionListCallbacks {
+	onProgress?: AgentConnectionSessionListProgress;
+	onSession?: (session: AgentConnectionSavedSessionInfo) => void;
+}
 
 export interface AgentConnectionSessionEntryBase {
 	type: string;
@@ -171,11 +183,7 @@ export interface AgentConnectionSessionStateEntry extends AgentConnectionSession
 
 export interface AgentConnectionAgentStatusEntry extends AgentConnectionSessionEntryBase {
 	type: "agent_status";
-	status: {
-		summary: string;
-		taskState?: "needs_input" | "completed";
-		basedOnMessageCount: number;
-	};
+	status: AgentConnectionAgentStatus;
 }
 
 export interface AgentConnectionGitStateEntry extends AgentConnectionSessionEntryBase {
@@ -515,10 +523,11 @@ export interface AgentConnection {
 	getSessionTree(): Promise<{ tree: AgentConnectionSessionTreeNode[]; leafId: string | null }>;
 	listSavedSessions(
 		scope: AgentConnectionSavedSessionScope,
-		onProgress?: AgentConnectionSessionListProgress,
+		callbacks?: AgentConnectionSessionListCallbacks,
 	): Promise<AgentConnectionSavedSessionInfo[]>;
 	getQueue(): Promise<AgentConnectionQueueState>;
 	clearQueue(): Promise<AgentConnectionQueueState>;
+	abortAndClearQueue(): Promise<AgentConnectionQueueState>;
 	listCronJobs(options?: { includeInactive?: boolean }): Promise<AgentCronJob[]>;
 	addCronJob(schedule: string, prompt: string): Promise<AgentCronJob>;
 	cancelCronJob(jobId: string): Promise<AgentCronJob>;
@@ -536,6 +545,7 @@ export interface AgentConnection {
 	prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void>;
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;
+	/** Request cancellation of the active turn and return once the request is accepted. */
 	abort(): Promise<void>;
 	cancelRlmChild(childId: string): Promise<boolean>;
 	waitForIdle(): Promise<void>;

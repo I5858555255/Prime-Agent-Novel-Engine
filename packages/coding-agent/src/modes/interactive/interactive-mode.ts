@@ -143,7 +143,7 @@ import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
-import { showFullPaneOverlay } from "./components/centered-overlay.js";
+import { type FullPaneOverlayOptions, showFullPaneOverlay } from "./components/centered-overlay.js";
 import {
 	ChildAgentDetailComponent,
 	type ChildAgentInspectorNode,
@@ -167,6 +167,7 @@ import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybin
 import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
+import { SessionPickerScreen } from "./components/session-picker-screen.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
@@ -225,6 +226,7 @@ interface PendingToolCallRenderInput {
 
 const HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS = 15_000;
 const HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS = 120_000;
+const MODEL_CATALOG_REFRESH_TTL_MS = 60_000;
 
 function isLabeledQueuedPreview(message: string): boolean {
 	return (
@@ -298,6 +300,7 @@ export interface BrandSplashHeaderOptions {
 	logo?: string;
 	getExtraMetadata?: () => readonly BrandSplashMetadataLine[];
 	getHideStartHint?: () => boolean;
+	getStartHint?: () => string;
 }
 
 export class BrandSplashHeader implements Component {
@@ -335,13 +338,14 @@ export class BrandSplashHeader implements Component {
 		};
 		const extraMetadata = this.options.getExtraMetadata?.() ?? [];
 		const hideStartHint = this.options.getHideStartHint?.() ?? false;
+		const startHint = this.options.getStartHint?.() ?? "type to start";
 		const metaLines = showMeta
 			? [
 					labelled("version", `v${this.version}`),
 					labelled("model", this.getModelId() ?? "—"),
 					labelled("cwd", formatSplashCwd(this.getCwd())),
 					...extraMetadata.map((line) => labelled(line.label, line.value)),
-					...(hideStartHint ? [] : ["", theme.fg("dim", "type to start")]),
+					...(hideStartHint ? [] : ["", theme.fg("dim", startHint)]),
 				]
 			: [];
 		const metaStart = Math.max(0, Math.floor((this.logoRaw.length - metaLines.length) / 2));
@@ -570,6 +574,7 @@ export type InteractiveModeRunResult = "agents_view";
 
 export class InteractiveMode {
 	private static readonly EXIT_HINT_DURATION_MS = 2000;
+	private static readonly ESCAPE_REPEAT_WINDOW_MS = 500;
 
 	private uiServices: InteractiveModeUiServices;
 	private agentConnection: AgentConnection;
@@ -577,6 +582,7 @@ export class InteractiveMode {
 	private bindLocalSessionExtensions: boolean;
 	private ui: TUI;
 	private chatContainer: Container;
+	private shortcutGuideContainer: Container;
 	private pendingMessagesContainer: Container;
 	private statusContainer: Container;
 	private queuedMessagesContainer: Container;
@@ -620,6 +626,10 @@ export class InteractiveMode {
 
 	private ctrlCExitHintExpiresAt = 0;
 	private ctrlCExitHintTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+	private escapeRepeatAction: "tree" | "clear" | undefined;
+	private escapeRepeatExpiresAt = 0;
+	private escapeRepeatTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+	private isRestoringQueuedEditorText = false;
 	private anthropicSubscriptionWarningShown = false;
 
 	// Status line tracking (for mutating immediately-sequential status updates)
@@ -676,11 +686,13 @@ export class InteractiveMode {
 	private skillCommands = new Map<string, string>();
 	private connectionCommands: AgentConnectionSlashCommand[] = [];
 	private connectionModels: AgentConnectionModel[] = [];
+	private connectionModelsFetchedAt = 0;
+	private connectionModelsRefreshVersion = 0;
+	private connectionModelsRefreshInFlight: { version: number; promise: Promise<AgentConnectionModel[]> } | undefined;
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private initialConnectionSnapshotConsumed = false;
-	// Whether the session already had messages when first rendered (i.e. a resumed session).
-	private sessionHadInitialMessages = false;
+	private sessionHasMessages = false;
 
 	// Registry of images pasted this session, keyed by the `[image #N]` marker
 	// shown to the user. Insertion-ordered; the bytes persist (bounded by
@@ -773,6 +785,7 @@ export class InteractiveMode {
 		};
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
+		this.shortcutGuideContainer = new Container();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.queuedMessagesContainer = new Container();
@@ -799,7 +812,7 @@ export class InteractiveMode {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
 			isArgumentCommand: builtinSlashCommandTakesArgument,
-			placeholder: "Type a message, / for commands",
+			placeholder: 'Try "refactor @<filepath>"',
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
 		this.editor = this.defaultEditor;
@@ -1050,9 +1063,12 @@ export class InteractiveMode {
 				() => this.getCurrentModelId(),
 				() => this.getCurrentCwd(),
 				verboseInstructions,
-				{ getHideStartHint: () => this.childAgentPanelMode !== undefined },
+				{
+					getExtraMetadata: () => this.getStartupMetadata(),
+					getHideStartHint: () => this.childAgentPanelMode !== undefined || !this.isNewChat(),
+					getStartHint: () => 'Try "refactor @<filepath>"',
+				},
 			);
-			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
 			this.headerContainer.addChild(new Spacer(1));
 		} else {
@@ -1220,7 +1236,7 @@ export class InteractiveMode {
 			// The agents view owns these for daemon sessions. When there is no agents view,
 			// show them once at the top of a fresh session, but never append them under a
 			// restored conversation where they read as disconnected clutter.
-			if (!ownsGlobalStartupNotices || this.sessionHadInitialMessages) {
+			if (!ownsGlobalStartupNotices || this.sessionHasMessages) {
 				return;
 			}
 
@@ -2156,6 +2172,7 @@ export class InteractiveMode {
 	}
 
 	private async refreshConnectionCatalog(): Promise<void> {
+		this.invalidateConnectionModelRefresh();
 		const [state, commands, models, resources] = await Promise.all([
 			this.agentConnection.getState(),
 			this.agentConnection.getCommands(),
@@ -2165,6 +2182,7 @@ export class InteractiveMode {
 		this.applyConnectionStateSnapshot(state);
 		this.connectionCommands = commands;
 		this.connectionModels = models;
+		this.connectionModelsFetchedAt = Date.now();
 		this.connectionResourceSnapshot = resources;
 	}
 
@@ -2305,6 +2323,10 @@ export class InteractiveMode {
 		return this.connectionState?.isBashRunning ?? false;
 	}
 
+	private hasInterruptibleWork(): boolean {
+		return this.isAgentStreaming() || this.isAgentCompacting() || this.isBashRunning() || this.getRetryAttempt() > 0;
+	}
+
 	private getRetryAttempt(): number {
 		return this.connectionState?.retryAttempt ?? 0;
 	}
@@ -2379,6 +2401,7 @@ export class InteractiveMode {
 
 	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean }): void {
 		this.chatContainer.clear();
+		this.shortcutGuideContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.queuedMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
@@ -3458,12 +3481,13 @@ export class InteractiveMode {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
-			this.clearInputBar();
+			this.handleEscape();
 		};
 
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onAction("app.interrupt", () => this.handleInterruptKey());
+		this.defaultEditor.onAction("app.shortcuts", () => this.showShortcutGuide());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
 
@@ -3501,6 +3525,9 @@ export class InteractiveMode {
 		this.defaultEditor.onMoveBelowPrompt = () => this.focusChildAgentSummary();
 
 		this.defaultEditor.onChange = (text: string) => {
+			if (this.escapeRepeatAction && !this.isRestoringQueuedEditorText) {
+				this.clearEscapeRepeat();
+			}
 			if (text.length > 0) {
 				this.clearCtrlCExitHint();
 			}
@@ -3654,6 +3681,7 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
 			if (!text) return;
+			this.clearShortcutGuide();
 			const promptStashToRestore = this.promptStash;
 			let restorePromptStashAfterSubmit = true;
 
@@ -4158,6 +4186,8 @@ export class InteractiveMode {
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
 		if (event.type === "message_start" && event.message.role === "user") {
 			this.contextUsageTokenBaseline = 0;
+			this.setSessionHasMessages(true);
+			this.clearShortcutGuide();
 		}
 		this.activityTracker.handleEvent(event);
 		this.updateWorkingLoaderMessage();
@@ -4722,6 +4752,7 @@ export class InteractiveMode {
 	private restoreMainAgentView(): void {
 		this.mainViewContainer.clear();
 		this.mainViewContainer.addChild(this.chatContainer);
+		this.mainViewContainer.addChild(this.shortcutGuideContainer);
 		this.mainViewContainer.addChild(this.pendingMessagesContainer);
 		// Subagent tree sits directly above the loader, mirroring Claude's layout.
 		this.mainViewContainer.addChild(this.subagentTree);
@@ -4802,8 +4833,46 @@ export class InteractiveMode {
 	}
 
 	private getTrayLocationLabel(): string | undefined {
+		const modelLabel = this.getModelTrayLabel();
+		const shortcutsHint = this.getShortcutsTrayHint();
 		const agentsHint = this.getAgentsViewTrayHint();
-		return [agentsHint, this.getModelTrayLabel()].filter((label): label is string => label !== undefined).join("  ");
+		return [agentsHint, modelLabel, shortcutsHint].filter((label): label is string => label !== undefined).join("  ");
+	}
+
+	private getStartupMetadata(): BrandSplashMetadataLine[] {
+		if (this.childAgentPanelMode || !this.isNewChat()) {
+			return [];
+		}
+		return [
+			{ label: "input", value: "! shell · / commands" },
+			{ label: "files", value: "@ file paths" },
+			{ label: "help", value: this.getShortcutHelpHint() },
+		];
+	}
+
+	private getShortcutsTrayHint(): string | undefined {
+		if (!this.isNewChat()) {
+			return undefined;
+		}
+		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : "/hotkeys for shortcuts";
+	}
+
+	private getShortcutHelpHint(): string {
+		const shortcuts = keyText("app.shortcuts");
+		return shortcuts ? `${shortcuts} for shortcuts` : "/hotkeys for shortcuts";
+	}
+
+	private isNewChat(): boolean {
+		return !this.sessionHasMessages;
+	}
+
+	private setSessionHasMessages(hasMessages: boolean): void {
+		if (this.sessionHasMessages === hasMessages) {
+			return;
+		}
+		this.sessionHasMessages = hasMessages;
+		this.builtInHeader?.invalidate();
+		this.childAgentSummary.invalidate();
 	}
 
 	private getModelTrayLabel(): string {
@@ -4825,7 +4894,7 @@ export class InteractiveMode {
 		if (this.editor.getText().trim()) {
 			return undefined;
 		}
-		return keyHint("app.agents.back", "manage sessions");
+		return keyHint("app.agents.back", "agents view");
 	}
 
 	private getTrayContextLabel(): string | undefined {
@@ -5440,10 +5509,10 @@ export class InteractiveMode {
 			const snapshot = await this.agentConnection.getInitialSnapshot();
 			this.initialConnectionSnapshotConsumed = true;
 			context = this.getSessionContextFromConnectionSnapshot(snapshot);
-			this.sessionHadInitialMessages = context.messages.length > 0;
 			state = snapshot.state;
 			this.seedChildAgentInspector(snapshot.children);
 		}
+		this.setSessionHasMessages(context.messages.length > 0);
 		this.applyConnectionStateSnapshot(state);
 		await this.renderSessionContext(context, {
 			updateFooter: true,
@@ -5492,7 +5561,53 @@ export class InteractiveMode {
 	// Key handlers
 	// =========================================================================
 
+	private handleEscape(): void {
+		this.clearCtrlCExitHint();
+		const action = this.takeEscapeRepeatAction();
+		if (action === "tree") {
+			void this.showTreeSelector();
+			return;
+		}
+		if (action === "clear") {
+			this.clearInputBar();
+			return;
+		}
+
+		this.armEscapeRepeat(this.hasInterruptibleWork() || this.editor.getText().length === 0 ? "tree" : "clear");
+		this.interruptOrClearInput();
+	}
+
+	private armEscapeRepeat(action: "tree" | "clear"): void {
+		this.clearEscapeRepeat();
+		this.escapeRepeatAction = action;
+		this.escapeRepeatExpiresAt = Date.now() + InteractiveMode.ESCAPE_REPEAT_WINDOW_MS;
+		this.escapeRepeatTimer = setTimeout(() => {
+			this.clearEscapeRepeat();
+		}, InteractiveMode.ESCAPE_REPEAT_WINDOW_MS);
+		this.escapeRepeatTimer.unref?.();
+	}
+
+	private takeEscapeRepeatAction(): "tree" | "clear" | undefined {
+		if (!this.escapeRepeatAction || this.escapeRepeatExpiresAt <= Date.now()) {
+			this.clearEscapeRepeat();
+			return undefined;
+		}
+		const action = this.escapeRepeatAction;
+		this.clearEscapeRepeat();
+		return action;
+	}
+
+	private clearEscapeRepeat(): void {
+		if (this.escapeRepeatTimer) {
+			clearTimeout(this.escapeRepeatTimer);
+			this.escapeRepeatTimer = undefined;
+		}
+		this.escapeRepeatAction = undefined;
+		this.escapeRepeatExpiresAt = 0;
+	}
+
 	private handleCtrlC(): void {
+		this.clearEscapeRepeat();
 		if (this.isCtrlCExitHintVisible()) {
 			void this.shutdown();
 			return;
@@ -5501,6 +5616,7 @@ export class InteractiveMode {
 	}
 
 	private handleInterruptKey(): void {
+		this.clearEscapeRepeat();
 		this.interruptOrClearInput();
 		this.showCtrlCExitHint();
 	}
@@ -5508,24 +5624,18 @@ export class InteractiveMode {
 	private interruptOrClearInput(): void {
 		if (this.getRetryAttempt() > 0) {
 			void this.agentConnection.abortRetry();
-			return;
 		}
 		if (this.isAgentCompacting()) {
 			void this.agentConnection.abortCompaction();
 			void this.agentConnection.abortBranchSummary();
-			return;
 		}
-		// Bash outranks the agent stream: the already-running warning tells the user
-		// this key cancels the bash command, and the stream stays one press away.
 		if (this.isBashRunning()) {
 			void this.agentConnection.abortBash();
-			return;
 		}
 		if (this.isAgentStreaming()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
-			return;
 		}
 	}
 
@@ -5959,6 +6069,7 @@ export class InteractiveMode {
 	}
 
 	private clearInputBar(): void {
+		this.clearEscapeRepeat();
 		this.clearCtrlCExitHint({ render: false });
 		this.editor.setText("");
 		this.ui.requestRender();
@@ -6007,8 +6118,12 @@ export class InteractiveMode {
 	 * Clear all queued messages and return their contents.
 	 * Clears both session queue and compaction queue.
 	 */
-	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
-		const { steering, followUp } = await this.agentConnection.clearQueue();
+	private async clearAllQueues(
+		options: { abort?: boolean } = {},
+	): Promise<{ steering: string[]; followUp: string[] }> {
+		const { steering, followUp } = options.abort
+			? await this.agentConnection.abortAndClearQueue()
+			: await this.agentConnection.clearQueue();
 		this.connectionQueue = { steering: [], followUp: [] };
 		const compactionSteering = this.compactionQueuedMessages
 			.filter((msg) => msg.mode === "steer")
@@ -6061,13 +6176,10 @@ export class InteractiveMode {
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
-		const { steering, followUp } = await this.clearAllQueues();
+		const { steering, followUp } = await this.clearAllQueues({ abort: options?.abort });
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
 			this.updatePendingMessagesDisplay();
-			if (options?.abort) {
-				await this.agentConnection.abort();
-			}
 			return 0;
 		}
 		const queuedText = allQueued.join("\n\n");
@@ -6075,11 +6187,13 @@ export class InteractiveMode {
 		const combinedText = [queuedText, currentText].filter((t) => t.trim()).join("\n\n");
 		// The image registry persists, so the restored `[image #N]` markers resolve
 		// on resubmit without any re-registration here.
-		this.editor.setText(combinedText);
-		this.updatePendingMessagesDisplay();
-		if (options?.abort) {
-			await this.agentConnection.abort();
+		this.isRestoringQueuedEditorText = true;
+		try {
+			this.editor.setText(combinedText);
+		} finally {
+			this.isRestoringQueuedEditorText = false;
 		}
+		this.updatePendingMessagesDisplay();
 		return allQueued.length;
 	}
 
@@ -6200,8 +6314,8 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private showFullPaneOverlay(component: Component, maxContentWidth = 80): OverlayHandle {
-		return showFullPaneOverlay(this.ui, component, maxContentWidth);
+	private showFullPaneOverlay(component: Component, options: number | FullPaneOverlayOptions = 80): OverlayHandle {
+		return showFullPaneOverlay(this.ui, component, options);
 	}
 
 	private async showSettingsSelector(): Promise<void> {
@@ -6391,6 +6505,7 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
+				this.showStatus(`Switching model: ${model.id}`);
 				await this.applySelectedModel(model);
 				this.completeOnboardingIfCurrentModelReady();
 				this.showStatus(`Model: ${model.id}`);
@@ -6406,8 +6521,21 @@ export class InteractiveMode {
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
-		const models = await this.getModelCandidates();
-		return findExactModelReferenceMatch(searchTerm, models);
+		const cachedMatch = findExactModelReferenceMatch(searchTerm, this.getCachedModelCandidates());
+		if (cachedMatch) {
+			return cachedMatch;
+		}
+
+		const refreshPromise = this.getModelSelectorRefreshPromise({ force: true });
+		if (!refreshPromise) {
+			return undefined;
+		}
+
+		try {
+			return findExactModelReferenceMatch(searchTerm, await refreshPromise);
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async applySelectedModel(model: AgentConnectionModel): Promise<void> {
@@ -6424,9 +6552,67 @@ export class InteractiveMode {
 	}
 
 	private async getConnectionAvailableModels(): Promise<AgentConnectionModel[]> {
-		const models = await this.agentConnection.getAvailableModels();
-		this.connectionModels = [...models];
-		return [...models];
+		const inFlight = this.connectionModelsRefreshInFlight;
+		if (inFlight && inFlight.version === this.connectionModelsRefreshVersion) {
+			return [...(await inFlight.promise)];
+		}
+
+		const version = this.connectionModelsRefreshVersion;
+		const promise = this.agentConnection.getAvailableModels().then((models) => {
+			const nextModels = [...models];
+			if (version !== this.connectionModelsRefreshVersion) {
+				return [...this.connectionModels];
+			}
+			this.connectionModels = nextModels;
+			this.connectionModelsFetchedAt = Date.now();
+			return nextModels;
+		});
+		this.connectionModelsRefreshInFlight = { version, promise };
+
+		try {
+			return [...(await promise)];
+		} finally {
+			if (this.connectionModelsRefreshInFlight?.promise === promise) {
+				this.connectionModelsRefreshInFlight = undefined;
+			}
+		}
+	}
+
+	private getCachedModelCandidates(): AgentConnectionModel[] {
+		const modelsById = new Map<string, AgentConnectionModel>();
+		for (const scoped of this.getScopedModelState()) {
+			modelsById.set(`${scoped.model.provider}/${scoped.model.id}`, scoped.model);
+		}
+		for (const model of this.connectionModels) {
+			modelsById.set(`${model.provider}/${model.id}`, model);
+		}
+		return [...modelsById.values()];
+	}
+
+	private getModelSelectorRefreshPromise(
+		options: { force?: boolean } = {},
+	): Promise<AgentConnectionModel[]> | undefined {
+		if (this.connectionModelsRefreshInFlight) {
+			return this.getConnectionAvailableModels();
+		}
+		if (options.force || this.connectionModelsFetchedAt === 0) {
+			return this.getConnectionAvailableModels();
+		}
+		if (Date.now() - this.connectionModelsFetchedAt > MODEL_CATALOG_REFRESH_TTL_MS) {
+			return this.getConnectionAvailableModels();
+		}
+		return undefined;
+	}
+
+	private invalidateConnectionModelRefresh(): void {
+		this.connectionModelsRefreshVersion++;
+		this.connectionModelsRefreshInFlight = undefined;
+	}
+
+	private invalidateConnectionModels(): void {
+		this.connectionModels = [];
+		this.connectionModelsFetchedAt = 0;
+		this.invalidateConnectionModelRefresh();
 	}
 
 	private async getModelCandidates(): Promise<AgentConnectionModel[]> {
@@ -6568,17 +6754,12 @@ export class InteractiveMode {
 				return;
 			}
 			await this.showLoginProviderSelector();
+			this.invalidateConnectionModels();
 			nextSearchInput = undefined;
 		}
 	}
 
 	private async promptForModelSelection(options: { allowProviderSetup?: boolean } = {}): Promise<boolean> {
-		const availableModels = await this.getModelCandidates();
-		if (availableModels.length === 0 && !options.allowProviderSetup) {
-			this.showStatus("No models available. Add credentials with /login.");
-			return false;
-		}
-
 		while (true) {
 			this.showStatus("Select a model to continue.");
 			const result = await this.showModelSelectorAsync(
@@ -6598,6 +6779,7 @@ export class InteractiveMode {
 			}
 
 			await this.showLoginProviderSelector();
+			this.invalidateConnectionModels();
 		}
 	}
 
@@ -6605,17 +6787,12 @@ export class InteractiveMode {
 		initialSearchInput?: string,
 		options?: { actions?: ReadonlyArray<ModelSelectorAction>; subtitle?: string },
 	): Promise<ModelSelectionResult> {
-		let availableModels: AgentConnectionModel[];
-		try {
-			availableModels = await this.getConnectionAvailableModels();
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-			return { status: "cancelled" };
-		}
+		const availableModels = this.getCachedModelCandidates();
 
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
+			let selector: ModelSelectorComponent | undefined;
 			const settle = (result: ModelSelectionResult) => {
 				if (settled) {
 					return;
@@ -6628,15 +6805,16 @@ export class InteractiveMode {
 				this.ui.requestRender();
 			};
 
-			const selector = new ModelSelectorComponent(
+			selector = new ModelSelectorComponent(
 				this.ui,
 				this.getCurrentModel(),
 				this.modelRegistry,
 				this.getScopedModelState(),
 				async (model) => {
+					close();
+					this.showStatus(`Switching model: ${model.id}`);
 					try {
 						await this.applySelectedModel(model);
-						close();
 						this.completeOnboardingIfCurrentModelReady();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
@@ -6666,6 +6844,26 @@ export class InteractiveMode {
 				},
 			);
 			handle = this.showFullPaneOverlay(selector, 96);
+
+			const refreshPromise = this.getModelSelectorRefreshPromise({ force: initialSearchInput !== undefined });
+			if (refreshPromise) {
+				void refreshPromise
+					.then((models) => {
+						if (settled || !selector) {
+							return undefined;
+						}
+						return selector.updateAvailableModels(models);
+					})
+					.catch((error) => {
+						if (!settled) {
+							this.showError(error instanceof Error ? error.message : String(error));
+							if (availableModels.length === 0) {
+								close();
+								settle({ status: "cancelled" });
+							}
+						}
+					});
+			}
 		});
 	}
 
@@ -6962,19 +7160,30 @@ export class InteractiveMode {
 			this.showError(error instanceof Error ? error.message : String(error));
 			return;
 		}
-		this.showSelector((done) => {
+		await new Promise<void>((done) => {
+			let handle: OverlayHandle | undefined;
+			let settled = false;
+			const close = () => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				handle?.hide();
+				this.ui.requestRender();
+				done();
+			};
 			const selector = new SessionSelectorComponent(
-				(onProgress) => this.agentConnection.listSavedSessions("current", onProgress),
-				(onProgress) => this.agentConnection.listSavedSessions("all", onProgress),
+				(callbacks) => this.agentConnection.listSavedSessions("current", callbacks),
+				(callbacks) => this.agentConnection.listSavedSessions("all", callbacks),
 				async (sessionPath) => {
-					done();
+					close();
 					await this.handleResumeSession(sessionPath);
 				},
 				() => {
-					done();
-					this.ui.requestRender();
+					close();
 				},
 				() => {
+					close();
 					void this.shutdown();
 				},
 				() => this.ui.requestRender(),
@@ -6987,11 +7196,17 @@ export class InteractiveMode {
 					deleteSession: (sessionFilePath: string) => this.agentConnection.deleteSavedSession(sessionFilePath),
 					showRenameHint: true,
 					keybindings: this.keybindings,
+					frameless: true,
 				},
 
 				state.sessionFile,
 			);
-			return { component: selector, focus: selector };
+			const splash = new BrandSplashHeader(
+				this.version,
+				() => this.getCurrentModelId(),
+				() => this.getCurrentCwd(),
+			);
+			handle = this.showFullPaneOverlay(new SessionPickerScreen(this.ui, splash, selector), { fullWidth: true });
 		});
 	}
 
@@ -7203,6 +7418,7 @@ export class InteractiveMode {
 			const authResult = await this.showLoginProviderSelector();
 			// Service credentials don't change the model, so skip the model picker.
 			if (authResult.status === "success" && authResult.kind !== "service") {
+				this.invalidateConnectionModels();
 				await this.promptForModelSelection();
 			}
 			// An MCP integration login enables its skill, so reload resources — but a
@@ -7978,8 +8194,35 @@ export class InteractiveMode {
 		return this.capitalizeKey(keyText(action));
 	}
 
-	private handleHotkeysCommand(): void {
-		// Navigation keybindings
+	private getShortcutGuide(): string {
+		const tab = this.getEditorKeyDisplay("tui.input.tab");
+		const newLine = this.getEditorKeyDisplay("tui.input.newLine");
+		const clearInput = this.getAppKeyDisplay("app.input.clear");
+		const shortcutsKey = this.getAppKeyDisplay("app.shortcuts");
+		const selectModel = this.getAppKeyDisplay("app.model.select");
+		const expandTools = this.getAppKeyDisplay("app.tools.expand");
+		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
+		const externalEditor = this.getAppKeyDisplay("app.editor.external");
+		const promptStash = this.getAppKeyDisplay("app.prompt.stash");
+		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
+
+		return `
+**Prompt**
+\`!\` shell mode · \`/\` commands · \`@\` file paths
+\`${tab}\` complete paths · \`${newLine}\` new line
+\`${clearInput}\` interrupt · press twice to rewind or clear the prompt
+
+**Controls**
+\`${selectModel}\` select model · \`/effort\` set reasoning · \`${expandTools}\` tool output
+\`${toggleThinking}\` thinking blocks · \`${promptStash}\` stash prompt · \`${externalEditor}\` edit in \`$EDITOR\`
+\`${pasteImage}\` paste image
+
+**Help**
+${shortcutsKey ? `\`${shortcutsKey}\` quick shortcuts · ` : ""}\`/hotkeys\` full reference
+`;
+	}
+
+	private getHotkeysGuide(): string {
 		const cursorUp = this.getEditorKeyDisplay("tui.editor.cursorUp");
 		const cursorDown = this.getEditorKeyDisplay("tui.editor.cursorDown");
 		const cursorLeft = this.getEditorKeyDisplay("tui.editor.cursorLeft");
@@ -7992,8 +8235,6 @@ export class InteractiveMode {
 		const jumpBackward = this.getEditorKeyDisplay("tui.editor.jumpBackward");
 		const pageUp = this.getEditorKeyDisplay("tui.editor.pageUp");
 		const pageDown = this.getEditorKeyDisplay("tui.editor.pageDown");
-
-		// Editing keybindings
 		const submit = this.getEditorKeyDisplay("tui.input.submit");
 		const newLine = this.getEditorKeyDisplay("tui.input.newLine");
 		const deleteWordBackward = this.getEditorKeyDisplay("tui.editor.deleteWordBackward");
@@ -8004,13 +8245,11 @@ export class InteractiveMode {
 		const yankPop = this.getEditorKeyDisplay("tui.editor.yankPop");
 		const undo = this.getEditorKeyDisplay("tui.editor.undo");
 		const tab = this.getEditorKeyDisplay("tui.input.tab");
-
-		// App keybindings
 		const clear = this.getAppKeyDisplay("app.clear");
 		const clearInput = this.getAppKeyDisplay("app.input.clear");
 		const interrupt = this.getAppKeyDisplay("app.interrupt");
+		const shortcutsKey = this.getAppKeyDisplay("app.shortcuts");
 		const exit = this.getAppKeyDisplay("app.exit");
-		const suspend = this.getAppKeyDisplay("app.suspend");
 		const selectModel = this.getAppKeyDisplay("app.model.select");
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
@@ -8020,8 +8259,6 @@ export class InteractiveMode {
 		const followUp = this.getAppKeyDisplay("app.message.followUp");
 		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
 		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
-
-		// Fullscreen viewport keybindings
 		const viewportPageUp = this.getEditorKeyDisplay("tui.viewport.pageUp");
 		const viewportPageDown = this.getEditorKeyDisplay("tui.viewport.pageDown");
 		const viewportTop = this.getEditorKeyDisplay("tui.viewport.top");
@@ -8058,8 +8295,7 @@ export class InteractiveMode {
 | \`${tab}\` | Path completion / accept autocomplete |
 | \`${clearInput}\` | Clear input / cancel autocomplete |
 | \`${clear}\` | Interrupt current operation (first) / exit (second) |
-${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
-| \`${suspend}\` | Suspend to background |
+${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shortcutsKey ? `| \`${shortcutsKey}\` | Show quick shortcuts |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
 | \`${selectModel}\` | Open model selector |
 | \`${expandTools}\` | Toggle tool output expansion |
 | \`${toggleThinking}\` | Toggle thinking block visibility |
@@ -8080,7 +8316,6 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 | mouse wheel | Scroll transcript |
 `;
 
-		// Add extension-registered shortcuts
 		const shortcuts = this.bindLocalSessionExtensions
 			? this.getLocalSessionHost().getExtensionRunner().getShortcuts(this.keybindings.getEffectiveConfig())
 			: undefined;
@@ -8092,17 +8327,35 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 `;
 			for (const [key, shortcut] of shortcuts) {
 				const description = shortcut.description ?? shortcut.extensionPath;
-				const keyDisplay = formatKeyText(key);
-				hotkeys += `| \`${keyDisplay}\` | ${description} |\n`;
+				hotkeys += `| \`${formatKeyText(key)}\` | ${description} |\n`;
 			}
 		}
 
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder());
-		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "Keyboard Shortcuts")), 1, 0));
+		return hotkeys;
+	}
+
+	private showShortcutGuide(): void {
+		const hotkeys = this.getShortcutGuide();
+
+		this.shortcutGuideContainer.clear();
+		this.shortcutGuideContainer.addChild(new Spacer(1));
+		this.shortcutGuideContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
+		this.ui.requestRender();
+	}
+
+	private handleHotkeysCommand(): void {
+		const hotkeys = this.getHotkeysGuide();
+
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
-		this.chatContainer.addChild(new DynamicBorder());
+		this.ui.requestRender();
+	}
+
+	private clearShortcutGuide(): void {
+		if (this.shortcutGuideContainer.children.length === 0) {
+			return;
+		}
+		this.shortcutGuideContainer.clear();
 		this.ui.requestRender();
 	}
 
@@ -8272,6 +8525,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 	stop(options: { preserveAltScreen?: boolean } = {}): void {
 		this.unregisterSignalHandlers();
 		this.clearCtrlCExitHint({ render: false });
+		this.clearEscapeRepeat();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}

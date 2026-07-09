@@ -174,6 +174,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_available_models",
 	"get_queue",
 	"clear_queue",
+	"abort_and_clear_queue",
 	"cron_list",
 	"cron_add",
 	"cron_cancel",
@@ -1269,24 +1270,45 @@ export class AgentDaemon {
 			}
 
 			case "list_saved_sessions": {
-				const state = this.getSessionState(command.activeSessionId);
-				const sessionManager = state.runtime.session.sessionManager;
-				const onProgress = command.id
-					? (loaded: number, total: number) => {
-							this.write(client, {
-								id: command.id,
-								type: "session_list_progress",
-								command: "list_saved_sessions",
-								activeSessionId: command.activeSessionId,
-								loaded,
-								total,
-							});
+				let activeSessionId: string | undefined;
+				let cwd: string;
+				let sessionDir: string | undefined;
+				if ("activeSessionId" in command) {
+					activeSessionId = command.activeSessionId;
+					const sessionManager = this.getSessionState(activeSessionId).runtime.session.sessionManager;
+					cwd = sessionManager.getCwd();
+					sessionDir = sessionManager.getSessionDir();
+				} else {
+					cwd = resolve(command.cwd);
+					sessionDir = command.sessionDir;
+				}
+				const callbacks = command.id
+					? {
+							onProgress: (loaded: number, total: number) => {
+								this.write(client, {
+									id: command.id,
+									type: "session_list_progress",
+									command: "list_saved_sessions",
+									...(activeSessionId ? { activeSessionId } : {}),
+									loaded,
+									total,
+								});
+							},
+							onSession: (session: SessionInfo) => {
+								this.write(client, {
+									id: command.id,
+									type: "session_list_item",
+									command: "list_saved_sessions",
+									...(activeSessionId ? { activeSessionId } : {}),
+									session: serializeSavedSessionInfo(session),
+								});
+							},
 						}
 					: undefined;
 				const savedSessions =
 					command.scope === "current"
-						? await SessionManager.list(sessionManager.getCwd(), sessionManager.getSessionDir(), onProgress)
-						: await SessionManager.listAll(onProgress, sessionManager.getSessionDir());
+						? await SessionManager.list(cwd, sessionDir, callbacks)
+						: await SessionManager.listAll(callbacks, sessionDir);
 				return success(command.id, "list_saved_sessions", {
 					sessions: savedSessions.map(serializeSavedSessionInfo),
 				});
@@ -1352,7 +1374,9 @@ export class AgentDaemon {
 			}
 
 			case "rename_saved_session": {
-				this.getSessionState(command.activeSessionId);
+				if (command.activeSessionId) {
+					this.getSessionState(command.activeSessionId);
+				}
 				const state = this.findActiveSessionByFile(command.sessionPath);
 				const name = command.name.trim();
 				if (!name) {
@@ -1523,7 +1547,7 @@ export class AgentDaemon {
 
 			case "abort": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.abort();
+				state.runtime.session.requestAbort();
 				return success(command.id, "abort");
 			}
 
@@ -1626,6 +1650,13 @@ export class AgentDaemon {
 				return success(command.id, "clear_queue", state.runtime.session.clearQueue());
 			}
 
+			case "abort_and_clear_queue": {
+				const state = this.getSessionState(command.activeSessionId);
+				const queue = state.runtime.session.clearQueue();
+				state.runtime.session.requestAbort();
+				return success(command.id, "abort_and_clear_queue", queue);
+			}
+
 			case "cron_list": {
 				const jobs = this.cronStore.list().filter((job) => {
 					if (!command.includeInactive && job.status !== "active" && job.status !== "paused") {
@@ -1686,13 +1717,16 @@ export class AgentDaemon {
 				if (!model) {
 					throw new Error(`Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				await session.setModel(model, { waitForExtensions: !(session.isStreaming || session.isCompacting) });
 				return success(command.id, "set_model", model);
 			}
 
 			case "cycle_model": {
 				const state = this.getSessionState(command.activeSessionId);
-				const result = await state.runtime.session.cycleModel(command.direction);
+				const session = state.runtime.session;
+				const result = await session.cycleModel(command.direction, {
+					waitForExtensions: !(session.isStreaming || session.isCompacting),
+				});
 				return success(command.id, "cycle_model", result ?? null);
 			}
 
@@ -2717,6 +2751,7 @@ function serializeSavedSessionInfo(session: SessionInfo): DaemonSavedSessionInfo
 		messageCount: session.messageCount,
 		firstMessage: session.firstMessage,
 		allMessagesText: session.allMessagesText,
+		agentStatus: session.agentStatus,
 	};
 }
 

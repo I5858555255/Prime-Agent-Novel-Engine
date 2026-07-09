@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -522,6 +523,10 @@ export interface ModelCycleResult {
 	isScoped: boolean;
 }
 
+interface ModelSelectOptions {
+	waitForExtensions?: boolean;
+}
+
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
@@ -668,12 +673,14 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
+	private _compactionOperation: Promise<void> | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
+	private _branchSummaryOperation: Promise<void> | undefined = undefined;
 
 	// Retry state
 	private _retryAbortController: AbortController | undefined = undefined;
@@ -697,6 +704,9 @@ export class AgentSession {
 	private _extensionRunner!: ExtensionRunner;
 	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
+	private _modelSelectEmitQueue: Promise<void> = Promise.resolve();
+	private _modelSelectEmitQueueIdle = true;
+	private _modelSelectEmitContext = new AsyncLocalStorage<boolean>();
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -2518,6 +2528,11 @@ export class AgentSession {
 				await this._checkCompaction(lastAssistant, false);
 			}
 
+			const pendingModelSelectEmit = this._pendingModelSelectEmit();
+			if (pendingModelSelectEmit) {
+				await pendingModelSelectEmit;
+			}
+
 			drainedNextTurnMessages = this._pendingNextTurnMessages;
 			this._pendingNextTurnMessages = [];
 			messages = [...drainedNextTurnMessages, message];
@@ -2713,6 +2728,11 @@ export class AgentSession {
 					throw new Error(formatAuthenticationFailedMessage(this.model.provider));
 				}
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			}
+
+			const pendingModelSelectEmit = this._pendingModelSelectEmit();
+			if (pendingModelSelectEmit) {
+				await pendingModelSelectEmit;
 			}
 			if (options?.skipPrePromptWork) {
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
@@ -3493,17 +3513,30 @@ export class AgentSession {
 		return this._resourceLoader;
 	}
 
+	requestAbort(): void {
+		this.abortRetry();
+		this.abortCompaction();
+		this.abortBranchSummary();
+		this.abortBash();
+		this.agent.abort();
+	}
+
 	/**
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
-		this.abortRetry();
+		const compactionOperation = this._compactionOperation;
+		const branchSummaryOperation = this._branchSummaryOperation;
+		this.requestAbort();
 		this._cancelActiveRlmChildRuns("Parent session aborted");
 		this._goalAbortInProgress = this._goalState.status === "active";
-		this.agent.abort();
 		try {
-			await this.agent.waitForIdle();
-			await this._agentEventQueue;
+			await Promise.allSettled([
+				this.agent.waitForIdle(),
+				this._agentEventQueue,
+				...(compactionOperation ? [compactionOperation] : []),
+				...(branchSummaryOperation ? [branchSummaryOperation] : []),
+			]);
 		} finally {
 			this._goalAbortInProgress = false;
 		}
@@ -3543,12 +3576,31 @@ export class AgentSession {
 		});
 	}
 
+	private _queueModelSelectEmit(
+		nextModel: Model<any>,
+		previousModel: Model<any> | undefined,
+		source: "set" | "cycle" | "restore",
+	): Promise<void> {
+		const emit = () =>
+			this._modelSelectEmitContext.run(true, () => this._emitModelSelect(nextModel, previousModel, source));
+		this._modelSelectEmitQueueIdle = false;
+		const promise = this._modelSelectEmitQueue.then(emit, emit);
+		const queued = promise.catch(() => {});
+		this._modelSelectEmitQueue = queued;
+		void queued.finally(() => {
+			if (this._modelSelectEmitQueue === queued) {
+				this._modelSelectEmitQueueIdle = true;
+			}
+		});
+		return promise;
+	}
+
 	/**
 	 * Set model directly.
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, options: ModelSelectOptions = {}): Promise<void> {
 		if (!this._modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -3562,7 +3614,34 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(model, previousModel, "set");
+		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
+		if (this._shouldWaitForModelSelectEmit(options)) {
+			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
+		}
+	}
+
+	private _trackModelSelectEmitError(emitPromise: Promise<void>): void {
+		void emitPromise.catch((error) => {
+			this._extensionRunner.emitError({
+				extensionPath: "<internal>",
+				event: "model_select",
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+		});
+	}
+
+	private _shouldWaitForModelSelectEmit(options: ModelSelectOptions): boolean {
+		return options.waitForExtensions !== false && !this._modelSelectEmitContext.getStore();
+	}
+
+	private _pendingModelSelectEmit(): Promise<void> | undefined {
+		if (!this._modelSelectEmitContext.getStore() && !this._modelSelectEmitQueueIdle) {
+			return this._modelSelectEmitQueue;
+		}
+		return undefined;
 	}
 
 	/**
@@ -3571,14 +3650,20 @@ export class AgentSession {
 	 * @param direction - "forward" (default) or "backward"
 	 * @returns The new model info, or undefined if only one model available
 	 */
-	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+	async cycleModel(
+		direction: "forward" | "backward" = "forward",
+		options: ModelSelectOptions = {},
+	): Promise<ModelCycleResult | undefined> {
 		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction);
+			return this._cycleScopedModel(direction, options);
 		}
-		return this._cycleAvailableModel(direction);
+		return this._cycleAvailableModel(direction, options);
 	}
 
-	private async _cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleScopedModel(
+		direction: "forward" | "backward",
+		options: ModelSelectOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const scopedModels = this._scopedModels.filter((scoped) => this._modelRegistry.hasConfiguredAuth(scoped.model));
 		if (scopedModels.length <= 1) return undefined;
 
@@ -3602,12 +3687,20 @@ export class AgentSession {
 		// setThinkingLevel clamps to model capabilities.
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(next.model, currentModel, "cycle");
+		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
+		if (this._shouldWaitForModelSelectEmit(options)) {
+			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
+		}
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
-	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleAvailableModel(
+		direction: "forward" | "backward",
+		options: ModelSelectOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const availableModels = await this._modelRegistry.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
@@ -3627,7 +3720,12 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(nextModel, currentModel, "cycle");
+		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
+		if (this._shouldWaitForModelSelectEmit(options)) {
+			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
+		}
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 	}
@@ -3832,6 +3930,11 @@ export class AgentSession {
 		await this.abort();
 		let didCompact = false;
 		this._compactionAbortController = new AbortController();
+		let resolveCompactionOperation: () => void = () => {};
+		const compactionOperation = new Promise<void>((resolve) => {
+			resolveCompactionOperation = resolve;
+		});
+		this._compactionOperation = compactionOperation;
 		this._emit({ type: "compaction_start", reason: "manual", customInstructions });
 
 		try {
@@ -3879,6 +3982,10 @@ export class AgentSession {
 		} finally {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
+			if (this._compactionOperation === compactionOperation) {
+				this._compactionOperation = undefined;
+			}
+			resolveCompactionOperation();
 			if (didCompact) {
 				this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 				if (hadPostCompactionContinue) {
@@ -6425,6 +6532,11 @@ export class AgentSession {
 
 		// Set up abort controller for summarization
 		this._branchSummaryAbortController = new AbortController();
+		let resolveBranchSummaryOperation: () => void = () => {};
+		const branchSummaryOperation = new Promise<void>((resolve) => {
+			resolveBranchSummaryOperation = resolve;
+		});
+		this._branchSummaryOperation = branchSummaryOperation;
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown } | undefined;
@@ -6563,6 +6675,10 @@ export class AgentSession {
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
 			this._branchSummaryAbortController = undefined;
+			if (this._branchSummaryOperation === branchSummaryOperation) {
+				this._branchSummaryOperation = undefined;
+			}
+			resolveBranchSummaryOperation();
 		}
 	}
 
