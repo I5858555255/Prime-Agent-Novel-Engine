@@ -5842,6 +5842,12 @@ export class AgentSession {
 		if (rawPersistentId !== undefined && typeof rawPersistentId !== "string") {
 			throw new Error("rlm.run persistent_id must be a string");
 		}
+		// A supplied-but-blank persistent_id is a mistake, not an opt-out: reject it rather
+		// than silently folding it to undefined and running ephemerally (dropping the
+		// caller's request for a reopenable subagent).
+		if (typeof rawPersistentId === "string" && rawPersistentId.trim().length === 0) {
+			throw new Error("rlm.run persistent_id must not be blank");
+		}
 		const rawSystemPrompt = kwargs.system_prompt;
 		if (rawSystemPrompt !== undefined && typeof rawSystemPrompt !== "string") {
 			throw new Error("rlm.run system_prompt must be a string");
@@ -6001,6 +6007,11 @@ export class AgentSession {
 				// session file, so the new run can't restore from a half-written snapshot.
 				if (retainedDispose) {
 					await retainedDispose;
+				}
+				// A cancel can land during the dispose await (run.abort is still the no-op at
+				// this point); honor it before opening the session and starting a new runtime.
+				if (isRlmChildRunCancelled(run)) {
+					throw new Error(run.error ?? "RLM child cancelled");
 				}
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;

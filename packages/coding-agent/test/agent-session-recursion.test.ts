@@ -1339,6 +1339,45 @@ describe("AgentSession persistent subagents", () => {
 		);
 	});
 
+	it("rejects a blank persistent_id rather than running ephemerally", async () => {
+		const root = createPersistentSession();
+
+		await expect(root.runRlmChild("blank id", { persistent_id: "   " })).rejects.toThrow(
+			"persistent_id must not be blank",
+		);
+	});
+
+	it("honors a cancel that lands while awaiting the retained session's dispose on reopen", async () => {
+		let calls = 0;
+		const root = createPersistentSession((_model, context) => {
+			calls += 1;
+			return streamAnswer(`child answer: ${userText(context)}`);
+		});
+
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		expect(calls).toBe(1);
+
+		// Make the retained session's dispose block until we release it, so we can cancel the
+		// reopen during the await retainedDispose window (run.abort is still the no-op then).
+		const nodeId = persistentSubagentNodeId("reviewer");
+		const retained = root.getRlmChildSession(nodeId) as AgentSession;
+		let releaseDispose: () => void = () => {};
+		const disposeGate = new Promise<void>((resolve) => {
+			releaseDispose = resolve;
+		});
+		vi.spyOn(retained, "disposeAsync").mockImplementation(() => disposeGate);
+
+		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		const runPromise = root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+		await waitFor(() => runs.has(nodeId));
+		expect(root.cancelRlmChildRun(nodeId)).toBe(true);
+		releaseDispose();
+
+		await expect(runPromise).rejects.toThrow();
+		// The new runtime never started, so the child stream was not invoked a second time.
+		expect(calls).toBe(1);
+	});
+
 	it("runs ephemerally when persist is explicitly false", async () => {
 		const root = createPersistentSession();
 
