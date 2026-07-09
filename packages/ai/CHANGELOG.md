@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Added GPT-5.6 Sol, Terra, and Luna to OpenAI API-key and Codex subscription model catalogs, with their 1.05M API / 272k Codex context windows and `max` reasoning support.
+- Added GPT-5.6 Sol, Terra, and Luna to OpenAI API-key and Codex subscription model catalogs, with their 1.05M API / 272k Codex context windows and `low` through `max` reasoning support.
 
 ## [0.2.7] - 2026-07-08
 

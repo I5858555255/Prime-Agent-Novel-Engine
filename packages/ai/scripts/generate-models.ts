@@ -228,7 +228,7 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
 	if (model.id.includes("gpt-5.6")) {
-		mergeThinkingLevelMap(model, { max: "max" });
+		mergeThinkingLevelMap(model, { minimal: null, max: "max" });
 	}
 	// Per-family effort support per the Anthropic effort docs. Opus 4.6 / Sonnet 4.6
 	// have no xhigh; Fable 5 / Mythos 5 / Mythos Preview think every turn (off: null).
@@ -270,7 +270,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "groq" && model.id === "qwen/qwen3-32b") {
 		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });
 	}
-	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id)) {
+	if (
+		model.provider === "openai-codex" &&
+		supportsOpenAiXhigh(model.id) &&
+		!model.id.includes("gpt-5.6")
+	) {
 		mergeThinkingLevelMap(model, { minimal: "low" });
 	}
 	if (model.provider === "openai-codex" && model.id === "gpt-5.1-codex-mini") {

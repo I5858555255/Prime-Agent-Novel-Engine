@@ -76,24 +76,8 @@ describe("getSupportedThinkingLevels", () => {
 
 			expect(apiModel).toBeDefined();
 			expect(codexModel).toBeDefined();
-			expect(getSupportedThinkingLevels(apiModel!)).toEqual([
-				"off",
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh",
-				"max",
-			]);
-			expect(getSupportedThinkingLevels(codexModel!)).toEqual([
-				"off",
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh",
-				"max",
-			]);
+			expect(getSupportedThinkingLevels(apiModel!)).toEqual(["off", "low", "medium", "high", "xhigh", "max"]);
+			expect(getSupportedThinkingLevels(codexModel!)).toEqual(["off", "low", "medium", "high", "xhigh", "max"]);
 			expect(apiModel!.contextWindow).toBe(1050000);
 			expect(apiModel!.maxTokens).toBe(128000);
 			expect(codexModel!.contextWindow).toBe(272000);

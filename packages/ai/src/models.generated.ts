@@ -2698,7 +2698,7 @@ export const MODELS = {
 			provider: "azure-openai-responses",
 			baseUrl: "",
 			reasoning: true,
-			thinkingLevelMap: {"off":null,"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -2716,7 +2716,7 @@ export const MODELS = {
 			provider: "azure-openai-responses",
 			baseUrl: "",
 			reasoning: true,
-			thinkingLevelMap: {"off":null,"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 1,
@@ -2734,7 +2734,7 @@ export const MODELS = {
 			provider: "azure-openai-responses",
 			baseUrl: "",
 			reasoning: true,
-			thinkingLevelMap: {"off":null,"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -2752,7 +2752,7 @@ export const MODELS = {
 			provider: "azure-openai-responses",
 			baseUrl: "",
 			reasoning: true,
-			thinkingLevelMap: {"off":null,"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 2.5,
@@ -7740,7 +7740,7 @@ export const MODELS = {
 			provider: "openai",
 			baseUrl: "https://api.openai.com/v1",
 			reasoning: true,
-			thinkingLevelMap: {"off":null,"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -7758,7 +7758,7 @@ export const MODELS = {
 			provider: "openai",
 			baseUrl: "https://api.openai.com/v1",
 			reasoning: true,
-			thinkingLevelMap: {"off":"none","xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":"none","xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 1,
@@ -7776,7 +7776,7 @@ export const MODELS = {
 			provider: "openai",
 			baseUrl: "https://api.openai.com/v1",
 			reasoning: true,
-			thinkingLevelMap: {"off":"none","xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":"none","xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -7794,7 +7794,7 @@ export const MODELS = {
 			provider: "openai",
 			baseUrl: "https://api.openai.com/v1",
 			reasoning: true,
-			thinkingLevelMap: {"off":"none","xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":"none","xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 2.5,
@@ -8128,7 +8128,7 @@ export const MODELS = {
 			provider: "openai-codex",
 			baseUrl: "https://chatgpt.com/backend-api",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max","minimal":"low"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 1,
@@ -8146,7 +8146,7 @@ export const MODELS = {
 			provider: "openai-codex",
 			baseUrl: "https://chatgpt.com/backend-api",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max","minimal":"low"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -8164,7 +8164,7 @@ export const MODELS = {
 			provider: "openai-codex",
 			baseUrl: "https://chatgpt.com/backend-api",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max","minimal":"low"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 2.5,
@@ -11954,7 +11954,7 @@ export const MODELS = {
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 1,
@@ -11972,7 +11972,7 @@ export const MODELS = {
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 1,
@@ -11990,7 +11990,7 @@ export const MODELS = {
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -12008,7 +12008,7 @@ export const MODELS = {
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -12026,7 +12026,7 @@ export const MODELS = {
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 2.5,
@@ -12044,7 +12044,7 @@ export const MODELS = {
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 2.5,
@@ -17025,7 +17025,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 1,
@@ -17043,7 +17043,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
@@ -17061,7 +17061,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 2.5,
