@@ -335,6 +335,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				startupNotice: opened.cwdFallbackNotice,
 				verbose: options.verbose,
 				returnToAgentsView: true,
+				forceFullscreen: true,
 				// The agents view renders the global notices itself, so suppress them in-session.
 				agentsViewOwnsStartupNotices: true,
 				// Matches the node id scheme used by snapshot child seeding
