@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
 	loadPersistentSubagentRecord,
 	persistentSubagentDir,
 	persistentSubagentNodeId,
+	persistentSubagentSessionHasHistory,
 	planPersistentSubagentRun,
 	savePersistentSubagentRecord,
 	slugifyPersistentSubagentId,
@@ -55,13 +56,24 @@ describe("persistent subagents store", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("slugs ids into filesystem-safe directory names", () => {
-		expect(slugifyPersistentSubagentId("Code Reviewer!")).toBe("code_reviewer");
-		expect(slugifyPersistentSubagentId("  ")).toBe("subagent");
-		expect(persistentSubagentNodeId("Code Reviewer")).toBe("persist-code_reviewer");
+	it("slugs ids into readable, collision-resistant directory names", () => {
+		// Readable prefix preserved, plus a hash of the exact id.
+		expect(slugifyPersistentSubagentId("Code Reviewer!")).toMatch(/^code_reviewer-[0-9a-f]{8}$/);
+		expect(slugifyPersistentSubagentId("  ")).toMatch(/^subagent-[0-9a-f]{8}$/);
+		expect(persistentSubagentNodeId("Code Reviewer")).toBe(`persist-${slugifyPersistentSubagentId("Code Reviewer")}`);
 		expect(persistentSubagentDir(tempDir, "Code Reviewer")).toBe(
-			join(tempDir, "persistent-subagents", "code_reviewer"),
+			join(tempDir, "persistent-subagents", slugifyPersistentSubagentId("Code Reviewer")),
 		);
+	});
+
+	it("keeps distinct ids that normalize identically from colliding", () => {
+		const ids = ["reviewer-1", "Reviewer 1", "reviewer_1", "Reviewer", "reviewer"];
+		const slugs = ids.map(slugifyPersistentSubagentId);
+		expect(new Set(slugs).size).toBe(ids.length);
+		const dirs = ids.map((id) => persistentSubagentDir(tempDir, id));
+		expect(new Set(dirs).size).toBe(ids.length);
+		// Same id is always stable.
+		expect(slugifyPersistentSubagentId("reviewer")).toBe(slugifyPersistentSubagentId("reviewer"));
 	});
 
 	it("plans a fresh run when no prior subagent exists", () => {
@@ -71,7 +83,43 @@ describe("persistent subagents store", () => {
 		expect(plan.existingSessionFile).toBeUndefined();
 		expect(plan.systemPrompt).toBe("role");
 		expect(plan.record.runCount).toBe(1);
-		expect(plan.nodeId).toBe("persist-reviewer");
+		expect(plan.nodeId).toBe(persistentSubagentNodeId("reviewer"));
+	});
+
+	it("does not report a reopen for a session file with no chat turns", () => {
+		const plan1 = planPersistentSubagentRun({ rootDir: tempDir, id: "meta", systemPrompt: "role" });
+		// A leftover JSONL with only a header and metadata (model/thinking) entries, no
+		// user/assistant turns, as could be left behind by a run that never produced a turn.
+		const dir = plan1.dir;
+		mkdirSync(dir, { recursive: true });
+		const sessionFile = join(dir, "0192aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee.jsonl");
+		const header = {
+			type: "session",
+			version: 3,
+			id: "0192aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+			timestamp: new Date().toISOString(),
+			cwd: tempDir,
+		};
+		const modelChange = {
+			type: "model_change",
+			id: "m1",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			provider: "anthropic",
+			modelId: "claude-sonnet-4-5",
+		};
+		writeFileSync(sessionFile, `${JSON.stringify(header)}\n${JSON.stringify(modelChange)}\n`);
+		savePersistentSubagentRecord(dir, { ...plan1.record, sessionFile });
+
+		expect(existsSync(sessionFile)).toBe(true);
+		expect(findPersistentSubagentSessionFile(dir, undefined)).toBe(sessionFile);
+		// No conversation turns, so it must not count as a reopen (which would hydrate
+		// nothing while re-appending metadata).
+		expect(persistentSubagentSessionHasHistory(sessionFile)).toBe(false);
+
+		const plan2 = planPersistentSubagentRun({ rootDir: tempDir, id: "meta" });
+		expect(plan2.reopened).toBe(false);
+		expect(plan2.existingSessionFile).toBeUndefined();
 	});
 
 	it("reopens and reuses the stored system prompt on the next plan", () => {

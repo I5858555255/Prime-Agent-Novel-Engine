@@ -191,7 +191,7 @@ import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
 	type SessionHeader,
-	type SessionManager,
+	SessionManager,
 } from "./session-manager.js";
 import type { SessionStats } from "./session-stats.js";
 import type { SettingsManager } from "./settings-manager.js";
@@ -5328,6 +5328,35 @@ export class AgentSession {
 		return dir;
 	}
 
+	/**
+	 * Resolve a reopened persistent subagent's last-used model and thinking level from
+	 * its saved session, so it continues with its own settings rather than the parent's.
+	 * The restored model is only used when its provider auth is still configured;
+	 * otherwise the caller falls back to the parent's model. Never throws.
+	 */
+	private _resolveReopenedSubagentSettings(sessionFile: string): {
+		model?: Model<any>;
+		thinkingLevel?: ThinkingLevel;
+	} {
+		try {
+			const context = SessionManager.open(sessionFile).buildSessionContext();
+			let model: Model<any> | undefined;
+			if (context.model) {
+				const restored = this._modelRegistry.find(context.model.provider, context.model.modelId);
+				if (restored && this._modelRegistry.hasConfiguredAuth(restored)) {
+					model = restored;
+				}
+			}
+			const referenceModel = model ?? this.model;
+			const thinkingLevel = referenceModel
+				? (clampThinkingLevel(referenceModel, context.thinkingLevel as ThinkingLevel) as ThinkingLevel)
+				: undefined;
+			return { model, thinkingLevel };
+		} catch {
+			return {};
+		}
+	}
+
 	private _usageForCurrentMessages(): RlmUsage {
 		const usage = emptyRlmUsage();
 		for (const message of this.agent.state.messages) {
@@ -5396,6 +5425,7 @@ export class AgentSession {
 		spawnCode?: string;
 		sessionDir: string;
 		model: Model<any>;
+		thinkingLevel?: ThinkingLevel;
 		existingSessionFile?: string;
 		subagentSystemPrompt?: string;
 	}): CreateRlmSubagentRuntimeOptions {
@@ -5406,7 +5436,7 @@ export class AgentSession {
 			spawnCode: options.spawnCode,
 			sessionDir: options.sessionDir,
 			model: options.model,
-			thinkingLevel: this.thinkingLevel,
+			thinkingLevel: options.thinkingLevel ?? this.thinkingLevel,
 			scopedModels: [...this._scopedModels],
 			activeToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
@@ -5544,21 +5574,25 @@ export class AgentSession {
 	}
 
 	/**
-	 * Dispose a retained (finished, resident) child session by id and drop its event
-	 * forwarder. Used when a persistent subagent is reopened under the same node id, so
-	 * the prior resident session releases the session file before the new one opens it.
+	 * Detach a retained (finished, resident) child session by id and drop its event
+	 * forwarder, returning a promise that settles once it is fully disposed. Used when a
+	 * persistent subagent is reopened under the same node id: the maps are cleared
+	 * synchronously (so nothing disposes it twice), and the caller awaits the returned
+	 * promise before opening the session file, so the prior child's kernel finishes
+	 * flushing its snapshot before the new run restores from it.
 	 */
-	private _disposeRetainedRlmChildSession(childId: string): void {
+	private _disposeRetainedRlmChildSession(childId: string): Promise<void> {
 		const unsubscribe = this._retainedRlmChildUnsubscribes.get(childId);
 		if (unsubscribe) {
 			unsubscribe();
 			this._retainedRlmChildUnsubscribes.delete(childId);
 		}
 		const retained = this._retainedRlmChildSessions.get(childId);
-		if (retained) {
-			this._retainedRlmChildSessions.delete(childId);
-			void retained.disposeAsync().catch(() => undefined);
+		if (!retained) {
+			return Promise.resolve();
 		}
+		this._retainedRlmChildSessions.delete(childId);
+		return retained.disposeAsync().catch(() => undefined);
 	}
 
 	/**
@@ -5672,15 +5706,18 @@ export class AgentSession {
 		}
 
 		const persistentId = rawPersistentId?.trim() ? rawPersistentId.trim() : undefined;
+		const systemPrompt = rawSystemPrompt?.trim() ? rawSystemPrompt.trim() : undefined;
 		const persist = rawPersist === true || persistentId !== undefined;
 		if (persist && !persistentId) {
 			throw new Error("rlm.run persist requires a persistent_id so the subagent can be reopened later");
 		}
-		return {
-			persist,
-			persistentId,
-			systemPrompt: rawSystemPrompt?.trim() ? rawSystemPrompt.trim() : undefined,
-		};
+		// A system_prompt only takes effect for a persistent subagent (it is stored and
+		// re-applied on reopen). Reject it without persistence instead of silently dropping
+		// the caller's requested role.
+		if (systemPrompt && !persist) {
+			throw new Error("rlm.run system_prompt requires persist=true and a persistent_id");
+		}
+		return { persist, persistentId, systemPrompt };
 	}
 
 	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): RlmChildRun {
@@ -5722,10 +5759,9 @@ export class AgentSession {
 		const childNodeId = persistentPlan?.nodeId ?? basename(childSessionDir);
 		// Reopening a persistent subagent replaces any still-resident finished session for
 		// the same id, so its saved history is reopened from disk instead of two sessions
-		// sharing one file.
-		if (persistentPlan) {
-			this._disposeRetainedRlmChildSession(childNodeId);
-		}
+		// sharing one file. Detach it synchronously here (so nothing disposes it twice) and
+		// await full teardown inside the task before the new runtime opens the session file.
+		const retainedDispose = persistentPlan ? this._disposeRetainedRlmChildSession(childNodeId) : undefined;
 		const startedAt = Date.now();
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const label = rlmChildLabel(prompt);
@@ -5768,12 +5804,19 @@ export class AgentSession {
 		run.emitUpdate = emitChildUpdate;
 		emitChildUpdate();
 
+		// A reopened persistent subagent may have switched model or thinking level during a
+		// prior run; those are recorded in its saved session so it continues with its own
+		// last-used settings rather than the parent's current ones.
+		const reopenedSettings = persistentPlan?.existingSessionFile
+			? this._resolveReopenedSubagentSettings(persistentPlan.existingSessionFile)
+			: undefined;
 		const subagentOptions = this._createRlmSubagentRuntimeOptions({
 			id: childNodeId,
 			prompt,
 			spawnCode,
 			sessionDir: childSessionDir,
-			model,
+			model: reopenedSettings?.model ?? model,
+			thinkingLevel: reopenedSettings?.thinkingLevel,
 			existingSessionFile: persistentPlan?.existingSessionFile,
 			subagentSystemPrompt: persistentPlan?.systemPrompt,
 		});
@@ -5787,6 +5830,12 @@ export class AgentSession {
 				}
 				if (isRlmChildRunCancelled(run)) {
 					throw new Error(run.error ?? "RLM child cancelled");
+				}
+				// Wait for a reopened persistent subagent's prior resident session to finish
+				// tearing down (its kernel flushes a final snapshot) before opening the reused
+				// session file, so the new run can't restore from a half-written snapshot.
+				if (retainedDispose) {
+					await retainedDispose;
 				}
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;

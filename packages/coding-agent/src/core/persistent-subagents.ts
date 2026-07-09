@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { SessionManager } from "./session-manager.js";
@@ -37,15 +38,23 @@ export interface PersistentSubagentRecord {
 	runCount: number;
 }
 
-/** Slug a persistent-subagent id into a filesystem-safe directory name. */
+/**
+ * Slug a persistent-subagent id into a filesystem-safe, collision-resistant
+ * directory name. A readable, normalized prefix keeps directories browsable, and a
+ * short hash of the exact id keeps distinct ids (differing only in case,
+ * punctuation, spacing, or beyond the prefix length) from colliding into the same
+ * directory and overwriting each other's history.
+ */
 export function slugifyPersistentSubagentId(id: string): string {
-	const normalized = id
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "_")
-		.replace(/^_+|_+$/g, "")
-		.slice(0, 80);
-	return normalized || "subagent";
+	const readable =
+		id
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "_")
+			.replace(/^_+|_+$/g, "")
+			.slice(0, 60) || "subagent";
+	const hash = createHash("sha256").update(id).digest("hex").slice(0, 8);
+	return `${readable}-${hash}`;
 }
 
 /**
@@ -129,6 +138,20 @@ export function findPersistentSubagentSessionFile(
 }
 
 /**
+ * Whether a session file holds actual conversation turns (not just metadata like
+ * model/thinking-level entries). Used to decide whether reopening genuinely
+ * continues history: a metadata-only or unreadable file is treated as no history,
+ * so the run starts fresh instead of reporting a reopen that hydrates nothing.
+ */
+export function persistentSubagentSessionHasHistory(sessionFile: string): boolean {
+	try {
+		return SessionManager.open(sessionFile).buildSessionContext().messages.length > 0;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Plan for one persistent-subagent run: where its session lives, whether this run
  * reopens prior history, and the system prompt to apply.
  */
@@ -156,7 +179,15 @@ export function planPersistentSubagentRun(options: {
 }): PersistentSubagentPlan {
 	const dir = persistentSubagentDir(options.rootDir, options.id);
 	const record = loadPersistentSubagentRecord(dir);
-	const existingSessionFile = findPersistentSubagentSessionFile(dir, record);
+	const candidateSessionFile = findPersistentSubagentSessionFile(dir, record);
+	// Only treat the run as a reopen when the prior session actually has conversation
+	// turns; a leftover metadata-only JSONL would otherwise report reopened=true while
+	// hydrating nothing (and re-appending model/thinking entries). Keeping the flag and
+	// the hydration decision in one place keeps every transport consistent.
+	const existingSessionFile =
+		candidateSessionFile && persistentSubagentSessionHasHistory(candidateSessionFile)
+			? candidateSessionFile
+			: undefined;
 	const systemPrompt = options.systemPrompt ?? record?.systemPrompt;
 	const now = new Date().toISOString();
 	const nextRecord: PersistentSubagentRecord = {

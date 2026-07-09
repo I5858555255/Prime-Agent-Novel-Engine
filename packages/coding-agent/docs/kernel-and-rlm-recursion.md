@@ -722,18 +722,23 @@ r2 = await rlm("Now review the API changes too.", persist=True, persistent_id="r
 
 `persist=True` requires a `persistent_id` (so the subagent can be found again) and a
 persisted parent session (so its history has a stable home). Passing a `persistent_id`
-alone implies `persist=True`. `system_prompt` is stored with the subagent and
-re-applied on every reopen; omit it on later runs to reuse the stored role, or pass a
-new one to update it.
+alone implies `persist=True`. `system_prompt` only applies to a persistent subagent
+(it is stored and re-applied on reopen), so passing it without `persist` is rejected
+rather than silently dropped. It is stored with the subagent and re-applied on every
+reopen; omit it on later runs to reuse the stored role, or pass a new one to update it.
+A reopened subagent also continues with its own last-used model and thinking level
+(recorded in its saved session), not the parent's current settings.
 
 History reuses the existing append-only session JSONL format. Only a small
 `subagent.json` sidecar (the session file pointer, stored system prompt, and run count)
-is new. A persistent subagent lives under the parent's artifact dir:
+is new. A persistent subagent lives under the parent's artifact dir, in a directory
+named from a readable prefix plus a short hash of the exact id so distinct ids never
+collide:
 
 ```text
 ~/.prime/agent/session-artifacts/<root-session-id>/
   persistent-subagents/
-    reviewer/
+    reviewer-<hash>/
       subagent.json
       <child-session-id>.jsonl
 ```

@@ -17,6 +17,11 @@ import { AuthStorage } from "../src/core/auth-storage.js";
 import { KernelManager } from "../src/core/kernel/index.js";
 import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
+import {
+	loadPersistentSubagentRecord,
+	persistentSubagentNodeId,
+	slugifyPersistentSubagentId,
+} from "../src/core/persistent-subagents.js";
 import { createRlmRunHostHandler } from "../src/core/rlm-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -1160,7 +1165,8 @@ describe("AgentSession persistent subagents", () => {
 		expect(result.persistent_id).toBe("reviewer");
 		expect(result.reopened).toBe(false);
 		expect(result.session_dir).not.toBeNull();
-		expect(basename(result.session_dir!)).toBe("reviewer");
+		// Directory name is a readable prefix plus a hash of the exact id.
+		expect(basename(result.session_dir!)).toMatch(/^reviewer-[0-9a-f]{8}$/);
 		expect(dirname(result.session_dir!)).toBe(
 			join(root.sessionManager.getSessionArtifactDir()!, "persistent-subagents"),
 		);
@@ -1233,6 +1239,45 @@ describe("AgentSession persistent subagents", () => {
 		const root = createPersistentSession();
 
 		await expect(root.runRlmChild("no id", { persist: true })).rejects.toThrow("persist requires a persistent_id");
+	});
+
+	it("rejects a system_prompt without persistence instead of dropping it", async () => {
+		const root = createPersistentSession();
+
+		await expect(root.runRlmChild("no persist", { system_prompt: "be terse" })).rejects.toThrow(
+			"system_prompt requires persist=true",
+		);
+	});
+
+	it("does not report a reopen when the prior session has no chat turns", async () => {
+		const root = createPersistentSession((_model, context) => {
+			// Answer with no assistant text is still a turn, so force a real turn only on the
+			// first run; here every run produces a turn, so both persist history normally.
+			return streamAnswer(`child answer: ${userText(context)}`);
+		});
+
+		const first = await root.runRlmChild("only run", { persist: true, persistent_id: "solo" });
+		expect(first.reopened).toBe(false);
+	});
+
+	it("restores the subagent's last-used thinking level on reopen", async () => {
+		const root = createPersistentSession();
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+
+		// The subagent changed its thinking level to "high" during the prior run; record
+		// that in its saved session so reopening continues with the subagent's own level.
+		const nodeId = persistentSubagentNodeId("reviewer");
+		const dir = join(
+			root.sessionManager.getSessionArtifactDir()!,
+			"persistent-subagents",
+			slugifyPersistentSubagentId("reviewer"),
+		);
+		const record = loadPersistentSubagentRecord(dir)!;
+		SessionManager.open(record.sessionFile!).appendThinkingLevelChange("high");
+
+		await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+		const child = root.getRlmChildSession(nodeId);
+		expect(child?.thinkingLevel).toBe("high");
 	});
 
 	it("rejects a non-persisted parent for persistent subagents", async () => {
