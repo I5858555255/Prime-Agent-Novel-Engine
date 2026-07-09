@@ -2654,7 +2654,10 @@ export class AgentDaemon {
 		if (persistError && !keepsResumeEntry && reason !== "completed" && reason !== "reopened") {
 			throw persistError;
 		}
-		if (cascadeError && !keepsResumeEntry && reason !== "completed" && reason !== "reopened") {
+		// A reopen must surface a failed nested-child teardown (unlike its own archive, which
+		// it intentionally skips): otherwise the parent is removed while an errored child
+		// lingers as an orphaned, still-observable session.
+		if (cascadeError && !keepsResumeEntry && reason !== "completed") {
 			throw cascadeError;
 		}
 	}

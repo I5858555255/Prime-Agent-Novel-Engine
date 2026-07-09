@@ -2564,6 +2564,67 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("surfaces a nested child teardown error when closing a subagent for reopen", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-reopen-err-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const state = makeState("child-1", "parent-1") as ActiveSessionState;
+			state.extensionUiRequests = new Map();
+			state.runtime = {
+				metadata: {
+					kind: "subagent",
+					createdAt: 1,
+					parentActiveSessionId: "parent-1",
+					rlmChildId: "persist-reviewer",
+				},
+				cwd: tempDir,
+				dispose: vi.fn(async () => {}),
+				session: {
+					sessionId: "child-session-1",
+					sessionFile: join(tempDir, "child.jsonl"),
+					messages: ["user message"],
+					sessionManager: { appendSessionState: vi.fn(), hasUserContent: () => true },
+					abort: vi.fn(async () => {}),
+					removeQueuedFollowUp: vi.fn(),
+				},
+			} as never;
+			// A nested child whose teardown fails must not be silently orphaned.
+			const nested = makeState("nested-1", "child-1") as ActiveSessionState;
+			nested.extensionUiRequests = new Map();
+			nested.runtime = {
+				metadata: { kind: "subagent", createdAt: 2, parentActiveSessionId: "child-1", rlmChildId: "sub-abcd1234" },
+				cwd: tempDir,
+				dispose: vi.fn(async () => {
+					throw new Error("nested dispose failed");
+				}),
+				session: {
+					sessionId: "nested-session-1",
+					sessionFile: join(tempDir, "nested.jsonl"),
+					messages: ["user message"],
+					sessionManager: { appendSessionState: vi.fn(), hasUserContent: () => true },
+					abort: vi.fn(async () => {}),
+					removeQueuedFollowUp: vi.fn(),
+				},
+			} as never;
+
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				closeSession(state: ActiveSessionState, reason: string): Promise<void>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+			internals.sessions.set(nested.activeSessionId, nested);
+
+			await expect(internals.closeSession(state, "reopened")).rejects.toThrow("nested dispose failed");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("cancels scheduled jobs when a live session is killed", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-cron-"));
 		try {
