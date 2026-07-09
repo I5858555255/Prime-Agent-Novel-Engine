@@ -1102,3 +1102,160 @@ describe("AgentSession RLM session dir", () => {
 		}
 	});
 });
+
+describe("AgentSession persistent subagents", () => {
+	let tempDir: string;
+	let session: AgentSession | undefined;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `pi-rlm-persist-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(async () => {
+		await session?.disposeAsync().catch(() => undefined);
+		session = undefined;
+		toolsManagerMock.ensureTool.mockReset();
+		toolsManagerMock.ensureTool.mockResolvedValue("rg");
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	function createPersistentSession(streamFn?: StreamFn): AgentSession {
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const sessionManager = SessionManager.create(tempDir, join(tempDir, "sessions"));
+		// Persistent subagents key off the parent's artifact dir, which only exists for a
+		// persisted parent; materialize the parent session file so the dir resolves.
+		sessionManager.materializeSessionFile();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "",
+				tools: [],
+				thinkingLevel: "off",
+			},
+			streamFn: streamFn ?? ((_model, context) => streamAnswer(`child answer: ${userText(context)}`)),
+		});
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
+			resourceLoader: createTestResourceLoader(),
+		});
+		return session;
+	}
+
+	it("creates a persistent subagent under a stable directory and records a sidecar", async () => {
+		const root = createPersistentSession();
+
+		const result = await root.runRlmChild("first instruction", { persist: true, persistent_id: "reviewer" });
+
+		expect(result.persistent_id).toBe("reviewer");
+		expect(result.reopened).toBe(false);
+		expect(result.session_dir).not.toBeNull();
+		expect(basename(result.session_dir!)).toBe("reviewer");
+		expect(dirname(result.session_dir!)).toBe(
+			join(root.sessionManager.getSessionArtifactDir()!, "persistent-subagents"),
+		);
+
+		const sidecarPath = join(result.session_dir!, "subagent.json");
+		expect(existsSync(sidecarPath)).toBe(true);
+		const sidecar = JSON.parse(readFileSync(sidecarPath, "utf8"));
+		expect(sidecar.id).toBe("reviewer");
+		expect(sidecar.runCount).toBe(1);
+		expect(typeof sidecar.sessionFile).toBe("string");
+		expect(existsSync(sidecar.sessionFile)).toBe(true);
+	});
+
+	it("reopens a persistent subagent's saved history on the next run", async () => {
+		const seenHistories: number[] = [];
+		const root = createPersistentSession((_model, context) => {
+			seenHistories.push(context.messages.filter((message) => message.role === "user").length);
+			return streamAnswer(`child answer: ${userText(context)}`);
+		});
+
+		await root.runRlmChild("first instruction", { persist: true, persistent_id: "reviewer" });
+		const second = await root.runRlmChild("second instruction", { persist: true, persistent_id: "reviewer" });
+
+		expect(second.reopened).toBe(true);
+		// First run saw just its own instruction; the reopened run also sees the prior
+		// user turn from the saved history plus its own new instruction.
+		expect(seenHistories[0]).toBe(1);
+		expect(seenHistories[seenHistories.length - 1]).toBeGreaterThanOrEqual(2);
+
+		const sidecar = JSON.parse(readFileSync(join(second.session_dir!, "subagent.json"), "utf8"));
+		expect(sidecar.runCount).toBe(2);
+	});
+
+	it("applies and re-applies the subagent system prompt across reopen", async () => {
+		const seenSystemPrompts: Array<string | undefined> = [];
+		const root = createPersistentSession((_model, context) => {
+			seenSystemPrompts.push(context.systemPrompt);
+			return streamAnswer(`child answer: ${userText(context)}`);
+		});
+
+		await root.runRlmChild("first", {
+			persist: true,
+			persistent_id: "reviewer",
+			system_prompt: "You are the code reviewer subagent.",
+		});
+		// A reopen without an explicit system_prompt reuses the stored one.
+		await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+
+		expect(seenSystemPrompts).toHaveLength(2);
+		for (const prompt of seenSystemPrompts) {
+			expect(prompt).toContain("You are the code reviewer subagent.");
+		}
+	});
+
+	it("keeps non-persistent subagents ephemeral with fresh per-run directories", async () => {
+		const root = createPersistentSession();
+
+		const first = await root.runRlmChild("shard 1");
+		const second = await root.runRlmChild("shard 2");
+
+		expect(first.persistent_id).toBeUndefined();
+		expect(first.reopened).toBeUndefined();
+		expect(basename(first.session_dir!)).toMatch(/^sub-/);
+		expect(basename(second.session_dir!)).toMatch(/^sub-/);
+		expect(first.session_dir).not.toBe(second.session_dir);
+		expect(existsSync(join(first.session_dir!, "subagent.json"))).toBe(false);
+	});
+
+	it("requires a persistent_id when persist is requested", async () => {
+		const root = createPersistentSession();
+
+		await expect(root.runRlmChild("no id", { persist: true })).rejects.toThrow("persist requires a persistent_id");
+	});
+
+	it("rejects a non-persisted parent for persistent subagents", async () => {
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "", tools: [], thinkingLevel: "off" },
+			streamFn: (_model, context) => streamAnswer(`child answer: ${userText(context)}`),
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(tempDir),
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		await expect(session.runRlmChild("x", { persist: true, persistent_id: "reviewer" })).rejects.toThrow(
+			"Persistent subagents require a persisted session",
+		);
+	});
+});

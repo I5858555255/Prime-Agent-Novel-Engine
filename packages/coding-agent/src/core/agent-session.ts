@@ -149,6 +149,12 @@ import {
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
+import {
+	createSubagentSessionManager,
+	type PersistentSubagentPlan,
+	planPersistentSubagentRun,
+	savePersistentSubagentRecord,
+} from "./persistent-subagents.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
 	type AutoRefineReason,
@@ -185,7 +191,7 @@ import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
 	type SessionHeader,
-	SessionManager,
+	type SessionManager,
 } from "./session-manager.js";
 import type { SessionStats } from "./session-stats.js";
 import type { SettingsManager } from "./settings-manager.js";
@@ -357,6 +363,12 @@ export interface AgentSessionConfig {
 	rlmParentNodeId?: string;
 	/** Host responsible for creating RLM subagent runtimes. */
 	subagentRuntimeHost?: SubagentRuntimeHost;
+	/**
+	 * System prompt (append) for a subagent session. Appended after the loader's own
+	 * append prompt when building the system prompt, so a reopened persistent subagent
+	 * keeps its role alongside its saved history. Undefined for normal sessions.
+	 */
+	subagentSystemPrompt?: string;
 	/**
 	 * Boot the IPython kernel in the background as soon as the session is created,
 	 * so the first ipython tool call doesn't pay the kernel cold start.
@@ -734,6 +746,7 @@ export class AgentSession {
 	private _rlmMaxDepth: number;
 	private _rlmSessionDir?: string;
 	private _rlmParentNodeId?: string;
+	private _subagentSystemPrompt?: string;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	// Inline mode keeps finished child sessions so the inspector can still read them;
@@ -800,6 +813,7 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
+		this._subagentSystemPrompt = config.subagentSystemPrompt;
 		this._goalState = this._loadPersistedGoalState();
 		if (this._goalState.status === "active") {
 			this._goalAccountingStartedAt = Date.now();
@@ -2385,8 +2399,13 @@ export class AgentSession {
 
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
-		const appendSystemPrompt =
-			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
+		// A persistent (reopenable) subagent carries its own role as a system-prompt
+		// append, kept after the loader's appends so it survives reopen alongside history.
+		const appendParts = [...loaderAppendSystemPrompt];
+		if (this._subagentSystemPrompt && this._subagentSystemPrompt.trim().length > 0) {
+			appendParts.push(this._subagentSystemPrompt.trim());
+		}
+		const appendSystemPrompt = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 		const loadedSkills = this._modelVisibleSkills();
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
@@ -5300,6 +5319,15 @@ export class AgentSession {
 		return this._rlmSessionDir;
 	}
 
+	// A persistent subagent reuses a stable directory so its session file survives
+	// across runs and resumes; ensure the parent RLM session dir (which anchors it)
+	// exists first, then the subagent's own directory.
+	private _ensurePersistentSubagentSessionDir(dir: string): string {
+		this._ensureRlmSessionDir();
+		mkdirSync(dir, { recursive: true });
+		return dir;
+	}
+
 	private _usageForCurrentMessages(): RlmUsage {
 		const usage = emptyRlmUsage();
 		for (const message of this.agent.state.messages) {
@@ -5368,6 +5396,8 @@ export class AgentSession {
 		spawnCode?: string;
 		sessionDir: string;
 		model: Model<any>;
+		existingSessionFile?: string;
+		subagentSystemPrompt?: string;
 	}): CreateRlmSubagentRuntimeOptions {
 		return {
 			parentSession: this,
@@ -5386,6 +5416,8 @@ export class AgentSession {
 			rlmDepth: this._rlmDepth + 1,
 			rlmMaxDepth: this._rlmMaxDepth,
 			rlmParentNodeId: options.id,
+			existingSessionFile: options.existingSessionFile,
+			subagentSystemPrompt: options.subagentSystemPrompt,
 		};
 	}
 
@@ -5421,12 +5453,20 @@ export class AgentSession {
 	}
 
 	private _createInlineRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): RlmSubagentRuntime {
-		const childSessionManager = SessionManager.create(this._cwd, options.sessionDir);
-		if (options.parentSession.sessionFile) {
-			childSessionManager.newSession({ parentSession: options.parentSession.sessionFile });
+		const childSessionManager = createSubagentSessionManager({
+			cwd: this._cwd,
+			sessionDir: options.sessionDir,
+			parentSessionFile: options.parentSession.sessionFile,
+			existingSessionFile: options.existingSessionFile,
+		});
+		// A reopened persistent subagent already has model/thinking history and a saved
+		// conversation; hydrate its messages. A fresh session records the initial model
+		// and thinking level so it can be restored on later reopen.
+		const reopened = childSessionManager.buildSessionContext().messages.length > 0;
+		if (!reopened) {
+			childSessionManager.appendModelChange(options.model.provider, options.model.id);
+			childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
 		}
-		childSessionManager.appendModelChange(options.model.provider, options.model.id);
-		childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
 
 		const childAgent = new Agent({
 			initialState: {
@@ -5449,6 +5489,9 @@ export class AgentSession {
 			maxRetryDelayMs: this.settingsManager.getProviderRetrySettings().maxRetryDelayMs,
 			toolExecution: this.agent.toolExecution,
 		});
+		if (reopened) {
+			childAgent.state.messages = childSessionManager.buildSessionContext().messages;
+		}
 
 		const child = new AgentSession({
 			agent: childAgent,
@@ -5468,7 +5511,8 @@ export class AgentSession {
 			rlmMaxDepth: options.rlmMaxDepth,
 			rlmSessionDir: options.sessionDir,
 			rlmParentNodeId: options.rlmParentNodeId,
-			sessionStartEvent: { type: "session_start", reason: "startup" },
+			subagentSystemPrompt: options.subagentSystemPrompt,
+			sessionStartEvent: { type: "session_start", reason: reopened ? "resume" : "startup" },
 		});
 
 		return { session: child };
@@ -5497,6 +5541,24 @@ export class AgentSession {
 	/** Status of a direct RLM child run, while the run is still tracked. */
 	getRlmChildRunStatus(childId: string): RlmChildAgentStatus | undefined {
 		return this._activeRlmChildRuns.get(childId)?.status;
+	}
+
+	/**
+	 * Dispose a retained (finished, resident) child session by id and drop its event
+	 * forwarder. Used when a persistent subagent is reopened under the same node id, so
+	 * the prior resident session releases the session file before the new one opens it.
+	 */
+	private _disposeRetainedRlmChildSession(childId: string): void {
+		const unsubscribe = this._retainedRlmChildUnsubscribes.get(childId);
+		if (unsubscribe) {
+			unsubscribe();
+			this._retainedRlmChildUnsubscribes.delete(childId);
+		}
+		const retained = this._retainedRlmChildSessions.get(childId);
+		if (retained) {
+			this._retainedRlmChildSessions.delete(childId);
+			void retained.disposeAsync().catch(() => undefined);
+		}
 	}
 
 	/**
@@ -5580,11 +5642,49 @@ export class AgentSession {
 		return false;
 	}
 
-	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): RlmChildRun {
-		const unsupportedKwargs = Object.keys(kwargs);
+	/**
+	 * Parse the persistence kwargs of an `rlm.run` call. Persistence is opt-in and
+	 * defaults off, so a bare `rlm.run(prompt)` keeps the existing ephemeral
+	 * behavior. Any unrecognized kwarg still fails loudly.
+	 */
+	private _parsePersistentSubagentKwargs(kwargs: Record<string, unknown>): {
+		persist: boolean;
+		persistentId?: string;
+		systemPrompt?: string;
+	} {
+		const known = new Set(["persist", "persistent_id", "system_prompt"]);
+		const unsupportedKwargs = Object.keys(kwargs).filter((key) => !known.has(key));
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
 		}
+
+		const rawPersist = kwargs.persist;
+		if (rawPersist !== undefined && typeof rawPersist !== "boolean") {
+			throw new Error("rlm.run persist must be a boolean");
+		}
+		const rawPersistentId = kwargs.persistent_id;
+		if (rawPersistentId !== undefined && typeof rawPersistentId !== "string") {
+			throw new Error("rlm.run persistent_id must be a string");
+		}
+		const rawSystemPrompt = kwargs.system_prompt;
+		if (rawSystemPrompt !== undefined && typeof rawSystemPrompt !== "string") {
+			throw new Error("rlm.run system_prompt must be a string");
+		}
+
+		const persistentId = rawPersistentId?.trim() ? rawPersistentId.trim() : undefined;
+		const persist = rawPersist === true || persistentId !== undefined;
+		if (persist && !persistentId) {
+			throw new Error("rlm.run persist requires a persistent_id so the subagent can be reopened later");
+		}
+		return {
+			persist,
+			persistentId,
+			systemPrompt: rawSystemPrompt?.trim() ? rawSystemPrompt.trim() : undefined,
+		};
+	}
+
+	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): RlmChildRun {
+		const persistence = this._parsePersistentSubagentKwargs(kwargs);
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
 				`RLM recursion depth limit reached (RLM_DEPTH=${this._rlmDepth}, RLM_MAX_DEPTH=${this._rlmMaxDepth})`,
@@ -5595,8 +5695,37 @@ export class AgentSession {
 			throw new Error(formatNoModelSelectedMessage());
 		}
 
-		const childSessionDir = this._createChildRlmSessionDir();
-		const childNodeId = basename(childSessionDir);
+		// A persistent subagent lives in a stable directory keyed by its id under the
+		// parent's persisted artifact dir, so its history can be reopened across runs and
+		// session resumes. Everything else keeps the ephemeral per-run sub-<uuid> dir.
+		let persistentPlan: PersistentSubagentPlan | undefined;
+		if (persistence.persist && persistence.persistentId) {
+			const root = this.sessionManager.getSessionArtifactDir();
+			if (!root) {
+				throw new Error(
+					"Persistent subagents require a persisted session; run without persist or start a persisted session first",
+				);
+			}
+			persistentPlan = planPersistentSubagentRun({
+				rootDir: root,
+				id: persistence.persistentId,
+				systemPrompt: persistence.systemPrompt,
+			});
+			if (this._activeRlmChildRuns.has(persistentPlan.nodeId)) {
+				throw new Error(`Persistent subagent ${persistence.persistentId} is already running`);
+			}
+		}
+
+		const childSessionDir = persistentPlan
+			? this._ensurePersistentSubagentSessionDir(persistentPlan.dir)
+			: this._createChildRlmSessionDir();
+		const childNodeId = persistentPlan?.nodeId ?? basename(childSessionDir);
+		// Reopening a persistent subagent replaces any still-resident finished session for
+		// the same id, so its saved history is reopened from disk instead of two sessions
+		// sharing one file.
+		if (persistentPlan) {
+			this._disposeRetainedRlmChildSession(childNodeId);
+		}
 		const startedAt = Date.now();
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const label = rlmChildLabel(prompt);
@@ -5645,6 +5774,8 @@ export class AgentSession {
 			spawnCode,
 			sessionDir: childSessionDir,
 			model,
+			existingSessionFile: persistentPlan?.existingSessionFile,
+			subagentSystemPrompt: persistentPlan?.systemPrompt,
 		});
 		let childRuntime: RlmSubagentRuntime | undefined;
 		let unsubscribeChild: (() => void) | undefined;
@@ -5725,11 +5856,23 @@ export class AgentSession {
 					answerPreview = compactAnswer;
 				}
 				emitChildUpdate();
+				// Record the persistent subagent's sidecar (session file + system prompt) so a
+				// later run with the same id reopens this exact history.
+				if (persistentPlan) {
+					const sessionFile = child.sessionFile;
+					savePersistentSubagentRecord(persistentPlan.dir, {
+						...persistentPlan.record,
+						sessionFile: sessionFile ?? persistentPlan.record.sessionFile,
+						updatedAt: new Date().toISOString(),
+					});
+				}
 				const result: RlmRunResult = {
 					answer,
 					usage,
 					turns: child._assistantTurnCount(),
 					session_dir: childSessionDir,
+					persistent_id: persistentPlan?.id,
+					reopened: persistentPlan?.reopened,
 				};
 				run.result = result;
 				return { ...result, assistantUsage };
@@ -5777,6 +5920,8 @@ export class AgentSession {
 			usage: result.usage,
 			turns: result.turns,
 			session_dir: result.session_dir,
+			persistent_id: result.persistent_id,
+			reopened: result.reopened,
 		};
 	}
 

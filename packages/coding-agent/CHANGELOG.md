@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added persistent (reopenable) subagents: `rlm('instruction', persist=True, persistent_id='reviewer', system_prompt='...')` saves a subagent's session history and system prompt so later runs with the same id reopen it with its role, prior history, and the new instruction; non-persistent subagents are unchanged.
 - Changed automatic harness refinement to be enabled by default while keeping `autoRefine.enabled: false` as the opt-out.
 - Fixed non-numeric `autoRefine.turnInterval` and `autoRefine.cooldownMs` settings falling back to defaults instead of silently enabling a noisy auto-refine loop.
 

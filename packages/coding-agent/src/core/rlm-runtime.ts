@@ -21,6 +21,10 @@ export interface RlmRunResult {
 	usage: RlmUsage;
 	turns: number;
 	session_dir: string | null;
+	/** Stable id of the persistent subagent this run used, when persistence was requested. */
+	persistent_id?: string;
+	/** True when this run reopened a persistent subagent's saved history. */
+	reopened?: boolean;
 }
 
 export interface RlmInternalRunResult extends RlmRunResult {
@@ -68,6 +72,17 @@ export interface CreateRlmSubagentRuntimeOptions {
 	rlmParentNodeId: string;
 	/** Source of the IPython cell that spawned this subagent, for display. */
 	spawnCode?: string;
+	/**
+	 * Existing session file to reopen for a persistent (reopenable) subagent. When
+	 * set, the runtime hydrates this session's saved history instead of starting a
+	 * fresh conversation.
+	 */
+	existingSessionFile?: string;
+	/**
+	 * System prompt (append) applied to this subagent. For a persistent subagent it
+	 * is stored with its history and re-applied on every reopen.
+	 */
+	subagentSystemPrompt?: string;
 }
 
 /** Terminal status of an RLM child run, passed to the host when releasing its runtime. */

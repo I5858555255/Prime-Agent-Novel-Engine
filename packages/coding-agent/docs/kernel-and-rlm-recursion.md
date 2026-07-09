@@ -700,6 +700,48 @@ asyncio.gather resolves in the IPython cell
 
 The root kernel still executes one cell. The concurrency comes from multiple comms and multiple child `AgentSession` instances, each with its own kernel.
 
+## Persistent Sub-Agents
+
+By default a subagent is ephemeral: each `rlm(...)` call mints a fresh `sub-xxxxxxxx`
+directory and session, so its conversation can be inspected afterwards but never
+continued. A persistent subagent is opt-in and keyed by a caller-chosen id:
+
+```python
+# First run creates the persistent subagent and stores its role.
+r1 = await rlm(
+    "Review the auth changes on this branch.",
+    persist=True,
+    persistent_id="reviewer",
+    system_prompt="You are the code reviewer subagent. Be terse and specific.",
+)
+
+# A later run with the same id reopens its saved session: it sees its system
+# prompt + prior history + this new instruction. r2.reopened is True.
+r2 = await rlm("Now review the API changes too.", persist=True, persistent_id="reviewer")
+```
+
+`persist=True` requires a `persistent_id` (so the subagent can be found again) and a
+persisted parent session (so its history has a stable home). Passing a `persistent_id`
+alone implies `persist=True`. `system_prompt` is stored with the subagent and
+re-applied on every reopen; omit it on later runs to reuse the stored role, or pass a
+new one to update it.
+
+History reuses the existing append-only session JSONL format. Only a small
+`subagent.json` sidecar (the session file pointer, stored system prompt, and run count)
+is new. A persistent subagent lives under the parent's artifact dir:
+
+```text
+~/.prime/agent/session-artifacts/<root-session-id>/
+  persistent-subagents/
+    reviewer/
+      subagent.json
+      <child-session-id>.jsonl
+```
+
+`RLMResult` surfaces `persistent_id` and `reopened` so the caller can tell whether a
+run started fresh or continued saved history. Non-persistent subagents are unchanged:
+no sidecar, no reopen, a fresh `sub-xxxxxxxx` directory per run.
+
 ## What This Deliberately Does Not Do
 
 The runtime does not import or subprocess `rlm-harness`.

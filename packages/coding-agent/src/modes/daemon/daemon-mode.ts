@@ -71,6 +71,7 @@ import {
 	normalizeHeartbeatSchedule,
 	shouldDeferHeartbeatCronJob,
 } from "../../core/cron-jobs.js";
+import { createSubagentSessionManager } from "../../core/persistent-subagents.js";
 import type {
 	CreateRlmSubagentRuntimeOptions,
 	RlmSubagentRuntime,
@@ -994,10 +995,12 @@ export class AgentDaemon {
 		parentState: ActiveSessionState,
 		options: CreateRlmSubagentRuntimeOptions,
 	): Promise<AgentSessionRuntime> {
-		const sessionManager = SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
-		if (options.parentSession.sessionFile) {
-			sessionManager.newSession({ parentSession: options.parentSession.sessionFile });
-		}
+		const sessionManager = createSubagentSessionManager({
+			cwd: options.parentSession.sessionManager.getCwd(),
+			sessionDir: options.sessionDir,
+			parentSessionFile: options.parentSession.sessionFile,
+			existingSessionFile: options.existingSessionFile,
+		});
 		let stateRef: ActiveSessionState | undefined;
 		// Subagents inherit the parent's client env (e.g. herdr pane identity).
 		const runtime = await withClientEnv(parentState.clientEnv, () =>
@@ -1005,7 +1008,10 @@ export class AgentDaemon {
 				cwd: sessionManager.getCwd(),
 				agentDir: parentState.runtime.services.agentDir,
 				sessionManager,
-				sessionStartEvent: { type: "session_start", reason: "startup" },
+				sessionStartEvent: {
+					type: "session_start",
+					reason: options.existingSessionFile ? "resume" : "startup",
+				},
 				sessionConfig: parentState.runtime.runtimeConfig,
 				sessionOptions: {
 					model: options.model,
@@ -1046,6 +1052,7 @@ export class AgentDaemon {
 					rlmMaxDepth: options.rlmMaxDepth,
 					rlmSessionDir: options.sessionDir,
 					rlmParentNodeId: options.rlmParentNodeId,
+					subagentSystemPrompt: options.subagentSystemPrompt,
 				},
 				runtimeMetadata: {
 					kind: "subagent",

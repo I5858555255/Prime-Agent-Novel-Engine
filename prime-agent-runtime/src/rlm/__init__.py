@@ -41,6 +41,10 @@ class RLMResult:
     session_dir: Path | None = None
     usage: TokenUsage = field(default_factory=TokenUsage)
     turns: int = 0
+    # Set when the run used a persistent (reopenable) subagent: its stable id and
+    # whether this run reopened prior saved history.
+    persistent_id: str | None = None
+    reopened: bool = False
 
 
 def _env_int(name: str, default: int) -> int:
@@ -88,11 +92,15 @@ def _result_from_payload(payload: dict[str, Any]) -> RLMResult:
 
     session_dir_payload = payload.get("session_dir")
     session_dir = Path(session_dir_payload) if isinstance(session_dir_payload, str) else None
+    persistent_id_payload = payload.get("persistent_id")
+    persistent_id = persistent_id_payload if isinstance(persistent_id_payload, str) else None
     return RLMResult(
         answer=str(payload.get("answer", "")),
         usage=usage,
         turns=int(payload.get("turns", 0)),
         session_dir=session_dir,
+        persistent_id=persistent_id,
+        reopened=bool(payload.get("reopened", False)),
     )
 
 

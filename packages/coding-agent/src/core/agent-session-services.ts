@@ -65,6 +65,8 @@ export interface AgentSessionCreationOptions {
 	subagentRuntimeHost?: SubagentRuntimeHost;
 	rlmHeartbeatController?: AgentRlmHeartbeatController;
 	prewarmIpythonKernel?: boolean;
+	/** System prompt (append) for a subagent session; stored and re-applied for persistent subagents. */
+	subagentSystemPrompt?: string;
 }
 
 /**
@@ -247,5 +249,6 @@ export async function createAgentSessionFromServices(
 		rlmHeartbeatController: options.rlmHeartbeatController,
 		sessionStartEvent: options.sessionStartEvent,
 		prewarmIpythonKernel: options.prewarmIpythonKernel,
+		subagentSystemPrompt: options.subagentSystemPrompt,
 	});
 }

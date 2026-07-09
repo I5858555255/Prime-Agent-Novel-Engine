@@ -11,6 +11,7 @@ import { flushAgentTraceUpload } from "./agent-traces.js";
 import { isNoModelsAvailableMessage } from "./auth-guidance.js";
 import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
+import { createSubagentSessionManager } from "./persistent-subagents.js";
 import type {
 	CreateRlmSubagentRuntimeOptions,
 	RlmSubagentReleaseStatus,
@@ -270,16 +271,21 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	}
 
 	async createRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): Promise<RlmSubagentRuntime> {
-		const sessionManager = SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
-		if (options.parentSession.sessionFile) {
-			sessionManager.newSession({ parentSession: options.parentSession.sessionFile });
-		}
+		const sessionManager = createSubagentSessionManager({
+			cwd: options.parentSession.sessionManager.getCwd(),
+			sessionDir: options.sessionDir,
+			parentSessionFile: options.parentSession.sessionFile,
+			existingSessionFile: options.existingSessionFile,
+		});
 		const runtime = await this.scopedBuild(() =>
 			createAgentSessionRuntime(this.createRuntime, {
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
-				sessionStartEvent: { type: "session_start", reason: "startup" },
+				sessionStartEvent: {
+					type: "session_start",
+					reason: options.existingSessionFile ? "resume" : "startup",
+				},
 				sessionConfig: this.sessionConfig,
 				sessionOptions: {
 					model: options.model,
@@ -294,6 +300,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 					rlmMaxDepth: options.rlmMaxDepth,
 					rlmSessionDir: options.sessionDir,
 					rlmParentNodeId: options.rlmParentNodeId,
+					subagentSystemPrompt: options.subagentSystemPrompt,
 				},
 				runtimeMetadata: {
 					kind: "subagent",
