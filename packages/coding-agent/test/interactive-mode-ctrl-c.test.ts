@@ -255,6 +255,17 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		expect(mode.restoreQueuedMessagesToEditor).not.toHaveBeenCalled();
 	});
 
+	it("opens the tree on double Escape with an empty idle prompt", () => {
+		const mode = createInteractiveFake({});
+		const handleEscape = Reflect.get(InteractiveMode.prototype, "handleEscape");
+
+		handleEscape.call(mode);
+		handleEscape.call(mode);
+
+		expect(mode.showTreeSelector).toHaveBeenCalledTimes(1);
+		expect(mode.editor.getText()).toBe("");
+	});
+
 	it("expires the Escape repeat window", async () => {
 		const actionHandlers = new Map<string, () => void>();
 		const mode = createInteractiveFake({ editorText: "draft" });

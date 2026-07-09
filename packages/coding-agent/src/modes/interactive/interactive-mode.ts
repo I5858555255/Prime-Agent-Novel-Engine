@@ -5561,7 +5561,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		this.armEscapeRepeat(this.isAgentStreaming() ? "tree" : "clear");
+		this.armEscapeRepeat(this.isAgentStreaming() || !this.editor.getText().trim() ? "tree" : "clear");
 		this.interruptOrClearInput();
 	}
 
