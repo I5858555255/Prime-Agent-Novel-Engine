@@ -2522,18 +2522,43 @@ describe("daemon mode helpers", () => {
 					removeQueuedFollowUp: vi.fn(),
 				},
 			} as never;
+			// A finished, resident nested child of the reopened session. It is torn down
+			// permanently (not handed off), so it must archive normally.
+			const nestedDispose = vi.fn(async () => {});
+			const nestedAppendSessionState = vi.fn();
+			const nested = makeState("nested-1", "child-1") as ActiveSessionState;
+			nested.extensionUiRequests = new Map();
+			nested.runtime = {
+				metadata: { kind: "subagent", createdAt: 2, parentActiveSessionId: "child-1", rlmChildId: "sub-abcd1234" },
+				cwd: tempDir,
+				dispose: nestedDispose,
+				session: {
+					sessionId: "nested-session-1",
+					sessionFile: join(tempDir, "nested.jsonl"),
+					messages: ["user message"],
+					sessionManager: { appendSessionState: nestedAppendSessionState, hasUserContent: () => true },
+					abort: vi.fn(async () => {}),
+					removeQueuedFollowUp: vi.fn(),
+				},
+			} as never;
+
 			const internals = daemon as unknown as {
 				sessions: Map<string, ActiveSessionState>;
 				closeSession(state: ActiveSessionState, reason: string): Promise<void>;
 			};
 			internals.sessions.set(state.activeSessionId, state);
+			internals.sessions.set(nested.activeSessionId, nested);
 
 			await internals.closeSession(state, "reopened");
 
-			// The session file is handed to the next run, so it must not be archived.
+			// The reopened session's file is handed to the next run, so it must not be archived.
 			expect(appendSessionState).not.toHaveBeenCalledWith({ status: "archived" });
 			expect(dispose).toHaveBeenCalledOnce();
 			expect(internals.sessions.has(state.activeSessionId)).toBe(false);
+			// The nested child is torn down for good, so it archives normally.
+			expect(nestedAppendSessionState).toHaveBeenCalledWith({ status: "archived" });
+			expect(nestedDispose).toHaveBeenCalledOnce();
+			expect(internals.sessions.has(nested.activeSessionId)).toBe(false);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

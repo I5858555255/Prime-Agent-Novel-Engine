@@ -2604,7 +2604,11 @@ export class AgentDaemon {
 		// Abort in-flight status work before any await/dispose so it can't write
 		// agent_status to a session being torn down.
 		this.summarizer.forget(state.activeSessionId);
-		const cascadeError = await this.closeChildSessions(state, reason);
+		// "reopened" only spares the session being reopened from archiving; its nested
+		// children are torn down permanently (not handed off), so cascade a normal
+		// "completed" close to them so they archive/discard as usual.
+		const childCloseReason: DaemonSessionClosedReason = reason === "reopened" ? "completed" : reason;
+		const cascadeError = await this.closeChildSessions(state, childCloseReason);
 		// Empty draft (no messages, config, or jobs): discard rather than persist an
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
