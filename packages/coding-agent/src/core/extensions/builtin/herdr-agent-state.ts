@@ -38,7 +38,9 @@ type AgentState = "working" | "blocked" | "idle";
  * with no reporter at all.
  */
 export function hasFileBasedHerdrIntegration(extensionDirs: string[]): boolean {
-	return extensionDirs.some((dir) => existsSync(join(dir, "herdr-agent-state.ts")));
+	return extensionDirs.some(
+		(dir) => existsSync(join(dir, "herdr-agent-state.ts")) || existsSync(join(dir, "herdr-agent-state.js")),
+	);
 }
 
 interface QueuedState {
@@ -98,14 +100,32 @@ function nextReportSeq(): number {
 	return reportSeq;
 }
 
+/**
+ * Build the built-in Herdr reporter factory. `extensionDirs` are the
+ * directories the resource loader discovers file-based extensions from; they
+ * are re-checked on every factory invocation (i.e. on every session load and
+ * `/reload`), so installing Herdr's own file-based integration and reloading
+ * hands the pane over to it without also keeping the built-in active.
+ */
+export function createHerdrAgentStateExtension(extensionDirs: string[]): ExtensionFactory {
+	return (pi: ExtensionAPI) => {
+		herdrAgentStateExtensionImpl(pi, extensionDirs);
+	};
+}
+
+/** Built-in reporter with no file-based deferral, for tests and embedders. */
 export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+	herdrAgentStateExtensionImpl(pi, []);
+};
+
+function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[]): void {
 	// Captured per factory invocation: the resource loader runs this during
 	// session load, inside the daemon's client-env window, so these reflect the
 	// session's own Herdr pane rather than the daemon's startup environment.
 	const socketPath = process.env.HERDR_SOCKET_PATH;
 	const paneId = process.env.HERDR_PANE_ID;
 	const enabled = process.env.HERDR_ENV === "1" && !!socketPath && !!paneId;
-	if (!enabled) {
+	if (!enabled || hasFileBasedHerdrIntegration(extensionDirs)) {
 		return;
 	}
 
@@ -116,6 +136,12 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 
 	let currentAgentSessionId: string | undefined;
 	let currentAgentSessionPath: string | undefined;
+	// Inline RLM child sessions reuse the parent's resource loader, so their
+	// extension runners re-bind these same handler closures. Bind the reporter
+	// to the first session that starts (the parent) and ignore events other
+	// sessions deliver, or a subagent's turns would flip the pane state and
+	// stomp the parent's session reference.
+	let boundSessionManager: unknown;
 	let sendInFlight = false;
 	let queuedState: QueuedState | undefined;
 
@@ -148,6 +174,13 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 			const timeout = setTimeout(finish, 500);
 			timeout.unref?.();
 		});
+	}
+
+	function isBoundSession(ctx: any): boolean {
+		if (boundSessionManager === undefined) {
+			return true;
+		}
+		return ctx?.sessionManager === boundSessionManager;
 	}
 
 	function updateSessionRef(ctx: any): void {
@@ -300,6 +333,12 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		if (!isBoundSession(ctx)) {
+			return;
+		}
+		if (boundSessionManager === undefined && ctx?.sessionManager !== undefined) {
+			boundSessionManager = ctx.sessionManager;
+		}
 		updateSessionRef(ctx);
 		publishState(true);
 	});
@@ -320,7 +359,10 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 		publishState();
 	});
 
-	pi.on("agent_start", () => {
+	pi.on("agent_start", (_event, ctx) => {
+		if (!isBoundSession(ctx)) {
+			return;
+		}
 		clearPendingTimers();
 		clearFailureState();
 		agentActive = true;
@@ -328,6 +370,9 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 	});
 
 	pi.on("agent_end", (event, ctx) => {
+		if (!isBoundSession(ctx)) {
+			return;
+		}
 		if (!agentActive) {
 			// Duplicate/late end events can arrive while auto-retry is already
 			// holding the pane in Working. Do not let an unqualified duplicate end
@@ -356,7 +401,10 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 		publishState();
 	});
 
-	pi.on("session_shutdown", async (event) => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		if (!isBoundSession(ctx)) {
+			return;
+		}
 		clearPendingTimers();
 		// The event bus is shared across reloads and session replacements, so a
 		// listener left behind would keep this stale instance reporting with a
@@ -372,4 +420,4 @@ export const herdrAgentStateExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 		}
 		await releaseAgent();
 	});
-};
+}

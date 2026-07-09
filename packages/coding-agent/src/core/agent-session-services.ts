@@ -7,7 +7,7 @@ import type { AgentObserveController } from "./agent-observe.js";
 import { installAgentTraceUpload } from "./agent-traces.js";
 import { AuthStorage } from "./auth-storage.js";
 import type { AgentRlmHeartbeatController } from "./cron-jobs.js";
-import { hasFileBasedHerdrIntegration, herdrAgentStateExtension } from "./extensions/builtin/herdr-agent-state.js";
+import { createHerdrAgentStateExtension } from "./extensions/builtin/herdr-agent-state.js";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { McpManager } from "./mcp/mcp-manager.js";
 import { ModelRegistry } from "./model-registry.js";
@@ -44,6 +44,13 @@ export interface CreateAgentSessionServicesOptions {
 	modelRegistry?: ModelRegistry;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
+	/**
+	 * Skip the built-in Herdr reporter for these services. Set for RLM subagent
+	 * runtimes: they inherit the parent's HERDR_* pane identity, so their own
+	 * reporter would race the parent's on the same pane and a subagent quit
+	 * would release the pane while the parent is still running.
+	 */
+	noBuiltinHerdrReporter?: boolean;
 }
 
 export interface AgentSessionCreationOptions {
@@ -169,14 +176,15 @@ export async function createAgentSessionServices(
 	modelRegistry.setOnOAuthProvidersReset(() => mcpManager.registerUserProviders());
 
 	const userExtensionFactories = options.resourceLoaderOptions?.extensionFactories ?? [];
-	// Skip the built-in Herdr reporter when the user installed Herdr's own
-	// file-based integration in a directory the loader discovers from; two
-	// reporters would race on the same pane. Checked against the same dirs the
-	// loader scans so agentDir overrides are honored.
+	// The built-in Herdr reporter defers to Herdr's own file-based integration
+	// when it is present in a directory the loader discovers from; two
+	// reporters would race on the same pane. The factory re-checks on every
+	// session load and /reload, using the same dirs the loader scans so
+	// agentDir overrides are honored.
 	const discoveredExtensionDirs = [join(cwd, CONFIG_DIR_NAME, "extensions"), join(agentDir, "extensions")];
-	const builtinExtensionFactories = hasFileBasedHerdrIntegration(discoveredExtensionDirs)
+	const builtinExtensionFactories = options.noBuiltinHerdrReporter
 		? []
-		: [herdrAgentStateExtension];
+		: [createHerdrAgentStateExtension(discoveredExtensionDirs)];
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		extensionFactories: [...builtinExtensionFactories, ...userExtensionFactories],

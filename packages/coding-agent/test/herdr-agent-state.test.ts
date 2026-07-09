@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	createHerdrAgentStateExtension,
 	hasFileBasedHerdrIntegration,
 	herdrAgentStateExtension,
 } from "../src/core/extensions/builtin/herdr-agent-state.js";
@@ -155,6 +156,73 @@ describe("herdrAgentStateExtension", () => {
 		expect(hasFileBasedHerdrIntegration([extDir])).toBe(true);
 		expect(hasFileBasedHerdrIntegration([join(tempDir, "other")])).toBe(false);
 		expect(hasFileBasedHerdrIntegration([])).toBe(false);
+
+		const jsDir = join(tempDir, "js-ext");
+		mkdirSync(jsDir, { recursive: true });
+		writeFileSync(join(jsDir, "herdr-agent-state.js"), "// compiled install\n");
+		expect(hasFileBasedHerdrIntegration([jsDir])).toBe(true);
+	});
+
+	it("defers to the file-based integration when created with matching extension dirs", () => {
+		const tempDir = join(tmpdir(), `pi-herdr-defer-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const extDir = join(tempDir, "extensions");
+		mkdirSync(extDir, { recursive: true });
+		writeFileSync(join(extDir, "herdr-agent-state.ts"), "// installed by herdr\n");
+		cleanupPaths.push(tempDir);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = join(tempDir, "h.sock");
+		process.env.HERDR_PANE_ID = "w1:p1";
+
+		const { pi, handlers, busHandlers } = createMockPi();
+		createHerdrAgentStateExtension([extDir])(pi);
+		expect(handlers.size).toBe(0);
+		expect(busHandlers.size).toBe(0);
+
+		// The check runs per factory invocation, so removing the file and
+		// re-invoking (as /reload does) re-enables the built-in reporter.
+		rmSync(join(extDir, "herdr-agent-state.ts"));
+		const second = createMockPi();
+		createHerdrAgentStateExtension([extDir])(second.pi);
+		expect(second.handlers.size).toBeGreaterThan(0);
+	});
+
+	it("ignores events from sessions other than the one it bound to", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server, requests, waitForRequests } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+
+		const { pi, handlers } = createMockPi();
+		herdrAgentStateExtension(pi);
+
+		const parentSessionManager = { getSessionFile: () => "/tmp/parent.jsonl", getSessionId: () => "parent" };
+		const childSessionManager = { getSessionFile: () => "/tmp/child.jsonl", getSessionId: () => "child" };
+		const parentCtx = { sessionManager: parentSessionManager };
+		const childCtx = { sessionManager: childSessionManager };
+
+		handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, parentCtx);
+		await waitForRequests(1);
+		expect(requests[0]?.params.agent_session_path).toBe("/tmp/parent.jsonl");
+
+		// Inline RLM children rebind the same handlers with their own ctx; their
+		// events must not flip the pane state or release the parent's pane.
+		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, childCtx);
+		await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, childCtx);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(requests).toHaveLength(1);
+
+		// The bound parent still reports normally.
+		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, parentCtx);
+		await waitForRequests(2);
+		expect(requests[1]?.params.state).toBe("working");
 	});
 
 	it("reports lifecycle state to the herdr socket", async () => {
