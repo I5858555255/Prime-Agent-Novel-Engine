@@ -11,11 +11,12 @@ import { SessionSelectorComponent } from "../modes/interactive/components/sessio
 import { BrandSplashHeader } from "../modes/interactive/interactive-mode.js";
 
 type SessionsLoader = (callbacks?: SessionListCallbacks) => Promise<SessionInfo[]>;
+type AllSessionsLoader = (callbacks?: SessionListCallbacks, sessionDir?: string) => Promise<SessionInfo[]>;
 
 /** Show TUI session selector and return selected session path or null if cancelled */
 export async function selectSession(
 	currentSessionsLoader: SessionsLoader,
-	allSessionsLoader: SessionsLoader,
+	allSessionsLoader: AllSessionsLoader,
 	options?: { cwd?: string; modelId?: string; sessionDir?: string },
 ): Promise<string | null> {
 	return new Promise((resolve) => {
@@ -31,10 +32,13 @@ export async function selectSession(
 					onSession: callbacks?.onSession,
 				}),
 			(callbacks) =>
-				allSessionsLoader({
-					onProgress: callbacks?.onProgress,
-					onSession: callbacks?.onSession,
-				}),
+				allSessionsLoader(
+					{
+						onProgress: callbacks?.onProgress,
+						onSession: callbacks?.onSession,
+					},
+					options?.sessionDir,
+				),
 			(path: string) => {
 				if (!resolved) {
 					resolved = true;

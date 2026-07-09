@@ -2650,6 +2650,12 @@ describe("daemon mode helpers", () => {
 			const sessionDir = join(tempDir, "sessions");
 			const session = SessionManager.create(tempDir, sessionDir);
 			session.appendSessionState({ status: "active" });
+			session.appendAgentStatus({
+				summary: "Finished the task",
+				taskState: "completed",
+				basedOnMessageCount: 0,
+			});
+			session.appendSessionState({ status: "active" });
 			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
 				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
 				createRuntime: async () => {
@@ -2677,10 +2683,26 @@ describe("daemon mode helpers", () => {
 				cwd: tempDir,
 				sessionDir,
 				scope: "current",
-			})) as { data: { sessions: Array<{ id: string }> } };
+			})) as {
+				data: {
+					sessions: Array<{
+						id: string;
+						agentStatus?: {
+							summary: string;
+							taskState?: "needs_input" | "completed";
+							basedOnMessageCount: number;
+						};
+					}>;
+				};
+			};
 			const updates = writes.map((line) => JSON.parse(line) as { type: string; activeSessionId?: string });
 
-			expect(response.data.sessions).toEqual([expect.objectContaining({ id: session.getSessionId() })]);
+			expect(response.data.sessions).toEqual([
+				expect.objectContaining({
+					id: session.getSessionId(),
+					agentStatus: { summary: "Finished the task", taskState: "completed", basedOnMessageCount: 0 },
+				}),
+			]);
 			expect(updates).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
@@ -2694,7 +2716,10 @@ describe("daemon mode helpers", () => {
 						id: "list-1",
 						type: "session_list_item",
 						command: "list_saved_sessions",
-						session: expect.objectContaining({ id: session.getSessionId() }),
+						session: expect.objectContaining({
+							id: session.getSessionId(),
+							agentStatus: { summary: "Finished the task", taskState: "completed", basedOnMessageCount: 0 },
+						}),
 					}),
 				]),
 			);

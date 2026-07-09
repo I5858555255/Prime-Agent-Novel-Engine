@@ -67,6 +67,12 @@ export interface AgentConnectionSavedSessionState {
 	status: AgentConnectionSavedSessionStateStatus;
 }
 
+export interface AgentConnectionAgentStatus {
+	summary: string;
+	taskState?: "needs_input" | "completed";
+	basedOnMessageCount: number;
+}
+
 /**
  * Saved-session registry row for the current local TUI migration.
  *
@@ -88,6 +94,7 @@ export interface AgentConnectionSavedSessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+	agentStatus?: AgentConnectionAgentStatus;
 }
 
 export type AgentConnectionSessionListProgress = (loaded: number, total: number) => void;
@@ -176,11 +183,7 @@ export interface AgentConnectionSessionStateEntry extends AgentConnectionSession
 
 export interface AgentConnectionAgentStatusEntry extends AgentConnectionSessionEntryBase {
 	type: "agent_status";
-	status: {
-		summary: string;
-		taskState?: "needs_input" | "completed";
-		basedOnMessageCount: number;
-	};
+	status: AgentConnectionAgentStatus;
 }
 
 export interface AgentConnectionGitStateEntry extends AgentConnectionSessionEntryBase {

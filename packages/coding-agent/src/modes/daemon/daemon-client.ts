@@ -280,6 +280,21 @@ function isDaemonSavedSessionInfo(value: unknown): value is DaemonSavedSessionIn
 		typeof candidate.modified === "string" &&
 		typeof candidate.messageCount === "number" &&
 		typeof candidate.firstMessage === "string" &&
-		typeof candidate.allMessagesText === "string"
+		typeof candidate.allMessagesText === "string" &&
+		(candidate.agentStatus === undefined || isDaemonSavedSessionAgentStatus(candidate.agentStatus))
+	);
+}
+
+function isDaemonSavedSessionAgentStatus(value: unknown): boolean {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const candidate = value as Record<string, unknown>;
+	return (
+		typeof candidate.summary === "string" &&
+		typeof candidate.basedOnMessageCount === "number" &&
+		(candidate.taskState === undefined ||
+			candidate.taskState === "needs_input" ||
+			candidate.taskState === "completed")
 	);
 }

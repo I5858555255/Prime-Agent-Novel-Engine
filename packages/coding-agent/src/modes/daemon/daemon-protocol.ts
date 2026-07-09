@@ -12,6 +12,7 @@ import type { CustomMessage } from "../../core/messages.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type {
+	AgentConnectionAgentStatus,
 	AgentConnectionQueueMode,
 	AgentConnectionResourceSnapshot,
 	AgentConnectionRlmChildAgentSnapshot,
@@ -35,7 +36,7 @@ import type { SessionSummary } from "./daemon-session-list.js";
  */
 
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
-export const DAEMON_PROTOCOL_VERSION = 1;
+export const DAEMON_PROTOCOL_VERSION = 2;
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = typeof DAEMON_PROTOCOL_VERSION;
@@ -461,6 +462,7 @@ export interface DaemonSavedSessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+	agentStatus?: AgentConnectionAgentStatus;
 }
 
 export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;

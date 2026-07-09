@@ -2751,6 +2751,7 @@ function serializeSavedSessionInfo(session: SessionInfo): DaemonSavedSessionInfo
 		messageCount: session.messageCount,
 		firstMessage: session.firstMessage,
 		allMessagesText: session.allMessagesText,
+		agentStatus: session.agentStatus,
 	};
 }
 

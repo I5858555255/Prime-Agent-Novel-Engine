@@ -519,6 +519,12 @@ describe("agents view state", () => {
 			id: "saved",
 			name: "Saved session",
 			cwd: "/tmp/project",
+			messageCount: 2,
+			agentStatus: {
+				summary: "Finished the task",
+				taskState: "completed",
+				basedOnMessageCount: 2,
+			},
 		});
 
 		const summary = resolveAgentsViewResumeSummary(savedSession.path, [savedSession], []);
@@ -530,6 +536,8 @@ describe("agents view state", () => {
 			sessionFile: savedSession.path,
 			sessionName: "Saved session",
 			cwd: "/tmp/project",
+			summary: "Finished the task",
+			taskState: "completed",
 		});
 		expect(summary?.activeSessionId).toBeUndefined();
 		expect(summary?.lifecycle).toBe("live");

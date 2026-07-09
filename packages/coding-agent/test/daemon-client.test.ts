@@ -235,6 +235,7 @@ describe("DaemonClient", () => {
 
 		const progress: Array<[number, number]> = [];
 		const discovered: string[] = [];
+		let discoveredStatus: unknown;
 		const listenerMessages: unknown[] = [];
 		const unsubscribe = client.onMessage((message) => {
 			listenerMessages.push(message);
@@ -248,6 +249,7 @@ describe("DaemonClient", () => {
 						progress.push([message.loaded, message.total]);
 					} else {
 						discovered.push(message.session.id);
+						discoveredStatus = message.session.agentStatus;
 					}
 				},
 			},
@@ -287,6 +289,11 @@ describe("DaemonClient", () => {
 					messageCount: 1,
 					firstMessage: "hello",
 					allMessagesText: "hello",
+					agentStatus: {
+						summary: "Finished the task",
+						taskState: "completed",
+						basedOnMessageCount: 1,
+					},
 				},
 			})}\n`,
 		);
@@ -304,6 +311,11 @@ describe("DaemonClient", () => {
 		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
 		expect(progress).toEqual([[1, 2]]);
 		expect(discovered).toEqual(["session-a"]);
+		expect(discoveredStatus).toEqual({
+			summary: "Finished the task",
+			taskState: "completed",
+			basedOnMessageCount: 1,
+		});
 		expect(listenerMessages).toEqual([]);
 
 		unsubscribe();

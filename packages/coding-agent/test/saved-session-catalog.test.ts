@@ -35,6 +35,11 @@ class FakeDaemonClient {
 					messageCount: 1,
 					firstMessage: "hello",
 					allMessagesText: "hello",
+					agentStatus: {
+						summary: "Finished the task",
+						taskState: "completed",
+						basedOnMessageCount: 1,
+					},
 				},
 			});
 			return {
@@ -52,6 +57,11 @@ class FakeDaemonClient {
 							messageCount: 1,
 							firstMessage: "hello",
 							allMessagesText: "hello",
+							agentStatus: {
+								summary: "Finished the task",
+								taskState: "completed",
+								basedOnMessageCount: 1,
+							},
 						},
 					],
 				},
@@ -107,6 +117,11 @@ describe("saved session catalog", () => {
 				messageCount: 1,
 				firstMessage: "hello",
 				allMessagesText: "hello",
+				agentStatus: {
+					summary: "Finished the task",
+					taskState: "completed",
+					basedOnMessageCount: 1,
+				},
 			},
 		]);
 	});
