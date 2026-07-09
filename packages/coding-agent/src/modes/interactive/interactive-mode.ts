@@ -163,7 +163,7 @@ import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
-import { keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
+import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
@@ -3476,7 +3476,7 @@ export class InteractiveMode {
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onAction("app.interrupt", () => this.handleInterruptKey());
-		this.defaultEditor.onAction("app.shortcuts", () => this.handleHotkeysCommand());
+		this.defaultEditor.onAction("app.shortcuts", () => this.showShortcutGuide());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
 
@@ -3670,7 +3670,7 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
 			if (!text) return;
-			this.clearHotkeysGuide();
+			this.clearShortcutGuide();
 			const promptStashToRestore = this.promptStash;
 			let restorePromptStashAfterSubmit = true;
 
@@ -3774,6 +3774,7 @@ export class InteractiveMode {
 					return;
 				}
 				if (commandName === "hotkeys" && !commandArgs) {
+					this.echoLocalCommand(text);
 					this.handleHotkeysCommand();
 					this.editor.setText("");
 					return;
@@ -4175,7 +4176,7 @@ export class InteractiveMode {
 		if (event.type === "message_start" && event.message.role === "user") {
 			this.contextUsageTokenBaseline = 0;
 			this.setSessionHasMessages(true);
-			this.clearHotkeysGuide();
+			this.clearShortcutGuide();
 		}
 		this.activityTracker.handleEvent(event);
 		this.updateWorkingLoaderMessage();
@@ -8074,12 +8075,11 @@ export class InteractiveMode {
 		return this.capitalizeKey(keyText(action));
 	}
 
-	private getHotkeysGuide(): string {
+	private getShortcutGuide(): string {
 		const tab = this.getEditorKeyDisplay("tui.input.tab");
 		const newLine = this.getEditorKeyDisplay("tui.input.newLine");
 		const clearInput = this.getAppKeyDisplay("app.input.clear");
 		const shortcutsKey = this.getAppKeyDisplay("app.shortcuts");
-		const suspend = this.getAppKeyDisplay("app.suspend");
 		const selectModel = this.getAppKeyDisplay("app.model.select");
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
@@ -8096,15 +8096,127 @@ export class InteractiveMode {
 **Controls**
 \`${selectModel}\` select model · \`/effort\` set reasoning · \`${expandTools}\` tool output
 \`${toggleThinking}\` thinking blocks · \`${promptStash}\` stash prompt · \`${externalEditor}\` edit in \`$EDITOR\`
-\`${pasteImage}\` paste image · \`${suspend}\` suspend
+\`${pasteImage}\` paste image
 
 **Help**
-${shortcutsKey ? `\`${shortcutsKey}\` or ` : ""}\`/hotkeys\` show this guide
+${shortcutsKey ? `\`${shortcutsKey}\` quick shortcuts · ` : ""}\`/hotkeys\` full reference
 `;
 	}
 
-	private handleHotkeysCommand(): void {
-		const hotkeys = this.getHotkeysGuide();
+	private getHotkeysGuide(): string {
+		const cursorUp = this.getEditorKeyDisplay("tui.editor.cursorUp");
+		const cursorDown = this.getEditorKeyDisplay("tui.editor.cursorDown");
+		const cursorLeft = this.getEditorKeyDisplay("tui.editor.cursorLeft");
+		const cursorRight = this.getEditorKeyDisplay("tui.editor.cursorRight");
+		const cursorWordLeft = this.getEditorKeyDisplay("tui.editor.cursorWordLeft");
+		const cursorWordRight = this.getEditorKeyDisplay("tui.editor.cursorWordRight");
+		const cursorLineStart = this.getEditorKeyDisplay("tui.editor.cursorLineStart");
+		const cursorLineEnd = this.getEditorKeyDisplay("tui.editor.cursorLineEnd");
+		const jumpForward = this.getEditorKeyDisplay("tui.editor.jumpForward");
+		const jumpBackward = this.getEditorKeyDisplay("tui.editor.jumpBackward");
+		const pageUp = this.getEditorKeyDisplay("tui.editor.pageUp");
+		const pageDown = this.getEditorKeyDisplay("tui.editor.pageDown");
+		const submit = this.getEditorKeyDisplay("tui.input.submit");
+		const newLine = this.getEditorKeyDisplay("tui.input.newLine");
+		const deleteWordBackward = this.getEditorKeyDisplay("tui.editor.deleteWordBackward");
+		const deleteWordForward = this.getEditorKeyDisplay("tui.editor.deleteWordForward");
+		const deleteToLineStart = this.getEditorKeyDisplay("tui.editor.deleteToLineStart");
+		const deleteToLineEnd = this.getEditorKeyDisplay("tui.editor.deleteToLineEnd");
+		const yank = this.getEditorKeyDisplay("tui.editor.yank");
+		const yankPop = this.getEditorKeyDisplay("tui.editor.yankPop");
+		const undo = this.getEditorKeyDisplay("tui.editor.undo");
+		const tab = this.getEditorKeyDisplay("tui.input.tab");
+		const clear = this.getAppKeyDisplay("app.clear");
+		const clearInput = this.getAppKeyDisplay("app.input.clear");
+		const interrupt = this.getAppKeyDisplay("app.interrupt");
+		const shortcutsKey = this.getAppKeyDisplay("app.shortcuts");
+		const exit = this.getAppKeyDisplay("app.exit");
+		const selectModel = this.getAppKeyDisplay("app.model.select");
+		const expandTools = this.getAppKeyDisplay("app.tools.expand");
+		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
+		const focusSubagents = this.getAppKeyDisplay("app.subagents.focus");
+		const externalEditor = this.getAppKeyDisplay("app.editor.external");
+		const promptStash = this.getAppKeyDisplay("app.prompt.stash");
+		const followUp = this.getAppKeyDisplay("app.message.followUp");
+		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
+		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
+		const viewportPageUp = this.getEditorKeyDisplay("tui.viewport.pageUp");
+		const viewportPageDown = this.getEditorKeyDisplay("tui.viewport.pageDown");
+		const viewportTop = this.getEditorKeyDisplay("tui.viewport.top");
+		const viewportFollow = this.getEditorKeyDisplay("tui.viewport.follow");
+
+		let hotkeys = `
+**Navigation**
+| Key | Action |
+|-----|--------|
+| \`${cursorUp}\` / \`${cursorDown}\` / \`${cursorLeft}\` / \`${cursorRight}\` | Move cursor / browse history (Up when empty) |
+| \`${cursorWordLeft}\` / \`${cursorWordRight}\` | Move by word |
+| \`${cursorLineStart}\` | Start of line |
+| \`${cursorLineEnd}\` | End of line |
+| \`${jumpForward}\` | Jump forward to character |
+| \`${jumpBackward}\` | Jump backward to character |
+| \`${pageUp}\` / \`${pageDown}\` | Scroll by page |
+
+**Editing**
+| Key | Action |
+|-----|--------|
+| \`${submit}\` | Send message |
+| \`${newLine}\` | New line${process.platform === "win32" ? " (Ctrl+Enter on Windows Terminal)" : ""} |
+| \`${deleteWordBackward}\` | Delete word backwards |
+| \`${deleteWordForward}\` | Delete word forwards |
+| \`${deleteToLineStart}\` | Delete to start of line |
+| \`${deleteToLineEnd}\` | Delete to end of line |
+| \`${yank}\` | Paste the most-recently-deleted text |
+| \`${yankPop}\` | Cycle through the deleted text after pasting |
+| \`${undo}\` | Undo |
+
+**Other**
+| Key | Action |
+|-----|--------|
+| \`${tab}\` | Path completion / accept autocomplete |
+| \`${clearInput}\` | Clear input / cancel autocomplete |
+| \`${clear}\` | Interrupt current operation (first) / exit (second) |
+${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shortcutsKey ? `| \`${shortcutsKey}\` | Show quick shortcuts |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
+| \`${selectModel}\` | Open model selector |
+| \`${expandTools}\` | Toggle tool output expansion |
+| \`${toggleThinking}\` | Toggle thinking block visibility |
+| \`${focusSubagents}\` | Open subagent inspector |
+| \`${externalEditor}\` | Edit message in external editor |
+| \`${promptStash}\` | Stash or restore draft prompt |
+| \`${followUp}\` | Queue follow-up message |
+| \`${dequeue}\` | Restore queued messages |
+| \`${pasteImage}\` | Paste image from clipboard |
+| \`/\` | Slash commands |
+
+**Fullscreen mode (\`/fullscreen\`)**
+| Key | Action |
+|-----|--------|
+| \`${viewportPageUp}\` / \`${viewportPageDown}\` | Scroll transcript by page |
+| \`${viewportTop}\` | Scroll to top |
+| \`${viewportFollow}\` | Scroll to bottom and follow output |
+| mouse wheel | Scroll transcript |
+`;
+
+		const shortcuts = this.bindLocalSessionExtensions
+			? this.getLocalSessionHost().getExtensionRunner().getShortcuts(this.keybindings.getEffectiveConfig())
+			: undefined;
+		if (shortcuts && shortcuts.size > 0) {
+			hotkeys += `
+**Extensions**
+| Key | Action |
+|-----|--------|
+`;
+			for (const [key, shortcut] of shortcuts) {
+				const description = shortcut.description ?? shortcut.extensionPath;
+				hotkeys += `| \`${formatKeyText(key)}\` | ${description} |\n`;
+			}
+		}
+
+		return hotkeys;
+	}
+
+	private showShortcutGuide(): void {
+		const hotkeys = this.getShortcutGuide();
 
 		this.shortcutGuideContainer.clear();
 		this.shortcutGuideContainer.addChild(new Spacer(1));
@@ -8112,7 +8224,15 @@ ${shortcutsKey ? `\`${shortcutsKey}\` or ` : ""}\`/hotkeys\` show this guide
 		this.ui.requestRender();
 	}
 
-	private clearHotkeysGuide(): void {
+	private handleHotkeysCommand(): void {
+		const hotkeys = this.getHotkeysGuide();
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
+		this.ui.requestRender();
+	}
+
+	private clearShortcutGuide(): void {
 		if (this.shortcutGuideContainer.children.length === 0) {
 			return;
 		}

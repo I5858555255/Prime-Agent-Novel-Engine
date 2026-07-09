@@ -74,17 +74,51 @@ describe("InteractiveMode startup hints", () => {
 		expect(stripAnsi(label)).toBe("test-model • high");
 	});
 
-	it("keeps the shortcut guide compact", () => {
-		const guide = Reflect.get(InteractiveMode.prototype, "getHotkeysGuide").call(createMode());
+	it("keeps the question-mark shortcut guide compact", () => {
+		const guide = Reflect.get(InteractiveMode.prototype, "getShortcutGuide").call(createMode());
 
 		expect(guide).toContain("`!` shell mode · `/` commands · `@` file paths");
 		expect(guide).toContain("stash prompt");
-		expect(guide).toContain("`/hotkeys` show this guide");
+		expect(guide).toContain("`/hotkeys` full reference");
+		expect(guide).not.toContain("Ctrl+Z");
+		expect(guide).not.toContain("suspend");
 		expect(guide).not.toContain("**Navigation**");
 		expect(guide).not.toContain("**Extensions**");
 	});
 
-	it("renders shortcut help ephemerally without appending to chat history", () => {
+	it("renders question-mark shortcut help ephemerally without appending to chat history", () => {
+		const shortcutGuideContainer = new Container();
+		const chatContainer = new Container();
+		const mode = Object.assign(createMode(), {
+			shortcutGuideContainer,
+			chatContainer,
+			ui: { requestRender: vi.fn() },
+			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+		});
+
+		Reflect.get(InteractiveMode.prototype, "showShortcutGuide").call(mode);
+		Reflect.get(InteractiveMode.prototype, "showShortcutGuide").call(mode);
+
+		expect(chatContainer.children).toHaveLength(0);
+		expect(shortcutGuideContainer.children).toHaveLength(2);
+
+		Reflect.get(InteractiveMode.prototype, "clearShortcutGuide").call(mode);
+
+		expect(shortcutGuideContainer.children).toHaveLength(0);
+	});
+
+	it("keeps /hotkeys comprehensive without Ctrl+Z", () => {
+		const guide = Reflect.get(InteractiveMode.prototype, "getHotkeysGuide").call(createMode());
+
+		expect(guide).toContain("**Navigation**");
+		expect(guide).toContain("**Editing**");
+		expect(guide).toContain("**Fullscreen mode (`/fullscreen`)**");
+		expect(guide).toContain("Queue follow-up message");
+		expect(guide).not.toContain("Ctrl+Z");
+		expect(guide).not.toContain("Suspend to background");
+	});
+
+	it("renders /hotkeys in chat history instead of the temporary guide", () => {
 		const shortcutGuideContainer = new Container();
 		const chatContainer = new Container();
 		const mode = Object.assign(createMode(), {
@@ -95,13 +129,8 @@ describe("InteractiveMode startup hints", () => {
 		});
 
 		Reflect.get(InteractiveMode.prototype, "handleHotkeysCommand").call(mode);
-		Reflect.get(InteractiveMode.prototype, "handleHotkeysCommand").call(mode);
 
-		expect(chatContainer.children).toHaveLength(0);
-		expect(shortcutGuideContainer.children).toHaveLength(2);
-
-		Reflect.get(InteractiveMode.prototype, "clearHotkeysGuide").call(mode);
-
+		expect(chatContainer.children).toHaveLength(2);
 		expect(shortcutGuideContainer.children).toHaveLength(0);
 	});
 });

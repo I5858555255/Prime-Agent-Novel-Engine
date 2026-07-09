@@ -52,7 +52,7 @@ type FakeInteractiveMode = {
 	};
 	keybindings?: KeybindingsManager;
 	handleDebugCommand?: Mock;
-	handleHotkeysCommand?: Mock;
+	showShortcutGuide?: Mock;
 };
 
 function createEditor(text = ""): FakeEditor {
@@ -111,7 +111,7 @@ function createInteractiveFake(options: {
 		showTreeSelector: vi.fn(),
 		shutdown: vi.fn().mockResolvedValue(undefined),
 		updateEditorBorderColor: vi.fn(),
-		handleHotkeysCommand: vi.fn(),
+		showShortcutGuide: vi.fn(),
 	};
 	Object.setPrototypeOf(fake, InteractiveMode.prototype);
 	return fake;
@@ -305,6 +305,6 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		Reflect.get(InteractiveMode.prototype, "setupKeyHandlers").call(mode);
 		actionHandlers.get("app.shortcuts")?.();
 
-		expect(mode.handleHotkeysCommand).toHaveBeenCalledTimes(1);
+		expect(mode.showShortcutGuide).toHaveBeenCalledTimes(1);
 	});
 });
