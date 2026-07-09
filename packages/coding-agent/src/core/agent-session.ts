@@ -153,6 +153,7 @@ import {
 	createSubagentSessionManager,
 	type PersistentSubagentPlan,
 	planPersistentSubagentRun,
+	readPersistentSubagentSessionContext,
 	savePersistentSubagentRecord,
 } from "./persistent-subagents.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -191,7 +192,7 @@ import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
 	type SessionHeader,
-	SessionManager,
+	type SessionManager,
 } from "./session-manager.js";
 import type { SessionStats } from "./session-stats.js";
 import type { SettingsManager } from "./settings-manager.js";
@@ -5338,23 +5339,24 @@ export class AgentSession {
 		model?: Model<any>;
 		thinkingLevel?: ThinkingLevel;
 	} {
-		try {
-			const context = SessionManager.open(sessionFile).buildSessionContext();
-			let model: Model<any> | undefined;
-			if (context.model) {
-				const restored = this._modelRegistry.find(context.model.provider, context.model.modelId);
-				if (restored && this._modelRegistry.hasConfiguredAuth(restored)) {
-					model = restored;
-				}
-			}
-			const referenceModel = model ?? this.model;
-			const thinkingLevel = referenceModel
-				? (clampThinkingLevel(referenceModel, context.thinkingLevel as ThinkingLevel) as ThinkingLevel)
-				: undefined;
-			return { model, thinkingLevel };
-		} catch {
+		// Read-only: never open the file through SessionManager here, which would rewrite a
+		// malformed session and destroy its history.
+		const context = readPersistentSubagentSessionContext(sessionFile);
+		if (!context) {
 			return {};
 		}
+		let model: Model<any> | undefined;
+		if (context.model) {
+			const restored = this._modelRegistry.find(context.model.provider, context.model.modelId);
+			if (restored && this._modelRegistry.hasConfiguredAuth(restored)) {
+				model = restored;
+			}
+		}
+		const referenceModel = model ?? this.model;
+		const thinkingLevel = referenceModel
+			? (clampThinkingLevel(referenceModel, context.thinkingLevel as ThinkingLevel) as ThinkingLevel)
+			: undefined;
+		return { model, thinkingLevel };
 	}
 
 	private _usageForCurrentMessages(): RlmUsage {
@@ -5581,18 +5583,34 @@ export class AgentSession {
 	 * promise before opening the session file, so the prior child's kernel finishes
 	 * flushing its snapshot before the new run restores from it.
 	 */
-	private _disposeRetainedRlmChildSession(childId: string): Promise<void> {
+	private async _disposeRetainedRlmChildSession(childId: string): Promise<void> {
 		const unsubscribe = this._retainedRlmChildUnsubscribes.get(childId);
 		if (unsubscribe) {
 			unsubscribe();
 			this._retainedRlmChildUnsubscribes.delete(childId);
 		}
 		const retained = this._retainedRlmChildSessions.get(childId);
-		if (!retained) {
-			return Promise.resolve();
+		if (retained) {
+			this._retainedRlmChildSessions.delete(childId);
 		}
-		this._retainedRlmChildSessions.delete(childId);
-		return retained.disposeAsync().catch(() => undefined);
+		// Host mode (daemon / in-process runtime): route through the host so its own
+		// registry entry (e.g. the daemon ActiveSessionState) is evicted, not just the
+		// AgentSession. Covers the case where the parent never held the session in
+		// _retainedRlmChildSessions but the host still owns the retained runtime.
+		const host = this._subagentRuntimeHost;
+		if (host?.closeRetainedRlmSubagentRuntime) {
+			const closed = await host.closeRetainedRlmSubagentRuntime(childId).catch(() => false);
+			// If the host had nothing to close but the parent still holds the session, fall
+			// back to disposing it directly so it can't linger.
+			if (!closed && retained) {
+				await retained.disposeAsync().catch(() => undefined);
+			}
+			return;
+		}
+		// Inline mode: dispose the session we hold directly.
+		if (retained) {
+			await retained.disposeAsync().catch(() => undefined);
+		}
 	}
 
 	/**

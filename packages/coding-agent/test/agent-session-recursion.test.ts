@@ -1280,6 +1280,35 @@ describe("AgentSession persistent subagents", () => {
 		expect(child?.thinkingLevel).toBe("high");
 	});
 
+	it("routes retained-session eviction through the host on reopen", async () => {
+		const root = createPersistentSession();
+
+		// A host that delegates creation to the session's own inline path (by unsetting
+		// itself for the duration of the create call) but records reopen evictions, like the
+		// daemon host does to drop its stale ActiveSessionState.
+		const closeCalls: string[] = [];
+		const inspectable = root as unknown as {
+			_subagentRuntimeHost?: unknown;
+			_createInlineRlmSubagentRuntime(options: unknown): unknown;
+		};
+		const host = {
+			createRlmSubagentRuntime: async (options: unknown) => inspectable._createInlineRlmSubagentRuntime(options),
+			closeRetainedRlmSubagentRuntime: async (childId: string) => {
+				closeCalls.push(childId);
+				return false;
+			},
+		};
+		inspectable._subagentRuntimeHost = host;
+
+		// Each persistent run asks the host to evict any resident session for its node id
+		// before opening; the host is the owner of that registry in daemon mode.
+		const nodeId = persistentSubagentNodeId("reviewer");
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+		expect(closeCalls.every((id) => id === nodeId)).toBe(true);
+		expect(closeCalls.length).toBeGreaterThanOrEqual(1);
+	});
+
 	it("rejects a non-persisted parent for persistent subagents", async () => {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");

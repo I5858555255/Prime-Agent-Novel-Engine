@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import {
 	persistentSubagentNodeId,
 	persistentSubagentSessionHasHistory,
 	planPersistentSubagentRun,
+	readPersistentSubagentSessionContext,
 	savePersistentSubagentRecord,
 	slugifyPersistentSubagentId,
 } from "../src/core/persistent-subagents.js";
@@ -170,5 +171,32 @@ describe("persistent subagents store", () => {
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "subagent.json"), "{ not valid json");
 		expect(loadPersistentSubagentRecord(dir)).toBeUndefined();
+	});
+
+	it("probes a malformed session file without truncating it", () => {
+		const dir = persistentSubagentDir(tempDir, "corrupt");
+		mkdirSync(dir, { recursive: true });
+		const sessionFile = join(dir, "0192cccc-dddd-7eee-8fff-000000000000.jsonl");
+		// A malformed JSONL: no valid session header, garbage lines.
+		const original = "not json at all\n{ also broken\n";
+		writeFileSync(sessionFile, original);
+
+		// The read-only probe must never rewrite the file it inspects.
+		expect(persistentSubagentSessionHasHistory(sessionFile)).toBe(false);
+		expect(readPersistentSubagentSessionContext(sessionFile)).toBeUndefined();
+		expect(readFileSync(sessionFile, "utf8")).toBe(original);
+	});
+
+	it("reads model and thinking level from a saved session without mutating it", () => {
+		const dir = persistentSubagentDir(tempDir, "settings");
+		const sessionFile = writeSubagentSession(tempDir, dir);
+		SessionManager.open(sessionFile).appendThinkingLevelChange("high");
+		const before = readFileSync(sessionFile, "utf8");
+
+		const context = readPersistentSubagentSessionContext(sessionFile);
+		expect(context?.thinkingLevel).toBe("high");
+		expect(context?.model).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-5" });
+		// Read-only: file unchanged.
+		expect(readFileSync(sessionFile, "utf8")).toBe(before);
 	});
 });

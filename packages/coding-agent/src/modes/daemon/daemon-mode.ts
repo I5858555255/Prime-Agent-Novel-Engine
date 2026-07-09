@@ -955,6 +955,24 @@ export class AgentDaemon {
 		return undefined;
 	}
 
+	/** Find a resident subagent session for a parent by its RLM child id, if any. */
+	private findSubagentStateByChildId(
+		parentState: ActiveSessionState,
+		childId: string,
+	): ActiveSessionState | undefined {
+		for (const state of this.sessions.values()) {
+			const metadata = state.runtime.metadata;
+			if (
+				metadata.kind === "subagent" &&
+				metadata.parentActiveSessionId === parentState.activeSessionId &&
+				metadata.rlmChildId === childId
+			) {
+				return state;
+			}
+		}
+		return undefined;
+	}
+
 	private createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost {
 		return {
 			createRlmSubagentRuntime: async (options) => this.createRlmSubagentRuntime(parentState, options),
@@ -963,6 +981,18 @@ export class AgentDaemon {
 				if (cascadeError) {
 					throw cascadeError;
 				}
+			},
+			// Reopening a persistent subagent must first fully close the prior finished
+			// child that is still resident in the daemon registry under the same
+			// rlmChildId; otherwise observe/message/status could target the stale disposed
+			// session, and a new session would register with a duplicate child id.
+			closeRetainedRlmSubagentRuntime: async (childId) => {
+				const childState = this.findSubagentStateByChildId(parentState, childId);
+				if (!childState) {
+					return false;
+				}
+				await this.closeSession(childState, "completed");
+				return true;
 			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
 				const state = this.findRuntimeState(runtime);

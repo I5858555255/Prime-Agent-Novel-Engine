@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { SessionManager } from "./session-manager.js";
+import {
+	buildSessionContext,
+	loadEntriesFromFile,
+	type SessionContext,
+	type SessionEntry,
+	SessionManager,
+} from "./session-manager.js";
 
 /**
  * Persistent (reopenable) subagents.
@@ -138,17 +144,36 @@ export function findPersistentSubagentSessionFile(
 }
 
 /**
+ * Read a session file's resolved context without ever mutating the file. Uses the
+ * read-only `loadEntriesFromFile` + `buildSessionContext` path rather than
+ * `SessionManager.open`, because opening a malformed/partially-unreadable session
+ * truncates and rewrites it with a fresh empty header — a probe must never destroy
+ * the history it inspects. Returns undefined when the file is missing/unreadable or
+ * has no usable entries.
+ */
+export function readPersistentSubagentSessionContext(sessionFile: string): SessionContext | undefined {
+	try {
+		if (!existsSync(sessionFile)) {
+			return undefined;
+		}
+		const entries = loadEntriesFromFile(sessionFile);
+		if (entries.length === 0) {
+			return undefined;
+		}
+		return buildSessionContext(entries as SessionEntry[]);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Whether a session file holds actual conversation turns (not just metadata like
  * model/thinking-level entries). Used to decide whether reopening genuinely
  * continues history: a metadata-only or unreadable file is treated as no history,
  * so the run starts fresh instead of reporting a reopen that hydrates nothing.
  */
 export function persistentSubagentSessionHasHistory(sessionFile: string): boolean {
-	try {
-		return SessionManager.open(sessionFile).buildSessionContext().messages.length > 0;
-	} catch {
-		return false;
-	}
+	return (readPersistentSubagentSessionContext(sessionFile)?.messages.length ?? 0) > 0;
 }
 
 /**

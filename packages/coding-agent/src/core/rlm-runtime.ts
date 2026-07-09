@@ -95,5 +95,13 @@ export interface SubagentRuntimeHost {
 		options: CreateRlmSubagentRuntimeOptions,
 		status: RlmSubagentReleaseStatus,
 	): Promise<void>;
+	/**
+	 * Fully close a retained (finished, resident) subagent runtime by its child id,
+	 * evicting any host-side registry entry (e.g. the daemon's ActiveSessionState) in
+	 * addition to disposing the session. Called before a persistent subagent is reopened
+	 * under the same id so the stale resident session can't be observed, messaged, or
+	 * re-stamped. Returns true when a retained runtime was found and closed.
+	 */
+	closeRetainedRlmSubagentRuntime?(childId: string): Promise<boolean>;
 	disposeRlmSubagentRuntimes?(): Promise<void>;
 }
