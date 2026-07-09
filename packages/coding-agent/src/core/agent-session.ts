@@ -2696,6 +2696,10 @@ export class AgentSession {
 					await this._checkCompaction(lastAssistant, false);
 				}
 
+				if (!this._modelSelectEmitContext.getStore()) {
+					await this._modelSelectEmitQueue;
+				}
+
 				// Build messages array (custom message if any, then user message)
 				messages = [];
 
@@ -2717,10 +2721,6 @@ export class AgentSession {
 					timestamp: Date.now(),
 				};
 				messages.push(userMessage);
-
-				if (!this._modelSelectEmitContext.getStore()) {
-					await this._modelSelectEmitQueue;
-				}
 
 				// Emit before_agent_start extension event
 				const result = await this._extensionRunner.emitBeforeAgentStart(

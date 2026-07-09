@@ -6333,8 +6333,10 @@ export class InteractiveMode {
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
-		const models = this.getCachedModelCandidates();
-		const cachedMatch = findExactModelReferenceMatch(searchTerm, models);
+		const scopedModels = this.getScopedModelState();
+		const cachedModels =
+			scopedModels.length > 0 ? scopedModels.map((scoped) => scoped.model) : [...this.connectionModels];
+		const cachedMatch = findExactModelReferenceMatch(searchTerm, cachedModels);
 		if (cachedMatch) {
 			return cachedMatch;
 		}

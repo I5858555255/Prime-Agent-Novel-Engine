@@ -1022,6 +1022,7 @@ describe("InteractiveMode model selection persistence", () => {
 
 	function createSelectorOverlayHarness(options: {
 		connectionModels: AgentConnectionModel[];
+		registryModels?: AgentConnectionModel[];
 		getAvailableModels?: () => Promise<AgentConnectionModel[]>;
 		applySelectedModel?: (model: AgentConnectionModel) => Promise<void>;
 		currentModel?: AgentConnectionModel;
@@ -1029,7 +1030,7 @@ describe("InteractiveMode model selection persistence", () => {
 	}) {
 		let overlayComponent: Component | undefined;
 		const hide = vi.fn();
-		const registryModels = [...options.connectionModels];
+		const registryModels = [...(options.registryModels ?? options.connectionModels)];
 		const modelRegistry = {
 			refresh: vi.fn(),
 			getError: vi.fn(() => undefined),
@@ -1244,6 +1245,20 @@ describe("InteractiveMode model selection persistence", () => {
 		});
 
 		await expect(fakeThis.findExactModelMatch("beta")).resolves.toEqual(beta);
+
+		expect(getAvailableModels).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not exact-match local fallback before daemon catalog loads", async () => {
+		const localOnly = createModel("openai", "local-only");
+		const getAvailableModels = vi.fn(async () => []);
+		const { fakeThis } = createSelectorOverlayHarness({
+			connectionModels: [],
+			registryModels: [localOnly],
+			getAvailableModels,
+		});
+
+		await expect(fakeThis.findExactModelMatch("local-only")).resolves.toBeUndefined();
 
 		expect(getAvailableModels).toHaveBeenCalledTimes(1);
 	});

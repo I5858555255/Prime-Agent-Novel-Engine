@@ -3,7 +3,7 @@ import { fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "../../src/index.js";
-import { createHarness, getAssistantTexts, type Harness } from "./harness.js";
+import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
 function createDeferred<T = void>(): {
 	promise: Promise<T>;
@@ -244,6 +244,57 @@ describe("AgentSession model and extension characterization", () => {
 		await prompt;
 
 		expect(getAssistantTexts(harness)).toContain("after model select");
+	});
+
+	it("includes nextTurn messages queued by pending model_select handlers in the next prompt", async () => {
+		const handlerStarted = createDeferred();
+		const finishHandler = createDeferred();
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async () => {
+						handlerStarted.resolve();
+						await finishHandler.promise;
+						await pi.sendMessage(
+							{
+								customType: "model-context",
+								content: "model context",
+								display: false,
+							},
+							{ deliverAs: "nextTurn" },
+						);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("after model context")]);
+
+		await harness.session.setModel(harness.getModel("faux-2")!, { waitForExtensions: false });
+		await handlerStarted.promise;
+
+		const prompt = harness.session.prompt("hi");
+		await flushAsyncWork();
+
+		expect(harness.session.messages).toHaveLength(0);
+
+		finishHandler.resolve();
+		await prompt;
+		for (let i = 0; i < 5 && !getAssistantTexts(harness).includes("after model context"); i++) {
+			await flushAsyncWork();
+		}
+
+		expect(
+			harness.session.messages.slice(0, 2).map((message) => ({ role: message.role, text: getMessageText(message) })),
+		).toEqual([
+			{ role: "custom", text: "model context" },
+			{ role: "user", text: "hi" },
+		]);
+		expect(getAssistantTexts(harness)).toContain("after model context");
 	});
 
 	it("allows model_select handlers to enqueue user messages without waiting on themselves", async () => {
