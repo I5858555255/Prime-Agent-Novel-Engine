@@ -30,7 +30,12 @@ export { TruncatedText } from "./components/truncated-text.js";
 // Editor component interface (for custom editors)
 export type { EditorComponent, EditorPasteSnapshot } from "./editor-component.js";
 // Fullscreen (alternate-screen) viewport
-export { FullscreenViewport, type ScrollInfo } from "./fullscreen.js";
+export {
+	clippedFullscreenDockHeight,
+	FULLSCREEN_MIN_TRANSCRIPT_ROWS,
+	FullscreenViewport,
+	type ScrollInfo,
+} from "./fullscreen.js";
 // Fuzzy matching
 export { type FuzzyMatch, fuzzyFilter, fuzzyFilterScored, fuzzyMatch, type ScoredItem } from "./fuzzy.js";
 // Keybindings

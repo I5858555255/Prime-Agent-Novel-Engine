@@ -43,3 +43,40 @@ describe("ProcessTerminal dimensions", () => {
 		}
 	});
 });
+
+describe("ProcessTerminal alternate screen handoff", () => {
+	it("inherits a preserved alternate screen into the next terminal instance", () => {
+		const originalWrite = process.stdout.write;
+		const writes: string[] = [];
+		const patchedWrite = ((...args: Parameters<typeof process.stdout.write>): boolean => {
+			const chunk = args[0];
+			writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+			const callback = args.find((arg): arg is (error?: Error | null) => void => typeof arg === "function");
+			callback?.();
+			return true;
+		}) as typeof process.stdout.write;
+
+		process.stdout.write = patchedWrite;
+		try {
+			const first = new ProcessTerminal();
+			first.enterAltScreen();
+			first.stop({ preserveAltScreen: true });
+
+			const second = new ProcessTerminal();
+			assert.equal(second.altScreenActive, true);
+			second.stop();
+			assert.equal(second.altScreenActive, false);
+
+			const third = new ProcessTerminal();
+			assert.equal(third.altScreenActive, false);
+			assert.ok(writes.includes("\x1b[?1049h"));
+			assert.ok(writes.includes("\x1b[?1049l"));
+		} finally {
+			const cleanup = new ProcessTerminal();
+			if (cleanup.altScreenActive) {
+				cleanup.stop();
+			}
+			process.stdout.write = originalWrite;
+		}
+	});
+});

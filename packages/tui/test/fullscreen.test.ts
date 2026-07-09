@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import type { TerminalStopOptions } from "../src/terminal.js";
 import { type Component, TUI } from "../src/tui.js";
 import { VirtualTerminal } from "./virtual-terminal.js";
 
@@ -20,10 +21,16 @@ class InputComponent extends TestComponent {
 
 class LoggingVirtualTerminal extends VirtualTerminal {
 	private writes: string[] = [];
+	lastStopOptions: TerminalStopOptions | undefined;
 
 	override write(data: string): void {
 		this.writes.push(data);
 		super.write(data);
+	}
+
+	override stop(options?: TerminalStopOptions): void {
+		this.lastStopOptions = options;
+		super.stop(options);
 	}
 
 	getWrites(): string {
@@ -657,6 +664,18 @@ describe("TUI fullscreen mode", () => {
 		next.stop({ flushFullscreen: false });
 		await terminal.flush();
 		assert.strictEqual(terminal.getActiveBufferType(), "normal");
+	});
+
+	it("ignores preserve requests when no alternate screen is active", async () => {
+		const { terminal, tui } = setup(lines(3));
+		await terminal.waitForRender();
+
+		terminal.clearWrites();
+		tui.stop({ preserveAltScreen: true });
+		await terminal.flush();
+
+		assert.strictEqual(terminal.getActiveBufferType(), "normal");
+		assert.strictEqual(terminal.lastStopOptions?.preserveAltScreen, false);
 	});
 
 	it("can pass viewport keys to the focused component", async () => {

@@ -17,6 +17,9 @@ const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 
+// A preserved alternate screen survives across ProcessTerminal instances during in-process handoff.
+let inheritedAltScreenActive = false;
+
 /**
  * Minimal terminal interface for TUI
  */
@@ -89,7 +92,7 @@ export class ProcessTerminal implements Terminal {
 	private resizeHandler?: () => void;
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
-	private _altScreenActive = false;
+	private _altScreenActive = inheritedAltScreenActive;
 	private _mouseTrackingActive = false;
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
@@ -356,9 +359,14 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.write("\x1b[?1006l\x1b[?1002l");
 			this._mouseTrackingActive = false;
 		}
-		if (this._altScreenActive && !options.preserveAltScreen) {
-			process.stdout.write("\x1b[?1049l");
-			this._altScreenActive = false;
+		if (this._altScreenActive) {
+			if (options.preserveAltScreen) {
+				inheritedAltScreenActive = true;
+			} else {
+				process.stdout.write("\x1b[?1049l");
+				this._altScreenActive = false;
+				inheritedAltScreenActive = false;
+			}
 		}
 
 		// Disable bracketed paste mode
@@ -456,12 +464,14 @@ export class ProcessTerminal implements Terminal {
 	enterAltScreen(): void {
 		if (this._altScreenActive) return;
 		this._altScreenActive = true;
+		inheritedAltScreenActive = true;
 		this.write("\x1b[?1049h");
 	}
 
 	leaveAltScreen(): void {
 		if (!this._altScreenActive) return;
 		this._altScreenActive = false;
+		inheritedAltScreenActive = false;
 		this.write("\x1b[?1049l");
 	}
 

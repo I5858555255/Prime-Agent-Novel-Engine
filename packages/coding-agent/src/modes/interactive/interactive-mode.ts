@@ -5560,11 +5560,20 @@ export class InteractiveMode {
 		this.unregisterSignalHandlers();
 
 		await this.teardownSessionUi({ preserveAltScreen: true });
+		let handoffComplete = false;
 		try {
-			await this.agentConnection.dispose();
+			try {
+				await this.agentConnection.dispose();
+			} finally {
+				await this.options.onShutdown?.();
+				this.onInputCallback?.(undefined);
+				handoffComplete = true;
+			}
 		} finally {
-			await this.options.onShutdown?.();
-			this.onInputCallback?.(undefined);
+			if (!handoffComplete) {
+				this.ui.terminal.leaveAltScreen();
+				this.ui.terminal.showCursor();
+			}
 		}
 	}
 

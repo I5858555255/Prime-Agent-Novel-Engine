@@ -5,6 +5,7 @@ import type { AutocompleteItem, OverlayHandle, SlashCommand } from "@earendil-wo
 import {
 	CombinedAutocompleteProvider,
 	type Component,
+	clippedFullscreenDockHeight,
 	type Focusable,
 	fuzzyFilter,
 	ProcessTerminal,
@@ -2019,7 +2020,9 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private contentHeight(width: number): number {
-		return Math.max(0, this.ui.terminal.rows - this.renderDock(width).length);
+		const rows = this.ui.terminal.rows;
+		const dockHeight = clippedFullscreenDockHeight(this.renderDock(width).length, rows);
+		return Math.max(0, rows - dockHeight);
 	}
 
 	private getSplashModelId(): string | undefined {

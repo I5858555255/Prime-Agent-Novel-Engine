@@ -550,7 +550,7 @@ export class TUI extends Container {
 	}
 
 	stop(options: TuiStopOptions = {}): void {
-		const preserveAltScreen = options.preserveAltScreen === true;
+		const preserveAltScreen = options.preserveAltScreen === true && this.terminal.altScreenActive;
 		const flushFullscreen = options.flushFullscreen ?? !preserveAltScreen;
 		this.exitFullscreen({ flush: flushFullscreen, leaveAltScreen: !preserveAltScreen });
 		this.stopped = true;
