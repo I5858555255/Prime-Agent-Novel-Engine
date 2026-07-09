@@ -49,11 +49,18 @@ function okExecuteResult(): ExecuteResult {
 	return { stdout: "ok", stderr: "", status: "ok", durationMs: 1 };
 }
 
-function createBusyKernelContext(select: (title: string, options: string[]) => Promise<string | undefined>): {
+function createBusyKernelContext(
+	select: (title: string, options: string[]) => Promise<string | undefined>,
+	options: { throwWorkingMessage?: boolean } = {},
+): {
 	ctx: ExtensionContext;
 	setWorkingMessage: ReturnType<typeof vi.fn>;
 } {
-	const setWorkingMessage = vi.fn();
+	const setWorkingMessage = vi.fn(() => {
+		if (options.throwWorkingMessage) {
+			throw new Error("stale UI context");
+		}
+	});
 	const ctx = {
 		hasUI: true,
 		ui: {
@@ -240,7 +247,7 @@ describe("IpythonKernelProvisioner", () => {
 		const kill = vi.fn(async () => {});
 		const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
 		const select = vi.fn(async () => "Wait and preserve state");
-		const { ctx, setWorkingMessage } = createBusyKernelContext(select);
+		const { ctx, setWorkingMessage } = createBusyKernelContext(select, { throwWorkingMessage: true });
 		const tool = createIpythonToolDefinition(tempDir, { provisioner });
 
 		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, ctx);
@@ -272,7 +279,7 @@ describe("IpythonKernelProvisioner", () => {
 		const kill = vi.fn(async () => {});
 		const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
 		const select = vi.fn(async () => "Kill kernel and restart");
-		const { ctx, setWorkingMessage } = createBusyKernelContext(select);
+		const { ctx, setWorkingMessage } = createBusyKernelContext(select, { throwWorkingMessage: true });
 		const tool = createIpythonToolDefinition(tempDir, { provisioner });
 
 		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, ctx);

@@ -217,6 +217,14 @@ function createLinkedAbortSignal(sources: readonly (AbortSignal | undefined)[]):
 	};
 }
 
+function setWorkingMessage(ctx: ExtensionContext | undefined, message?: string): void {
+	try {
+		ctx?.ui.setWorkingMessage(message);
+	} catch {
+		// Stale UI context; cosmetic only.
+	}
+}
+
 export type IpythonToolInput = Static<typeof ipythonSchema>;
 
 export interface IpythonToolDetails {
@@ -555,11 +563,11 @@ async function executeWithBusyKernelChoice(
 			}
 			const action = await chooseBusyKernelAction(ctx, signal);
 			if (action === "wait") {
-				ctx?.ui.setWorkingMessage("Waiting for IPython kernel...");
+				setWorkingMessage(ctx, "Waiting for IPython kernel...");
 				continue;
 			}
 			if (action === "kill") {
-				ctx?.ui.setWorkingMessage("Restarting IPython kernel...");
+				setWorkingMessage(ctx, "Restarting IPython kernel...");
 				await provisioner.kill();
 				kernelRestarted = true;
 				continue;
@@ -593,18 +601,10 @@ export function createIpythonToolDefinition(
 		executionMode: "sequential",
 		parameters: ipythonSchema,
 		execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
-			// Cosmetic; ctx.ui can throw on a stale ctx, but must never fail the cell.
-			const setWorkingMessage = (message?: string) => {
-				try {
-					ctx?.ui.setWorkingMessage(message);
-				} catch {
-					// Stale ctx; cosmetic only.
-				}
-			};
 			let reportedStartupProgress = false;
 			const reportStartupProgress: KernelBootstrapProgressHandler = (message) => {
 				reportedStartupProgress = true;
-				setWorkingMessage(message);
+				setWorkingMessage(ctx, message);
 				onUpdate?.({
 					content: [{ type: "text", text: message }],
 					details: { status: "starting" },
@@ -658,7 +658,7 @@ export function createIpythonToolDefinition(
 				};
 			} finally {
 				if (reportedStartupProgress) {
-					setWorkingMessage();
+					setWorkingMessage(ctx);
 				}
 			}
 		},
