@@ -233,6 +233,31 @@ describe("AgentSession autonomous mode", () => {
 		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(1);
 	});
 
+	it("suppresses autonomous continuation injection for host-driven gate prompts", async () => {
+		const harness = await createHarness({
+			autonomous: {
+				enabled: true,
+				maxContinuations: 2,
+				gates: {
+					commands: [`${process.execPath} -e "console.error('gate failed'); process.exit(1)"`],
+					maxRetries: 2,
+				},
+			},
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("Still failing.")]);
+
+		harness.session.recordHostAutonomousContinuation();
+		await harness.session.prompt("host gate follow-up", {
+			internalPrompt: true,
+			suppressAutonomousContinuation: true,
+		});
+
+		expect(getUserTexts(harness)).toEqual(["host gate follow-up"]);
+		expect(getAssistantTexts(harness)).toEqual(["Still failing."]);
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(1);
+	});
+
 	it("advances retry budget without rerunning a failed autonomous gate until the workspace changes", () => {
 		const tempDir = join(process.cwd(), `.tmp-autonomous-gate-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		execFileSync("mkdir", ["-p", join(tempDir, "verification")]);

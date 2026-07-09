@@ -116,6 +116,7 @@ async function waitForPrintModeIdleWithAutonomousGates(
 			{
 				streamingBehavior: "followUp",
 				internalPrompt: true,
+				suppressAutonomousContinuation: true,
 			},
 		);
 		// followUp prompts can be accepted/queued before the actual retry turn has

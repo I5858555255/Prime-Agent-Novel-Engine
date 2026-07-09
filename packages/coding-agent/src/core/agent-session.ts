@@ -413,6 +413,8 @@ export interface PromptOptions {
 	queueIfBusy?: boolean;
 	/** Host-generated prompt that must bypass extension/slash/template input interception. */
 	internalPrompt?: boolean;
+	/** Prevent host-driven prompts from causing autonomous continuation injection. */
+	suppressAutonomousContinuation?: boolean;
 	/** Skip extension input handlers for replaying already-accepted input. */
 	skipInputHandlers?: boolean;
 	agentMessageId?: string;
@@ -687,6 +689,7 @@ export class AgentSession {
 	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
 	private _goalAbortInProgress = false;
 	private _autonomousState: AutonomousRuntimeState;
+	private _autonomousContinuationSuppressionDepth = 0;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -1842,6 +1845,9 @@ export class AgentSession {
 		if (goalMessages.length > 0 || signal?.aborted) {
 			return goalMessages;
 		}
+		if (this._autonomousContinuationSuppressionDepth > 0) {
+			return [];
+		}
 		const autonomousMessage = nextAutonomousContinuation(this._autonomousState, context.message, { cwd: this._cwd });
 		return autonomousMessage ? [autonomousMessage] : [];
 	}
@@ -2534,6 +2540,15 @@ export class AgentSession {
 		addAutonomousContinuation(this._autonomousState);
 	}
 
+	private async _runWithAutonomousContinuationSuppressed<T>(fn: () => Promise<T>): Promise<T> {
+		this._autonomousContinuationSuppressionDepth++;
+		try {
+			return await fn();
+		} finally {
+			this._autonomousContinuationSuppressionDepth--;
+		}
+	}
+
 	/** Scoped models for cycling (from --models flag) */
 	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
 		return this._scopedModels;
@@ -2792,7 +2807,11 @@ export class AgentSession {
 		}
 
 		try {
-			await this.agent.prompt(messages);
+			if (options?.suppressAutonomousContinuation) {
+				await this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(messages));
+			} else {
+				await this.agent.prompt(messages);
+			}
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
 			throw error;
@@ -3105,7 +3124,9 @@ export class AgentSession {
 			reportPreflight(true, true);
 			return;
 		}
-		const promptPromise = this.agent.prompt(messages);
+		const promptPromise = options?.suppressAutonomousContinuation
+			? this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(messages))
+			: this.agent.prompt(messages);
 		const promptAccepted = Symbol("promptAccepted");
 		const acceptance = acceptedAgentMessagePrompt
 			? acceptedAgentMessagePrompt.accepted.then(
