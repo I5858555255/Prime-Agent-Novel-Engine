@@ -133,6 +133,51 @@ describe("AgentSession model and extension characterization", () => {
 		expect(events).toEqual(["start:faux-2", "end:faux-2", "start:faux-3", "end:faux-3"]);
 	});
 
+	it("queues cycle model_select handlers behind pending nonblocking switches", async () => {
+		const firstHandlerStarted = createDeferred();
+		const finishFirstHandler = createDeferred();
+		const events: string[] = [];
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+				{ id: "faux-3", name: "Three", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async (event) => {
+						events.push(`start:${event.model.id}`);
+						if (event.model.id === "faux-2") {
+							firstHandlerStarted.resolve();
+							await finishFirstHandler.promise;
+						}
+						events.push(`end:${event.model.id}`);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.setModel(harness.getModel("faux-2")!, { waitForExtensions: false });
+		await firstHandlerStarted.promise;
+
+		let cycleResolved = false;
+		const cycle = harness.session.cycleModel().then((result) => {
+			cycleResolved = true;
+			return result;
+		});
+		await flushAsyncWork();
+
+		expect(cycleResolved).toBe(false);
+		expect(events).toEqual(["start:faux-2"]);
+
+		finishFirstHandler.resolve();
+		const result = await cycle;
+
+		expect(result?.model.id).toBe("faux-3");
+		expect(events).toEqual(["start:faux-2", "end:faux-2", "start:faux-3", "end:faux-3"]);
+	});
+
 	it("waits for pending model_select handlers before starting the next prompt", async () => {
 		const handlerStarted = createDeferred();
 		const finishHandler = createDeferred();

@@ -6334,7 +6334,21 @@ export class InteractiveMode {
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
 		const models = this.getCachedModelCandidates();
-		return findExactModelReferenceMatch(searchTerm, models);
+		const cachedMatch = findExactModelReferenceMatch(searchTerm, models);
+		if (cachedMatch) {
+			return cachedMatch;
+		}
+
+		const refreshPromise = this.getModelSelectorRefreshPromise();
+		if (!refreshPromise) {
+			return undefined;
+		}
+
+		try {
+			return findExactModelReferenceMatch(searchTerm, await refreshPromise);
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async applySelectedModel(model: AgentConnectionModel): Promise<void> {

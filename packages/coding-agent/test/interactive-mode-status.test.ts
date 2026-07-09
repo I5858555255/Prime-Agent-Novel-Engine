@@ -996,6 +996,7 @@ describe("InteractiveMode model selection persistence", () => {
 		showError(message: string): void;
 		getScopedModelState(): AgentConnectionState["scopedModels"];
 		getCurrentModel(): AgentConnectionModel | undefined;
+		findExactModelMatch(searchTerm: string): Promise<AgentConnectionModel | undefined>;
 		getConnectionAvailableModels(): Promise<AgentConnectionModel[]>;
 		getCachedModelCandidates(): AgentConnectionModel[];
 		getModelSelectorRefreshPromise(): Promise<AgentConnectionModel[]> | undefined;
@@ -1064,6 +1065,11 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.showError = vi.fn();
 		fakeThis.getScopedModelState = vi.fn(() => []);
 		fakeThis.getCurrentModel = vi.fn(() => options.currentModel);
+		fakeThis.findExactModelMatch = (
+			InteractiveMode.prototype as unknown as {
+				findExactModelMatch(searchTerm: string): Promise<AgentConnectionModel | undefined>;
+			}
+		).findExactModelMatch;
 		fakeThis.getConnectionAvailableModels = overlayPrototype.getConnectionAvailableModels;
 		fakeThis.getCachedModelCandidates = overlayPrototype.getCachedModelCandidates;
 		fakeThis.getModelSelectorRefreshPromise = overlayPrototype.getModelSelectorRefreshPromise;
@@ -1225,6 +1231,21 @@ describe("InteractiveMode model selection persistence", () => {
 
 		getSelector().handleInput("\x1b");
 		await expect(result).resolves.toEqual({ status: "cancelled" });
+	});
+
+	test("refreshes stale cached candidates for exact model matches", async () => {
+		const alpha = createModel("openai", "alpha");
+		const beta = createModel("openai", "beta");
+		const getAvailableModels = vi.fn(async () => [beta]);
+		const { fakeThis } = createSelectorOverlayHarness({
+			connectionModels: [alpha],
+			connectionModelsFetchedAt: Date.now() - 120_000,
+			getAvailableModels,
+		});
+
+		await expect(fakeThis.findExactModelMatch("beta")).resolves.toEqual(beta);
+
+		expect(getAvailableModels).toHaveBeenCalledTimes(1);
 	});
 
 	test("uses a fresh cached model catalog without starting another refresh", async () => {
