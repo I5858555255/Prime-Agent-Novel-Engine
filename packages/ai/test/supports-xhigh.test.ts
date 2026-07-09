@@ -85,6 +85,12 @@ describe("getSupportedThinkingLevels", () => {
 		},
 	);
 
+	it("supports disabling reasoning for the base GPT-5.6 API alias", () => {
+		const model = getModel("openai", "gpt-5.6");
+		expect(model).toBeDefined();
+		expect(getSupportedThinkingLevels(model!)).toContain("off");
+	});
+
 	it("includes only high/xhigh plus off for DeepSeek V4 Flash on the DeepSeek provider", () => {
 		const model = getModel("deepseek", "deepseek-v4-flash");
 		expect(model).toBeDefined();

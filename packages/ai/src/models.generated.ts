@@ -7740,7 +7740,7 @@ export const MODELS = {
 			provider: "openai",
 			baseUrl: "https://api.openai.com/v1",
 			reasoning: true,
-			thinkingLevelMap: {"off":null,"xhigh":"xhigh","minimal":null,"max":"max"},
+			thinkingLevelMap: {"off":"none","xhigh":"xhigh","minimal":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 5,
