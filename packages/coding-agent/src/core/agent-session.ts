@@ -5466,32 +5466,6 @@ export class AgentSession {
 		return { model, thinkingLevel };
 	}
 
-	/**
-	 * Snapshot the assistant messages already present in this session, so a reopened
-	 * persistent subagent can measure only the usage and turns produced by the current
-	 * run. Without this, the hydrated prior turns would be summed again, making
-	 * `RLMResult.usage`/`turns` cumulative and re-attributing earlier runs to the parent.
-	 */
-	_snapshotAssistantMessages(): ReadonlySet<AgentMessage> {
-		const seen = new Set<AgentMessage>();
-		for (const message of this.agent.state.messages) {
-			if (message.role === "assistant") {
-				seen.add(message);
-			}
-		}
-		return seen;
-	}
-
-	private _usageForCurrentMessages(exclude?: ReadonlySet<AgentMessage>): RlmUsage {
-		const usage = emptyRlmUsage();
-		for (const message of this.agent.state.messages) {
-			if (message.role === "assistant" && !exclude?.has(message)) {
-				addUsage(usage, (message as AssistantMessage).usage);
-			}
-		}
-		return usage;
-	}
-
 	/** Context size (tokens) of this session's latest assistant turn, for live subagent display. */
 	_contextTokensForCurrentMessages(): number | undefined {
 		const last = this._findLastAssistantMessage();
@@ -5508,16 +5482,6 @@ export class AgentSession {
 
 	getCurrentRecap(): string | undefined {
 		return this._currentRecap;
-	}
-
-	private _assistantUsageForCurrentMessages(exclude?: ReadonlySet<AgentMessage>): Usage {
-		const usage = emptyUsage();
-		for (const message of this.agent.state.messages) {
-			if (message.role === "assistant" && !exclude?.has(message)) {
-				addAssistantUsage(usage, (message as AssistantMessage).usage);
-			}
-		}
-		return usage;
 	}
 
 	private _findAssistantEntryForMessage(message: AssistantMessage): SessionMessageEntry | undefined {
@@ -5538,11 +5502,6 @@ export class AgentSession {
 		if (parentEntry) {
 			this.sessionManager.appendChildUsageAttribution(parentEntry.id, childUsage, parentAssistant.usage);
 		}
-	}
-
-	private _assistantTurnCount(exclude?: ReadonlySet<AgentMessage>): number {
-		return this.agent.state.messages.filter((message) => message.role === "assistant" && !exclude?.has(message))
-			.length;
 	}
 
 	private _createRlmSubagentRuntimeOptions(options: {
@@ -6017,13 +5976,20 @@ export class AgentSession {
 				const child = childRuntime.session;
 				childSession = child;
 				run.session = child;
-				// Assistant turns hydrated from a reopened persistent subagent's history are
-				// excluded from this run's usage/turns so they aren't counted twice or
-				// re-attributed to the parent.
-				const priorAssistantMessages = child._snapshotAssistantMessages();
 				run.abort = () => {
 					void child.abort();
 				};
+				// Accumulate this run's usage/turns/answer from live message_end events rather
+				// than scanning the child's message array afterwards. A reopened persistent
+				// subagent hydrates prior turns into that array (and mid-run compaction rebuilds
+				// it), so an array scan would double-count old turns and could leak a prior
+				// answer; only the current run's turns emit message_end here. Dedupe by message
+				// identity so a repeated terminal event can't inflate the totals.
+				const runUsage = emptyRlmUsage();
+				const runAssistantUsage = emptyUsage();
+				let runTurns = 0;
+				let runAnswer = "";
+				const countedAssistantMessages = new Set<AgentMessage>();
 				unsubscribeChild = child.subscribe((event) => {
 					if (event.type === "rlm_child_update") {
 						this._emit(event);
@@ -6033,9 +5999,31 @@ export class AgentSession {
 						case "recap_update":
 							emitChildUpdate();
 							break;
-						case "message_start":
-						case "message_update":
 						case "message_end": {
+							if (event.message.role === "assistant" && !countedAssistantMessages.has(event.message)) {
+								countedAssistantMessages.add(event.message);
+								const message = event.message as AssistantMessage;
+								addUsage(runUsage, message.usage);
+								addAssistantUsage(runAssistantUsage, message.usage);
+								runTurns += 1;
+								// Match getLastAssistantText: skip an aborted, empty turn so a run that
+								// produces no usable text reports an empty answer, not a prior one.
+								if (!(message.stopReason === "aborted" && message.content.length === 0)) {
+									runAnswer = readAssistantText(message).trim();
+								}
+							}
+							if (event.message.role === "assistant") {
+								const text = compactRlmText(readAssistantText(event.message as AssistantMessage));
+								if (text) {
+									answerPreview = text;
+								}
+								activity = { kind: "writing" };
+								emitChildUpdate();
+							}
+							break;
+						}
+						case "message_start":
+						case "message_update": {
 							if (event.message.role === "assistant") {
 								const text = compactRlmText(readAssistantText(event.message as AssistantMessage));
 								if (text) {
@@ -6073,9 +6061,9 @@ export class AgentSession {
 				if (isRlmChildRunCancelled(run)) {
 					throw new Error(run.error ?? "RLM child cancelled");
 				}
-				const answer = child.getLastAssistantText(priorAssistantMessages) ?? "";
-				const usage = child._usageForCurrentMessages(priorAssistantMessages);
-				const assistantUsage = child._assistantUsageForCurrentMessages(priorAssistantMessages);
+				const answer = runAnswer;
+				const usage = runUsage;
+				const assistantUsage = runAssistantUsage;
 				this._attributeRlmChildUsageToParent(assistantUsage, parentAssistantForUsage);
 				run.status = "done";
 				durationMs = Date.now() - startedAt;
@@ -6098,7 +6086,7 @@ export class AgentSession {
 				const result: RlmRunResult = {
 					answer,
 					usage,
-					turns: child._assistantTurnCount(priorAssistantMessages),
+					turns: runTurns,
 					session_dir: childSessionDir,
 					persistent_id: persistentPlan?.id,
 					reopened: persistentPlan?.reopened,
@@ -7195,15 +7183,12 @@ export class AgentSession {
 	 * Useful for /copy command.
 	 * @returns Text content, or undefined if no assistant message exists
 	 */
-	getLastAssistantText(exclude?: ReadonlySet<AgentMessage>): string | undefined {
+	getLastAssistantText(): string | undefined {
 		const lastAssistant = this.messages
 			.slice()
 			.reverse()
 			.find((m) => {
 				if (m.role !== "assistant") return false;
-				// Skip messages the caller already accounted for (e.g. a reopened persistent
-				// subagent's hydrated prior turns), so the answer reflects only this run.
-				if (exclude?.has(m)) return false;
 				const msg = m as AssistantMessage;
 				// Skip aborted messages with no content
 				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;

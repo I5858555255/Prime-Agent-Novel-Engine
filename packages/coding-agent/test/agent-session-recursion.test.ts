@@ -1265,6 +1265,22 @@ describe("AgentSession persistent subagents", () => {
 		expect(second.usage).toEqual(first.usage);
 	});
 
+	it("counts only the current run across many accumulated prior turns on reopen", async () => {
+		// Usage/turns/answer come from live message_end events, so a growing hydrated
+		// history (many prior turns in the child's message array) must never inflate a
+		// later run's accounting or leak an earlier answer.
+		const root = createPersistentSession();
+		for (let i = 0; i < 3; i++) {
+			await root.runRlmChild(`run ${i}`, { persist: true, persistent_id: "reviewer" });
+		}
+
+		const latest = await root.runRlmChild("final", { persist: true, persistent_id: "reviewer" });
+		expect(latest.reopened).toBe(true);
+		expect(latest.turns).toBe(1);
+		expect(latest.usage).toEqual({ prompt_tokens: 7, completion_tokens: 3 });
+		expect(latest.answer).toBe("child answer: final");
+	});
+
 	it("does not re-attribute a reopened subagent's prior usage to the parent", async () => {
 		const root = createPersistentSession();
 		const parentAssistant = assistantMessage("running ipython", usage(0, 0));
