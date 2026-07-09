@@ -92,6 +92,11 @@ export interface AgentConnectionSavedSessionInfo {
 
 export type AgentConnectionSessionListProgress = (loaded: number, total: number) => void;
 
+export interface AgentConnectionSessionListCallbacks {
+	onProgress?: AgentConnectionSessionListProgress;
+	onSession?: (session: AgentConnectionSavedSessionInfo) => void;
+}
+
 export interface AgentConnectionSessionEntryBase {
 	type: string;
 	id: string;
@@ -515,7 +520,7 @@ export interface AgentConnection {
 	getSessionTree(): Promise<{ tree: AgentConnectionSessionTreeNode[]; leafId: string | null }>;
 	listSavedSessions(
 		scope: AgentConnectionSavedSessionScope,
-		onProgress?: AgentConnectionSessionListProgress,
+		callbacks?: AgentConnectionSessionListCallbacks,
 	): Promise<AgentConnectionSavedSessionInfo[]>;
 	getQueue(): Promise<AgentConnectionQueueState>;
 	clearQueue(): Promise<AgentConnectionQueueState>;

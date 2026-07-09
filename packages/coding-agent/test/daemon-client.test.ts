@@ -234,6 +234,7 @@ describe("DaemonClient", () => {
 		await connect;
 
 		const progress: Array<[number, number]> = [];
+		const discovered: string[] = [];
 		const listenerMessages: unknown[] = [];
 		const unsubscribe = client.onMessage((message) => {
 			listenerMessages.push(message);
@@ -243,7 +244,11 @@ describe("DaemonClient", () => {
 			30000,
 			{
 				onProgress: (message) => {
-					progress.push([message.loaded, message.total]);
+					if (message.type === "session_list_progress") {
+						progress.push([message.loaded, message.total]);
+					} else {
+						discovered.push(message.session.id);
+					}
 				},
 			},
 		);
@@ -270,6 +275,25 @@ describe("DaemonClient", () => {
 			"data",
 			`${JSON.stringify({
 				id: command.id,
+				type: "session_list_item",
+				command: "list_saved_sessions",
+				activeSessionId: "active-1",
+				session: {
+					path: "/tmp/session-a.jsonl",
+					id: "session-a",
+					cwd: "/tmp",
+					created: "2026-01-01T00:00:00.000Z",
+					modified: "2026-01-02T00:00:00.000Z",
+					messageCount: 1,
+					firstMessage: "hello",
+					allMessagesText: "hello",
+				},
+			})}\n`,
+		);
+		socket.emit(
+			"data",
+			`${JSON.stringify({
+				id: command.id,
 				type: "response",
 				command: "list_saved_sessions",
 				success: true,
@@ -279,6 +303,7 @@ describe("DaemonClient", () => {
 
 		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
 		expect(progress).toEqual([[1, 2]]);
+		expect(discovered).toEqual(["session-a"]);
 		expect(listenerMessages).toEqual([]);
 
 		unsubscribe();

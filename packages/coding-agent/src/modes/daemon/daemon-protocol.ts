@@ -230,9 +230,19 @@ export interface DaemonUpdateRestartManifest {
 	sessions: DaemonUpdateRestartSession[];
 }
 
+export type DaemonSavedSessionListCommand =
+	| { id?: string; type: "list_saved_sessions"; activeSessionId: string; scope: AgentConnectionSavedSessionScope }
+	| {
+			id?: string;
+			type: "list_saved_sessions";
+			cwd: string;
+			sessionDir?: string;
+			scope: AgentConnectionSavedSessionScope;
+	  };
+
 export type DaemonCommand =
 	| { id?: string; type: "list"; all?: boolean; cwd?: string; sessionDir?: string }
-	| { id?: string; type: "list_saved_sessions"; activeSessionId: string; scope: AgentConnectionSavedSessionScope }
+	| DaemonSavedSessionListCommand
 	| ({
 			id?: string;
 			type: "create";
@@ -370,7 +380,7 @@ export type DaemonCommand =
 	| { id?: string; type: "export_html"; activeSessionId: string; outputPath?: string }
 	| { id?: string; type: "export_jsonl"; activeSessionId: string; outputPath?: string }
 	| { id?: string; type: "set_session_name"; activeSessionId: string; name: string }
-	| { id?: string; type: "rename_saved_session"; activeSessionId: string; sessionPath: string; name: string }
+	| { id?: string; type: "rename_saved_session"; activeSessionId?: string; sessionPath: string; name: string }
 	| { id?: string; type: "delete_saved_session"; activeSessionId?: string; sessionPath: string }
 	| { id?: string; type: "get_session_context"; activeSessionId: string }
 	| { id?: string; type: "get_session_tree"; activeSessionId: string }
@@ -422,14 +432,22 @@ export function isUnknownDaemonCommandError(error: unknown, command: DaemonComma
 	return error instanceof Error && error.message.includes(`Unknown daemon command: ${command}`);
 }
 
-export interface DaemonRequestProgress {
-	id?: string;
-	type: "session_list_progress";
-	command: "list_saved_sessions";
-	activeSessionId: string;
-	loaded: number;
-	total: number;
-}
+export type DaemonRequestProgress =
+	| {
+			id?: string;
+			type: "session_list_progress";
+			command: "list_saved_sessions";
+			activeSessionId?: string;
+			loaded: number;
+			total: number;
+	  }
+	| {
+			id?: string;
+			type: "session_list_item";
+			command: "list_saved_sessions";
+			activeSessionId?: string;
+			session: DaemonSavedSessionInfo;
+	  };
 
 export interface DaemonSavedSessionInfo {
 	path: string;

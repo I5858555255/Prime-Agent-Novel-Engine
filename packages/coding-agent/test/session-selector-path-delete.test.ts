@@ -271,6 +271,35 @@ describe("session selector path/delete interactions", () => {
 		expect(output).not.toContain("Failed to delete");
 	});
 
+	it("renders streamed sessions before the initial load completes", async () => {
+		const streamedSession = makeSession({ id: "streamed", name: "Streamed session" });
+		const sessionsDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
+
+		const selector = new SessionSelectorComponent(
+			async (callbacks) => {
+				callbacks?.onProgress?.(1, 2);
+				callbacks?.onSession?.(streamedSession);
+				return sessionsDeferred.promise;
+			},
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings },
+		);
+		await flushPromises();
+
+		const loadingOutput = stripAnsi(selector.render(120).join("\n"));
+		expect(loadingOutput).toContain("loading 1/2");
+		expect(loadingOutput).toContain("Streamed session");
+
+		sessionsDeferred.resolve([streamedSession]);
+		await flushPromises();
+
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain("current folder");
+	});
+
 	it("does not switch scope back to All when All load resolves after toggling back to Current", async () => {
 		const currentSessions = [makeSession({ id: "current" })];
 		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();

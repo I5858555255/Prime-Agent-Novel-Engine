@@ -25,6 +25,11 @@ import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode }
 
 type SessionScope = "current" | "all";
 
+export interface SessionListCallbacks {
+	onProgress?: AgentConnectionSessionListProgress;
+	onSession?: (session: AgentConnectionSavedSessionInfo) => void;
+}
+
 // Mirrors the agents view delete flow: press the delete key once to arm, again
 // within this window to confirm; anything else (or the timeout) cancels.
 const DELETE_CONFIRM_DURATION_MS = 2000;
@@ -652,7 +657,7 @@ class SessionList implements Component, Focusable {
 	}
 }
 
-type SessionsLoader = (onProgress?: AgentConnectionSessionListProgress) => Promise<AgentConnectionSavedSessionInfo[]>;
+type SessionsLoader = (callbacks?: SessionListCallbacks) => Promise<AgentConnectionSavedSessionInfo[]>;
 type SessionDeleter = (sessionPath: string) => Promise<DeleteSessionFileResult>;
 
 /**
@@ -691,6 +696,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private deleteSession: SessionDeleter;
 	private currentLoading = false;
 	private allLoading = false;
+	private currentLoadSeq = 0;
 	private allLoadSeq = 0;
 
 	private mode: "list" | "rename" = "list";
@@ -954,22 +960,32 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.allLoading = true;
 		}
 
-		const seq = scope === "all" ? ++this.allLoadSeq : undefined;
+		const seq = scope === "current" ? ++this.currentLoadSeq : ++this.allLoadSeq;
 		this.header.setScope(scope);
 		this.header.setLoading(true);
 		this.requestRender();
+		const isLatestLoad = () => seq === (scope === "current" ? this.currentLoadSeq : this.allLoadSeq);
+		const isCurrentView = () => scope === this.scope;
+		const streamedSessions = new Map<string, AgentConnectionSavedSessionInfo>();
 
 		const onProgress = (loaded: number, total: number) => {
-			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
+			if (!isLatestLoad() || !isCurrentView()) return;
 			this.header.setProgress(loaded, total);
+			this.requestRender();
+		};
+		const onSession = (session: AgentConnectionSavedSessionInfo) => {
+			if (reason === "refresh" || !isLatestLoad() || !isCurrentView()) return;
+			streamedSessions.set(session.path, session);
+			this.sessionList.setSessions([...streamedSessions.values()], showCwd);
 			this.requestRender();
 		};
 
 		try {
 			const sessions = await (scope === "current"
-				? this.currentSessionsLoader(onProgress)
-				: this.allSessionsLoader(onProgress));
+				? this.currentSessionsLoader({ onProgress, onSession })
+				: this.allSessionsLoader({ onProgress, onSession }));
+
+			if (!isLatestLoad()) return;
 
 			if (scope === "current") {
 				this.currentSessions = sessions;
@@ -979,8 +995,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.allLoading = false;
 			}
 
-			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
+			if (!isCurrentView()) return;
 
 			this.header.setLoading(false);
 			this.sessionList.setSessions(sessions, showCwd);
@@ -990,14 +1005,15 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.onCancel();
 			}
 		} catch (err) {
+			if (!isLatestLoad()) return;
+
 			if (scope === "current") {
 				this.currentLoading = false;
 			} else {
 				this.allLoading = false;
 			}
 
-			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
+			if (!isCurrentView()) return;
 
 			const message = err instanceof Error ? err.message : String(err);
 			this.header.setLoading(false);

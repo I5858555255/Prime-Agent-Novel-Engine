@@ -51,6 +51,7 @@ export type {
 	AgentConnectionSessionEntryBase,
 	AgentConnectionSessionEvent,
 	AgentConnectionSessionInfoEntry,
+	AgentConnectionSessionListCallbacks,
 	AgentConnectionSessionListProgress,
 	AgentConnectionSessionMessageEntry,
 	AgentConnectionSessionStateEntry,
