@@ -1274,6 +1274,28 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(fakeThis.getCachedModelCandidates()).toEqual([]);
 	});
 
+	test("does not show local fallback before daemon catalog loads", async () => {
+		const localOnly = createModel("openai", "local-only");
+		const liveModels = createDeferred<AgentConnectionModel[]>();
+		const getAvailableModels = vi.fn(() => liveModels.promise);
+		const { fakeThis, getSelector } = createSelectorOverlayHarness({
+			connectionModels: [],
+			registryModels: [localOnly],
+			getAvailableModels,
+		});
+
+		const result = fakeThis.showModelSelectorAsync();
+		await flushAsyncWork();
+
+		expect(getAvailableModels).toHaveBeenCalledTimes(1);
+		expect(getSelector().render(120).join("\n")).not.toContain("local-only");
+
+		liveModels.resolve([]);
+		await flushAsyncWork();
+		getSelector().handleInput("\x1b");
+		await expect(result).resolves.toEqual({ status: "cancelled" });
+	});
+
 	test("uses a fresh cached model catalog without starting another refresh", async () => {
 		const cachedModel = createModel("openai", "gpt-5.5");
 		const getAvailableModels = vi.fn(async () => [cachedModel]);
