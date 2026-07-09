@@ -144,6 +144,8 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[])
 	let boundSessionManager: unknown;
 	let sendInFlight = false;
 	let queuedState: QueuedState | undefined;
+	let activeDrain: Promise<void> = Promise.resolve();
+	let released = false;
 
 	let agentActive = false;
 	let retryHoldActive = false;
@@ -225,9 +227,14 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[])
 	}
 
 	function queueState(state: AgentState, message?: string): void {
+		if (released) {
+			// The pane was released on quit; a late report would reclaim it and
+			// leave Herdr showing an agent that already exited.
+			return;
+		}
 		queuedState = { state, message, seq: nextReportSeq() };
 		if (!sendInFlight) {
-			void drainStateQueue();
+			activeDrain = drainStateQueue();
 		}
 	}
 
@@ -246,12 +253,18 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, extensionDirs: string[])
 		} finally {
 			sendInFlight = false;
 			if (queuedState) {
-				void drainStateQueue();
+				activeDrain = drainStateQueue();
 			}
 		}
 	}
 
-	function releaseAgent(): Promise<void> {
+	async function releaseAgent(): Promise<void> {
+		// Stop new reports, drop anything still queued, and wait for the
+		// in-flight send to finish so the release is the last write on the wire;
+		// a report landing after the release would reclaim the pane.
+		released = true;
+		queuedState = undefined;
+		await activeDrain.catch(() => undefined);
 		return sendRequest({
 			id: `${source}:release:${Date.now()}:${Math.random().toString(36).slice(2)}`,
 			method: "pane.release_agent",

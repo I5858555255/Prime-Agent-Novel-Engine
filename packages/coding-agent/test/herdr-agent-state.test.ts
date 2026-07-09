@@ -309,6 +309,39 @@ describe("herdrAgentStateExtension", () => {
 		expect(busHandlers.get("herdr:blocked")).toHaveLength(0);
 	});
 
+	it("sends no reports after quit release", async () => {
+		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const socketPath = join(tempDir, "h.sock");
+
+		const { server, requests, waitForRequests } = await startFakeHerdrServer(socketPath);
+		cleanupServers.push(server);
+
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_SOCKET_PATH = socketPath;
+		process.env.HERDR_PANE_ID = "w1:p1";
+
+		const { pi, handlers } = createMockPi();
+		herdrAgentStateExtension(pi);
+
+		const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "s" } };
+		handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, ctx);
+		// Quit while the working report may still be in flight; the release must
+		// be the final write, with no report reclaiming the pane afterwards.
+		await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
+		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, ctx);
+
+		await waitForRequests(2);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		// Still-queued reports are dropped by the release, so the exact report
+		// count depends on send timing; the invariant is that the release is the
+		// last write and nothing reclaims the pane after it.
+		expect(requests.at(-1)?.method).toBe("pane.release_agent");
+		expect(requests.filter((r) => r.method === "pane.release_agent")).toHaveLength(1);
+	});
+
 	it("keeps seq monotonically increasing across extension instances", async () => {
 		const tempDir = join(tmpdir(), `hrd-${Math.random().toString(36).slice(2, 8)}`);
 		mkdirSync(tempDir, { recursive: true });
