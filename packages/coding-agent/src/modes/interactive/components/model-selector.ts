@@ -167,37 +167,51 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.panel.addChild(this.listContainer);
 		this.updateResponsiveLayout();
 
-		// Load models and do initial render
-		this.loadModels().then(() => {
-			if (initialSearchInput) {
-				this.filterModels(initialSearchInput);
-			} else {
-				this.updateList();
-			}
-			// Request re-render after models are loaded
-			this.tui.requestRender();
-		});
+		this.loadModels();
+		if (initialSearchInput) {
+			this.filterModels(initialSearchInput);
+		} else {
+			this.updateList();
+		}
+		this.tui.requestRender();
 	}
 
-	private async loadModels(): Promise<void> {
+	updateAvailableModels(availableModels: ReadonlyArray<Model<any>>): void {
+		this.availableModels = availableModels;
+		const query = this.searchInput.getValue();
+		const selectedKey = this.getSelectedModelKey();
+
+		this.loadModels();
+		this.filterModels(query);
+
+		if (selectedKey) {
+			const selectedIndex = this.filteredModels.findIndex((item) => this.getModelKey(item) === selectedKey);
+			if (selectedIndex >= 0) {
+				this.selectedIndex = selectedIndex;
+				this.updateList();
+			}
+		}
+
+		this.tui.requestRender();
+	}
+
+	private loadModels(): void {
 		let models: ModelItem[];
+		this.errorMessage = undefined;
 
-		// Refresh to pick up any changes to models.json
-		this.modelRegistry.refresh();
-
-		// Check for models.json errors
-		const loadError = this.modelRegistry.getError();
-		if (loadError) {
-			this.errorMessage = loadError;
+		if (this.availableModels === undefined) {
+			this.modelRegistry.refresh();
+			const loadError = this.modelRegistry.getError();
+			if (loadError) {
+				this.errorMessage = loadError;
+			}
 		}
 
 		// Load available models (built-in models still work even if models.json failed)
 		let availableModels: ReadonlyArray<Model<any>>;
 		try {
-			// An empty snapshot may predate login; prefer a live query.
-			availableModels = this.availableModels?.length
-				? this.availableModels
-				: await this.modelRegistry.getAvailable();
+			availableModels =
+				this.availableModels !== undefined ? this.availableModels : this.modelRegistry.getAvailable();
 			models = availableModels.map((model: Model<any>) => ({
 				provider: model.provider,
 				id: model.id,
@@ -218,7 +232,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const scopedModelId = `${scoped.model.provider}/${scoped.model.id}`;
 			const refreshed =
 				availableModelsById.get(scopedModelId) ??
-				(this.availableModels?.length
+				(this.availableModels !== undefined
 					? undefined
 					: this.modelRegistry.find(scoped.model.provider, scoped.model.id));
 			return refreshed ? { ...scoped, model: refreshed } : scoped;
@@ -235,6 +249,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			currentIndex >= 0 ? currentIndex : Math.min(this.selectedIndex, Math.max(0, this.getSelectableCount() - 1));
 	}
 
+	private getModelKey(item: ModelItem): string {
+		return `${item.provider}/${item.id}`;
+	}
+
+	private getSelectedModelKey(): string | undefined {
+		const selected = this.filteredModels[this.selectedIndex];
+		return selected ? this.getModelKey(selected) : undefined;
+	}
+
 	private recentRankOf(item: ModelItem): number {
 		// Finite sentinel so subtracting two non-recent ranks yields 0, not NaN.
 		return this.recentRank.get(`${item.provider}/${item.id}`) ?? Number.MAX_SAFE_INTEGER;
@@ -242,14 +265,20 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private sortModels(models: ModelItem[]): ModelItem[] {
 		const sorted = [...models];
-		// Current model first, then most-recently-used, then provider.
+		// Current model first, then most-recently-used, then provider; within a
+		// provider, featured flagships before the long tail, each alphabetical.
 		sorted.sort((a, b) => {
 			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
 			if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
 			const rankDiff = this.recentRankOf(a) - this.recentRankOf(b);
 			if (rankDiff !== 0) return rankDiff;
-			return a.provider.localeCompare(b.provider);
+			const providerDiff = a.provider.localeCompare(b.provider);
+			if (providerDiff !== 0) return providerDiff;
+			const aFeatured = a.model.featured === true;
+			const bFeatured = b.model.featured === true;
+			if (aFeatured !== bFeatured) return aFeatured ? -1 : 1;
+			return a.id.localeCompare(b.id, undefined, { numeric: true });
 		});
 		return sorted;
 	}

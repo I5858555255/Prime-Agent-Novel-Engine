@@ -2,9 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import type { AgentCronJob, AgentCronJobStore } from "../src/core/cron-jobs.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
 	AgentDaemon,
@@ -2642,6 +2644,91 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("streams detached saved-session catalog requests", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-saved-session-catalog-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const session = SessionManager.create(tempDir, sessionDir);
+			session.appendSessionState({ status: "active" });
+			session.appendAgentStatus({
+				summary: "Finished the task",
+				taskState: "completed",
+				basedOnMessageCount: 0,
+			});
+			session.appendSessionState({ status: "active" });
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const internals = daemon as unknown as {
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const writes: string[] = [];
+			const client = {
+				...makeClient("client-1", "detached"),
+				socket: {
+					destroyed: false,
+					write: (line: string) => {
+						writes.push(line);
+						return true;
+					},
+				} as unknown as Socket,
+			};
+
+			const response = (await internals.handleCommand(client, {
+				id: "list-1",
+				type: "list_saved_sessions",
+				cwd: tempDir,
+				sessionDir,
+				scope: "current",
+			})) as {
+				data: {
+					sessions: Array<{
+						id: string;
+						agentStatus?: {
+							summary: string;
+							taskState?: "needs_input" | "completed";
+							basedOnMessageCount: number;
+						};
+					}>;
+				};
+			};
+			const updates = writes.map((line) => JSON.parse(line) as { type: string; activeSessionId?: string });
+
+			expect(response.data.sessions).toEqual([
+				expect.objectContaining({
+					id: session.getSessionId(),
+					agentStatus: { summary: "Finished the task", taskState: "completed", basedOnMessageCount: 0 },
+				}),
+			]);
+			expect(updates).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						id: "list-1",
+						type: "session_list_progress",
+						command: "list_saved_sessions",
+						loaded: 1,
+						total: 1,
+					}),
+					expect.objectContaining({
+						id: "list-1",
+						type: "session_list_item",
+						command: "list_saved_sessions",
+						session: expect.objectContaining({
+							id: session.getSessionId(),
+							agentStatus: { summary: "Finished the task", taskState: "completed", basedOnMessageCount: 0 },
+						}),
+					}),
+				]),
+			);
+			expect(updates.every((update) => update.activeSessionId === undefined)).toBe(true);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps saved session jobs when file deletion fails", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-delete-cron-fail-"));
 		try {
@@ -3221,6 +3308,231 @@ describe("daemon mode helpers", () => {
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("sets models without waiting for model_select extension handlers while running", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const setModel = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					modelRegistry: {
+						refresh(): void;
+						getAvailable(): unknown[];
+					};
+					isStreaming: boolean;
+					isCompacting: boolean;
+					setModel(model: unknown, options?: { waitForExtensions?: boolean }): Promise<void>;
+				};
+			};
+		};
+		state.runtime.session = {
+			modelRegistry: {
+				refresh: vi.fn(),
+				getAvailable: vi.fn(() => [model]),
+			},
+			isStreaming: true,
+			isCompacting: false,
+			setModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "set_model",
+			activeSessionId: state.activeSessionId,
+			provider: "faux",
+			modelId: "faux-2",
+		});
+
+		expect(setModel).toHaveBeenCalledWith(model, { waitForExtensions: false });
+	});
+
+	it("waits for model_select extension handlers when setting models while idle", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const setModel = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					modelRegistry: {
+						refresh(): void;
+						getAvailable(): unknown[];
+					};
+					isStreaming: boolean;
+					isCompacting: boolean;
+					setModel(model: unknown, options?: { waitForExtensions?: boolean }): Promise<void>;
+				};
+			};
+		};
+		state.runtime.session = {
+			modelRegistry: {
+				refresh: vi.fn(),
+				getAvailable: vi.fn(() => [model]),
+			},
+			isStreaming: false,
+			isCompacting: false,
+			setModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "set_model",
+			activeSessionId: state.activeSessionId,
+			provider: "faux",
+			modelId: "faux-2",
+		});
+
+		expect(setModel).toHaveBeenCalledWith(model, { waitForExtensions: true });
+	});
+
+	it("cycles models without waiting for model_select extension handlers while running", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const cycleResult = { model, thinkingLevel: "off" as const, isScoped: false };
+		const cycleModel = vi.fn(async () => cycleResult);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isCompacting: boolean;
+					cycleModel(
+						direction?: "forward" | "backward",
+						options?: { waitForExtensions?: boolean },
+					): Promise<typeof cycleResult | undefined>;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: true,
+			isCompacting: false,
+			cycleModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "cycle_model",
+			activeSessionId: state.activeSessionId,
+			direction: "backward",
+		});
+
+		expect(cycleModel).toHaveBeenCalledWith("backward", { waitForExtensions: false });
+	});
+
+	it("waits for model_select extension handlers when cycling models while idle", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const cycleResult = { model, thinkingLevel: "off" as const, isScoped: false };
+		const cycleModel = vi.fn(async () => cycleResult);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isCompacting: boolean;
+					cycleModel(
+						direction?: "forward" | "backward",
+						options?: { waitForExtensions?: boolean },
+					): Promise<typeof cycleResult | undefined>;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			isCompacting: false,
+			cycleModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "cycle_model",
+			activeSessionId: state.activeSessionId,
+		});
+
+		expect(cycleModel).toHaveBeenCalledWith(undefined, { waitForExtensions: true });
 	});
 
 	it("validates active sessions before reading a heartbeat", async () => {
