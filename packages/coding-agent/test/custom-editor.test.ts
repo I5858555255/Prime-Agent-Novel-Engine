@@ -79,6 +79,18 @@ describe("CustomEditor", () => {
 		expect(editor.getText()).toBe("");
 	});
 
+	it("keeps question marks in a nonempty prompt", () => {
+		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
+		const handler = vi.fn();
+		editor.onAction("app.shortcuts", handler);
+		editor.setText("Can this contain");
+
+		editor.handleInput("?");
+
+		expect(handler).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("Can this contain?");
+	});
+
 	it("splits terminal-batched repeats for the configured clear-input binding", () => {
 		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
 		const handler = vi.fn();

@@ -196,7 +196,12 @@ export class CustomEditor extends Editor {
 
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
-			if (action !== "app.input.clear" && action !== "app.exit" && this.keybindings.matches(data, action)) {
+			if (
+				action !== "app.input.clear" &&
+				action !== "app.exit" &&
+				(action !== "app.shortcuts" || this.getText().length === 0) &&
+				this.keybindings.matches(data, action)
+			) {
 				if ((action === "app.clear" || action === "app.interrupt") && this.isShowingAutocomplete()) {
 					this.cancelAutocomplete();
 				}

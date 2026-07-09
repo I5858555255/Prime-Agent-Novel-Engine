@@ -163,7 +163,7 @@ import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
-import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
+import { keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
@@ -580,6 +580,7 @@ export class InteractiveMode {
 	private bindLocalSessionExtensions: boolean;
 	private ui: TUI;
 	private chatContainer: Container;
+	private shortcutGuideContainer: Container;
 	private pendingMessagesContainer: Container;
 	private statusContainer: Container;
 	private queuedMessagesContainer: Container;
@@ -685,8 +686,7 @@ export class InteractiveMode {
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private initialConnectionSnapshotConsumed = false;
-	// Whether the session already had messages when first rendered (i.e. a resumed session).
-	private sessionHadInitialMessages = false;
+	private sessionHasMessages = false;
 
 	// Registry of images pasted this session, keyed by the `[image #N]` marker
 	// shown to the user. Insertion-ordered; the bytes persist (bounded by
@@ -779,6 +779,7 @@ export class InteractiveMode {
 		};
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
+		this.shortcutGuideContainer = new Container();
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.queuedMessagesContainer = new Container();
@@ -805,7 +806,7 @@ export class InteractiveMode {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
 			isArgumentCommand: builtinSlashCommandTakesArgument,
-			placeholder: 'Try "refactor <filepath>"',
+			placeholder: 'Try "refactor @<filepath>"',
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
 		this.editor = this.defaultEditor;
@@ -1058,8 +1059,8 @@ export class InteractiveMode {
 				verboseInstructions,
 				{
 					getExtraMetadata: () => this.getStartupMetadata(),
-					getHideStartHint: () => this.childAgentPanelMode !== undefined,
-					getStartHint: () => 'Try "refactor <filepath>"',
+					getHideStartHint: () => this.childAgentPanelMode !== undefined || !this.isNewChat(),
+					getStartHint: () => 'Try "refactor @<filepath>"',
 				},
 			);
 			this.headerContainer.addChild(new Spacer(1));
@@ -1230,7 +1231,7 @@ export class InteractiveMode {
 			// The agents view owns these for daemon sessions. When there is no agents view,
 			// show them once at the top of a fresh session, but never append them under a
 			// restored conversation where they read as disconnected clutter.
-			if (!ownsGlobalStartupNotices || this.sessionHadInitialMessages) {
+			if (!ownsGlobalStartupNotices || this.sessionHasMessages) {
 				return;
 			}
 
@@ -2389,6 +2390,7 @@ export class InteractiveMode {
 
 	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean }): void {
 		this.chatContainer.clear();
+		this.shortcutGuideContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.queuedMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
@@ -3668,6 +3670,7 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
 			if (!text) return;
+			this.clearHotkeysGuide();
 			const promptStashToRestore = this.promptStash;
 			let restorePromptStashAfterSubmit = true;
 
@@ -3771,7 +3774,6 @@ export class InteractiveMode {
 					return;
 				}
 				if (commandName === "hotkeys" && !commandArgs) {
-					this.echoLocalCommand(text);
 					this.handleHotkeysCommand();
 					this.editor.setText("");
 					return;
@@ -4172,6 +4174,8 @@ export class InteractiveMode {
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
 		if (event.type === "message_start" && event.message.role === "user") {
 			this.contextUsageTokenBaseline = 0;
+			this.setSessionHasMessages(true);
+			this.clearHotkeysGuide();
 		}
 		this.activityTracker.handleEvent(event);
 		this.updateWorkingLoaderMessage();
@@ -4736,6 +4740,7 @@ export class InteractiveMode {
 	private restoreMainAgentView(): void {
 		this.mainViewContainer.clear();
 		this.mainViewContainer.addChild(this.chatContainer);
+		this.mainViewContainer.addChild(this.shortcutGuideContainer);
 		this.mainViewContainer.addChild(this.pendingMessagesContainer);
 		// Subagent tree sits directly above the loader, mirroring Claude's layout.
 		this.mainViewContainer.addChild(this.subagentTree);
@@ -4816,32 +4821,46 @@ export class InteractiveMode {
 	}
 
 	private getTrayLocationLabel(): string | undefined {
+		const modelLabel = this.getModelTrayLabel();
 		const shortcutsHint = this.getShortcutsTrayHint();
 		const agentsHint = this.getAgentsViewTrayHint();
-		const navigationHints = [shortcutsHint, agentsHint]
-			.filter((label): label is string => label !== undefined)
-			.join(" · ");
-		return [navigationHints || undefined, this.getModelTrayLabel()]
-			.filter((label): label is string => label !== undefined)
-			.join("  ");
+		return [modelLabel, shortcutsHint, agentsHint].filter((label): label is string => label !== undefined).join("  ");
 	}
 
 	private getStartupMetadata(): BrandSplashMetadataLine[] {
-		if (this.childAgentPanelMode) {
+		if (this.childAgentPanelMode || !this.isNewChat()) {
 			return [];
 		}
-		const shortcuts = keyText("app.shortcuts");
-		const hint = [shortcuts ? `${shortcuts} for shortcuts` : undefined, "/ for commands"]
-			.filter((value): value is string => value !== undefined)
-			.join(" · ");
 		return [
-			{ label: "try", value: "/model or /tree" },
-			{ label: "hint", value: hint },
+			{ label: "input", value: "! shell · / commands" },
+			{ label: "files", value: "@ file paths" },
+			{ label: "help", value: this.getShortcutHelpHint() },
 		];
 	}
 
 	private getShortcutsTrayHint(): string | undefined {
-		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : undefined;
+		if (!this.isNewChat()) {
+			return undefined;
+		}
+		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "or /hotkeys") : "/hotkeys";
+	}
+
+	private getShortcutHelpHint(): string {
+		const shortcuts = keyText("app.shortcuts");
+		return shortcuts ? `${shortcuts} or /hotkeys` : "/hotkeys";
+	}
+
+	private isNewChat(): boolean {
+		return !this.sessionHasMessages;
+	}
+
+	private setSessionHasMessages(hasMessages: boolean): void {
+		if (this.sessionHasMessages === hasMessages) {
+			return;
+		}
+		this.sessionHasMessages = hasMessages;
+		this.builtInHeader?.invalidate();
+		this.childAgentSummary.invalidate();
 	}
 
 	private getModelTrayLabel(): string {
@@ -5478,10 +5497,10 @@ export class InteractiveMode {
 			const snapshot = await this.agentConnection.getInitialSnapshot();
 			this.initialConnectionSnapshotConsumed = true;
 			context = this.getSessionContextFromConnectionSnapshot(snapshot);
-			this.sessionHadInitialMessages = context.messages.length > 0;
 			state = snapshot.state;
 			this.seedChildAgentInspector(snapshot.children);
 		}
+		this.setSessionHasMessages(context.messages.length > 0);
 		this.applyConnectionStateSnapshot(state);
 		await this.renderSessionContext(context, {
 			updateFooter: true,
@@ -8055,132 +8074,49 @@ export class InteractiveMode {
 		return this.capitalizeKey(keyText(action));
 	}
 
-	private handleHotkeysCommand(): void {
-		// Navigation keybindings
-		const cursorUp = this.getEditorKeyDisplay("tui.editor.cursorUp");
-		const cursorDown = this.getEditorKeyDisplay("tui.editor.cursorDown");
-		const cursorLeft = this.getEditorKeyDisplay("tui.editor.cursorLeft");
-		const cursorRight = this.getEditorKeyDisplay("tui.editor.cursorRight");
-		const cursorWordLeft = this.getEditorKeyDisplay("tui.editor.cursorWordLeft");
-		const cursorWordRight = this.getEditorKeyDisplay("tui.editor.cursorWordRight");
-		const cursorLineStart = this.getEditorKeyDisplay("tui.editor.cursorLineStart");
-		const cursorLineEnd = this.getEditorKeyDisplay("tui.editor.cursorLineEnd");
-		const jumpForward = this.getEditorKeyDisplay("tui.editor.jumpForward");
-		const jumpBackward = this.getEditorKeyDisplay("tui.editor.jumpBackward");
-		const pageUp = this.getEditorKeyDisplay("tui.editor.pageUp");
-		const pageDown = this.getEditorKeyDisplay("tui.editor.pageDown");
-
-		// Editing keybindings
-		const submit = this.getEditorKeyDisplay("tui.input.submit");
-		const newLine = this.getEditorKeyDisplay("tui.input.newLine");
-		const deleteWordBackward = this.getEditorKeyDisplay("tui.editor.deleteWordBackward");
-		const deleteWordForward = this.getEditorKeyDisplay("tui.editor.deleteWordForward");
-		const deleteToLineStart = this.getEditorKeyDisplay("tui.editor.deleteToLineStart");
-		const deleteToLineEnd = this.getEditorKeyDisplay("tui.editor.deleteToLineEnd");
-		const yank = this.getEditorKeyDisplay("tui.editor.yank");
-		const yankPop = this.getEditorKeyDisplay("tui.editor.yankPop");
-		const undo = this.getEditorKeyDisplay("tui.editor.undo");
+	private getHotkeysGuide(): string {
 		const tab = this.getEditorKeyDisplay("tui.input.tab");
-
-		// App keybindings
-		const clear = this.getAppKeyDisplay("app.clear");
+		const newLine = this.getEditorKeyDisplay("tui.input.newLine");
 		const clearInput = this.getAppKeyDisplay("app.input.clear");
 		const shortcutsKey = this.getAppKeyDisplay("app.shortcuts");
-		const interrupt = this.getAppKeyDisplay("app.interrupt");
-		const exit = this.getAppKeyDisplay("app.exit");
 		const suspend = this.getAppKeyDisplay("app.suspend");
 		const selectModel = this.getAppKeyDisplay("app.model.select");
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
-		const focusSubagents = this.getAppKeyDisplay("app.subagents.focus");
 		const externalEditor = this.getAppKeyDisplay("app.editor.external");
 		const promptStash = this.getAppKeyDisplay("app.prompt.stash");
-		const followUp = this.getAppKeyDisplay("app.message.followUp");
-		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
 		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
 
-		// Fullscreen viewport keybindings
-		const viewportPageUp = this.getEditorKeyDisplay("tui.viewport.pageUp");
-		const viewportPageDown = this.getEditorKeyDisplay("tui.viewport.pageDown");
-		const viewportTop = this.getEditorKeyDisplay("tui.viewport.top");
-		const viewportFollow = this.getEditorKeyDisplay("tui.viewport.follow");
+		return `
+**Prompt**
+\`!\` shell mode · \`/\` commands · \`@\` file paths
+\`${tab}\` complete paths · \`${newLine}\` new line
+\`${clearInput}\` interrupt · press twice to rewind or clear the prompt
 
-		let hotkeys = `
-**Navigation**
-| Key | Action |
-|-----|--------|
-| \`${cursorUp}\` / \`${cursorDown}\` / \`${cursorLeft}\` / \`${cursorRight}\` | Move cursor / browse history (Up when empty) |
-| \`${cursorWordLeft}\` / \`${cursorWordRight}\` | Move by word |
-| \`${cursorLineStart}\` | Start of line |
-| \`${cursorLineEnd}\` | End of line |
-| \`${jumpForward}\` | Jump forward to character |
-| \`${jumpBackward}\` | Jump backward to character |
-| \`${pageUp}\` / \`${pageDown}\` | Scroll by page |
+**Controls**
+\`${selectModel}\` select model · \`/effort\` set reasoning · \`${expandTools}\` tool output
+\`${toggleThinking}\` thinking blocks · \`${promptStash}\` stash prompt · \`${externalEditor}\` edit in \`$EDITOR\`
+\`${pasteImage}\` paste image · \`${suspend}\` suspend
 
-**Editing**
-| Key | Action |
-|-----|--------|
-| \`${submit}\` | Send message |
-| \`${newLine}\` | New line${process.platform === "win32" ? " (Ctrl+Enter on Windows Terminal)" : ""} |
-| \`${deleteWordBackward}\` | Delete word backwards |
-| \`${deleteWordForward}\` | Delete word forwards |
-| \`${deleteToLineStart}\` | Delete to start of line |
-| \`${deleteToLineEnd}\` | Delete to end of line |
-| \`${yank}\` | Paste the most-recently-deleted text |
-| \`${yankPop}\` | Cycle through the deleted text after pasting |
-| \`${undo}\` | Undo |
-
-**Other**
-| Key | Action |
-|-----|--------|
-| \`${tab}\` | Path completion / accept autocomplete |
-${shortcutsKey ? `| \`${shortcutsKey}\` | Show keyboard shortcuts |\n` : ""}| \`${clearInput}\` | Interrupt active work; press twice to rewind or clear the prompt |
-| \`${clear}\` | Interrupt current operation (first) / exit (second) |
-${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
-| \`${suspend}\` | Suspend to background |
-| \`${selectModel}\` | Open model selector |
-| \`${expandTools}\` | Toggle tool output expansion |
-| \`${toggleThinking}\` | Toggle thinking block visibility |
-| \`${focusSubagents}\` | Open subagent inspector |
-| \`${externalEditor}\` | Edit message in external editor |
-| \`${promptStash}\` | Stash or restore draft prompt |
-| \`${followUp}\` | Queue follow-up message |
-| \`${dequeue}\` | Restore queued messages |
-| \`${pasteImage}\` | Paste image from clipboard |
-| \`/\` | Slash commands |
-
-**Fullscreen mode (\`/fullscreen\`)**
-| Key | Action |
-|-----|--------|
-| \`${viewportPageUp}\` / \`${viewportPageDown}\` | Scroll transcript by page |
-| \`${viewportTop}\` | Scroll to top |
-| \`${viewportFollow}\` | Scroll to bottom and follow output |
-| mouse wheel | Scroll transcript |
+**Help**
+${shortcutsKey ? `\`${shortcutsKey}\` or ` : ""}\`/hotkeys\` show this guide
 `;
+	}
 
-		// Add extension-registered shortcuts
-		const shortcuts = this.bindLocalSessionExtensions
-			? this.getLocalSessionHost().getExtensionRunner().getShortcuts(this.keybindings.getEffectiveConfig())
-			: undefined;
-		if (shortcuts && shortcuts.size > 0) {
-			hotkeys += `
-**Extensions**
-| Key | Action |
-|-----|--------|
-`;
-			for (const [key, shortcut] of shortcuts) {
-				const description = shortcut.description ?? shortcut.extensionPath;
-				const keyDisplay = formatKeyText(key);
-				hotkeys += `| \`${keyDisplay}\` | ${description} |\n`;
-			}
+	private handleHotkeysCommand(): void {
+		const hotkeys = this.getHotkeysGuide();
+
+		this.shortcutGuideContainer.clear();
+		this.shortcutGuideContainer.addChild(new Spacer(1));
+		this.shortcutGuideContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
+		this.ui.requestRender();
+	}
+
+	private clearHotkeysGuide(): void {
+		if (this.shortcutGuideContainer.children.length === 0) {
+			return;
 		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder());
-		this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "Keyboard Shortcuts")), 1, 0));
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Markdown(hotkeys.trim(), 1, 1, this.getMarkdownThemeWithSettings()));
-		this.chatContainer.addChild(new DynamicBorder());
+		this.shortcutGuideContainer.clear();
 		this.ui.requestRender();
 	}
 
