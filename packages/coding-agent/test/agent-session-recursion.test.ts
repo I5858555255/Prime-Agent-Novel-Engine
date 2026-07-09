@@ -1234,6 +1234,23 @@ describe("AgentSession persistent subagents", () => {
 		expect(sidecar.runCount).toBe(2);
 	});
 
+	it("returns an empty answer on reopen when the new run produces no assistant text", async () => {
+		let callCount = 0;
+		const root = createPersistentSession((_model, context) => {
+			callCount += 1;
+			// First run answers; the reopened run produces an assistant turn with no text.
+			return streamAnswer(callCount === 1 ? `child answer: ${userText(context)}` : "");
+		});
+
+		const first = await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		expect(first.answer).toBe("child answer: first");
+
+		const second = await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+		expect(second.reopened).toBe(true);
+		// The answer must reflect only this run (empty), not leak the prior run's answer.
+		expect(second.answer).toBe("");
+	});
+
 	it("reports only the current run's usage and turns on reopen, not cumulative", async () => {
 		const root = createPersistentSession();
 
@@ -1312,6 +1329,23 @@ describe("AgentSession persistent subagents", () => {
 		await expect(root.runRlmChild("no persist", { system_prompt: "be terse" })).rejects.toThrow(
 			"system_prompt requires persist=true",
 		);
+	});
+
+	it("rejects an explicit persist=false combined with a persistent_id", async () => {
+		const root = createPersistentSession();
+
+		await expect(root.runRlmChild("opt out", { persist: false, persistent_id: "reviewer" })).rejects.toThrow(
+			"persist=false conflicts with persistent_id",
+		);
+	});
+
+	it("runs ephemerally when persist is explicitly false", async () => {
+		const root = createPersistentSession();
+
+		const result = await root.runRlmChild("ephemeral", { persist: false });
+		expect(result.persistent_id).toBeUndefined();
+		expect(result.reopened).toBeUndefined();
+		expect(basename(result.session_dir!)).toMatch(/^sub-/);
 	});
 
 	it("persists the sidecar with the system prompt even when the run fails", async () => {

@@ -5849,7 +5849,15 @@ export class AgentSession {
 
 		const persistentId = rawPersistentId?.trim() ? rawPersistentId.trim() : undefined;
 		const systemPrompt = rawSystemPrompt?.trim() ? rawSystemPrompt.trim() : undefined;
-		const persist = rawPersist === true || persistentId !== undefined;
+		// An explicit persist=false opts out even when a persistent_id/system_prompt is
+		// present; combining them is contradictory, so reject it rather than silently
+		// ignoring the opt-out. Otherwise a persistent_id (or persist=true) enables it.
+		if (rawPersist === false && (persistentId || systemPrompt)) {
+			throw new Error(
+				"rlm.run persist=false conflicts with persistent_id/system_prompt; omit persist or set persist=true",
+			);
+		}
+		const persist = rawPersist === true || (rawPersist !== false && persistentId !== undefined);
 		if (persist && !persistentId) {
 			throw new Error("rlm.run persist requires a persistent_id so the subagent can be reopened later");
 		}
@@ -6054,7 +6062,7 @@ export class AgentSession {
 				if (isRlmChildRunCancelled(run)) {
 					throw new Error(run.error ?? "RLM child cancelled");
 				}
-				const answer = child.getLastAssistantText() ?? "";
+				const answer = child.getLastAssistantText(priorAssistantMessages) ?? "";
 				const usage = child._usageForCurrentMessages(priorAssistantMessages);
 				const assistantUsage = child._assistantUsageForCurrentMessages(priorAssistantMessages);
 				this._attributeRlmChildUsageToParent(assistantUsage, parentAssistantForUsage);
@@ -7176,12 +7184,15 @@ export class AgentSession {
 	 * Useful for /copy command.
 	 * @returns Text content, or undefined if no assistant message exists
 	 */
-	getLastAssistantText(): string | undefined {
+	getLastAssistantText(exclude?: ReadonlySet<AgentMessage>): string | undefined {
 		const lastAssistant = this.messages
 			.slice()
 			.reverse()
 			.find((m) => {
 				if (m.role !== "assistant") return false;
+				// Skip messages the caller already accounted for (e.g. a reopened persistent
+				// subagent's hydrated prior turns), so the answer reflects only this run.
+				if (exclude?.has(m)) return false;
 				const msg = m as AssistantMessage;
 				// Skip aborted messages with no content
 				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
