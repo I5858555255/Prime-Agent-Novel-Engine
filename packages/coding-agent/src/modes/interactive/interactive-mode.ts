@@ -49,12 +49,15 @@ import {
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
 import {
+	APP_NAME,
 	APP_TITLE,
 	getAgentDir,
 	getAgentTracesLogPath,
 	getDebugLogPath,
 	getLogsDir,
 	getShareViewerUrl,
+	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
+	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 	VERSION,
 } from "../../config.js";
 import {
@@ -86,6 +89,7 @@ import {
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
+import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
@@ -221,6 +225,7 @@ interface PendingToolCallRenderInput {
 
 const HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS = 15_000;
 const HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS = 120_000;
+const MODEL_CATALOG_REFRESH_TTL_MS = 60_000;
 
 function isLabeledQueuedPreview(message: string): boolean {
 	return (
@@ -472,6 +477,51 @@ function getPayloadWorkingIndicatorOptions(
 	};
 }
 
+function updateArgsIncludeSelf(args: readonly string[]): boolean {
+	let selfFlag = false;
+	let extensionsOnlyFlag = false;
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--self") {
+			selfFlag = true;
+		} else if (arg === "--extensions") {
+			extensionsOnlyFlag = true;
+		} else if (arg === "--extension") {
+			extensionsOnlyFlag = true;
+			index++;
+		}
+	}
+	if (selfFlag) {
+		return true;
+	}
+	if (extensionsOnlyFlag) {
+		return false;
+	}
+	const positional = args.find((arg) => !arg.startsWith("-"));
+	if (!positional) {
+		return true;
+	}
+	const normalized = positional.toLowerCase();
+	return normalized === "self" || normalized === "pi" || normalized === APP_NAME.toLowerCase();
+}
+
+function argsIncludeSessionSelection(args: readonly string[]): boolean {
+	for (const arg of args) {
+		if (arg === "--resume" || arg === "-r" || arg === "--continue" || arg === "-c" || arg === "--fork") {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function buildUpdateRelaunchArgs(args: readonly string[], sessionFile: string | undefined): string[] {
+	const relaunchArgs = [...args];
+	if (sessionFile && !argsIncludeSessionSelection(relaunchArgs)) {
+		relaunchArgs.push("--resume", sessionFile);
+	}
+	return relaunchArgs;
+}
+
 /**
  * Options for InteractiveMode initialization.
  */
@@ -505,6 +555,8 @@ export interface InteractiveModeOptions {
 	onShutdown?: () => void | Promise<void>;
 	/** Allow returning from a full session to the agents view without stopping the daemon-owned agent. */
 	returnToAgentsView?: boolean;
+	/** Enter fullscreen regardless of the persisted fullscreen preference. */
+	forceFullscreen?: boolean;
 	/**
 	 * The agents view already surfaced global startup notices (app/extension updates, tmux setup),
 	 * so this session must not repeat them in its chat stream. Distinct from `returnToAgentsView`,
@@ -625,6 +677,9 @@ export class InteractiveMode {
 	private skillCommands = new Map<string, string>();
 	private connectionCommands: AgentConnectionSlashCommand[] = [];
 	private connectionModels: AgentConnectionModel[] = [];
+	private connectionModelsFetchedAt = 0;
+	private connectionModelsRefreshVersion = 0;
+	private connectionModelsRefreshInFlight: { version: number; promise: Promise<AgentConnectionModel[]> } | undefined;
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private initialConnectionSnapshotConsumed = false;
@@ -770,7 +825,6 @@ export class InteractiveMode {
 		this.childAgentSummary.onCancel = () => this.focusEditor();
 		this.childAgentSummary.onExit = () => this.handleSubagentSummaryExit();
 		this.childAgentSummary.onChatAction = (data) => this.handleSubagentSummaryChatAction(data);
-		this.childAgentSummary.onUnhandledInput = (data) => this.handleSubagentSummaryUnhandledInput(data);
 		this.footerDataProvider = new FooterDataProvider(this.uiServices.getInitialCwd());
 		this.footer = new FooterComponent(this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.settingsManager.getCompactionEnabled());
@@ -1033,7 +1087,9 @@ export class InteractiveMode {
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
-		this.fullscreenEnabled = this.settingsManager.getFullscreen() && process.stdout.isTTY === true;
+		this.fullscreenEnabled =
+			(this.options.forceFullscreen === true || this.settingsManager.getFullscreen()) &&
+			process.stdout.isTTY === true;
 		if (this.fullscreenEnabled) {
 			this.applyFullscreen(true);
 		}
@@ -2104,6 +2160,7 @@ export class InteractiveMode {
 	}
 
 	private async refreshConnectionCatalog(): Promise<void> {
+		this.invalidateConnectionModelRefresh();
 		const [state, commands, models, resources] = await Promise.all([
 			this.agentConnection.getState(),
 			this.agentConnection.getCommands(),
@@ -2113,6 +2170,7 @@ export class InteractiveMode {
 		this.applyConnectionStateSnapshot(state);
 		this.connectionCommands = commands;
 		this.connectionModels = models;
+		this.connectionModelsFetchedAt = Date.now();
 		this.connectionResourceSnapshot = resources;
 	}
 
@@ -3603,6 +3661,7 @@ export class InteractiveMode {
 			text = text.trim();
 			if (!text) return;
 			const promptStashToRestore = this.promptStash;
+			let restorePromptStashAfterSubmit = true;
 
 			try {
 				const slashCommand = parseSlashCommand(text);
@@ -3721,6 +3780,7 @@ export class InteractiveMode {
 				}
 				if (commandName === "tree" && !commandArgs) {
 					this.editor.setText("");
+					restorePromptStashAfterSubmit = false;
 					await this.showTreeSelector();
 					return;
 				}
@@ -3759,6 +3819,19 @@ export class InteractiveMode {
 				if (commandName === "reload" && !commandArgs) {
 					this.editor.setText("");
 					await this.handleReloadCommand();
+					return;
+				}
+				if (commandName === "update") {
+					this.editor.setText("");
+					const updateArgs = parseCommandArgs(commandArgs);
+					if (
+						!updateArgsIncludeSelf(updateArgs) &&
+						(this.isAgentCompacting() || this.isAgentStreaming() || this.isBashRunning())
+					) {
+						this.showWarning("Wait for the current work to finish before updating.");
+						return;
+					}
+					await this.handleUpdateCommand(commandArgs);
 					return;
 				}
 				if (commandName === "fullscreen") {
@@ -3866,7 +3939,7 @@ export class InteractiveMode {
 				}
 				this.editor.addToHistory?.(text);
 			} finally {
-				if (promptStashToRestore !== undefined) {
+				if (restorePromptStashAfterSubmit && promptStashToRestore !== undefined) {
 					this.restorePromptStashIfEditorEmpty(promptStashToRestore);
 				}
 			}
@@ -4707,23 +4780,19 @@ export class InteractiveMode {
 		this.focusEditor();
 	}
 
-	private handleSubagentSummaryUnhandledInput(data: string): void {
-		this.focusEditor();
-		this.editor.handleInput(data);
-	}
-
 	// Chat actions stay live while the subagent list holds focus; the editor's
 	// own handlers are bypassed because input routes only to the focused list.
-	private handleSubagentSummaryChatAction(data: string): boolean {
+	private handleSubagentSummaryChatAction(data: string): void {
 		if (this.keybindings.matches(data, "app.tools.expand")) {
 			this.toggleToolOutputExpansion();
-			return true;
+			return;
 		}
 		if (this.keybindings.matches(data, "app.thinking.toggle")) {
 			this.toggleThinkingBlockVisibility();
-			return true;
+			return;
 		}
-		return false;
+		this.focusEditor();
+		this.editor.handleInput(data);
 	}
 
 	private getTrayOverrideLabel(): string | undefined {
@@ -5445,24 +5514,18 @@ export class InteractiveMode {
 	private interruptOrClearInput(): void {
 		if (this.getRetryAttempt() > 0) {
 			void this.agentConnection.abortRetry();
-			return;
 		}
 		if (this.isAgentCompacting()) {
 			void this.agentConnection.abortCompaction();
 			void this.agentConnection.abortBranchSummary();
-			return;
 		}
-		// Bash outranks the agent stream: the already-running warning tells the user
-		// this key cancels the bash command, and the stream stays one press away.
 		if (this.isBashRunning()) {
 			void this.agentConnection.abortBash();
-			return;
 		}
 		if (this.isAgentStreaming()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
-			return;
 		}
 	}
 
@@ -5547,9 +5610,9 @@ export class InteractiveMode {
 	 * leak into the parent UI, then stops the renderer and theme watcher. Safe to
 	 * call from a crash path too; idempotent via stop().
 	 */
-	async teardownSessionUi(): Promise<void> {
+	async teardownSessionUi(options: { preserveAltScreen?: boolean } = {}): Promise<void> {
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
-		this.stop();
+		this.stop({ preserveAltScreen: options.preserveAltScreen });
 		stopThemeWatcher();
 	}
 
@@ -5559,12 +5622,21 @@ export class InteractiveMode {
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
 
-		await this.teardownSessionUi();
+		await this.teardownSessionUi({ preserveAltScreen: true });
+		let handoffComplete = false;
 		try {
-			await this.agentConnection.dispose();
+			try {
+				await this.agentConnection.dispose();
+			} finally {
+				await this.options.onShutdown?.();
+				this.onInputCallback?.(undefined);
+				handoffComplete = true;
+			}
 		} finally {
-			await this.options.onShutdown?.();
-			this.onInputCallback?.(undefined);
+			if (!handoffComplete) {
+				this.ui.terminal.leaveAltScreen();
+				this.ui.terminal.showCursor();
+			}
 		}
 	}
 
@@ -5935,8 +6007,12 @@ export class InteractiveMode {
 	 * Clear all queued messages and return their contents.
 	 * Clears both session queue and compaction queue.
 	 */
-	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
-		const { steering, followUp } = await this.agentConnection.clearQueue();
+	private async clearAllQueues(
+		options: { abort?: boolean } = {},
+	): Promise<{ steering: string[]; followUp: string[] }> {
+		const { steering, followUp } = options.abort
+			? await this.agentConnection.abortAndClearQueue()
+			: await this.agentConnection.clearQueue();
 		this.connectionQueue = { steering: [], followUp: [] };
 		const compactionSteering = this.compactionQueuedMessages
 			.filter((msg) => msg.mode === "steer")
@@ -5989,13 +6065,10 @@ export class InteractiveMode {
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
-		const { steering, followUp } = await this.clearAllQueues();
+		const { steering, followUp } = await this.clearAllQueues({ abort: options?.abort });
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
 			this.updatePendingMessagesDisplay();
-			if (options?.abort) {
-				await this.agentConnection.abort();
-			}
 			return 0;
 		}
 		const queuedText = allQueued.join("\n\n");
@@ -6005,9 +6078,6 @@ export class InteractiveMode {
 		// on resubmit without any re-registration here.
 		this.editor.setText(combinedText);
 		this.updatePendingMessagesDisplay();
-		if (options?.abort) {
-			await this.agentConnection.abort();
-		}
 		return allQueued.length;
 	}
 
@@ -6319,6 +6389,7 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
+				this.showStatus(`Switching model: ${model.id}`);
 				await this.applySelectedModel(model);
 				this.completeOnboardingIfCurrentModelReady();
 				this.showStatus(`Model: ${model.id}`);
@@ -6334,8 +6405,21 @@ export class InteractiveMode {
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
-		const models = await this.getModelCandidates();
-		return findExactModelReferenceMatch(searchTerm, models);
+		const cachedMatch = findExactModelReferenceMatch(searchTerm, this.getCachedModelCandidates());
+		if (cachedMatch) {
+			return cachedMatch;
+		}
+
+		const refreshPromise = this.getModelSelectorRefreshPromise({ force: true });
+		if (!refreshPromise) {
+			return undefined;
+		}
+
+		try {
+			return findExactModelReferenceMatch(searchTerm, await refreshPromise);
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async applySelectedModel(model: AgentConnectionModel): Promise<void> {
@@ -6352,9 +6436,67 @@ export class InteractiveMode {
 	}
 
 	private async getConnectionAvailableModels(): Promise<AgentConnectionModel[]> {
-		const models = await this.agentConnection.getAvailableModels();
-		this.connectionModels = [...models];
-		return [...models];
+		const inFlight = this.connectionModelsRefreshInFlight;
+		if (inFlight && inFlight.version === this.connectionModelsRefreshVersion) {
+			return [...(await inFlight.promise)];
+		}
+
+		const version = this.connectionModelsRefreshVersion;
+		const promise = this.agentConnection.getAvailableModels().then((models) => {
+			const nextModels = [...models];
+			if (version !== this.connectionModelsRefreshVersion) {
+				return [...this.connectionModels];
+			}
+			this.connectionModels = nextModels;
+			this.connectionModelsFetchedAt = Date.now();
+			return nextModels;
+		});
+		this.connectionModelsRefreshInFlight = { version, promise };
+
+		try {
+			return [...(await promise)];
+		} finally {
+			if (this.connectionModelsRefreshInFlight?.promise === promise) {
+				this.connectionModelsRefreshInFlight = undefined;
+			}
+		}
+	}
+
+	private getCachedModelCandidates(): AgentConnectionModel[] {
+		const modelsById = new Map<string, AgentConnectionModel>();
+		for (const scoped of this.getScopedModelState()) {
+			modelsById.set(`${scoped.model.provider}/${scoped.model.id}`, scoped.model);
+		}
+		for (const model of this.connectionModels) {
+			modelsById.set(`${model.provider}/${model.id}`, model);
+		}
+		return [...modelsById.values()];
+	}
+
+	private getModelSelectorRefreshPromise(
+		options: { force?: boolean } = {},
+	): Promise<AgentConnectionModel[]> | undefined {
+		if (this.connectionModelsRefreshInFlight) {
+			return this.getConnectionAvailableModels();
+		}
+		if (options.force || this.connectionModelsFetchedAt === 0) {
+			return this.getConnectionAvailableModels();
+		}
+		if (Date.now() - this.connectionModelsFetchedAt > MODEL_CATALOG_REFRESH_TTL_MS) {
+			return this.getConnectionAvailableModels();
+		}
+		return undefined;
+	}
+
+	private invalidateConnectionModelRefresh(): void {
+		this.connectionModelsRefreshVersion++;
+		this.connectionModelsRefreshInFlight = undefined;
+	}
+
+	private invalidateConnectionModels(): void {
+		this.connectionModels = [];
+		this.connectionModelsFetchedAt = 0;
+		this.invalidateConnectionModelRefresh();
 	}
 
 	private async getModelCandidates(): Promise<AgentConnectionModel[]> {
@@ -6496,17 +6638,12 @@ export class InteractiveMode {
 				return;
 			}
 			await this.showLoginProviderSelector();
+			this.invalidateConnectionModels();
 			nextSearchInput = undefined;
 		}
 	}
 
 	private async promptForModelSelection(options: { allowProviderSetup?: boolean } = {}): Promise<boolean> {
-		const availableModels = await this.getModelCandidates();
-		if (availableModels.length === 0 && !options.allowProviderSetup) {
-			this.showStatus("No models available. Add credentials with /login.");
-			return false;
-		}
-
 		while (true) {
 			this.showStatus("Select a model to continue.");
 			const result = await this.showModelSelectorAsync(
@@ -6526,6 +6663,7 @@ export class InteractiveMode {
 			}
 
 			await this.showLoginProviderSelector();
+			this.invalidateConnectionModels();
 		}
 	}
 
@@ -6533,17 +6671,12 @@ export class InteractiveMode {
 		initialSearchInput?: string,
 		options?: { actions?: ReadonlyArray<ModelSelectorAction>; subtitle?: string },
 	): Promise<ModelSelectionResult> {
-		let availableModels: AgentConnectionModel[];
-		try {
-			availableModels = await this.getConnectionAvailableModels();
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-			return { status: "cancelled" };
-		}
+		const availableModels = this.getCachedModelCandidates();
 
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
+			let selector: ModelSelectorComponent | undefined;
 			const settle = (result: ModelSelectionResult) => {
 				if (settled) {
 					return;
@@ -6556,15 +6689,16 @@ export class InteractiveMode {
 				this.ui.requestRender();
 			};
 
-			const selector = new ModelSelectorComponent(
+			selector = new ModelSelectorComponent(
 				this.ui,
 				this.getCurrentModel(),
 				this.modelRegistry,
 				this.getScopedModelState(),
 				async (model) => {
+					close();
+					this.showStatus(`Switching model: ${model.id}`);
 					try {
 						await this.applySelectedModel(model);
-						close();
 						this.completeOnboardingIfCurrentModelReady();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
@@ -6594,6 +6728,26 @@ export class InteractiveMode {
 				},
 			);
 			handle = this.showFullPaneOverlay(selector, 96);
+
+			const refreshPromise = this.getModelSelectorRefreshPromise({ force: initialSearchInput !== undefined });
+			if (refreshPromise) {
+				void refreshPromise
+					.then((models) => {
+						if (settled || !selector) {
+							return undefined;
+						}
+						return selector.updateAvailableModels(models);
+					})
+					.catch((error) => {
+						if (!settled) {
+							this.showError(error instanceof Error ? error.message : String(error));
+							if (availableModels.length === 0) {
+								close();
+								settle({ status: "cancelled" });
+							}
+						}
+					});
+			}
 		});
 	}
 
@@ -7131,6 +7285,7 @@ export class InteractiveMode {
 			const authResult = await this.showLoginProviderSelector();
 			// Service credentials don't change the model, so skip the model picker.
 			if (authResult.status === "success" && authResult.kind !== "service") {
+				this.invalidateConnectionModels();
 				await this.promptForModelSelection();
 			}
 			// An MCP integration login enables its skill, so reload resources — but a
@@ -7156,6 +7311,89 @@ export class InteractiveMode {
 	// =========================================================================
 	// Command handlers
 	// =========================================================================
+
+	private async handleUpdateCommand(args: string): Promise<void> {
+		const entrypoint = process.argv[1];
+		if (!entrypoint) {
+			this.showError("Cannot determine current CLI entrypoint for update");
+			return;
+		}
+
+		const updateArgs = parseCommandArgs(args);
+		const includesSelf = updateArgsIncludeSelf(updateArgs);
+		const updateCwd = this.getCurrentCwd();
+		this.stopWorkingLoader();
+		await this.ui.terminal.drainInput(1000).catch(() => undefined);
+		this.ui.stop();
+
+		const updateEnv = includesSelf ? { ...process.env, [SELF_UPDATE_INTERACTIVE_CHILD_ENV]: "1" } : process.env;
+		const updateResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, "update", ...updateArgs], {
+			stdio: "inherit",
+			cwd: updateCwd,
+			env: updateEnv,
+		});
+		const updateExitCode = updateResult.status ?? (updateResult.signal ? 1 : 0);
+		const selfUpdateNotAttempted =
+			includesSelf && !updateResult.error && updateExitCode === SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE;
+
+		if (includesSelf && !selfUpdateNotAttempted) {
+			const relaunchArgs = buildUpdateRelaunchArgs(process.argv.slice(2), this.connectionState?.sessionFile);
+			if (updateResult.error) {
+				console.error(`Update failed: ${updateResult.error.message}`);
+				console.error(`Relaunching ${APP_NAME}...`);
+			} else if (updateExitCode !== 0) {
+				console.error(
+					updateResult.signal
+						? `Update terminated by signal ${updateResult.signal}`
+						: `Update exited with code ${updateExitCode}`,
+				);
+				console.error(`Relaunching ${APP_NAME}...`);
+			}
+			this.stop();
+			await this.agentConnection.dispose().catch(() => undefined);
+			try {
+				await this.options.onShutdown?.();
+			} catch {
+				// The update already completed; do not block relaunch on local teardown.
+			}
+			const relaunchResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, ...relaunchArgs], {
+				stdio: "inherit",
+				cwd: updateCwd,
+				env: process.env,
+			});
+			if (relaunchResult.error) {
+				console.error(`Failed to relaunch ${APP_NAME}: ${relaunchResult.error.message}`);
+				process.exit(1);
+			}
+			process.exit(relaunchResult.status ?? (relaunchResult.signal ? 1 : 0));
+		}
+
+		this.ui.start();
+		if (this.fullscreenEnabled) {
+			this.applyFullscreen(true);
+		}
+		this.ui.requestRender(true);
+
+		if (selfUpdateNotAttempted) {
+			this.showStatus(`Update did not change ${APP_NAME}. Reloading resources...`);
+			await this.handleReloadCommand();
+			return;
+		}
+		if (updateResult.error) {
+			this.showError(`Update failed: ${updateResult.error.message}`);
+			return;
+		}
+		if (updateExitCode !== 0) {
+			this.showError(
+				updateResult.signal
+					? `Update terminated by signal ${updateResult.signal}`
+					: `Update exited with code ${updateExitCode}`,
+			);
+			return;
+		}
+		this.showStatus("Packages updated. Reloading resources...");
+		await this.handleReloadCommand();
+	}
 
 	private async handleReloadCommand(): Promise<void> {
 		if (this.isAgentStreaming()) {
@@ -8114,7 +8352,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 		}
 	}
 
-	stop(): void {
+	stop(options: { preserveAltScreen?: boolean } = {}): void {
 		this.unregisterSignalHandlers();
 		this.clearCtrlCExitHint({ render: false });
 		if (this.settingsManager.getShowTerminalProgress()) {
@@ -8130,7 +8368,10 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			this.ui.stop();
+			this.ui.stop({
+				preserveAltScreen: options.preserveAltScreen,
+				flushFullscreen: options.preserveAltScreen ? false : undefined,
+			});
 			this.isInitialized = false;
 		}
 	}
