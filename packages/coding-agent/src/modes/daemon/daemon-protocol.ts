@@ -273,6 +273,7 @@ export type DaemonCommand =
 			message: string;
 			content?: (TextContent | ImageContent)[];
 			images?: ImageContent[];
+			queueKey?: string;
 			expandPromptTemplates?: boolean;
 			agentMessageId?: string;
 			customMessage?: CustomMessage;

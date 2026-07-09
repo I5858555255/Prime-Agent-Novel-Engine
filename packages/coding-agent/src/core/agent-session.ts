@@ -3064,12 +3064,14 @@ export class AgentSession {
 		text: string,
 		images?: ImageContent[],
 		options: {
+			queueKey?: string;
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			customMessage?: CustomMessage;
 		} = {},
 	): Promise<void> {
 		await this._queueSteer(text, images, {
+			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			content: options.content,
 			message: options.customMessage,

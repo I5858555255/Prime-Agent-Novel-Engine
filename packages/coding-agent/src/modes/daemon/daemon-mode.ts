@@ -1446,6 +1446,7 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				if (command.expandPromptTemplates === false) {
 					await state.runtime.session.restoreSteeringMessage(command.message, command.images, {
+						queueKey: command.queueKey,
 						agentMessageId: command.agentMessageId,
 						content: command.content,
 						customMessage: command.customMessage,
@@ -2316,6 +2317,7 @@ export class AgentDaemon {
 				message: message.text,
 				...(message.content ? { content: message.content } : {}),
 				...(message.images ? { images: message.images } : {}),
+				...(message.queueKey ? { queueKey: message.queueKey } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 				...(message.customMessage ? { customMessage: message.customMessage } : {}),
 			})),
