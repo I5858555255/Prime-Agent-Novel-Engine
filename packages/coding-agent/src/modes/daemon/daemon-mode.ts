@@ -175,6 +175,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_available_models",
 	"get_queue",
 	"clear_queue",
+	"abort_and_clear_queue",
 	"cron_list",
 	"cron_add",
 	"cron_cancel",
@@ -1560,7 +1561,7 @@ export class AgentDaemon {
 
 			case "abort": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.abort();
+				state.runtime.session.requestAbort();
 				return success(command.id, "abort");
 			}
 
@@ -1663,6 +1664,13 @@ export class AgentDaemon {
 				return success(command.id, "clear_queue", state.runtime.session.clearQueue());
 			}
 
+			case "abort_and_clear_queue": {
+				const state = this.getSessionState(command.activeSessionId);
+				const queue = state.runtime.session.clearQueue();
+				state.runtime.session.requestAbort();
+				return success(command.id, "abort_and_clear_queue", queue);
+			}
+
 			case "cron_list": {
 				const jobs = this.cronStore.list().filter((job) => {
 					if (!command.includeInactive && job.status !== "active" && job.status !== "paused") {
@@ -1723,13 +1731,16 @@ export class AgentDaemon {
 				if (!model) {
 					throw new Error(`Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				await session.setModel(model, { waitForExtensions: !(session.isStreaming || session.isCompacting) });
 				return success(command.id, "set_model", model);
 			}
 
 			case "cycle_model": {
 				const state = this.getSessionState(command.activeSessionId);
-				const result = await state.runtime.session.cycleModel(command.direction);
+				const session = state.runtime.session;
+				const result = await session.cycleModel(command.direction, {
+					waitForExtensions: !(session.isStreaming || session.isCompacting),
+				});
 				return success(command.id, "cycle_model", result ?? null);
 			}
 

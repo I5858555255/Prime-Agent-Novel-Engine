@@ -225,6 +225,7 @@ interface PendingToolCallRenderInput {
 
 const HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS = 15_000;
 const HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS = 120_000;
+const MODEL_CATALOG_REFRESH_TTL_MS = 60_000;
 
 function isLabeledQueuedPreview(message: string): boolean {
 	return (
@@ -676,6 +677,9 @@ export class InteractiveMode {
 	private skillCommands = new Map<string, string>();
 	private connectionCommands: AgentConnectionSlashCommand[] = [];
 	private connectionModels: AgentConnectionModel[] = [];
+	private connectionModelsFetchedAt = 0;
+	private connectionModelsRefreshVersion = 0;
+	private connectionModelsRefreshInFlight: { version: number; promise: Promise<AgentConnectionModel[]> } | undefined;
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private initialConnectionSnapshotConsumed = false;
@@ -1052,7 +1056,6 @@ export class InteractiveMode {
 				verboseInstructions,
 				{ getHideStartHint: () => this.childAgentPanelMode !== undefined },
 			);
-			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
 			this.headerContainer.addChild(new Spacer(1));
 		} else {
@@ -2156,6 +2159,7 @@ export class InteractiveMode {
 	}
 
 	private async refreshConnectionCatalog(): Promise<void> {
+		this.invalidateConnectionModelRefresh();
 		const [state, commands, models, resources] = await Promise.all([
 			this.agentConnection.getState(),
 			this.agentConnection.getCommands(),
@@ -2165,6 +2169,7 @@ export class InteractiveMode {
 		this.applyConnectionStateSnapshot(state);
 		this.connectionCommands = commands;
 		this.connectionModels = models;
+		this.connectionModelsFetchedAt = Date.now();
 		this.connectionResourceSnapshot = resources;
 	}
 
@@ -5508,24 +5513,18 @@ export class InteractiveMode {
 	private interruptOrClearInput(): void {
 		if (this.getRetryAttempt() > 0) {
 			void this.agentConnection.abortRetry();
-			return;
 		}
 		if (this.isAgentCompacting()) {
 			void this.agentConnection.abortCompaction();
 			void this.agentConnection.abortBranchSummary();
-			return;
 		}
-		// Bash outranks the agent stream: the already-running warning tells the user
-		// this key cancels the bash command, and the stream stays one press away.
 		if (this.isBashRunning()) {
 			void this.agentConnection.abortBash();
-			return;
 		}
 		if (this.isAgentStreaming()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
-			return;
 		}
 	}
 
@@ -6007,8 +6006,12 @@ export class InteractiveMode {
 	 * Clear all queued messages and return their contents.
 	 * Clears both session queue and compaction queue.
 	 */
-	private async clearAllQueues(): Promise<{ steering: string[]; followUp: string[] }> {
-		const { steering, followUp } = await this.agentConnection.clearQueue();
+	private async clearAllQueues(
+		options: { abort?: boolean } = {},
+	): Promise<{ steering: string[]; followUp: string[] }> {
+		const { steering, followUp } = options.abort
+			? await this.agentConnection.abortAndClearQueue()
+			: await this.agentConnection.clearQueue();
 		this.connectionQueue = { steering: [], followUp: [] };
 		const compactionSteering = this.compactionQueuedMessages
 			.filter((msg) => msg.mode === "steer")
@@ -6061,13 +6064,10 @@ export class InteractiveMode {
 	}
 
 	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
-		const { steering, followUp } = await this.clearAllQueues();
+		const { steering, followUp } = await this.clearAllQueues({ abort: options?.abort });
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
 			this.updatePendingMessagesDisplay();
-			if (options?.abort) {
-				await this.agentConnection.abort();
-			}
 			return 0;
 		}
 		const queuedText = allQueued.join("\n\n");
@@ -6077,9 +6077,6 @@ export class InteractiveMode {
 		// on resubmit without any re-registration here.
 		this.editor.setText(combinedText);
 		this.updatePendingMessagesDisplay();
-		if (options?.abort) {
-			await this.agentConnection.abort();
-		}
 		return allQueued.length;
 	}
 
@@ -6391,6 +6388,7 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
+				this.showStatus(`Switching model: ${model.id}`);
 				await this.applySelectedModel(model);
 				this.completeOnboardingIfCurrentModelReady();
 				this.showStatus(`Model: ${model.id}`);
@@ -6406,8 +6404,21 @@ export class InteractiveMode {
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
-		const models = await this.getModelCandidates();
-		return findExactModelReferenceMatch(searchTerm, models);
+		const cachedMatch = findExactModelReferenceMatch(searchTerm, this.getCachedModelCandidates());
+		if (cachedMatch) {
+			return cachedMatch;
+		}
+
+		const refreshPromise = this.getModelSelectorRefreshPromise({ force: true });
+		if (!refreshPromise) {
+			return undefined;
+		}
+
+		try {
+			return findExactModelReferenceMatch(searchTerm, await refreshPromise);
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async applySelectedModel(model: AgentConnectionModel): Promise<void> {
@@ -6424,9 +6435,67 @@ export class InteractiveMode {
 	}
 
 	private async getConnectionAvailableModels(): Promise<AgentConnectionModel[]> {
-		const models = await this.agentConnection.getAvailableModels();
-		this.connectionModels = [...models];
-		return [...models];
+		const inFlight = this.connectionModelsRefreshInFlight;
+		if (inFlight && inFlight.version === this.connectionModelsRefreshVersion) {
+			return [...(await inFlight.promise)];
+		}
+
+		const version = this.connectionModelsRefreshVersion;
+		const promise = this.agentConnection.getAvailableModels().then((models) => {
+			const nextModels = [...models];
+			if (version !== this.connectionModelsRefreshVersion) {
+				return [...this.connectionModels];
+			}
+			this.connectionModels = nextModels;
+			this.connectionModelsFetchedAt = Date.now();
+			return nextModels;
+		});
+		this.connectionModelsRefreshInFlight = { version, promise };
+
+		try {
+			return [...(await promise)];
+		} finally {
+			if (this.connectionModelsRefreshInFlight?.promise === promise) {
+				this.connectionModelsRefreshInFlight = undefined;
+			}
+		}
+	}
+
+	private getCachedModelCandidates(): AgentConnectionModel[] {
+		const modelsById = new Map<string, AgentConnectionModel>();
+		for (const scoped of this.getScopedModelState()) {
+			modelsById.set(`${scoped.model.provider}/${scoped.model.id}`, scoped.model);
+		}
+		for (const model of this.connectionModels) {
+			modelsById.set(`${model.provider}/${model.id}`, model);
+		}
+		return [...modelsById.values()];
+	}
+
+	private getModelSelectorRefreshPromise(
+		options: { force?: boolean } = {},
+	): Promise<AgentConnectionModel[]> | undefined {
+		if (this.connectionModelsRefreshInFlight) {
+			return this.getConnectionAvailableModels();
+		}
+		if (options.force || this.connectionModelsFetchedAt === 0) {
+			return this.getConnectionAvailableModels();
+		}
+		if (Date.now() - this.connectionModelsFetchedAt > MODEL_CATALOG_REFRESH_TTL_MS) {
+			return this.getConnectionAvailableModels();
+		}
+		return undefined;
+	}
+
+	private invalidateConnectionModelRefresh(): void {
+		this.connectionModelsRefreshVersion++;
+		this.connectionModelsRefreshInFlight = undefined;
+	}
+
+	private invalidateConnectionModels(): void {
+		this.connectionModels = [];
+		this.connectionModelsFetchedAt = 0;
+		this.invalidateConnectionModelRefresh();
 	}
 
 	private async getModelCandidates(): Promise<AgentConnectionModel[]> {
@@ -6568,17 +6637,12 @@ export class InteractiveMode {
 				return;
 			}
 			await this.showLoginProviderSelector();
+			this.invalidateConnectionModels();
 			nextSearchInput = undefined;
 		}
 	}
 
 	private async promptForModelSelection(options: { allowProviderSetup?: boolean } = {}): Promise<boolean> {
-		const availableModels = await this.getModelCandidates();
-		if (availableModels.length === 0 && !options.allowProviderSetup) {
-			this.showStatus("No models available. Add credentials with /login.");
-			return false;
-		}
-
 		while (true) {
 			this.showStatus("Select a model to continue.");
 			const result = await this.showModelSelectorAsync(
@@ -6598,6 +6662,7 @@ export class InteractiveMode {
 			}
 
 			await this.showLoginProviderSelector();
+			this.invalidateConnectionModels();
 		}
 	}
 
@@ -6605,17 +6670,12 @@ export class InteractiveMode {
 		initialSearchInput?: string,
 		options?: { actions?: ReadonlyArray<ModelSelectorAction>; subtitle?: string },
 	): Promise<ModelSelectionResult> {
-		let availableModels: AgentConnectionModel[];
-		try {
-			availableModels = await this.getConnectionAvailableModels();
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-			return { status: "cancelled" };
-		}
+		const availableModels = this.getCachedModelCandidates();
 
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
+			let selector: ModelSelectorComponent | undefined;
 			const settle = (result: ModelSelectionResult) => {
 				if (settled) {
 					return;
@@ -6628,15 +6688,16 @@ export class InteractiveMode {
 				this.ui.requestRender();
 			};
 
-			const selector = new ModelSelectorComponent(
+			selector = new ModelSelectorComponent(
 				this.ui,
 				this.getCurrentModel(),
 				this.modelRegistry,
 				this.getScopedModelState(),
 				async (model) => {
+					close();
+					this.showStatus(`Switching model: ${model.id}`);
 					try {
 						await this.applySelectedModel(model);
-						close();
 						this.completeOnboardingIfCurrentModelReady();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
@@ -6666,6 +6727,26 @@ export class InteractiveMode {
 				},
 			);
 			handle = this.showFullPaneOverlay(selector, 96);
+
+			const refreshPromise = this.getModelSelectorRefreshPromise({ force: initialSearchInput !== undefined });
+			if (refreshPromise) {
+				void refreshPromise
+					.then((models) => {
+						if (settled || !selector) {
+							return undefined;
+						}
+						return selector.updateAvailableModels(models);
+					})
+					.catch((error) => {
+						if (!settled) {
+							this.showError(error instanceof Error ? error.message : String(error));
+							if (availableModels.length === 0) {
+								close();
+								settle({ status: "cancelled" });
+							}
+						}
+					});
+			}
 		});
 	}
 
@@ -7203,6 +7284,7 @@ export class InteractiveMode {
 			const authResult = await this.showLoginProviderSelector();
 			// Service credentials don't change the model, so skip the model picker.
 			if (authResult.status === "success" && authResult.kind !== "service") {
+				this.invalidateConnectionModels();
 				await this.promptForModelSelection();
 			}
 			// An MCP integration login enables its skill, so reload resources — but a
