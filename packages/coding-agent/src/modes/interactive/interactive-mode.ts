@@ -49,12 +49,15 @@ import {
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
 import {
+	APP_NAME,
 	APP_TITLE,
 	getAgentDir,
 	getAgentTracesLogPath,
 	getDebugLogPath,
 	getLogsDir,
 	getShareViewerUrl,
+	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
+	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 	VERSION,
 } from "../../config.js";
 import {
@@ -76,11 +79,17 @@ import type {
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
-import { emptyGoalState, formatGoalUsage, type GoalState } from "../../core/goals.js";
+import { emptyGoalState, formatGoalUsage, GOAL_CONTEXT_PREVIEW_LABEL, type GoalState } from "../../core/goals.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
-import { createCompactionSummaryMessage } from "../../core/messages.js";
+import {
+	createCompactionSummaryMessage,
+	createHeartbeatPromptMessage,
+	HEARTBEAT_PROMPT_CUSTOM_TYPE,
+	HEARTBEAT_PROMPT_PREVIEW_LABEL,
+} from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
+import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
@@ -153,6 +162,7 @@ import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
+import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
 import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import { type ModelSelectorAction, ModelSelectorComponent } from "./components/model-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
@@ -211,6 +221,15 @@ interface PendingToolCallRenderInput {
 	id: string;
 	name: string;
 	arguments: ToolCall["arguments"];
+}
+
+const HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS = 15_000;
+const HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS = 120_000;
+
+function isLabeledQueuedPreview(message: string): boolean {
+	return (
+		message.startsWith(`${HEARTBEAT_PROMPT_PREVIEW_LABEL}: `) || message.startsWith(`${GOAL_CONTEXT_PREVIEW_LABEL}: `)
+	);
 }
 
 function isExpandable(obj: unknown): obj is Expandable {
@@ -381,6 +400,14 @@ const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	max: "Maximum reasoning",
 };
 
+const HEARTBEAT_ARGUMENT_COMPLETIONS: AutocompleteItem[] = [
+	{
+		value: "every ",
+		label: "every <duration> <instruction>",
+		description: "Set an interval, then add an instruction: /heartbeat every 10s Scan the logs",
+	},
+];
+
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN"]);
 
 // Cap on retained pasted-image bytes (base64). Images are resized below the
@@ -449,6 +476,51 @@ function getPayloadWorkingIndicatorOptions(
 	};
 }
 
+function updateArgsIncludeSelf(args: readonly string[]): boolean {
+	let selfFlag = false;
+	let extensionsOnlyFlag = false;
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--self") {
+			selfFlag = true;
+		} else if (arg === "--extensions") {
+			extensionsOnlyFlag = true;
+		} else if (arg === "--extension") {
+			extensionsOnlyFlag = true;
+			index++;
+		}
+	}
+	if (selfFlag) {
+		return true;
+	}
+	if (extensionsOnlyFlag) {
+		return false;
+	}
+	const positional = args.find((arg) => !arg.startsWith("-"));
+	if (!positional) {
+		return true;
+	}
+	const normalized = positional.toLowerCase();
+	return normalized === "self" || normalized === "pi" || normalized === APP_NAME.toLowerCase();
+}
+
+function argsIncludeSessionSelection(args: readonly string[]): boolean {
+	for (const arg of args) {
+		if (arg === "--resume" || arg === "-r" || arg === "--continue" || arg === "-c" || arg === "--fork") {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function buildUpdateRelaunchArgs(args: readonly string[], sessionFile: string | undefined): string[] {
+	const relaunchArgs = [...args];
+	if (sessionFile && !argsIncludeSessionSelection(relaunchArgs)) {
+		relaunchArgs.push("--resume", sessionFile);
+	}
+	return relaunchArgs;
+}
+
 /**
  * Options for InteractiveMode initialization.
  */
@@ -482,6 +554,8 @@ export interface InteractiveModeOptions {
 	onShutdown?: () => void | Promise<void>;
 	/** Allow returning from a full session to the agents view without stopping the daemon-owned agent. */
 	returnToAgentsView?: boolean;
+	/** Enter fullscreen regardless of the persisted fullscreen preference. */
+	forceFullscreen?: boolean;
 	/**
 	 * The agents view already surfaced global startup notices (app/extension updates, tmux setup),
 	 * so this session must not repeat them in its chat stream. Distinct from `returnToAgentsView`,
@@ -866,6 +940,12 @@ export class InteractiveMode {
 			}
 		}
 
+		const heartbeatCommand = slashCommands.find((command) => command.name === "heartbeat");
+		if (heartbeatCommand) {
+			heartbeatCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
+				this.getHeartbeatArgumentCompletions(prefix);
+		}
+
 		const connectionCommands = this.connectionCommands;
 		const templateCommands: SlashCommand[] = connectionCommands
 			.filter((cmd) => cmd.source === "prompt")
@@ -1003,7 +1083,9 @@ export class InteractiveMode {
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
-		this.fullscreenEnabled = this.settingsManager.getFullscreen() && process.stdout.isTTY === true;
+		this.fullscreenEnabled =
+			(this.options.forceFullscreen === true || this.settingsManager.getFullscreen()) &&
+			process.stdout.isTTY === true;
 		if (this.fullscreenEnabled) {
 			this.applyFullscreen(true);
 		}
@@ -2191,6 +2273,18 @@ export class InteractiveMode {
 		return this.connectionState?.sessionName ?? this.uiServices.getInitialSessionName();
 	}
 
+	private applyAuthStaleEvent(event: Extract<AgentConnectionSessionEvent, { type: "auth_stale" }>): void {
+		let marked = false;
+		for (const token of event.sourceTokens ?? []) {
+			marked = this.modelRegistry.markProviderAuthSourceStale(token) || marked;
+		}
+		if (!marked) {
+			this.modelRegistry.markProviderAuthStale(event.provider);
+		}
+		this.footer.invalidate();
+		this.updateEditorBorderColor();
+	}
+
 	private getCurrentModel(): AgentConnectionModel | undefined {
 		return this.connectionState?.model;
 	}
@@ -2805,6 +2899,12 @@ export class InteractiveMode {
 			this.recapContainer.addChild(new Spacer(1));
 		}
 		this.ui.requestRender();
+	}
+
+	private clearStaleRecapForPromptTurn(): void {
+		this.sessionRecap = undefined;
+		this.renderRecap();
+		this.updatePendingMessagesDisplay();
 	}
 
 	private renderWidgetContainer(
@@ -3555,6 +3655,7 @@ export class InteractiveMode {
 			text = text.trim();
 			if (!text) return;
 			const promptStashToRestore = this.promptStash;
+			let restorePromptStashAfterSubmit = true;
 
 			try {
 				const slashCommand = parseSlashCommand(text);
@@ -3673,6 +3774,7 @@ export class InteractiveMode {
 				}
 				if (commandName === "tree" && !commandArgs) {
 					this.editor.setText("");
+					restorePromptStashAfterSubmit = false;
 					await this.showTreeSelector();
 					return;
 				}
@@ -3711,6 +3813,19 @@ export class InteractiveMode {
 				if (commandName === "reload" && !commandArgs) {
 					this.editor.setText("");
 					await this.handleReloadCommand();
+					return;
+				}
+				if (commandName === "update") {
+					this.editor.setText("");
+					const updateArgs = parseCommandArgs(commandArgs);
+					if (
+						!updateArgsIncludeSelf(updateArgs) &&
+						(this.isAgentCompacting() || this.isAgentStreaming() || this.isBashRunning())
+					) {
+						this.showWarning("Wait for the current work to finish before updating.");
+						return;
+					}
+					await this.handleUpdateCommand(commandArgs);
 					return;
 				}
 				if (commandName === "fullscreen") {
@@ -3818,7 +3933,7 @@ export class InteractiveMode {
 				}
 				this.editor.addToHistory?.(text);
 			} finally {
-				if (promptStashToRestore !== undefined) {
+				if (restorePromptStashAfterSubmit && promptStashToRestore !== undefined) {
 					this.restorePromptStashIfEditorEmpty(promptStashToRestore);
 				}
 			}
@@ -4130,13 +4245,13 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
+					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
+						this.clearStaleRecapForPromptTurn();
+					}
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
-					// A new turn makes the recap stale; clear it until the summarizer pushes a fresh one.
-					this.sessionRecap = undefined;
-					this.renderRecap();
-					this.updatePendingMessagesDisplay();
+					this.clearStaleRecapForPromptTurn();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					this.startAssistantStreamingMessage(event.message);
@@ -4279,7 +4394,9 @@ export class InteractiveMode {
 				const label =
 					event.reason === "manual"
 						? `Compacting context${focus}... ${cancelHint}`
-						: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
+						: event.reason === "requested"
+							? `Agent requested compaction, compacting context${focus}... ${cancelHint}`
+							: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
 				this.autoCompactionLoader = new Loader(
 					this.ui,
 					(spinner) => theme.fg("muted", spinner),
@@ -4381,6 +4498,12 @@ export class InteractiveMode {
 				if (!event.success) {
 					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 				}
+				this.ui.requestRender();
+				break;
+			}
+
+			case "auth_stale": {
+				this.applyAuthStaleEvent(event);
 				this.ui.requestRender();
 				break;
 			}
@@ -4660,7 +4783,10 @@ export class InteractiveMode {
 		}
 		if (this.keybindings.matches(data, "app.thinking.toggle")) {
 			this.toggleThinkingBlockVisibility();
+			return;
 		}
+		this.focusEditor();
+		this.editor.handleInput(data);
 	}
 
 	private getTrayOverrideLabel(): string | undefined {
@@ -4704,12 +4830,40 @@ export class InteractiveMode {
 
 	private getTrayContextLabel(): string | undefined {
 		const goalLabel = this.getTrayGoalLabel();
+		const heartbeatLabel = this.getTrayHeartbeatLabel();
 		const usage = this.getConnectionContextUsage();
 		const contextLabel =
 			usage && typeof usage.tokens === "number" && typeof usage.percent === "number"
 				? `${formatTokenCount(usage.tokens)} (${Math.round(usage.percent)}%)`
 				: undefined;
-		return [goalLabel, contextLabel].filter((label) => label !== undefined).join(" · ") || undefined;
+		return [goalLabel, heartbeatLabel, contextLabel].filter((label) => label !== undefined).join(" · ") || undefined;
+	}
+
+	private getTrayHeartbeatLabel(): string | undefined {
+		const heartbeat = this.connectionState?.heartbeat;
+		if (!heartbeat) {
+			return undefined;
+		}
+		const schedule = this.formatHeartbeatScheduleLabel(heartbeat);
+		const suffix = schedule ? ` (${schedule})` : "";
+		switch (heartbeat.status) {
+			case "active":
+				return `Heartbeat active${suffix}`;
+			case "paused":
+				return `Heartbeat paused${suffix}`;
+			case "completed":
+			case "cancelled":
+				return undefined;
+			default: {
+				const _exhaustive: never = heartbeat.status;
+				return _exhaustive;
+			}
+		}
+	}
+
+	private formatHeartbeatScheduleLabel(heartbeat: AgentCronJob): string | undefined {
+		const schedule = heartbeat.schedule.expression.trim().replace(/^every\s+/i, "");
+		return schedule || undefined;
 	}
 
 	private getTrayGoalLabel(): string | undefined {
@@ -4974,6 +5128,56 @@ export class InteractiveMode {
 		return textBlocks.map((c) => (c as { text: string }).text).join("");
 	}
 
+	private createLegacyHeartbeatPromptMessage(
+		message: Message,
+		textContent: string,
+	): ReturnType<typeof createHeartbeatPromptMessage> | undefined {
+		const heartbeat = this.connectionState?.heartbeat;
+		if (
+			message.role !== "user" ||
+			!heartbeat ||
+			!this.isTextOnlyUserMessage(message) ||
+			textContent.trim() !== heartbeat.prompt.trim() ||
+			!this.isLikelyHeartbeatPromptTimestamp(heartbeat, message.timestamp)
+		) {
+			return undefined;
+		}
+
+		return createHeartbeatPromptMessage(heartbeat, message.timestamp);
+	}
+
+	private isTextOnlyUserMessage(message: Message): boolean {
+		if (message.role !== "user") {
+			return false;
+		}
+		if (typeof message.content === "string") {
+			return true;
+		}
+		return message.content.every((content) => content.type === "text");
+	}
+
+	private isLikelyHeartbeatPromptTimestamp(job: AgentCronJob, timestamp: number): boolean {
+		const directRunTimes = [job.lastRunAt, job.nextRunAt]
+			.map((value) => (value ? Date.parse(value) : Number.NaN))
+			.filter((value) => Number.isFinite(value));
+		const tolerance = this.heartbeatLegacyPromptToleranceMs(job);
+		if (directRunTimes.some((runAt) => Math.abs(timestamp - runAt) <= tolerance)) {
+			return true;
+		}
+		return false;
+	}
+
+	private heartbeatLegacyPromptToleranceMs(job: AgentCronJob): number {
+		const intervalMs = job.schedule.intervalMs;
+		if (!intervalMs || intervalMs <= 0) {
+			return HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS;
+		}
+		return Math.min(
+			HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS,
+			Math.max(HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS, intervalMs / 3),
+		);
+	}
+
 	/**
 	 * Show a status message in the chat.
 	 *
@@ -5029,10 +5233,15 @@ export class InteractiveMode {
 			}
 			case "custom": {
 				if (message.display) {
-					const renderer = this.bindLocalSessionExtensions
-						? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
-						: undefined;
-					const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
+					const component = isInjectedPromptMessage(message)
+						? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
+						: new CustomMessageComponent(
+								message,
+								this.bindLocalSessionExtensions
+									? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
+									: undefined,
+								this.getMarkdownThemeWithSettings(),
+							);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}
@@ -5055,6 +5264,20 @@ export class InteractiveMode {
 			case "user": {
 				const textContent = this.getUserMessageText(message);
 				if (textContent) {
+					const heartbeatMessage = this.createLegacyHeartbeatPromptMessage(message, textContent);
+					if (heartbeatMessage) {
+						if (this.chatContainer.children.length > 0) {
+							this.chatContainer.addChild(new Spacer(1));
+						}
+						const component = new InjectedPromptMessageComponent(
+							heartbeatMessage,
+							this.getMarkdownThemeWithSettings(),
+						);
+						component.setExpanded(this.toolOutputExpanded);
+						this.chatContainer.addChild(component);
+						break;
+					}
+
 					if (this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
 					}
@@ -5387,9 +5610,9 @@ export class InteractiveMode {
 	 * leak into the parent UI, then stops the renderer and theme watcher. Safe to
 	 * call from a crash path too; idempotent via stop().
 	 */
-	async teardownSessionUi(): Promise<void> {
+	async teardownSessionUi(options: { preserveAltScreen?: boolean } = {}): Promise<void> {
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
-		this.stop();
+		this.stop({ preserveAltScreen: options.preserveAltScreen });
 		stopThemeWatcher();
 	}
 
@@ -5399,12 +5622,21 @@ export class InteractiveMode {
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
 
-		await this.teardownSessionUi();
+		await this.teardownSessionUi({ preserveAltScreen: true });
+		let handoffComplete = false;
 		try {
-			await this.agentConnection.dispose();
+			try {
+				await this.agentConnection.dispose();
+			} finally {
+				await this.options.onShutdown?.();
+				this.onInputCallback?.(undefined);
+				handoffComplete = true;
+			}
 		} finally {
-			await this.options.onShutdown?.();
-			this.onInputCallback?.(undefined);
+			if (!handoffComplete) {
+				this.ui.terminal.leaveAltScreen();
+				this.ui.terminal.showCursor();
+			}
 		}
 	}
 
@@ -5806,11 +6038,11 @@ export class InteractiveMode {
 		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
 			this.queuedMessagesContainer.addChild(new Spacer(1));
 			for (const message of steeringMessages) {
-				const text = theme.fg("dim", `Steering: ${message}`);
+				const text = theme.fg("dim", isLabeledQueuedPreview(message) ? message : `Steering: ${message}`);
 				this.queuedMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
 			for (const message of followUpMessages) {
-				const text = theme.fg("dim", `Follow-up: ${message}`);
+				const text = theme.fg("dim", isLabeledQueuedPreview(message) ? message : `Follow-up: ${message}`);
 				this.queuedMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
 			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
@@ -6278,6 +6510,16 @@ export class InteractiveMode {
 			description:
 				level === current ? `${THINKING_LEVEL_DESCRIPTIONS[level]} (current)` : THINKING_LEVEL_DESCRIPTIONS[level],
 		}));
+	}
+
+	private getHeartbeatArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+		const term = prefix.trim().toLowerCase();
+		const filtered = term
+			? HEARTBEAT_ARGUMENT_COMPLETIONS.filter(
+					(item) => item.value.toLowerCase().startsWith(term) || item.label.toLowerCase().startsWith(term),
+				)
+			: HEARTBEAT_ARGUMENT_COMPLETIONS;
+		return filtered.length === 0 ? null : filtered;
 	}
 
 	private handleEffortCommand(arg: string): void {
@@ -6987,6 +7229,89 @@ export class InteractiveMode {
 	// Command handlers
 	// =========================================================================
 
+	private async handleUpdateCommand(args: string): Promise<void> {
+		const entrypoint = process.argv[1];
+		if (!entrypoint) {
+			this.showError("Cannot determine current CLI entrypoint for update");
+			return;
+		}
+
+		const updateArgs = parseCommandArgs(args);
+		const includesSelf = updateArgsIncludeSelf(updateArgs);
+		const updateCwd = this.getCurrentCwd();
+		this.stopWorkingLoader();
+		await this.ui.terminal.drainInput(1000).catch(() => undefined);
+		this.ui.stop();
+
+		const updateEnv = includesSelf ? { ...process.env, [SELF_UPDATE_INTERACTIVE_CHILD_ENV]: "1" } : process.env;
+		const updateResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, "update", ...updateArgs], {
+			stdio: "inherit",
+			cwd: updateCwd,
+			env: updateEnv,
+		});
+		const updateExitCode = updateResult.status ?? (updateResult.signal ? 1 : 0);
+		const selfUpdateNotAttempted =
+			includesSelf && !updateResult.error && updateExitCode === SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE;
+
+		if (includesSelf && !selfUpdateNotAttempted) {
+			const relaunchArgs = buildUpdateRelaunchArgs(process.argv.slice(2), this.connectionState?.sessionFile);
+			if (updateResult.error) {
+				console.error(`Update failed: ${updateResult.error.message}`);
+				console.error(`Relaunching ${APP_NAME}...`);
+			} else if (updateExitCode !== 0) {
+				console.error(
+					updateResult.signal
+						? `Update terminated by signal ${updateResult.signal}`
+						: `Update exited with code ${updateExitCode}`,
+				);
+				console.error(`Relaunching ${APP_NAME}...`);
+			}
+			this.stop();
+			await this.agentConnection.dispose().catch(() => undefined);
+			try {
+				await this.options.onShutdown?.();
+			} catch {
+				// The update already completed; do not block relaunch on local teardown.
+			}
+			const relaunchResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, ...relaunchArgs], {
+				stdio: "inherit",
+				cwd: updateCwd,
+				env: process.env,
+			});
+			if (relaunchResult.error) {
+				console.error(`Failed to relaunch ${APP_NAME}: ${relaunchResult.error.message}`);
+				process.exit(1);
+			}
+			process.exit(relaunchResult.status ?? (relaunchResult.signal ? 1 : 0));
+		}
+
+		this.ui.start();
+		if (this.fullscreenEnabled) {
+			this.applyFullscreen(true);
+		}
+		this.ui.requestRender(true);
+
+		if (selfUpdateNotAttempted) {
+			this.showStatus(`Update did not change ${APP_NAME}. Reloading resources...`);
+			await this.handleReloadCommand();
+			return;
+		}
+		if (updateResult.error) {
+			this.showError(`Update failed: ${updateResult.error.message}`);
+			return;
+		}
+		if (updateExitCode !== 0) {
+			this.showError(
+				updateResult.signal
+					? `Update terminated by signal ${updateResult.signal}`
+					: `Update exited with code ${updateExitCode}`,
+			);
+			return;
+		}
+		this.showStatus("Packages updated. Reloading resources...");
+		await this.handleReloadCommand();
+	}
+
 	private async handleReloadCommand(): Promise<void> {
 		if (this.isAgentStreaming()) {
 			this.showWarning("Wait for the current response to finish before reloading.");
@@ -7532,11 +7857,13 @@ export class InteractiveMode {
 			switch (command.type) {
 				case "status": {
 					const heartbeat = await this.agentConnection.getHeartbeat();
+					this.patchConnectionState({ heartbeat: heartbeat ?? null });
 					this.showHeartbeat(heartbeat);
 					return;
 				}
 				case "set": {
 					const heartbeat = await this.agentConnection.setHeartbeat(command.schedule, command.instruction);
+					this.patchConnectionState({ heartbeat });
 					this.showStatus(`Heartbeat set\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
 					return;
 				}
@@ -7546,6 +7873,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
+					this.patchConnectionState({ heartbeat });
 					this.showStatus("Heartbeat paused");
 					return;
 				}
@@ -7555,6 +7883,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
+					this.patchConnectionState({ heartbeat });
 					this.showStatus(`Heartbeat resumed\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
 					return;
 				}
@@ -7564,6 +7893,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
+					this.patchConnectionState({ heartbeat });
 					this.showStatus("Heartbeat cleared");
 					return;
 				}
@@ -7939,7 +8269,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 		}
 	}
 
-	stop(): void {
+	stop(options: { preserveAltScreen?: boolean } = {}): void {
 		this.unregisterSignalHandlers();
 		this.clearCtrlCExitHint({ render: false });
 		if (this.settingsManager.getShowTerminalProgress()) {
@@ -7955,7 +8285,10 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			this.ui.stop();
+			this.ui.stop({
+				preserveAltScreen: options.preserveAltScreen,
+				flushFullscreen: options.preserveAltScreen ? false : undefined,
+			});
 			this.isInitialized = false;
 		}
 	}

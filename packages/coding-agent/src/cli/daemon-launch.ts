@@ -182,6 +182,10 @@ export function isSessionRestorableAfterDaemonStop(summary: SessionSummary): boo
 	return isSessionReopenableAfterDaemonStop(summary) && !hasSessionVolatileWorkForDaemonStop(summary);
 }
 
+export function isSessionBusy(summary: SessionSummary): boolean {
+	return hasSessionVolatileWorkForDaemonStop(summary);
+}
+
 export function isSessionAtRiskFromDaemonStop(summary: SessionSummary): boolean {
 	if (summary.activeSessionId === undefined) {
 		return hasSessionVolatileWorkForDaemonStop(summary);

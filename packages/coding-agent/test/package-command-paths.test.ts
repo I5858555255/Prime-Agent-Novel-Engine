@@ -3,22 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as DaemonLaunchModule from "../src/cli/daemon-launch.js";
-import type { DaemonSessionRestoreResult, RunningDaemonProbe } from "../src/cli/daemon-launch.js";
+import type { RunningDaemonProbe } from "../src/cli/daemon-launch.js";
 import { APP_NAME, ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.js";
 import { main } from "../src/main.js";
-import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
+import type * as DaemonSocketModule from "../src/modes/daemon/daemon-socket.js";
 
 const daemonLaunchMock = vi.hoisted(() => ({
 	probeRunningDaemonSessions: vi.fn<() => Promise<RunningDaemonProbe>>(),
-	relaunchDaemonAndRestoreSessions:
-		vi.fn<
-			(
-				socketPath: string,
-				sessions: readonly SessionSummary[],
-				spawnCwd?: string,
-				options?: { allowAtRiskSessions?: boolean; latestProbe?: RunningDaemonProbe },
-			) => Promise<DaemonSessionRestoreResult>
-		>(),
+}));
+
+const daemonSocketMock = vi.hoisted(() => ({
+	socketPath: "",
 }));
 
 vi.mock("../src/cli/daemon-launch.js", async (importOriginal) => {
@@ -26,28 +21,16 @@ vi.mock("../src/cli/daemon-launch.js", async (importOriginal) => {
 	return {
 		...actual,
 		probeRunningDaemonSessions: daemonLaunchMock.probeRunningDaemonSessions,
-		relaunchDaemonAndRestoreSessions: daemonLaunchMock.relaunchDaemonAndRestoreSessions,
 	};
 });
 
-function sessionSummary(overrides: Partial<SessionSummary>): SessionSummary {
+vi.mock("../src/modes/daemon/daemon-socket.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof DaemonSocketModule>();
 	return {
-		id: "session",
-		lifecycle: "live",
-		activity: "idle",
-		runtimeKind: "top-level",
-		activeSessionId: "active",
-		sessionId: "session",
-		sessionFile: "/tmp/session.jsonl",
-		cwd: "/tmp",
-		isStreaming: false,
-		isCompacting: false,
-		attachedClients: 0,
-		messageCount: 1,
-		pendingMessageCount: 0,
-		...overrides,
+		...actual,
+		defaultDaemonSocketPath: () => daemonSocketMock.socketPath,
 	};
-}
+});
 
 function restoreEnv(name: string, value: string | undefined): void {
 	if (value === undefined) {
@@ -93,8 +76,7 @@ describe("package commands", () => {
 		process.env[ENV_AGENT_DIR] = agentDir;
 		daemonLaunchMock.probeRunningDaemonSessions.mockReset();
 		daemonLaunchMock.probeRunningDaemonSessions.mockResolvedValue({ reachable: false });
-		daemonLaunchMock.relaunchDaemonAndRestoreSessions.mockReset();
-		daemonLaunchMock.relaunchDaemonAndRestoreSessions.mockResolvedValue({ restored: 0, total: 0, failed: [] });
+		daemonSocketMock.socketPath = join(tempDir, "daemon.sock");
 		process.chdir(projectDir);
 	});
 
@@ -105,6 +87,7 @@ describe("package commands", () => {
 		restoreEnv(ENV_AGENT_DIR, originalAgentDir);
 		restoreEnv("PI_PACKAGE_DIR", originalPiPackageDir);
 		restoreEnv("PRIME_AGENT_DOWNLOAD_BASE_URL", originalPrimeAgentDownloadBaseUrl);
+		daemonSocketMock.socketPath = "";
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
 		rmSync(tempDir, { recursive: true, force: true });
 	});
@@ -230,135 +213,6 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			expect(recordedArgs).toContain(globalPrefix);
 			expect(recordedArgs).toContain(tarballUrl);
 			expect(recordedArgs).not.toContain(projectPrefix);
-		} finally {
-			logSpy.mockRestore();
-			errorSpy.mockRestore();
-		}
-	});
-
-	it("relaunches the daemon and restores sessions from a post-update probe", async () => {
-		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
-		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
-		const recordPath = join(tempDir, "self-update.json");
-		const preUpdateSession = sessionSummary({
-			activeSessionId: "active-1",
-			sessionId: "session-1",
-			sessionFile: join(tempDir, "sessions", "session-1.jsonl"),
-		});
-		const postUpdateSession = sessionSummary({
-			activeSessionId: "active-2",
-			sessionId: "session-2",
-			sessionFile: join(tempDir, "sessions", "session-2.jsonl"),
-		});
-		mkdirSync(selfPackageDir, { recursive: true });
-		writeFileSync(
-			fakeNpmPath,
-			`const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),prefix=args[args.indexOf("--prefix")+1];
-if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
-else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
-`,
-		);
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({ npmCommand: [originalExecPath, fakeNpmPath, "--prefix", globalPrefix] }, null, 2),
-		);
-		process.env.PI_PACKAGE_DIR = selfPackageDir;
-		Object.defineProperty(process, "execPath", {
-			value: join(selfPackageDir, "dist", "cli.js"),
-			configurable: true,
-		});
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => Response.json({ version: getNewerPatchVersion() })),
-		);
-		daemonLaunchMock.probeRunningDaemonSessions
-			.mockResolvedValueOnce({
-				reachable: true,
-				activeSessions: [preUpdateSession],
-			})
-			.mockResolvedValueOnce({
-				reachable: true,
-				activeSessions: [postUpdateSession],
-			});
-
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		try {
-			await expect(main(["update", "--self"])).resolves.toBeUndefined();
-
-			expect(process.exitCode).toBeUndefined();
-			expect(errorSpy).not.toHaveBeenCalled();
-			expect(existsSync(recordPath)).toBe(true);
-			expect(daemonLaunchMock.probeRunningDaemonSessions).toHaveBeenCalledTimes(2);
-			expect(daemonLaunchMock.relaunchDaemonAndRestoreSessions).toHaveBeenCalledOnce();
-			expect(daemonLaunchMock.relaunchDaemonAndRestoreSessions).toHaveBeenCalledWith(
-				expect.any(String),
-				[postUpdateSession],
-				undefined,
-				{
-					allowAtRiskSessions: false,
-					latestProbe: { reachable: true, activeSessions: [postUpdateSession] },
-				},
-			);
-		} finally {
-			logSpy.mockRestore();
-			errorSpy.mockRestore();
-		}
-	});
-
-	it("carries prior force consent when post-update probing cannot list sessions", async () => {
-		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
-		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
-		const recordPath = join(tempDir, "self-update.json");
-		const atRiskSession = sessionSummary({
-			activeSessionId: "busy",
-			sessionId: "session-busy",
-			sessionFile: join(tempDir, "sessions", "busy.jsonl"),
-			isStreaming: true,
-		});
-		mkdirSync(selfPackageDir, { recursive: true });
-		writeFileSync(
-			fakeNpmPath,
-			`const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),prefix=args[args.indexOf("--prefix")+1];
-if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
-else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
-`,
-		);
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({ npmCommand: [originalExecPath, fakeNpmPath, "--prefix", globalPrefix] }, null, 2),
-		);
-		process.env.PI_PACKAGE_DIR = selfPackageDir;
-		Object.defineProperty(process, "execPath", {
-			value: join(selfPackageDir, "dist", "cli.js"),
-			configurable: true,
-		});
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => Response.json({ version: getNewerPatchVersion() })),
-		);
-		daemonLaunchMock.probeRunningDaemonSessions
-			.mockResolvedValueOnce({ reachable: true, activeSessions: [atRiskSession] })
-			.mockResolvedValueOnce({ reachable: true });
-
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		try {
-			await expect(main(["update", "--self", "--force"])).resolves.toBeUndefined();
-
-			expect(process.exitCode).toBeUndefined();
-			expect(errorSpy).not.toHaveBeenCalled();
-			expect(existsSync(recordPath)).toBe(true);
-			expect(daemonLaunchMock.relaunchDaemonAndRestoreSessions).toHaveBeenCalledWith(
-				expect.any(String),
-				[atRiskSession],
-				undefined,
-				{ allowAtRiskSessions: true, latestProbe: { reachable: true } },
-			);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
