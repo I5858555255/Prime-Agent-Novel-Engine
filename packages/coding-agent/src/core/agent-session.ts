@@ -2455,6 +2455,8 @@ export class AgentSession {
 				await this._checkCompaction(lastAssistant, false);
 			}
 
+			await this._waitForPendingModelSelectEmit();
+
 			drainedNextTurnMessages = this._pendingNextTurnMessages;
 			this._pendingNextTurnMessages = [];
 			messages = [...drainedNextTurnMessages, message];
@@ -2651,6 +2653,8 @@ export class AgentSession {
 				}
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
+
+			await this._waitForPendingModelSelectEmit();
 			if (options?.skipPrePromptWork) {
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
 				messages = [];
@@ -2694,10 +2698,6 @@ export class AgentSession {
 				const lastAssistant = this._findLastAssistantMessage();
 				if (lastAssistant) {
 					await this._checkCompaction(lastAssistant, false);
-				}
-
-				if (!this._modelSelectEmitContext.getStore()) {
-					await this._modelSelectEmitQueue;
 				}
 
 				// Build messages array (custom message if any, then user message)
@@ -3437,6 +3437,12 @@ export class AgentSession {
 
 	private _shouldWaitForModelSelectEmit(options: ModelSelectOptions): boolean {
 		return options.waitForExtensions !== false && !this._modelSelectEmitContext.getStore();
+	}
+
+	private async _waitForPendingModelSelectEmit(): Promise<void> {
+		if (!this._modelSelectEmitContext.getStore()) {
+			await this._modelSelectEmitQueue;
+		}
 	}
 
 	/**

@@ -1027,6 +1027,7 @@ describe("InteractiveMode model selection persistence", () => {
 		applySelectedModel?: (model: AgentConnectionModel) => Promise<void>;
 		currentModel?: AgentConnectionModel;
 		connectionModelsFetchedAt?: number;
+		scopedModels?: AgentConnectionState["scopedModels"];
 	}) {
 		let overlayComponent: Component | undefined;
 		const hide = vi.fn();
@@ -1064,7 +1065,7 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.updateEditorBorderColor = vi.fn();
 		fakeThis.showStatus = vi.fn();
 		fakeThis.showError = vi.fn();
-		fakeThis.getScopedModelState = vi.fn(() => []);
+		fakeThis.getScopedModelState = vi.fn(() => options.scopedModels ?? []);
 		fakeThis.getCurrentModel = vi.fn(() => options.currentModel);
 		fakeThis.findExactModelMatch = (
 			InteractiveMode.prototype as unknown as {
@@ -1292,6 +1293,32 @@ describe("InteractiveMode model selection persistence", () => {
 
 		liveModels.resolve([]);
 		await flushAsyncWork();
+		getSelector().handleInput("\x1b");
+		await expect(result).resolves.toEqual({ status: "cancelled" });
+	});
+
+	test("keeps cached daemon models visible when scoped models are active", async () => {
+		const scopedModel = createModel("openai", "scoped");
+		const catalogModel = createModel("anthropic", "catalog");
+		const getAvailableModels = vi.fn(async () => [catalogModel]);
+		const { fakeThis, getSelector } = createSelectorOverlayHarness({
+			connectionModels: [catalogModel],
+			connectionModelsFetchedAt: Date.now(),
+			getAvailableModels,
+			scopedModels: [{ model: scopedModel }],
+		});
+
+		const result = fakeThis.showModelSelectorAsync();
+
+		expect(getAvailableModels).not.toHaveBeenCalled();
+		expect(getSelector().render(120).join("\n")).toContain("scoped");
+		expect(fakeThis.getCachedModelCandidates()).toEqual([scopedModel, catalogModel]);
+		await expect(fakeThis.findExactModelMatch("catalog")).resolves.toEqual(catalogModel);
+
+		getSelector().handleInput("\t");
+		expect(getSelector().render(120).join("\n")).toContain("catalog");
+		expect(getAvailableModels).not.toHaveBeenCalled();
+
 		getSelector().handleInput("\x1b");
 		await expect(result).resolves.toEqual({ status: "cancelled" });
 	});

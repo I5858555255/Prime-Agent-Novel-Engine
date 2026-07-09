@@ -6333,10 +6333,7 @@ export class InteractiveMode {
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined> {
-		const scopedModels = this.getScopedModelState();
-		const cachedModels =
-			scopedModels.length > 0 ? scopedModels.map((scoped) => scoped.model) : [...this.connectionModels];
-		const cachedMatch = findExactModelReferenceMatch(searchTerm, cachedModels);
+		const cachedMatch = findExactModelReferenceMatch(searchTerm, this.getCachedModelCandidates());
 		if (cachedMatch) {
 			return cachedMatch;
 		}
@@ -6394,15 +6391,14 @@ export class InteractiveMode {
 	}
 
 	private getCachedModelCandidates(): AgentConnectionModel[] {
-		const scopedModels = this.getScopedModelState();
-		if (scopedModels.length > 0) {
-			return scopedModels.map((scoped) => scoped.model);
+		const modelsById = new Map<string, AgentConnectionModel>();
+		for (const scoped of this.getScopedModelState()) {
+			modelsById.set(`${scoped.model.provider}/${scoped.model.id}`, scoped.model);
 		}
-
-		if (this.connectionModels.length > 0) {
-			return [...this.connectionModels];
+		for (const model of this.connectionModels) {
+			modelsById.set(`${model.provider}/${model.id}`, model);
 		}
-		return [];
+		return [...modelsById.values()];
 	}
 
 	private getModelSelectorRefreshPromise(

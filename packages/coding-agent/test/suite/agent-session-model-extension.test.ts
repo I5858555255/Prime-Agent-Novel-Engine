@@ -2,6 +2,7 @@ import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentCronJob } from "../../src/core/cron-jobs.js";
 import type { ExtensionAPI } from "../../src/index.js";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./harness.js";
 
@@ -18,6 +19,24 @@ function createDeferred<T = void>(): {
 
 async function flushAsyncWork(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function createHeartbeat(): AgentCronJob {
+	return {
+		id: "heartbeat-1",
+		status: "active",
+		source: "heartbeat",
+		activeSessionId: "active-1",
+		sessionId: "session-1",
+		sessionFile: "/tmp/session.jsonl",
+		cwd: "/tmp/project",
+		prompt: "Check whether the long-running task needs another step.",
+		schedule: { kind: "interval", expression: "every 5m", intervalMs: 300_000 },
+		createdAt: "2026-01-01T00:00:00.000Z",
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		nextRunAt: "2026-01-01T00:05:00.000Z",
+		runCount: 2,
+	};
 }
 
 describe("AgentSession model and extension characterization", () => {
@@ -295,6 +314,106 @@ describe("AgentSession model and extension characterization", () => {
 			{ role: "user", text: "hi" },
 		]);
 		expect(getAssistantTexts(harness)).toContain("after model context");
+	});
+
+	it("includes nextTurn messages queued by pending model_select handlers in accepted prompts", async () => {
+		const handlerStarted = createDeferred();
+		const finishHandler = createDeferred();
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async () => {
+						handlerStarted.resolve();
+						await finishHandler.promise;
+						await pi.sendMessage(
+							{
+								customType: "model-context",
+								content: "accepted model context",
+								display: false,
+							},
+							{ deliverAs: "nextTurn" },
+						);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("accepted")]);
+
+		await harness.session.setModel(harness.getModel("faux-2")!, { waitForExtensions: false });
+		await handlerStarted.promise;
+
+		const accepted = harness.session.acceptAgentMessagePrompt("agent-to-agent payload", {
+			expandPromptTemplates: false,
+		});
+		await flushAsyncWork();
+
+		expect(harness.session.messages).toHaveLength(0);
+
+		finishHandler.resolve();
+		await accepted;
+		await harness.session.agent.waitForIdle();
+
+		expect(
+			harness.session.messages.slice(0, 2).map((message) => ({ role: message.role, text: getMessageText(message) })),
+		).toEqual([
+			{ role: "custom", text: "accepted model context" },
+			{ role: "user", text: "agent-to-agent payload" },
+		]);
+		expect(getAssistantTexts(harness)).toContain("accepted");
+	});
+
+	it("includes nextTurn messages queued by pending model_select handlers in injected prompts", async () => {
+		const handlerStarted = createDeferred();
+		const finishHandler = createDeferred();
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("model_select", async () => {
+						handlerStarted.resolve();
+						await finishHandler.promise;
+						await pi.sendMessage(
+							{
+								customType: "model-context",
+								content: "heartbeat model context",
+								display: false,
+							},
+							{ deliverAs: "nextTurn" },
+						);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("heartbeat")]);
+
+		await harness.session.setModel(harness.getModel("faux-2")!, { waitForExtensions: false });
+		await handlerStarted.promise;
+
+		const heartbeat = harness.session.promptHeartbeat(createHeartbeat());
+		await flushAsyncWork();
+
+		expect(harness.session.messages).toHaveLength(0);
+
+		finishHandler.resolve();
+		await heartbeat;
+		await harness.session.agent.waitForIdle();
+
+		expect(
+			harness.session.messages.slice(0, 2).map((message) => ({ role: message.role, text: getMessageText(message) })),
+		).toEqual([
+			{ role: "custom", text: "heartbeat model context" },
+			{ role: "custom", text: "Check whether the long-running task needs another step." },
+		]);
+		expect(getAssistantTexts(harness)).toContain("heartbeat");
 	});
 
 	it("allows model_select handlers to enqueue user messages without waiting on themselves", async () => {
