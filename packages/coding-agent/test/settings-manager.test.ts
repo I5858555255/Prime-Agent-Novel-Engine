@@ -228,6 +228,45 @@ describe("SettingsManager", () => {
 
 			expect(optedOut.getAutoRefineSettings().enabled).toBe(false);
 		});
+
+		it("falls back to defaults for non-numeric turnInterval and cooldownMs", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ autoRefine: { turnInterval: "oops", cooldownMs: "nope" } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			const settings = manager.getAutoRefineSettings();
+			expect(settings.turnInterval).toBe(25);
+			expect(settings.cooldownMs).toBe(20 * 60_000);
+			expect(Number.isFinite(settings.turnInterval)).toBe(true);
+			expect(Number.isFinite(settings.cooldownMs)).toBe(true);
+		});
+
+		it("ignores non-finite numeric values that parse to Infinity", () => {
+			// 1e999 is valid JSON that JSON.parse turns into Infinity.
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				`{ "autoRefine": { "turnInterval": 1e999, "cooldownMs": 1e999 } }`,
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			const settings = manager.getAutoRefineSettings();
+			expect(settings.turnInterval).toBe(25);
+			expect(settings.cooldownMs).toBe(20 * 60_000);
+		});
+
+		it("preserves valid numeric overrides", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ autoRefine: { turnInterval: 5, cooldownMs: 1000 } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			const settings = manager.getAutoRefineSettings();
+			expect(settings.turnInterval).toBe(5);
+			expect(settings.cooldownMs).toBe(1000);
+		});
 	});
 
 	describe("recentModels", () => {
