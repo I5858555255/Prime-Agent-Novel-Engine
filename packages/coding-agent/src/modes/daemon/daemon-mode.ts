@@ -2639,7 +2639,12 @@ export class AgentDaemon {
 		}
 		state.unsubscribe?.();
 		await state.runtime.dispose();
-		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
+		// A reopen is an internal handoff, not a user-visible closure: broadcasting
+		// session_closed would surface to attached clients as a connection error. Skip it;
+		// clients still detach below and re-attach to the reopened subagent session.
+		if (reason !== "reopened") {
+			this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
+		}
 		for (const client of state.clients) {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
 		}

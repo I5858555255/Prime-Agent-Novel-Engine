@@ -2545,12 +2545,20 @@ describe("daemon mode helpers", () => {
 			const internals = daemon as unknown as {
 				sessions: Map<string, ActiveSessionState>;
 				closeSession(state: ActiveSessionState, reason: string): Promise<void>;
+				broadcastToSession(state: ActiveSessionState, message: { type: string }): void;
 			};
+			const broadcastSpy = vi.spyOn(internals, "broadcastToSession");
 			internals.sessions.set(state.activeSessionId, state);
 			internals.sessions.set(nested.activeSessionId, nested);
 
 			await internals.closeSession(state, "reopened");
 
+			// A reopen is an internal handoff, not a user-visible closure: the reopened session
+			// itself must not get a session_closed broadcast (which clients would surface as a
+			// connection error). The nested child, closed normally, still may.
+			expect(
+				broadcastSpy.mock.calls.some(([target, message]) => message.type === "session_closed" && target === state),
+			).toBe(false);
 			// The reopened session's file is handed to the next run, so it must not be archived.
 			expect(appendSessionState).not.toHaveBeenCalledWith({ status: "archived" });
 			expect(dispose).toHaveBeenCalledOnce();
