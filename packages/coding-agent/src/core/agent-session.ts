@@ -5689,10 +5689,13 @@ export class AgentSession {
 		// Host mode (daemon / in-process runtime): route through the host so its own
 		// registry entry (e.g. the daemon ActiveSessionState) is evicted, not just the
 		// AgentSession. Covers the case where the parent never held the session in
-		// _retainedRlmChildSessions but the host still owns the retained runtime.
+		// _retainedRlmChildSessions but the host still owns the retained runtime. A teardown
+		// error is intentionally NOT swallowed here: it must fail the reopen rather than
+		// leave an orphaned nested session behind (the host returns false only when it found
+		// nothing to close).
 		const host = this._subagentRuntimeHost;
 		if (host?.closeRetainedRlmSubagentRuntime) {
-			const closed = await host.closeRetainedRlmSubagentRuntime(childId).catch(() => false);
+			const closed = await host.closeRetainedRlmSubagentRuntime(childId);
 			// If the host had nothing to close but the parent still holds the session, fall
 			// back to disposing it directly so it can't linger.
 			if (!closed && retained) {
@@ -5901,7 +5904,11 @@ export class AgentSession {
 		// the same id, so its saved history is reopened from disk instead of two sessions
 		// sharing one file. Detach it synchronously here (so nothing disposes it twice) and
 		// await full teardown inside the task before the new runtime opens the session file.
+		// A teardown failure must fail the reopen; the task awaits this and surfaces the
+		// error. Attach a no-op rejection sink so the interval between this synchronous
+		// start and that await can't raise an unhandled rejection.
 		const retainedDispose = persistentPlan ? this._disposeRetainedRlmChildSession(childNodeId) : undefined;
+		retainedDispose?.catch(() => undefined);
 		const startedAt = Date.now();
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const label = rlmChildLabel(prompt);

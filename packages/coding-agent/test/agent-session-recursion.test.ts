@@ -1501,6 +1501,32 @@ describe("AgentSession persistent subagents", () => {
 		expect(closeCalls.length).toBeGreaterThanOrEqual(1);
 	});
 
+	it("fails the reopen when the host's retained-session teardown throws", async () => {
+		const root = createPersistentSession();
+		const inspectable = root as unknown as {
+			_subagentRuntimeHost?: unknown;
+			_createInlineRlmSubagentRuntime(options: unknown): unknown;
+		};
+		let failNext = false;
+		const host = {
+			createRlmSubagentRuntime: async (options: unknown) => inspectable._createInlineRlmSubagentRuntime(options),
+			closeRetainedRlmSubagentRuntime: async () => {
+				if (failNext) {
+					throw new Error("nested teardown failed");
+				}
+				return false;
+			},
+		};
+		inspectable._subagentRuntimeHost = host;
+
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		// The reopen must surface a failed retained-session teardown, not swallow it.
+		failNext = true;
+		await expect(root.runRlmChild("second", { persist: true, persistent_id: "reviewer" })).rejects.toThrow(
+			"nested teardown failed",
+		);
+	});
+
 	it("rejects a non-persisted parent for persistent subagents", async () => {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
