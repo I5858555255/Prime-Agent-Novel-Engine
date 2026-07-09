@@ -300,6 +300,38 @@ describe("session selector path/delete interactions", () => {
 		expect(stripAnsi(selector.render(120).join("\n"))).toContain("current folder");
 	});
 
+	it("keeps streamed threaded sessions flat until loading completes", async () => {
+		const parent = makeSession({ id: "parent", name: "Parent" });
+		const child = makeSession({ id: "child", name: "Child", parentSessionPath: parent.path });
+		const sessionsDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
+		const onSelect = vi.fn();
+
+		const selector = new SessionSelectorComponent(
+			async (callbacks) => {
+				callbacks?.onSession?.(child);
+				callbacks?.onSession?.(parent);
+				return sessionsDeferred.promise;
+			},
+			async () => [],
+			onSelect,
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings },
+		);
+		await flushPromises();
+
+		const list = selector.getSessionList();
+		expect(stripAnsi(selector.render(120).join("\n"))).not.toContain("└─");
+
+		sessionsDeferred.resolve([parent, child]);
+		await flushPromises();
+
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain("└─ ✓ Child");
+		list.handleInput("\r");
+		expect(onSelect).toHaveBeenCalledWith(child.path);
+	});
+
 	it("does not switch scope back to All when All load resolves after toggling back to Current", async () => {
 		const currentSessions = [makeSession({ id: "current" })];
 		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();

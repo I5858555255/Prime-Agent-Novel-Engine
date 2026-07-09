@@ -291,6 +291,7 @@ class SessionList implements Component, Focusable {
 	private nameFilter: NameFilter = "all";
 	private keybindings: KeybindingsManager;
 	private showPath = false;
+	private streaming = false;
 	private confirmingDeletePath: string | null = null;
 	private deleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 	private currentSessionCanonicalPath?: string;
@@ -360,10 +361,18 @@ class SessionList implements Component, Focusable {
 		this.filterSessions(this.searchInput.getValue());
 	}
 
-	setSessions(sessions: AgentConnectionSavedSessionInfo[], showCwd: boolean): void {
+	setSessions(sessions: AgentConnectionSavedSessionInfo[], showCwd: boolean, streaming = false): void {
+		const selectedPath = this.getSelectedSessionPath();
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
+		this.streaming = streaming;
 		this.filterSessions(this.searchInput.getValue());
+		if (selectedPath) {
+			const selectedIndex = this.filteredSessions.findIndex((session) => session.session.path === selectedPath);
+			if (selectedIndex >= 0) {
+				this.selectedIndex = selectedIndex;
+			}
+		}
 	}
 
 	private filterSessions(query: string): void {
@@ -371,7 +380,7 @@ class SessionList implements Component, Focusable {
 		const nameFiltered =
 			this.nameFilter === "all" ? this.allSessions : this.allSessions.filter((session) => hasSessionName(session));
 
-		if (this.sortMode === "threaded" && !trimmed) {
+		if (this.sortMode === "threaded" && !trimmed && !this.streaming) {
 			// Threaded mode without search: show tree structure
 			const roots = buildSessionTree(nameFiltered);
 			this.filteredSessions = flattenSessionTree(roots);
@@ -976,7 +985,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		const onSession = (session: AgentConnectionSavedSessionInfo) => {
 			if (reason === "refresh" || !isLatestLoad() || !isCurrentView()) return;
 			streamedSessions.set(session.path, session);
-			this.sessionList.setSessions([...streamedSessions.values()], showCwd);
+			this.sessionList.setSessions([...streamedSessions.values()], showCwd, true);
 			this.requestRender();
 		};
 
