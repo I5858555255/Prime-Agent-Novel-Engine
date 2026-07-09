@@ -434,7 +434,7 @@ export class AgentDaemon {
 		} finally {
 			this.bindingSessions.delete(state.activeSessionId);
 		}
-		this.rebindCronJobsToState(state);
+		this.rebindCronJobsToState(state, { matchActiveSessionId: activeSessionId === undefined });
 		if (runtime.metadata.kind !== "subagent") {
 			// Mark the session as daemon-resident so a restarted daemon can
 			// restore it. Closes for kill/completed/replaced flip this back to
@@ -834,7 +834,7 @@ export class AgentDaemon {
 		return job;
 	}
 
-	private rebindCronJobsToState(state: ActiveSessionState): void {
+	private rebindCronJobsToState(state: ActiveSessionState, options: { matchActiveSessionId?: boolean } = {}): void {
 		const sessionFile = state.runtime.session.sessionFile;
 		if (!sessionFile) {
 			return;
@@ -844,6 +844,7 @@ export class AgentDaemon {
 			sessionId: state.runtime.session.sessionId,
 			sessionFile,
 			cwd: state.runtime.cwd,
+			matchActiveSessionId: options.matchActiveSessionId,
 		});
 		if (reboundJobs.some((job) => job.status === "active")) {
 			this.cronScheduler.wake();

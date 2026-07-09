@@ -369,6 +369,50 @@ describe("AgentCronJobStore", () => {
 		);
 	});
 
+	it("does not move jobs by active session id when rebinding only by session file", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const otherSessionHeartbeat = store.createHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session-1.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 5m",
+			prompt: "check on the first session",
+			now: start,
+		});
+		const targetSessionHeartbeat = store.createHeartbeat({
+			activeSessionId: "old-active-2",
+			sessionId: "session-2",
+			sessionFile: "/tmp/session-2.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 10m",
+			prompt: "check on the second session",
+			now: start,
+		});
+
+		const rebound = store.rebindSessionJobs({
+			activeSessionId: "active-1",
+			sessionId: "session-2",
+			sessionFile: "/tmp/session-2.jsonl",
+			cwd: "/tmp/project-restored",
+			matchActiveSessionId: false,
+		});
+
+		expect(rebound.map((job) => job.id)).toEqual([targetSessionHeartbeat.id]);
+		expect(store.getHeartbeat("active-1")).toMatchObject({
+			id: otherSessionHeartbeat.id,
+			sessionId: "session-1",
+			sessionFile: "/tmp/session-1.jsonl",
+		});
+		expect(store.getHeartbeat("old-active-2")).toBeUndefined();
+		expect(store.list().find((job) => job.id === targetSessionHeartbeat.id)).toMatchObject({
+			activeSessionId: "active-1",
+			sessionId: "session-2",
+			sessionFile: "/tmp/session-2.jsonl",
+			cwd: "/tmp/project-restored",
+		});
+	});
+
 	it("keeps multiple RLM heartbeats separate from the single user heartbeat", () => {
 		const store = new AgentCronJobStore(makeStorePath(tempDirs));
 		const userHeartbeat = store.createHeartbeat({

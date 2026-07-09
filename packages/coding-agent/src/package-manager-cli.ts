@@ -381,7 +381,7 @@ const UPDATE_RESTART_CONTINUATION_PROMPT =
 const UPDATE_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
 	atRiskDetail(count) {
 		const { noun, pronoun } = pluralizeSessions(count);
-		return `The running daemon has ${count} busy ${noun}. After the update installs, Prime Agent will stop ${pronoun}, restart the daemon, and resume interrupted work.`;
+		return `The running daemon has ${count} active ${noun}. After the update installs, Prime Agent will stop ${pronoun}, restart the daemon, and resume interrupted work.`;
 	},
 	unlistableDetail:
 		"A running daemon's sessions could not be listed. After the update installs, Prime Agent will stop resident sessions, restart the daemon, and resume interrupted work where possible.",

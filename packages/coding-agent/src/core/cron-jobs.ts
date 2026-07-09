@@ -149,11 +149,14 @@ export class AgentCronJobStore {
 		sessionId: string;
 		sessionFile: string;
 		cwd: string;
+		matchActiveSessionId?: boolean;
 	}): AgentCronJob[] {
 		const targetSessionFile = resolve(input.sessionFile);
 		const reboundJobs: AgentCronJob[] = [];
 		const jobs = this.readJobs().map((job) => {
-			if (job.activeSessionId !== input.activeSessionId && resolve(job.sessionFile) !== targetSessionFile) {
+			const matchesActiveSessionId =
+				input.matchActiveSessionId !== false && job.activeSessionId === input.activeSessionId;
+			if (!matchesActiveSessionId && resolve(job.sessionFile) !== targetSessionFile) {
 				return job;
 			}
 			if (
