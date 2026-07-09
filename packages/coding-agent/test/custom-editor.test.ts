@@ -68,6 +68,17 @@ describe("CustomEditor", () => {
 		expect(editor.getText()).toBe("/");
 	});
 
+	it("handles the question-mark shortcut as an app action", () => {
+		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
+		const handler = vi.fn();
+
+		editor.onAction("app.shortcuts", handler);
+		editor.handleInput("?");
+
+		expect(handler).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("");
+	});
+
 	it("renders a header line and blank spacer inside the top of the editor box", () => {
 		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
 		const withoutHeader = editor.render(40);

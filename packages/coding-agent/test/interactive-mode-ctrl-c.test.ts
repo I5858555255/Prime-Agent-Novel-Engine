@@ -13,6 +13,9 @@ type FakeEditor = {
 type FakeInteractiveMode = {
 	ctrlCExitHintExpiresAt: number;
 	ctrlCExitHintTimer: ReturnType<typeof setTimeout> | undefined;
+	escapeRepeatAction: "tree" | "clear" | undefined;
+	escapeRepeatExpiresAt: number;
+	escapeRepeatTimer: ReturnType<typeof setTimeout> | undefined;
 	isShuttingDown: boolean;
 	editor: FakeEditor;
 	connectionState: {
@@ -36,6 +39,7 @@ type FakeInteractiveMode = {
 	ui: { requestRender: Mock; onDebug?: () => void };
 	restoreQueuedMessagesToEditor: Mock;
 	updatePendingMessagesDisplay: Mock;
+	showTreeSelector: Mock;
 	shutdown: Mock;
 	updateEditorBorderColor: Mock;
 	defaultEditor?: {
@@ -48,6 +52,7 @@ type FakeInteractiveMode = {
 	};
 	keybindings?: KeybindingsManager;
 	handleDebugCommand?: Mock;
+	handleHotkeysCommand?: Mock;
 };
 
 function createEditor(text = ""): FakeEditor {
@@ -77,6 +82,9 @@ function createInteractiveFake(options: {
 	const fake: FakeInteractiveMode = {
 		ctrlCExitHintExpiresAt: 0,
 		ctrlCExitHintTimer: undefined,
+		escapeRepeatAction: undefined,
+		escapeRepeatExpiresAt: 0,
+		escapeRepeatTimer: undefined,
 		isShuttingDown: false,
 		editor,
 		connectionState: {
@@ -100,14 +108,16 @@ function createInteractiveFake(options: {
 		ui: { requestRender: vi.fn() },
 		restoreQueuedMessagesToEditor: vi.fn().mockResolvedValue(0),
 		updatePendingMessagesDisplay: vi.fn(),
+		showTreeSelector: vi.fn(),
 		shutdown: vi.fn().mockResolvedValue(undefined),
 		updateEditorBorderColor: vi.fn(),
+		handleHotkeysCommand: vi.fn(),
 	};
 	Object.setPrototypeOf(fake, InteractiveMode.prototype);
 	return fake;
 }
 
-describe("InteractiveMode Ctrl+C flow", () => {
+describe("InteractiveMode interrupt shortcuts", () => {
 	beforeEach(() => {
 		setKeybindings(new KeybindingsManager());
 		vi.useFakeTimers();
@@ -194,7 +204,7 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
 
-	it("makes Escape clear input without aborting the agent", () => {
+	it("interrupts streaming on first Escape and opens the tree on second Escape", () => {
 		const actionHandlers = new Map<string, () => void>();
 		const mode = createInteractiveFake({ editorText: "draft", streaming: true });
 		const defaultEditor: NonNullable<FakeInteractiveMode["defaultEditor"]> = {
@@ -211,12 +221,79 @@ describe("InteractiveMode Ctrl+C flow", () => {
 		Reflect.get(InteractiveMode.prototype, "setupKeyHandlers").call(mode);
 		expect(defaultEditor.onEscape).toBeDefined();
 		defaultEditor.onEscape?.();
+		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
+		expect(mode.editor.getText()).toBe("draft");
+		defaultEditor.onChange?.("queued draft");
+
+		defaultEditor.onEscape?.();
+
+		expect(mode.showTreeSelector).toHaveBeenCalledTimes(1);
+		expect(mode.shutdown).not.toHaveBeenCalled();
+	});
+
+	it("clears an idle draft on double Escape", () => {
+		const actionHandlers = new Map<string, () => void>();
+		const mode = createInteractiveFake({ editorText: "draft" });
+		const defaultEditor: NonNullable<FakeInteractiveMode["defaultEditor"]> = {
+			onAction: vi.fn((action: string, handler: () => void) => {
+				actionHandlers.set(action, handler);
+			}),
+		};
+		Object.assign(mode, {
+			defaultEditor,
+			keybindings: new KeybindingsManager(),
+			handleDebugCommand: vi.fn(),
+		});
+
+		Reflect.get(InteractiveMode.prototype, "setupKeyHandlers").call(mode);
+		defaultEditor.onEscape?.();
+		expect(mode.editor.getText()).toBe("draft");
+
+		defaultEditor.onEscape?.();
 
 		expect(mode.editor.getText()).toBe("");
-		expect(mode.agentConnection.abortRetry).not.toHaveBeenCalled();
-		expect(mode.agentConnection.abortCompaction).not.toHaveBeenCalled();
-		expect(mode.agentConnection.abortBranchSummary).not.toHaveBeenCalled();
-		expect(mode.agentConnection.abortBash).not.toHaveBeenCalled();
 		expect(mode.restoreQueuedMessagesToEditor).not.toHaveBeenCalled();
+	});
+
+	it("expires the Escape repeat window", async () => {
+		const actionHandlers = new Map<string, () => void>();
+		const mode = createInteractiveFake({ editorText: "draft" });
+		const defaultEditor: NonNullable<FakeInteractiveMode["defaultEditor"]> = {
+			onAction: vi.fn((action: string, handler: () => void) => {
+				actionHandlers.set(action, handler);
+			}),
+		};
+		Object.assign(mode, {
+			defaultEditor,
+			keybindings: new KeybindingsManager(),
+			handleDebugCommand: vi.fn(),
+		});
+
+		Reflect.get(InteractiveMode.prototype, "setupKeyHandlers").call(mode);
+		defaultEditor.onEscape?.();
+		await vi.advanceTimersByTimeAsync(500);
+		defaultEditor.onEscape?.();
+
+		expect(mode.editor.getText()).toBe("draft");
+	});
+
+	it("opens keyboard shortcuts from the configured app action", () => {
+		const actionHandlers = new Map<string, () => void>();
+		const mode = createInteractiveFake({});
+		const defaultEditor: NonNullable<FakeInteractiveMode["defaultEditor"]> = {
+			onAction: vi.fn((action: string, handler: () => void) => {
+				actionHandlers.set(action, handler);
+			}),
+		};
+		Object.assign(mode, {
+			defaultEditor,
+			keybindings: new KeybindingsManager(),
+			handleDebugCommand: vi.fn(),
+		});
+
+		Reflect.get(InteractiveMode.prototype, "setupKeyHandlers").call(mode);
+		actionHandlers.get("app.shortcuts")?.();
+
+		expect(mode.handleHotkeysCommand).toHaveBeenCalledTimes(1);
 	});
 });

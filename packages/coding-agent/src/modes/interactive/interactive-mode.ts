@@ -298,6 +298,7 @@ export interface BrandSplashHeaderOptions {
 	logo?: string;
 	getExtraMetadata?: () => readonly BrandSplashMetadataLine[];
 	getHideStartHint?: () => boolean;
+	getStartHint?: () => string;
 }
 
 export class BrandSplashHeader implements Component {
@@ -335,13 +336,14 @@ export class BrandSplashHeader implements Component {
 		};
 		const extraMetadata = this.options.getExtraMetadata?.() ?? [];
 		const hideStartHint = this.options.getHideStartHint?.() ?? false;
+		const startHint = this.options.getStartHint?.() ?? "type to start";
 		const metaLines = showMeta
 			? [
 					labelled("version", `v${this.version}`),
 					labelled("model", this.getModelId() ?? "—"),
 					labelled("cwd", formatSplashCwd(this.getCwd())),
 					...extraMetadata.map((line) => labelled(line.label, line.value)),
-					...(hideStartHint ? [] : ["", theme.fg("dim", "type to start")]),
+					...(hideStartHint ? [] : ["", theme.fg("dim", startHint)]),
 				]
 			: [];
 		const metaStart = Math.max(0, Math.floor((this.logoRaw.length - metaLines.length) / 2));
@@ -570,6 +572,7 @@ export type InteractiveModeRunResult = "agents_view";
 
 export class InteractiveMode {
 	private static readonly EXIT_HINT_DURATION_MS = 2000;
+	private static readonly ESCAPE_REPEAT_WINDOW_MS = 500;
 
 	private uiServices: InteractiveModeUiServices;
 	private agentConnection: AgentConnection;
@@ -620,6 +623,9 @@ export class InteractiveMode {
 
 	private ctrlCExitHintExpiresAt = 0;
 	private ctrlCExitHintTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+	private escapeRepeatAction: "tree" | "clear" | undefined;
+	private escapeRepeatExpiresAt = 0;
+	private escapeRepeatTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 	private anthropicSubscriptionWarningShown = false;
 
 	// Status line tracking (for mutating immediately-sequential status updates)
@@ -799,7 +805,7 @@ export class InteractiveMode {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
 			isArgumentCommand: builtinSlashCommandTakesArgument,
-			placeholder: "Type a message, / for commands",
+			placeholder: 'Try "refactor <filepath>"',
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
 		this.editor = this.defaultEditor;
@@ -1050,7 +1056,11 @@ export class InteractiveMode {
 				() => this.getCurrentModelId(),
 				() => this.getCurrentCwd(),
 				verboseInstructions,
-				{ getHideStartHint: () => this.childAgentPanelMode !== undefined },
+				{
+					getExtraMetadata: () => this.getStartupMetadata(),
+					getHideStartHint: () => this.childAgentPanelMode !== undefined,
+					getStartHint: () => 'Try "refactor <filepath>"',
+				},
 			);
 			this.headerContainer.addChild(new Spacer(1));
 			this.headerContainer.addChild(this.builtInHeader);
@@ -3458,12 +3468,13 @@ export class InteractiveMode {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
-			this.clearInputBar();
+			this.handleEscape();
 		};
 
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onAction("app.interrupt", () => this.handleInterruptKey());
+		this.defaultEditor.onAction("app.shortcuts", () => this.handleHotkeysCommand());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
 
@@ -3501,6 +3512,9 @@ export class InteractiveMode {
 		this.defaultEditor.onMoveBelowPrompt = () => this.focusChildAgentSummary();
 
 		this.defaultEditor.onChange = (text: string) => {
+			if (this.escapeRepeatAction === "clear") {
+				this.clearEscapeRepeat();
+			}
 			if (text.length > 0) {
 				this.clearCtrlCExitHint();
 			}
@@ -4802,8 +4816,32 @@ export class InteractiveMode {
 	}
 
 	private getTrayLocationLabel(): string | undefined {
+		const shortcutsHint = this.getShortcutsTrayHint();
 		const agentsHint = this.getAgentsViewTrayHint();
-		return [agentsHint, this.getModelTrayLabel()].filter((label): label is string => label !== undefined).join("  ");
+		const navigationHints = [shortcutsHint, agentsHint]
+			.filter((label): label is string => label !== undefined)
+			.join(" · ");
+		return [navigationHints || undefined, this.getModelTrayLabel()]
+			.filter((label): label is string => label !== undefined)
+			.join("  ");
+	}
+
+	private getStartupMetadata(): BrandSplashMetadataLine[] {
+		if (this.childAgentPanelMode) {
+			return [];
+		}
+		const shortcuts = keyText("app.shortcuts");
+		const hint = [shortcuts ? `${shortcuts} for shortcuts` : undefined, "/ for commands"]
+			.filter((value): value is string => value !== undefined)
+			.join(" · ");
+		return [
+			{ label: "try", value: "/model or /tree" },
+			{ label: "hint", value: hint },
+		];
+	}
+
+	private getShortcutsTrayHint(): string | undefined {
+		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : undefined;
 	}
 
 	private getModelTrayLabel(): string {
@@ -5492,7 +5530,53 @@ export class InteractiveMode {
 	// Key handlers
 	// =========================================================================
 
+	private handleEscape(): void {
+		this.clearCtrlCExitHint();
+		const action = this.takeEscapeRepeatAction();
+		if (action === "tree") {
+			void this.showTreeSelector();
+			return;
+		}
+		if (action === "clear") {
+			this.clearInputBar();
+			return;
+		}
+
+		this.armEscapeRepeat(this.isAgentStreaming() ? "tree" : "clear");
+		this.interruptOrClearInput();
+	}
+
+	private armEscapeRepeat(action: "tree" | "clear"): void {
+		this.clearEscapeRepeat();
+		this.escapeRepeatAction = action;
+		this.escapeRepeatExpiresAt = Date.now() + InteractiveMode.ESCAPE_REPEAT_WINDOW_MS;
+		this.escapeRepeatTimer = setTimeout(() => {
+			this.clearEscapeRepeat();
+		}, InteractiveMode.ESCAPE_REPEAT_WINDOW_MS);
+		this.escapeRepeatTimer.unref?.();
+	}
+
+	private takeEscapeRepeatAction(): "tree" | "clear" | undefined {
+		if (!this.escapeRepeatAction || this.escapeRepeatExpiresAt <= Date.now()) {
+			this.clearEscapeRepeat();
+			return undefined;
+		}
+		const action = this.escapeRepeatAction;
+		this.clearEscapeRepeat();
+		return action;
+	}
+
+	private clearEscapeRepeat(): void {
+		if (this.escapeRepeatTimer) {
+			clearTimeout(this.escapeRepeatTimer);
+			this.escapeRepeatTimer = undefined;
+		}
+		this.escapeRepeatAction = undefined;
+		this.escapeRepeatExpiresAt = 0;
+	}
+
 	private handleCtrlC(): void {
+		this.clearEscapeRepeat();
 		if (this.isCtrlCExitHintVisible()) {
 			void this.shutdown();
 			return;
@@ -5953,6 +6037,7 @@ export class InteractiveMode {
 	}
 
 	private clearInputBar(): void {
+		this.clearEscapeRepeat();
 		this.clearCtrlCExitHint({ render: false });
 		this.editor.setText("");
 		this.ui.requestRender();
@@ -8000,6 +8085,7 @@ export class InteractiveMode {
 		// App keybindings
 		const clear = this.getAppKeyDisplay("app.clear");
 		const clearInput = this.getAppKeyDisplay("app.input.clear");
+		const shortcutsKey = this.getAppKeyDisplay("app.shortcuts");
 		const interrupt = this.getAppKeyDisplay("app.interrupt");
 		const exit = this.getAppKeyDisplay("app.exit");
 		const suspend = this.getAppKeyDisplay("app.suspend");
@@ -8048,7 +8134,7 @@ export class InteractiveMode {
 | Key | Action |
 |-----|--------|
 | \`${tab}\` | Path completion / accept autocomplete |
-| \`${clearInput}\` | Clear input / cancel autocomplete |
+${shortcutsKey ? `| \`${shortcutsKey}\` | Show keyboard shortcuts |\n` : ""}| \`${clearInput}\` | Interrupt active work; press twice to rewind or clear the prompt |
 | \`${clear}\` | Interrupt current operation (first) / exit (second) |
 ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
@@ -8264,6 +8350,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}| \`${
 	stop(options: { preserveAltScreen?: boolean } = {}): void {
 		this.unregisterSignalHandlers();
 		this.clearCtrlCExitHint({ render: false });
+		this.clearEscapeRepeat();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}
