@@ -2533,6 +2533,7 @@ export class InteractiveMode {
 			clearChat: true,
 			updateFooter: true,
 		});
+		this.restoreStreamingMessageFromSnapshot(snapshot.streamingMessage);
 		await this.refreshConnectionQueue();
 		if (compactionFinished) {
 			await this.flushCompactionQueue({ willRetry: false });
@@ -5730,6 +5731,7 @@ export class InteractiveMode {
 	async renderInitialMessages(): Promise<void> {
 		let context: AgentConnectionSessionContext;
 		let state: AgentConnectionState;
+		let streamingMessage: AgentMessage | undefined;
 		if (this.initialConnectionSnapshotConsumed) {
 			[context, state] = await Promise.all([
 				this.agentConnection.getSessionContext(),
@@ -5740,6 +5742,7 @@ export class InteractiveMode {
 			this.initialConnectionSnapshotConsumed = true;
 			context = this.getSessionContextFromConnectionSnapshot(snapshot);
 			state = snapshot.state;
+			streamingMessage = snapshot.streamingMessage;
 			this.seedChildAgentInspector(snapshot.children);
 		}
 		this.setSessionHasMessages(context.messages.length > 0);
@@ -5748,12 +5751,19 @@ export class InteractiveMode {
 			updateFooter: true,
 			populateHistory: true,
 		});
+		this.restoreStreamingMessageFromSnapshot(streamingMessage);
 
 		// Show compaction info if session was compacted
 		const compactionCount = state.compactionCount;
 		if (compactionCount > 0) {
 			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 			this.showStatus(`Session compacted ${times}`);
+		}
+	}
+
+	private restoreStreamingMessageFromSnapshot(message: AgentMessage | undefined): void {
+		if (message?.role === "assistant") {
+			this.startAssistantStreamingMessage(message);
 		}
 	}
 

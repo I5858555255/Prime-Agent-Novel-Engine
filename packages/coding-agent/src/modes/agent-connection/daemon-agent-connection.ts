@@ -1331,6 +1331,7 @@ function mapDaemonSessionSnapshot(snapshot: DaemonSessionSnapshot, replay?: Daem
 	const connectionSnapshot: AgentConnectionSnapshot = {
 		state: snapshot.state,
 		messages: snapshot.messages,
+		...(snapshot.summary.streamingMessage ? { streamingMessage: snapshot.summary.streamingMessage } : {}),
 		lastEventSequence: snapshot.lastEventSequence,
 		lastEventCursor: snapshot.lastEventCursor,
 	};

@@ -458,6 +458,7 @@ function createConnectionState(activeSessionId: string, sessionId: string): Agen
 interface CreateAttachResultOptions {
 	state?: AgentConnectionState;
 	messages?: AgentMessage[];
+	streamingMessage?: AgentMessage;
 	sessionContext?: DaemonAttachResult["snapshot"]["sessionContext"];
 	omitSessionContext?: boolean;
 	sessionTree?: DaemonAttachResult["snapshot"]["sessionTree"];
@@ -482,11 +483,12 @@ function createAttachResult(
 		activity: "idle" as const,
 		sessionId: state.sessionId,
 		cwd: "/tmp/project",
-		isStreaming: false,
+		isStreaming: state.isStreaming,
 		isCompacting: false,
 		attachedClients: 1,
 		messageCount: messages.length,
 		pendingMessageCount: 0,
+		...(options.streamingMessage ? { streamingMessage: options.streamingMessage } : {}),
 	};
 	// Slim shape: the daemon omits top-level state/messages for clients with the
 	// "slim_attach" capability, which DaemonAgentConnection always advertises.
@@ -1035,9 +1037,14 @@ describe("DaemonAgentConnection", () => {
 		});
 		await connection.attach();
 		const messages: AgentMessage[] = [{ role: "user", content: "caught up", timestamp: 2 }];
+		const streamingMessage = {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "Still reasoning" }],
+		} as AgentMessage;
 		const snapshot = createAttachResult("active-1", "client-1", undefined, 13, {
-			state: createConnectionState("active-1", "session-current"),
+			state: { ...createConnectionState("active-1", "session-current"), isStreaming: true },
 			messages,
+			streamingMessage,
 		}).snapshot;
 
 		fakeClient.emitMessage({
@@ -1060,6 +1067,7 @@ describe("DaemonAgentConnection", () => {
 				snapshot: expect.objectContaining({
 					state: expect.objectContaining({ sessionId: "session-current" }),
 					messages,
+					streamingMessage,
 					lastEventSequence: 13,
 				}),
 			},

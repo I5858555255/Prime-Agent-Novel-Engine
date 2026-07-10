@@ -249,6 +249,8 @@ export interface AgentConnectionParentMetadata {
 export interface AgentConnectionSnapshot {
 	state: AgentConnectionState;
 	messages: AgentMessage[];
+	/** In-flight assistant message, kept separate from finalized transcript messages. */
+	streamingMessage?: AgentMessage;
 	sessionContext?: AgentConnectionSessionContext;
 	sessionTree?: { tree: AgentConnectionSessionTreeNode[]; leafId: string | null };
 	parent?: AgentConnectionParentMetadata;

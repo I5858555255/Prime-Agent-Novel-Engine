@@ -709,10 +709,21 @@ describe("InteractiveMode connection events", () => {
 		const sideQuestion = { id: "side-1", status: "running" };
 		const extensionRequests = new Map([["request-1", { cancelLocal: vi.fn() }]]);
 		const activeBashComponent = {};
+		const streamingMessage = {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "Still reasoning" }],
+		} as AgentConnectionSnapshot["streamingMessage"];
 		const snapshot: AgentConnectionSnapshot = {
-			state: createConnectionState({ isCompacting: true, isBashRunning: true }),
+			state: createConnectionState({ isCompacting: true, isBashRunning: true, isStreaming: true }),
 			messages: [],
+			streamingMessage,
 		};
+		const startAssistantStreamingMessage = vi.fn();
+		const restoreStreamingMessageFromSnapshot = vi.fn((message: AgentConnectionSnapshot["streamingMessage"]) => {
+			if (message?.role === "assistant") {
+				startAssistantStreamingMessage(message);
+			}
+		});
 		const fakeThis = {
 			compactionQueuedMessages: compactionQueue,
 			sideQuestionEvent: sideQuestion,
@@ -730,6 +741,7 @@ describe("InteractiveMode connection events", () => {
 				model: null,
 			})),
 			renderSessionContext: vi.fn(async () => {}),
+			restoreStreamingMessageFromSnapshot,
 			refreshConnectionQueue: vi.fn(async () => {}),
 			flushCompactionQueue: vi.fn(async () => {}),
 			flushPendingBashComponents: vi.fn(),
@@ -754,6 +766,7 @@ describe("InteractiveMode connection events", () => {
 			(fakeThis as unknown as { activeConnectionExtensionUiRequests: unknown }).activeConnectionExtensionUiRequests,
 		).toBe(extensionRequests);
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBe(activeBashComponent);
+		expect(startAssistantStreamingMessage).toHaveBeenCalledWith(streamingMessage);
 	});
 
 	test("finishes local compaction and bash UI when a resync proves the operations ended", async () => {
@@ -778,6 +791,7 @@ describe("InteractiveMode connection events", () => {
 				model: null,
 			})),
 			renderSessionContext: vi.fn(async () => {}),
+			restoreStreamingMessageFromSnapshot: vi.fn(),
 			refreshConnectionQueue: vi.fn(async () => {}),
 			flushCompactionQueue,
 			flushPendingBashComponents,
