@@ -2955,17 +2955,17 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/** Render the recap line above the editor, only when one exists. */
+	/** Render the fixed-height recap area above the editor. */
 	private renderRecap(): void {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
-		// The subagent panel shows its own recap; suppress the parent's while it's open.
-		const recap = this.childAgentPanelMode ? undefined : this.sessionRecap?.trim();
-		if (recap) {
-			this.recapContainer.addChild(new Text(theme.fg("dim", `Recap: ${recap}`), 1, 0));
-			// Blank line between the recap and the prompt bar below it.
-			this.recapContainer.addChild(new Spacer(1));
+		if (this.childAgentPanelMode) {
+			this.ui.requestRender();
+			return;
 		}
+		const recap = this.sessionRecap?.trim();
+		this.recapContainer.addChild(new TruncatedText(recap ? theme.fg("dim", `Recap: ${recap}`) : "", 1, 0));
+		this.recapContainer.addChild(new Spacer(1));
 		this.ui.requestRender();
 	}
 
