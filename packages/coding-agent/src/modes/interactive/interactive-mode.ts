@@ -85,7 +85,6 @@ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.j
 import {
 	createCompactionSummaryMessage,
 	createHeartbeatPromptMessage,
-	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
@@ -139,7 +138,12 @@ import {
 	formatUpdateAvailableNotice,
 } from "../shared/startup-notices.js";
 import { AGENT_ACTIVITY_LABELS, AgentActivityTracker, formatTokenCount } from "./agent-activity.js";
-import { type AuthenticationResult, getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "./auth-flows.js";
+import {
+	type AuthenticationResult,
+	getAnthropicSubscriptionAuthWarning,
+	ProviderAuthFlows,
+	type ProviderLoginOptions,
+} from "./auth-flows.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -185,12 +189,7 @@ import type {
 	InteractiveModeLocalToolRendererDefinition,
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
-import {
-	isOnboardingModelReady,
-	type OnboardingStartupState,
-	shouldRunOnboarding,
-	shouldRunPrimeCliOnboardingSplash,
-} from "./onboarding.js";
+import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -313,6 +312,7 @@ export interface BrandSplashMetadataLine {
 
 export interface BrandSplashHeaderOptions {
 	logo?: string;
+	topPadding?: boolean;
 	getExtraMetadata?: () => readonly BrandSplashMetadataLine[];
 	getHideStartHint?: () => boolean;
 	getStartHint?: () => string;
@@ -364,15 +364,20 @@ export class BrandSplashHeader implements Component {
 				]
 			: [];
 		const metaStart = Math.max(0, Math.floor((this.logoRaw.length - metaLines.length) / 2));
-		const lines = this.logoRaw.map((line, index) => {
-			const colored = theme.fg("text", line);
-			const meta = index >= metaStart && index < metaStart + metaLines.length ? metaLines[index - metaStart] : "";
-			const padding = showMeta
-				? " ".repeat(Math.max(0, this.logoCanvasWidth - visibleWidth(line) + this.gutter))
-				: "";
-			const content = truncateToWidth(colored + padding + meta, contentWidth, "");
-			return " ".repeat(paddingX) + content + " ".repeat(Math.max(0, safeWidth - paddingX - visibleWidth(content)));
-		});
+		const lines = this.options.topPadding ? [""] : [];
+		lines.push(
+			...this.logoRaw.map((line, index) => {
+				const colored = theme.fg("text", line);
+				const meta = index >= metaStart && index < metaStart + metaLines.length ? metaLines[index - metaStart] : "";
+				const padding = showMeta
+					? " ".repeat(Math.max(0, this.logoCanvasWidth - visibleWidth(line) + this.gutter))
+					: "";
+				const content = truncateToWidth(colored + padding + meta, contentWidth, "");
+				return (
+					" ".repeat(paddingX) + content + " ".repeat(Math.max(0, safeWidth - paddingX - visibleWidth(content)))
+				);
+			}),
+		);
 
 		if (this.verboseInstructions) {
 			lines.push(" ".repeat(safeWidth));
@@ -403,7 +408,7 @@ type GoalAnnouncementSnapshot = {
 
 type ModelSelectionResult = { status: "selected" } | { status: "cancelled" } | { status: "action"; actionId: string };
 
-type ModelFallbackWarningAction = "show" | "suppress" | "wait";
+type ModelFallbackWarningAction = "show" | "suppress";
 
 const MODEL_SELECTOR_ACTIONS: readonly ModelSelectorAction[] = [
 	{ id: "add_provider", label: "Add provider...", description: "subscription or API key" },
@@ -1096,6 +1101,7 @@ export class InteractiveMode {
 				() => this.getCurrentCwd(),
 				verboseInstructions,
 				{
+					topPadding: true,
 					getHideStartHint: () => this.childAgentPanelMode !== undefined || !this.isNewChat(),
 					getStartHint: () => this.startHint,
 				},
@@ -1235,6 +1241,13 @@ export class InteractiveMode {
 			if (initialPromptsSent) {
 				return;
 			}
+			if (!initialMessage && !initialMessages?.length) {
+				initialPromptsSent = true;
+				return;
+			}
+			if (!this.getCurrentModel()) {
+				return;
+			}
 			initialPromptsSent = true;
 
 			if (initialMessage) {
@@ -1258,10 +1271,9 @@ export class InteractiveMode {
 			}
 		};
 
-		const needsOnboarding = this.shouldRunOnboarding();
 		let deferredStartupNotificationsShown = false;
 		const showDeferredStartupNotifications = () => {
-			if (deferredStartupNotificationsShown || this.shouldRunOnboarding()) {
+			if (deferredStartupNotificationsShown) {
 				return;
 			}
 			deferredStartupNotificationsShown = true;
@@ -1303,42 +1315,24 @@ export class InteractiveMode {
 			if (modelFallbackWarningShown) {
 				return;
 			}
-			const action = this.getModelFallbackWarningAction(modelFallbackMessage, needsOnboarding);
-			if (action === "wait") {
-				return;
-			}
+			const action = this.getModelFallbackWarningAction(modelFallbackMessage);
 			modelFallbackWarningShown = true;
 			if (action === "show" && modelFallbackMessage) {
 				this.showWarning(modelFallbackMessage);
 			}
 		};
 
-		if (!needsOnboarding) {
-			showModelFallbackWarning();
-		}
-
-		let promptReady = !needsOnboarding;
-		if (needsOnboarding) {
-			promptReady = await this.runOnboardingFlow();
-		}
-
-		if (promptReady) {
-			showDeferredStartupNotifications();
-			showModelFallbackWarning();
-			void this.maybeWarnAboutAnthropicSubscriptionAuth();
-			await sendInitialPrompts();
-		}
+		await this.runStartupOnboarding();
+		showDeferredStartupNotifications();
+		showModelFallbackWarning();
+		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		await sendInitialPrompts();
 
 		// Main interactive loop
 		while (true) {
 			const userInput = await this.getUserInput();
 			if (userInput === undefined || this.returnToAgentsViewRequested) {
 				return "agents_view";
-			}
-			if (!(await this.ensurePromptReady())) {
-				this.editor.setText(userInput);
-				this.showStatus("Complete onboarding to send the restored prompt.");
-				continue;
 			}
 			showDeferredStartupNotifications();
 			showModelFallbackWarning();
@@ -1356,10 +1350,7 @@ export class InteractiveMode {
 		}
 	}
 
-	private getModelFallbackWarningAction(
-		modelFallbackMessage: string | undefined,
-		startupNeededOnboarding: boolean,
-	): ModelFallbackWarningAction {
+	private getModelFallbackWarningAction(modelFallbackMessage: string | undefined): ModelFallbackWarningAction {
 		if (!modelFallbackMessage) {
 			return "suppress";
 		}
@@ -1368,12 +1359,6 @@ export class InteractiveMode {
 		// visible to the daemon, or added after the snapshot was taken).
 		if (isNoModelsAvailableMessage(modelFallbackMessage) && this.getCurrentModel()) {
 			return "suppress";
-		}
-		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage) && !this.shouldRunOnboarding()) {
-			return "suppress";
-		}
-		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage)) {
-			return "wait";
 		}
 		return "show";
 	}
@@ -1394,81 +1379,48 @@ export class InteractiveMode {
 		return shouldRunPrimeCliOnboardingSplash(this.getOnboardingState());
 	}
 
-	private isCurrentModelReady(): boolean {
-		return isOnboardingModelReady(this.getOnboardingState());
-	}
-
-	private completeOnboarding(): void {
-		if (!this.settingsManager.getOnboardingCompleted()) {
-			this.settingsManager.setOnboardingCompleted(true);
+	private markOnboardingShown(): void {
+		if (!this.settingsManager.getOnboardingShown()) {
+			this.settingsManager.setOnboardingShown(true);
 		}
 	}
 
-	private completeOnboardingIfCurrentModelReady(): void {
-		if (this.isCurrentModelReady()) {
-			this.completeOnboarding();
-		}
-	}
-
-	private isOnboardingResolvedAfterModelPrompt(selectedModel: boolean): boolean {
-		if (selectedModel) {
-			this.completeOnboarding();
-			return true;
-		}
-		return !this.shouldRunOnboarding();
-	}
-
-	private async ensurePromptReady(): Promise<boolean> {
+	private async runStartupOnboarding(): Promise<boolean> {
 		if (!this.shouldRunOnboarding()) {
-			return true;
+			return false;
 		}
-		return this.runOnboardingFlow();
+
+		const showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash();
+		this.markOnboardingShown();
+		await this.settingsManager.flush();
+		await this.runOnboardingFlow(showPrimeCliSplash);
+		return true;
 	}
 
-	private async runOnboardingFlow(): Promise<boolean> {
+	private async runOnboardingFlow(showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash()): Promise<void> {
 		this.modelRegistry.refresh();
-		if (this.shouldRunPrimeCliOnboardingSplash()) {
+		if (showPrimeCliSplash) {
 			const shouldContinue = await this.showOnboardingModelSelectionSplash();
 			if (!shouldContinue) {
-				this.showStatus("Model selection required. Use /model to continue.");
-				return false;
+				return;
 			}
 
-			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-				return true;
-			}
-
-			this.showStatus("Model selection required. Use /model to continue.");
-			return false;
+			await this.promptForModelSelection({ allowProviderSetup: true });
+			return;
 		}
 
 		const availableModels = await this.getModelCandidates();
 		if (availableModels.length > 0) {
-			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-				return true;
-			}
-
-			this.showStatus("Model selection required. Use /model to continue.");
-			return false;
+			await this.promptForModelSelection({ allowProviderSetup: true });
+			return;
 		}
 
 		const authResult = await this.showOnboardingPrimeLogin();
 		if (authResult.status !== "success") {
-			this.showStatus(
-				"Prime Intellect login required for onboarding. Use /login to configure other providers later.",
-			);
-			return false;
+			return;
 		}
 
-		const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-		if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-			return true;
-		}
-
-		this.showStatus("Model selection required. Use /model to continue.");
-		return false;
+		await this.promptForModelSelection({ allowProviderSetup: true });
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -2943,24 +2895,16 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/** Render the recap line above the editor, only when one exists. */
+	/** Render the recap line above the editor when one exists. */
 	private renderRecap(): void {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
-		// The subagent panel shows its own recap; suppress the parent's while it's open.
 		const recap = this.childAgentPanelMode ? undefined : this.sessionRecap?.trim();
 		if (recap) {
-			this.recapContainer.addChild(new Text(theme.fg("dim", `Recap: ${recap}`), 1, 0));
-			// Blank line between the recap and the prompt bar below it.
+			this.recapContainer.addChild(new TruncatedText(theme.fg("dim", `Recap: ${recap}`), 1, 0));
 			this.recapContainer.addChild(new Spacer(1));
 		}
 		this.ui.requestRender();
-	}
-
-	private clearStaleRecapForPromptTurn(): void {
-		this.sessionRecap = undefined;
-		this.renderRecap();
-		this.updatePendingMessagesDisplay();
 	}
 
 	private renderWidgetContainer(
@@ -4418,13 +4362,9 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
-					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
-						this.clearStaleRecapForPromptTurn();
-					}
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
-					this.clearStaleRecapForPromptTurn();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					this.startAssistantStreamingMessage(event.message);
@@ -4983,7 +4923,7 @@ export class InteractiveMode {
 	}
 
 	private getShortcutsTrayHint(): string | undefined {
-		if (!this.isNewChat()) {
+		if (!this.isNewChat() || this.editor.getText().length > 0) {
 			return undefined;
 		}
 		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : "/hotkeys for shortcuts";
@@ -5018,10 +4958,7 @@ export class InteractiveMode {
 		if (!this.options.returnToAgentsView) {
 			return undefined;
 		}
-		if (this.editor.getText().trim()) {
-			return undefined;
-		}
-		return keyHint("app.agents.back", "agents view");
+		return keyHint("app.agents.back", "agents");
 	}
 
 	private getTrayContextLabel(): string | undefined {
@@ -6642,7 +6579,6 @@ export class InteractiveMode {
 			try {
 				this.showStatus(`Switching model: ${model.id}`);
 				await this.applySelectedModel(model);
-				this.completeOnboardingIfCurrentModelReady();
 				this.showStatus(`Model: ${model.id}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 				this.checkDaxnutsEasterEgg(model);
@@ -6950,7 +6886,6 @@ export class InteractiveMode {
 					this.showStatus(`Switching model: ${model.id}`);
 					try {
 						await this.applySelectedModel(model);
-						this.completeOnboardingIfCurrentModelReady();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 						this.checkDaxnutsEasterEgg(model);
@@ -7478,16 +7413,21 @@ export class InteractiveMode {
 		});
 	}
 
-	private showLoginProviderSelector(authType?: "oauth" | "api_key"): Promise<AuthenticationResult> {
-		return this.createAuthFlows().runLogin(authType);
+	private showLoginProviderSelector(options: ProviderLoginOptions = {}): Promise<AuthenticationResult> {
+		return this.createAuthFlows().runLogin(options);
 	}
 
 	private async handleMcpCommand(args: string | undefined): Promise<void> {
 		const [sub, server] = (args ?? "").trim().split(/\s+/);
+		if (!sub) {
+			await this.showOAuthSelector("login", { initialCategory: "service" });
+			return;
+		}
+
 		const authStorage = this.modelRegistry.authStorage;
 		const isAuthed = (name: string) => authStorage.get(`mcp:${name}`) !== undefined;
 
-		if (!sub || sub === "list") {
+		if (sub === "list") {
 			const labels = new Map(BUILTIN_MCP_CATALOG.map((e) => [e.server, e.label]));
 			const names = new Set([...labels.keys(), ...Object.keys(this.settingsManager.getMcpServers() ?? {})]);
 			const lines = [...names].map((name) => {
@@ -7541,13 +7481,11 @@ export class InteractiveMode {
 		this.showError(`Unknown /mcp subcommand: ${sub}. Use list, login, or logout.`);
 	}
 
-	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
+	private async showOAuthSelector(mode: "login" | "logout", loginOptions: ProviderLoginOptions = {}): Promise<void> {
 		if (mode === "login") {
-			const authResult = await this.showLoginProviderSelector();
-			// Service credentials don't change the model, so skip the model picker.
+			const authResult = await this.showLoginProviderSelector(loginOptions);
 			if (authResult.status === "success" && authResult.kind !== "service") {
 				this.invalidateConnectionModels();
-				await this.promptForModelSelection();
 			}
 			// An MCP integration login enables its skill, so reload resources — but a
 			// reload is refused mid-turn, so tell the user to /reload (matching /mcp login).
