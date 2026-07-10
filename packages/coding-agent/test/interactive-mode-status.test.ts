@@ -562,6 +562,44 @@ describe("InteractiveMode pending bash components", () => {
 		expect(loader.intervalId).toBeNull();
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBeUndefined();
 	});
+
+	test("preserves a local prompt draft during an unsolicited session refresh", () => {
+		const editorStub = { clearHistory: vi.fn(), setText: vi.fn() };
+		const pastedImages = new Map([[7, { type: "image", data: "draft-image", mimeType: "image/png" }]]);
+		const fakeThis = {
+			chatContainer: new Container(),
+			shortcutGuideContainer: new Container(),
+			pendingMessagesContainer: new Container(),
+			queuedMessagesContainer: new Container(),
+			compactionQueuedMessages: [],
+			promptStash: { text: "stashed draft" },
+			pastedImages,
+			liveImageMarkerIds: () => new Set<number>(),
+			defaultEditor: editorStub,
+			editor: editorStub,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			activeBashComponent: undefined,
+			pendingBashComponents: [],
+			activityTracker: { reset: vi.fn() },
+			resetPendingToolState: vi.fn(),
+			resetChildAgentInspector: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			syncGoalTray: vi.fn(),
+			getGoalState: () => emptyGoalState(),
+		} as unknown as InteractiveMode;
+
+		(
+			InteractiveMode.prototype as unknown as {
+				resetCurrentSessionRenderState(this: unknown, options: { preservePrompt: boolean }): void;
+			}
+		).resetCurrentSessionRenderState.call(fakeThis, { preservePrompt: true });
+
+		expect(editorStub.clearHistory).toHaveBeenCalledOnce();
+		expect(editorStub.setText).not.toHaveBeenCalled();
+		expect((fakeThis as unknown as { promptStash: unknown }).promptStash).toEqual({ text: "stashed draft" });
+		expect(pastedImages.has(7)).toBe(true);
+	});
 });
 
 describe("InteractiveMode connection events", () => {
@@ -604,6 +642,7 @@ describe("InteractiveMode connection events", () => {
 		expect(resetRenderOrder).toBeLessThan(rebindOrder);
 		expect(rebindOrder).toBeLessThan(renderMessagesOrder);
 		expect(fakeThis.applyConnectionStateSnapshot).toHaveBeenCalledWith(state);
+		expect(fakeThis.resetCurrentSessionRenderState).toHaveBeenCalledWith({ preservePrompt: true });
 		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();

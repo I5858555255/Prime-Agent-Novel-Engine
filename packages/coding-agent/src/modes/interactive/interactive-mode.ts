@@ -2432,7 +2432,7 @@ export class InteractiveMode {
 		process.exit(1);
 	}
 
-	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean }): void {
+	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean; preservePrompt?: boolean }): void {
 		this.chatContainer.clear();
 		this.shortcutGuideContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -2442,18 +2442,24 @@ export class InteractiveMode {
 		if (options?.clearPromptStash) {
 			this.promptStash = undefined;
 		}
-		// Clear every editor's prompt history, draft text, and queues, then prune
-		// any pasted images no longer referenced by the remaining stashed draft.
+		// Clear prompt history while retaining a client-local draft across an
+		// unsolicited daemon refresh. Explicit session commands still clear it.
 		this.defaultEditor.clearHistory?.();
-		this.defaultEditor.setText("");
+		if (!options?.preservePrompt) {
+			this.defaultEditor.setText("");
+		}
 		if (this.editor !== this.defaultEditor) {
 			this.editor.clearHistory?.();
-			this.editor.setText("");
+			if (!options?.preservePrompt) {
+				this.editor.setText("");
+			}
 		}
-		const keepImageIds = this.liveImageMarkerIds();
-		for (const markerId of this.pastedImages.keys()) {
-			if (!keepImageIds.has(markerId)) {
-				this.pastedImages.delete(markerId);
+		if (!options?.preservePrompt) {
+			const keepImageIds = this.liveImageMarkerIds();
+			for (const markerId of this.pastedImages.keys()) {
+				if (!keepImageIds.has(markerId)) {
+					this.pastedImages.delete(markerId);
+				}
 			}
 		}
 		this.streamingComponent = undefined;
@@ -4122,7 +4128,7 @@ export class InteractiveMode {
 					this.resetSideQuestion();
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
-					this.resetCurrentSessionRenderState({ clearPromptStash: true });
+					this.resetCurrentSessionRenderState({ preservePrompt: true });
 					await this.rebindCurrentSession();
 					await this.renderInitialMessages();
 					this.ui.requestRender();
