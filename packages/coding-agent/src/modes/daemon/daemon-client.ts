@@ -2,6 +2,7 @@ import { createConnection, type Socket } from "node:net";
 import { getDaemonLogPath } from "../../config.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type {
+	DaemonClosingReason,
 	DaemonCommand,
 	DaemonOutbound,
 	DaemonRequestProgress,
@@ -28,15 +29,27 @@ function daemonEndpointDetails(socketPath: string): string {
 	return `Socket: ${socketPath}. Daemon log: ${getDaemonLogPath(socketPath)}.`;
 }
 
-class DaemonSocketClosedError extends Error {
-	constructor(socketPath: string) {
-		super(`Connection to the Prime Agent daemon closed. ${daemonEndpointDetails(socketPath)}`);
+export class DaemonSocketClosedError extends Error {
+	constructor(
+		socketPath: string,
+		readonly daemonClosingReason?: DaemonClosingReason,
+		cause?: string,
+	) {
+		const reasonDetails = daemonClosingReason ? ` Reason: ${daemonClosingReason}.` : "";
+		const causeDetails = cause ? ` Cause: ${cause}.` : "";
+		super(
+			`Connection to the Prime Agent daemon closed.${reasonDetails}${causeDetails} ${daemonEndpointDetails(socketPath)}`,
+		);
 		this.name = "DaemonSocketClosedError";
 	}
 }
 
 export function isDaemonSocketClosedError(error: Error): boolean {
 	return error instanceof DaemonSocketClosedError || error.message === LEGACY_DAEMON_SOCKET_CLOSED_MESSAGE;
+}
+
+export function getDaemonSocketCloseReason(error: Error): DaemonClosingReason | undefined {
+	return error instanceof DaemonSocketClosedError ? error.daemonClosingReason : undefined;
 }
 
 export class DaemonClient {
@@ -55,6 +68,7 @@ export class DaemonClient {
 	>();
 	private requestId = 0;
 	private helloMessage?: DaemonHello;
+	private daemonClosingReason?: DaemonClosingReason;
 	private reconnectPromise?: Promise<void>;
 	private readonly helloWaiters = new Set<{
 		resolve: (hello: DaemonHello) => void;
@@ -105,6 +119,7 @@ export class DaemonClient {
 		}
 
 		this.helloMessage = undefined;
+		this.daemonClosingReason = undefined;
 		const socket = createConnection(this.socketPath);
 		this.socket = socket;
 		this.detachReader = attachJsonlLineReader(socket, (line) => this.handleLine(line));
@@ -142,8 +157,17 @@ export class DaemonClient {
 			socket.once("error", onError);
 		});
 
-		socket.on("error", (error) => this.notifyClosed(socket, error));
-		socket.on("close", () => this.notifyClosed(socket, new DaemonSocketClosedError(this.socketPath)));
+		socket.on("error", (error) =>
+			this.notifyClosed(
+				socket,
+				this.daemonClosingReason
+					? new DaemonSocketClosedError(this.socketPath, this.daemonClosingReason, error.message)
+					: error,
+			),
+		);
+		socket.on("close", () =>
+			this.notifyClosed(socket, new DaemonSocketClosedError(this.socketPath, this.daemonClosingReason)),
+		);
 	}
 
 	async reconnect(timeoutMs = 3000): Promise<void> {
@@ -245,6 +269,9 @@ export class DaemonClient {
 				waiter.resolve(message);
 			}
 		}
+		if (isDaemonClosing(message)) {
+			this.daemonClosingReason = message.reason;
+		}
 
 		if (isDaemonResponse(message) && message.id) {
 			const pending = this.pendingRequests.get(message.id);
@@ -291,6 +318,14 @@ export class DaemonClient {
 			listener(error);
 		}
 	}
+}
+
+function isDaemonClosing(value: unknown): value is Extract<DaemonOutbound, { type: "daemon_closing" }> {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const candidate = value as { type?: unknown; reason?: unknown };
+	return candidate.type === "daemon_closing" && (candidate.reason === "shutdown" || candidate.reason === "update");
 }
 
 function isDaemonHello(value: unknown): value is DaemonHello {

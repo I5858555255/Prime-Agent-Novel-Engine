@@ -12,11 +12,13 @@ import type {
 	AgentConnectionSavedSessionInfo,
 	AgentConnectionState,
 } from "../src/modes/agent-connection/types.js";
-import type {
-	DaemonClient,
-	DaemonClientCloseListener,
-	DaemonClientMessageListener,
-	DaemonClientRequestOptions,
+
+import {
+	type DaemonClient,
+	type DaemonClientCloseListener,
+	type DaemonClientMessageListener,
+	type DaemonClientRequestOptions,
+	DaemonSocketClosedError,
 } from "../src/modes/daemon/daemon-client.js";
 import {
 	DAEMON_PROTOCOL_INFO,
@@ -728,6 +730,26 @@ describe("DaemonAgentConnection", () => {
 		expect(closedError).toContain("Session ID: session-current.");
 		expect(closedError).toContain("Session file: /tmp/session-current.jsonl.");
 		expect(closedError).toContain("Diagnostic log:");
+	});
+
+	it("does not infer an update when shutdown closes the socket before the session notice", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const closedEvents: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			if (event.type === "closed") {
+				closedEvents.push(event);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.emitClose(new DaemonSocketClosedError("/tmp/prime-agent.sock", "shutdown"));
+		await Promise.resolve();
+
+		expect(fakeClient.reconnectCount).toBe(0);
+		expect(closedEvents).toHaveLength(1);
+		const closedError = closedEvents[0]?.type === "closed" ? closedEvents[0].error : undefined;
+		expect(closedError).toContain("The Prime Agent daemon shut down while this window was attached.");
 	});
 
 	it.each([

@@ -22,8 +22,13 @@ import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
 import { SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import type { AgentConnectionSavedSessionInfo } from "../agent-connection/types.js";
-import { DaemonClient } from "../daemon/daemon-client.js";
-import { type DaemonCommand, type DaemonResponse, isUnknownDaemonCommandError } from "../daemon/daemon-protocol.js";
+import { DaemonClient, getDaemonSocketCloseReason } from "../daemon/daemon-client.js";
+import {
+	type DaemonClosingReason,
+	type DaemonCommand,
+	type DaemonResponse,
+	isUnknownDaemonCommandError,
+} from "../daemon/daemon-protocol.js";
 import {
 	resolveAttachModelFallbackMessage,
 	type SessionSummary,
@@ -210,6 +215,10 @@ export function formatAgentsViewStatusLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
+export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
+	return reason !== "shutdown";
+}
+
 export function createAgentsViewReplyHeadline(text: string | undefined): string | undefined {
 	return text
 		?.split("\n")
@@ -381,6 +390,7 @@ class AgentsViewMode implements Component, Focusable {
 	private unsubscribeClientClose: (() => void) | undefined;
 	private reconnectPromise: Promise<void> | undefined;
 	private reconnectTimedOut = false;
+	private daemonShutdownReceived = false;
 	private resolveRun: ((result: AgentsViewRunResult) => void) | undefined;
 	private pollTimer: NodeJS.Timeout | undefined;
 	private animationTimer: NodeJS.Timeout | undefined;
@@ -778,7 +788,7 @@ class AgentsViewMode implements Component, Focusable {
 
 	/** Sticky messages (e.g. billing warnings) stay until the user acknowledges them with any keypress. */
 	private clearStickyStatusMessage(): void {
-		if (!this.statusMessageSticky) {
+		if (!this.statusMessageSticky || this.daemonShutdownReceived) {
 			return;
 		}
 		this.statusMessageSticky = false;
@@ -1731,7 +1741,7 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private async refreshSessions(): Promise<void> {
-		if (this.reconnectPromise) {
+		if (this.reconnectPromise || this.daemonShutdownReceived) {
 			return;
 		}
 		const client = this.requireClient();
@@ -1852,11 +1862,30 @@ class AgentsViewMode implements Component, Focusable {
 
 	private subscribeToClientClose(client: DaemonClient): void {
 		this.unsubscribeClientClose?.();
-		this.unsubscribeClientClose = client.onClose((error) => this.startClientReconnect(client, error));
+		this.unsubscribeClientClose = client.onClose((error) => {
+			if (!shouldReconnectAgentsViewDaemon(getDaemonSocketCloseReason(error))) {
+				this.handleDaemonShutdown(client, error);
+				return;
+			}
+			this.startClientReconnect(client, error);
+		});
+	}
+
+	private handleDaemonShutdown(client: DaemonClient, error: Error): void {
+		if (this.stopped || client !== this.client) {
+			return;
+		}
+		this.daemonShutdownReceived = true;
+		this.reconnectTimedOut = false;
+		this.setStatusMessage(`Prime Agent daemon shut down. Restart Prime Agent to reconnect. ${error.message}`, {
+			tone: "error",
+			sticky: true,
+		});
+		this.applySessionList([]);
 	}
 
 	private startClientReconnect(client: DaemonClient, error: unknown): void {
-		if (this.stopped || client !== this.client || this.reconnectPromise) {
+		if (this.stopped || client !== this.client || this.reconnectPromise || this.daemonShutdownReceived) {
 			return;
 		}
 		if (!this.reconnectTimedOut) {
@@ -1873,12 +1902,13 @@ class AgentsViewMode implements Component, Focusable {
 	private async reconnectClient(client: DaemonClient, initialError: unknown): Promise<void> {
 		const deadline = Date.now() + RECONNECT_TIMEOUT_MS;
 		let lastError = initialError;
-		while (!this.stopped && client === this.client && Date.now() < deadline) {
+		while (!this.stopped && !this.daemonShutdownReceived && client === this.client && Date.now() < deadline) {
 			try {
 				await client.reconnect(1000);
 				const response = await client.request(createAgentsViewListCommand());
 				const data = requireDaemonData(response);
 				const sessions = expectSessionList(data);
+				this.daemonShutdownReceived = false;
 				this.reconnectTimedOut = false;
 				this.setStatusMessage("Reconnected after daemon restart", { render: false });
 				this.applySessionList(sessions);
@@ -1891,7 +1921,7 @@ class AgentsViewMode implements Component, Focusable {
 				retryTimer.unref?.();
 			});
 		}
-		if (!this.stopped && client === this.client) {
+		if (!this.stopped && !this.daemonShutdownReceived && client === this.client) {
 			this.reconnectTimedOut = true;
 			this.setStatusMessage(formatError("Daemon unavailable; retrying", lastError), {
 				tone: "error",

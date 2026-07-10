@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DaemonClient } from "../src/modes/daemon/daemon-client.js";
+import { DaemonClient, getDaemonSocketCloseReason } from "../src/modes/daemon/daemon-client.js";
 
 const netMock = vi.hoisted(() => {
 	type Listener = (...args: unknown[]) => void;
@@ -422,6 +422,24 @@ describe("DaemonClient", () => {
 		expect(closed[0]?.message).toContain("Daemon log:");
 		expect(client.isConnected).toBe(false);
 		unsubscribe();
+		client.close();
+	});
+
+	it.each(["shutdown", "update"] as const)("preserves the daemon %s reason on socket close", async (reason) => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const connect = client.connect();
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+
+		const closed: Error[] = [];
+		client.onClose((error) => closed.push(error));
+		socket.emit("data", `${JSON.stringify({ type: "daemon_closing", reason })}\n`);
+		socket.emit("close");
+
+		expect(closed).toHaveLength(1);
+		expect(getDaemonSocketCloseReason(closed[0]!)).toBe(reason);
+		expect(closed[0]?.message).toContain(`Reason: ${reason}.`);
 		client.close();
 	});
 

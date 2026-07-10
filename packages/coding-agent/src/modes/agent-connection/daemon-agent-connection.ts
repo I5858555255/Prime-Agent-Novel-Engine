@@ -8,7 +8,7 @@ import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-j
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
-import { type DaemonClient, isDaemonSocketClosedError } from "../daemon/daemon-client.js";
+import { type DaemonClient, getDaemonSocketCloseReason, isDaemonSocketClosedError } from "../daemon/daemon-client.js";
 import { deserializeDaemonError } from "../daemon/daemon-errors.js";
 import {
 	collectDaemonClientEnv,
@@ -155,6 +155,12 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.captureDaemonLogPath();
 		this.unsubscribeDaemonClose = this.client.onClose((error) => {
 			if (this.disposed || this.terminalCloseEmitted) {
+				return;
+			}
+			const closeReason = getDaemonSocketCloseReason(error);
+			if (closeReason === "shutdown") {
+				this.terminalCloseEmitted = true;
+				void this.emit({ type: "closed", error: this.formatDaemonSessionClosedError("shutdown") });
 				return;
 			}
 			const unannouncedUpdateCandidate = isDaemonSocketClosedError(error) && !this.updateReconnectFailed;

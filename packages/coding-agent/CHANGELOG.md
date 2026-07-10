@@ -6,6 +6,8 @@
 - Changed the new-chat splash to show only version, model, and cwd metadata and rotate among five example prompts.
 - Fixed self-updates losing restored daemon sessions to a socket cleanup race and leaving open session or agents-view windows disconnected.
 - Changed daemon connection errors to report the failed operation, session identity, recovery steps, socket, and diagnostic log instead of raw protocol reasons.
+- Fixed Agents View retrying after an intentional daemon shutdown instead of stopping with restart guidance.
+- Fixed stale heartbeat jobs reopening archived, deleted, or concurrently terminated sessions ([ENG-4519](https://linear.app/primeintellect/issue/ENG-4519/heartbeats-rebirth-sessions-that-were-previously-killed)).
 
 ## [0.2.8] - 2026-07-09
 
