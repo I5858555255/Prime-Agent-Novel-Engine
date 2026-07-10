@@ -34,6 +34,7 @@ class FakeDaemonClient {
 	restoredAttachCompleted = 0;
 	closeCount = 0;
 	emitCloseOnClose = false;
+	connected = true;
 	reconnectCount = 0;
 	reconnectError: Error | undefined;
 	abortBashUnknownCommand = false;
@@ -380,10 +381,14 @@ class FakeDaemonClient {
 	}
 
 	async reconnect(): Promise<void> {
+		if (this.connected) {
+			return;
+		}
 		this.reconnectCount++;
 		if (this.reconnectError) {
 			throw this.reconnectError;
 		}
+		this.connected = true;
 	}
 
 	getMessageListenerCount(): number {
@@ -396,6 +401,7 @@ class FakeDaemonClient {
 
 	close(): void {
 		this.closeCount++;
+		this.connected = false;
 		if (this.emitCloseOnClose) {
 			this.emitClose(new Error("Daemon socket closed"));
 		}
@@ -629,6 +635,68 @@ describe("DaemonAgentConnection", () => {
 		});
 		expect(fakeClient.reconnectCount).toBe(1);
 		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "list", "attach"]);
+	});
+
+	it("coordinates one transport reconnect across connections sharing a daemon client", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.emitCloseOnClose = true;
+		fakeClient.updateRestartSessions = [
+			{
+				id: "restored-a",
+				activeSessionId: "restored-a",
+				sessionId: "session-a",
+				sessionFile: "/tmp/session-a.jsonl",
+			},
+			{
+				id: "restored-b",
+				activeSessionId: "restored-b",
+				sessionId: "session-b",
+				sessionFile: "/tmp/session-b.jsonl",
+			},
+		];
+		const sessionIds: Record<string, string> = {
+			"active-a": "session-a",
+			"active-b": "session-b",
+			"restored-a": "session-a",
+			"restored-b": "session-b",
+		};
+		fakeClient.attachResultFactory = (command) =>
+			createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 1, {
+				state: createConnectionState(command.activeSessionId, sessionIds[command.activeSessionId]!),
+			});
+		const connectionA = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-a");
+		const connectionB = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-b");
+		await connectionA.attach();
+		await connectionB.attach();
+		const restoredA = new Promise<AgentConnectionEvent>((resolve) => {
+			connectionA.subscribe((event) => {
+				if (event.type === "session_replaced") {
+					resolve(event);
+				}
+			});
+		});
+		const restoredB = new Promise<AgentConnectionEvent>((resolve) => {
+			connectionB.subscribe((event) => {
+				if (event.type === "session_replaced") {
+					resolve(event);
+				}
+			});
+		});
+
+		fakeClient.emitMessage({ type: "session_closed", activeSessionId: "active-a", reason: "update" });
+
+		await expect(Promise.all([restoredA, restoredB])).resolves.toEqual([
+			expect.objectContaining({
+				type: "session_replaced",
+				state: expect.objectContaining({ sessionId: "session-a" }),
+			}),
+			expect.objectContaining({
+				type: "session_replaced",
+				state: expect.objectContaining({ sessionId: "session-b" }),
+			}),
+		]);
+		expect(fakeClient.closeCount).toBe(1);
+		expect(fakeClient.reconnectCount).toBe(1);
 	});
 
 	it("does not reconnect after an explicit shutdown session close", async () => {

@@ -62,9 +62,40 @@ type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
 export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const UPDATE_RECONNECT_TIMEOUT_MS = 120000;
 const UPDATE_RECONNECT_RETRY_MS = 100;
+const updateTransportReconnects = new WeakMap<DaemonClient, Promise<void>>();
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function reconnectDaemonTransportAfterUpdate(client: DaemonClient): Promise<void> {
+	const existing = updateTransportReconnects.get(client);
+	if (existing) {
+		return existing;
+	}
+	const reconnectPromise = Promise.resolve()
+		.then(async () => {
+			client.close();
+			const deadline = Date.now() + UPDATE_RECONNECT_TIMEOUT_MS;
+			let lastError: unknown;
+			while (Date.now() < deadline) {
+				try {
+					await client.reconnect(1000);
+					return;
+				} catch (error) {
+					lastError = error;
+				}
+				await delay(UPDATE_RECONNECT_RETRY_MS);
+			}
+			throw lastError ?? new Error("the updated daemon did not become available");
+		})
+		.finally(() => {
+			if (updateTransportReconnects.get(client) === reconnectPromise) {
+				updateTransportReconnects.delete(client);
+			}
+		});
+	updateTransportReconnects.set(client, reconnectPromise);
+	return reconnectPromise;
 }
 
 export interface DaemonAgentConnectionOptions {
@@ -802,13 +833,8 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (this.updateReconnectPromise) {
 			return this.updateReconnectPromise;
 		}
-		const reconnectPromise = Promise.resolve()
-			.then(() => {
-				// Register the recovery operation before dropping the old transport so
-				// a synchronous close notification cannot start a second restore loop.
-				this.client.close();
-				return this.restoreConnectionAfterUpdate();
-			})
+		const reconnectPromise = reconnectDaemonTransportAfterUpdate(this.client)
+			.then(() => this.restoreConnectionAfterUpdate())
 			.catch(async (error: unknown) => {
 				this.updateRestartPending = false;
 				this.updateReconnectFailed = true;
