@@ -12,7 +12,7 @@
 - Fixed Agents View retrying after an intentional daemon shutdown instead of stopping with restart guidance.
 - Fixed daemon catch-up snapshots being disposed mid-transfer or triggering destructive session-replacement resets that cleared drafts, local queues, dialogs, and active UI state.
 - Fixed compact daemon streams occasionally duplicating the first token of an assistant response.
-- Fixed subagent prompts and usage counters flickering or disappearing during daemon resyncs and large parallel runs.
+- Fixed subagent prompts and usage counters flickering or disappearing during daemon resyncs and large parallel runs, and added compact fixed-width recap rows.
 - Fixed stale heartbeat jobs reopening sessions after they were archived, deleted, explicitly shut down, concurrently terminated, or lost resident worker ownership ([ENG-4519](https://linear.app/primeintellect/issue/ENG-4519/heartbeats-rebirth-sessions-that-were-previously-killed)).
 
 ## [0.2.8] - 2026-07-09

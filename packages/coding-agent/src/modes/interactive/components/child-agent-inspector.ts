@@ -180,19 +180,13 @@ function formatChildAgentDuration(durationMs: number | undefined): string {
 	return `${Math.floor(minutes / 60)}h`;
 }
 
-function formatChildAgentUsage(node: ChildAgentInspectorNode): string {
-	const parts: string[] = [];
-	if (node.toolUseCount !== undefined) {
-		parts.push(`${node.toolUseCount} ${node.toolUseCount === 1 ? "tool" : "tools"}`);
-	}
-	if (node.tokenCount !== undefined) {
-		parts.push(`${formatTokenCount(node.tokenCount)} tok`);
-	}
-	return parts.join(" · ");
+function childAgentRecap(node: ChildAgentInspectorNode): string {
+	const recap = node.recap?.replace(/\s+/g, " ").trim();
+	return recap || nodeActivityLabel(node);
 }
 
-function padTableCell(value: string, width: number): string {
-	const truncated = truncateToWidth(value, width, "");
+function padTableCell(value: string, width: number, ellipsis = ""): string {
+	const truncated = truncateToWidth(value, width, ellipsis);
 	return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
 }
 
@@ -200,12 +194,17 @@ function padTableCell(value: string, width: number): string {
 const SUMMARY_VISIBLE_ROWS = 5;
 const SUMMARY_LIST_INDENT = 1;
 const SHARED_PREFIX_MIN = 12;
-// Gap between the "Subagent N" column and the prompt.
-const SUMMARY_LABEL_GAP = 4;
+const SUMMARY_COLUMN_GAP = 2;
+const SUMMARY_PROMPT_MAX_WIDTH = 24;
+const SUMMARY_RECAP_MIN_WIDTH = 12;
+const SUMMARY_TOOLS_WIDTH = 7;
+const SUMMARY_TOKENS_WIDTH = 8;
+const SUMMARY_DURATION_WIDTH = 4;
+const SUMMARY_METRICS_WIDTH = SUMMARY_TOOLS_WIDTH + 1 + SUMMARY_TOKENS_WIDTH + 1 + SUMMARY_DURATION_WIDTH;
 // Opening chars of the prompt kept for context before eliding a shared prefix.
-const PROMPT_LEADING_CONTEXT = 14;
+const PROMPT_LEADING_CONTEXT = 6;
 // Words of context kept on each side of the divergence.
-const PROMPT_DIFF_CONTEXT_WORDS = 2;
+const PROMPT_DIFF_CONTEXT_WORDS = 1;
 
 export class ChildAgentSummaryComponent implements Component, Focusable {
 	focused = false;
@@ -353,7 +352,15 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		const clampedStart = Math.max(0, start);
 		const window = flat.slice(clampedStart, clampedStart + SUMMARY_VISIBLE_ROWS);
 
-		const labelWidth = `Subagent ${flat.length}`.length;
+		// Reserve one hierarchy marker for every row so roots and descendants share columns.
+		const agentWidth = `↳S${flat.length}`.length;
+		const fixedWidth =
+			SUMMARY_LIST_INDENT + 2 + agentWidth + SUMMARY_COLUMN_GAP + 3 + SUMMARY_COLUMN_GAP + SUMMARY_METRICS_WIDTH;
+		const flexibleWidth = Math.max(0, contentWidth - fixedWidth);
+		const recapMinimum = Math.min(SUMMARY_RECAP_MIN_WIDTH, Math.floor(flexibleWidth / 2));
+		const promptTarget = Math.min(SUMMARY_PROMPT_MAX_WIDTH, Math.max(10, Math.floor(flexibleWidth * 0.34)));
+		const promptWidth = Math.max(0, Math.min(promptTarget, flexibleWidth - recapMinimum));
+		const recapWidth = Math.max(0, flexibleWidth - promptWidth);
 		const promptPrefix = this.sharedPromptPrefix(window);
 		const promptSuffix = this.sharedPromptSuffix(window, promptPrefix);
 
@@ -363,7 +370,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 			const number = flat.indexOf(entry) + 1;
 			lines.push(
 				this.panelLine(
-					this.renderListEntry(entry, number, labelWidth, promptPrefix, promptSuffix, contentWidth),
+					this.renderListEntry(entry, number, agentWidth, promptPrefix, promptSuffix, promptWidth, recapWidth),
 					width,
 					selected,
 				),
@@ -424,41 +431,38 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 	private renderListEntry(
 		entry: FlatChildAgentNode,
 		number: number,
-		labelWidth: number,
+		agentWidth: number,
 		sharedPrefix: string,
 		sharedSuffix: string,
-		width: number,
+		promptWidth: number,
+		recapWidth: number,
 	): string {
-		const indent = " ".repeat(SUMMARY_LIST_INDENT + Math.min(6, entry.depth * 2));
+		const indent = " ".repeat(SUMMARY_LIST_INDENT);
 		// Running rows pulse the shared working glyph; other states stay static.
 		const rawIcon =
 			entry.node.status === "running"
 				? workingIconFrame(getWorkingPulseFrame())
 				: childAgentStatusIcon(entry.node.status);
 		const icon = formatChildAgentStatusIcon(entry.node.status, rawIcon);
-		const numberCell = theme.fg("muted", padTableCell(`Subagent ${number}`, labelWidth));
-		const time = formatChildAgentDuration(entry.node.durationMs);
-		const usage = formatChildAgentUsage(entry.node);
-		const rightText = [usage, time].filter((value) => value.length > 0).join("  ");
-		const rightWidth = visibleWidth(rightText);
-		// Fixed columns consume the icon, label, gap, and one separator before right-aligned metadata.
-		const fixed =
-			visibleWidth(indent) +
-			visibleWidth(rawIcon) +
-			1 +
-			labelWidth +
-			SUMMARY_LABEL_GAP +
-			(rightWidth > 0 ? 1 + rightWidth : 0);
-		// The prompt may use all remaining space; the elision keeps it short and the
-		// gap fill still right-aligns the time.
-		const promptWidth = Math.max(0, width - fixed);
+		const agentLabel = `${entry.depth > 0 ? "↳" : ""}S${number}`;
+		const agentCell = theme.fg("muted", padTableCell(agentLabel, agentWidth));
 		const prompt = this.elidePrompt(entry.node.label, sharedPrefix, sharedSuffix, promptWidth);
-		const promptCell = theme.fg("dim", prompt);
-		const labelGap = " ".repeat(SUMMARY_LABEL_GAP);
-		const fillWidth = Math.max(0, promptWidth - visibleWidth(prompt));
-		const fill = " ".repeat(fillWidth);
-		const rightCell = rightText ? ` ${theme.fg("muted", rightText)}` : "";
-		return `${indent}${icon} ${numberCell}${labelGap}${promptCell}${fill}${rightCell}`;
+		const promptCell = theme.fg("dim", padTableCell(prompt, promptWidth));
+		const recapCell = theme.fg("muted", padTableCell(childAgentRecap(entry.node), recapWidth, "…"));
+		const tools =
+			entry.node.toolUseCount === undefined
+				? ""
+				: `${entry.node.toolUseCount} ${entry.node.toolUseCount === 1 ? "tool" : "tools"}`;
+		const tokens = entry.node.tokenCount === undefined ? "" : `${formatTokenCount(entry.node.tokenCount)} tok`;
+		const duration = formatChildAgentDuration(entry.node.durationMs);
+		const metrics = [
+			padTableCell(tools, SUMMARY_TOOLS_WIDTH, "…"),
+			padTableCell(tokens, SUMMARY_TOKENS_WIDTH, "…"),
+			padTableCell(duration, SUMMARY_DURATION_WIDTH, "…"),
+		].join(" ");
+		const gap = " ".repeat(SUMMARY_COLUMN_GAP);
+		const divider = theme.fg("borderMuted", " │ ");
+		return `${indent}${icon} ${agentCell}${gap}${promptCell}${divider}${recapCell}${gap}${theme.fg("muted", metrics)}`;
 	}
 
 	// Coloring is applied by the caller so the trailing ellipsis matches the text.

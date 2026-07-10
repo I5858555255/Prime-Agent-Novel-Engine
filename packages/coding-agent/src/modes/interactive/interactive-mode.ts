@@ -316,7 +316,10 @@ function childAgentSummaryChanged(
 		previous.status !== next.status ||
 		previous.durationMs !== next.durationMs ||
 		previous.toolUseCount !== next.toolUseCount ||
-		previousTokens !== nextTokens
+		previousTokens !== nextTokens ||
+		previous.recap !== next.recap ||
+		previous.activity?.kind !== next.activity?.kind ||
+		previous.activity?.toolName !== next.activity?.toolName
 	);
 }
 
