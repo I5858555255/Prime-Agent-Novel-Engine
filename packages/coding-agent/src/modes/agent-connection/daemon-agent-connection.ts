@@ -752,6 +752,8 @@ export class DaemonAgentConnection implements AgentConnection {
 			return;
 		}
 		if (message.type === "session_replaced") {
+			this.attachedSessionId = message.state.sessionId;
+			this.attachedSessionFile = message.state.sessionFile;
 			const latestSnapshot: AgentConnectionSnapshot = {
 				state: message.state,
 				messages: message.messages,

@@ -577,6 +577,59 @@ describe("DaemonAgentConnection", () => {
 		]);
 	});
 
+	it("reattaches using the replacement session identity after a session switch", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const restoredMessages: AgentMessage[] = [{ role: "user", content: "switched prompt", timestamp: 3 }];
+		fakeClient.updateRestartSessions = [
+			{
+				id: "active-restored",
+				activeSessionId: "active-restored",
+				sessionId: "session-next",
+				sessionFile: "/tmp/session-next.jsonl",
+			},
+		];
+		fakeClient.attachResultFactory = (command) => {
+			const sessionId = command.activeSessionId === "active-restored" ? "session-next" : "session-current";
+			return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 1, {
+				state: createConnectionState(command.activeSessionId, sessionId),
+				messages: command.activeSessionId === "active-restored" ? restoredMessages : [],
+			});
+		};
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		await connection.attach();
+		fakeClient.emitMessage({
+			type: "session_replaced",
+			activeSessionId: "active-original",
+			state: createConnectionState("active-original", "session-next"),
+			messages: [{ role: "user", content: "switched prompt", timestamp: 2 }],
+		});
+
+		const restored = new Promise<AgentConnectionEvent>((resolve) => {
+			connection.subscribe((event) => {
+				if (event.type === "session_replaced") {
+					resolve(event);
+				}
+			});
+		});
+		fakeClient.emitMessage({
+			type: "session_closed",
+			activeSessionId: "active-original",
+			reason: "update",
+		});
+		fakeClient.emitClose(new Error("Daemon socket closed"));
+
+		await expect(restored).resolves.toMatchObject({
+			type: "session_replaced",
+			state: { activeSessionId: "active-restored", sessionId: "session-next" },
+			messages: restoredMessages,
+		});
+		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "list", "attach"]);
+		expect(fakeClient.requests.at(-1)).toMatchObject({
+			type: "attach",
+			activeSessionId: "active-restored",
+		});
+	});
+
 	it("loads connection state and forwards replacement snapshots through the daemon protocol", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
