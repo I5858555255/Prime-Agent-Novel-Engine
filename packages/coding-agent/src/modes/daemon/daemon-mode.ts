@@ -682,7 +682,10 @@ export class AgentDaemon {
 			await session.followUp(runnableJob.prompt);
 			return;
 		}
-		const canPrompt = () => this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob);
+		const getRunnableJob = (): AgentCronJob | undefined => {
+			const current = requirePersistedJob ? this.cronStore.getDueJob(job.id) : runnableJob;
+			return current && this.isCronJobRunnableForState(current, state, requirePersistedJob) ? current : undefined;
+		};
 		if (isHeartbeatCronJob(runnableJob)) {
 			const didPrompt = await this.promptHeartbeatWithAgentMessagePreparingGuard(
 				state,
@@ -692,10 +695,11 @@ export class AgentDaemon {
 					followUpQueueKey: `heartbeat:${runnableJob.id}`,
 					source: "rpc",
 				},
-				canPrompt,
+				getRunnableJob,
 			);
 			return didPrompt ? undefined : "skipped";
 		}
+		const canPrompt = () => getRunnableJob() !== undefined;
 		const didPrompt = await this.promptWithAgentMessagePreparingGuard(
 			state,
 			runnableJob.prompt,
@@ -740,18 +744,29 @@ export class AgentDaemon {
 		state: ActiveSessionState,
 		job: AgentCronJob,
 		options?: PromptOptions,
-		canPrompt?: () => boolean,
+		getPromptJob?: () => AgentCronJob | undefined,
 	): Promise<boolean> {
+		let promptJob = job;
 		return this.withAgentMessagePreparingGuard(
 			state,
 			(session) =>
-				session.promptHeartbeat(job, {
+				session.promptHeartbeat(promptJob, {
 					...options,
 					preflightResult: (didSucceed) => {
 						options?.preflightResult?.(didSucceed);
 					},
 				}),
-			canPrompt,
+			() => {
+				if (!getPromptJob) {
+					return true;
+				}
+				const current = getPromptJob();
+				if (!current) {
+					return false;
+				}
+				promptJob = current;
+				return true;
+			},
 		);
 	}
 

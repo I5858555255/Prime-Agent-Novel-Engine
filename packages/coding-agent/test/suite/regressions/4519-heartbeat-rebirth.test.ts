@@ -209,6 +209,49 @@ describe("ENG-4519 heartbeat rebirth", () => {
 		expect(storedHeartbeat?.lastRunAt).toBeUndefined();
 	});
 
+	it("uses an updated RLM heartbeat instruction after waiting to prompt", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		harness.sessionManager.appendSessionState({ status: "active" });
+		const promptHeartbeat = vi.spyOn(harness.session, "promptHeartbeat").mockResolvedValue();
+		const createRuntime = vi.fn<CreateAgentSessionRuntimeFactory>(async ({ cwd, agentDir }) =>
+			runtimeResult(harness, cwd, agentDir),
+		);
+		const daemon = createDaemon(harness, createRuntime);
+		const internals = daemon as unknown as AgentDaemonCronInternals;
+		const state = await internals.createRuntime({
+			type: "create",
+			sessionPath: harness.session.sessionFile!,
+		});
+		const heartbeat = internals.cronStore.createRlmHeartbeat({
+			activeSessionId: state.activeSessionId,
+			sessionId: harness.session.sessionId,
+			sessionFile: harness.session.sessionFile!,
+			cwd: harness.tempDir,
+			scheduleText: "every 10s",
+			prompt: "old instruction",
+			now: new Date(Date.now() - 20_000),
+		});
+		let releaseLock: () => void = () => {};
+		const lock = new Promise<void>((resolve) => {
+			releaseLock = resolve;
+		});
+		internals.agentMessageTargetLocks.set(state.activeSessionId, lock);
+
+		const run = internals.cronScheduler.runDue(new Date());
+		await waitForCondition(() => internals.agentMessagePreparingTargets.has(state.activeSessionId));
+		internals.cronStore.updateRlmHeartbeat(state.activeSessionId, heartbeat.id, {
+			prompt: "updated instruction",
+		});
+		releaseLock();
+
+		await expect(run).resolves.toBe(1);
+		expect(promptHeartbeat).toHaveBeenCalledWith(
+			expect.objectContaining({ id: heartbeat.id, prompt: "updated instruction" }),
+			expect.anything(),
+		);
+	});
+
 	it("uses the current runtime session after waiting for a prompt lock", async () => {
 		const original = await createHarness();
 		const replacement = await createHarness();
