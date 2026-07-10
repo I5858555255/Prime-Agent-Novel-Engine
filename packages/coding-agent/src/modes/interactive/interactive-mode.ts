@@ -2432,7 +2432,7 @@ export class InteractiveMode {
 		process.exit(1);
 	}
 
-	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean; preservePrompt?: boolean }): void {
+	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean }): void {
 		this.chatContainer.clear();
 		this.shortcutGuideContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -2442,24 +2442,18 @@ export class InteractiveMode {
 		if (options?.clearPromptStash) {
 			this.promptStash = undefined;
 		}
-		// Clear prompt history while retaining a client-local draft across an
-		// unsolicited daemon refresh. Explicit session commands still clear it.
+		// Clear every editor's prompt history, draft text, and queues, then prune
+		// any pasted images no longer referenced by the remaining stashed draft.
 		this.defaultEditor.clearHistory?.();
-		if (!options?.preservePrompt) {
-			this.defaultEditor.setText("");
-		}
+		this.defaultEditor.setText("");
 		if (this.editor !== this.defaultEditor) {
 			this.editor.clearHistory?.();
-			if (!options?.preservePrompt) {
-				this.editor.setText("");
-			}
+			this.editor.setText("");
 		}
-		if (!options?.preservePrompt) {
-			const keepImageIds = this.liveImageMarkerIds();
-			for (const markerId of this.pastedImages.keys()) {
-				if (!keepImageIds.has(markerId)) {
-					this.pastedImages.delete(markerId);
-				}
+		const keepImageIds = this.liveImageMarkerIds();
+		for (const markerId of this.pastedImages.keys()) {
+			if (!keepImageIds.has(markerId)) {
+				this.pastedImages.delete(markerId);
 			}
 		}
 		this.streamingComponent = undefined;
@@ -2487,6 +2481,34 @@ export class InteractiveMode {
 	private async renderCurrentSessionState(): Promise<void> {
 		this.resetCurrentSessionRenderState();
 		await this.renderInitialMessages();
+		this.syncWorkingLoader();
+	}
+
+	private async renderResyncedSession(snapshot: AgentConnectionSnapshot): Promise<void> {
+		const compactionFinished = this.isAgentCompacting() && !snapshot.state.isCompacting;
+		const bashFinished = this.isBashRunning() && !snapshot.state.isBashRunning;
+		this.applyConnectionStateSnapshot(snapshot.state);
+		this.streamingComponent = undefined;
+		this.streamingMessage = undefined;
+		this.replaceChildAgentInspector(snapshot.children);
+		await this.renderSessionContext(this.getSessionContextFromConnectionSnapshot(snapshot), {
+			clearChat: true,
+			updateFooter: true,
+		});
+		await this.refreshConnectionQueue();
+		if (compactionFinished) {
+			await this.flushCompactionQueue({ willRetry: false });
+		}
+		if (bashFinished && this.activeBashComponent) {
+			this.activeBashComponent.setComplete(undefined, false);
+			this.activeBashComponent = undefined;
+			if (!snapshot.state.isStreaming) {
+				this.flushPendingBashComponents();
+			}
+		}
+		this.updateTerminalTitle();
+		this.setGoalAnnouncementBaseline(this.getGoalState());
+		this.syncGoalTray(this.getGoalState());
 		this.syncWorkingLoader();
 	}
 
@@ -4128,9 +4150,14 @@ export class InteractiveMode {
 					this.resetSideQuestion();
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
-					this.resetCurrentSessionRenderState({ preservePrompt: true });
+					this.resetCurrentSessionRenderState({ clearPromptStash: true });
 					await this.rebindCurrentSession();
 					await this.renderInitialMessages();
+					this.ui.requestRender();
+				} else if (event.type === "session_resynced") {
+					const run = this.sessionEventQueue.then(() => this.renderResyncedSession(event.snapshot));
+					this.sessionEventQueue = run.catch(() => {});
+					await run;
 					this.ui.requestRender();
 				} else if (event.type === "session_status") {
 					this.sessionRecap = event.recap;
@@ -4868,6 +4895,13 @@ export class InteractiveMode {
 		}
 	}
 
+	private replaceChildAgentInspector(children: readonly AgentConnectionRlmChildAgentSnapshot[] | undefined): void {
+		this.childAgentSnapshots = new Map(
+			(children ?? []).filter((child) => child.status !== "cancelled").map((child) => [child.id, child]),
+		);
+		this.refreshChildAgentInspector();
+	}
+
 	private updateChildAgentInspector(child: AgentConnectionRlmChildAgentSnapshot): void {
 		// Cancelled subagents were deliberately stopped; drop them from the
 		// viewer instead of keeping a dead row around.
@@ -4876,6 +4910,10 @@ export class InteractiveMode {
 		} else {
 			this.childAgentSnapshots.set(child.id, child);
 		}
+		this.refreshChildAgentInspector();
+	}
+
+	private refreshChildAgentInspector(): void {
 		this.childAgentNodes = this.buildChildAgentInspectorNodes();
 		this.childAgentSummary.setNodes(this.childAgentNodes);
 		this.subagentTree.setNodes(this.childAgentNodes);
@@ -5171,8 +5209,8 @@ export class InteractiveMode {
 			if (token !== this.childAgentWatcherToken) {
 				return;
 			}
-			// session_replaced carries a fresh messages array; both need a rebuild.
-			if (event.type === "session_event" || event.type === "session_replaced") {
+			// Replacement and resync snapshots both carry authoritative messages.
+			if (event.type === "session_event" || event.type === "session_replaced" || event.type === "session_resynced") {
 				void this.refreshChildAgentWatch(token, watcher);
 			}
 		});

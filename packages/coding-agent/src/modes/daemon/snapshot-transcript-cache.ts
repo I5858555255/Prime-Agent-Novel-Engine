@@ -24,6 +24,9 @@ export class SnapshotTranscriptCache {
 	private cacheDirectory?: string;
 	private totalBytes = 0;
 	private completed = false;
+	private readers = 0;
+	private disposeRequested = false;
+	private disposed = false;
 	private failure?: Error;
 	private readonly chunkWaiters = new Map<
 		number,
@@ -116,7 +119,32 @@ export class SnapshotTranscriptCache {
 		});
 	}
 
+	retain(): () => void {
+		if (this.disposed) {
+			throw new Error(`Snapshot transcript ${this.snapshotId} was disposed`);
+		}
+		this.readers++;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.readers--;
+			if (this.readers === 0 && this.disposeRequested) {
+				this.disposeNow();
+			}
+		};
+	}
+
 	dispose(): void {
+		if (this.disposed || this.disposeRequested) return;
+		this.disposeRequested = true;
+		if (this.readers > 0) return;
+		this.disposeNow();
+	}
+
+	private disposeNow(): void {
+		if (this.disposed) return;
+		this.disposed = true;
 		this.markFailed(new Error(`Snapshot transcript ${this.snapshotId} was disposed`));
 		if (this.cacheDirectory) {
 			rmSync(this.cacheDirectory, { recursive: true, force: true });

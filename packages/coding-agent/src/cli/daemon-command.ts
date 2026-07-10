@@ -1366,6 +1366,17 @@ class DaemonAttachTerminal {
 				}
 				this.rl?.prompt();
 				return;
+			case "session_resynced":
+				this.isStreaming = message.snapshot.state.isStreaming;
+				this.writeLine(
+					chalk.dim(`Session resynchronized: ${message.snapshot.state.sessionName ?? message.activeSessionId}`),
+				);
+				if (message.snapshot.messages.length > 0) {
+					this.writeLine(chalk.bold("Transcript"));
+					this.printTranscript(message.snapshot.messages);
+				}
+				this.rl?.prompt();
+				return;
 			case "session_detached":
 				return;
 			case "session_closed":

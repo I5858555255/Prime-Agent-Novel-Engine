@@ -10,7 +10,7 @@
 - Fixed supervisor replacement surfacing fatal socket errors or recovering roots that were intentionally stopped ([ENG-4526](https://linear.app/primeintellect/issue/ENG-4526/reconnect-daemon-clients-transparently-after-supervisor-replacement)).
 - Changed daemon connection errors to report the failed operation, session identity, recovery steps, socket, and diagnostic log instead of raw protocol reasons.
 - Fixed Agents View retrying after an intentional daemon shutdown instead of stopping with restart guidance.
-- Fixed daemon session refreshes clearing prompt drafts and pasted images while users were typing.
+- Fixed daemon catch-up snapshots being disposed mid-transfer or triggering destructive session-replacement resets that cleared drafts, local queues, dialogs, and active UI state.
 - Fixed stale heartbeat jobs reopening sessions after they were archived, deleted, explicitly shut down, concurrently terminated, or lost resident worker ownership ([ENG-4519](https://linear.app/primeintellect/issue/ENG-4519/heartbeats-rebirth-sessions-that-were-previously-killed)).
 
 ## [0.2.8] - 2026-07-09

@@ -11,6 +11,8 @@ export interface DaemonSocketClient {
 	attachedActiveSessionIds: Set<string>;
 	/** Session events are dropped while the socket is blocked and replaced with one catch-up snapshot on drain. */
 	catchupActiveSessionIds?: Set<string>;
+	/** A real runtime replacement takes precedence over an ordinary resync for the same queued catch-up. */
+	catchupPurposes?: Map<string, "replacement" | "resync">;
 	backpressured?: boolean;
 	authenticated?: boolean;
 	transport?: "jsonl" | "private-framed";

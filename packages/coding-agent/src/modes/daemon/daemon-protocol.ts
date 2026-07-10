@@ -546,6 +546,12 @@ export type DaemonOutbound =
 			meta?: DaemonEventMeta;
 	  }
 	| {
+			type: "session_resynced";
+			activeSessionId: string;
+			snapshot: DaemonSessionSnapshot;
+			meta?: DaemonEventMeta;
+	  }
+	| {
 			type: "session_attached";
 			activeSessionId: string;
 			state: SessionSummary;
@@ -561,6 +567,7 @@ export type DaemonOutbound =
 			snapshot: Omit<DaemonSessionSnapshot, "messages">;
 			messageCount: number;
 			targetChunkBytes: number;
+			purpose?: "attach" | "replacement" | "resync";
 	  }
 	| {
 			type: "session_snapshot_chunk";

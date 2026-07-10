@@ -79,4 +79,22 @@ describe("snapshot transcript cache", () => {
 		await expect(end).resolves.toBeUndefined();
 		cache.dispose();
 	});
+
+	it("defers disposal until active snapshot readers finish", () => {
+		const cache = new SnapshotTranscriptCache({
+			activeSessionId: "active-d",
+			snapshotId: "snapshot-d",
+			messages: messages(3, 80),
+			cacheRoot: tempDir(),
+			targetChunkBytes: 150,
+		});
+		const release = cache.retain();
+		const firstChunk = cache.readChunk(0);
+
+		cache.dispose();
+
+		expect(cache.readChunk(0)).toEqual(firstChunk);
+		release();
+		expect(() => cache.readChunk(0)).toThrow("Unknown snapshot transcript chunk");
+	});
 });

@@ -863,6 +863,8 @@ export class DaemonAgentConnection implements AgentConnection {
 					await this.client.waitForHello(3000);
 					await this.attach();
 					if (!this.disposed) {
+						const snapshot = await this.getInitialSnapshot();
+						await this.emit({ type: "session_resynced", snapshot });
 						await this.emit({ type: "connection_status", status: "connected" });
 					}
 					return;
@@ -946,6 +948,20 @@ export class DaemonAgentConnection implements AgentConnection {
 				};
 			}
 			await this.emit({ type: "session_status", recap: message.recap });
+			return;
+		}
+		if (message.type === "session_resynced") {
+			this.attachedSessionId = message.snapshot.state.sessionId;
+			this.attachedSessionFile = message.snapshot.state.sessionFile;
+			this.latestSnapshot = mapDaemonSessionSnapshot(message.snapshot);
+			if (this.lastEventSequence !== undefined) {
+				this.latestSnapshot.lastEventSequence = this.lastEventSequence;
+			}
+			if (this.lastEventCursor) {
+				this.latestSnapshot.lastEventCursor = this.lastEventCursor;
+			}
+			this.latestSnapshotIsFresh = true;
+			await this.emit({ type: "session_resynced", snapshot: this.latestSnapshot });
 			return;
 		}
 		if (message.type === "session_replaced") {
@@ -1106,7 +1122,7 @@ export class DaemonAgentConnection implements AgentConnection {
 						return;
 					}
 					this.updateRestartPending = false;
-					await this.emit({ type: "session_replaced", state: snapshot.state, messages: snapshot.messages });
+					await this.emit({ type: "session_resynced", snapshot });
 					return;
 				}
 			} catch (error) {
@@ -1201,10 +1217,17 @@ export class DaemonAgentConnection implements AgentConnection {
 			this.lastEventCursor = maxEventCursor(this.lastEventCursor, message.lastEventCursor);
 		}
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, message.lastEventSequence);
+		this.attachedSessionId = snapshot.state.sessionId;
+		this.attachedSessionFile = snapshot.state.sessionFile;
 		this.latestSnapshot = mapDaemonSessionSnapshot(snapshot);
 		this.latestSnapshotIsFresh = true;
 		assembly.resolve(snapshot);
-		await this.emit({ type: "session_replaced", state: snapshot.state, messages });
+		const purpose = assembly.begin.purpose ?? "attach";
+		if (purpose === "replacement") {
+			await this.emit({ type: "session_replaced", state: snapshot.state, messages });
+		} else if (purpose === "resync") {
+			await this.emit({ type: "session_resynced", snapshot: this.latestSnapshot });
+		}
 	}
 
 	private isMessageForActiveSession(message: DaemonOutbound): boolean {

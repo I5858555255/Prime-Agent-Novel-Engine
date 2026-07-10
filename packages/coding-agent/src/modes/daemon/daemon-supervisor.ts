@@ -1583,11 +1583,13 @@ export class DaemonSupervisor {
 		client: DaemonSocketClient,
 		result: DaemonAttachResult,
 		transcript: SnapshotTranscriptCache,
+		purpose: "attach" | "replacement" | "resync" = "attach",
 	): Promise<void> {
 		const stream = result.snapshotStream;
 		if (!stream || client.socket.destroyed) {
 			return;
 		}
+		const releaseTranscript = transcript.retain();
 		client.snapshotStreaming = true;
 		if (!client.snapshotActiveSessionIds) {
 			client.snapshotActiveSessionIds = new Set();
@@ -1603,6 +1605,7 @@ export class DaemonSupervisor {
 					snapshot: snapshotHeader,
 					messageCount: stream.messageCount,
 					targetChunkBytes: stream.targetChunkBytes,
+					purpose,
 				}))
 			) {
 				return;
@@ -1632,6 +1635,7 @@ export class DaemonSupervisor {
 			if (!client.snapshotStreaming) {
 				client.backpressured = false;
 			}
+			releaseTranscript();
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpClient(client);
 			}
@@ -1762,7 +1766,7 @@ export class DaemonSupervisor {
 						) {
 							continue;
 						}
-						void this.streamSnapshot(client, result, transcript).catch((error) =>
+						void this.streamSnapshot(client, result, transcript, "replacement").catch((error) =>
 							this.log(`Failed to stream replacement snapshot for ${activeSessionId}: ${String(error)}`),
 						);
 					}
@@ -1787,15 +1791,12 @@ export class DaemonSupervisor {
 		if (outboundType === "session_snapshot_end" && activeSessionId) {
 			worker.transcriptCaches.get(activeSessionId)?.markComplete();
 			worker.incomingTranscriptActiveSessionIds.delete(activeSessionId);
-			if (snapshotPurpose === "replacement") {
+			if (snapshotPurpose === "replacement" || snapshotPurpose === "catchup") {
 				for (const client of this.clients) {
-					if (
-						client.attachedActiveSessionIds.has(activeSessionId) &&
-						!client.capabilities.has("chunked_snapshot")
-					) {
-						this.queueCatchup(client, activeSessionId);
-						void this.catchUpClient(client);
-					}
+					if (!client.attachedActiveSessionIds.has(activeSessionId)) continue;
+					if (snapshotPurpose === "replacement" && client.capabilities.has("chunked_snapshot")) continue;
+					this.queueCatchup(client, activeSessionId, snapshotPurpose === "replacement" ? "replacement" : "resync");
+					void this.catchUpClient(client);
 				}
 			}
 			return;
@@ -1835,6 +1836,7 @@ export class DaemonSupervisor {
 			sessionEventType === "message_start" ||
 			sessionEventType === "message_end" ||
 			outboundType === "session_replaced" ||
+			outboundType === "session_resynced" ||
 			outboundType === "session_closed"
 		) {
 			try {
@@ -1864,15 +1866,15 @@ export class DaemonSupervisor {
 				continue;
 			}
 			if (client.snapshotActiveSessionIds?.has(activeSessionId)) {
-				this.queueCatchup(client, activeSessionId);
+				this.queueCatchup(client, activeSessionId, outboundType === "session_replaced" ? "replacement" : "resync");
 				continue;
 			}
 			if (client.backpressured === true) {
-				this.queueCatchup(client, activeSessionId);
+				this.queueCatchup(client, activeSessionId, outboundType === "session_replaced" ? "replacement" : "resync");
 				continue;
 			}
 			if (!this.writeSerialized(client, publicPayload)) {
-				this.queueCatchup(client, activeSessionId);
+				this.queueCatchup(client, activeSessionId, outboundType === "session_replaced" ? "replacement" : "resync");
 			}
 		}
 		if (outboundType === "session_replaced" || outboundType === "session_closed") {
@@ -1929,11 +1931,19 @@ export class DaemonSupervisor {
 		});
 	}
 
-	private queueCatchup(client: DaemonSocketClient, activeSessionId: string): void {
+	private queueCatchup(
+		client: DaemonSocketClient,
+		activeSessionId: string,
+		purpose: "replacement" | "resync" = "resync",
+	): void {
 		if (!client.catchupActiveSessionIds) {
 			client.catchupActiveSessionIds = new Set();
 		}
 		client.catchupActiveSessionIds.add(activeSessionId);
+		client.catchupPurposes ??= new Map();
+		if (purpose === "replacement" || !client.catchupPurposes.has(activeSessionId)) {
+			client.catchupPurposes.set(activeSessionId, purpose);
+		}
 	}
 
 	private async catchUpClient(client: DaemonSocketClient): Promise<void> {
@@ -1941,10 +1951,14 @@ export class DaemonSupervisor {
 			return;
 		}
 		client.backpressured = false;
-		const pending = [...(client.catchupActiveSessionIds ?? [])];
+		const pending = [...(client.catchupActiveSessionIds ?? [])].map((activeSessionId) => ({
+			activeSessionId,
+			purpose: client.catchupPurposes?.get(activeSessionId) ?? ("resync" as const),
+		}));
 		client.catchupActiveSessionIds?.clear();
+		client.catchupPurposes?.clear();
 		for (let index = 0; index < pending.length; index++) {
-			const activeSessionId = pending[index]!;
+			const { activeSessionId, purpose } = pending[index]!;
 			try {
 				const attached = await this.attachClient(client, {
 					type: "attach",
@@ -1954,41 +1968,53 @@ export class DaemonSupervisor {
 				});
 				if (client.capabilities.has("chunked_snapshot")) {
 					const transcript = this.getOrCreateTranscriptCache(attached.worker, attached.result);
-					this.write(client, {
-						type: "session_replaced",
-						activeSessionId,
-						state: attached.result.snapshot.state,
-						messages: [],
-						snapshotFollows: true,
-						meta: createDaemonEventMeta(
+					if (purpose === "replacement") {
+						this.write(client, {
+							type: "session_replaced",
 							activeSessionId,
-							attached.result.lastEventSequence,
-							undefined,
-							attached.result.lastEventCursor?.generation,
-						),
-					});
+							state: attached.result.snapshot.state,
+							messages: [],
+							snapshotFollows: true,
+							meta: createDaemonEventMeta(
+								activeSessionId,
+								attached.result.lastEventSequence,
+								undefined,
+								attached.result.lastEventCursor?.generation,
+							),
+						});
+					}
 					await this.streamSnapshot(
 						client,
 						this.createStreamedAttachResult(attached.result, transcript),
 						transcript,
+						purpose,
 					);
 					continue;
 				}
-				const replacement: DaemonOutbound = {
-					type: "session_replaced",
+				const meta = createDaemonEventMeta(
 					activeSessionId,
-					state: attached.result.snapshot.state,
-					messages: attached.result.snapshot.messages,
-					meta: createDaemonEventMeta(
-						activeSessionId,
-						attached.result.lastEventSequence,
-						undefined,
-						attached.result.lastEventCursor?.generation,
-					),
-				};
-				if (!this.write(client, replacement)) {
+					attached.result.lastEventSequence,
+					undefined,
+					attached.result.lastEventCursor?.generation,
+				);
+				const catchup: DaemonOutbound =
+					purpose === "replacement"
+						? {
+								type: "session_replaced",
+								activeSessionId,
+								state: attached.result.snapshot.state,
+								messages: attached.result.snapshot.messages,
+								meta,
+							}
+						: {
+								type: "session_resynced",
+								activeSessionId,
+								snapshot: attached.result.snapshot,
+								meta,
+							};
+				if (!this.write(client, catchup)) {
 					for (const remaining of pending.slice(index + 1)) {
-						this.queueCatchup(client, remaining);
+						this.queueCatchup(client, remaining.activeSessionId, remaining.purpose);
 					}
 					return;
 				}

@@ -517,6 +517,7 @@ export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }
 	| { type: "side_question_event"; event: AgentConnectionSideQuestionEvent }
 	| { type: "session_replaced"; state: AgentConnectionState; messages: AgentMessage[] }
+	| { type: "session_resynced"; snapshot: AgentConnectionSnapshot }
 	| { type: "session_status"; recap?: string }
 	| { type: "extension_ui_request"; request: AgentConnectionExtensionUiRequest }
 	| { type: "connection_status"; status: "reconnecting" | "connected"; error?: string }

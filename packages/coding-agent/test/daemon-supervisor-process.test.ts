@@ -732,6 +732,7 @@ describe("daemon supervisor resident workers", () => {
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
 		}
 		expect(connectionEvents).toContain("connection_status:reconnecting");
+		expect(connectionEvents).toContain("session_resynced");
 		expect(connectionEvents).toContain("connection_status:connected");
 		expect(connectionEvents).not.toContain("closed");
 		await expect(connection.getState()).resolves.toMatchObject({

@@ -49,7 +49,11 @@ export class CompactAssistantStreamReconstructor {
 
 	observe(message: DaemonOutbound): void {
 		if (message.type !== "session_event") {
-			if (message.type === "session_replaced" || message.type === "session_closed") {
+			if (
+				message.type === "session_replaced" ||
+				message.type === "session_resynced" ||
+				message.type === "session_closed"
+			) {
 				this.clear(message.activeSessionId);
 			}
 			return;

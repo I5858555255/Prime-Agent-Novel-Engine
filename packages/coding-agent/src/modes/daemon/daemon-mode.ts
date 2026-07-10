@@ -2747,6 +2747,7 @@ export class AgentDaemon {
 						snapshot,
 						messageCount: stream.messageCount,
 						targetChunkBytes: stream.targetChunkBytes,
+						purpose: purpose === "catchup" ? "resync" : purpose,
 					},
 					purpose,
 				))
@@ -3570,11 +3571,19 @@ export class AgentDaemon {
 				continue;
 			}
 			if (client.snapshotActiveSessionIds?.has(state.activeSessionId)) {
-				this.queueClientCatchup(client, state.activeSessionId);
+				this.queueClientCatchup(
+					client,
+					state.activeSessionId,
+					sequencedMessage.type === "session_replaced" ? "replacement" : "resync",
+				);
 				continue;
 			}
 			if (client.backpressured === true) {
-				this.queueClientCatchup(client, state.activeSessionId);
+				this.queueClientCatchup(
+					client,
+					state.activeSessionId,
+					sequencedMessage.type === "session_replaced" ? "replacement" : "resync",
+				);
 				continue;
 			}
 			if (
@@ -3588,7 +3597,7 @@ export class AgentDaemon {
 					snapshotFollows: true,
 				});
 				if (!accepted) {
-					this.queueClientCatchup(client, state.activeSessionId);
+					this.queueClientCatchup(client, state.activeSessionId, "replacement");
 					continue;
 				}
 				const result = this.createAttachResult(client, state, {
@@ -3627,7 +3636,11 @@ export class AgentDaemon {
 				accepted = this.writeSerialized(client, serialized, sequencedMessage);
 			}
 			if (!accepted) {
-				this.queueClientCatchup(client, state.activeSessionId);
+				this.queueClientCatchup(
+					client,
+					state.activeSessionId,
+					sequencedMessage.type === "session_replaced" ? "replacement" : "resync",
+				);
 			}
 		}
 	}
@@ -3657,19 +3670,38 @@ export class AgentDaemon {
 			return;
 		}
 		client.backpressured = false;
-		const pending = [...(client.catchupActiveSessionIds ?? [])];
+		const pending = [...(client.catchupActiveSessionIds ?? [])].map((activeSessionId) => ({
+			activeSessionId,
+			purpose: client.catchupPurposes?.get(activeSessionId) ?? ("resync" as const),
+		}));
 		client.catchupActiveSessionIds?.clear();
+		client.catchupPurposes?.clear();
 		for (let index = 0; index < pending.length; index++) {
-			const activeSessionId = pending[index]!;
+			const { activeSessionId, purpose } = pending[index]!;
 			const state = this.sessions.get(activeSessionId);
 			if (!state || !state.clients.has(client)) {
 				continue;
 			}
+			const result = this.createAttachResult(client, state, {
+				type: "attach",
+				activeSessionId,
+			});
 			if (client.transport === "private-framed" && client.capabilities.has("chunked_snapshot")) {
-				const result = this.createAttachResult(client, state, {
-					type: "attach",
-					activeSessionId,
-				});
+				if (purpose === "replacement") {
+					this.write(client, {
+						type: "session_replaced",
+						activeSessionId,
+						state: result.snapshot.state,
+						messages: [],
+						snapshotFollows: true,
+						meta: createDaemonEventMeta(
+							activeSessionId,
+							state.lastEventSequence,
+							undefined,
+							state.eventGeneration,
+						),
+					});
+				}
 				const transcript = new SnapshotTranscriptCache({
 					activeSessionId,
 					snapshotId: `${activeSessionId}-${state.eventGeneration}-${state.lastEventSequence}`,
@@ -3690,30 +3722,43 @@ export class AgentDaemon {
 						},
 					},
 					transcript,
-					"catchup",
+					purpose === "replacement" ? "replacement" : "catchup",
 				);
 				continue;
 			}
-			const catchup = this.addSessionEventMeta(state, {
-				type: "session_replaced",
-				activeSessionId,
-				state: this.createConnectionState(state),
-				messages: state.runtime.session.messages,
-			});
+			const meta = createDaemonEventMeta(activeSessionId, state.lastEventSequence, undefined, state.eventGeneration);
+			const catchup: DaemonOutbound =
+				purpose === "replacement"
+					? {
+							type: "session_replaced",
+							activeSessionId,
+							state: result.snapshot.state,
+							messages: result.snapshot.messages,
+							meta,
+						}
+					: { type: "session_resynced", activeSessionId, snapshot: result.snapshot, meta };
 			if (!this.write(client, catchup)) {
 				for (const remaining of pending.slice(index + 1)) {
-					this.queueClientCatchup(client, remaining);
+					this.queueClientCatchup(client, remaining.activeSessionId, remaining.purpose);
 				}
 				return;
 			}
 		}
 	}
 
-	private queueClientCatchup(client: DaemonSocketClient, activeSessionId: string): void {
+	private queueClientCatchup(
+		client: DaemonSocketClient,
+		activeSessionId: string,
+		purpose: "replacement" | "resync" = "resync",
+	): void {
 		if (!client.catchupActiveSessionIds) {
 			client.catchupActiveSessionIds = new Set();
 		}
 		client.catchupActiveSessionIds.add(activeSessionId);
+		client.catchupPurposes ??= new Map();
+		if (purpose === "replacement" || !client.catchupPurposes.has(activeSessionId)) {
+			client.catchupPurposes.set(activeSessionId, purpose);
+		}
 	}
 
 	// The AgentSession doesn't know its own daemon active-session id, so fill it in here.
@@ -3940,6 +3985,7 @@ type SequencedDaemonOutbound = Extract<
 			| "session_event"
 			| "session_status"
 			| "session_replaced"
+			| "session_resynced"
 			| "session_closed"
 			| "extension_ui_request"
 			| "extension_error";
@@ -3951,6 +3997,7 @@ function isSequencedSessionOutbound(message: DaemonOutbound): message is Sequenc
 		message.type === "session_event" ||
 		message.type === "session_status" ||
 		message.type === "session_replaced" ||
+		message.type === "session_resynced" ||
 		message.type === "session_closed" ||
 		message.type === "extension_ui_request" ||
 		message.type === "extension_error"

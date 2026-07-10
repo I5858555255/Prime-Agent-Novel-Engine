@@ -25,6 +25,7 @@ import type {
 	AgentConnectionResourceDiagnostic,
 	AgentConnectionResourceSnapshot,
 	AgentConnectionSessionEvent,
+	AgentConnectionSnapshot,
 	AgentConnectionSourceInfo,
 	AgentConnectionState,
 } from "../src/modes/agent-connection/types.js";
@@ -562,44 +563,6 @@ describe("InteractiveMode pending bash components", () => {
 		expect(loader.intervalId).toBeNull();
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBeUndefined();
 	});
-
-	test("preserves a local prompt draft during an unsolicited session refresh", () => {
-		const editorStub = { clearHistory: vi.fn(), setText: vi.fn() };
-		const pastedImages = new Map([[7, { type: "image", data: "draft-image", mimeType: "image/png" }]]);
-		const fakeThis = {
-			chatContainer: new Container(),
-			shortcutGuideContainer: new Container(),
-			pendingMessagesContainer: new Container(),
-			queuedMessagesContainer: new Container(),
-			compactionQueuedMessages: [],
-			promptStash: { text: "stashed draft" },
-			pastedImages,
-			liveImageMarkerIds: () => new Set<number>(),
-			defaultEditor: editorStub,
-			editor: editorStub,
-			streamingComponent: undefined,
-			streamingMessage: undefined,
-			activeBashComponent: undefined,
-			pendingBashComponents: [],
-			activityTracker: { reset: vi.fn() },
-			resetPendingToolState: vi.fn(),
-			resetChildAgentInspector: vi.fn(),
-			setGoalAnnouncementBaseline: vi.fn(),
-			syncGoalTray: vi.fn(),
-			getGoalState: () => emptyGoalState(),
-		} as unknown as InteractiveMode;
-
-		(
-			InteractiveMode.prototype as unknown as {
-				resetCurrentSessionRenderState(this: unknown, options: { preservePrompt: boolean }): void;
-			}
-		).resetCurrentSessionRenderState.call(fakeThis, { preservePrompt: true });
-
-		expect(editorStub.clearHistory).toHaveBeenCalledOnce();
-		expect(editorStub.setText).not.toHaveBeenCalled();
-		expect((fakeThis as unknown as { promptStash: unknown }).promptStash).toEqual({ text: "stashed draft" });
-		expect(pastedImages.has(7)).toBe(true);
-	});
 });
 
 describe("InteractiveMode connection events", () => {
@@ -642,10 +605,145 @@ describe("InteractiveMode connection events", () => {
 		expect(resetRenderOrder).toBeLessThan(rebindOrder);
 		expect(rebindOrder).toBeLessThan(renderMessagesOrder);
 		expect(fakeThis.applyConnectionStateSnapshot).toHaveBeenCalledWith(state);
-		expect(fakeThis.resetCurrentSessionRenderState).toHaveBeenCalledWith({ preservePrompt: true });
+		expect(fakeThis.resetCurrentSessionRenderState).toHaveBeenCalledWith({ clearPromptStash: true });
 		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();
+	});
+
+	test("resynchronizes transcript state without destructive session teardown", async () => {
+		type SessionResyncedEvent = {
+			type: "session_resynced";
+			snapshot: { state: AgentConnectionState; messages: [] };
+		};
+		let listener: ((event: SessionResyncedEvent) => Promise<void> | void) | undefined;
+		const fakeThis = {
+			agentConnection: {
+				subscribe: vi.fn((callback) => {
+					listener = callback;
+					return vi.fn();
+				}),
+			},
+			sessionEventQueue: Promise.resolve(),
+			renderResyncedSession: vi.fn(async () => {}),
+			resetSideQuestion: vi.fn(),
+			resetExtensionUI: vi.fn(),
+			resetCurrentSessionRenderState: vi.fn(),
+			rebindCurrentSession: vi.fn(),
+			ui: { requestRender: vi.fn() },
+			handleEvent: vi.fn(),
+			handleConnectionExtensionUiRequest: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+
+		const snapshot = { state: createConnectionState(), messages: [] as [] };
+		await listener?.({ type: "session_resynced", snapshot });
+
+		expect(fakeThis.renderResyncedSession).toHaveBeenCalledWith(snapshot);
+		expect(fakeThis.resetSideQuestion).not.toHaveBeenCalled();
+		expect(fakeThis.resetExtensionUI).not.toHaveBeenCalled();
+		expect(fakeThis.resetCurrentSessionRenderState).not.toHaveBeenCalled();
+		expect(fakeThis.rebindCurrentSession).not.toHaveBeenCalled();
+	});
+
+	test("preserves client-local work while rendering a resynchronized snapshot", async () => {
+		const compactionQueue = [{ text: "send after compaction", mode: "followUp" as const }];
+		const sideQuestion = { id: "side-1", status: "running" };
+		const extensionRequests = new Map([["request-1", { cancelLocal: vi.fn() }]]);
+		const activeBashComponent = {};
+		const snapshot: AgentConnectionSnapshot = {
+			state: createConnectionState({ isCompacting: true, isBashRunning: true }),
+			messages: [],
+		};
+		const fakeThis = {
+			compactionQueuedMessages: compactionQueue,
+			sideQuestionEvent: sideQuestion,
+			activeConnectionExtensionUiRequests: extensionRequests,
+			activeBashComponent,
+			isAgentCompacting: () => true,
+			isBashRunning: () => true,
+			streamingComponent: {},
+			streamingMessage: {},
+			applyConnectionStateSnapshot: vi.fn(),
+			replaceChildAgentInspector: vi.fn(),
+			getSessionContextFromConnectionSnapshot: vi.fn(() => ({
+				messages: [],
+				thinkingLevel: "medium",
+				model: null,
+			})),
+			renderSessionContext: vi.fn(async () => {}),
+			refreshConnectionQueue: vi.fn(async () => {}),
+			flushCompactionQueue: vi.fn(async () => {}),
+			flushPendingBashComponents: vi.fn(),
+			updateTerminalTitle: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			syncGoalTray: vi.fn(),
+			syncWorkingLoader: vi.fn(),
+			getGoalState: () => emptyGoalState(),
+		} as unknown as InteractiveMode;
+
+		await (
+			InteractiveMode.prototype as unknown as {
+				renderResyncedSession(this: unknown, value: AgentConnectionSnapshot): Promise<void>;
+			}
+		).renderResyncedSession.call(fakeThis, snapshot);
+
+		expect((fakeThis as unknown as { compactionQueuedMessages: unknown }).compactionQueuedMessages).toBe(
+			compactionQueue,
+		);
+		expect((fakeThis as unknown as { sideQuestionEvent: unknown }).sideQuestionEvent).toBe(sideQuestion);
+		expect(
+			(fakeThis as unknown as { activeConnectionExtensionUiRequests: unknown }).activeConnectionExtensionUiRequests,
+		).toBe(extensionRequests);
+		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBe(activeBashComponent);
+	});
+
+	test("finishes local compaction and bash UI when a resync proves the operations ended", async () => {
+		const bashComponent = { setComplete: vi.fn() };
+		const flushCompactionQueue = vi.fn(async () => {});
+		const flushPendingBashComponents = vi.fn();
+		const snapshot: AgentConnectionSnapshot = {
+			state: createConnectionState({ isCompacting: false, isBashRunning: false, isStreaming: false }),
+			messages: [],
+		};
+		const fakeThis = {
+			activeBashComponent: bashComponent,
+			streamingComponent: {},
+			streamingMessage: {},
+			isAgentCompacting: () => true,
+			isBashRunning: () => true,
+			applyConnectionStateSnapshot: vi.fn(),
+			replaceChildAgentInspector: vi.fn(),
+			getSessionContextFromConnectionSnapshot: vi.fn(() => ({
+				messages: [],
+				thinkingLevel: "medium",
+				model: null,
+			})),
+			renderSessionContext: vi.fn(async () => {}),
+			refreshConnectionQueue: vi.fn(async () => {}),
+			flushCompactionQueue,
+			flushPendingBashComponents,
+			updateTerminalTitle: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			syncGoalTray: vi.fn(),
+			syncWorkingLoader: vi.fn(),
+			getGoalState: () => emptyGoalState(),
+		} as unknown as InteractiveMode;
+
+		await (
+			InteractiveMode.prototype as unknown as {
+				renderResyncedSession(this: unknown, value: AgentConnectionSnapshot): Promise<void>;
+			}
+		).renderResyncedSession.call(fakeThis, snapshot);
+
+		expect(flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+		expect(bashComponent.setComplete).toHaveBeenCalledWith(undefined, false);
+		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBeUndefined();
+		expect(flushPendingBashComponents).toHaveBeenCalledOnce();
 	});
 });
 
