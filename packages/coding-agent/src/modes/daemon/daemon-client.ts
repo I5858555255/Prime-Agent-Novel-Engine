@@ -4,6 +4,7 @@ import { getDaemonLogPath } from "../../config.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import {
 	createDaemonCommandEnvelope,
+	DAEMON_PROTOCOL_VERSION,
 	type DaemonClosingReason,
 	type DaemonCommand,
 	type DaemonCommandEnvelope,
@@ -53,6 +54,22 @@ export function getDaemonSocketCloseReason(error: Error): DaemonClosingReason | 
 	return error instanceof DaemonSocketClosedError ? error.daemonClosingReason : undefined;
 }
 
+export type DaemonClientReconnectStatus =
+	| { status: "reconnecting"; error: string }
+	| { status: "connected" }
+	| { status: "failed"; error: string };
+
+export interface DaemonClientReconnectOptions {
+	recoverDaemon: () => Promise<void>;
+	timeoutMs?: number;
+	onStatus?: (status: DaemonClientReconnectStatus) => void;
+}
+
+const DEFAULT_RECONNECT_TIMEOUT_MS = 60_000;
+const RECONNECT_CONNECT_TIMEOUT_MS = 1000;
+const RECONNECT_HELLO_TIMEOUT_MS = 3000;
+const MAX_RECONNECT_DELAY_MS = 2000;
+
 export class DaemonClient {
 	private socket?: Socket;
 	private detachReader?: () => void;
@@ -73,6 +90,9 @@ export class DaemonClient {
 	private requestId = 0;
 	private readonly protocolClientId = `daemon-client:${randomUUID()}`;
 	private requestRecoveryEnabled = false;
+	private reconnectOptions?: DaemonClientReconnectOptions;
+	private autoReconnectPromise?: Promise<void>;
+	private closed = false;
 	private helloMessage?: DaemonHello;
 	private daemonClosingReason?: DaemonClosingReason;
 	private reconnectPromise?: Promise<void>;
@@ -223,12 +243,24 @@ export class DaemonClient {
 		this.requestRecoveryEnabled = true;
 	}
 
+	/** Reconnect a global/raw daemon client after supervisor replacement. */
+	enableAutoReconnect(options: DaemonClientReconnectOptions): void {
+		this.requestRecoveryEnabled = true;
+		this.reconnectOptions = options;
+	}
+
 	async request(
 		command: DaemonCommandBody,
 		timeoutMs = 30000,
 		options: DaemonClientRequestOptions = {},
 	): Promise<DaemonResponse> {
-		return this.requestWire(command, timeoutMs, options, true);
+		if (!this.socket || this.socket.destroyed) {
+			throw new Error(
+				`Cannot send daemon command "${command.type}" because the Prime Agent daemon is not connected. ${daemonEndpointDetails(this.socketPath)}`,
+			);
+		}
+		const hello = this.helloMessage ?? (await this.waitForHello());
+		return this.requestWire(command, timeoutMs, options, hello.protocol.version >= DAEMON_PROTOCOL_VERSION);
 	}
 
 	/** One-release compatibility path for preparing and stopping a v1 daemon. */
@@ -295,6 +327,8 @@ export class DaemonClient {
 	}
 
 	close(): void {
+		this.closed = true;
+		this.reconnectOptions = undefined;
 		this.detachReader?.();
 		this.detachReader = undefined;
 		this.rejectAll(
@@ -405,7 +439,79 @@ export class DaemonClient {
 		for (const listener of [...this.closeListeners]) {
 			listener(error);
 		}
+		if (this.reconnectOptions && !this.closed) {
+			void this.autoReconnect(error);
+		}
 	}
+
+	private async autoReconnect(cause: Error): Promise<void> {
+		if (this.autoReconnectPromise) {
+			return this.autoReconnectPromise;
+		}
+		const options = this.reconnectOptions;
+		if (!options || this.closed) {
+			return;
+		}
+		this.emitReconnectStatus({ status: "reconnecting", error: cause.message });
+		this.autoReconnectPromise = (async () => {
+			const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_RECONNECT_TIMEOUT_MS);
+			let attempt = 0;
+			let lastError: Error = cause;
+			while (!this.closed && this.reconnectOptions === options && Date.now() < deadline) {
+				try {
+					await options.recoverDaemon();
+					if (this.closed || this.reconnectOptions !== options) {
+						return;
+					}
+					await this.connect(RECONNECT_CONNECT_TIMEOUT_MS);
+					await this.waitForHello(RECONNECT_HELLO_TIMEOUT_MS);
+					this.emitReconnectStatus({ status: "connected" });
+					return;
+				} catch (error) {
+					lastError = error instanceof Error ? error : new Error(String(error));
+					this.resetTransportForReconnect();
+					const remainingMs = deadline - Date.now();
+					if (remainingMs <= 0) {
+						break;
+					}
+					const delayMs = Math.min(remainingMs, MAX_RECONNECT_DELAY_MS, 100 * 2 ** Math.min(attempt, 5));
+					attempt++;
+					await delay(delayMs);
+				}
+			}
+			if (this.closed || this.reconnectOptions !== options) {
+				return;
+			}
+			const failure = new Error(`Daemon reconnection failed: ${lastError.message}`);
+			this.rejectAll(failure);
+			this.emitReconnectStatus({ status: "failed", error: failure.message });
+			this.reconnectOptions = undefined;
+		})().finally(() => {
+			this.autoReconnectPromise = undefined;
+		});
+		return this.autoReconnectPromise;
+	}
+
+	private resetTransportForReconnect(): void {
+		const socket = this.socket;
+		if (!socket) {
+			return;
+		}
+		this.clearSocketReference(socket);
+		socket.destroy();
+	}
+
+	private emitReconnectStatus(status: DaemonClientReconnectStatus): void {
+		try {
+			this.reconnectOptions?.onStatus?.(status);
+		} catch {
+			// UI status callbacks must never interrupt transport recovery.
+		}
+	}
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 function isDaemonClosing(value: unknown): value is Extract<DaemonOutbound, { type: "daemon_closing" }> {

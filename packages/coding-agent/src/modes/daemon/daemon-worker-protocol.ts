@@ -82,6 +82,8 @@ export interface DaemonWorkerDescriptor {
 	lifecycle: DaemonWorkerLifecycle;
 	createCommand: DaemonCreateCommand;
 	consecutiveFailures: number;
+	/** Durable intent written before root termination so replacement supervisors never recover it. */
+	stopRequestedAt?: string;
 	lastFailureAt?: string;
 	lastError?: string;
 }

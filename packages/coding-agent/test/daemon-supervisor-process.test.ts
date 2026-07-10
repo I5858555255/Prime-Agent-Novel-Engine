@@ -46,6 +46,11 @@ afterEach(async () => {
 	children.clear();
 	for (const pid of workerPids) {
 		try {
+			process.kill(pid, "SIGCONT");
+		} catch {
+			// Already gone.
+		}
+		try {
 			process.kill(-pid, "SIGTERM");
 		} catch {
 			try {
@@ -122,6 +127,33 @@ function readWorkerDescriptor(agentDir: string): DaemonWorkerDescriptor {
 		}
 	}
 	throw new Error("Worker descriptor was not persisted");
+}
+
+function countWorkerDescriptors(agentDir: string): number {
+	const workersRoot = join(agentDir, "daemon-workers");
+	try {
+		return readdirSync(workersRoot).reduce((count, directory) => {
+			return count + readdirSync(join(workersRoot, directory)).filter((name) => name.endsWith(".json")).length;
+		}, 0);
+	} catch {
+		return 0;
+	}
+}
+
+async function waitForWorkerStopTombstone(agentDir: string): Promise<DaemonWorkerDescriptor> {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		try {
+			const descriptor = readWorkerDescriptor(agentDir);
+			if (descriptor.stopRequestedAt) {
+				return descriptor;
+			}
+		} catch {
+			// The descriptor directory may still be appearing.
+		}
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+	}
+	throw new Error("Worker stop tombstone was not persisted");
 }
 
 function readSupervisorConfig(agentDir: string): { defaultSessionConfig?: { sessionDir?: string; noTools?: boolean } } {
@@ -251,6 +283,67 @@ describe("daemon supervisor resident workers", () => {
 		replacementClient.close();
 		await waitForSocketGone(socketPath);
 	});
+
+	it("does not resurrect an intentionally stopped root when the supervisor dies during kill", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const sessionDir = join(agentDir, "sessions");
+		const socketPath = join(tmpdir(), `prime-supervisor-stop-race-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+		mkdirSync(projectDir, { recursive: true });
+		const sessionManager = SessionManager.create(projectDir, sessionDir);
+		sessionManager.appendMessage({ role: "user", content: "stop me", timestamp: 1 });
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("Fixture session did not persist");
+		}
+
+		const firstSupervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, firstSupervisor);
+		const firstSupervisorPid = client.hello?.supervisorPid;
+		if (!firstSupervisorPid) {
+			throw new Error("Daemon hello did not expose its supervisor pid");
+		}
+		const created = await client.request({
+			type: "create",
+			sessionPath: sessionFile,
+			config: { cwd: projectDir, agentDir, sessionDir, noTools: true, noExtensions: true },
+		});
+		if (!created.success) {
+			throw new Error(created.error);
+		}
+		const summary = requireSummary(created.data);
+		if (!summary.workerPid) {
+			throw new Error("Resident worker did not expose its pid");
+		}
+		workerPids.add(summary.workerPid);
+		process.kill(summary.workerPid, "SIGSTOP");
+
+		const activeSessionId = summary.activeSessionId ?? summary.id;
+		const killResult = client.request({ type: "kill", activeSessionId }).catch((error: unknown) => error);
+		const tombstone = await waitForWorkerStopTombstone(agentDir);
+		expect(tombstone.stopRequestedAt).toEqual(expect.any(String));
+
+		process.kill(firstSupervisorPid, "SIGKILL");
+		await waitForExit(firstSupervisor);
+		children.delete(firstSupervisor);
+		client.close();
+		await expect(killResult).resolves.toBeInstanceOf(Error);
+
+		const replacementSupervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const replacementClient = await connectEventually(socketPath, replacementSupervisor);
+		const listed = await replacementClient.request({ type: "list" });
+		expect(listed.success).toBe(true);
+		const sessions = requireSessionList(listed.success ? listed.data : undefined);
+		expect(sessions.filter((session) => session.activeSessionId || session.workerPid)).toEqual([]);
+		await waitForProcessGone(summary.workerPid);
+		workerPids.delete(summary.workerPid);
+		expect(countWorkerDescriptors(agentDir)).toBe(0);
+
+		await replacementClient.request({ type: "shutdown" });
+		replacementClient.close();
+		await waitForSocketGone(socketPath);
+	}, 30_000);
 
 	it("hosts ten resident roots in ten isolated worker processes without a session cap", async () => {
 		const root = tempDir();

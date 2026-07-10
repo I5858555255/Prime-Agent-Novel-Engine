@@ -1339,6 +1339,7 @@ export async function main(args: string[], options?: MainOptions) {
 				socketPath: daemonSocketPath,
 				config: defaultSessionConfig,
 				uiServices: daemonUiServices,
+				recoverDaemon: () => ensureInteractiveDaemonRunning(daemonSocketPath),
 				createUiServicesForSession: async (summary) => {
 					const attachedSessionManager = createSessionManagerForActiveDaemonSummary(
 						summary,

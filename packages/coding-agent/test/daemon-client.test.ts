@@ -85,6 +85,20 @@ vi.mock("node:net", () => ({
 	createConnection: netMock.createConnection,
 }));
 
+function emitHello(socket: (typeof netMock.sockets)[number], version = 2): void {
+	socket.emit(
+		"data",
+		`${JSON.stringify({
+			type: "daemon_hello",
+			socketPath: "/tmp/prime-agent.sock",
+			protocol: { name: "prime-agent.daemon", version },
+			appVersion: "9.9.9",
+			clientId: "client-1",
+			serverCapabilities: [],
+		})}\n`,
+	);
+}
+
 describe("DaemonClient", () => {
 	beforeEach(() => {
 		netMock.sockets.length = 0;
@@ -184,6 +198,7 @@ describe("DaemonClient", () => {
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
+		emitHello(socket);
 
 		const response = client.request({ type: "attach", activeSessionId: "active-1" });
 		expect(socket.writes).toHaveLength(1);
@@ -220,6 +235,7 @@ describe("DaemonClient", () => {
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
+		emitHello(socket);
 
 		const response = client.request({ type: "list", all: true });
 		expect(socket.writes).toHaveLength(1);
@@ -274,6 +290,26 @@ describe("DaemonClient", () => {
 		client.close();
 	});
 
+	it("uses legacy framing automatically after a v1 daemon hello", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const connect = client.connect();
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+		emitHello(socket, 1);
+
+		const response = client.request({ type: "create" });
+		const command = JSON.parse(socket.writes[0]!.trim()) as { id: string; type: string };
+		expect(command.type).toBe("create");
+		expect(command).not.toHaveProperty("protocol");
+		socket.emit(
+			"data",
+			`${JSON.stringify({ id: command.id, type: "response", command: command.type, success: true })}\n`,
+		);
+		await expect(response).resolves.toMatchObject({ success: true });
+		client.close();
+	});
+
 	it("routes request progress by response id without notifying general listeners", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
 
@@ -282,6 +318,7 @@ describe("DaemonClient", () => {
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
+		emitHello(socket);
 
 		const progress: Array<[number, number]> = [];
 		const discovered: string[] = [];
@@ -379,6 +416,7 @@ describe("DaemonClient", () => {
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
+		emitHello(socket);
 
 		const response = client.request({
 			type: "create",
@@ -436,17 +474,7 @@ describe("DaemonClient", () => {
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
-		socket.emit(
-			"data",
-			`${JSON.stringify({
-				type: "daemon_hello",
-				socketPath: "/tmp/prime-agent.sock",
-				protocol: { name: "prime-agent.daemon", version: 2 },
-				appVersion: "9.9.9",
-				clientId: "client-1",
-				serverCapabilities: [],
-			})}\n`,
-		);
+		emitHello(socket);
 
 		const response = client.request({ type: "create" });
 		const request = JSON.parse(socket.writes[0]!.trim()) as { id: string };
@@ -594,6 +622,7 @@ describe("DaemonClient", () => {
 		const firstSocket = netMock.sockets[0]!;
 		firstSocket.emit("connect");
 		await firstConnect;
+		emitHello(firstSocket);
 
 		const response = client.request({ type: "prompt", activeSessionId: "active-1", message: "hello" });
 		const firstWireData = firstSocket.writes[0]!;
@@ -620,6 +649,52 @@ describe("DaemonClient", () => {
 		secondSocket.emit(
 			"data",
 			`${JSON.stringify({ id: firstEnvelope.id, type: "response", command: "prompt", success: true })}\n`,
+		);
+		await expect(response).resolves.toMatchObject({ id: firstEnvelope.id, success: true });
+		client.close();
+	});
+
+	it("reconnects raw clients and replays pending commands after supervisor replacement", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const firstConnect = client.connect();
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+		emitHello(firstSocket);
+
+		const statuses: string[] = [];
+		const recoverDaemon = vi.fn(async () => {});
+		client.enableAutoReconnect({
+			recoverDaemon,
+			onStatus: (status) => statuses.push(status.status),
+		});
+		const response = client.request({ type: "list" });
+		const firstWireData = firstSocket.writes[0]!;
+		const firstEnvelope = JSON.parse(firstWireData) as { id: string };
+
+		firstSocket.emit("close");
+		await vi.waitFor(() => expect(netMock.sockets).toHaveLength(2));
+		const secondSocket = netMock.sockets[1]!;
+		secondSocket.emit("connect");
+		await Promise.resolve();
+		secondSocket.emit(
+			"data",
+			`${JSON.stringify({
+				type: "daemon_hello",
+				socketPath: "/tmp/prime-agent.sock",
+				protocol: { name: "prime-agent.daemon", version: 2 },
+				clientId: "server-client-2",
+				serverCapabilities: [],
+			})}\n`,
+		);
+
+		await vi.waitFor(() => expect(statuses).toEqual(["reconnecting", "connected"]));
+		expect(recoverDaemon).toHaveBeenCalledOnce();
+		expect(secondSocket.writes).toEqual([firstWireData]);
+
+		secondSocket.emit(
+			"data",
+			`${JSON.stringify({ id: firstEnvelope.id, type: "response", command: "list", success: true })}\n`,
 		);
 		await expect(response).resolves.toMatchObject({ id: firstEnvelope.id, success: true });
 		client.close();

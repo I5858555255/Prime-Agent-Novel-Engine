@@ -526,6 +526,10 @@ export type DaemonOutbound =
 			protocol: DaemonProtocolInfo;
 			/** App version of the daemon process, used to detect stale daemons after self-update. */
 			appVersion?: string;
+			/** Changes whenever the public supervisor process is replaced. */
+			supervisorGeneration?: string;
+			/** Diagnostic process identity for attributing supervisor replacement. */
+			supervisorPid?: number;
 			clientId: DaemonClientId;
 			serverCapabilities: readonly DaemonClientCapability[];
 	  }

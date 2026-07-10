@@ -73,6 +73,7 @@ interface DaemonSnapshotAssembly {
 }
 
 export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+export const DAEMON_RECONNECT_TIMEOUT_MS = 60_000;
 const UPDATE_RECONNECT_TIMEOUT_MS = 120000;
 const UPDATE_RECONNECT_RETRY_MS = 100;
 const updateTransportReconnects = new WeakMap<DaemonClient, Promise<void>>();
@@ -123,6 +124,8 @@ export interface DaemonAgentConnectionOptions {
 	closeClientOnDispose?: boolean;
 	/** Restart/probe the detached supervisor after a transient socket loss. */
 	recoverDaemon?: () => Promise<void>;
+	/** Bound supervisor recovery before surfacing a fatal connection error. */
+	reconnectTimeoutMs?: number;
 	/**
 	 * Send this client's allowlisted env (herdr pane identity) with attach so
 	 * an env-less session (e.g. cron-created) adopts it. Set only by the
@@ -850,8 +853,10 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		this.reconnectPromise = (async () => {
 			await this.emit({ type: "connection_status", status: "reconnecting", error: cause.message });
+			const deadline = Date.now() + (this.options.reconnectTimeoutMs ?? DAEMON_RECONNECT_TIMEOUT_MS);
 			let attempt = 0;
-			while (!this.disposed) {
+			let lastError: Error = cause;
+			while (!this.disposed && Date.now() < deadline) {
 				try {
 					await this.options.recoverDaemon?.();
 					await this.client.connect(1000);
@@ -861,14 +866,23 @@ export class DaemonAgentConnection implements AgentConnection {
 						await this.emit({ type: "connection_status", status: "connected" });
 					}
 					return;
-				} catch {
+				} catch (error) {
+					lastError = error instanceof Error ? error : new Error(String(error));
 					if (this.disposed) {
 						return;
 					}
-					const delayMs = Math.min(5000, 100 * 2 ** Math.min(attempt, 6));
+					const remainingMs = deadline - Date.now();
+					if (remainingMs <= 0) {
+						break;
+					}
+					const delayMs = Math.min(remainingMs, 2000, 100 * 2 ** Math.min(attempt, 5));
 					attempt++;
 					await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
 				}
+			}
+			if (!this.disposed) {
+				this.client.close();
+				await this.emit({ type: "closed", error: `Daemon reconnection failed: ${lastError.message}` });
 			}
 		})().finally(() => {
 			this.reconnectPromise = undefined;

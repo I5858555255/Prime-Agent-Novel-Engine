@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -359,6 +359,7 @@ export class DaemonSupervisor {
 	private readonly openingWorkers = new Map<string, Promise<ResidentWorker>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 	private readonly descriptorDir: string;
+	private readonly generation = randomUUID();
 	private readonly supervisorConfigPath: string;
 	private readonly defaultSessionConfig: AgentSessionRuntimeConfig;
 	private readonly snapshotCacheRoot: string;
@@ -433,7 +434,7 @@ export class DaemonSupervisor {
 		await Promise.all(workersToAdopt.map((worker) => this.adoptOrRecoverWorker(worker)));
 		await this.syncAgentPeers().catch((error) => this.log(`Could not synchronize agent peers: ${String(error)}`));
 		this.markReady();
-		this.log(`Prime Agent daemon supervisor listening on ${this.socketPath}`);
+		this.log(`Prime Agent daemon supervisor ${this.generation} listening on ${this.socketPath}`);
 	}
 
 	private log(message: string): void {
@@ -469,7 +470,7 @@ export class DaemonSupervisor {
 					transcriptCaches: new Map(),
 					incomingTranscriptActiveSessionIds: new Set(),
 					snapshotLoads: new Map(),
-					intentionalStop: false,
+					intentionalStop: descriptor.stopRequestedAt !== undefined,
 				});
 			} catch (error) {
 				this.log(`Ignoring invalid worker descriptor ${path}: ${String(error)}`);
@@ -556,6 +557,8 @@ export class DaemonSupervisor {
 					socketPath: this.socketPath,
 					protocol: DAEMON_PROTOCOL_INFO,
 					appVersion: VERSION,
+					supervisorGeneration: this.generation,
+					supervisorPid: process.pid,
 					clientId: client.id,
 					serverCapabilities: [
 						"attach_snapshot",
@@ -883,11 +886,17 @@ export class DaemonSupervisor {
 			...command,
 			activeSessionId: match.summary.activeSessionId ?? match.summary.id,
 		} as DaemonCommand;
-		const response = await this.forwardToWorker(match.worker, resolvedCommand);
-		if (
+		const isRootKill =
 			command.type === "kill" &&
-			(match.summary.activeSessionId ?? match.summary.id) === match.worker.descriptor.rootActiveSessionId
-		) {
+			(match.summary.activeSessionId ?? match.summary.id) === match.worker.descriptor.rootActiveSessionId;
+		if (!isRootKill) {
+			return this.forwardToWorker(match.worker, resolvedCommand);
+		}
+		this.persistWorkerStopTombstone(match.worker);
+		let response: DaemonResponse;
+		try {
+			response = await this.forwardToWorker(match.worker, resolvedCommand);
+		} finally {
 			await this.stopWorker(match.worker, true);
 		}
 		return response;
@@ -1138,6 +1147,16 @@ export class DaemonSupervisor {
 	}
 
 	private async adoptOrRecoverWorker(worker: ResidentWorker): Promise<void> {
+		if (worker.descriptor.stopRequestedAt) {
+			try {
+				await this.stopWorker(worker, true, true);
+				this.log(`Completed intentional stop for worker ${worker.descriptor.workerId} during supervisor adoption`);
+			} catch (error) {
+				this.workers.delete(worker.descriptor.workerId);
+				this.log(`Could not complete intentional stop for worker ${worker.descriptor.workerId}: ${String(error)}`);
+			}
+			return;
+		}
 		try {
 			if (!isProcessAlive(worker.descriptor.pid)) {
 				throw new Error("Session worker process is no longer running");
@@ -2112,8 +2131,10 @@ export class DaemonSupervisor {
 	}
 
 	private async stopWorker(worker: ResidentWorker, removeDescriptor: boolean, force = false): Promise<void> {
-		worker.intentionalStop = true;
-		if (!removeDescriptor) {
+		if (removeDescriptor) {
+			this.persistWorkerStopTombstone(worker);
+		} else {
+			worker.intentionalStop = true;
 			worker.descriptor.lifecycle = "recovering";
 			this.persistWorker(worker);
 		}
@@ -2149,7 +2170,7 @@ export class DaemonSupervisor {
 			}
 		}
 		if (isProcessAlive(worker.descriptor.pid)) {
-			worker.intentionalStop = false;
+			worker.intentionalStop = worker.descriptor.stopRequestedAt !== undefined;
 			throw new Error(`Session worker ${worker.descriptor.workerId} did not stop${force ? " after SIGKILL" : ""}`);
 		}
 		this.workers.delete(worker.descriptor.workerId);
@@ -2159,6 +2180,12 @@ export class DaemonSupervisor {
 		if (!this.shuttingDown) {
 			void this.syncAgentPeers().catch(() => undefined);
 		}
+	}
+
+	private persistWorkerStopTombstone(worker: ResidentWorker): void {
+		worker.intentionalStop = true;
+		worker.descriptor.stopRequestedAt ??= new Date().toISOString();
+		this.persistWorker(worker);
 	}
 
 	private write(client: DaemonSocketClient, message: DaemonOutbound): boolean {
