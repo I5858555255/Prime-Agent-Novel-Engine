@@ -3,6 +3,7 @@
  * Handles TUI rendering and user interaction, delegating agent execution to AgentConnection.
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -124,6 +125,7 @@ import type {
 	AgentConnectionSessionEvent,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
+	AgentConnectionSideQuestionEvent,
 	AgentConnectionSlashCommand,
 	AgentConnectionSnapshot,
 	AgentConnectionSourceInfo,
@@ -170,6 +172,7 @@ import { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 import { SessionPickerScreen } from "./components/session-picker-screen.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
+import { SideQuestionComponent } from "./components/side-question.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
 import { SubagentTreeView } from "./components/subagent-tree-view.js";
 import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
@@ -608,6 +611,7 @@ export class InteractiveMode {
 	private pendingMessagesContainer: Container;
 	private statusContainer: Container;
 	private queuedMessagesContainer: Container;
+	private sideQuestionContainer: Container;
 	private defaultEditor: CustomEditor;
 	private editor: EditorComponent;
 	private promptStash: PromptStash | undefined;
@@ -664,6 +668,9 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private sideQuestionComponent: SideQuestionComponent | undefined;
+	private sideQuestionEvent: AgentConnectionSideQuestionEvent | undefined;
+	private activeSideQuestionId: string | undefined;
 
 	// User bash execution tracking (! / !! prefix), driven by bash_* session events
 	private activeBashComponent: BashExecutionComponent | undefined = undefined;
@@ -799,6 +806,7 @@ export class InteractiveMode {
 		}
 		this.agentConnection.onBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
+			this.resetSideQuestion();
 		});
 		this.version = VERSION;
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
@@ -812,6 +820,7 @@ export class InteractiveMode {
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.queuedMessagesContainer = new Container();
+		this.sideQuestionContainer = new Container();
 		this.childAgentDetail = new ChildAgentDetailComponent(() => this.getChildAgentPanelRows(), {
 			ui: this.ui,
 		});
@@ -1105,11 +1114,13 @@ export class InteractiveMode {
 		this.renderRecap();
 		this.mainContainer.addChild(this.recapContainer);
 		this.mainContainer.addChild(this.queuedMessagesContainer);
+		this.mainContainer.addChild(this.sideQuestionContainer);
 		this.mainContainer.addChild(this.editorContainer);
 		this.mainContainer.addChild(this.childAgentSummary);
 		this.mainContainer.addChild(this.widgetContainerBelow);
 		this.footerSlot.addChild(this.footer);
 		this.mainContainer.addChild(this.footerSlot);
+		this.promptDock.addChild(this.sideQuestionContainer);
 		this.promptDock.addChild(this.editorContainer);
 		this.promptDock.addChild(this.childAgentSummary);
 		this.promptDock.addChild(this.footerSlot);
@@ -2134,13 +2145,7 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
-					this.chatContainer.clear();
-					await this.renderInitialMessages();
-					if (result.editorText && !this.editor.getText().trim()) {
-						this.editor.setText(result.editorText);
-					}
-					this.showStatus("Navigated to selected point");
-					void this.flushCompactionQueue({ willRetry: false });
+					await this.renderTreeNavigation(result);
 					return { cancelled: false };
 				},
 				switchSession: async (sessionPath, options) => {
@@ -2346,7 +2351,13 @@ export class InteractiveMode {
 	}
 
 	private hasInterruptibleWork(): boolean {
-		return this.isAgentStreaming() || this.isAgentCompacting() || this.isBashRunning() || this.getRetryAttempt() > 0;
+		return (
+			this.isAgentStreaming() ||
+			this.isAgentCompacting() ||
+			this.isBashRunning() ||
+			this.getRetryAttempt() > 0 ||
+			this.sideQuestionEvent?.status === "running"
+		);
 	}
 
 	private getRetryAttempt(): number {
@@ -3699,6 +3710,105 @@ export class InteractiveMode {
 		return images.length > 0 ? images : undefined;
 	}
 
+	private async handleSideQuestion(question: string): Promise<void> {
+		if (!question) {
+			this.showWarning("Usage: /btw <question>");
+			return;
+		}
+		if (this.activeSideQuestionId) {
+			this.showWarning("Wait for the current side question to finish or cancel it first.");
+			return;
+		}
+
+		this.clearSideQuestion();
+		const event: AgentConnectionSideQuestionEvent = {
+			id: randomUUID(),
+			question,
+			answer: "",
+			status: "running",
+		};
+		this.activeSideQuestionId = event.id;
+		this.sideQuestionEvent = event;
+		this.sideQuestionComponent = new SideQuestionComponent(
+			event,
+			() => this.getSideQuestionMaxLines(),
+			this.settingsManager.getEditorPaddingX(),
+		);
+		this.sideQuestionContainer.addChild(new Spacer(1));
+		this.sideQuestionContainer.addChild(this.sideQuestionComponent);
+		this.ui.requestRender();
+
+		try {
+			await this.agentConnection.startSideQuestion(event.id, question);
+		} catch (error) {
+			this.handleSideQuestionEvent({
+				...event,
+				status: "error",
+				errorMessage: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	private handleSideQuestionEvent(event: AgentConnectionSideQuestionEvent): void {
+		if (event.id === this.activeSideQuestionId && event.status !== "running") {
+			this.activeSideQuestionId = undefined;
+		}
+		if (event.id !== this.sideQuestionEvent?.id || !this.sideQuestionComponent) {
+			return;
+		}
+		this.sideQuestionEvent = event;
+		this.sideQuestionComponent.update(event);
+		this.ui.requestRender();
+	}
+
+	private clearSideQuestion(options: { abort?: boolean } = {}): void {
+		const event = this.sideQuestionEvent;
+		if (options.abort && event?.status === "running") {
+			this.abortSideQuestion(event.id);
+		}
+		this.sideQuestionEvent = undefined;
+		this.sideQuestionComponent = undefined;
+		this.sideQuestionContainer.clear();
+		if (this.isInitialized) {
+			this.ui.requestRender();
+		}
+	}
+
+	private resetSideQuestion(): void {
+		this.clearSideQuestion({ abort: true });
+		this.activeSideQuestionId = undefined;
+	}
+
+	private abortSideQuestion(id: string, reportError = false): void {
+		void this.agentConnection
+			.abortSideQuestion(id)
+			.then((aborted) => {
+				if (!aborted && this.activeSideQuestionId === id) {
+					this.activeSideQuestionId = undefined;
+				}
+			})
+			.catch((error) => {
+				if (reportError) {
+					this.showError(error instanceof Error ? error.message : String(error));
+				}
+			});
+	}
+
+	private async renderTreeNavigation(result: { editorText?: string }): Promise<void> {
+		this.clearSideQuestion({ abort: true });
+		this.chatContainer.clear();
+		await this.renderInitialMessages();
+		if (result.editorText && !this.editor.getText().trim()) {
+			this.editor.setText(result.editorText);
+		}
+		this.showStatus("Navigated to selected point");
+		void this.flushCompactionQueue({ willRetry: false });
+	}
+
+	private getSideQuestionMaxLines(): number {
+		return Math.max(6, Math.min(12, Math.floor(this.ui.terminal.rows * 0.3)));
+	}
+
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
@@ -3714,6 +3824,11 @@ export class InteractiveMode {
 				const canonicalCommandText = commandName ? `/${commandName}${commandArgs ? ` ${commandArgs}` : ""}` : text;
 
 				// Handle commands
+				if (commandName === "btw") {
+					this.editor.setText("");
+					await this.handleSideQuestion(commandArgs);
+					return;
+				}
 				if (commandName === "settings" && !commandArgs) {
 					await this.showSettingsSelector();
 					this.editor.setText("");
@@ -3929,6 +4044,7 @@ export class InteractiveMode {
 						);
 						return;
 					}
+					this.clearSideQuestion({ abort: true });
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
 					// Optimistic: bash_start only fires after extension dispatch, and the
@@ -3949,6 +4065,8 @@ export class InteractiveMode {
 					}
 					return;
 				}
+
+				this.clearSideQuestion({ abort: true });
 
 				// Queue input during compaction (extension commands execute immediately)
 				if (this.isAgentCompacting()) {
@@ -4001,6 +4119,7 @@ export class InteractiveMode {
 					this.sessionEventQueue = run.catch(() => {});
 					await run;
 				} else if (event.type === "session_replaced") {
+					this.resetSideQuestion();
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
 					this.resetCurrentSessionRenderState({ clearPromptStash: true });
@@ -4011,6 +4130,8 @@ export class InteractiveMode {
 					this.sessionRecap = event.recap;
 					this.patchConnectionState({ recap: event.recap });
 					this.renderRecap();
+				} else if (event.type === "side_question_event") {
+					this.handleSideQuestionEvent(event.event);
 				} else if (event.type === "extension_ui_request") {
 					await this.handleConnectionExtensionUiRequest(event.request);
 				} else if (event.type === "closed") {
@@ -5569,6 +5690,11 @@ export class InteractiveMode {
 
 	private handleEscape(): void {
 		this.clearCtrlCExitHint();
+		if (this.sideQuestionEvent) {
+			this.clearEscapeRepeat();
+			this.clearSideQuestion({ abort: true });
+			return;
+		}
 		const action = this.takeEscapeRepeatAction();
 		if (action === "tree") {
 			void this.showTreeSelector();
@@ -5628,6 +5754,9 @@ export class InteractiveMode {
 	}
 
 	private interruptOrClearInput(): void {
+		if (this.sideQuestionEvent?.status === "running") {
+			this.abortSideQuestion(this.sideQuestionEvent.id, true);
+		}
 		if (this.getRetryAttempt() > 0) {
 			void this.agentConnection.abortRetry();
 		}
@@ -7119,14 +7248,7 @@ export class InteractiveMode {
 							return;
 						}
 
-						// Update UI
-						this.chatContainer.clear();
-						await this.renderInitialMessages();
-						if (result.editorText && !this.editor.getText().trim()) {
-							this.editor.setText(result.editorText);
-						}
-						this.showStatus("Navigated to selected point");
-						void this.flushCompactionQueue({ willRetry: false });
+						await this.renderTreeNavigation(result);
 					} catch (error) {
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
