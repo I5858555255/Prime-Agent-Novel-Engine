@@ -14,6 +14,7 @@
 - Fixed non-numeric `autoRefine.turnInterval` and `autoRefine.cooldownMs` settings falling back to defaults instead of silently enabling a noisy auto-refine loop.
 - Fixed all session-resume entry points to share a searchable full-screen picker, stream results while loading, and support renaming ([ENG-4513](https://linear.app/primeintellect/issue/ENG-4513/resume-in-agents-view-is-broken)).
 - Fixed self-updates losing restored daemon sessions to a socket cleanup race and leaving open session or agents-view windows disconnected.
+- Changed daemon connection errors to report the failed operation, session identity, recovery steps, socket, and diagnostic log instead of raw protocol reasons.
 
 ## [0.2.7] - 2026-07-08
 

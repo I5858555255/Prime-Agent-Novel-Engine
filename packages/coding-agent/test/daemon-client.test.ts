@@ -106,7 +106,10 @@ describe("DaemonClient", () => {
 
 		firstSocket.emit("error", new Error("initial connect failed"));
 
-		await expect(firstAttempt).resolves.toMatchObject({ message: "initial connect failed" });
+		const firstError = await firstAttempt;
+		expect(firstError.message).toContain("Failed to connect to the Prime Agent daemon: initial connect failed.");
+		expect(firstError.message).toContain("Socket: /tmp/prime-agent-missing.sock.");
+		expect(firstError.message).toContain("Daemon log:");
 		expect(firstSocket.listenerCount("data")).toBe(0);
 		expect(firstSocket.listenerCount("end")).toBe(0);
 
@@ -114,7 +117,9 @@ describe("DaemonClient", () => {
 		expect(netMock.sockets).toHaveLength(2);
 		netMock.sockets[1]!.emit("error", new Error("retry reached socket"));
 
-		await expect(secondAttempt).resolves.toMatchObject({ message: "retry reached socket" });
+		await expect(secondAttempt).resolves.toMatchObject({
+			message: expect.stringContaining("Failed to connect to the Prime Agent daemon: retry reached socket."),
+		});
 	});
 
 	it("allows connect retry after the initial connection times out", async () => {
@@ -126,7 +131,7 @@ describe("DaemonClient", () => {
 		const firstSocket = netMock.sockets[0]!;
 
 		const timeoutRejection = expect(firstAttempt).resolves.toMatchObject({
-			message: "Timed out connecting to daemon socket: /tmp/prime-agent-slow.sock",
+			message: expect.stringContaining("Timed out after 5ms connecting to the Prime Agent daemon."),
 		});
 		await vi.advanceTimersByTimeAsync(5);
 		await timeoutRejection;
@@ -139,7 +144,9 @@ describe("DaemonClient", () => {
 		expect(netMock.sockets).toHaveLength(2);
 		netMock.sockets[1]!.emit("error", new Error("retry reached socket"));
 
-		await expect(secondAttempt).resolves.toMatchObject({ message: "retry reached socket" });
+		await expect(secondAttempt).resolves.toMatchObject({
+			message: expect.stringContaining("Failed to connect to the Prime Agent daemon: retry reached socket."),
+		});
 	});
 
 	it("captures the daemon hello greeting for version checks", async () => {
@@ -222,6 +229,24 @@ describe("DaemonClient", () => {
 		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
 
 		client.close();
+	});
+
+	it("includes command, socket, and log context when a request is made while disconnected", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+
+		const request = client.request({ type: "list", all: true });
+
+		await expect(request).rejects.toMatchObject({
+			message: expect.stringContaining(
+				'Cannot send daemon command "list" because the Prime Agent daemon is not connected.',
+			),
+		});
+		await expect(request).rejects.toMatchObject({
+			message: expect.stringContaining("Socket: /tmp/prime-agent.sock."),
+		});
+		await expect(request).rejects.toMatchObject({
+			message: expect.stringContaining("Daemon log:"),
+		});
 	});
 
 	it("routes request progress by response id without notifying general listeners", async () => {
@@ -391,7 +416,10 @@ describe("DaemonClient", () => {
 
 		socket.emit("close");
 
-		expect(closed.map((error) => error.message)).toEqual(["Daemon socket closed"]);
+		expect(closed).toHaveLength(1);
+		expect(closed[0]?.message).toContain("Connection to the Prime Agent daemon closed.");
+		expect(closed[0]?.message).toContain("Socket: /tmp/prime-agent.sock.");
+		expect(closed[0]?.message).toContain("Daemon log:");
 		expect(client.isConnected).toBe(false);
 		unsubscribe();
 		client.close();

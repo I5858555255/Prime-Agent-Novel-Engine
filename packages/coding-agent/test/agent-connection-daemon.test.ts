@@ -719,7 +719,62 @@ describe("DaemonAgentConnection", () => {
 		await Promise.resolve();
 
 		expect(fakeClient.reconnectCount).toBe(0);
-		expect(closedEvents).toEqual([{ type: "closed", error: "shutdown" }]);
+		expect(closedEvents).toHaveLength(1);
+		expect(closedEvents[0]).toMatchObject({
+			type: "closed",
+			error: expect.stringContaining("The Prime Agent daemon shut down while this window was attached."),
+		});
+		const closedError = closedEvents[0]?.type === "closed" ? closedEvents[0].error : undefined;
+		expect(closedError).toContain("Session ID: session-current.");
+		expect(closedError).toContain("Session file: /tmp/session-current.jsonl.");
+		expect(closedError).toContain("Diagnostic log:");
+	});
+
+	it.each([
+		["killed", "The daemon stopped this agent session."],
+		["completed", "The daemon closed this agent session after it completed."],
+		["replaced", "The daemon replaced this agent session with another session."],
+	] as const)("explains a %s session close instead of exposing the raw reason", async (reason, explanation) => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const closedEvents: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			if (event.type === "closed") {
+				closedEvents.push(event);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.emitMessage({ type: "session_closed", activeSessionId: "active-original", reason });
+		await Promise.resolve();
+
+		expect(closedEvents).toHaveLength(1);
+		const closedError = closedEvents[0]?.type === "closed" ? closedEvents[0].error : undefined;
+		expect(closedError).toContain(explanation);
+		expect(closedError).not.toBe(reason);
+		expect(closedError).toContain("Session ID: session-current.");
+	});
+
+	it("adds recovery and diagnostic context to unexpected daemon disconnects", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const closedEvents: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			if (event.type === "closed") {
+				closedEvents.push(event);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.emitClose(new Error("ECONNRESET"));
+		await Promise.resolve();
+
+		expect(closedEvents).toHaveLength(1);
+		const closedError = closedEvents[0]?.type === "closed" ? closedEvents[0].error : undefined;
+		expect(closedError).toContain("Lost connection to the Prime Agent daemon. Cause: ECONNRESET");
+		expect(closedError).toContain("restart Prime Agent or reopen the session from Agents View");
+		expect(closedError).toContain("Session file: /tmp/session-current.jsonl.");
+		expect(closedError).toContain("Diagnostic log:");
 	});
 
 	it("does not emit a restored session after disposal begins", async () => {
@@ -785,12 +840,16 @@ describe("DaemonAgentConnection", () => {
 			});
 			await vi.advanceTimersByTimeAsync(120100);
 
-			expect(closedEvents).toEqual([
-				{
-					type: "closed",
-					error: "Failed to reconnect after update: daemon unavailable",
-				},
-			]);
+			expect(closedEvents).toHaveLength(1);
+			const closedError = closedEvents[0]?.type === "closed" ? closedEvents[0].error : undefined;
+			expect(closedError).toContain(
+				"The Prime Agent daemon restarted for an update, but this window could not reconnect",
+			);
+			expect(closedError).toContain("Last error: daemon unavailable");
+			expect(closedError).toContain("restart Prime Agent and reopen it from Agents View");
+			expect(closedError).toContain("Session ID: session-current.");
+			expect(closedError).toContain("Session file: /tmp/session-current.jsonl.");
+			expect(closedError).toContain("Diagnostic log:");
 			const reconnectCountAfterFailure = fakeClient.reconnectCount;
 			fakeClient.emitClose(new Error("Daemon socket closed"));
 			await Promise.resolve();

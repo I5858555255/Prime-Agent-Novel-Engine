@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from "node:net";
+import { getDaemonLogPath } from "../../config.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type {
 	DaemonCommand,
@@ -19,6 +20,23 @@ export type DaemonClientProgressListener = (message: DaemonRequestProgress) => v
 
 export interface DaemonClientRequestOptions {
 	onProgress?: DaemonClientProgressListener;
+}
+
+const LEGACY_DAEMON_SOCKET_CLOSED_MESSAGE = "Daemon socket closed";
+
+function daemonEndpointDetails(socketPath: string): string {
+	return `Socket: ${socketPath}. Daemon log: ${getDaemonLogPath(socketPath)}.`;
+}
+
+class DaemonSocketClosedError extends Error {
+	constructor(socketPath: string) {
+		super(`Connection to the Prime Agent daemon closed. ${daemonEndpointDetails(socketPath)}`);
+		this.name = "DaemonSocketClosedError";
+	}
+}
+
+export function isDaemonSocketClosedError(error: Error): boolean {
+	return error instanceof DaemonSocketClosedError || error.message === LEGACY_DAEMON_SOCKET_CLOSED_MESSAGE;
 }
 
 export class DaemonClient {
@@ -60,7 +78,9 @@ export class DaemonClient {
 			return this.helloMessage;
 		}
 		if (!this.socket || this.socket.destroyed) {
-			throw new Error("Daemon client is not connected");
+			throw new Error(
+				`Cannot wait for the Prime Agent daemon handshake because the daemon is not connected. ${daemonEndpointDetails(this.socketPath)}`,
+			);
 		}
 		return new Promise<DaemonHello>((resolve, reject) => {
 			const waiter = {
@@ -68,7 +88,11 @@ export class DaemonClient {
 				reject,
 				timeout: setTimeout(() => {
 					this.helloWaiters.delete(waiter);
-					reject(new Error("Timed out waiting for daemon hello"));
+					reject(
+						new Error(
+							`Timed out after ${timeoutMs}ms waiting for the Prime Agent daemon handshake. ${daemonEndpointDetails(this.socketPath)}`,
+						),
+					);
 				}, timeoutMs),
 			};
 			this.helloWaiters.add(waiter);
@@ -77,7 +101,7 @@ export class DaemonClient {
 
 	async connect(timeoutMs = 3000): Promise<void> {
 		if (this.socket) {
-			throw new Error("Daemon client is already connected");
+			throw new Error(`Prime Agent daemon client is already connected. ${daemonEndpointDetails(this.socketPath)}`);
 		}
 
 		this.helloMessage = undefined;
@@ -90,7 +114,11 @@ export class DaemonClient {
 				cleanup();
 				this.clearSocketReference(socket);
 				socket.destroy();
-				reject(new Error(`Timed out connecting to daemon socket: ${this.socketPath}`));
+				reject(
+					new Error(
+						`Timed out after ${timeoutMs}ms connecting to the Prime Agent daemon. ${daemonEndpointDetails(this.socketPath)}`,
+					),
+				);
 			}, timeoutMs);
 			const cleanup = () => {
 				clearTimeout(timeout);
@@ -104,14 +132,18 @@ export class DaemonClient {
 			const onError = (error: Error) => {
 				cleanup();
 				this.clearSocketReference(socket);
-				reject(error);
+				reject(
+					new Error(
+						`Failed to connect to the Prime Agent daemon: ${error.message}. ${daemonEndpointDetails(this.socketPath)}`,
+					),
+				);
 			};
 			socket.once("connect", onConnect);
 			socket.once("error", onError);
 		});
 
 		socket.on("error", (error) => this.notifyClosed(socket, error));
-		socket.on("close", () => this.notifyClosed(socket, new Error("Daemon socket closed")));
+		socket.on("close", () => this.notifyClosed(socket, new DaemonSocketClosedError(this.socketPath)));
 	}
 
 	async reconnect(timeoutMs = 3000): Promise<void> {
@@ -152,7 +184,9 @@ export class DaemonClient {
 		options: DaemonClientRequestOptions = {},
 	): Promise<DaemonResponse> {
 		if (!this.socket || this.socket.destroyed) {
-			throw new Error("Daemon client is not connected");
+			throw new Error(
+				`Cannot send daemon command "${command.type}" because the Prime Agent daemon is not connected. ${daemonEndpointDetails(this.socketPath)}`,
+			);
 		}
 
 		const id = `daemon_${++this.requestId}`;
@@ -161,7 +195,11 @@ export class DaemonClient {
 		return new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
-				reject(new Error(`Timed out waiting for daemon response to ${command.type}`));
+				reject(
+					new Error(
+						`Timed out after ${timeoutMs}ms waiting for the Prime Agent daemon response to "${command.type}". ${daemonEndpointDetails(this.socketPath)}`,
+					),
+				);
 			}, timeoutMs);
 
 			this.pendingRequests.set(id, { resolve, reject, timeout, onProgress: options.onProgress });
@@ -172,7 +210,11 @@ export class DaemonClient {
 	close(): void {
 		this.detachReader?.();
 		this.detachReader = undefined;
-		this.rejectAll(new Error("Daemon client closed"));
+		this.rejectAll(
+			new Error(
+				`Prime Agent daemon client closed before the operation completed. ${daemonEndpointDetails(this.socketPath)}`,
+			),
+		);
 		this.socket?.end();
 		this.socket?.destroy();
 		this.socket = undefined;
