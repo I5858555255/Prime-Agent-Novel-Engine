@@ -163,6 +163,25 @@ describe("ENG-4509 side questions", () => {
 		expect(rendered).toContain("…");
 	});
 
+	it("aligns the thinking placeholder with the streamed response", () => {
+		const running = new SideQuestionComponent(
+			{ id: "question-5", question: "Still running?", answer: "", status: "running" },
+			() => 8,
+			4,
+		);
+		const complete = new SideQuestionComponent(
+			{ id: "question-5", question: "Still running?", answer: "Aligned response", status: "complete" },
+			() => 8,
+			4,
+		);
+		const runningLines = running.render(40).map(stripAnsi);
+		const completeLines = complete.render(40).map(stripAnsi);
+		const thinkingLine = runningLines.find((line) => line.includes("Thinking…"));
+		const responseLine = completeLines.find((line) => line.includes("Aligned response"));
+
+		expect(thinkingLine?.indexOf("Thinking…")).toBe(responseLine?.indexOf("Aligned response"));
+	});
+
 	it("closes and cancels a running pane before handling other Escape actions", () => {
 		const abortSideQuestion = vi.fn(async () => true);
 		const takeEscapeRepeatAction = vi.fn();

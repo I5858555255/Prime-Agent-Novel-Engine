@@ -45,14 +45,14 @@ export class SideQuestionComponent implements Component {
 
 	private renderAnswer(width: number): string[] {
 		if (this.event.errorMessage) {
-			return new Text(theme.fg("error", this.event.errorMessage), 1, 0).render(width);
+			return new Text(theme.fg("error", this.event.errorMessage), this.paddingX, 0).render(width);
 		}
 		if (this.event.status === "cancelled") {
-			return new Text(theme.fg("muted", "Cancelled"), 1, 0).render(width);
+			return new Text(theme.fg("muted", "Cancelled"), this.paddingX, 0).render(width);
 		}
 		if (!this.event.answer) {
 			const message = this.event.status === "complete" ? "No response" : "Thinking…";
-			return new Text(theme.fg("muted", message), 1, 0).render(width);
+			return new Text(theme.fg("muted", message), this.paddingX, 0).render(width);
 		}
 		return this.answer.render(width);
 	}
