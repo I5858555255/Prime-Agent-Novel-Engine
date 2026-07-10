@@ -1235,6 +1235,13 @@ export class InteractiveMode {
 			if (initialPromptsSent) {
 				return;
 			}
+			if (!initialMessage && !initialMessages?.length) {
+				initialPromptsSent = true;
+				return;
+			}
+			if (!this.getCurrentModel()) {
+				return;
+			}
 			initialPromptsSent = true;
 
 			if (initialMessage) {

@@ -1594,6 +1594,43 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		maxTokens: 128000,
 	} as AgentConnectionModel;
 
+	test("defers CLI initial prompts until a model is selected after onboarding dismissal", async () => {
+		let currentModel: AgentConnectionModel | undefined;
+		const prompt = vi.fn(async () => {});
+		const getUserInput = vi
+			.fn<() => Promise<string | undefined>>()
+			.mockImplementationOnce(async () => {
+				currentModel = primeModel;
+				return "interactive prompt";
+			})
+			.mockResolvedValueOnce(undefined);
+		const fakeThis = {
+			init: vi.fn(async () => {}),
+			options: {
+				agentsViewOwnsStartupNotices: true,
+				initialMessage: "initial prompt",
+			},
+			modelRegistry: { getError: vi.fn(() => undefined) },
+			runStartupOnboarding: vi.fn(async () => true),
+			getModelFallbackWarningAction: vi.fn(() => "suppress"),
+			getCurrentModel: vi.fn(() => currentModel),
+			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+			getUserInput,
+			collectImagesFor: vi.fn(() => []),
+			agentConnection: { prompt },
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+			returnToAgentsViewRequested: false,
+			sessionHasMessages: false,
+		};
+
+		await expect(InteractiveMode.prototype.run.call(fakeThis as never)).resolves.toBe("agents_view");
+
+		expect(prompt).toHaveBeenNthCalledWith(1, "initial prompt", { images: undefined });
+		expect(prompt).toHaveBeenNthCalledWith(2, "interactive prompt", { images: [] });
+		expect(prompt).toHaveBeenCalledTimes(2);
+	});
+
 	function createPrimeCliHarness(shown: boolean): OnboardingFake {
 		const fakeThis = Object.create(InteractiveMode.prototype) as OnboardingFake;
 		fakeThis.connectionState = createConnectionState({ model: primeModel });
