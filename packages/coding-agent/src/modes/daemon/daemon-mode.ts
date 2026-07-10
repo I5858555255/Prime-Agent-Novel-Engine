@@ -454,6 +454,9 @@ export class AgentDaemon {
 	}
 
 	private refreshReplacedSessionState(state: ActiveSessionState): void {
+		for (const client of state.clients) {
+			this.abortSideQuestionsFor(client, state.activeSessionId);
+		}
 		this.summarizer.forget(state.activeSessionId);
 		state.summaryState = undefined;
 		state.runtime.session.setCurrentRecap(undefined);

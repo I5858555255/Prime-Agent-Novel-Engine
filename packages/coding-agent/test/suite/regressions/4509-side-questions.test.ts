@@ -3,6 +3,7 @@ import { Container } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { type SideQuestionEvent, startSideQuestion } from "../../../src/core/side-question.js";
+import { AgentDaemon } from "../../../src/modes/daemon/daemon-mode.js";
 import { SideQuestionComponent } from "../../../src/modes/interactive/components/side-question.js";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.js";
@@ -161,6 +162,36 @@ describe("ENG-4509 side questions", () => {
 		} finally {
 			harness.cleanup();
 		}
+	});
+
+	it("aborts daemon side questions when the session runtime is replaced", () => {
+		const clients = [{ id: "client-1" }, { id: "client-2" }];
+		const sessionState = {
+			activeSessionId: "session-1",
+			clients: new Set(clients),
+			summaryState: undefined,
+			runtime: {
+				metadata: { kind: "primary" },
+				session: { setCurrentRecap: vi.fn() },
+			},
+		};
+		const abortSideQuestionsFor = vi.fn();
+		const fakeThis = Object.assign(Object.create(AgentDaemon.prototype), {
+			abortSideQuestionsFor,
+			summarizer: { forget: vi.fn(), seed: vi.fn() },
+			rebindCronJobsToState: vi.fn(),
+		});
+		const refreshReplacedSessionState = (
+			AgentDaemon.prototype as unknown as {
+				refreshReplacedSessionState(this: typeof fakeThis, state: typeof sessionState): void;
+			}
+		).refreshReplacedSessionState;
+
+		refreshReplacedSessionState.call(fakeThis, sessionState);
+
+		expect(abortSideQuestionsFor).toHaveBeenCalledTimes(2);
+		expect(abortSideQuestionsFor).toHaveBeenNthCalledWith(1, clients[0], "session-1");
+		expect(abortSideQuestionsFor).toHaveBeenNthCalledWith(2, clients[1], "session-1");
 	});
 
 	it("renders a bounded one-turn panel above the prompt", () => {
