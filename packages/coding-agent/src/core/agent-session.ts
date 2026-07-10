@@ -152,6 +152,7 @@ import {
 	createHeartbeatPromptMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
+	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -424,6 +425,7 @@ interface QueuedSteeringMessage {
 	previewLabel?: string;
 	queueKey?: string;
 	agentMessageId?: string;
+	prefixMessages: CustomMessage[];
 	message: QueuedAgentMessage;
 }
 
@@ -432,6 +434,7 @@ interface QueuedFollowUpMessage {
 	previewLabel?: string;
 	queueKey?: string;
 	agentMessageId?: string;
+	prefixMessages: CustomMessage[];
 	message: QueuedAgentMessage;
 }
 
@@ -442,6 +445,7 @@ export interface QueuedAgentInputSnapshot {
 	queueKey?: string;
 	agentMessageId?: string;
 	customMessage?: CustomMessage;
+	prefixMessages?: CustomMessage[];
 }
 
 export interface AcceptedAgentInputSnapshot extends QueuedAgentInputSnapshot {
@@ -477,6 +481,9 @@ function createQueuedAgentInputSnapshot(
 	const snapshot = createQueuedAgentInputSnapshotFromUserMessage(message.text, message.message);
 	return {
 		...snapshot,
+		...(message.prefixMessages.length > 0
+			? { prefixMessages: message.prefixMessages.map((prefix) => cloneCustomMessage(prefix)) }
+			: {}),
 		...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 		...("queueKey" in message && message.queueKey ? { queueKey: message.queueKey } : {}),
 	};
@@ -3231,6 +3238,7 @@ export class AgentSession {
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			customMessage?: CustomMessage;
+			prefixMessages?: CustomMessage[];
 		} = {},
 	): Promise<void> {
 		await this._queueSteer(text, images, {
@@ -3238,6 +3246,7 @@ export class AgentSession {
 			agentMessageId: options.agentMessageId,
 			content: options.content,
 			message: options.customMessage,
+			prefixMessages: options.prefixMessages,
 		});
 	}
 
@@ -3249,6 +3258,7 @@ export class AgentSession {
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			customMessage?: CustomMessage;
+			prefixMessages?: CustomMessage[];
 		} = {},
 	): Promise<boolean> {
 		return this._queueFollowUp(text, images, {
@@ -3256,22 +3266,12 @@ export class AgentSession {
 			agentMessageId: options.agentMessageId,
 			content: options.content,
 			message: options.customMessage,
+			prefixMessages: options.prefixMessages,
 		});
 	}
 
-	private _buildPromptContent(
-		text: string,
-		images?: ImageContent[],
-		prefixMessages: readonly CustomMessage[] = [],
-	): (TextContent | ImageContent)[] {
+	private _buildPromptContent(text: string, images?: ImageContent[]): (TextContent | ImageContent)[] {
 		const content: (TextContent | ImageContent)[] = [];
-		for (const message of prefixMessages) {
-			if (typeof message.content === "string") {
-				content.push({ type: "text", text: message.content });
-			} else {
-				content.push(...message.content);
-			}
-		}
 		content.push({ type: "text", text });
 		if (images) {
 			content.push(...images);
@@ -3287,26 +3287,24 @@ export class AgentSession {
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
-		const content = this._buildPromptContent(text, images, pendingNextTurnMessages);
-		const message = options.customMessage ? { ...cloneCustomMessage(options.customMessage), content } : undefined;
 		try {
 			if (streamingBehavior === "followUp") {
-				const queued = await this._queueFollowUp(text, undefined, {
+				const queued = await this._queueFollowUp(text, images, {
 					queueKey: options.queueKey,
 					agentMessageId: options.agentMessageId,
-					content,
-					message,
+					message: options.customMessage,
+					prefixMessages: pendingNextTurnMessages,
 				});
 				if (!queued) {
 					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
 				}
 				return queued;
 			}
-			await this._queueSteer(text, undefined, {
+			await this._queueSteer(text, images, {
 				agentMessageId: options.agentMessageId,
 				queueKey: options.queueKey,
-				content,
-				message,
+				message: options.customMessage,
+				prefixMessages: pendingNextTurnMessages,
 			});
 			return true;
 		} catch (error) {
@@ -3323,15 +3321,12 @@ export class AgentSession {
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
-		const queuedMessage: CustomMessage = {
-			...message,
-			content: this._buildPromptContent(text, undefined, pendingNextTurnMessages),
-		};
 		try {
 			if (streamingBehavior === "followUp") {
 				const queued = await this._queueFollowUp(text, undefined, {
 					queueKey: options.queueKey,
-					message: queuedMessage,
+					message,
+					prefixMessages: pendingNextTurnMessages,
 					previewLabel: options.previewLabel,
 				});
 				if (!queued) {
@@ -3340,7 +3335,8 @@ export class AgentSession {
 				return queued;
 			}
 			await this._queueSteer(text, undefined, {
-				message: queuedMessage,
+				message,
+				prefixMessages: pendingNextTurnMessages,
 				previewLabel: options.previewLabel,
 				queueKey: options.queueKey,
 			});
@@ -3362,6 +3358,7 @@ export class AgentSession {
 			queueKey?: string;
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
+			prefixMessages?: CustomMessage[];
 			previewLabel?: string;
 		} = {},
 	): Promise<void> {
@@ -3378,9 +3375,10 @@ export class AgentSession {
 			previewLabel: options.previewLabel,
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
+			prefixMessages: options.prefixMessages ?? [],
 			message,
 		});
-		this.agent.steer(message);
+		this.agent.steer(options.prefixMessages?.length ? [...options.prefixMessages, message] : message);
 		this._emitQueueUpdate();
 	}
 
@@ -3395,6 +3393,7 @@ export class AgentSession {
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
+			prefixMessages?: CustomMessage[];
 			previewLabel?: string;
 		} = {},
 	): Promise<boolean> {
@@ -3414,9 +3413,10 @@ export class AgentSession {
 			previewLabel: options.previewLabel,
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
+			prefixMessages: options.prefixMessages ?? [],
 			message,
 		});
-		this.agent.followUp(message);
+		this.agent.followUp(options.prefixMessages?.length ? [...options.prefixMessages, message] : message);
 		this._emitQueueUpdate();
 		return true;
 	}
@@ -4058,9 +4058,10 @@ export class AgentSession {
 		lines.push("</ipython_state_restored>");
 		void this.sendCustomMessage(
 			{
-				customType: "ipython_state_restored",
+				customType: IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 				content: lines.join("\n"),
-				display: false,
+				display: true,
+				details: { restored: result.restored.length > 0 },
 			},
 			{ deliverAs: "nextTurn" },
 		).catch(() => {});
@@ -6467,7 +6468,10 @@ export class AgentSession {
 		const followUpMessages = [...this._followUpMessages];
 		const drainedSteeringMessages = steeringMessages.length > 0 ? steeringMessages : [];
 		const drainedFollowUpMessages = steeringMessages.length > 0 ? [] : followUpMessages;
-		const queuedMessages = [...drainedSteeringMessages, ...drainedFollowUpMessages].map((message) => message.message);
+		const queuedMessages = [...drainedSteeringMessages, ...drainedFollowUpMessages].flatMap((message) => [
+			...message.prefixMessages,
+			message.message,
+		]);
 		if (queuedMessages.length === 0) {
 			return;
 		}
@@ -6481,17 +6485,22 @@ export class AgentSession {
 			await this.agent.prompt([...nextTurnMessages, ...queuedMessages]);
 			await this.waitForRetry();
 		} catch {
-			this._pendingNextTurnMessages.unshift(...nextTurnMessages.map((message) => ({ ...message })));
+			const deliveredMessages = new Set(this.agent.state.messages);
+			this._pendingNextTurnMessages.unshift(
+				...nextTurnMessages.filter((message) => !deliveredMessages.has(message)).map((message) => ({ ...message })),
+			);
 			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
 			const queuedFollowUps = new Set(this._followUpMessages.map((message) => message.message));
 			for (const queued of drainedSteeringMessages) {
-				if (queuedSteering.has(queued.message)) {
-					this.agent.steer(queued.message);
+				queued.prefixMessages = queued.prefixMessages.filter((message) => !deliveredMessages.has(message));
+				if (queuedSteering.has(queued.message) && !deliveredMessages.has(queued.message)) {
+					this.agent.steer([...queued.prefixMessages, queued.message]);
 				}
 			}
 			for (const queued of drainedFollowUpMessages) {
-				if (queuedFollowUps.has(queued.message)) {
-					this.agent.followUp(queued.message);
+				queued.prefixMessages = queued.prefixMessages.filter((message) => !deliveredMessages.has(message));
+				if (queuedFollowUps.has(queued.message) && !deliveredMessages.has(queued.message)) {
+					this.agent.followUp([...queued.prefixMessages, queued.message]);
 				}
 			}
 		}
