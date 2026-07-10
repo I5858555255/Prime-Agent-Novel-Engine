@@ -77,7 +77,7 @@ import type {
 	SubagentRuntimeHost,
 } from "../../core/rlm-runtime.js";
 import { deleteSessionFile } from "../../core/session-file-actions.js";
-import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
+import { readSessionInfo, type SessionInfo, SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import {
@@ -235,6 +235,10 @@ const UPDATE_RESTART_MARKER =
 function delay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
+
+type RuntimeOpenGuard = () => boolean | Promise<boolean>;
+
+class RuntimeOpenCancelledError extends Error {}
 
 export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
@@ -397,6 +401,7 @@ export class AgentDaemon {
 		name?: string,
 		clientEnv?: Record<string, string>,
 		onStateCreated?: (state: ActiveSessionState) => void,
+		runtimeOpenGuard?: RuntimeOpenGuard,
 	): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
 			activeSessionId: createActiveSessionId(this.sessions),
@@ -422,6 +427,9 @@ export class AgentDaemon {
 				},
 				subagentRuntimeHost: this.createSubagentRuntimeHost(state),
 			});
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				throw new RuntimeOpenCancelledError();
+			}
 		} catch (error) {
 			state.unsubscribe?.();
 			this.sessions.delete(state.activeSessionId);
@@ -458,7 +466,10 @@ export class AgentDaemon {
 		this.rebindCronJobsToState(state);
 	}
 
-	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState> {
+	private async createRuntime(
+		command: Extract<DaemonCommand, { type: "create" }>,
+		runtimeOpenGuard?: RuntimeOpenGuard,
+	): Promise<ActiveSessionState> {
 		const config = mergeAgentSessionRuntimeConfig(this.options.defaultSessionConfig, command.config);
 		if (!config.cwd) {
 			throw new Error("Active session config is missing cwd");
@@ -480,6 +491,9 @@ export class AgentDaemon {
 				? SessionManager.continueRecent(cwd, config.sessionDir)
 				: SessionManager.create(cwd, config.sessionDir);
 		const createState = async (): Promise<ActiveSessionState> => {
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				throw new RuntimeOpenCancelledError();
+			}
 			const existing = this.findSessionBySessionFile(sessionManager.getSessionFile());
 			if (existing) {
 				// A live runtime already owns this session file; reuse it instead of
@@ -567,9 +581,19 @@ export class AgentDaemon {
 					},
 				}),
 			);
-			return this.addRuntime(runtime, command.name, clientEnv, (state) => {
-				stateRef = state;
-			});
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				await runtime.dispose().catch(() => undefined);
+				throw new RuntimeOpenCancelledError();
+			}
+			return this.addRuntime(
+				runtime,
+				command.name,
+				clientEnv,
+				(state) => {
+					stateRef = state;
+				},
+				runtimeOpenGuard,
+			);
 		};
 
 		const sessionFile = sessionManager.getSessionFile();
@@ -581,7 +605,21 @@ export class AgentDaemon {
 		if (pending) {
 			// Same as the reuse path above: adopt-if-absent, never overwrite the
 			// identity the racing creator's extensions already captured.
-			const state = await pending;
+			let state: ActiveSessionState;
+			try {
+				state = await pending;
+			} catch (error) {
+				if (!runtimeOpenGuard && error instanceof RuntimeOpenCancelledError) {
+					if (this.openingSessions.get(sessionKey) === pending) {
+						this.openingSessions.delete(sessionKey);
+					}
+					return this.createRuntime(command);
+				}
+				throw error;
+			}
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				throw new RuntimeOpenCancelledError();
+			}
 			if (command.name) {
 				state.runtime.session.setSessionName(command.name);
 			}
@@ -604,18 +642,29 @@ export class AgentDaemon {
 		if (this.updateRestartPreparing) {
 			return "skipped";
 		}
-		const state = await this.getOrCreateCronJobSession(job);
-		if (!state || this.updateRestartPreparing) {
+		const requirePersistedJob = this.cronStore.list().some((candidate) => candidate.id === job.id);
+		const dueJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : job;
+		if (!dueJob) {
+			return "skipped";
+		}
+		const state = await this.getOrCreateCronJobSession(dueJob, requirePersistedJob);
+		const runnableJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : dueJob;
+		if (
+			!state ||
+			!runnableJob ||
+			this.updateRestartPreparing ||
+			!this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob)
+		) {
 			return "skipped";
 		}
 		const session = state.runtime.session;
 		const isAgentMessagePromptInProgress =
 			this.agentMessageAcceptingTargets.has(state.activeSessionId) ||
 			this.agentMessagePreparingTargets.has(state.activeSessionId);
-		if (isHeartbeatCronJob(job) && isAgentMessagePromptInProgress) {
+		if (isHeartbeatCronJob(runnableJob) && isAgentMessagePromptInProgress) {
 			return "skipped";
 		}
-		if (shouldDeferHeartbeatCronJob(job, session)) {
+		if (shouldDeferHeartbeatCronJob(runnableJob, session)) {
 			return "skipped";
 		}
 		const shouldQueueCronPrompt =
@@ -626,22 +675,36 @@ export class AgentDaemon {
 			session.isBashRunning ||
 			session.hasAcceptedPromptInFlight ||
 			session.pendingMessageCount > 0;
-		if (!isHeartbeatCronJob(job) && shouldQueueCronPrompt) {
-			await session.followUp(job.prompt);
+		if (!isHeartbeatCronJob(runnableJob) && shouldQueueCronPrompt) {
+			if (!this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob)) {
+				return "skipped";
+			}
+			await session.followUp(runnableJob.prompt);
 			return;
 		}
-		if (isHeartbeatCronJob(job)) {
-			await this.promptHeartbeatWithAgentMessagePreparingGuard(state, job, {
+		const canPrompt = () => this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob);
+		if (isHeartbeatCronJob(runnableJob)) {
+			await this.promptHeartbeatWithAgentMessagePreparingGuard(
+				state,
+				runnableJob,
+				{
+					streamingBehavior: "followUp",
+					followUpQueueKey: `heartbeat:${runnableJob.id}`,
+					source: "rpc",
+				},
+				canPrompt,
+			);
+			return;
+		}
+		await this.promptWithAgentMessagePreparingGuard(
+			state,
+			runnableJob.prompt,
+			{
 				streamingBehavior: "followUp",
-				followUpQueueKey: `heartbeat:${job.id}`,
 				source: "rpc",
-			});
-			return;
-		}
-		await this.promptWithAgentMessagePreparingGuard(state, job.prompt, {
-			streamingBehavior: "followUp",
-			source: "rpc",
-		});
+			},
+			canPrompt,
+		);
 	}
 
 	// Wraps session.prompt so the target counts as "preparing" until the turn
@@ -652,39 +715,49 @@ export class AgentDaemon {
 		state: ActiveSessionState,
 		message: string,
 		options?: PromptOptions,
+		canPrompt?: () => boolean,
 	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(state, (session) => {
-			const prompt =
-				options?.agentMessageId === undefined
-					? session.prompt.bind(session)
-					: session.acceptAgentMessagePrompt.bind(session);
-			return prompt(message, {
-				...options,
-				preflightResult: (didSucceed) => {
-					options?.preflightResult?.(didSucceed);
-				},
-			});
-		});
+		await this.withAgentMessagePreparingGuard(
+			state,
+			(session) => {
+				const prompt =
+					options?.agentMessageId === undefined
+						? session.prompt.bind(session)
+						: session.acceptAgentMessagePrompt.bind(session);
+				return prompt(message, {
+					...options,
+					preflightResult: (didSucceed) => {
+						options?.preflightResult?.(didSucceed);
+					},
+				});
+			},
+			canPrompt,
+		);
 	}
 
 	private async promptHeartbeatWithAgentMessagePreparingGuard(
 		state: ActiveSessionState,
 		job: AgentCronJob,
 		options?: PromptOptions,
+		canPrompt?: () => boolean,
 	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(state, (session) =>
-			session.promptHeartbeat(job, {
-				...options,
-				preflightResult: (didSucceed) => {
-					options?.preflightResult?.(didSucceed);
-				},
-			}),
+		await this.withAgentMessagePreparingGuard(
+			state,
+			(session) =>
+				session.promptHeartbeat(job, {
+					...options,
+					preflightResult: (didSucceed) => {
+						options?.preflightResult?.(didSucceed);
+					},
+				}),
+			canPrompt,
 		);
 	}
 
 	private async withAgentMessagePreparingGuard(
 		state: ActiveSessionState,
 		run: (session: AgentSession) => Promise<void>,
+		canRun?: () => boolean,
 	): Promise<void> {
 		const activeSessionId = state.activeSessionId;
 		const session = state.runtime.session;
@@ -707,6 +780,9 @@ export class AgentDaemon {
 		};
 		try {
 			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
+			if (canRun && !canRun()) {
+				return;
+			}
 			await run(session);
 		} finally {
 			clearPreparing();
@@ -893,26 +969,102 @@ export class AgentDaemon {
 		state.runtime.session.removeQueuedFollowUp(`heartbeat:${job.id}`);
 	}
 
-	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState | undefined> {
+	private async getOrCreateCronJobSession(
+		job: AgentCronJob,
+		requirePersistedJob: boolean,
+	): Promise<ActiveSessionState | undefined> {
 		if (this.updateRestartPreparing) {
 			return undefined;
 		}
-		const current = this.sessions.get(job.activeSessionId) ?? this.findSessionBySessionFile(job.sessionFile);
+		const dueJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : job;
+		if (!dueJob) {
+			return undefined;
+		}
+		const activeIdMatch = this.sessions.get(dueJob.activeSessionId);
+		const current =
+			this.findSessionBySessionFile(dueJob.sessionFile) ??
+			(!requirePersistedJob || activeIdMatch?.runtime.session.sessionId === dueJob.sessionId
+				? activeIdMatch
+				: undefined);
 		// A half-bound match falls through to createRuntime, which awaits the
 		// pending create for the same session file instead of prompting mid-bind.
 		if (current && !this.bindingSessions.has(current.activeSessionId)) {
 			this.rebindCronJobsToState(current);
-			return current;
+			const reboundJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : dueJob;
+			return reboundJob && this.isCronJobRunnableForState(reboundJob, current, requirePersistedJob)
+				? current
+				: undefined;
 		}
-		if (job.source === "rlm_heartbeat" && job.runtimeKind === "subagent") {
+		if (!requirePersistedJob) {
+			return undefined;
+		}
+		if (dueJob.source === "rlm_heartbeat" && dueJob.runtimeKind === "subagent") {
 			if (current && this.bindingSessions.has(current.activeSessionId)) {
 				return undefined;
 			}
-			this.cronStore.cancel(job.id);
+			this.cronStore.cancel(dueJob.id);
 			this.cronScheduler.wake();
 			return undefined;
 		}
-		return this.createRuntime({ type: "create", sessionPath: job.sessionFile });
+		if (!(await this.isPersistedCronJobRunnable(dueJob.id))) {
+			return undefined;
+		}
+		try {
+			return await this.createRuntime({ type: "create", sessionPath: dueJob.sessionFile }, () =>
+				this.isPersistedCronJobRunnable(dueJob.id),
+			);
+		} catch (error) {
+			if (error instanceof RuntimeOpenCancelledError) {
+				return undefined;
+			}
+			throw error;
+		}
+	}
+
+	private async isPersistedCronJobRunnable(jobId: string): Promise<boolean> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const job = this.cronStore.getDueJob(jobId);
+			if (!job) {
+				return false;
+			}
+			const sessionFile = resolve(job.sessionFile);
+			const sessionInfo = await readSessionInfo(sessionFile);
+			const current = this.cronStore.getDueJob(jobId);
+			if (!current) {
+				return false;
+			}
+			if (resolve(current.sessionFile) !== sessionFile || current.sessionId !== job.sessionId) {
+				continue;
+			}
+			if (!sessionInfo || sessionInfo.id !== current.sessionId || sessionInfo.state?.status !== "active") {
+				this.cancelScheduledJobsForSessionFile(current.sessionFile);
+				return false;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	private isCronJobRunnableForState(
+		job: AgentCronJob,
+		state: ActiveSessionState,
+		requirePersistedJob: boolean,
+	): boolean {
+		if (this.sessions.get(state.activeSessionId) !== state || this.closingSessions.has(state.activeSessionId)) {
+			return false;
+		}
+		if (!requirePersistedJob) {
+			return job.status === "active" && job.activeSessionId === state.activeSessionId;
+		}
+		const current = this.cronStore.getDueJob(job.id);
+		const sessionFile = state.runtime.session.sessionFile;
+		return (
+			current !== undefined &&
+			current.activeSessionId === state.activeSessionId &&
+			current.sessionId === state.runtime.session.sessionId &&
+			sessionFile !== undefined &&
+			resolve(current.sessionFile) === resolve(sessionFile)
+		);
 	}
 
 	private findSessionBySessionFile(sessionFile: string | undefined): ActiveSessionState | undefined {
