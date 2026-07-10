@@ -30,6 +30,8 @@ class FakeDaemonClient {
 	readonly requests: DaemonCommand[] = [];
 	readonly requestTimeouts: number[] = [];
 	attachResultFactory: ((command: Extract<DaemonCommand, { type: "attach" }>) => DaemonAttachResult) | undefined;
+	restoredAttachGate: Promise<void> | undefined;
+	restoredAttachCompleted = 0;
 	closeCount = 0;
 	reconnectCount = 0;
 	reconnectError: Error | undefined;
@@ -55,6 +57,10 @@ class FakeDaemonClient {
 					data: { sessions: this.updateRestartSessions },
 				};
 			case "attach":
+				if (command.activeSessionId === "active-restored" && this.restoredAttachGate) {
+					await this.restoredAttachGate;
+					this.restoredAttachCompleted++;
+				}
 				if (command.activeSessionId === "missing") {
 					return {
 						type: "response",
@@ -617,6 +623,48 @@ describe("DaemonAgentConnection", () => {
 		});
 		expect(fakeClient.reconnectCount).toBe(1);
 		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "list", "attach"]);
+	});
+
+	it("does not emit a restored session after disposal begins", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.updateRestartSessions = [
+			{
+				id: "active-restored",
+				activeSessionId: "active-restored",
+				sessionId: "session-current",
+				sessionFile: "/tmp/session-current.jsonl",
+			},
+		];
+		let releaseRestoredAttach: (() => void) | undefined;
+		fakeClient.restoredAttachGate = new Promise<void>((resolve) => {
+			releaseRestoredAttach = resolve;
+		});
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		await connection.attach();
+
+		fakeClient.emitClose(new Error("Daemon socket closed"));
+		await vi.waitFor(() => {
+			expect(
+				fakeClient.requests.some(
+					(request) => request.type === "attach" && request.activeSessionId === "active-restored",
+				),
+			).toBe(true);
+		});
+		await connection.dispose();
+		releaseRestoredAttach?.();
+		await vi.waitFor(() => {
+			expect(fakeClient.restoredAttachCompleted).toBe(1);
+		});
+		for (let flush = 0; flush < 5; flush++) {
+			await Promise.resolve();
+		}
+
+		expect(events).toEqual([]);
+		expect(fakeClient.requests.at(-1)).toMatchObject({ type: "detach", activeSessionId: "active-restored" });
 	});
 
 	it("returns to normal close handling after update restoration times out", async () => {

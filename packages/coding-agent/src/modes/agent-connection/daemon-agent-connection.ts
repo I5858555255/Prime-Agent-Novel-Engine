@@ -826,7 +826,13 @@ export class DaemonAgentConnection implements AgentConnection {
 		while (!this.disposed && Date.now() < deadline) {
 			try {
 				await this.client.reconnect(1000);
+				if (this.disposed) {
+					return;
+				}
 				const response = await this.client.request({ type: "list" }, 30000);
+				if (this.disposed) {
+					return;
+				}
 				if (!response.success) {
 					throw deserializeDaemonError(response);
 				}
@@ -838,10 +844,19 @@ export class DaemonAgentConnection implements AgentConnection {
 							(sessionId !== undefined && summary.sessionId === sessionId)),
 				);
 				if (restored?.activeSessionId) {
+					if (this.disposed) {
+						return;
+					}
 					this.activeSessionId = restored.activeSessionId;
 					this.lastEventSequence = undefined;
 					await this.attach();
+					if (this.disposed) {
+						return;
+					}
 					const snapshot = await this.getInitialSnapshot();
+					if (this.disposed) {
+						return;
+					}
 					this.updateRestartPending = false;
 					await this.emit({ type: "session_replaced", state: snapshot.state, messages: snapshot.messages });
 					return;
