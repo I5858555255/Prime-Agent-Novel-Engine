@@ -1508,6 +1508,28 @@ describe("AgentSession persistent subagents", () => {
 		expect(order).toEqual(["abort", "dispose"]);
 	});
 
+	it("ignores a late bash result once reopen teardown has begun", async () => {
+		const root = createPersistentSession();
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		const retained = root.getRlmChildSession(persistentSubagentNodeId("reviewer")) as AgentSession;
+
+		const before = retained.sessionManager.getEntries().length;
+		// A stuck bash finishing after teardown started must not append to the shared JSONL.
+		retained.beginReopenTeardown();
+		retained.recordBashResult("echo late", {
+			output: "late output",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+		});
+		expect(retained.sessionManager.getEntries().length).toBe(before);
+		expect(
+			retained.messages.some(
+				(m) => m.role === "bashExecution" && (m as { command?: string }).command === "echo late",
+			),
+		).toBe(false);
+	});
+
 	it("drains a late-started bash on the retained session before disposing it on inline reopen", async () => {
 		const root = createPersistentSession();
 		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });

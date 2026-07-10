@@ -2166,6 +2166,15 @@ export class AgentSession {
 	 * (which flushes a final namespace snapshot) before the synchronous dispose, so
 	 * the latest state reaches disk instead of racing process exit.
 	 */
+	/**
+	 * Mark this session as tearing down for a reopen handoff, so late writes (e.g. a stuck
+	 * bash's recordBashResult) become no-ops before the full dispose runs. Idempotent and
+	 * safe to call before disposeAsync(); it only sets the disposing flag.
+	 */
+	beginReopenTeardown(): void {
+		this._disposing = true;
+	}
+
 	async disposeAsync(): Promise<void> {
 		if (this._disposed) {
 			return;
@@ -5720,6 +5729,11 @@ export class AgentSession {
 	 * only for the inline / host-fallback paths that dispose the AgentSession directly.
 	 */
 	private async _abortAndDisposeRetainedSession(retained: AgentSession): Promise<void> {
+		// Mark teardown as begun before draining/aborting so recordBashResult is a no-op for
+		// the rest of the handoff: even if the bash drain times out with a stuck command, a
+		// late result can't append a stale bashExecution message to the JSONL the reopened
+		// session takes over.
+		retained.beginReopenTeardown();
 		// abort() signals bash cancellation and waits for the agent loop, but not for bash
 		// itself to finish. Drain bash to idle first (bounded), matching the daemon's
 		// abortBashForClose, so a late bash can't keep touching the shared session file.
@@ -6698,6 +6712,13 @@ export class AgentSession {
 	 * Used by executeBash and by extensions that handle bash execution themselves.
 	 */
 	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void {
+		// Once the session is disposing/disposed (e.g. a retained subagent being torn down
+		// for reopen), a late bash result must not be recorded: appending it would write a
+		// stale bashExecution message to the shared session JSONL that the reopened session
+		// has already taken over, corrupting its transcript.
+		if (this._disposed || this._disposing) {
+			return;
+		}
 		const bashMessage: BashExecutionMessage = {
 			role: "bashExecution",
 			command,
