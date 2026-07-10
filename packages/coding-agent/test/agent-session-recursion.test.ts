@@ -1508,6 +1508,42 @@ describe("AgentSession persistent subagents", () => {
 		expect(order).toEqual(["abort", "dispose"]);
 	});
 
+	it("drains a late-started bash on the retained session before disposing it on inline reopen", async () => {
+		const root = createPersistentSession();
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+
+		const retained = root.getRlmChildSession(persistentSubagentNodeId("reviewer")) as AgentSession;
+		// Model the race the drain defends against: bash is idle at the reopen busy check
+		// (so the reopen is allowed) but a late bash is running by the time teardown starts,
+		// then goes idle after abortBash (like the daemon abortBashForClose drain).
+		let bashCalls = 0;
+		let bashRunning = false;
+		vi.spyOn(retained, "isBashRunning", "get").mockImplementation(() => {
+			bashCalls += 1;
+			// First read is the busy-guard (idle); afterwards a late bash is running.
+			if (bashCalls === 1) return false;
+			return bashRunning;
+		});
+		// Once the guard passes, the late bash is "running" until abortBash drains it.
+		bashRunning = true;
+		const abortBashSpy = vi.spyOn(retained, "abortBash").mockImplementation(() => {
+			bashRunning = false;
+		});
+		const order: string[] = [];
+		vi.spyOn(retained, "abort").mockImplementation(async () => {
+			order.push(`abort(bash=${bashRunning})`);
+		});
+		vi.spyOn(retained, "disposeAsync").mockImplementation(async () => {
+			order.push(`dispose(bash=${bashRunning})`);
+		});
+
+		await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+
+		expect(abortBashSpy).toHaveBeenCalledOnce();
+		// bash was drained to idle (false) before both abort and dispose ran.
+		expect(order).toEqual(["abort(bash=false)", "dispose(bash=false)"]);
+	});
+
 	it("routes retained-session eviction through the host on reopen", async () => {
 		const root = createPersistentSession();
 

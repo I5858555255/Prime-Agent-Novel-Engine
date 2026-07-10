@@ -577,6 +577,9 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 /** Cap on the post-compaction kernel namespace probe so a wedged kernel can't stall recovery. */
 const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
 
+/** Bound on waiting for a retained subagent's bash to drain before disposing it on reopen. */
+const RETAINED_SESSION_BASH_DRAIN_TIMEOUT_MS = 5000;
+
 function noopRlmChildAbort(): void {}
 
 function isRlmChildRunCancelled(run: RlmChildRun): boolean {
@@ -5717,6 +5720,16 @@ export class AgentSession {
 	 * only for the inline / host-fallback paths that dispose the AgentSession directly.
 	 */
 	private async _abortAndDisposeRetainedSession(retained: AgentSession): Promise<void> {
+		// abort() signals bash cancellation and waits for the agent loop, but not for bash
+		// itself to finish. Drain bash to idle first (bounded), matching the daemon's
+		// abortBashForClose, so a late bash can't keep touching the shared session file.
+		if (retained.isBashRunning) {
+			retained.abortBash();
+			const deadline = Date.now() + RETAINED_SESSION_BASH_DRAIN_TIMEOUT_MS;
+			while (retained.isBashRunning && Date.now() < deadline) {
+				await sleep(50);
+			}
+		}
 		await retained.abort().catch(() => undefined);
 		await retained.disposeAsync().catch(() => undefined);
 	}
