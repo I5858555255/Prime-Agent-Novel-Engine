@@ -443,6 +443,13 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 		process.exit(1);
 	}
 	try {
+		if (probe.reachable && probe.activeSessions === undefined) {
+			const restoreResult = await relaunchDaemonAndRestoreSessions(socketPath, [], undefined, {
+				allowAtRiskSessions: true,
+			});
+			reportDaemonSessionRestoreWarnings(restoreResult);
+			return { ready: ensureInteractiveDaemonRunning(socketPath) };
+		}
 		const latestProbe = await probeRunningDaemonSessions(socketPath);
 		const initialProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(probe);
 		const latestProbeAtRisk = isRunningDaemonProbeAtRiskFromStop(latestProbe);
@@ -462,12 +469,16 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 			}
 			allowAtRiskSessions = true;
 		}
-		const restoreResult = await relaunchDaemonAndRestoreSessions(
-			socketPath,
-			latestProbe.reachable ? (latestProbe.activeSessions ?? []) : [],
-			undefined,
-			{ allowAtRiskSessions, latestProbe },
-		);
+		const restoreSessions =
+			latestProbe.reachable && latestProbe.activeSessions !== undefined
+				? latestProbe.activeSessions
+				: probe.reachable
+					? (probe.activeSessions ?? [])
+					: [];
+		const restoreResult = await relaunchDaemonAndRestoreSessions(socketPath, restoreSessions, undefined, {
+			allowAtRiskSessions,
+			latestProbe,
+		});
 		reportDaemonSessionRestoreWarnings(restoreResult);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

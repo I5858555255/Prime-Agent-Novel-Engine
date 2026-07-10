@@ -221,9 +221,9 @@ describe("restoreDaemonSessionSummaries", () => {
 
 		await expect(
 			restoreDaemonSessionSummaries(daemon.socketPath, [
-				sessionSummary({ activeSessionId: "a", sessionFile: firstSessionFile }),
-				sessionSummary({ activeSessionId: "a-duplicate", sessionFile: firstSessionFile }),
-				sessionSummary({ activeSessionId: "b", sessionFile: secondSessionFile }),
+				sessionSummary({ activeSessionId: "a", sessionFile: firstSessionFile, cwd: "/tmp/project-a" }),
+				sessionSummary({ activeSessionId: "a-duplicate", sessionFile: firstSessionFile, cwd: "/tmp/project-dupe" }),
+				sessionSummary({ activeSessionId: "b", sessionFile: secondSessionFile, cwd: "/tmp/project-b" }),
 				sessionSummary({ activeSessionId: "busy", sessionFile: busySessionFile, isStreaming: true }),
 				sessionSummary({
 					activeSessionId: "sub",
@@ -238,8 +238,8 @@ describe("restoreDaemonSessionSummaries", () => {
 			[secondSessionFile, "b"],
 		]);
 		expect(createCommands.map((command) => command.config)).toEqual([
-			{ sessionDir: dirname(firstSessionFile) },
-			{ sessionDir: dirname(secondSessionFile) },
+			{ sessionDir: dirname(firstSessionFile), cwd: "/tmp/project-a" },
+			{ sessionDir: dirname(secondSessionFile), cwd: "/tmp/project-b" },
 		]);
 	});
 

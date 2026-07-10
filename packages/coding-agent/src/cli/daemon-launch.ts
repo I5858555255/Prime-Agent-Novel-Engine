@@ -239,6 +239,7 @@ export async function restoreDaemonSessionSummaries(
 				sessionPath: sessionFile,
 				config: {
 					sessionDir: dirname(sessionFile),
+					...(sourceSummary?.cwd ? { cwd: sourceSummary.cwd } : {}),
 				},
 			});
 			if (response.success) {
