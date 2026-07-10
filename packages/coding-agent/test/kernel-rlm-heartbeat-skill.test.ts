@@ -146,4 +146,33 @@ except RuntimeError as error:
 			'RuntimeError: host request type "rlm_heartbeat.list" is not available in this session',
 		);
 	});
+
+	it("rejects non-string delivery modes before calling the host", async () => {
+		let hostRequestCount = 0;
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledRlmHeartbeatSkill()],
+			hostHandlers: {
+				"rlm_heartbeat.create": async () => {
+					hostRequestCount++;
+					return {};
+				},
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		const result = await manager.execute(`
+for value in ([], {}):
+    try:
+        await rlm_heartbeat.create("check tests", delivery_mode=value)
+    except TypeError as error:
+        print(f"TypeError: {error}")
+`);
+
+		expect(result.status).toBe("ok");
+		expect(result.stdout.trim().split("\n")).toEqual([
+			"TypeError: delivery_mode must be str or None, got list",
+			"TypeError: delivery_mode must be str or None, got dict",
+		]);
+		expect(hostRequestCount).toBe(0);
+	});
 });

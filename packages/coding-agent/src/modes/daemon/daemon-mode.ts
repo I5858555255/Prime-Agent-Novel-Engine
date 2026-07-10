@@ -656,7 +656,7 @@ export class AgentDaemon {
 		message: string,
 		options?: PromptOptions,
 	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(state, (session) => {
+		await this.withAgentMessagePreparingGuard(state, (session, clearPreparing) => {
 			const prompt =
 				options?.agentMessageId === undefined
 					? session.prompt.bind(session)
@@ -664,6 +664,9 @@ export class AgentDaemon {
 			return prompt(message, {
 				...options,
 				preflightResult: (didSucceed) => {
+					if (didSucceed && session.isStreaming) {
+						clearPreparing();
+					}
 					options?.preflightResult?.(didSucceed);
 				},
 			});
@@ -675,10 +678,13 @@ export class AgentDaemon {
 		job: AgentCronJob,
 		options?: PromptOptions,
 	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(state, (session) =>
+		await this.withAgentMessagePreparingGuard(state, (session, clearPreparing) =>
 			session.promptHeartbeat(job, {
 				...options,
 				preflightResult: (didSucceed) => {
+					if (didSucceed && session.isStreaming) {
+						clearPreparing();
+					}
 					options?.preflightResult?.(didSucceed);
 				},
 			}),
@@ -687,7 +693,7 @@ export class AgentDaemon {
 
 	private async withAgentMessagePreparingGuard(
 		state: ActiveSessionState,
-		run: (session: AgentSession) => Promise<void>,
+		run: (session: AgentSession, clearPreparing: () => void) => Promise<void>,
 	): Promise<void> {
 		const activeSessionId = state.activeSessionId;
 		const session = state.runtime.session;
@@ -710,7 +716,7 @@ export class AgentDaemon {
 		};
 		try {
 			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
-			await run(session);
+			await run(session, clearPreparing);
 		} finally {
 			clearPreparing();
 		}

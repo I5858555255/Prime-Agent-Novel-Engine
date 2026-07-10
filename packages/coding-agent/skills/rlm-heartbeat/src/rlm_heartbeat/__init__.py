@@ -18,6 +18,8 @@ DeliveryMode = Literal["steer", "follow_up"]
 def _normalize_delivery_mode(delivery_mode: DeliveryMode | None) -> str | None:
     if delivery_mode is None:
         return None
+    if not isinstance(delivery_mode, str):
+        raise TypeError(f"delivery_mode must be str or None, got {type(delivery_mode).__name__}")
     if delivery_mode not in {"steer", "follow_up"}:
         raise ValueError('delivery_mode must be "steer", "follow_up", or None')
     return delivery_mode

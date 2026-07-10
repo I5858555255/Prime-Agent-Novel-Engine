@@ -121,6 +121,14 @@ describe("parseHeartbeatCommand", () => {
 	});
 
 	it("rejects invalid delivery mode values in delivery flag positions", () => {
+		for (const command of [
+			"/heartbeat --deliver",
+			"/heartbeat --deliver=",
+			"/heartbeat check status --deliver",
+			"/heartbeat check status --deliver=",
+		]) {
+			expect(() => parseHeartbeatCommand(command)).toThrow('Heartbeat delivery mode must be "steer" or "follow_up"');
+		}
 		expect(() => parseHeartbeatCommand("/heartbeat --deliver later check status")).toThrow(
 			'Heartbeat delivery mode must be "steer" or "follow_up"',
 		);

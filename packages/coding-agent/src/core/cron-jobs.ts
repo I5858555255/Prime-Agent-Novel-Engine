@@ -888,6 +888,9 @@ export function createAgentHeartbeatToolDefinitions(controller: AgentCronToolCon
 
 function consumeDeliveryOption(text: string): { deliveryMode: AgentHeartbeatDeliveryMode | undefined; rest: string } {
 	let rest = text.trim();
+	if (/(?:^|\s)--deliver=?$/i.test(rest)) {
+		throw new Error('Heartbeat delivery mode must be "steer" or "follow_up"');
+	}
 	let deliveryMode: AgentHeartbeatDeliveryMode | undefined;
 	let leading = consumeLeadingDeliveryFlag(rest);
 	while (leading) {

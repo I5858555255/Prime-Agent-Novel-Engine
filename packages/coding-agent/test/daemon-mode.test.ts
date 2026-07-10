@@ -3129,6 +3129,74 @@ describe("daemon mode helpers", () => {
 		expect(followUp).not.toHaveBeenCalled();
 	});
 
+	it("delivers steer heartbeats after an RPC prompt finishes preflight while its turn is still streaming", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		let releasePrompt = () => {};
+		const promptFinished = new Promise<void>((resolve) => {
+			releasePrompt = resolve;
+		});
+		let reportPromptStarted = () => {};
+		const promptStarted = new Promise<void>((resolve) => {
+			reportPromptStarted = resolve;
+		});
+		const sessionState = {
+			isStreaming: false,
+			isBashRunning: false,
+			pendingMessageCount: 0,
+		};
+		const prompt = vi.fn(async (_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+			sessionState.isStreaming = true;
+			options?.preflightResult?.(true);
+			reportPromptStarted();
+			await promptFinished;
+		});
+		const promptHeartbeat = vi.fn(
+			async (
+				_job: AgentCronJob,
+				options?: { streamingBehavior?: "steer" | "followUp"; preflightResult?: (didSucceed: boolean) => void },
+			) => {
+				options?.preflightResult?.(true);
+			},
+		);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: typeof sessionState & {
+					prompt: typeof prompt;
+					promptHeartbeat: typeof promptHeartbeat;
+				};
+			};
+		};
+		state.runtime.session = Object.assign(sessionState, { prompt, promptHeartbeat }) as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			agentMessagePreparingTargets: Map<string, number>;
+			promptWithAgentMessagePreparingGuard(state: ActiveSessionState, message: string): Promise<void>;
+			runCronJob(job: AgentCronJob): Promise<"skipped" | undefined>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		const promptPromise = internals.promptWithAgentMessagePreparingGuard(state, "long-running prompt");
+		await promptStarted;
+		const preparingReleased = !internals.agentMessagePreparingTargets.has(state.activeSessionId);
+		const result = await internals.runCronJob(
+			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+		);
+		releasePrompt();
+		await promptPromise;
+
+		expect(preparingReleased).toBe(true);
+		expect(result).toBeUndefined();
+		expect(promptHeartbeat).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "heartbeat-1" }),
+			expect.objectContaining({ streamingBehavior: "steer" }),
+		);
+	});
+
 	it("delivers follow-up heartbeats with a followUp behavior and coalescing key", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
