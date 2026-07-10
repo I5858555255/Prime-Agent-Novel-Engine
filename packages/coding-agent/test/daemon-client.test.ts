@@ -377,12 +377,14 @@ describe("DaemonClient", () => {
 
 	it("notifies listeners when a connected daemon socket closes", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
+		expect(client.isConnected).toBe(false);
 
 		const connect = client.connect();
 		expect(netMock.sockets).toHaveLength(1);
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
+		expect(client.isConnected).toBe(true);
 
 		const closed: Error[] = [];
 		const unsubscribe = client.onClose((error) => closed.push(error));
@@ -390,6 +392,7 @@ describe("DaemonClient", () => {
 		socket.emit("close");
 
 		expect(closed.map((error) => error.message)).toEqual(["Daemon socket closed"]);
+		expect(client.isConnected).toBe(false);
 		unsubscribe();
 		client.close();
 	});

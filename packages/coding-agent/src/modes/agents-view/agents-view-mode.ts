@@ -1741,7 +1741,11 @@ class AgentsViewMode implements Component, Focusable {
 			this.applySessionList(expectSessionList(data));
 		} catch (error) {
 			if (!this.reconnectPromise) {
-				this.startClientReconnect(client, error);
+				if (client.isConnected) {
+					this.setStatusMessage(formatError("Failed to refresh agents", error));
+				} else {
+					this.startClientReconnect(client, error);
+				}
 			}
 		}
 	}
@@ -1882,7 +1886,10 @@ class AgentsViewMode implements Component, Focusable {
 			} catch (error) {
 				lastError = error;
 			}
-			await new Promise<void>((resolve) => setTimeout(resolve, RECONNECT_RETRY_MS));
+			await new Promise<void>((resolve) => {
+				const retryTimer = setTimeout(resolve, RECONNECT_RETRY_MS);
+				retryTimer.unref?.();
+			});
 		}
 		if (!this.stopped && client === this.client) {
 			this.reconnectTimedOut = true;

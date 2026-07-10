@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -31,6 +31,56 @@ describe("defaultDaemonSocketPath", () => {
 
 		expect(dirname(socketPath)).toBe(join(tmpdir(), `prime-agent-${suffix}`));
 		expect(basename(socketPath)).toBe("daemon.sock");
+	});
+
+	it("checks a live daemon before acquiring the socket path lock", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const dir = mkdtempSync(join(tmpdir(), "pa-socket-live-"));
+		const socketPath = join(dir, "daemon.sock");
+		let observedLock: boolean | undefined;
+		const server = createServer((socket) => {
+			observedLock = existsSync(`${socketPath}.lock`);
+			socket.destroy();
+		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(socketPath, resolve);
+			});
+
+			await expect(prepareDaemonSocketPath(socketPath)).rejects.toThrow(/socket already in use/i);
+			expect(observedLock).toBe(false);
+		} finally {
+			if (server.listening) {
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+			}
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not wait on a stale lock when no socket path exists", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const dir = mkdtempSync(join(tmpdir(), "pa-socket-stale-lock-"));
+		const socketPath = join(dir, "daemon.sock");
+		mkdirSync(`${socketPath}.lock`);
+		let prepared = false;
+		try {
+			await Promise.race([
+				prepareDaemonSocketPath(socketPath).then(() => {
+					prepared = true;
+				}),
+				new Promise<void>((resolve) => setTimeout(resolve, 250)),
+			]);
+			expect(prepared).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("does not unlink a replacement daemon's socket during delayed cleanup", async () => {

@@ -8,8 +8,8 @@ const DAEMON_SOCKET_MODE = 0o600;
 const DAEMON_SOCKET_DIR_MODE = 0o700;
 const DAEMON_SOCKET_RELEASE_GRACE_MS = 1000;
 const DAEMON_SOCKET_RELEASE_POLL_MS = 25;
-const DAEMON_SOCKET_LOCK_STALE_MS = 10000;
-const DAEMON_SOCKET_LOCK_UPDATE_MS = 2000;
+const DAEMON_SOCKET_LOCK_STALE_MS = 5000;
+const DAEMON_SOCKET_LOCK_UPDATE_MS = 1000;
 
 export interface DaemonSocketIdentity {
 	dev: number;
@@ -28,6 +28,12 @@ export async function prepareDaemonSocketPath(socketPath: string): Promise<void>
 
 	if (process.platform === "win32") {
 		return;
+	}
+	if (!existsSync(socketPath)) {
+		return;
+	}
+	if (await canConnectToUnixSocket(socketPath)) {
+		throw new Error(`Daemon socket already in use: ${socketPath}`);
 	}
 	const releaseLock = await lockfile.lock(socketPath, {
 		realpath: false,

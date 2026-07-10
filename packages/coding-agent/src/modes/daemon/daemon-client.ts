@@ -50,6 +50,10 @@ export class DaemonClient {
 		return this.helloMessage;
 	}
 
+	get isConnected(): boolean {
+		return this.socket !== undefined && !this.socket.destroyed;
+	}
+
 	/** Wait for the daemon_hello greeting sent on connect. */
 	async waitForHello(timeoutMs = 3000): Promise<DaemonHello> {
 		if (this.helloMessage) {
