@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added persistent (reopenable) subagents: `rlm('instruction', persist=True, persistent_id='reviewer', system_prompt='...')` saves a subagent's session history and system prompt so later runs with the same id reopen it with its role, prior history, and the new instruction; non-persistent subagents are unchanged.
+- Changed the new-chat splash to show only version, model, and cwd metadata and rotate among five example prompts.
 
 ## [0.2.8] - 2026-07-09
 
