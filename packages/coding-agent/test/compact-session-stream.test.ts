@@ -104,4 +104,39 @@ describe("compact daemon assistant streaming", () => {
 		expect(Buffer.byteLength(JSON.stringify(compact))).toBeLessThan(1024);
 		expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(2 * 1024 * 1024);
 	});
+
+	it("does not duplicate text already present on a provider start event", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		reconstructor.observe({
+			type: "session_event",
+			activeSessionId: "active-start-text",
+			event: { type: "message_start", message: assistant([]) },
+		});
+		const started = assistant([{ type: "text", text: "Hello" }]);
+		const startFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-start-text",
+			event: {
+				type: "message_update",
+				message: started,
+				assistantMessageEvent: { type: "text_start", contentIndex: 0, partial: started },
+			},
+		});
+		const deltaFrame = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-start-text",
+			event: {
+				type: "message_update",
+				message: started,
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Hello", partial: started },
+			},
+		});
+
+		expect(reconstructor.reconstruct(startFrame!)).toMatchObject({
+			event: { message: { content: [{ type: "text", text: "" }] } },
+		});
+		expect(reconstructor.reconstruct(deltaFrame!)).toMatchObject({
+			event: { message: { content: [{ type: "text", text: "Hello" }] } },
+		});
+	});
 });

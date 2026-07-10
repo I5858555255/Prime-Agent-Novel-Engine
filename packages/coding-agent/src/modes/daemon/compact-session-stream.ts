@@ -25,11 +25,7 @@ export function createCompactAssistantDelta(message: DaemonOutbound): CompactAss
 		.assistantMessageEvent as AssistantMessageEvent & {
 		partial?: AssistantMessage;
 	};
-	const eventType = assistantMessageEvent.type;
-	const contentStart =
-		eventType === "text_start" || eventType === "thinking_start" || eventType === "toolcall_start"
-			? message.event.message.content[assistantMessageEvent.contentIndex]
-			: undefined;
+	const contentStart = compactContentStart(message.event.message, assistantMessageEvent);
 	return {
 		type: "assistant_stream_delta",
 		activeSessionId: message.activeSessionId,
@@ -37,6 +33,26 @@ export function createCompactAssistantDelta(message: DaemonOutbound): CompactAss
 		...(contentStart ? { contentStart } : {}),
 		...(message.meta ? { meta: message.meta } : {}),
 	};
+}
+
+function compactContentStart(
+	message: AssistantMessage,
+	event: CompactAssistantMessageEvent,
+): AssistantMessage["content"][number] | undefined {
+	if (event.type !== "text_start" && event.type !== "thinking_start" && event.type !== "toolcall_start") {
+		return undefined;
+	}
+	const content = message.content[event.contentIndex];
+	if (event.type === "text_start" && content?.type === "text") {
+		return { ...content, text: "" };
+	}
+	if (event.type === "thinking_start" && content?.type === "thinking") {
+		return { ...content, thinking: "" };
+	}
+	if (event.type === "toolcall_start" && content?.type === "toolCall") {
+		return { ...content, arguments: {} };
+	}
+	return undefined;
 }
 
 export class CompactAssistantStreamReconstructor {

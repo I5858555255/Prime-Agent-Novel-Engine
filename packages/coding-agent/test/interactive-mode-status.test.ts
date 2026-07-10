@@ -24,6 +24,7 @@ import type {
 	AgentConnectionModel,
 	AgentConnectionResourceDiagnostic,
 	AgentConnectionResourceSnapshot,
+	AgentConnectionRlmChildAgentSnapshot,
 	AgentConnectionSessionEvent,
 	AgentConnectionSnapshot,
 	AgentConnectionSourceInfo,
@@ -33,7 +34,12 @@ import { AgentActivityTracker } from "../src/modes/interactive/agent-activity.js
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
 import type { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.js";
 import type { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
-import { formatSplashCwd, InteractiveMode, truncatePathMiddle } from "../src/modes/interactive/interactive-mode.js";
+import {
+	formatSplashCwd,
+	InteractiveMode,
+	mergeChildAgentSnapshots,
+	truncatePathMiddle,
+} from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 function renderLastLine(container: Container, width = 120): string {
@@ -99,6 +105,54 @@ function createConnectionState(overrides: Partial<AgentConnectionState> = {}): A
 		...overrides,
 	};
 }
+
+describe("mergeChildAgentSnapshots", () => {
+	const rich: AgentConnectionRlmChildAgentSnapshot = {
+		id: "child-1",
+		activeSessionId: "active-child-1",
+		label: "Inspect the scheduler",
+		status: "running",
+		durationMs: 5_000,
+		answerPreview: "Reading the queue",
+		toolUseCount: 4,
+		tokenCount: 41_000,
+		recap: "Tracing dispatch",
+		sessionDir: "/tmp/child-1",
+		activity: { kind: "executing", toolName: "ipython" },
+	};
+
+	test("preserves rich live fields when a daemon resync is sparse", () => {
+		const merged = mergeChildAgentSnapshots(rich, {
+			id: "child-1",
+			label: "Inspect the scheduler",
+			status: "running",
+			sessionDir: "/tmp/child-1",
+		});
+
+		expect(merged).toMatchObject({
+			activeSessionId: "active-child-1",
+			durationMs: 5_000,
+			answerPreview: "Reading the queue",
+			toolUseCount: 4,
+			tokenCount: 41_000,
+			recap: "Tracing dispatch",
+			activity: { kind: "executing", toolName: "ipython" },
+		});
+	});
+
+	test("clears transient activity when the child finishes", () => {
+		const merged = mergeChildAgentSnapshots(rich, {
+			id: "child-1",
+			label: "Inspect the scheduler",
+			status: "done",
+			sessionDir: "/tmp/child-1",
+		});
+
+		expect(merged.activity).toBeUndefined();
+		expect(merged.toolUseCount).toBe(4);
+		expect(merged.tokenCount).toBe(41_000);
+	});
+});
 
 describe("InteractiveMode update notifications", () => {
 	beforeAll(() => {

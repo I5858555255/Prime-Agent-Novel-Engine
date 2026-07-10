@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { compactRlmText } from "../../core/agent-session.js";
+import { compactRlmText, rlmChildLabel } from "../../core/agent-session.js";
 import type { AgentSessionRuntimeMetadata } from "../../core/agent-session-runtime.js";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.js";
 import type { AgentTaskState, SessionInfo } from "../../core/session-manager.js";
@@ -262,12 +262,14 @@ function rlmChildSnapshotForActiveSession(
 ): AgentConnectionRlmChildAgentSnapshot {
 	const session = activeSession.runtime.session;
 	let answerPreview: string | undefined;
+	let toolUseCount = 0;
 	for (const message of session.messages) {
 		if (message.role === "assistant") {
 			const text = compactRlmText(readMessageText(message.content));
 			if (text) {
 				answerPreview = text;
 			}
+			toolUseCount += message.content.filter((block) => block.type === "toolCall").length;
 		}
 	}
 	// The parent session's run tracker is the source of truth for child status;
@@ -282,9 +284,11 @@ function rlmChildSnapshotForActiveSession(
 		id: metadata.rlmChildId ?? activeSession.activeSessionId,
 		parentId: parentNodeId,
 		activeSessionId: activeSession.activeSessionId,
-		label: compactRlmText(metadata.prompt ?? "", 80) || "child agent",
+		label: rlmChildLabel(metadata.prompt ?? ""),
 		status,
 		answerPreview,
+		toolUseCount: toolUseCount > 0 ? toolUseCount : undefined,
+		tokenCount: session._contextTokensForCurrentMessages(),
 		recap: session.getCurrentRecap(),
 		sessionDir: metadata.sessionDir ?? session.sessionManager.getSessionDir(),
 		activity: status === "running" ? { kind: session.isStreaming ? "writing" : "waiting" } : undefined,

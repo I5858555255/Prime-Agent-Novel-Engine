@@ -174,7 +174,6 @@ import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SideQuestionComponent } from "./components/side-question.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
-import { SubagentTreeView } from "./components/subagent-tree-view.js";
 import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
@@ -280,6 +279,45 @@ export function formatSplashCwd(cwd: string): string {
 	}
 
 	return normalized;
+}
+
+export function mergeChildAgentSnapshots(
+	previous: AgentConnectionRlmChildAgentSnapshot,
+	incoming: AgentConnectionRlmChildAgentSnapshot,
+): AgentConnectionRlmChildAgentSnapshot {
+	const active = incoming.status === "running" || incoming.status === "queued";
+	return {
+		...previous,
+		...incoming,
+		parentId: incoming.parentId ?? previous.parentId,
+		activeSessionId: incoming.activeSessionId ?? previous.activeSessionId,
+		durationMs: incoming.durationMs ?? previous.durationMs,
+		answerPreview: incoming.answerPreview ?? previous.answerPreview,
+		toolUseCount:
+			incoming.toolUseCount === undefined
+				? previous.toolUseCount
+				: Math.max(previous.toolUseCount ?? 0, incoming.toolUseCount),
+		tokenCount: incoming.tokenCount ?? previous.tokenCount,
+		recap: incoming.recap ?? previous.recap,
+		activity: active ? (incoming.activity ?? previous.activity) : undefined,
+		error: incoming.status === "error" ? (incoming.error ?? previous.error) : undefined,
+	};
+}
+
+function childAgentSummaryChanged(
+	previous: AgentConnectionRlmChildAgentSnapshot,
+	next: AgentConnectionRlmChildAgentSnapshot,
+): boolean {
+	const previousTokens = previous.tokenCount === undefined ? undefined : formatTokenCount(previous.tokenCount);
+	const nextTokens = next.tokenCount === undefined ? undefined : formatTokenCount(next.tokenCount);
+	return (
+		previous.parentId !== next.parentId ||
+		previous.label !== next.label ||
+		previous.status !== next.status ||
+		previous.durationMs !== next.durationMs ||
+		previous.toolUseCount !== next.toolUseCount ||
+		previousTokens !== nextTokens
+	);
 }
 
 export function truncatePathMiddle(value: string, width: number): string {
@@ -688,9 +726,6 @@ export class InteractiveMode {
 
 	// RLM child-agent tray: inline list below the editor, full-screen detail on open.
 	private childAgentSummary: ChildAgentSummaryComponent;
-	// Live tree of the current turn's subagents, drawn above the working loader.
-	// Shown in addition to the inline list below the prompt bar.
-	private subagentTree = new SubagentTreeView();
 	private childAgentDetail: ChildAgentDetailComponent;
 	private childAgentSnapshots = new Map<string, AgentConnectionRlmChildAgentSnapshot>();
 	private childAgentNodes: ChildAgentInspectorNode[] = [];
@@ -4886,19 +4921,30 @@ export class InteractiveMode {
 		if (!children?.length) {
 			return;
 		}
+		let changed = false;
 		for (const child of children) {
 			// Live rlm_child_update events are richer than the snapshot; never
 			// clobber state that already arrived from the event stream.
-			if (!this.childAgentSnapshots.has(child.id)) {
-				this.updateChildAgentInspector(child);
+			if (!this.childAgentSnapshots.has(child.id) && child.status !== "cancelled") {
+				this.childAgentSnapshots.set(child.id, child);
+				changed = true;
 			}
+		}
+		if (changed) {
+			this.refreshChildAgentInspector();
 		}
 	}
 
 	private replaceChildAgentInspector(children: readonly AgentConnectionRlmChildAgentSnapshot[] | undefined): void {
-		this.childAgentSnapshots = new Map(
-			(children ?? []).filter((child) => child.status !== "cancelled").map((child) => [child.id, child]),
-		);
+		const next = new Map<string, AgentConnectionRlmChildAgentSnapshot>();
+		for (const child of children ?? []) {
+			if (child.status === "cancelled") {
+				continue;
+			}
+			const previous = this.childAgentSnapshots.get(child.id);
+			next.set(child.id, previous ? mergeChildAgentSnapshots(previous, child) : child);
+		}
+		this.childAgentSnapshots = next;
 		this.refreshChildAgentInspector();
 	}
 
@@ -4907,16 +4953,20 @@ export class InteractiveMode {
 		// viewer instead of keeping a dead row around.
 		if (child.status === "cancelled") {
 			this.removeChildAgentSnapshot(child.id);
-		} else {
-			this.childAgentSnapshots.set(child.id, child);
+			this.refreshChildAgentInspector();
+			return;
 		}
-		this.refreshChildAgentInspector();
+		const previous = this.childAgentSnapshots.get(child.id);
+		const next = previous ? mergeChildAgentSnapshots(previous, child) : child;
+		this.childAgentSnapshots.set(child.id, next);
+		if (!previous || childAgentSummaryChanged(previous, next) || this.childAgentDetailNodeId === child.id) {
+			this.refreshChildAgentInspector();
+		}
 	}
 
 	private refreshChildAgentInspector(): void {
 		this.childAgentNodes = this.buildChildAgentInspectorNodes();
 		this.childAgentSummary.setNodes(this.childAgentNodes);
-		this.subagentTree.setNodes(this.childAgentNodes);
 		this.updateWorkingPulse();
 		this.syncWorkingLoader();
 		this.updateWorkingLoaderMessage();
@@ -4946,8 +4996,6 @@ export class InteractiveMode {
 		this.mainViewContainer.addChild(this.chatContainer);
 		this.mainViewContainer.addChild(this.shortcutGuideContainer);
 		this.mainViewContainer.addChild(this.pendingMessagesContainer);
-		// Subagent tree sits directly above the loader, mirroring Claude's layout.
-		this.mainViewContainer.addChild(this.subagentTree);
 		this.mainViewContainer.addChild(this.statusContainer);
 	}
 
@@ -4955,7 +5003,6 @@ export class InteractiveMode {
 		this.childAgentSnapshots.clear();
 		this.childAgentNodes = [];
 		this.childAgentSummary.setNodes([]);
-		this.subagentTree.setNodes([]);
 		this.childAgentSummary.setHidden(false);
 		this.childAgentDetail.setNode(undefined);
 		this.childAgentDetailNodeId = undefined;
@@ -5159,6 +5206,10 @@ export class InteractiveMode {
 	}
 
 	private openChildAgentDetail(nodeId: string): boolean {
+		// Live text deltas are stored without redrawing the summary on every token.
+		// Rebuild once here so the detail opens with the latest preview and recap.
+		this.childAgentNodes = this.buildChildAgentInspectorNodes();
+		this.childAgentSummary.setNodes(this.childAgentNodes);
 		const node = this.findChildAgentInspectorNode(nodeId);
 		if (!node) {
 			return false;

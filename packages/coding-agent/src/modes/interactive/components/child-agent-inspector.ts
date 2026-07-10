@@ -8,7 +8,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { AGENT_ACTIVITY_LABELS } from "../agent-activity.js";
+import { AGENT_ACTIVITY_LABELS, formatTokenCount } from "../agent-activity.js";
 import { theme } from "../theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../theme/working-icon.js";
 import { keyText } from "./keybinding-hints.js";
@@ -180,6 +180,17 @@ function formatChildAgentDuration(durationMs: number | undefined): string {
 	return `${Math.floor(minutes / 60)}h`;
 }
 
+function formatChildAgentUsage(node: ChildAgentInspectorNode): string {
+	const parts: string[] = [];
+	if (node.toolUseCount !== undefined) {
+		parts.push(`${node.toolUseCount} ${node.toolUseCount === 1 ? "tool" : "tools"}`);
+	}
+	if (node.tokenCount !== undefined) {
+		parts.push(`${formatTokenCount(node.tokenCount)} tok`);
+	}
+	return parts.join(" · ");
+}
+
 function padTableCell(value: string, width: number): string {
 	const truncated = truncateToWidth(value, width, "");
 	return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
@@ -223,8 +234,10 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 			this.selectedId = undefined;
 			return;
 		}
-		if (!this.selectedId || !flat.some((entry) => entry.node.id === this.selectedId)) {
-			this.selectedId = flat.find((entry) => entry.node.status === "running")?.node.id ?? flat[0]?.node.id;
+		if (!this.focused || !this.selectedId || !flat.some((entry) => entry.node.id === this.selectedId)) {
+			this.selectedId =
+				flat.find((entry) => entry.node.status === "running" || entry.node.status === "queued")?.node.id ??
+				flat[0]?.node.id;
 		}
 	}
 
@@ -334,10 +347,9 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 			0,
 			flat.findIndex((entry) => entry.node.id === this.selectedId),
 		);
-		const start = Math.max(
-			0,
-			Math.min(selectedIndex - (SUMMARY_VISIBLE_ROWS - 1), flat.length - SUMMARY_VISIBLE_ROWS),
-		);
+		const start = this.focused
+			? Math.max(0, Math.min(selectedIndex - (SUMMARY_VISIBLE_ROWS - 1), flat.length - SUMMARY_VISIBLE_ROWS))
+			: 0;
 		const clampedStart = Math.max(0, start);
 		const window = flat.slice(clampedStart, clampedStart + SUMMARY_VISIBLE_ROWS);
 
@@ -426,30 +438,27 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		const icon = formatChildAgentStatusIcon(entry.node.status, rawIcon);
 		const numberCell = theme.fg("muted", padTableCell(`Subagent ${number}`, labelWidth));
 		const time = formatChildAgentDuration(entry.node.durationMs);
-		const timeWidth = 6;
-		// Fixed columns consume: icon + space, the label gap, and a space before time.
-		const fixed = visibleWidth(indent) + visibleWidth(rawIcon) + 1 + labelWidth + SUMMARY_LABEL_GAP + 1 + timeWidth;
+		const usage = formatChildAgentUsage(entry.node);
+		const rightText = [usage, time].filter((value) => value.length > 0).join("  ");
+		const rightWidth = visibleWidth(rightText);
+		// Fixed columns consume the icon, label, gap, and one separator before right-aligned metadata.
+		const fixed =
+			visibleWidth(indent) +
+			visibleWidth(rawIcon) +
+			1 +
+			labelWidth +
+			SUMMARY_LABEL_GAP +
+			(rightWidth > 0 ? 1 + rightWidth : 0);
 		// The prompt may use all remaining space; the elision keeps it short and the
 		// gap fill still right-aligns the time.
 		const promptWidth = Math.max(0, width - fixed);
 		const prompt = this.elidePrompt(entry.node.label, sharedPrefix, sharedSuffix, promptWidth);
 		const promptCell = theme.fg("dim", prompt);
 		const labelGap = " ".repeat(SUMMARY_LABEL_GAP);
-		const fillWidth = Math.max(
-			0,
-			width -
-				visibleWidth(indent) -
-				visibleWidth(rawIcon) -
-				1 -
-				labelWidth -
-				SUMMARY_LABEL_GAP -
-				visibleWidth(prompt) -
-				visibleWidth(time) -
-				1,
-		);
+		const fillWidth = Math.max(0, promptWidth - visibleWidth(prompt));
 		const fill = " ".repeat(fillWidth);
-		const timeCell = theme.fg("muted", time);
-		return `${indent}${icon} ${numberCell}${labelGap}${promptCell}${fill} ${timeCell}`;
+		const rightCell = rightText ? ` ${theme.fg("muted", rightText)}` : "";
+		return `${indent}${icon} ${numberCell}${labelGap}${promptCell}${fill}${rightCell}`;
 	}
 
 	// Coloring is applied by the caller so the trailing ellipsis matches the text.

@@ -321,8 +321,15 @@ describe("buildRlmChildSnapshots", () => {
 			},
 			messages: [
 				{ role: "user", content: "Summarize the repo layout" },
-				{ role: "assistant", content: [{ type: "text", text: "The repo is an npm workspace." }] },
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "The repo is an npm workspace." },
+						{ type: "toolCall", id: "tool-1", name: "ipython", arguments: {} },
+					],
+				},
 			] as AgentMessage[],
+			contextTokens: 41_000,
 		});
 		const grandchild = makeState({
 			activeSessionId: "grandchild",
@@ -355,6 +362,8 @@ describe("buildRlmChildSnapshots", () => {
 		expect(snapshots[0]).toMatchObject({
 			label: "Summarize the repo layout",
 			answerPreview: "The repo is an npm workspace.",
+			toolUseCount: 1,
+			tokenCount: 41_000,
 			sessionDir: "/tmp/artifacts/sub-aaa",
 			activeSessionId: "child",
 		});
@@ -442,6 +451,7 @@ interface StateOptions {
 	childRunStatuses?: Record<string, "queued" | "running" | "done" | "error" | "cancelled">;
 	hasRunningRlmChildren?: boolean;
 	hasAcceptedPromptInFlight?: boolean;
+	contextTokens?: number;
 	metadata?: {
 		kind: "top-level" | "subagent";
 		createdAt: number;
@@ -487,6 +497,7 @@ function makeState(options: StateOptions): ActiveSessionState {
 				hasRunningRlmChildren: () => options.hasRunningRlmChildren ?? false,
 				hasAcceptedPromptInFlight: options.hasAcceptedPromptInFlight ?? false,
 				getCurrentRecap: () => undefined,
+				_contextTokensForCurrentMessages: () => options.contextTokens,
 				pendingMessageCount: 0,
 				state: {
 					streamingMessage: undefined,

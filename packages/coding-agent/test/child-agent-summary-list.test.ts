@@ -39,6 +39,24 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		expect(lines.join("\n")).toContain("2 below");
 	});
 
+	it("keeps the active agents visible when a previously selected agent finishes", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([node("a"), node("b"), node("c"), node("d"), node("e"), node("f")]);
+		summary.selectNode("a");
+		summary.setNodes([node("a", "done"), node("b"), node("c"), node("d"), node("e"), node("f")]);
+		const out = summary.render(80).map(stripAnsi).join("\n");
+		expect(out).toContain("b");
+		expect(out).toContain("f");
+		expect(out).not.toContain(" a ");
+	});
+
+	it("shows tool and token usage beside each subagent", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([{ ...node("a"), toolUseCount: 3, tokenCount: 41_000 }]);
+		const out = stripAnsi(summary.render(80).join("\n"));
+		expect(out).toContain("3 tools · 41k tok");
+	});
+
 	it("scrolls the window and updates the indicator as selection moves down", () => {
 		const summary = new ChildAgentSummaryComponent();
 		summary.focused = true;
@@ -88,7 +106,7 @@ describe("ChildAgentSummaryComponent inline list", () => {
 	it("never exceeds the row width with wide (CJK) characters", () => {
 		const wide = "実行するタスクは非常に長い説明を含んでいてこれは折り返しのテストです".repeat(3);
 		const summary = new ChildAgentSummaryComponent();
-		summary.setNodes([{ ...node("a"), label: wide }]);
+		summary.setNodes([{ ...node("a"), label: wide, toolUseCount: 12, tokenCount: 912_000 }]);
 		for (const width of [40, 60, 80]) {
 			for (const line of summary.render(width)) {
 				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
