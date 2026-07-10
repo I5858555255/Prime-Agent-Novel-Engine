@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed fullscreen TUI handoffs temporarily releasing raw input and leaking keyboard-protocol timers, which caused flicker and echoed arrow escape sequences while opening sessions.
+
 ## [0.2.8] - 2026-07-09
 
 ## [0.2.7] - 2026-07-08
