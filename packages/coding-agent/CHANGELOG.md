@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added autonomous mode with host-side continuations, configurable limits, and quality gates for evaluator-controlled runs ([#278](https://github.com/PrimeIntellect-ai/prime-agent/pull/278) by [@sethkarten](https://github.com/sethkarten)).
+- Changed bare `/mcp` to open the Services menu while preserving explicit `list`, `login`, and `logout` subcommands ([ENG-4535](https://linear.app/primeintellect/issue/ENG-4535/open-services-mcp-menu-from-mcp)).
 - Added `/btw` and `/side` for one-turn inline side questions that use the current context without changing the main session ([ENG-4509](https://linear.app/primeintellect/issue/ENG-4509/add-btw-and-side-side-question-flows)).
 - Changed scheduled heartbeat prompts to steer (interrupt the current turn) by default, with a `steer`/`follow_up` delivery mode selectable via `/heartbeat --steer|--follow-up` and the `rlm_heartbeat` skill's `delivery_mode` argument.
 - Changed the new-chat splash to show only version, model, and cwd metadata and rotate among five example prompts.
