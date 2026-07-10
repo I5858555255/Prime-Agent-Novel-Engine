@@ -81,6 +81,7 @@ import {
 } from "./agents-view-state.js";
 
 const POLL_INTERVAL_MS = 1000;
+const RECONNECT_TIMEOUT_MS = 120000;
 const RECONNECT_RETRY_MS = 1000;
 const EXIT_HINT_DURATION_MS = 2000;
 const DELETE_CONFIRM_DURATION_MS = 2000;
@@ -379,6 +380,7 @@ class AgentsViewMode implements Component, Focusable {
 	private client: DaemonClient | undefined;
 	private unsubscribeClientClose: (() => void) | undefined;
 	private reconnectPromise: Promise<void> | undefined;
+	private reconnectTimedOut = false;
 	private resolveRun: ((result: AgentsViewRunResult) => void) | undefined;
 	private pollTimer: NodeJS.Timeout | undefined;
 	private animationTimer: NodeJS.Timeout | undefined;
@@ -1739,7 +1741,7 @@ class AgentsViewMode implements Component, Focusable {
 			this.applySessionList(expectSessionList(data));
 		} catch (error) {
 			if (!this.reconnectPromise) {
-				this.setStatusMessage(formatError("Failed to refresh agents", error));
+				this.startClientReconnect(client, error);
 			}
 		}
 	}
@@ -1846,34 +1848,50 @@ class AgentsViewMode implements Component, Focusable {
 
 	private subscribeToClientClose(client: DaemonClient): void {
 		this.unsubscribeClientClose?.();
-		this.unsubscribeClientClose = client.onClose(() => {
-			if (this.stopped || client !== this.client || this.reconnectPromise) {
-				return;
-			}
-			this.setStatusMessage("Daemon restarted; reconnecting...", { sticky: true });
-			const reconnectPromise = this.reconnectClient(client).finally(() => {
-				if (this.reconnectPromise === reconnectPromise) {
-					this.reconnectPromise = undefined;
-				}
-			});
-			this.reconnectPromise = reconnectPromise;
-		});
+		this.unsubscribeClientClose = client.onClose((error) => this.startClientReconnect(client, error));
 	}
 
-	private async reconnectClient(client: DaemonClient): Promise<void> {
-		while (!this.stopped && client === this.client) {
+	private startClientReconnect(client: DaemonClient, error: unknown): void {
+		if (this.stopped || client !== this.client || this.reconnectPromise) {
+			return;
+		}
+		if (!this.reconnectTimedOut) {
+			this.setStatusMessage("Daemon restarted; reconnecting...", { sticky: true });
+		}
+		const reconnectPromise = this.reconnectClient(client, error).finally(() => {
+			if (this.reconnectPromise === reconnectPromise) {
+				this.reconnectPromise = undefined;
+			}
+		});
+		this.reconnectPromise = reconnectPromise;
+	}
+
+	private async reconnectClient(client: DaemonClient, initialError: unknown): Promise<void> {
+		const deadline = Date.now() + RECONNECT_TIMEOUT_MS;
+		let lastError = initialError;
+		while (!this.stopped && client === this.client && Date.now() < deadline) {
 			try {
 				await client.reconnect(1000);
 				const response = await client.request(createAgentsViewListCommand());
 				const data = requireDaemonData(response);
 				const sessions = expectSessionList(data);
+				this.reconnectTimedOut = false;
 				this.setStatusMessage("Reconnected after daemon restart", { render: false });
 				this.applySessionList(sessions);
 				return;
-			} catch {
-				// Keep the existing rows visible and retry until the view exits or the daemon returns.
+			} catch (error) {
+				lastError = error;
 			}
 			await new Promise<void>((resolve) => setTimeout(resolve, RECONNECT_RETRY_MS));
+		}
+		if (!this.stopped && client === this.client) {
+			this.reconnectTimedOut = true;
+			this.setStatusMessage(formatError("Daemon unavailable; retrying", lastError), {
+				tone: "error",
+				sticky: true,
+				render: false,
+			});
+			this.applySessionList([]);
 		}
 	}
 
