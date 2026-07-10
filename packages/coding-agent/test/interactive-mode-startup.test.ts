@@ -41,6 +41,7 @@ describe("InteractiveMode startup hints", () => {
 			() => "/tmp/project",
 			undefined,
 			{
+				topPadding: true,
 				getStartHint: () => 'Try "refactor @<filepath>"',
 			},
 		);
@@ -56,6 +57,13 @@ describe("InteractiveMode startup hints", () => {
 		expect(output).not.toContain("input");
 		expect(output).not.toContain("files");
 		expect(output).not.toContain("help");
+
+		const unpadded = new BrandSplashHeader(
+			"0.0.0",
+			() => "test-model",
+			() => "/tmp/project",
+		);
+		expect(unpadded.render(120)[0]).not.toBe("");
 	});
 
 	it("randomly selects from five concise filepath prompts", () => {
