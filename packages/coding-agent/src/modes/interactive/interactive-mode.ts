@@ -139,7 +139,12 @@ import {
 	formatUpdateAvailableNotice,
 } from "../shared/startup-notices.js";
 import { AGENT_ACTIVITY_LABELS, AgentActivityTracker, formatTokenCount } from "./agent-activity.js";
-import { type AuthenticationResult, getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "./auth-flows.js";
+import {
+	type AuthenticationResult,
+	getAnthropicSubscriptionAuthWarning,
+	ProviderAuthFlows,
+	type ProviderLoginOptions,
+} from "./auth-flows.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -7412,16 +7417,21 @@ export class InteractiveMode {
 		});
 	}
 
-	private showLoginProviderSelector(authType?: "oauth" | "api_key"): Promise<AuthenticationResult> {
-		return this.createAuthFlows().runLogin(authType);
+	private showLoginProviderSelector(options: ProviderLoginOptions = {}): Promise<AuthenticationResult> {
+		return this.createAuthFlows().runLogin(options);
 	}
 
 	private async handleMcpCommand(args: string | undefined): Promise<void> {
 		const [sub, server] = (args ?? "").trim().split(/\s+/);
+		if (!sub) {
+			await this.showOAuthSelector("login", { initialCategory: "service" });
+			return;
+		}
+
 		const authStorage = this.modelRegistry.authStorage;
 		const isAuthed = (name: string) => authStorage.get(`mcp:${name}`) !== undefined;
 
-		if (!sub || sub === "list") {
+		if (sub === "list") {
 			const labels = new Map(BUILTIN_MCP_CATALOG.map((e) => [e.server, e.label]));
 			const names = new Set([...labels.keys(), ...Object.keys(this.settingsManager.getMcpServers() ?? {})]);
 			const lines = [...names].map((name) => {
@@ -7475,9 +7485,9 @@ export class InteractiveMode {
 		this.showError(`Unknown /mcp subcommand: ${sub}. Use list, login, or logout.`);
 	}
 
-	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
+	private async showOAuthSelector(mode: "login" | "logout", loginOptions: ProviderLoginOptions = {}): Promise<void> {
 		if (mode === "login") {
-			const authResult = await this.showLoginProviderSelector();
+			const authResult = await this.showLoginProviderSelector(loginOptions);
 			// Refresh the model catalog lazily when the user explicitly opens /model.
 			// /login must never redirect into a separate command's UI.
 			if (authResult.status === "success" && authResult.kind !== "service") {
