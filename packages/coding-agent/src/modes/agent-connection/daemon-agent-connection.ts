@@ -95,6 +95,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private attachedSessionId: string | undefined;
 	private attachedSessionFile: string | undefined;
 	private updateRestartPending = false;
+	private updateReconnectFailed = false;
 	private updateReconnectPromise?: Promise<void>;
 	private disposed = false;
 
@@ -107,7 +108,9 @@ export class DaemonAgentConnection implements AgentConnection {
 			void this.handleDaemonMessage(message);
 		});
 		this.unsubscribeDaemonClose = this.client.onClose((error) => {
-			if (this.updateRestartPending && !this.disposed) {
+			const unannouncedUpdateCandidate = error.message === "Daemon socket closed" && !this.updateReconnectFailed;
+			if (!this.disposed && (this.updateRestartPending || unannouncedUpdateCandidate)) {
+				this.updateRestartPending = true;
 				void this.reconnectAfterUpdate();
 				return;
 			}
@@ -150,6 +153,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		const summary = "snapshot" in result ? result.snapshot.summary : result;
 		this.attachedSessionId = summary.sessionId;
 		this.attachedSessionFile = summary.sessionFile;
+		this.updateReconnectFailed = false;
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 		if ("snapshot" in result) {
 			this.latestSnapshot = mapDaemonAttachSnapshot(result);
@@ -794,6 +798,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		const reconnectPromise = this.restoreConnectionAfterUpdate()
 			.catch(async (error: unknown) => {
 				this.updateRestartPending = false;
+				this.updateReconnectFailed = true;
 				if (!this.disposed) {
 					await this.emit({
 						type: "closed",

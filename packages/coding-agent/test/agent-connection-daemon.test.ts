@@ -582,6 +582,43 @@ describe("DaemonAgentConnection", () => {
 		]);
 	});
 
+	it("reattaches after a clean socket close arrives before the update notice", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const restoredMessages: AgentMessage[] = [{ role: "user", content: "restored prompt", timestamp: 2 }];
+		fakeClient.updateRestartSessions = [
+			{
+				id: "active-restored",
+				activeSessionId: "active-restored",
+				sessionId: "session-current",
+				sessionFile: "/tmp/session-current.jsonl",
+			},
+		];
+		fakeClient.attachResultFactory = (command) =>
+			createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 1, {
+				state: createConnectionState(command.activeSessionId, "session-current"),
+				messages: command.activeSessionId === "active-restored" ? restoredMessages : [],
+			});
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const restored = new Promise<AgentConnectionEvent>((resolve) => {
+			connection.subscribe((event) => {
+				if (event.type === "session_replaced") {
+					resolve(event);
+				}
+			});
+		});
+		await connection.attach();
+
+		fakeClient.emitClose(new Error("Daemon socket closed"));
+
+		await expect(restored).resolves.toMatchObject({
+			type: "session_replaced",
+			state: { activeSessionId: "active-restored", sessionId: "session-current" },
+			messages: restoredMessages,
+		});
+		expect(fakeClient.reconnectCount).toBe(1);
+		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "list", "attach"]);
+	});
+
 	it("returns to normal close handling after update restoration times out", async () => {
 		vi.useFakeTimers();
 		try {
@@ -610,11 +647,11 @@ describe("DaemonAgentConnection", () => {
 				},
 			]);
 			const reconnectCountAfterFailure = fakeClient.reconnectCount;
-			fakeClient.emitClose(new Error("later disconnect"));
+			fakeClient.emitClose(new Error("Daemon socket closed"));
 			await Promise.resolve();
 
 			expect(fakeClient.reconnectCount).toBe(reconnectCountAfterFailure);
-			expect(closedEvents.at(-1)).toEqual({ type: "closed", error: "later disconnect" });
+			expect(closedEvents.at(-1)).toEqual({ type: "closed", error: "Daemon socket closed" });
 			await connection.dispose();
 		} finally {
 			vi.useRealTimers();
