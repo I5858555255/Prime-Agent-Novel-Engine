@@ -19,22 +19,34 @@ import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSI
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
-import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
-import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
+import { SessionManager } from "../../core/session-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
-import { DaemonClient } from "../daemon/daemon-client.js";
-import { type DaemonCommand, type DaemonResponse, isUnknownDaemonCommandError } from "../daemon/daemon-protocol.js";
+import type { AgentConnectionSavedSessionInfo } from "../agent-connection/types.js";
+import { DaemonClient, getDaemonSocketCloseReason } from "../daemon/daemon-client.js";
+import {
+	type DaemonClosingReason,
+	type DaemonCommand,
+	type DaemonResponse,
+	isUnknownDaemonCommandError,
+} from "../daemon/daemon-protocol.js";
 import {
 	resolveAttachModelFallbackMessage,
 	type SessionSummary,
 	summaryForInactiveSession,
 } from "../daemon/daemon-session-list.js";
+import {
+	type DaemonSavedSessionCatalogContext,
+	deleteDaemonSavedSession,
+	listDaemonSavedSessions,
+	renameDaemonSavedSession,
+} from "../daemon/saved-session-catalog.js";
 import { getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "../interactive/auth-flows.js";
 import { showFullPaneOverlay } from "../interactive/components/centered-overlay.js";
 import { CustomEditor } from "../interactive/components/custom-editor.js";
 import { keyText } from "../interactive/components/keybinding-hints.js";
 import { ModelSelectorComponent } from "../interactive/components/model-selector.js";
-import { SessionSelectorComponent } from "../interactive/components/session-selector.js";
+import { SessionPickerScreen } from "../interactive/components/session-picker-screen.js";
+import { type SessionListCallbacks, SessionSelectorComponent } from "../interactive/components/session-selector.js";
 import { BrandSplashHeader, InteractiveMode } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
 import {
@@ -74,6 +86,8 @@ import {
 } from "./agents-view-state.js";
 
 const POLL_INTERVAL_MS = 1000;
+const RECONNECT_TIMEOUT_MS = 120000;
+const RECONNECT_RETRY_MS = 1000;
 const EXIT_HINT_DURATION_MS = 2000;
 const DELETE_CONFIRM_DURATION_MS = 2000;
 const STATUS_MESSAGE_DURATION_MS = 4500;
@@ -126,7 +140,6 @@ type AgentsViewPersistentState = {
 };
 
 type PromptCommand = Extract<DaemonCommand, { type: "prompt" }>;
-type DeleteSavedSessionCommand = Extract<DaemonCommand, { type: "delete_saved_session" }>;
 type PendingDeleteAgent = {
 	identity: string;
 	activeSessionId?: string;
@@ -168,13 +181,9 @@ export function createAgentsViewListCommand(): Extract<DaemonCommand, { type: "l
 	return { type: "list" };
 }
 
-export function createAgentsViewDeleteSavedSessionCommand(sessionPath: string): DeleteSavedSessionCommand {
-	return { type: "delete_saved_session", sessionPath };
-}
-
 export function resolveAgentsViewResumeSummary(
 	sessionPath: string,
-	savedSessions: readonly SessionInfo[],
+	savedSessions: readonly AgentConnectionSavedSessionInfo[],
 	visibleSummaries: readonly SessionSummary[],
 ): SessionSummary | undefined {
 	const activeSummary = resolveAgentsViewActiveSummaryForPath(sessionPath, visibleSummaries);
@@ -204,6 +213,10 @@ export function resolveAgentsViewActiveSummaryForPath(
 // the input, so flatten all whitespace runs to single spaces.
 export function formatAgentsViewStatusLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
+}
+
+export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
+	return reason !== "shutdown";
 }
 
 export function createAgentsViewReplyHeadline(text: string | undefined): string | undefined {
@@ -374,6 +387,10 @@ class AgentsViewMode implements Component, Focusable {
 	private readonly fullscreenDock: Component;
 	private readonly keybindings: KeybindingsManager;
 	private client: DaemonClient | undefined;
+	private unsubscribeClientClose: (() => void) | undefined;
+	private reconnectPromise: Promise<void> | undefined;
+	private reconnectTimedOut = false;
+	private daemonShutdownReceived = false;
 	private resolveRun: ((result: AgentsViewRunResult) => void) | undefined;
 	private pollTimer: NodeJS.Timeout | undefined;
 	private animationTimer: NodeJS.Timeout | undefined;
@@ -468,6 +485,7 @@ class AgentsViewMode implements Component, Focusable {
 	async run(): Promise<AgentsViewRunResult> {
 		this.client = new DaemonClient(this.options.socketPath);
 		await this.client.connect();
+		this.subscribeToClientClose(this.client);
 
 		this.ui.addChild(this);
 		this.ui.setFocus(this);
@@ -490,7 +508,6 @@ class AgentsViewMode implements Component, Focusable {
 		});
 
 		await this.refreshSessions();
-		await this.sendInitialPrompts();
 		this.loadStartupNotices();
 		this.pollTimer = setInterval(() => {
 			void this.refreshSessions();
@@ -770,7 +787,7 @@ class AgentsViewMode implements Component, Focusable {
 
 	/** Sticky messages (e.g. billing warnings) stay until the user acknowledges them with any keypress. */
 	private clearStickyStatusMessage(): void {
-		if (!this.statusMessageSticky) {
+		if (!this.statusMessageSticky || this.daemonShutdownReceived) {
 			return;
 		}
 		this.statusMessageSticky = false;
@@ -1040,13 +1057,31 @@ class AgentsViewMode implements Component, Focusable {
 		return new Promise((done) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
-			const savedSessionsByPath = new Map<string, SessionInfo>();
+			const savedSessionsByPath = new Map<string, AgentConnectionSavedSessionInfo>();
 
-			const rememberSessions = (sessions: SessionInfo[]): SessionInfo[] => {
+			const rememberSessions = <T extends AgentConnectionSavedSessionInfo[]>(sessions: T): T => {
 				for (const session of sessions) {
 					savedSessionsByPath.set(resolvePath(session.path), session);
 				}
 				return sessions;
+			};
+			const listSavedSessions = async (
+				scope: "current" | "all",
+				callbacks?: SessionListCallbacks,
+			): Promise<AgentConnectionSavedSessionInfo[]> => {
+				const sessions = await listDaemonSavedSessions(
+					this.requireClient(),
+					this.getSavedSessionCatalogContext(),
+					scope,
+					{
+						onProgress: callbacks?.onProgress,
+						onSession: (session) => {
+							rememberSessions([session]);
+							callbacks?.onSession?.(session);
+						},
+					},
+				);
+				return rememberSessions(sessions);
 			};
 
 			const close = () => {
@@ -1060,12 +1095,8 @@ class AgentsViewMode implements Component, Focusable {
 			};
 
 			const selector = new SessionSelectorComponent(
-				async (onProgress) =>
-					rememberSessions(
-						await SessionManager.list(this.getSavedSessionCwd(), this.options.config.sessionDir, onProgress),
-					),
-				async (onProgress) =>
-					rememberSessions(await SessionManager.listAll(onProgress, this.options.config.sessionDir)),
+				(callbacks) => listSavedSessions("current", callbacks),
+				(callbacks) => listSavedSessions("all", callbacks),
 				(sessionPath) => {
 					const summary = resolveAgentsViewResumeSummary(
 						sessionPath,
@@ -1096,9 +1127,17 @@ class AgentsViewMode implements Component, Focusable {
 					deleteSession: (sessionPath) => this.deleteSavedSessionFromSelector(sessionPath),
 					showRenameHint: true,
 					keybindings: this.keybindings,
+					frameless: true,
 				},
 			);
-			handle = showFullPaneOverlay(this.ui, selector, 96);
+			const splash = new BrandSplashHeader(
+				VERSION,
+				() => this.getSplashModelId(),
+				() => this.getSavedSessionCwd(),
+			);
+			handle = showFullPaneOverlay(this.ui, new SessionPickerScreen(this.ui, splash, selector), {
+				fullWidth: true,
+			});
 		});
 	}
 
@@ -1106,25 +1145,17 @@ class AgentsViewMode implements Component, Focusable {
 		return this.options.config.cwd ?? this.options.uiServices.getInitialCwd();
 	}
 
+	private getSavedSessionCatalogContext(): DaemonSavedSessionCatalogContext {
+		return { cwd: this.getSavedSessionCwd(), sessionDir: this.options.config.sessionDir };
+	}
+
 	private async renameSavedSessionFromSelector(sessionPath: string, name: string): Promise<void> {
-		const activeSummary = resolveAgentsViewActiveSummaryForPath(sessionPath, this.lastListedSummaries);
-		if (!activeSummary?.activeSessionId) {
-			SessionManager.open(sessionPath).appendSessionInfo(name);
-			return;
-		}
-		const response = await this.requireClient().request({
-			type: "rename_saved_session",
-			activeSessionId: activeSummary.activeSessionId,
-			sessionPath,
-			name,
-		});
-		requireDaemonData(response);
+		await renameDaemonSavedSession(this.requireClient(), this.getSavedSessionCatalogContext(), sessionPath, name);
 		await this.refreshSessions();
 	}
 
-	private async deleteSavedSessionFromSelector(sessionPath: string): Promise<DeleteSessionFileResult> {
-		const response = await this.requireClient().request(createAgentsViewDeleteSavedSessionCommand(sessionPath));
-		return expectDeleteSessionFileResult(requireDaemonData(response));
+	private async deleteSavedSessionFromSelector(sessionPath: string) {
+		return deleteDaemonSavedSession(this.requireClient(), this.getSavedSessionCatalogContext(), sessionPath);
 	}
 
 	private getDefaultModelForNewAgents(): Model<Api> | undefined {
@@ -1709,27 +1740,40 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private async refreshSessions(): Promise<void> {
+		if (this.reconnectPromise || this.daemonShutdownReceived) {
+			return;
+		}
 		const client = this.requireClient();
 		try {
 			const response = await client.request(createAgentsViewListCommand());
 			const data = requireDaemonData(response);
-			const sessions = expectSessionList(data);
-			this.lastListedSummaries = sessions;
-			const visibleSessions = sessions.filter((summary) =>
-				shouldShowAgentsViewSession(summary, this.inactiveAgentIdentities.has(getSummaryIdentity(summary))),
-			);
-			this.lastVisibleSummaries = this.withPendingDeleteSession(visibleSessions);
-			this.rows = buildAgentsViewRows(
-				this.lastVisibleSummaries,
-				this.expandedSubagentParents,
-				this.programShownParents,
-			);
-			this.applyPendingAncestorExpansion();
-			this.restoreSelection();
-			this.ui.requestRender();
+			this.applySessionList(expectSessionList(data));
+			await this.sendInitialPrompts();
 		} catch (error) {
-			this.setStatusMessage(formatError("Failed to refresh agents", error));
+			if (!this.reconnectPromise) {
+				if (client.isConnected) {
+					this.setStatusMessage(formatError("Failed to refresh agents", error));
+				} else {
+					this.startClientReconnect(client, error);
+				}
+			}
 		}
+	}
+
+	private applySessionList(sessions: SessionSummary[]): void {
+		this.lastListedSummaries = sessions;
+		const visibleSessions = sessions.filter((summary) =>
+			shouldShowAgentsViewSession(summary, this.inactiveAgentIdentities.has(getSummaryIdentity(summary))),
+		);
+		this.lastVisibleSummaries = this.withPendingDeleteSession(visibleSessions);
+		this.rows = buildAgentsViewRows(
+			this.lastVisibleSummaries,
+			this.expandedSubagentParents,
+			this.programShownParents,
+		);
+		this.applyPendingAncestorExpansion();
+		this.restoreSelection();
+		this.ui.requestRender();
 	}
 
 	private withPendingDeleteSession(sessions: readonly SessionSummary[]): SessionSummary[] {
@@ -1808,10 +1852,85 @@ class AgentsViewMode implements Component, Focusable {
 			flushFullscreen: false,
 		});
 		stopThemeWatcher();
+		this.unsubscribeClientClose?.();
+		this.unsubscribeClientClose = undefined;
 		this.client?.close();
 		this.client = undefined;
 		this.resolveRun?.(result);
 		this.resolveRun = undefined;
+	}
+
+	private subscribeToClientClose(client: DaemonClient): void {
+		this.unsubscribeClientClose?.();
+		this.unsubscribeClientClose = client.onClose((error) => {
+			if (!shouldReconnectAgentsViewDaemon(getDaemonSocketCloseReason(error))) {
+				this.handleDaemonShutdown(client, error);
+				return;
+			}
+			this.startClientReconnect(client, error);
+		});
+	}
+
+	private handleDaemonShutdown(client: DaemonClient, error: Error): void {
+		if (this.stopped || client !== this.client) {
+			return;
+		}
+		this.daemonShutdownReceived = true;
+		this.reconnectTimedOut = false;
+		this.setStatusMessage(`Prime Agent daemon shut down. Restart Prime Agent to reconnect. ${error.message}`, {
+			tone: "error",
+			sticky: true,
+		});
+		this.applySessionList([]);
+	}
+
+	private startClientReconnect(client: DaemonClient, error: unknown): void {
+		if (this.stopped || client !== this.client || this.reconnectPromise || this.daemonShutdownReceived) {
+			return;
+		}
+		if (!this.reconnectTimedOut) {
+			this.setStatusMessage("Daemon restarted; reconnecting...", { sticky: true });
+		}
+		const reconnectPromise = this.reconnectClient(client, error).finally(() => {
+			if (this.reconnectPromise === reconnectPromise) {
+				this.reconnectPromise = undefined;
+			}
+		});
+		this.reconnectPromise = reconnectPromise;
+	}
+
+	private async reconnectClient(client: DaemonClient, initialError: unknown): Promise<void> {
+		const deadline = Date.now() + RECONNECT_TIMEOUT_MS;
+		let lastError = initialError;
+		while (!this.stopped && !this.daemonShutdownReceived && client === this.client && Date.now() < deadline) {
+			try {
+				await client.reconnect(1000);
+				const response = await client.request(createAgentsViewListCommand());
+				const data = requireDaemonData(response);
+				const sessions = expectSessionList(data);
+				this.daemonShutdownReceived = false;
+				this.reconnectTimedOut = false;
+				this.setStatusMessage("Reconnected after daemon restart", { render: false });
+				this.applySessionList(sessions);
+				await this.sendInitialPrompts();
+				return;
+			} catch (error) {
+				lastError = error;
+			}
+			await new Promise<void>((resolve) => {
+				const retryTimer = setTimeout(resolve, RECONNECT_RETRY_MS);
+				retryTimer.unref?.();
+			});
+		}
+		if (!this.stopped && !this.daemonShutdownReceived && client === this.client) {
+			this.reconnectTimedOut = true;
+			this.setStatusMessage(formatError("Daemon unavailable; retrying", lastError), {
+				tone: "error",
+				sticky: true,
+				render: false,
+			});
+			this.applySessionList([]);
+		}
 	}
 
 	private requireClient(): DaemonClient {
@@ -2201,22 +2320,6 @@ function expectSessionSummary(value: unknown): SessionSummary {
 		throw new Error("Daemon returned an invalid session summary");
 	}
 	return value;
-}
-
-function expectDeleteSessionFileResult(value: unknown): DeleteSessionFileResult {
-	if (!isRecord(value) || typeof value.ok !== "boolean") {
-		throw new Error("Daemon returned an invalid delete session response");
-	}
-	if (value.ok) {
-		if (value.method !== "trash" && value.method !== "unlink") {
-			throw new Error("Daemon returned an invalid delete session response");
-		}
-		return { ok: true, method: value.method };
-	}
-	if (typeof value.error !== "string") {
-		throw new Error("Daemon returned an invalid delete session response");
-	}
-	return { ok: false, error: value.error };
 }
 
 function isSessionSummary(value: unknown): value is SessionSummary {

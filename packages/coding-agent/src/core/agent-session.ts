@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -104,6 +105,7 @@ import {
 	loadContextTreeChildrenFromDisk,
 } from "./context-tree.js";
 import type { AgentCronJob, AgentRlmHeartbeatController, AgentRlmHeartbeatStatusUpdate } from "./cron-jobs.js";
+import { normalizeHeartbeatDeliveryMode } from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
@@ -433,6 +435,7 @@ type QueuedAgentMessage = UserMessage | CustomMessage;
 interface QueuedSteeringMessage {
 	text: string;
 	previewLabel?: string;
+	queueKey?: string;
 	agentMessageId?: string;
 	message: QueuedAgentMessage;
 }
@@ -538,6 +541,10 @@ export interface ModelCycleResult {
 	thinkingLevel: ThinkingLevel;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
+}
+
+interface ModelSelectOptions {
+	waitForExtensions?: boolean;
 }
 
 interface ToolDefinitionEntry {
@@ -696,12 +703,14 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
+	private _compactionOperation: Promise<void> | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
+	private _branchSummaryOperation: Promise<void> | undefined = undefined;
 
 	// Retry state
 	private _retryAbortController: AbortController | undefined = undefined;
@@ -725,6 +734,9 @@ export class AgentSession {
 	private _extensionRunner!: ExtensionRunner;
 	private _execEnvProvider?: () => Record<string, string | undefined> | undefined;
 	private _turnIndex = 0;
+	private _modelSelectEmitQueue: Promise<void> = Promise.resolve();
+	private _modelSelectEmitQueueIdle = true;
+	private _modelSelectEmitContext = new AsyncLocalStorage<boolean>();
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -1653,12 +1665,14 @@ export class AgentSession {
 				if (payload.label !== undefined && typeof payload.label !== "string") {
 					throw new Error("rlm_heartbeat.create label must be a string when provided");
 				}
+				const deliveryMode = normalizeHeartbeatDeliveryMode(payload.delivery_mode ?? payload.deliveryMode);
 				return {
 					heartbeat: rlmHeartbeatHostResponse(
 						controller.createRlmHeartbeat({
 							instruction: payload.instruction,
 							interval: payload.interval,
 							label: payload.label,
+							deliveryMode,
 						}),
 					),
 				};
@@ -1679,11 +1693,14 @@ export class AgentSession {
 				if (payload.status !== undefined && !isRlmHeartbeatStatusUpdate(payload.status)) {
 					throw new Error('rlm_heartbeat.update status must be "pause" or "resume" when provided');
 				}
+				const rawDeliveryMode = payload.delivery_mode ?? payload.deliveryMode;
+				const deliveryMode = normalizeHeartbeatDeliveryMode(rawDeliveryMode);
 				if (
 					payload.instruction === undefined &&
 					payload.interval === undefined &&
 					payload.label === undefined &&
-					payload.status === undefined
+					payload.status === undefined &&
+					rawDeliveryMode === undefined
 				) {
 					throw new Error("rlm_heartbeat.update requires at least one field to update");
 				}
@@ -1693,6 +1710,7 @@ export class AgentSession {
 					interval: payload.interval,
 					label: payload.label,
 					status: payload.status,
+					deliveryMode,
 				});
 				return { heartbeat: heartbeat ? rlmHeartbeatHostResponse(heartbeat) : null };
 			}
@@ -2756,6 +2774,11 @@ export class AgentSession {
 				await this._checkCompaction(lastAssistant, false, false);
 			}
 
+			const pendingModelSelectEmit = this._pendingModelSelectEmit();
+			if (pendingModelSelectEmit) {
+				await pendingModelSelectEmit;
+			}
+
 			drainedNextTurnMessages = this._pendingNextTurnMessages;
 			this._pendingNextTurnMessages = [];
 			messages = [...drainedNextTurnMessages, message];
@@ -2984,6 +3007,11 @@ export class AgentSession {
 					throw new Error(formatAuthenticationFailedMessage(this.model.provider));
 				}
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			}
+
+			const pendingModelSelectEmit = this._pendingModelSelectEmit();
+			if (pendingModelSelectEmit) {
+				await pendingModelSelectEmit;
 			}
 			if (options?.skipPrePromptWork) {
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
@@ -3291,7 +3319,11 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	async steer(
+		text: string,
+		images?: ImageContent[],
+		options: { queueKey?: string; agentMessageId?: string } = {},
+	): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -3301,7 +3333,10 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images);
+		await this._queueSteer(expandedText, images, {
+			queueKey: options.queueKey,
+			agentMessageId: options.agentMessageId,
+		});
 	}
 
 	/**
@@ -3335,12 +3370,14 @@ export class AgentSession {
 		text: string,
 		images?: ImageContent[],
 		options: {
+			queueKey?: string;
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			customMessage?: CustomMessage;
 		} = {},
 	): Promise<void> {
 		await this._queueSteer(text, images, {
+			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			content: options.content,
 			message: options.customMessage,
@@ -3404,6 +3441,7 @@ export class AgentSession {
 			}
 			await this._queueSteer(text, undefined, {
 				agentMessageId: options.agentMessageId,
+				queueKey: options.queueKey,
 				content,
 				suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 			});
@@ -3442,6 +3480,7 @@ export class AgentSession {
 			await this._queueSteer(text, undefined, {
 				message: queuedMessage,
 				previewLabel: options.previewLabel,
+				queueKey: options.queueKey,
 				suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 			});
 			return true;
@@ -3459,6 +3498,7 @@ export class AgentSession {
 		images?: ImageContent[],
 		options: {
 			agentMessageId?: string;
+			queueKey?: string;
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
 			previewLabel?: string;
@@ -3479,6 +3519,7 @@ export class AgentSession {
 		this._steeringMessages.push({
 			text,
 			previewLabel: options.previewLabel,
+			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			message,
 		});
@@ -3768,13 +3809,18 @@ export class AgentSession {
 	}
 
 	removeQueuedFollowUp(queueKey: string): boolean {
-		const removed = this._followUpMessages.filter((message) => message.queueKey === queueKey);
-		if (removed.length === 0) {
+		const removedSteering = this._steeringMessages.filter((message) => message.queueKey === queueKey);
+		const removedFollowUp = this._followUpMessages.filter((message) => message.queueKey === queueKey);
+		if (removedSteering.length === 0 && removedFollowUp.length === 0) {
 			return false;
 		}
+		this._steeringMessages = this._steeringMessages.filter((message) => message.queueKey !== queueKey);
 		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
-		const removedMessages = new Set<AgentMessage>(removed.map((message) => message.message));
-		for (const message of removed) {
+		const removedMessages = new Set<AgentMessage>([
+			...removedSteering.map((message) => message.message),
+			...removedFollowUp.map((message) => message.message),
+		]);
+		for (const message of [...removedSteering, ...removedFollowUp]) {
 			this._rejectAgentMessageDelivery(
 				message.agentMessageId,
 				new Error("Queued agent message was cleared before delivery."),
@@ -3789,17 +3835,30 @@ export class AgentSession {
 		return this._resourceLoader;
 	}
 
+	requestAbort(): void {
+		this.abortRetry();
+		this.abortCompaction();
+		this.abortBranchSummary();
+		this.abortBash();
+		this.agent.abort();
+	}
+
 	/**
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
-		this.abortRetry();
+		const compactionOperation = this._compactionOperation;
+		const branchSummaryOperation = this._branchSummaryOperation;
+		this.requestAbort();
 		this._cancelActiveRlmChildRuns("Parent session aborted");
 		this._goalAbortInProgress = this._goalState.status === "active";
-		this.agent.abort();
 		try {
-			await this.agent.waitForIdle();
-			await this._agentEventQueue;
+			await Promise.allSettled([
+				this.agent.waitForIdle(),
+				this._agentEventQueue,
+				...(compactionOperation ? [compactionOperation] : []),
+				...(branchSummaryOperation ? [branchSummaryOperation] : []),
+			]);
 		} finally {
 			this._goalAbortInProgress = false;
 		}
@@ -3839,12 +3898,31 @@ export class AgentSession {
 		});
 	}
 
+	private _queueModelSelectEmit(
+		nextModel: Model<any>,
+		previousModel: Model<any> | undefined,
+		source: "set" | "cycle" | "restore",
+	): Promise<void> {
+		const emit = () =>
+			this._modelSelectEmitContext.run(true, () => this._emitModelSelect(nextModel, previousModel, source));
+		this._modelSelectEmitQueueIdle = false;
+		const promise = this._modelSelectEmitQueue.then(emit, emit);
+		const queued = promise.catch(() => {});
+		this._modelSelectEmitQueue = queued;
+		void queued.finally(() => {
+			if (this._modelSelectEmitQueue === queued) {
+				this._modelSelectEmitQueueIdle = true;
+			}
+		});
+		return promise;
+	}
+
 	/**
 	 * Set model directly.
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, options: ModelSelectOptions = {}): Promise<void> {
 		if (!this._modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -3858,7 +3936,34 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(model, previousModel, "set");
+		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
+		if (this._shouldWaitForModelSelectEmit(options)) {
+			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
+		}
+	}
+
+	private _trackModelSelectEmitError(emitPromise: Promise<void>): void {
+		void emitPromise.catch((error) => {
+			this._extensionRunner.emitError({
+				extensionPath: "<internal>",
+				event: "model_select",
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+		});
+	}
+
+	private _shouldWaitForModelSelectEmit(options: ModelSelectOptions): boolean {
+		return options.waitForExtensions !== false && !this._modelSelectEmitContext.getStore();
+	}
+
+	private _pendingModelSelectEmit(): Promise<void> | undefined {
+		if (!this._modelSelectEmitContext.getStore() && !this._modelSelectEmitQueueIdle) {
+			return this._modelSelectEmitQueue;
+		}
+		return undefined;
 	}
 
 	/**
@@ -3867,14 +3972,20 @@ export class AgentSession {
 	 * @param direction - "forward" (default) or "backward"
 	 * @returns The new model info, or undefined if only one model available
 	 */
-	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+	async cycleModel(
+		direction: "forward" | "backward" = "forward",
+		options: ModelSelectOptions = {},
+	): Promise<ModelCycleResult | undefined> {
 		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction);
+			return this._cycleScopedModel(direction, options);
 		}
-		return this._cycleAvailableModel(direction);
+		return this._cycleAvailableModel(direction, options);
 	}
 
-	private async _cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleScopedModel(
+		direction: "forward" | "backward",
+		options: ModelSelectOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const scopedModels = this._scopedModels.filter((scoped) => this._modelRegistry.hasConfiguredAuth(scoped.model));
 		if (scopedModels.length <= 1) return undefined;
 
@@ -3898,12 +4009,20 @@ export class AgentSession {
 		// setThinkingLevel clamps to model capabilities.
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(next.model, currentModel, "cycle");
+		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
+		if (this._shouldWaitForModelSelectEmit(options)) {
+			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
+		}
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
-	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleAvailableModel(
+		direction: "forward" | "backward",
+		options: ModelSelectOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const availableModels = await this._modelRegistry.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
@@ -3923,7 +4042,12 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(nextModel, currentModel, "cycle");
+		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
+		if (this._shouldWaitForModelSelectEmit(options)) {
+			await emitPromise;
+		} else {
+			this._trackModelSelectEmitError(emitPromise);
+		}
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 	}
@@ -4128,6 +4252,11 @@ export class AgentSession {
 		await this.abort();
 		let didCompact = false;
 		this._compactionAbortController = new AbortController();
+		let resolveCompactionOperation: () => void = () => {};
+		const compactionOperation = new Promise<void>((resolve) => {
+			resolveCompactionOperation = resolve;
+		});
+		this._compactionOperation = compactionOperation;
 		this._emit({ type: "compaction_start", reason: "manual", customInstructions });
 
 		try {
@@ -4175,6 +4304,10 @@ export class AgentSession {
 		} finally {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
+			if (this._compactionOperation === compactionOperation) {
+				this._compactionOperation = undefined;
+			}
+			resolveCompactionOperation();
 			if (didCompact) {
 				this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 				if (hadPostCompactionContinue) {
@@ -6765,6 +6898,11 @@ export class AgentSession {
 
 		// Set up abort controller for summarization
 		this._branchSummaryAbortController = new AbortController();
+		let resolveBranchSummaryOperation: () => void = () => {};
+		const branchSummaryOperation = new Promise<void>((resolve) => {
+			resolveBranchSummaryOperation = resolve;
+		});
+		this._branchSummaryOperation = branchSummaryOperation;
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown } | undefined;
@@ -6903,6 +7041,10 @@ export class AgentSession {
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
 			this._branchSummaryAbortController = undefined;
+			if (this._branchSummaryOperation === branchSummaryOperation) {
+				this._branchSummaryOperation = undefined;
+			}
+			resolveBranchSummaryOperation();
 		}
 	}
 
@@ -7214,6 +7356,7 @@ function rlmHeartbeatHostResponse(job: AgentCronJob): Record<string, unknown> {
 		id: job.id,
 		status: job.status,
 		label: job.label ?? null,
+		delivery_mode: job.deliveryMode ?? "steer",
 		instruction: job.prompt,
 		schedule: job.schedule,
 		created_at: job.createdAt,

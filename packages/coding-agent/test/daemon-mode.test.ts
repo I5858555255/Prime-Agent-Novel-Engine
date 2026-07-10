@@ -2,9 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import type { AgentCronJob, AgentCronJobStore } from "../src/core/cron-jobs.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
 	AgentDaemon,
@@ -2642,6 +2644,91 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("streams detached saved-session catalog requests", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-saved-session-catalog-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const session = SessionManager.create(tempDir, sessionDir);
+			session.appendSessionState({ status: "active" });
+			session.appendAgentStatus({
+				summary: "Finished the task",
+				taskState: "completed",
+				basedOnMessageCount: 0,
+			});
+			session.appendSessionState({ status: "active" });
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const internals = daemon as unknown as {
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const writes: string[] = [];
+			const client = {
+				...makeClient("client-1", "detached"),
+				socket: {
+					destroyed: false,
+					write: (line: string) => {
+						writes.push(line);
+						return true;
+					},
+				} as unknown as Socket,
+			};
+
+			const response = (await internals.handleCommand(client, {
+				id: "list-1",
+				type: "list_saved_sessions",
+				cwd: tempDir,
+				sessionDir,
+				scope: "current",
+			})) as {
+				data: {
+					sessions: Array<{
+						id: string;
+						agentStatus?: {
+							summary: string;
+							taskState?: "needs_input" | "completed";
+							basedOnMessageCount: number;
+						};
+					}>;
+				};
+			};
+			const updates = writes.map((line) => JSON.parse(line) as { type: string; activeSessionId?: string });
+
+			expect(response.data.sessions).toEqual([
+				expect.objectContaining({
+					id: session.getSessionId(),
+					agentStatus: { summary: "Finished the task", taskState: "completed", basedOnMessageCount: 0 },
+				}),
+			]);
+			expect(updates).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						id: "list-1",
+						type: "session_list_progress",
+						command: "list_saved_sessions",
+						loaded: 1,
+						total: 1,
+					}),
+					expect.objectContaining({
+						id: "list-1",
+						type: "session_list_item",
+						command: "list_saved_sessions",
+						session: expect.objectContaining({
+							id: session.getSessionId(),
+							agentStatus: { summary: "Finished the task", taskState: "completed", basedOnMessageCount: 0 },
+						}),
+					}),
+				]),
+			);
+			expect(updates.every((update) => update.activeSessionId === undefined)).toBe(true);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps saved session jobs when file deletion fails", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-delete-cron-fail-"));
 		try {
@@ -2785,7 +2872,12 @@ describe("daemon mode helpers", () => {
 		).runCronJob.bind(daemon);
 
 		const result = await runCronJob(
-			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "heartbeat-1",
+				source: "heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 
 		expect(result).toBe("skipped");
@@ -2835,10 +2927,20 @@ describe("daemon mode helpers", () => {
 		).runCronJob.bind(daemon);
 
 		const first = await runCronJob(
-			makeCronJob({ id: "rlm-1", source: "rlm_heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "rlm-1",
+				source: "rlm_heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 		const second = await runCronJob(
-			makeCronJob({ id: "rlm-2", source: "rlm_heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "rlm-2",
+				source: "rlm_heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 
 		expect(first).toBe("skipped");
@@ -3077,7 +3179,129 @@ describe("daemon mode helpers", () => {
 		expect(prompt).not.toHaveBeenCalled();
 	});
 
-	it("prompts idle sessions with a followUp streaming behavior to survive a mid-call stream start", async () => {
+	it("delivers heartbeats with a steering behavior by default", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const prompt = vi.fn(async () => {});
+		const promptHeartbeat = vi.fn(
+			async (
+				_job: AgentCronJob,
+				_options?: { streamingBehavior?: "steer" | "followUp"; followUpQueueKey?: string },
+			) => {},
+		);
+		const followUp = vi.fn(async () => true);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isBashRunning: boolean;
+					pendingMessageCount: number;
+					prompt: typeof prompt;
+					promptHeartbeat: typeof promptHeartbeat;
+					followUp: typeof followUp;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			isBashRunning: false,
+			pendingMessageCount: 0,
+			prompt,
+			promptHeartbeat,
+			followUp,
+		} as never;
+		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
+
+		await (daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }).runCronJob(
+			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+		);
+
+		// The preparing guard adds an internal preflightResult hook.
+		expect(promptHeartbeat).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "heartbeat-1", prompt: "heartbeat prompt" }),
+			expect.objectContaining({
+				streamingBehavior: "steer",
+				source: "rpc",
+			}),
+		);
+		expect(promptHeartbeat.mock.calls[0]?.[1]).toMatchObject({ followUpQueueKey: "heartbeat:heartbeat-1" });
+		expect(prompt).not.toHaveBeenCalled();
+		expect(followUp).not.toHaveBeenCalled();
+	});
+
+	it("delivers steer heartbeats after an RPC prompt finishes preflight while its turn is still streaming", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		let releasePrompt = () => {};
+		const promptFinished = new Promise<void>((resolve) => {
+			releasePrompt = resolve;
+		});
+		let reportPromptStarted = () => {};
+		const promptStarted = new Promise<void>((resolve) => {
+			reportPromptStarted = resolve;
+		});
+		const sessionState = {
+			isStreaming: false,
+			isBashRunning: false,
+			pendingMessageCount: 0,
+		};
+		const prompt = vi.fn(async (_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+			sessionState.isStreaming = true;
+			options?.preflightResult?.(true);
+			reportPromptStarted();
+			await promptFinished;
+		});
+		const promptHeartbeat = vi.fn(
+			async (
+				_job: AgentCronJob,
+				options?: { streamingBehavior?: "steer" | "followUp"; preflightResult?: (didSucceed: boolean) => void },
+			) => {
+				options?.preflightResult?.(true);
+			},
+		);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: typeof sessionState & {
+					prompt: typeof prompt;
+					promptHeartbeat: typeof promptHeartbeat;
+				};
+			};
+		};
+		state.runtime.session = Object.assign(sessionState, { prompt, promptHeartbeat }) as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			agentMessagePreparingTargets: Map<string, number>;
+			promptWithAgentMessagePreparingGuard(state: ActiveSessionState, message: string): Promise<void>;
+			runCronJob(job: AgentCronJob): Promise<"skipped" | undefined>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		const promptPromise = internals.promptWithAgentMessagePreparingGuard(state, "long-running prompt");
+		await promptStarted;
+		const preparingReleased = !internals.agentMessagePreparingTargets.has(state.activeSessionId);
+		const result = await internals.runCronJob(
+			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+		);
+		releasePrompt();
+		await promptPromise;
+
+		expect(preparingReleased).toBe(true);
+		expect(result).toBeUndefined();
+		expect(promptHeartbeat).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "heartbeat-1" }),
+			expect.objectContaining({ streamingBehavior: "steer" }),
+		);
+	});
+
+	it("delivers follow-up heartbeats with a followUp behavior and coalescing key", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -3110,7 +3334,12 @@ describe("daemon mode helpers", () => {
 		(daemon as unknown as { sessions: Map<string, ActiveSessionState> }).sessions.set(state.activeSessionId, state);
 
 		await (daemon as unknown as { runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> }).runCronJob(
-			makeCronJob({ id: "heartbeat-1", source: "heartbeat", activeSessionId: state.activeSessionId }),
+			makeCronJob({
+				id: "heartbeat-1",
+				source: "heartbeat",
+				activeSessionId: state.activeSessionId,
+				deliveryMode: "follow_up",
+			}),
 		);
 
 		// The preparing guard adds an internal preflightResult hook.
@@ -3176,6 +3405,207 @@ describe("daemon mode helpers", () => {
 		expect(followUp).not.toHaveBeenCalled();
 	});
 
+	it("forwards queue keys when expanded daemon steer commands are queued", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const steer = vi.fn(async () => {});
+		const restoreSteeringMessage = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					steer: typeof steer;
+					restoreSteeringMessage: typeof restoreSteeringMessage;
+				};
+			};
+		};
+		state.runtime.session = { steer, restoreSteeringMessage } as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "steer",
+			activeSessionId: state.activeSessionId,
+			message: "queued heartbeat",
+			queueKey: "heartbeat:job-1",
+			agentMessageId: "agentmsg_steer",
+		});
+
+		expect(steer).toHaveBeenCalledWith("queued heartbeat", undefined, {
+			queueKey: "heartbeat:job-1",
+			agentMessageId: "agentmsg_steer",
+		});
+		expect(restoreSteeringMessage).not.toHaveBeenCalled();
+	});
+
+	it("rejects invalid heartbeat delivery modes before persisting", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-delivery-mode-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const sessionFile = join(tempDir, "session.jsonl");
+			const state = makeState("active-1") as ActiveSessionState & {
+				runtime: ActiveSessionState["runtime"] & {
+					session: ActiveSessionState["runtime"]["session"] & {
+						sessionFile: string;
+						sessionId: string;
+					};
+				};
+			};
+			state.runtime = {
+				...state.runtime,
+				cwd: tempDir,
+				session: {
+					sessionFile,
+					sessionId: "session-1",
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				sessions: Map<string, ActiveSessionState>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+
+			await expect(
+				internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+					id: "command-1",
+					type: "heartbeat_set",
+					activeSessionId: state.activeSessionId,
+					schedule: "every 5m",
+					prompt: "check the run",
+					deliveryMode: "followup" as never,
+				}),
+			).rejects.toThrow('Heartbeat delivery mode must be "steer" or "follow_up"');
+			expect(internals.cronStore.getHeartbeat(state.activeSessionId)).toBeUndefined();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves the current heartbeat delivery mode when replacement omits it", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-preserve-delivery-mode-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const state = makeState("active-1") as ActiveSessionState & {
+				runtime: ActiveSessionState["runtime"] & {
+					session: ActiveSessionState["runtime"]["session"] & {
+						removeQueuedFollowUp: ReturnType<typeof vi.fn>;
+						sessionFile: string;
+						sessionId: string;
+					};
+				};
+			};
+			state.runtime = {
+				...state.runtime,
+				cwd: tempDir,
+				session: {
+					removeQueuedFollowUp: vi.fn(() => false),
+					sessionFile: join(tempDir, "session.jsonl"),
+					sessionId: "session-1",
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				handleCommand(
+					client: DaemonSocketClient,
+					command: DaemonCommand,
+				): Promise<{
+					data: { heartbeat: AgentCronJob };
+				}>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+			const client = makeClient("client-1", state.activeSessionId);
+
+			await internals.handleCommand(client, {
+				id: "command-1",
+				type: "heartbeat_set",
+				activeSessionId: state.activeSessionId,
+				schedule: "every 5m",
+				prompt: "first instruction",
+				deliveryMode: "follow_up",
+			});
+			const replacement = await internals.handleCommand(client, {
+				id: "command-2",
+				type: "heartbeat_set",
+				activeSessionId: state.activeSessionId,
+				schedule: "every 10m",
+				prompt: "replacement instruction",
+			});
+
+			expect(replacement.data.heartbeat).toMatchObject({
+				prompt: "replacement instruction",
+				deliveryMode: "follow_up",
+			});
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("removes queued RLM heartbeat follow-ups when only delivery mode changes", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-rlm-delivery-mode-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const removeQueuedFollowUp = vi.fn(() => true);
+			const state = makeState("active-1") as ActiveSessionState & {
+				runtime: ActiveSessionState["runtime"] & {
+					session: ActiveSessionState["runtime"]["session"] & {
+						removeQueuedFollowUp: typeof removeQueuedFollowUp;
+					};
+				};
+			};
+			state.runtime.session = { removeQueuedFollowUp } as never;
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				updateRlmHeartbeatForState(
+					state: ActiveSessionState,
+					input: { id: string; deliveryMode: "steer" | "follow_up" },
+				): AgentCronJob | undefined;
+			};
+			const rlmHeartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: state.activeSessionId,
+				sessionId: "session-1",
+				sessionFile: join(tempDir, "session.jsonl"),
+				cwd: tempDir,
+				scheduleText: "every 5m",
+				prompt: "check internal state",
+				deliveryMode: "follow_up",
+				now: new Date("2026-01-01T12:00:00.000Z"),
+			});
+
+			const updated = internals.updateRlmHeartbeatForState(state, {
+				id: rlmHeartbeat.id,
+				deliveryMode: "steer",
+			});
+
+			expect(updated).toMatchObject({ id: rlmHeartbeat.id, deliveryMode: "steer" });
+			expect(removeQueuedFollowUp).toHaveBeenCalledWith(`heartbeat:${rlmHeartbeat.id}`);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("removes queued heartbeat follow-ups when a heartbeat is cleared", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-clear-"));
 		try {
@@ -3223,6 +3653,231 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("sets models without waiting for model_select extension handlers while running", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const setModel = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					modelRegistry: {
+						refresh(): void;
+						getAvailable(): unknown[];
+					};
+					isStreaming: boolean;
+					isCompacting: boolean;
+					setModel(model: unknown, options?: { waitForExtensions?: boolean }): Promise<void>;
+				};
+			};
+		};
+		state.runtime.session = {
+			modelRegistry: {
+				refresh: vi.fn(),
+				getAvailable: vi.fn(() => [model]),
+			},
+			isStreaming: true,
+			isCompacting: false,
+			setModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "set_model",
+			activeSessionId: state.activeSessionId,
+			provider: "faux",
+			modelId: "faux-2",
+		});
+
+		expect(setModel).toHaveBeenCalledWith(model, { waitForExtensions: false });
+	});
+
+	it("waits for model_select extension handlers when setting models while idle", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const setModel = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					modelRegistry: {
+						refresh(): void;
+						getAvailable(): unknown[];
+					};
+					isStreaming: boolean;
+					isCompacting: boolean;
+					setModel(model: unknown, options?: { waitForExtensions?: boolean }): Promise<void>;
+				};
+			};
+		};
+		state.runtime.session = {
+			modelRegistry: {
+				refresh: vi.fn(),
+				getAvailable: vi.fn(() => [model]),
+			},
+			isStreaming: false,
+			isCompacting: false,
+			setModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "set_model",
+			activeSessionId: state.activeSessionId,
+			provider: "faux",
+			modelId: "faux-2",
+		});
+
+		expect(setModel).toHaveBeenCalledWith(model, { waitForExtensions: true });
+	});
+
+	it("cycles models without waiting for model_select extension handlers while running", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const cycleResult = { model, thinkingLevel: "off" as const, isScoped: false };
+		const cycleModel = vi.fn(async () => cycleResult);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isCompacting: boolean;
+					cycleModel(
+						direction?: "forward" | "backward",
+						options?: { waitForExtensions?: boolean },
+					): Promise<typeof cycleResult | undefined>;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: true,
+			isCompacting: false,
+			cycleModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "cycle_model",
+			activeSessionId: state.activeSessionId,
+			direction: "backward",
+		});
+
+		expect(cycleModel).toHaveBeenCalledWith("backward", { waitForExtensions: false });
+	});
+
+	it("waits for model_select extension handlers when cycling models while idle", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const model: Model<Api> = {
+			provider: "faux",
+			id: "faux-2",
+			name: "Two",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+		const cycleResult = { model, thinkingLevel: "off" as const, isScoped: false };
+		const cycleModel = vi.fn(async () => cycleResult);
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					isStreaming: boolean;
+					isCompacting: boolean;
+					cycleModel(
+						direction?: "forward" | "backward",
+						options?: { waitForExtensions?: boolean },
+					): Promise<typeof cycleResult | undefined>;
+				};
+			};
+		};
+		state.runtime.session = {
+			isStreaming: false,
+			isCompacting: false,
+			cycleModel,
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "cycle_model",
+			activeSessionId: state.activeSessionId,
+		});
+
+		expect(cycleModel).toHaveBeenCalledWith(undefined, { waitForExtensions: true });
+	});
+
 	it("validates active sessions before reading a heartbeat", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: {
@@ -3249,11 +3904,17 @@ describe("daemon mode helpers", () => {
 	});
 });
 
-function makeCronJob(input: { id: string; source: AgentCronJob["source"]; activeSessionId: string }): AgentCronJob {
+function makeCronJob(input: {
+	id: string;
+	source: AgentCronJob["source"];
+	activeSessionId: string;
+	deliveryMode?: AgentCronJob["deliveryMode"];
+}): AgentCronJob {
 	return {
 		id: input.id,
 		status: "active",
 		source: input.source,
+		...(input.deliveryMode ? { deliveryMode: input.deliveryMode } : {}),
 		activeSessionId: input.activeSessionId,
 		sessionId: "session-1",
 		sessionFile: "/tmp/session.jsonl",

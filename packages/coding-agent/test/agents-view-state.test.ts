@@ -7,7 +7,6 @@ import type { ModelRegistry } from "../src/core/model-registry.js";
 import type { SessionInfo } from "../src/core/session-manager.js";
 import type { SettingsManager } from "../src/core/settings-manager.js";
 import {
-	createAgentsViewDeleteSavedSessionCommand,
 	createAgentsViewListCommand,
 	createAgentsViewReplyHeadline,
 	createAgentsViewResumeConfig,
@@ -18,6 +17,7 @@ import {
 	resolveAgentsViewOpenCwd,
 	resolveAgentsViewResumeSummary,
 	resolveAgentsViewSessionUiServices,
+	shouldReconnectAgentsViewDaemon,
 } from "../src/modes/agents-view/agents-view-mode.js";
 import {
 	buildAgentsViewRows,
@@ -520,6 +520,12 @@ describe("agents view state", () => {
 			id: "saved",
 			name: "Saved session",
 			cwd: "/tmp/project",
+			messageCount: 2,
+			agentStatus: {
+				summary: "Finished the task",
+				taskState: "completed",
+				basedOnMessageCount: 2,
+			},
 		});
 
 		const summary = resolveAgentsViewResumeSummary(savedSession.path, [savedSession], []);
@@ -531,6 +537,8 @@ describe("agents view state", () => {
 			sessionFile: savedSession.path,
 			sessionName: "Saved session",
 			cwd: "/tmp/project",
+			summary: "Finished the task",
+			taskState: "completed",
 		});
 		expect(summary?.activeSessionId).toBeUndefined();
 		expect(summary?.lifecycle).toBe("live");
@@ -574,17 +582,6 @@ describe("agents view state", () => {
 		expect(resolveAgentsViewActiveSummaryForPath("/tmp/sessions/inactive.jsonl", [inactiveSummary])).toBeUndefined();
 	});
 
-	test("routes saved session deletes through the daemon file guard", () => {
-		expect(createAgentsViewDeleteSavedSessionCommand("/tmp/sessions/active.jsonl")).toEqual({
-			type: "delete_saved_session",
-			sessionPath: "/tmp/sessions/active.jsonl",
-		});
-		expect(createAgentsViewDeleteSavedSessionCommand("/tmp/sessions/inactive.jsonl")).toEqual({
-			type: "delete_saved_session",
-			sessionPath: "/tmp/sessions/inactive.jsonl",
-		});
-	});
-
 	test("derives the reply headline from the first line of the latest assistant text", () => {
 		expect(createAgentsViewReplyHeadline("  Done.\nNext step?  ")).toBe("Done.");
 		expect(createAgentsViewReplyHeadline("\n\n  spread   over \nlines")).toBe("spread over");
@@ -611,6 +608,12 @@ describe("agents view state", () => {
 		);
 		expect(formatAgentsViewStatusLine("  already   flat  ")).toBe("already flat");
 		expect(formatAgentsViewStatusLine("\n \r\n ")).toBe("");
+	});
+
+	test("reconnects daemon restarts and crashes but stops after an intentional shutdown", () => {
+		expect(shouldReconnectAgentsViewDaemon("update")).toBe(true);
+		expect(shouldReconnectAgentsViewDaemon(undefined)).toBe(true);
+		expect(shouldReconnectAgentsViewDaemon("shutdown")).toBe(false);
 	});
 
 	test("caps generated session names at the configured limit", () => {

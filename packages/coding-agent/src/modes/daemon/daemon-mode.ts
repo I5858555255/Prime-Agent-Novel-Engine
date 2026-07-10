@@ -64,11 +64,14 @@ import {
 	type AgentCronJob,
 	AgentCronJobStore,
 	AgentCronScheduler,
+	type AgentHeartbeatDeliveryMode,
 	type AgentHeartbeatUpdateAction,
 	createAgentHeartbeatToolDefinitions,
 	DEFAULT_HEARTBEAT_SCHEDULE,
 	isHeartbeatCronJob,
+	normalizeHeartbeatDeliveryMode,
 	normalizeHeartbeatSchedule,
+	resolveHeartbeatStreamingBehavior,
 	shouldDeferHeartbeatCronJob,
 } from "../../core/cron-jobs.js";
 import type {
@@ -77,8 +80,9 @@ import type {
 	SubagentRuntimeHost,
 } from "../../core/rlm-runtime.js";
 import { deleteSessionFile } from "../../core/session-file-actions.js";
-import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
+import { readSessionInfo, type SessionInfo, SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
+import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import {
 	createAgentConnectionCommands,
@@ -103,6 +107,7 @@ import {
 	DAEMON_PROTOCOL_INFO,
 	type DaemonAttachResult,
 	type DaemonClientCapability,
+	type DaemonClosingReason,
 	type DaemonCommand,
 	type DaemonOutbound,
 	type DaemonResponse,
@@ -124,7 +129,9 @@ import {
 import { DaemonSessionSummarizer } from "./daemon-session-summarizer.js";
 import {
 	cleanupDaemonSocketPath,
+	type DaemonSocketIdentity,
 	defaultDaemonSocketPath,
+	getDaemonSocketIdentity,
 	prepareDaemonSocketPath,
 	restrictDaemonSocketPath,
 } from "./daemon-socket.js";
@@ -160,6 +167,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"agent_messages_resume",
 	"agent_messages_clear",
 	"abort",
+	"start_side_question",
+	"abort_side_question",
 	"execute_bash",
 	"abort_bash",
 	"cancel_rlm_child",
@@ -174,6 +183,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"get_available_models",
 	"get_queue",
 	"clear_queue",
+	"abort_and_clear_queue",
 	"cron_list",
 	"cron_add",
 	"cron_cancel",
@@ -235,6 +245,10 @@ function delay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
+type RuntimeOpenGuard = () => boolean | Promise<boolean>;
+
+class RuntimeOpenCancelledError extends Error {}
+
 export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
 	const daemon = new AgentDaemon(socketPath, options);
@@ -247,10 +261,15 @@ export class AgentDaemon {
 	private shuttingDown = false;
 	private updateRestartPreparing = false;
 	private ownsSocketPath = false;
+	private socketIdentity?: DaemonSocketIdentity;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly openingSessions = new Map<string, Promise<ActiveSessionState>>();
 	private readonly closingSessions = new Map<string, Promise<void>>();
+	private readonly sideQuestionRuns = new Map<
+		string,
+		{ run: SideQuestionRun; client: DaemonSocketClient; activeSessionId: string }
+	>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
 	private readonly cronStore: AgentCronJobStore;
 	private readonly cronScheduler: AgentCronScheduler;
@@ -336,6 +355,7 @@ export class AgentDaemon {
 				const onListening = () => {
 					this.server?.off("error", onError);
 					try {
+						this.socketIdentity = getDaemonSocketIdentity(this.socketPath);
 						this.ownsSocketPath = true;
 						if (process.platform !== "win32") {
 							restrictDaemonSocketPath(this.socketPath);
@@ -370,7 +390,9 @@ export class AgentDaemon {
 			return;
 		}
 		this.ownsSocketPath = false;
-		cleanupDaemonSocketPath(this.socketPath);
+		const socketIdentity = this.socketIdentity;
+		this.socketIdentity = undefined;
+		cleanupDaemonSocketPath(this.socketPath, socketIdentity);
 	}
 
 	/**
@@ -396,6 +418,7 @@ export class AgentDaemon {
 		name?: string,
 		clientEnv?: Record<string, string>,
 		onStateCreated?: (state: ActiveSessionState) => void,
+		runtimeOpenGuard?: RuntimeOpenGuard,
 	): Promise<ActiveSessionState> {
 		const state: ActiveSessionState = {
 			activeSessionId: createActiveSessionId(this.sessions),
@@ -421,6 +444,9 @@ export class AgentDaemon {
 				},
 				subagentRuntimeHost: this.createSubagentRuntimeHost(state),
 			});
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				throw new RuntimeOpenCancelledError();
+			}
 		} catch (error) {
 			state.unsubscribe?.();
 			this.sessions.delete(state.activeSessionId);
@@ -446,6 +472,9 @@ export class AgentDaemon {
 	}
 
 	private refreshReplacedSessionState(state: ActiveSessionState): void {
+		for (const client of state.clients) {
+			this.abortSideQuestionsFor(client, state.activeSessionId);
+		}
 		this.summarizer.forget(state.activeSessionId);
 		state.summaryState = undefined;
 		state.runtime.session.setCurrentRecap(undefined);
@@ -457,7 +486,10 @@ export class AgentDaemon {
 		this.rebindCronJobsToState(state);
 	}
 
-	private async createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState> {
+	private async createRuntime(
+		command: Extract<DaemonCommand, { type: "create" }>,
+		runtimeOpenGuard?: RuntimeOpenGuard,
+	): Promise<ActiveSessionState> {
 		const config = mergeAgentSessionRuntimeConfig(this.options.defaultSessionConfig, command.config);
 		if (!config.cwd) {
 			throw new Error("Active session config is missing cwd");
@@ -479,6 +511,9 @@ export class AgentDaemon {
 				? SessionManager.continueRecent(cwd, config.sessionDir)
 				: SessionManager.create(cwd, config.sessionDir);
 		const createState = async (): Promise<ActiveSessionState> => {
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				throw new RuntimeOpenCancelledError();
+			}
 			const existing = this.findSessionBySessionFile(sessionManager.getSessionFile());
 			if (existing) {
 				// A live runtime already owns this session file; reuse it instead of
@@ -566,9 +601,19 @@ export class AgentDaemon {
 					},
 				}),
 			);
-			return this.addRuntime(runtime, command.name, clientEnv, (state) => {
-				stateRef = state;
-			});
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				await runtime.dispose().catch(() => undefined);
+				throw new RuntimeOpenCancelledError();
+			}
+			return this.addRuntime(
+				runtime,
+				command.name,
+				clientEnv,
+				(state) => {
+					stateRef = state;
+				},
+				runtimeOpenGuard,
+			);
 		};
 
 		const sessionFile = sessionManager.getSessionFile();
@@ -580,7 +625,21 @@ export class AgentDaemon {
 		if (pending) {
 			// Same as the reuse path above: adopt-if-absent, never overwrite the
 			// identity the racing creator's extensions already captured.
-			const state = await pending;
+			let state: ActiveSessionState;
+			try {
+				state = await pending;
+			} catch (error) {
+				if (!runtimeOpenGuard && error instanceof RuntimeOpenCancelledError) {
+					if (this.openingSessions.get(sessionKey) === pending) {
+						this.openingSessions.delete(sessionKey);
+					}
+					return this.createRuntime(command);
+				}
+				throw error;
+			}
+			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				throw new RuntimeOpenCancelledError();
+			}
 			if (command.name) {
 				state.runtime.session.setSessionName(command.name);
 			}
@@ -603,18 +662,29 @@ export class AgentDaemon {
 		if (this.updateRestartPreparing) {
 			return "skipped";
 		}
-		const state = await this.getOrCreateCronJobSession(job);
-		if (!state || this.updateRestartPreparing) {
+		const requirePersistedJob = this.cronStore.list().some((candidate) => candidate.id === job.id);
+		const dueJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : job;
+		if (!dueJob) {
+			return "skipped";
+		}
+		const state = await this.getOrCreateCronJobSession(dueJob, requirePersistedJob);
+		const runnableJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : dueJob;
+		if (
+			!state ||
+			!runnableJob ||
+			this.updateRestartPreparing ||
+			!this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob)
+		) {
 			return "skipped";
 		}
 		const session = state.runtime.session;
 		const isAgentMessagePromptInProgress =
 			this.agentMessageAcceptingTargets.has(state.activeSessionId) ||
 			this.agentMessagePreparingTargets.has(state.activeSessionId);
-		if (isHeartbeatCronJob(job) && isAgentMessagePromptInProgress) {
+		if (isHeartbeatCronJob(runnableJob) && isAgentMessagePromptInProgress) {
 			return "skipped";
 		}
-		if (shouldDeferHeartbeatCronJob(job, session)) {
+		if (shouldDeferHeartbeatCronJob(runnableJob, session)) {
 			return "skipped";
 		}
 		const shouldQueueCronPrompt =
@@ -625,22 +695,42 @@ export class AgentDaemon {
 			session.isBashRunning ||
 			session.hasAcceptedPromptInFlight ||
 			session.pendingMessageCount > 0;
-		if (!isHeartbeatCronJob(job) && shouldQueueCronPrompt) {
-			await session.followUp(job.prompt);
+		if (!isHeartbeatCronJob(runnableJob) && shouldQueueCronPrompt) {
+			if (!this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob)) {
+				return "skipped";
+			}
+			await session.followUp(runnableJob.prompt);
 			return;
 		}
-		if (isHeartbeatCronJob(job)) {
-			await this.promptHeartbeatWithAgentMessagePreparingGuard(state, job, {
+		const getRunnableJob = (): AgentCronJob | undefined => {
+			const current = requirePersistedJob ? this.cronStore.getDueJob(job.id) : runnableJob;
+			return current && this.isCronJobRunnableForState(current, state, requirePersistedJob) ? current : undefined;
+		};
+		if (isHeartbeatCronJob(runnableJob)) {
+			const streamingBehavior = resolveHeartbeatStreamingBehavior(runnableJob.deliveryMode);
+			const didPrompt = await this.promptHeartbeatWithAgentMessagePreparingGuard(
+				state,
+				runnableJob,
+				{
+					streamingBehavior,
+					followUpQueueKey: `heartbeat:${runnableJob.id}`,
+					source: "rpc",
+				},
+				getRunnableJob,
+			);
+			return didPrompt ? undefined : "skipped";
+		}
+		const canPrompt = () => getRunnableJob() !== undefined;
+		const didPrompt = await this.promptWithAgentMessagePreparingGuard(
+			state,
+			runnableJob.prompt,
+			{
 				streamingBehavior: "followUp",
-				followUpQueueKey: `heartbeat:${job.id}`,
 				source: "rpc",
-			});
-			return;
-		}
-		await this.promptWithAgentMessagePreparingGuard(state, job.prompt, {
-			streamingBehavior: "followUp",
-			source: "rpc",
-		});
+			},
+			canPrompt,
+		);
+		return didPrompt ? undefined : "skipped";
 	}
 
 	// Wraps session.prompt so the target counts as "preparing" until the turn
@@ -651,42 +741,68 @@ export class AgentDaemon {
 		state: ActiveSessionState,
 		message: string,
 		options?: PromptOptions,
-	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(state, (session) => {
-			const prompt =
-				options?.agentMessageId === undefined
-					? session.prompt.bind(session)
-					: session.acceptAgentMessagePrompt.bind(session);
-			return prompt(message, {
-				...options,
-				preflightResult: (didSucceed) => {
-					options?.preflightResult?.(didSucceed);
-				},
-			});
-		});
+		canPrompt?: () => boolean,
+	): Promise<boolean> {
+		return this.withAgentMessagePreparingGuard(
+			state,
+			(session, clearPreparing) => {
+				const prompt =
+					options?.agentMessageId === undefined
+						? session.prompt.bind(session)
+						: session.acceptAgentMessagePrompt.bind(session);
+				return prompt(message, {
+					...options,
+					preflightResult: (didSucceed) => {
+						if (didSucceed && session.isStreaming) {
+							clearPreparing();
+						}
+						options?.preflightResult?.(didSucceed);
+					},
+				});
+			},
+			canPrompt,
+		);
 	}
 
 	private async promptHeartbeatWithAgentMessagePreparingGuard(
 		state: ActiveSessionState,
 		job: AgentCronJob,
 		options?: PromptOptions,
-	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(state, (session) =>
-			session.promptHeartbeat(job, {
-				...options,
-				preflightResult: (didSucceed) => {
-					options?.preflightResult?.(didSucceed);
-				},
-			}),
+		getPromptJob?: () => AgentCronJob | undefined,
+	): Promise<boolean> {
+		let promptJob = job;
+		return this.withAgentMessagePreparingGuard(
+			state,
+			(session, clearPreparing) =>
+				session.promptHeartbeat(promptJob, {
+					...options,
+					preflightResult: (didSucceed) => {
+						if (didSucceed && session.isStreaming) {
+							clearPreparing();
+						}
+						options?.preflightResult?.(didSucceed);
+					},
+				}),
+			() => {
+				if (!getPromptJob) {
+					return true;
+				}
+				const current = getPromptJob();
+				if (!current) {
+					return false;
+				}
+				promptJob = current;
+				return true;
+			},
 		);
 	}
 
 	private async withAgentMessagePreparingGuard(
 		state: ActiveSessionState,
-		run: (session: AgentSession) => Promise<void>,
-	): Promise<void> {
+		run: (session: AgentSession, clearPreparing: () => void) => Promise<void>,
+		canRun?: () => boolean,
+	): Promise<boolean> {
 		const activeSessionId = state.activeSessionId;
-		const session = state.runtime.session;
 		this.agentMessagePreparingTargets.set(
 			activeSessionId,
 			(this.agentMessagePreparingTargets.get(activeSessionId) ?? 0) + 1,
@@ -706,7 +822,12 @@ export class AgentDaemon {
 		};
 		try {
 			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
-			await run(session);
+			if (canRun && !canRun()) {
+				return false;
+			}
+			const session = state.runtime.session;
+			await run(session, clearPreparing);
+			return true;
 		} finally {
 			clearPreparing();
 		}
@@ -731,7 +852,12 @@ export class AgentDaemon {
 		return job;
 	}
 
-	private createHeartbeatForState(state: ActiveSessionState, schedule: string, instruction: string): AgentCronJob {
+	private createHeartbeatForState(
+		state: ActiveSessionState,
+		schedule: string,
+		instruction: string,
+		deliveryMode?: AgentHeartbeatDeliveryMode,
+	): AgentCronJob {
 		const session = state.runtime.session;
 		const sessionFile = session.sessionFile;
 		if (!sessionFile) {
@@ -746,6 +872,7 @@ export class AgentDaemon {
 			runtimeKind: state.runtime.metadata.kind,
 			scheduleText: normalizeHeartbeatSchedule(schedule),
 			prompt: instruction,
+			deliveryMode: deliveryMode ?? previousHeartbeat?.deliveryMode,
 		});
 		if (previousHeartbeat) {
 			this.removeQueuedHeartbeatFollowUp(state, previousHeartbeat);
@@ -773,7 +900,7 @@ export class AgentDaemon {
 
 	private createRlmHeartbeatForState(
 		state: ActiveSessionState,
-		input: { instruction: string; interval?: string; label?: string },
+		input: { instruction: string; interval?: string; label?: string; deliveryMode?: AgentHeartbeatDeliveryMode },
 	): AgentCronJob {
 		const session = state.runtime.session;
 		const sessionFile = session.sessionFile;
@@ -789,6 +916,7 @@ export class AgentDaemon {
 			label: input.label,
 			scheduleText: normalizeHeartbeatSchedule(input.interval ?? DEFAULT_HEARTBEAT_SCHEDULE),
 			prompt: input.instruction,
+			deliveryMode: input.deliveryMode,
 		});
 		this.cronScheduler.wake();
 		return job;
@@ -796,16 +924,29 @@ export class AgentDaemon {
 
 	private updateRlmHeartbeatForState(
 		state: ActiveSessionState,
-		input: { id: string; instruction?: string; interval?: string; label?: string; status?: "pause" | "resume" },
+		input: {
+			id: string;
+			instruction?: string;
+			interval?: string;
+			label?: string;
+			status?: "pause" | "resume";
+			deliveryMode?: AgentHeartbeatDeliveryMode;
+		},
 	): AgentCronJob | undefined {
 		const job = this.cronStore.updateRlmHeartbeat(state.activeSessionId, input.id, {
 			label: input.label,
 			prompt: input.instruction,
 			scheduleText: input.interval ? normalizeHeartbeatSchedule(input.interval) : undefined,
 			status: input.status,
+			deliveryMode: input.deliveryMode,
 		});
 		if (job) {
-			if (input.instruction !== undefined || input.interval !== undefined || input.status === "pause") {
+			if (
+				input.instruction !== undefined ||
+				input.interval !== undefined ||
+				input.status === "pause" ||
+				input.deliveryMode !== undefined
+			) {
 				this.removeQueuedHeartbeatFollowUp(state, job);
 			}
 			this.cronScheduler.wake();
@@ -892,26 +1033,102 @@ export class AgentDaemon {
 		state.runtime.session.removeQueuedFollowUp(`heartbeat:${job.id}`);
 	}
 
-	private async getOrCreateCronJobSession(job: AgentCronJob): Promise<ActiveSessionState | undefined> {
+	private async getOrCreateCronJobSession(
+		job: AgentCronJob,
+		requirePersistedJob: boolean,
+	): Promise<ActiveSessionState | undefined> {
 		if (this.updateRestartPreparing) {
 			return undefined;
 		}
-		const current = this.sessions.get(job.activeSessionId) ?? this.findSessionBySessionFile(job.sessionFile);
+		const dueJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : job;
+		if (!dueJob) {
+			return undefined;
+		}
+		const activeIdMatch = this.sessions.get(dueJob.activeSessionId);
+		const current =
+			this.findSessionBySessionFile(dueJob.sessionFile) ??
+			(!requirePersistedJob || activeIdMatch?.runtime.session.sessionId === dueJob.sessionId
+				? activeIdMatch
+				: undefined);
 		// A half-bound match falls through to createRuntime, which awaits the
 		// pending create for the same session file instead of prompting mid-bind.
 		if (current && !this.bindingSessions.has(current.activeSessionId)) {
 			this.rebindCronJobsToState(current);
-			return current;
+			const reboundJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : dueJob;
+			return reboundJob && this.isCronJobRunnableForState(reboundJob, current, requirePersistedJob)
+				? current
+				: undefined;
 		}
-		if (job.source === "rlm_heartbeat" && job.runtimeKind === "subagent") {
+		if (!requirePersistedJob) {
+			return undefined;
+		}
+		if (dueJob.source === "rlm_heartbeat" && dueJob.runtimeKind === "subagent") {
 			if (current && this.bindingSessions.has(current.activeSessionId)) {
 				return undefined;
 			}
-			this.cronStore.cancel(job.id);
+			this.cronStore.cancel(dueJob.id);
 			this.cronScheduler.wake();
 			return undefined;
 		}
-		return this.createRuntime({ type: "create", sessionPath: job.sessionFile });
+		if (!(await this.isPersistedCronJobRunnable(dueJob.id))) {
+			return undefined;
+		}
+		try {
+			return await this.createRuntime({ type: "create", sessionPath: dueJob.sessionFile }, () =>
+				this.isPersistedCronJobRunnable(dueJob.id),
+			);
+		} catch (error) {
+			if (error instanceof RuntimeOpenCancelledError) {
+				return undefined;
+			}
+			throw error;
+		}
+	}
+
+	private async isPersistedCronJobRunnable(jobId: string): Promise<boolean> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const job = this.cronStore.getDueJob(jobId);
+			if (!job) {
+				return false;
+			}
+			const sessionFile = resolve(job.sessionFile);
+			const sessionInfo = await readSessionInfo(sessionFile);
+			const current = this.cronStore.getDueJob(jobId);
+			if (!current) {
+				return false;
+			}
+			if (resolve(current.sessionFile) !== sessionFile || current.sessionId !== job.sessionId) {
+				continue;
+			}
+			if (!sessionInfo || sessionInfo.id !== current.sessionId || sessionInfo.state?.status !== "active") {
+				this.cancelScheduledJobsForSessionFile(current.sessionFile);
+				return false;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	private isCronJobRunnableForState(
+		job: AgentCronJob,
+		state: ActiveSessionState,
+		requirePersistedJob: boolean,
+	): boolean {
+		if (this.sessions.get(state.activeSessionId) !== state || this.closingSessions.has(state.activeSessionId)) {
+			return false;
+		}
+		if (!requirePersistedJob) {
+			return job.status === "active" && job.activeSessionId === state.activeSessionId;
+		}
+		const current = this.cronStore.getDueJob(job.id);
+		const sessionFile = state.runtime.session.sessionFile;
+		return (
+			current !== undefined &&
+			current.activeSessionId === state.activeSessionId &&
+			current.sessionId === state.runtime.session.sessionId &&
+			sessionFile !== undefined &&
+			resolve(current.sessionFile) === resolve(sessionFile)
+		);
 	}
 
 	private findSessionBySessionFile(sessionFile: string | undefined): ActiveSessionState | undefined {
@@ -1269,24 +1486,45 @@ export class AgentDaemon {
 			}
 
 			case "list_saved_sessions": {
-				const state = this.getSessionState(command.activeSessionId);
-				const sessionManager = state.runtime.session.sessionManager;
-				const onProgress = command.id
-					? (loaded: number, total: number) => {
-							this.write(client, {
-								id: command.id,
-								type: "session_list_progress",
-								command: "list_saved_sessions",
-								activeSessionId: command.activeSessionId,
-								loaded,
-								total,
-							});
+				let activeSessionId: string | undefined;
+				let cwd: string;
+				let sessionDir: string | undefined;
+				if ("activeSessionId" in command) {
+					activeSessionId = command.activeSessionId;
+					const sessionManager = this.getSessionState(activeSessionId).runtime.session.sessionManager;
+					cwd = sessionManager.getCwd();
+					sessionDir = sessionManager.getSessionDir();
+				} else {
+					cwd = resolve(command.cwd);
+					sessionDir = command.sessionDir;
+				}
+				const callbacks = command.id
+					? {
+							onProgress: (loaded: number, total: number) => {
+								this.write(client, {
+									id: command.id,
+									type: "session_list_progress",
+									command: "list_saved_sessions",
+									...(activeSessionId ? { activeSessionId } : {}),
+									loaded,
+									total,
+								});
+							},
+							onSession: (session: SessionInfo) => {
+								this.write(client, {
+									id: command.id,
+									type: "session_list_item",
+									command: "list_saved_sessions",
+									...(activeSessionId ? { activeSessionId } : {}),
+									session: serializeSavedSessionInfo(session),
+								});
+							},
 						}
 					: undefined;
 				const savedSessions =
 					command.scope === "current"
-						? await SessionManager.list(sessionManager.getCwd(), sessionManager.getSessionDir(), onProgress)
-						: await SessionManager.listAll(onProgress, sessionManager.getSessionDir());
+						? await SessionManager.list(cwd, sessionDir, callbacks)
+						: await SessionManager.listAll(callbacks, sessionDir);
 				return success(command.id, "list_saved_sessions", {
 					sessions: savedSessions.map(serializeSavedSessionInfo),
 				});
@@ -1352,7 +1590,9 @@ export class AgentDaemon {
 			}
 
 			case "rename_saved_session": {
-				this.getSessionState(command.activeSessionId);
+				if (command.activeSessionId) {
+					this.getSessionState(command.activeSessionId);
+				}
 				const state = this.findActiveSessionByFile(command.sessionPath);
 				const name = command.name.trim();
 				if (!name) {
@@ -1422,12 +1662,16 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				if (command.expandPromptTemplates === false) {
 					await state.runtime.session.restoreSteeringMessage(command.message, command.images, {
+						queueKey: command.queueKey,
 						agentMessageId: command.agentMessageId,
 						content: command.content,
 						customMessage: command.customMessage,
 					});
 				} else {
-					await state.runtime.session.steer(command.message, command.images);
+					await state.runtime.session.steer(command.message, command.images, {
+						queueKey: command.queueKey,
+						agentMessageId: command.agentMessageId,
+					});
 				}
 				return success(command.id, "steer");
 			}
@@ -1523,8 +1767,55 @@ export class AgentDaemon {
 
 			case "abort": {
 				const state = this.getSessionState(command.activeSessionId);
-				await state.runtime.session.abort();
+				state.runtime.session.requestAbort();
 				return success(command.id, "abort");
+			}
+
+			case "start_side_question": {
+				const state = this.getSessionState(command.activeSessionId);
+				if (this.sideQuestionRuns.has(command.sideQuestionId)) {
+					throw new Error(`Side question already exists: ${command.sideQuestionId}`);
+				}
+				if (this.hasActiveSideQuestionFor(client, state.activeSessionId)) {
+					throw new Error("A side question is already running for this client and session");
+				}
+				const run = startSideQuestion(
+					state.runtime.session.agent,
+					command.sideQuestionId,
+					command.question,
+					(event) => {
+						this.write(client, {
+							type: "side_question_event",
+							activeSessionId: state.activeSessionId,
+							event,
+						});
+						if (event.status !== "running") {
+							this.sideQuestionRuns.delete(event.id);
+						}
+					},
+				);
+				this.sideQuestionRuns.set(command.sideQuestionId, {
+					run,
+					client,
+					activeSessionId: state.activeSessionId,
+				});
+				void run.done.catch((error) => {
+					this.sideQuestionRuns.delete(command.sideQuestionId);
+					this.log(
+						`side question ${command.sideQuestionId} failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				});
+				return success(command.id, "start_side_question");
+			}
+
+			case "abort_side_question": {
+				this.getSessionState(command.activeSessionId);
+				const entry = this.sideQuestionRuns.get(command.sideQuestionId);
+				if (!entry || entry.client !== client || entry.activeSessionId !== command.activeSessionId) {
+					return success(command.id, "abort_side_question", { aborted: false });
+				}
+				entry.run.abort();
+				return success(command.id, "abort_side_question", { aborted: true });
 			}
 
 			case "execute_bash": {
@@ -1626,6 +1917,13 @@ export class AgentDaemon {
 				return success(command.id, "clear_queue", state.runtime.session.clearQueue());
 			}
 
+			case "abort_and_clear_queue": {
+				const state = this.getSessionState(command.activeSessionId);
+				const queue = state.runtime.session.clearQueue();
+				state.runtime.session.requestAbort();
+				return success(command.id, "abort_and_clear_queue", queue);
+			}
+
 			case "cron_list": {
 				const jobs = this.cronStore.list().filter((job) => {
 					if (!command.includeInactive && job.status !== "active" && job.status !== "paused") {
@@ -1666,7 +1964,8 @@ export class AgentDaemon {
 
 			case "heartbeat_set": {
 				const state = this.getSessionState(command.activeSessionId);
-				const heartbeat = this.createHeartbeatForState(state, command.schedule, command.prompt);
+				const deliveryMode = normalizeHeartbeatDeliveryMode(command.deliveryMode);
+				const heartbeat = this.createHeartbeatForState(state, command.schedule, command.prompt, deliveryMode);
 				return success(command.id, "heartbeat_set", { heartbeat });
 			}
 
@@ -1686,13 +1985,16 @@ export class AgentDaemon {
 				if (!model) {
 					throw new Error(`Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				await session.setModel(model, { waitForExtensions: !(session.isStreaming || session.isCompacting) });
 				return success(command.id, "set_model", model);
 			}
 
 			case "cycle_model": {
 				const state = this.getSessionState(command.activeSessionId);
-				const result = await state.runtime.session.cycleModel(command.direction);
+				const session = state.runtime.session;
+				const result = await session.cycleModel(command.direction, {
+					waitForExtensions: !(session.isStreaming || session.isCompacting),
+				});
 				return success(command.id, "cycle_model", result ?? null);
 			}
 
@@ -2241,6 +2543,7 @@ export class AgentDaemon {
 	}
 
 	private detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void {
+		this.abortSideQuestionsFor(client, state.activeSessionId);
 		detachClientFromActiveSession(client, state);
 		this.write(client, { type: "session_detached", activeSessionId: state.activeSessionId });
 		// Abandoned new-chat: discard it so it doesn't linger in memory or leave an
@@ -2291,6 +2594,7 @@ export class AgentDaemon {
 				message: message.text,
 				...(message.content ? { content: message.content } : {}),
 				...(message.images ? { images: message.images } : {}),
+				...(message.queueKey ? { queueKey: message.queueKey } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 				...(message.customMessage ? { customMessage: message.customMessage } : {}),
 			})),
@@ -2494,6 +2798,9 @@ export class AgentDaemon {
 	}
 
 	private async closeSession(state: ActiveSessionState, reason: DaemonSessionClosedReason): Promise<void> {
+		for (const client of state.clients) {
+			this.abortSideQuestionsFor(client, state.activeSessionId);
+		}
 		const existingClose = this.closingSessions.get(state.activeSessionId);
 		if (existingClose) {
 			await existingClose;
@@ -2654,6 +2961,25 @@ export class AgentDaemon {
 		client.socket.write(serializeJsonLine(message));
 	}
 
+	private abortSideQuestionsFor(client: DaemonSocketClient, activeSessionId: string): void {
+		for (const [id, entry] of this.sideQuestionRuns) {
+			if (entry.client !== client || entry.activeSessionId !== activeSessionId) {
+				continue;
+			}
+			entry.run.abort();
+			this.sideQuestionRuns.delete(id);
+		}
+	}
+
+	private hasActiveSideQuestionFor(client: DaemonSocketClient, activeSessionId: string): boolean {
+		for (const entry of this.sideQuestionRuns.values()) {
+			if (entry.client === client && entry.activeSessionId === activeSessionId) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private registerSignalHandlers(): void {
 		const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
 		if (process.platform !== "win32") {
@@ -2679,6 +3005,10 @@ export class AgentDaemon {
 		}
 		this.shuttingDown = true;
 		this.log(`shutting down (exit ${exitCode}); closing ${this.sessions.size} active session(s)`);
+		const closingReason: DaemonClosingReason = this.updateRestartPreparing ? "update" : "shutdown";
+		for (const client of this.clients) {
+			this.write(client, { type: "daemon_closing", reason: closingReason });
+		}
 
 		this.summarizer.stop();
 		for (const cleanup of this.signalCleanupHandlers) {
@@ -2686,7 +3016,7 @@ export class AgentDaemon {
 		}
 		this.cronScheduler.stop();
 		for (const state of [...this.sessions.values()]) {
-			await this.closeSession(state, "shutdown");
+			await this.closeSession(state, closingReason);
 		}
 		for (const client of this.clients) {
 			client.detachInput();
@@ -2717,6 +3047,7 @@ function serializeSavedSessionInfo(session: SessionInfo): DaemonSavedSessionInfo
 		messageCount: session.messageCount,
 		firstMessage: session.firstMessage,
 		allMessagesText: session.allMessagesText,
+		agentStatus: session.agentStatus,
 	};
 }
 

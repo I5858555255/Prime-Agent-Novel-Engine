@@ -18,8 +18,9 @@ describe("built-in slash commands", () => {
 
 	test("exposes heartbeat syntax guidance", () => {
 		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "heartbeat")).toMatchObject({
-			description: "Set or view a persistent heartbeat; supports pause, resume, stop, and clear",
-			argumentHint: "[status|pause|resume|stop|every <duration> <instruction>]",
+			description:
+				"Set or view a persistent heartbeat; delivery defaults to steer, use --follow-up to queue; supports pause, resume, stop, and clear",
+			argumentHint: "[status|pause|resume|stop|[every <duration>] [--steer|--follow-up] <instruction>]",
 			takesArgument: true,
 		});
 	});
@@ -30,6 +31,16 @@ describe("built-in slash commands", () => {
 			argumentHint: "[level]",
 			aliases: ["thinking"],
 		});
+	});
+
+	test("exposes /btw as an argument command with /side as an alias", () => {
+		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "btw")).toMatchObject({
+			argumentHint: "<question>",
+			aliases: ["side"],
+			takesArgument: true,
+		});
+		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "side")).toBeUndefined();
+		expect(builtinSlashCommandTakesArgument("side")).toBe(true);
 	});
 
 	test("marks argument commands as taking a free-form argument", () => {
@@ -114,6 +125,17 @@ describe("slash command aliases", () => {
 			name: "context",
 			args: "latest turn",
 			originalName: "usage",
+			isAlias: true,
+		});
+	});
+
+	test("resolves /side to /btw", () => {
+		const parsed = parseSlashCommand("/side Is this cached?");
+
+		expect(resolveSlashCommand(parsed!)).toEqual({
+			name: "btw",
+			args: "Is this cached?",
+			originalName: "side",
 			isAlias: true,
 		});
 	});

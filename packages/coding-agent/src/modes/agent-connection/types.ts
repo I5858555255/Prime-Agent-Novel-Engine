@@ -3,7 +3,7 @@ import type { Api, ImageContent, Model, TextContent, Transport, Usage } from "@e
 import type { AuthSourceToken } from "../../core/auth-storage.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
-import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type { AgentCronJob, AgentHeartbeatDeliveryMode, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
 import type { ReplayBuiltInToolName } from "../../core/extensions/index.js";
 import type { GoalState } from "../../core/goals.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
@@ -67,6 +67,12 @@ export interface AgentConnectionSavedSessionState {
 	status: AgentConnectionSavedSessionStateStatus;
 }
 
+export interface AgentConnectionAgentStatus {
+	summary: string;
+	taskState?: "needs_input" | "completed";
+	basedOnMessageCount: number;
+}
+
 /**
  * Saved-session registry row for the current local TUI migration.
  *
@@ -88,9 +94,15 @@ export interface AgentConnectionSavedSessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+	agentStatus?: AgentConnectionAgentStatus;
 }
 
 export type AgentConnectionSessionListProgress = (loaded: number, total: number) => void;
+
+export interface AgentConnectionSessionListCallbacks {
+	onProgress?: AgentConnectionSessionListProgress;
+	onSession?: (session: AgentConnectionSavedSessionInfo) => void;
+}
 
 export interface AgentConnectionSessionEntryBase {
 	type: string;
@@ -171,11 +183,7 @@ export interface AgentConnectionSessionStateEntry extends AgentConnectionSession
 
 export interface AgentConnectionAgentStatusEntry extends AgentConnectionSessionEntryBase {
 	type: "agent_status";
-	status: {
-		summary: string;
-		taskState?: "needs_input" | "completed";
-		basedOnMessageCount: number;
-	};
+	status: AgentConnectionAgentStatus;
 }
 
 export interface AgentConnectionGitStateEntry extends AgentConnectionSessionEntryBase {
@@ -371,6 +379,14 @@ export interface AgentConnectionPromptOptions {
 	streamingBehavior?: "steer" | "followUp";
 }
 
+export interface AgentConnectionSideQuestionEvent {
+	id: string;
+	question: string;
+	answer: string;
+	status: "running" | "complete" | "cancelled" | "error";
+	errorMessage?: string;
+}
+
 export interface AgentConnectionExecuteBashOptions {
 	excludeFromContext?: boolean;
 }
@@ -491,6 +507,7 @@ export type AgentConnectionSessionEvent =
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }
+	| { type: "side_question_event"; event: AgentConnectionSideQuestionEvent }
 	| { type: "session_replaced"; state: AgentConnectionState; messages: AgentMessage[] }
 	| { type: "session_status"; recap?: string }
 	| { type: "extension_ui_request"; request: AgentConnectionExtensionUiRequest }
@@ -515,15 +532,20 @@ export interface AgentConnection {
 	getSessionTree(): Promise<{ tree: AgentConnectionSessionTreeNode[]; leafId: string | null }>;
 	listSavedSessions(
 		scope: AgentConnectionSavedSessionScope,
-		onProgress?: AgentConnectionSessionListProgress,
+		callbacks?: AgentConnectionSessionListCallbacks,
 	): Promise<AgentConnectionSavedSessionInfo[]>;
 	getQueue(): Promise<AgentConnectionQueueState>;
 	clearQueue(): Promise<AgentConnectionQueueState>;
+	abortAndClearQueue(): Promise<AgentConnectionQueueState>;
 	listCronJobs(options?: { includeInactive?: boolean }): Promise<AgentCronJob[]>;
 	addCronJob(schedule: string, prompt: string): Promise<AgentCronJob>;
 	cancelCronJob(jobId: string): Promise<AgentCronJob>;
 	getHeartbeat(): Promise<AgentCronJob | undefined>;
-	setHeartbeat(schedule: string, instruction: string): Promise<AgentCronJob>;
+	setHeartbeat(
+		schedule: string,
+		instruction: string,
+		deliveryMode?: AgentHeartbeatDeliveryMode,
+	): Promise<AgentCronJob>;
 	updateHeartbeat(action: AgentHeartbeatUpdateAction): Promise<AgentCronJob | undefined>;
 	getUserMessagesForForking(): Promise<AgentConnectionUserMessage[]>;
 	getLastAssistantText(): Promise<string | undefined>;
@@ -534,8 +556,11 @@ export interface AgentConnection {
 	respondToExtensionUiRequest(requestId: string, response: AgentConnectionExtensionUiResponse): Promise<void>;
 
 	prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void>;
+	startSideQuestion(id: string, question: string): Promise<void>;
+	abortSideQuestion(id: string): Promise<boolean>;
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;
+	/** Request cancellation of the active turn and return once the request is accepted. */
 	abort(): Promise<void>;
 	cancelRlmChild(childId: string): Promise<boolean>;
 	waitForIdle(): Promise<void>;

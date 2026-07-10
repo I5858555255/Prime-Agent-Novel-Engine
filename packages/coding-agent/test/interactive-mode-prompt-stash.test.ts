@@ -34,6 +34,7 @@ type PromptStashHarness = {
 	promptStash?: PromptStash;
 	editor: FakeEditor;
 	showStatus: Mock;
+	clearShortcutGuide: Mock;
 };
 
 type PromptStashLiveMarkerHarness = PromptStashHarness & {
@@ -43,6 +44,7 @@ type PromptStashLiveMarkerHarness = PromptStashHarness & {
 
 type ResetHarness = PromptStashLiveMarkerHarness & {
 	chatContainer: { clear: Mock };
+	shortcutGuideContainer: { clear: Mock };
 	pendingMessagesContainer: { clear: Mock };
 	queuedMessagesContainer: { clear: Mock };
 	defaultEditor: FakeEditor;
@@ -62,6 +64,7 @@ type ResetHarness = PromptStashLiveMarkerHarness & {
 
 type SubmitHarness = PromptStashHarness & {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
+	sideQuestionContainer: { clear: Mock };
 	isAgentCompacting: () => boolean;
 	isAgentStreaming: () => boolean;
 	flushPendingBashComponents: Mock;
@@ -126,6 +129,7 @@ function createPromptStashHarness(
 			pasteSnapshot: options.pasteSnapshot,
 		}),
 		showStatus: vi.fn(),
+		clearShortcutGuide: vi.fn(),
 	};
 	Object.setPrototypeOf(harness, InteractiveMode.prototype);
 	return harness;
@@ -224,6 +228,7 @@ describe("InteractiveMode prompt stash", () => {
 		const mode: SubmitHarness = {
 			...createPromptStashHarness({ stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -245,6 +250,7 @@ describe("InteractiveMode prompt stash", () => {
 		mode = {
 			...createPromptStashHarness({ stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -272,6 +278,7 @@ describe("InteractiveMode prompt stash", () => {
 		mode = {
 			...createPromptStashHarness({ stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -302,6 +309,7 @@ describe("InteractiveMode prompt stash", () => {
 		const mode: SubmitHarness & { showSettingsSelector: Mock<() => Promise<void>> } = {
 			...createPromptStashHarness({ text: "/settings", stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -330,6 +338,7 @@ describe("InteractiveMode prompt stash", () => {
 			compactionQueuedMessages: [],
 			connectionQueue: { steering: ["old [image #2]"], followUp: [] },
 			chatContainer: { clear: vi.fn() },
+			shortcutGuideContainer: { clear: vi.fn() },
 			pendingMessagesContainer: { clear: vi.fn() },
 			queuedMessagesContainer: { clear: vi.fn() },
 			pastedImages: new Map<number, unknown>([
@@ -363,6 +372,7 @@ describe("InteractiveMode prompt stash", () => {
 			compactionQueuedMessages: [],
 			connectionQueue: { steering: [], followUp: [] },
 			chatContainer: { clear: vi.fn() },
+			shortcutGuideContainer: { clear: vi.fn() },
 			pendingMessagesContainer: { clear: vi.fn() },
 			queuedMessagesContainer: { clear: vi.fn() },
 			pastedImages: new Map<number, unknown>([[1, {}]]),
@@ -393,6 +403,7 @@ describe("InteractiveMode prompt stash", () => {
 		} = {
 			...createPromptStashHarness({ text: "quick follow-up", stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => true,
 			flushPendingBashComponents: vi.fn(),
