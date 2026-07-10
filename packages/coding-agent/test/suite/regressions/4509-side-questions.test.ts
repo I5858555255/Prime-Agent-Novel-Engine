@@ -194,6 +194,25 @@ describe("ENG-4509 side questions", () => {
 		expect(abortSideQuestionsFor).toHaveBeenNthCalledWith(2, clients[1], "session-1");
 	});
 
+	it("limits daemon side questions to one run per client and session", () => {
+		const client = { id: "client-1" };
+		const otherClient = { id: "client-2" };
+		const fakeThis = Object.assign(Object.create(AgentDaemon.prototype), {
+			sideQuestionRuns: new Map([
+				["question-1", { client, activeSessionId: "session-1", run: { abort: vi.fn(), done: Promise.resolve() } }],
+			]),
+		});
+		const hasActiveSideQuestionFor = (
+			AgentDaemon.prototype as unknown as {
+				hasActiveSideQuestionFor(this: typeof fakeThis, candidate: typeof client, activeSessionId: string): boolean;
+			}
+		).hasActiveSideQuestionFor;
+
+		expect(hasActiveSideQuestionFor.call(fakeThis, client, "session-1")).toBe(true);
+		expect(hasActiveSideQuestionFor.call(fakeThis, client, "session-2")).toBe(false);
+		expect(hasActiveSideQuestionFor.call(fakeThis, otherClient, "session-1")).toBe(false);
+	});
+
 	it("renders a bounded one-turn panel above the prompt", () => {
 		const component = new SideQuestionComponent(
 			{

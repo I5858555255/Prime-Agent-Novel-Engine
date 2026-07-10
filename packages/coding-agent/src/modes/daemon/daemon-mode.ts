@@ -1566,6 +1566,9 @@ export class AgentDaemon {
 				if (this.sideQuestionRuns.has(command.sideQuestionId)) {
 					throw new Error(`Side question already exists: ${command.sideQuestionId}`);
 				}
+				if (this.hasActiveSideQuestionFor(client, state.activeSessionId)) {
+					throw new Error("A side question is already running for this client and session");
+				}
 				const run = startSideQuestion(
 					state.runtime.session.agent,
 					command.sideQuestionId,
@@ -2754,6 +2757,15 @@ export class AgentDaemon {
 			entry.run.abort();
 			this.sideQuestionRuns.delete(id);
 		}
+	}
+
+	private hasActiveSideQuestionFor(client: DaemonSocketClient, activeSessionId: string): boolean {
+		for (const entry of this.sideQuestionRuns.values()) {
+			if (entry.client === client && entry.activeSessionId === activeSessionId) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private registerSignalHandlers(): void {
