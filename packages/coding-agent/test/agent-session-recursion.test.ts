@@ -1472,6 +1472,19 @@ describe("AgentSession persistent subagents", () => {
 		);
 	});
 
+	it("refuses to reopen while the retained session itself is still busy", async () => {
+		const root = createPersistentSession();
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+
+		// The retained child is idle-but-busy (e.g. streaming after an agent_message steer).
+		const retained = root.getRlmChildSession(persistentSubagentNodeId("reviewer")) as AgentSession;
+		vi.spyOn(retained, "isStreaming", "get").mockReturnValue(true);
+
+		await expect(root.runRlmChild("second", { persist: true, persistent_id: "reviewer" })).rejects.toThrow(
+			"is still busy",
+		);
+	});
+
 	it("routes retained-session eviction through the host on reopen", async () => {
 		const root = createPersistentSession();
 

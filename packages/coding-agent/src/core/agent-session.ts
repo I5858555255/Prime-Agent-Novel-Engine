@@ -5888,6 +5888,14 @@ export class AgentSession {
 					`Persistent subagent ${persistence.persistentId} has nested subagents still running; wait for them to finish before reopening`,
 				);
 			}
+			// The retained session itself may still be busy (e.g. streaming or compacting after
+			// an agent_message steer). Reopening would dispose it mid-turn and race the reused
+			// JSONL, so refuse until it is idle.
+			if (retained && (retained.isStreaming || retained.isCompacting || retained.isBashRunning)) {
+				throw new Error(
+					`Persistent subagent ${persistence.persistentId} is still busy; wait for it to finish before reopening`,
+				);
+			}
 		}
 
 		const childSessionDir = persistentPlan

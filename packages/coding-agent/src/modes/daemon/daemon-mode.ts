@@ -2628,13 +2628,23 @@ export class AgentDaemon {
 			}
 		}
 		cancelPendingExtensionUiRequests(state);
-		if (reason === "killed" || reason === "shutdown" || reason === "replaced" || reason === "update") {
+		if (
+			reason === "killed" ||
+			reason === "shutdown" ||
+			reason === "replaced" ||
+			reason === "update" ||
+			reason === "reopened"
+		) {
 			await this.abortBashForClose(state);
 		}
 		if (reason === "update") {
 			state.runtime.session.abortForUpdateRestart();
 		}
-		if (reason === "killed" || reason === "shutdown" || reason === "replaced") {
+		// Abort a busy retained session before disposing it so a live turn can't race the
+		// dispose and the next SessionManager.open on the same JSONL. A reopen is guarded
+		// against reopening while nested children run, but the retained session itself may
+		// still be streaming or compacting (e.g. after an agent_message steer).
+		if (reason === "killed" || reason === "shutdown" || reason === "replaced" || reason === "reopened") {
 			await state.runtime.session.abort().catch(() => undefined);
 		}
 		state.unsubscribe?.();
