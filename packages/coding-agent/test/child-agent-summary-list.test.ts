@@ -119,6 +119,14 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		expect(out).not.toContain("↳");
 	});
 
+	it("aligns the row icon and label with the agents-view tray hint", () => {
+		const summary = new ChildAgentSummaryComponent(() => "← agents view");
+		summary.setNodes([node("task", "done")]);
+		const [infoLine = "", row = ""] = summary.render(80).map(stripAnsi);
+		expect(row.indexOf("✓")).toBe(infoLine.indexOf("←"));
+		expect(row.indexOf("S1")).toBe(infoLine.indexOf("agents"));
+	});
+
 	it("keeps truncation ellipses in the prompt color", () => {
 		const summary = new ChildAgentSummaryComponent();
 		summary.setNodes([{ ...node("a"), label: "A starting prompt that is much too long for its fixed column" }]);

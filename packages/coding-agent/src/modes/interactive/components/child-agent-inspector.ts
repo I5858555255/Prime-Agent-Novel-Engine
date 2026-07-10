@@ -193,7 +193,7 @@ function padTableCell(value: string, width: number, ellipsis = ""): string {
 
 // Rows shown at once in the inline list below the prompt; extras scroll.
 const SUMMARY_VISIBLE_ROWS = 5;
-const SUMMARY_LIST_INDENT = 1;
+const SUMMARY_LIST_INDENT = 0;
 const SHARED_PREFIX_MIN = 12;
 const SUMMARY_COLUMN_GAP = 2;
 const SUMMARY_PROMPT_MAX_WIDTH = 24;
