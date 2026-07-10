@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Changed scheduled heartbeat prompts to steer (interrupt the current turn) by default, with a `steer`/`follow_up` delivery mode selectable via `/heartbeat --steer|--follow-up` and the `rlm_heartbeat` skill's `delivery_mode` argument.
+- Changed the new-chat splash to show only version, model, and cwd metadata and rotate among five example prompts.
 
 ## [0.2.8] - 2026-07-09
 
