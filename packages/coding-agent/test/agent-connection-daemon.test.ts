@@ -625,6 +625,29 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "list", "attach"]);
 	});
 
+	it("does not reconnect after an explicit shutdown session close", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const closedEvents: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			if (event.type === "closed") {
+				closedEvents.push(event);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.emitMessage({
+			type: "session_closed",
+			activeSessionId: "active-original",
+			reason: "shutdown",
+		});
+		fakeClient.emitClose(new Error("Daemon socket closed"));
+		await Promise.resolve();
+
+		expect(fakeClient.reconnectCount).toBe(0);
+		expect(closedEvents).toEqual([{ type: "closed", error: "shutdown" }]);
+	});
+
 	it("does not emit a restored session after disposal begins", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.updateRestartSessions = [
@@ -699,7 +722,7 @@ describe("DaemonAgentConnection", () => {
 			await Promise.resolve();
 
 			expect(fakeClient.reconnectCount).toBe(reconnectCountAfterFailure);
-			expect(closedEvents.at(-1)).toEqual({ type: "closed", error: "Daemon socket closed" });
+			expect(closedEvents).toHaveLength(1);
 			await connection.dispose();
 		} finally {
 			vi.useRealTimers();

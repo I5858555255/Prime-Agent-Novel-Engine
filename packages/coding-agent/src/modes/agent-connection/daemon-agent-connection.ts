@@ -96,6 +96,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private attachedSessionFile: string | undefined;
 	private updateRestartPending = false;
 	private updateReconnectFailed = false;
+	private terminalCloseEmitted = false;
 	private updateReconnectPromise?: Promise<void>;
 	private disposed = false;
 
@@ -108,12 +109,16 @@ export class DaemonAgentConnection implements AgentConnection {
 			void this.handleDaemonMessage(message);
 		});
 		this.unsubscribeDaemonClose = this.client.onClose((error) => {
+			if (this.disposed || this.terminalCloseEmitted) {
+				return;
+			}
 			const unannouncedUpdateCandidate = error.message === "Daemon socket closed" && !this.updateReconnectFailed;
-			if (!this.disposed && (this.updateRestartPending || unannouncedUpdateCandidate)) {
+			if (this.updateRestartPending || unannouncedUpdateCandidate) {
 				this.updateRestartPending = true;
 				void this.reconnectAfterUpdate();
 				return;
 			}
+			this.terminalCloseEmitted = true;
 			void this.emit({ type: "closed", error: error.message });
 		});
 	}
@@ -154,6 +159,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.attachedSessionId = summary.sessionId;
 		this.attachedSessionFile = summary.sessionFile;
 		this.updateReconnectFailed = false;
+		this.terminalCloseEmitted = false;
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 		if ("snapshot" in result) {
 			this.latestSnapshot = mapDaemonAttachSnapshot(result);
@@ -787,6 +793,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				void this.reconnectAfterUpdate();
 				return;
 			}
+			this.terminalCloseEmitted = true;
 			await this.emit({ type: "closed", error: message.reason });
 		}
 	}
@@ -800,6 +807,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				this.updateRestartPending = false;
 				this.updateReconnectFailed = true;
 				if (!this.disposed) {
+					this.terminalCloseEmitted = true;
 					await this.emit({
 						type: "closed",
 						error: `Failed to reconnect after update: ${error instanceof Error ? error.message : String(error)}`,
