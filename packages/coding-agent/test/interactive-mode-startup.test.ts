@@ -83,11 +83,15 @@ describe("InteractiveMode startup hints", () => {
 		expect(stripAnsi(label)).toBe("test-model • high  ? for shortcuts");
 	});
 
-	it("places the Agents View hint before the model and fresh-chat help", () => {
-		const mode = createMode(false, true);
-		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
+	it("keeps the lowercase agents hint while typing", () => {
+		let editorText = "";
+		const mode = createMode(false, true, () => editorText);
+		const getLabel = () => Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(label)).toBe("← Agents  test-model • high  ? for shortcuts");
+		expect(stripAnsi(getLabel())).toBe("← agents  test-model • high  ? for shortcuts");
+
+		editorText = "draft prompt";
+		expect(stripAnsi(getLabel())).toBe("← agents  test-model • high");
 	});
 
 	it("hides the fresh-chat shortcut hint while the prompt has text", () => {

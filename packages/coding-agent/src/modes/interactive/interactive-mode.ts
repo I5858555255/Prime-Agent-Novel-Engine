@@ -5017,10 +5017,7 @@ export class InteractiveMode {
 		if (!this.options.returnToAgentsView) {
 			return undefined;
 		}
-		if (this.editor.getText().trim()) {
-			return undefined;
-		}
-		return keyHint("app.agents.back", "Agents");
+		return keyHint("app.agents.back", "agents");
 	}
 
 	private getTrayContextLabel(): string | undefined {
