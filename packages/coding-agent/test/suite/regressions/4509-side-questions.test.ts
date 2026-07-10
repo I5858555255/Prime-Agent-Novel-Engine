@@ -178,14 +178,28 @@ describe("ENG-4509 side questions", () => {
 		const completeLines = complete.render(40).map(stripAnsi);
 		const thinkingLine = runningLines.find((line) => line.includes("Thinking…"));
 		const responseLine = completeLines.find((line) => line.includes("Aligned response"));
+		const rawThinkingLine = running.render(40).find((line) => line.includes("Thinking…"));
 
 		expect(thinkingLine?.indexOf("Thinking…")).toBe(responseLine?.indexOf("Aligned response"));
+		expect(rawThinkingLine).toContain("\x1b[39mThinking…");
+	});
+
+	it("uses the user-message foreground for pane content", () => {
+		const component = new SideQuestionComponent(
+			{ id: "question-5", question: "Readable question", answer: "Readable response", status: "complete" },
+			() => 8,
+		);
+		const rendered = component.render(40).join("\n");
+
+		expect(rendered).toContain("\x1b[39mReadable question\x1b[39m");
+		expect(rendered).toContain("\x1b[39mReadable response");
 	});
 
 	it("closes and cancels a running pane before handling other Escape actions", () => {
 		const abortSideQuestion = vi.fn(async () => true);
 		const takeEscapeRepeatAction = vi.fn();
 		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			activeSideQuestionId: "question-5",
 			sideQuestionEvent: {
 				id: "question-5",
 				question: "Still running?",
@@ -209,6 +223,73 @@ describe("ENG-4509 side questions", () => {
 
 		expect(abortSideQuestion).toHaveBeenCalledWith("question-5");
 		expect(fakeThis.sideQuestionEvent).toBeUndefined();
+		expect(fakeThis.activeSideQuestionId).toBe("question-5");
 		expect(takeEscapeRepeatAction).not.toHaveBeenCalled();
+	});
+
+	it("waits for a cancelled run to settle before starting another side question", async () => {
+		const showWarning = vi.fn();
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			activeSideQuestionId: "question-5",
+			showWarning,
+		});
+		const handleSideQuestion = (
+			InteractiveMode.prototype as unknown as {
+				handleSideQuestion(this: typeof fakeThis, question: string): Promise<void>;
+			}
+		).handleSideQuestion;
+
+		await handleSideQuestion.call(fakeThis, "Can this overlap?");
+
+		expect(showWarning).toHaveBeenCalledWith("Wait for the current side question to finish or cancel it first.");
+	});
+
+	it("reports side-question abort failures without rejecting the interrupt path", async () => {
+		const showError = vi.fn();
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			activeSideQuestionId: "question-6",
+			sideQuestionEvent: {
+				id: "question-6",
+				question: "Still running?",
+				answer: "",
+				status: "running",
+			},
+			agentConnection: { abortSideQuestion: vi.fn(async () => Promise.reject(new Error("daemon unavailable"))) },
+			showError,
+			getRetryAttempt: () => 0,
+			isAgentCompacting: () => false,
+			isBashRunning: () => false,
+			isAgentStreaming: () => false,
+		});
+		const interruptOrClearInput = (
+			InteractiveMode.prototype as unknown as { interruptOrClearInput(this: typeof fakeThis): void }
+		).interruptOrClearInput;
+
+		interruptOrClearInput.call(fakeThis);
+
+		await vi.waitFor(() => expect(showError).toHaveBeenCalledWith("daemon unavailable"));
+	});
+
+	it("dismisses the side-question pane after successful tree navigation", async () => {
+		const clearSideQuestion = vi.fn();
+		const setText = vi.fn();
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			clearSideQuestion,
+			chatContainer: new Container(),
+			renderInitialMessages: vi.fn(async () => undefined),
+			editor: { getText: () => "", setText },
+			showStatus: vi.fn(),
+			flushCompactionQueue: vi.fn(async () => undefined),
+		});
+		const renderTreeNavigation = (
+			InteractiveMode.prototype as unknown as {
+				renderTreeNavigation(this: typeof fakeThis, result: { editorText?: string }): Promise<void>;
+			}
+		).renderTreeNavigation;
+
+		await renderTreeNavigation.call(fakeThis, { editorText: "restored draft" });
+
+		expect(clearSideQuestion).toHaveBeenCalledWith({ abort: true });
+		expect(setText).toHaveBeenCalledWith("restored draft");
 	});
 });

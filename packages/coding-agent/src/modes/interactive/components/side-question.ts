@@ -14,7 +14,9 @@ export class SideQuestionComponent implements Component {
 	) {
 		this.event = event;
 		this.paddingX = Math.max(2, paddingX);
-		this.answer = new Markdown("", this.paddingX, 0, getMarkdownTheme());
+		this.answer = new Markdown("", this.paddingX, 0, getMarkdownTheme(), {
+			color: (content: string) => theme.fg("userMessageText", content),
+		});
 		this.answer.setText(event.answer);
 	}
 
@@ -30,7 +32,7 @@ export class SideQuestionComponent implements Component {
 	render(width: number): string[] {
 		const blank = " ".repeat(Math.max(1, width));
 		const question = new Text(
-			`${theme.fg("accent", "/btw")}  ${theme.bold(this.event.question)}`,
+			`${theme.fg("accent", "/btw")}  ${theme.bold(theme.fg("userMessageText", this.event.question))}`,
 			this.paddingX,
 			0,
 		).render(width);
@@ -48,11 +50,11 @@ export class SideQuestionComponent implements Component {
 			return new Text(theme.fg("error", this.event.errorMessage), this.paddingX, 0).render(width);
 		}
 		if (this.event.status === "cancelled") {
-			return new Text(theme.fg("muted", "Cancelled"), this.paddingX, 0).render(width);
+			return new Text(theme.fg("userMessageText", "Cancelled"), this.paddingX, 0).render(width);
 		}
 		if (!this.event.answer) {
 			const message = this.event.status === "complete" ? "No response" : "Thinking…";
-			return new Text(theme.fg("muted", message), this.paddingX, 0).render(width);
+			return new Text(theme.fg("userMessageText", message), this.paddingX, 0).render(width);
 		}
 		return this.answer.render(width);
 	}

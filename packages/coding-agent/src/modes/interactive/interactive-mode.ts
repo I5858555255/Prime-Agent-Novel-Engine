@@ -647,6 +647,7 @@ export class InteractiveMode {
 	private streamingMessage: AssistantMessage | undefined = undefined;
 	private sideQuestionComponent: SideQuestionComponent | undefined;
 	private sideQuestionEvent: AgentConnectionSideQuestionEvent | undefined;
+	private activeSideQuestionId: string | undefined;
 
 	// User bash execution tracking (! / !! prefix), driven by bash_* session events
 	private activeBashComponent: BashExecutionComponent | undefined = undefined;
@@ -782,7 +783,7 @@ export class InteractiveMode {
 		}
 		this.agentConnection.onBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
-			this.clearSideQuestion({ abort: true });
+			this.resetSideQuestion();
 		});
 		this.version = VERSION;
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
@@ -2122,13 +2123,7 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
-					this.chatContainer.clear();
-					await this.renderInitialMessages();
-					if (result.editorText && !this.editor.getText().trim()) {
-						this.editor.setText(result.editorText);
-					}
-					this.showStatus("Navigated to selected point");
-					void this.flushCompactionQueue({ willRetry: false });
+					await this.renderTreeNavigation(result);
 					return { cancelled: false };
 				},
 				switchSession: async (sessionPath, options) => {
@@ -3698,7 +3693,7 @@ export class InteractiveMode {
 			this.showWarning("Usage: /btw <question>");
 			return;
 		}
-		if (this.sideQuestionEvent?.status === "running") {
+		if (this.activeSideQuestionId) {
 			this.showWarning("Wait for the current side question to finish or cancel it first.");
 			return;
 		}
@@ -3710,6 +3705,7 @@ export class InteractiveMode {
 			answer: "",
 			status: "running",
 		};
+		this.activeSideQuestionId = event.id;
 		this.sideQuestionEvent = event;
 		this.sideQuestionComponent = new SideQuestionComponent(
 			event,
@@ -3732,6 +3728,9 @@ export class InteractiveMode {
 	}
 
 	private handleSideQuestionEvent(event: AgentConnectionSideQuestionEvent): void {
+		if (event.id === this.activeSideQuestionId && event.status !== "running") {
+			this.activeSideQuestionId = undefined;
+		}
 		if (event.id !== this.sideQuestionEvent?.id || !this.sideQuestionComponent) {
 			return;
 		}
@@ -3743,7 +3742,7 @@ export class InteractiveMode {
 	private clearSideQuestion(options: { abort?: boolean } = {}): void {
 		const event = this.sideQuestionEvent;
 		if (options.abort && event?.status === "running") {
-			void this.agentConnection.abortSideQuestion(event.id).catch(() => undefined);
+			this.abortSideQuestion(event.id);
 		}
 		this.sideQuestionEvent = undefined;
 		this.sideQuestionComponent = undefined;
@@ -3751,6 +3750,37 @@ export class InteractiveMode {
 		if (this.isInitialized) {
 			this.ui.requestRender();
 		}
+	}
+
+	private resetSideQuestion(): void {
+		this.clearSideQuestion({ abort: true });
+		this.activeSideQuestionId = undefined;
+	}
+
+	private abortSideQuestion(id: string, reportError = false): void {
+		void this.agentConnection
+			.abortSideQuestion(id)
+			.then((aborted) => {
+				if (!aborted && this.activeSideQuestionId === id) {
+					this.activeSideQuestionId = undefined;
+				}
+			})
+			.catch((error) => {
+				if (reportError) {
+					this.showError(error instanceof Error ? error.message : String(error));
+				}
+			});
+	}
+
+	private async renderTreeNavigation(result: { editorText?: string }): Promise<void> {
+		this.clearSideQuestion({ abort: true });
+		this.chatContainer.clear();
+		await this.renderInitialMessages();
+		if (result.editorText && !this.editor.getText().trim()) {
+			this.editor.setText(result.editorText);
+		}
+		this.showStatus("Navigated to selected point");
+		void this.flushCompactionQueue({ willRetry: false });
 	}
 
 	private getSideQuestionMaxLines(): number {
@@ -4068,7 +4098,7 @@ export class InteractiveMode {
 					this.sessionEventQueue = run.catch(() => {});
 					await run;
 				} else if (event.type === "session_replaced") {
-					this.clearSideQuestion({ abort: true });
+					this.resetSideQuestion();
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
 					this.resetCurrentSessionRenderState({ clearPromptStash: true });
@@ -5720,7 +5750,7 @@ export class InteractiveMode {
 
 	private interruptOrClearInput(): void {
 		if (this.sideQuestionEvent?.status === "running") {
-			void this.agentConnection.abortSideQuestion(this.sideQuestionEvent.id);
+			this.abortSideQuestion(this.sideQuestionEvent.id, true);
 		}
 		if (this.getRetryAttempt() > 0) {
 			void this.agentConnection.abortRetry();
@@ -7213,14 +7243,7 @@ export class InteractiveMode {
 							return;
 						}
 
-						// Update UI
-						this.chatContainer.clear();
-						await this.renderInitialMessages();
-						if (result.editorText && !this.editor.getText().trim()) {
-							this.editor.setText(result.editorText);
-						}
-						this.showStatus("Navigated to selected point");
-						void this.flushCompactionQueue({ willRetry: false });
+						await this.renderTreeNavigation(result);
 					} catch (error) {
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
