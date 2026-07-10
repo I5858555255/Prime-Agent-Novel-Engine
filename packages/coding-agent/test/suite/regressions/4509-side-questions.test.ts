@@ -142,6 +142,27 @@ describe("ENG-4509 side questions", () => {
 		}
 	});
 
+	it("emits a terminal event after a transient event delivery failure", async () => {
+		const harness = await createHarness();
+		try {
+			const events: SideQuestionEvent[] = [];
+			let shouldFail = true;
+			const run = startSideQuestion(harness.session.agent, "question-4", "Can this recover?", (event) => {
+				if (shouldFail) {
+					shouldFail = false;
+					throw new Error("event delivery failed");
+				}
+				events.push(event);
+			});
+
+			await run.done;
+
+			expect(events).toEqual([expect.objectContaining({ status: "error", errorMessage: "event delivery failed" })]);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("renders a bounded one-turn panel above the prompt", () => {
 		const component = new SideQuestionComponent(
 			{

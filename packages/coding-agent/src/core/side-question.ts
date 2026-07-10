@@ -80,7 +80,8 @@ export function startSideQuestion(
 	});
 
 	const prompt = `<side_question>\n${SIDE_QUESTION_INSTRUCTION}\n\n${question}\n</side_question>`;
-	const done = Promise.resolve(emit("running"))
+	const done = Promise.resolve()
+		.then(() => emit("running"))
 		.then(async () => {
 			if (abortRequested) {
 				await emit("cancelled");
@@ -97,6 +98,12 @@ export function startSideQuestion(
 				return;
 			}
 			await emit("complete");
+		})
+		.catch(async (error) => {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			await Promise.resolve(
+				emit(abortRequested ? "cancelled" : "error", abortRequested ? undefined : errorMessage),
+			).catch(() => undefined);
 		})
 		.finally(unsubscribe);
 
