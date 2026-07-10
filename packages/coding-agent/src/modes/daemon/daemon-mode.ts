@@ -684,7 +684,7 @@ export class AgentDaemon {
 		}
 		const canPrompt = () => this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob);
 		if (isHeartbeatCronJob(runnableJob)) {
-			await this.promptHeartbeatWithAgentMessagePreparingGuard(
+			const didPrompt = await this.promptHeartbeatWithAgentMessagePreparingGuard(
 				state,
 				runnableJob,
 				{
@@ -694,9 +694,9 @@ export class AgentDaemon {
 				},
 				canPrompt,
 			);
-			return;
+			return didPrompt ? undefined : "skipped";
 		}
-		await this.promptWithAgentMessagePreparingGuard(
+		const didPrompt = await this.promptWithAgentMessagePreparingGuard(
 			state,
 			runnableJob.prompt,
 			{
@@ -705,6 +705,7 @@ export class AgentDaemon {
 			},
 			canPrompt,
 		);
+		return didPrompt ? undefined : "skipped";
 	}
 
 	// Wraps session.prompt so the target counts as "preparing" until the turn
@@ -716,8 +717,8 @@ export class AgentDaemon {
 		message: string,
 		options?: PromptOptions,
 		canPrompt?: () => boolean,
-	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(
+	): Promise<boolean> {
+		return this.withAgentMessagePreparingGuard(
 			state,
 			(session) => {
 				const prompt =
@@ -740,8 +741,8 @@ export class AgentDaemon {
 		job: AgentCronJob,
 		options?: PromptOptions,
 		canPrompt?: () => boolean,
-	): Promise<void> {
-		await this.withAgentMessagePreparingGuard(
+	): Promise<boolean> {
+		return this.withAgentMessagePreparingGuard(
 			state,
 			(session) =>
 				session.promptHeartbeat(job, {
@@ -758,9 +759,8 @@ export class AgentDaemon {
 		state: ActiveSessionState,
 		run: (session: AgentSession) => Promise<void>,
 		canRun?: () => boolean,
-	): Promise<void> {
+	): Promise<boolean> {
 		const activeSessionId = state.activeSessionId;
-		const session = state.runtime.session;
 		this.agentMessagePreparingTargets.set(
 			activeSessionId,
 			(this.agentMessagePreparingTargets.get(activeSessionId) ?? 0) + 1,
@@ -780,10 +780,12 @@ export class AgentDaemon {
 		};
 		try {
 			await this.agentMessageTargetLocks.get(activeSessionId)?.catch(() => undefined);
+			const session = state.runtime.session;
 			if (canRun && !canRun()) {
-				return;
+				return false;
 			}
 			await run(session);
+			return true;
 		} finally {
 			clearPreparing();
 		}
