@@ -2,8 +2,9 @@
 
 ## [Unreleased]
 
-- Fixed daemon updates and stale-daemon takeovers preserving restorable live sessions while blocking volatile child-agent work.
 - Changed automatic harness refinement to be enabled by default while keeping `autoRefine.enabled: false` as the opt-out.
+- Changed the new-chat splash to show only version, model, and cwd metadata and rotate among five example prompts.
+- Fixed daemon updates and stale-daemon takeovers preserving restorable live sessions while blocking volatile child-agent work.
 - Fixed non-numeric `autoRefine.turnInterval` and `autoRefine.cooldownMs` settings falling back to defaults instead of silently enabling a noisy auto-refine loop.
 - Fixed all session-resume entry points to share a searchable full-screen picker, stream results while loading, and support renaming ([ENG-4513](https://linear.app/primeintellect/issue/ENG-4513/resume-in-agents-view-is-broken)).
 
