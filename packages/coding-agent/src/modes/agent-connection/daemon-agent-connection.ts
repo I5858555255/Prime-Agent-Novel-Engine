@@ -780,6 +780,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (message.type === "session_closed") {
 			if (message.reason === "update") {
 				this.updateRestartPending = true;
+				void this.reconnectAfterUpdate();
 				return;
 			}
 			await this.emit({ type: "closed", error: message.reason });
@@ -792,6 +793,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		const reconnectPromise = this.restoreConnectionAfterUpdate()
 			.catch(async (error: unknown) => {
+				this.updateRestartPending = false;
 				if (!this.disposed) {
 					await this.emit({
 						type: "closed",

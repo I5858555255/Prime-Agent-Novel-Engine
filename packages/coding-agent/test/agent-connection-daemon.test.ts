@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { getModel } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MissingSessionCwdError } from "../src/core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../src/core/session-import-errors.js";
 import {
@@ -32,6 +32,7 @@ class FakeDaemonClient {
 	attachResultFactory: ((command: Extract<DaemonCommand, { type: "attach" }>) => DaemonAttachResult) | undefined;
 	closeCount = 0;
 	reconnectCount = 0;
+	reconnectError: Error | undefined;
 	abortBashUnknownCommand = false;
 	abortAndClearQueueUnknownCommand = false;
 	updateRestartSessions: Array<Record<string, unknown>> = [];
@@ -373,6 +374,9 @@ class FakeDaemonClient {
 
 	async reconnect(): Promise<void> {
 		this.reconnectCount++;
+		if (this.reconnectError) {
+			throw this.reconnectError;
+		}
 	}
 
 	getMessageListenerCount(): number {
@@ -555,6 +559,7 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-original",
 			reason: "update",
 		});
+		expect(fakeClient.reconnectCount).toBe(1);
 		fakeClient.emitClose(new Error("Daemon socket closed"));
 
 		await expect(restored).resolves.toMatchObject({
@@ -575,6 +580,45 @@ describe("DaemonAgentConnection", () => {
 				state: expect.objectContaining({ activeSessionId: "active-restored" }),
 			}),
 		]);
+	});
+
+	it("returns to normal close handling after update restoration times out", async () => {
+		vi.useFakeTimers();
+		try {
+			const fakeClient = new FakeDaemonClient();
+			fakeClient.reconnectError = new Error("daemon unavailable");
+			const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+			const closedEvents: AgentConnectionEvent[] = [];
+			connection.subscribe((event) => {
+				if (event.type === "closed") {
+					closedEvents.push(event);
+				}
+			});
+			await connection.attach();
+
+			fakeClient.emitMessage({
+				type: "session_closed",
+				activeSessionId: "active-original",
+				reason: "update",
+			});
+			await vi.advanceTimersByTimeAsync(120100);
+
+			expect(closedEvents).toEqual([
+				{
+					type: "closed",
+					error: "Failed to reconnect after update: daemon unavailable",
+				},
+			]);
+			const reconnectCountAfterFailure = fakeClient.reconnectCount;
+			fakeClient.emitClose(new Error("later disconnect"));
+			await Promise.resolve();
+
+			expect(fakeClient.reconnectCount).toBe(reconnectCountAfterFailure);
+			expect(closedEvents.at(-1)).toEqual({ type: "closed", error: "later disconnect" });
+			await connection.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("reattaches using the replacement session identity after a session switch", async () => {
