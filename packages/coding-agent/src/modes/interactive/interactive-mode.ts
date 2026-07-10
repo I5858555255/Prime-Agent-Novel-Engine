@@ -1392,8 +1392,6 @@ export class InteractiveMode {
 		}
 
 		const showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash();
-		// Onboarding is a one-shot offer, never a runtime readiness gate. Persist
-		// before opening UI so any later process starts directly in the normal TUI.
 		this.markOnboardingShown();
 		await this.settingsManager.flush();
 		await this.runOnboardingFlow(showPrimeCliSplash);
@@ -7502,8 +7500,6 @@ export class InteractiveMode {
 	private async showOAuthSelector(mode: "login" | "logout", loginOptions: ProviderLoginOptions = {}): Promise<void> {
 		if (mode === "login") {
 			const authResult = await this.showLoginProviderSelector(loginOptions);
-			// Refresh the model catalog lazily when the user explicitly opens /model.
-			// /login must never redirect into a separate command's UI.
 			if (authResult.status === "success" && authResult.kind !== "service") {
 				this.invalidateConnectionModels();
 			}

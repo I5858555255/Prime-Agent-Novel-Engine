@@ -120,9 +120,7 @@ export type McpServerConfig =
 	  };
 
 export interface Settings {
-	/** The first-run onboarding flow has been offered. */
 	onboardingShown?: boolean;
-	/** Legacy field read as onboardingShown so existing users are not re-onboarded. */
 	onboardingCompleted?: boolean;
 	defaultProvider?: string;
 	defaultModel?: string;
