@@ -61,6 +61,7 @@ import {
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 	VERSION,
 } from "../../config.js";
+import { isAgentSessionMessage } from "../../core/agent-messages.js";
 import {
 	type AgentTraceUploadResult,
 	getPrimeAgentTraceCredential,
@@ -145,6 +146,7 @@ import {
 	ProviderAuthFlows,
 	type ProviderLoginOptions,
 } from "./auth-flows.js";
+import { AgentMessageComponent } from "./components/agent-message.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -4339,7 +4341,7 @@ export class InteractiveMode {
 		this.updateConnectionStateFromEvent(event);
 		// A new user message resets the activity tracker to 0, so the in-flight baseline must
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
-		if (event.type === "message_start" && event.message.role === "user") {
+		if (event.type === "message_start" && (event.message.role === "user" || isAgentSessionMessage(event.message))) {
 			this.contextUsageTokenBaseline = 0;
 			this.setSessionHasMessages(true);
 			this.clearShortcutGuide();
@@ -4430,7 +4432,7 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
-					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
+					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE || isAgentSessionMessage(event.message)) {
 						this.clearStaleRecapForPromptTurn();
 					}
 					this.ui.requestRender();
@@ -5441,15 +5443,17 @@ export class InteractiveMode {
 			}
 			case "custom": {
 				if (message.display) {
-					const component = isInjectedPromptMessage(message)
-						? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
-						: new CustomMessageComponent(
-								message,
-								this.bindLocalSessionExtensions
-									? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
-									: undefined,
-								this.getMarkdownThemeWithSettings(),
-							);
+					const component = isAgentSessionMessage(message)
+						? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings())
+						: isInjectedPromptMessage(message)
+							? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
+							: new CustomMessageComponent(
+									message,
+									this.bindLocalSessionExtensions
+										? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
+										: undefined,
+									this.getMarkdownThemeWithSettings(),
+								);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}

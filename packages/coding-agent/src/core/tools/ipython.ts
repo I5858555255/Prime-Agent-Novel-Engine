@@ -14,6 +14,7 @@ import {
 	KernelBusyAfterInterruptError,
 	type KernelDiffDisplay,
 	KernelManager,
+	type KernelSentAgentMessage,
 } from "../kernel/index.js";
 import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
@@ -239,6 +240,8 @@ export interface IpythonToolDetails {
 	diffs?: KernelDiffDisplay[];
 	/** Media attachments loaded into context (e.g. by the attach-image skill). */
 	attachments?: KernelAttachment[];
+	/** Agent messages sent from this cell. */
+	sentAgentMessages?: KernelSentAgentMessage[];
 	/** True when this result came after killing and restarting a busy kernel. */
 	kernelRestarted?: boolean;
 	error?: {
@@ -655,6 +658,7 @@ export function createIpythonToolDefinition(
 						result: r.result,
 						diffs: r.diffs,
 						attachments: r.attachments,
+						sentAgentMessages: r.sentAgentMessages,
 						kernelRestarted,
 						error: r.error,
 					},

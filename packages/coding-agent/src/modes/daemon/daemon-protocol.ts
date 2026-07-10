@@ -277,6 +277,7 @@ export type DaemonCommand =
 			streamingBehavior?: "steer" | "followUp";
 			expandPromptTemplates?: boolean;
 			agentMessageId?: string;
+			customMessage?: CustomMessage;
 	  }
 	| {
 			id?: string;

@@ -110,6 +110,9 @@ export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
 /** MIME tag the `attach-image` skill emits media payloads under, via `display_data`. */
 export const ATTACHMENT_DISPLAY_MIME = "application/vnd.prime-agent.attachment+json";
 
+/** MIME tag the `agent-message` skill emits after sending a message. */
+export const AGENT_MESSAGE_DISPLAY_MIME = "application/vnd.prime-agent.agent-message+json";
+
 /**
  * Hard ceiling on a single attachment's base64 payload, a defensive guard
  * against a runaway direct `display_data` emit. The `attach-image` skill caps
@@ -136,6 +139,17 @@ export interface KernelAttachment {
 	path?: string;
 }
 
+export interface KernelSentAgentMessage {
+	id: string;
+	message: string;
+	deliveryStatus: "delivered" | "queued";
+	target: {
+		activeSessionId: string;
+		sessionId: string;
+		sessionName?: string;
+	};
+}
+
 export interface ExecuteResult {
 	stdout: string;
 	stderr: string;
@@ -145,6 +159,8 @@ export interface ExecuteResult {
 	diffs?: KernelDiffDisplay[];
 	/** Media attachments emitted via display_data, in order. */
 	attachments?: KernelAttachment[];
+	/** Agent messages sent from this cell, in order. */
+	sentAgentMessages?: KernelSentAgentMessage[];
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
 	durationMs: number;
@@ -180,6 +196,33 @@ function parseAttachmentDisplay(payload: unknown): KernelAttachment | "oversized
 		return "oversized";
 	}
 	return { mimeType, data, path: typeof path === "string" ? path : undefined };
+}
+
+function parseSentAgentMessage(payload: unknown): KernelSentAgentMessage | undefined {
+	if (!isRecord(payload) || !isRecord(payload.target)) {
+		return undefined;
+	}
+	const { id, message, deliveryStatus, target } = payload;
+	const { activeSessionId, sessionId, sessionName } = target;
+	if (
+		typeof id !== "string" ||
+		typeof message !== "string" ||
+		(deliveryStatus !== "delivered" && deliveryStatus !== "queued") ||
+		typeof activeSessionId !== "string" ||
+		typeof sessionId !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		id,
+		message,
+		deliveryStatus,
+		target: {
+			activeSessionId,
+			sessionId,
+			...(typeof sessionName === "string" ? { sessionName } : {}),
+		},
+	};
 }
 
 function createKernelStartupAbortError(): Error {
@@ -267,6 +310,7 @@ interface ActiveExecution {
 	result?: string;
 	diffs: KernelDiffDisplay[];
 	attachments: KernelAttachment[];
+	sentAgentMessages: KernelSentAgentMessage[];
 	error?: ExecuteResult["error"];
 	status: ExecuteResult["status"];
 	resolve: (result: ExecuteResult) => void;
@@ -832,6 +876,7 @@ export class KernelManager {
 			stderrTruncated: false,
 			diffs: [],
 			attachments: [],
+			sentAgentMessages: [],
 			status: "ok",
 			resolve: result.resolve,
 			reject: result.reject,
@@ -968,6 +1013,8 @@ export class KernelManager {
 			} else if (attachment) {
 				execution.attachments.push(attachment);
 			}
+			const sentAgentMessage = parseSentAgentMessage(c.data?.[AGENT_MESSAGE_DISPLAY_MIME]);
+			if (sentAgentMessage) execution.sentAgentMessages.push(sentAgentMessage);
 		} else if (t === "error") {
 			const c = incoming.content as { ename: string; evalue: string; traceback: string[] };
 			execution.error = c;
@@ -1011,6 +1058,7 @@ export class KernelManager {
 			result,
 			diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
 			attachments: execution.attachments.length > 0 ? execution.attachments : undefined,
+			sentAgentMessages: execution.sentAgentMessages.length > 0 ? execution.sentAgentMessages : undefined,
 			error: execution.error,
 			status,
 			durationMs: Date.now() - execution.started,

@@ -44,11 +44,13 @@ import { sleep } from "../utils/sleep.js";
 import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import {
 	AGENT_MESSAGE_SKILL_NAME,
+	type AgentSessionMessage,
 	type AgentSessionMessageController,
 	type AgentSessionMessageListResult,
 	type AgentSessionMessageReceipt,
 	assertDirectAgentMessageTarget,
 	createAgentMessageHostHandlers,
+	isAgentSessionMessage,
 	normalizeAgentSessionMessage,
 	normalizeAgentSessionMessageDeliveryMode,
 	parseAgentSessionMessagePromptId,
@@ -404,6 +406,7 @@ export interface PromptOptions {
 	skipInputHandlers?: boolean;
 	agentMessageId?: string;
 	content?: (TextContent | ImageContent)[];
+	customMessage?: CustomMessage;
 }
 
 interface InternalPromptOptions extends PromptOptions {
@@ -481,6 +484,13 @@ function queuedMessagePreview(message: { text: string; previewLabel?: string }):
 	return message.previewLabel ? `${message.previewLabel}: ${message.text}` : message.text;
 }
 
+function queuedAgentMessagePreview(message: QueuedSteeringMessage | QueuedFollowUpMessage): string {
+	if (isAgentSessionMessage(message.message)) {
+		return `Agent message received: ${message.message.details.message}`;
+	}
+	return queuedMessagePreview(message);
+}
+
 function injectedMessagePreviewLabel(message: CustomMessage): string | undefined {
 	switch (message.customType) {
 		case HEARTBEAT_PROMPT_CUSTOM_TYPE:
@@ -495,7 +505,7 @@ function injectedMessagePreviewLabel(message: CustomMessage): string | undefined
 interface AcceptedAgentMessagePrompt {
 	text: string;
 	agentMessageId: string;
-	message: UserMessage;
+	message: QueuedAgentMessage;
 	messages: Set<AgentMessage>;
 	/** Pending nextTurn messages drained into this prompt; restored to the queue if the prompt is cleared. */
 	pendingNextTurnMessages: CustomMessage[];
@@ -943,8 +953,8 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: this._steeringMessages.map(queuedMessagePreview),
-			followUp: this._followUpMessages.map(queuedMessagePreview),
+			steering: this._steeringMessages.map(queuedAgentMessagePreview),
+			followUp: this._followUpMessages.map(queuedAgentMessagePreview),
 		});
 	}
 
@@ -1981,7 +1991,9 @@ export class AgentSession {
 
 	private _isPromptTurnStartMessage(message: AgentMessage): boolean {
 		return (
-			message.role === "user" || (message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE)
+			message.role === "user" ||
+			isAgentSessionMessage(message) ||
+			(message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE)
 		);
 	}
 
@@ -2442,23 +2454,30 @@ export class AgentSession {
 	}
 
 	async acceptAgentMessagePrompt(text: string, options?: PromptOptions): Promise<void> {
+		const customMessage =
+			options?.customMessage && isAgentSessionMessage(options.customMessage) ? options.customMessage : undefined;
 		return this._prompt(text, {
 			...options,
 			expandPromptTemplates: false,
 			skipInputHandlers: true,
 			skipPrePromptWork: true,
 			returnAfterAccepted: true,
-			agentMessageId: options?.agentMessageId ?? parseAgentSessionMessagePromptId(text),
+			agentMessageId: options?.agentMessageId ?? customMessage?.details.id ?? parseAgentSessionMessagePromptId(text),
+			customMessage,
 		});
 	}
 
-	async queueAgentMessagePrompt(text: string, streamingBehavior: "steer" | "followUp"): Promise<boolean> {
-		const agentMessageId = parseAgentSessionMessagePromptId(text);
+	async queueAgentMessagePrompt(
+		text: string,
+		streamingBehavior: "steer" | "followUp",
+		customMessage?: AgentSessionMessage,
+	): Promise<boolean> {
+		const agentMessageId = customMessage?.details.id ?? parseAgentSessionMessagePromptId(text);
 		if (streamingBehavior === "steer") {
-			await this._queueSteer(text, undefined, { agentMessageId });
+			await this._queueSteer(text, undefined, { agentMessageId, message: customMessage });
 			return true;
 		}
-		return this._queueFollowUp(text, undefined, { agentMessageId });
+		return this._queueFollowUp(text, undefined, { agentMessageId, message: customMessage });
 	}
 
 	async promptHeartbeat(job: AgentCronJob, options?: PromptOptions): Promise<void> {
@@ -2708,6 +2727,7 @@ export class AgentSession {
 					{
 						queueKey: options.followUpQueueKey,
 						agentMessageId: options.agentMessageId,
+						customMessage: options.customMessage,
 					},
 				);
 				if (!queued) {
@@ -2756,12 +2776,14 @@ export class AgentSession {
 				if (!options?.content && currentImages) {
 					userContent.push(...currentImages);
 				}
-				const userMessage: AgentMessage = {
-					role: "user",
-					content: userContent,
-					timestamp: Date.now(),
-				};
-				messages.push(userMessage);
+				const promptMessage: QueuedAgentMessage = options.customMessage
+					? cloneCustomMessage(options.customMessage)
+					: {
+							role: "user",
+							content: userContent,
+							timestamp: Date.now(),
+						};
+				messages.push(promptMessage);
 				if (options.agentMessageId !== undefined && options.returnAfterAccepted) {
 					let resolveAccepted = () => {};
 					let rejectAccepted = (_error: Error) => {};
@@ -2772,8 +2794,8 @@ export class AgentSession {
 					acceptedAgentMessagePrompt = {
 						text: expandedText,
 						agentMessageId: options.agentMessageId,
-						message: userMessage,
-						messages: new Set<AgentMessage>([...drainedNextTurnMessages, userMessage]),
+						message: promptMessage,
+						messages: new Set<AgentMessage>([...drainedNextTurnMessages, promptMessage]),
 						pendingNextTurnMessages: drainedNextTurnMessages,
 						deliveredPendingNextTurnMessages: new Set(),
 						accepted,
@@ -2895,6 +2917,7 @@ export class AgentSession {
 				{
 					queueKey: options.followUpQueueKey,
 					agentMessageId: options.agentMessageId,
+					customMessage: options.customMessage,
 				},
 			);
 			if (!queued) {
@@ -3147,14 +3170,20 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		streamingBehavior: "steer" | "followUp",
-		options: { queueKey?: string; agentMessageId?: string } = {},
+		options: { queueKey?: string; agentMessageId?: string; customMessage?: CustomMessage } = {},
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
 		const content = this._buildPromptContent(text, images, pendingNextTurnMessages);
+		const message = options.customMessage ? { ...cloneCustomMessage(options.customMessage), content } : undefined;
 		try {
 			if (streamingBehavior === "followUp") {
-				const queued = await this._queueFollowUp(text, undefined, { ...options, content });
+				const queued = await this._queueFollowUp(text, undefined, {
+					queueKey: options.queueKey,
+					agentMessageId: options.agentMessageId,
+					content,
+					message,
+				});
 				if (!queued) {
 					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
 				}
@@ -3164,6 +3193,7 @@ export class AgentSession {
 				agentMessageId: options.agentMessageId,
 				queueKey: options.queueKey,
 				content,
+				message,
 			});
 			return true;
 		} catch (error) {
@@ -3410,12 +3440,10 @@ export class AgentSession {
 		if (steering.length === 0 && followUp.length === 0 && !acceptedMatches) {
 			return { steering: [], followUp: [] };
 		}
-		const steeringToRemove = new Set(steering.map((message) => message.message));
-		const followUpToRemove = new Set(followUp.map((message) => message.message));
+		const steeringToRemove = new Set<AgentMessage>(steering.map((message) => message.message));
+		const followUpToRemove = new Set<AgentMessage>(followUp.map((message) => message.message));
 		const removedQueuedMessages = new Set(
-			this.agent.removeQueuedMessages(
-				(message) => message.role === "user" && (steeringToRemove.has(message) || followUpToRemove.has(message)),
-			),
+			this.agent.removeQueuedMessages((message) => steeringToRemove.has(message) || followUpToRemove.has(message)),
 		);
 		const removedSteeringMessages = steering.filter((message) => removedQueuedMessages.has(message.message));
 		const removedFollowUpMessages = followUp.filter((message) => removedQueuedMessages.has(message.message));
@@ -3469,7 +3497,7 @@ export class AgentSession {
 	}
 
 	getSteeringMessagePreviews(): readonly string[] {
-		return this._steeringMessages.map(queuedMessagePreview);
+		return this._steeringMessages.map(queuedAgentMessagePreview);
 	}
 
 	/** Get pending follow-up messages (read-only) */
@@ -3478,7 +3506,7 @@ export class AgentSession {
 	}
 
 	getFollowUpMessagePreviews(): readonly string[] {
-		return this._followUpMessages.map(queuedMessagePreview);
+		return this._followUpMessages.map(queuedAgentMessagePreview);
 	}
 
 	getSteeringQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
