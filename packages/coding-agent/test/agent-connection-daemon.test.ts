@@ -565,6 +565,7 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-original",
 			reason: "update",
 		});
+		expect(fakeClient.closeCount).toBe(1);
 		expect(fakeClient.reconnectCount).toBe(1);
 		fakeClient.emitClose(new Error("Daemon socket closed"));
 
