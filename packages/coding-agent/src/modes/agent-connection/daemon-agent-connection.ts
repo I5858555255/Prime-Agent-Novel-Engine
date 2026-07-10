@@ -802,10 +802,13 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (this.updateReconnectPromise) {
 			return this.updateReconnectPromise;
 		}
-		// The update notice can arrive before the old transport closes. Drop it once
-		// so reconnect() cannot keep polling the pre-update daemon.
-		this.client.close();
-		const reconnectPromise = this.restoreConnectionAfterUpdate()
+		const reconnectPromise = Promise.resolve()
+			.then(() => {
+				// Register the recovery operation before dropping the old transport so
+				// a synchronous close notification cannot start a second restore loop.
+				this.client.close();
+				return this.restoreConnectionAfterUpdate();
+			})
 			.catch(async (error: unknown) => {
 				this.updateRestartPending = false;
 				this.updateReconnectFailed = true;

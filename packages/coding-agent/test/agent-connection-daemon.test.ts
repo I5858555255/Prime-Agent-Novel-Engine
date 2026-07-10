@@ -33,6 +33,7 @@ class FakeDaemonClient {
 	restoredAttachGate: Promise<void> | undefined;
 	restoredAttachCompleted = 0;
 	closeCount = 0;
+	emitCloseOnClose = false;
 	reconnectCount = 0;
 	reconnectError: Error | undefined;
 	abortBashUnknownCommand = false;
@@ -395,6 +396,9 @@ class FakeDaemonClient {
 
 	close(): void {
 		this.closeCount++;
+		if (this.emitCloseOnClose) {
+			this.emitClose(new Error("Daemon socket closed"));
+		}
 	}
 }
 
@@ -534,6 +538,7 @@ function emitSequencedQueueUpdate(client: FakeDaemonClient, activeSessionId: str
 describe("DaemonAgentConnection", () => {
 	it("reattaches an open window to its restored session after an update restart", async () => {
 		const fakeClient = new FakeDaemonClient();
+		fakeClient.emitCloseOnClose = true;
 		const restoredMessages: AgentMessage[] = [{ role: "user", content: "restored prompt", timestamp: 2 }];
 		fakeClient.updateRestartSessions = [
 			{
@@ -565,9 +570,9 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-original",
 			reason: "update",
 		});
+		await Promise.resolve();
 		expect(fakeClient.closeCount).toBe(1);
 		expect(fakeClient.reconnectCount).toBe(1);
-		fakeClient.emitClose(new Error("Daemon socket closed"));
 
 		await expect(restored).resolves.toMatchObject({
 			type: "session_replaced",
