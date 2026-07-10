@@ -195,6 +195,17 @@ describe("ENG-4509 side questions", () => {
 		expect(rendered).toContain("\x1b[39mReadable response");
 	});
 
+	it("keeps streamed text when a side question is cancelled", () => {
+		const component = new SideQuestionComponent(
+			{ id: "question-5", question: "Partial?", answer: "Useful partial response", status: "cancelled" },
+			() => 8,
+		);
+		const rendered = stripAnsi(component.render(40).join("\n"));
+
+		expect(rendered).toContain("Useful partial response");
+		expect(rendered).not.toContain("Cancelled");
+	});
+
 	it("closes and cancels a running pane before handling other Escape actions", () => {
 		const abortSideQuestion = vi.fn(async () => true);
 		const takeEscapeRepeatAction = vi.fn();

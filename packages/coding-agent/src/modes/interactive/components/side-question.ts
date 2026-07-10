@@ -46,17 +46,17 @@ export class SideQuestionComponent implements Component {
 	}
 
 	private renderAnswer(width: number): string[] {
+		if (this.event.answer) {
+			return this.answer.render(width);
+		}
 		if (this.event.errorMessage) {
 			return new Text(theme.fg("error", this.event.errorMessage), this.paddingX, 0).render(width);
 		}
 		if (this.event.status === "cancelled") {
 			return new Text(theme.fg("userMessageText", "Cancelled"), this.paddingX, 0).render(width);
 		}
-		if (!this.event.answer) {
-			const message = this.event.status === "complete" ? "No response" : "Thinking…";
-			return new Text(theme.fg("userMessageText", message), this.paddingX, 0).render(width);
-		}
-		return this.answer.render(width);
+		const message = this.event.status === "complete" ? "No response" : "Thinking…";
+		return new Text(theme.fg("userMessageText", message), this.paddingX, 0).render(width);
 	}
 
 	private applySurface(line: string, width: number): string {

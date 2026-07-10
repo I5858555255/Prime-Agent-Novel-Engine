@@ -4008,9 +4008,7 @@ export class InteractiveMode {
 					return;
 				}
 
-				if (this.sideQuestionEvent?.status !== "running") {
-					this.clearSideQuestion();
-				}
+				this.clearSideQuestion({ abort: true });
 
 				// Handle bash command (! for normal, !! for excluded from context)
 				if (text.startsWith("!")) {
