@@ -37,7 +37,7 @@ import type {
 	AgentConnectionSavedSessionScope,
 	AgentConnectionScopedModel,
 	AgentConnectionSessionContext,
-	AgentConnectionSessionListProgress,
+	AgentConnectionSessionListCallbacks,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
 	AgentConnectionSlashCommand,
@@ -130,16 +130,16 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async listSavedSessions(
 		scope: AgentConnectionSavedSessionScope,
-		onProgress?: AgentConnectionSessionListProgress,
+		callbacks?: AgentConnectionSessionListCallbacks,
 	): Promise<AgentConnectionSavedSessionInfo[]> {
 		if (scope === "current") {
 			return SessionManager.list(
 				this.session.sessionManager.getCwd(),
 				this.session.sessionManager.getSessionDir(),
-				onProgress,
+				callbacks,
 			);
 		}
-		return SessionManager.listAll(onProgress, this.session.sessionManager.getSessionDir());
+		return SessionManager.listAll(callbacks, this.session.sessionManager.getSessionDir());
 	}
 
 	async getQueue(): Promise<AgentConnectionQueueState> {
@@ -151,6 +151,12 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async clearQueue(): Promise<AgentConnectionQueueState> {
 		return this.session.clearQueue();
+	}
+
+	async abortAndClearQueue(): Promise<AgentConnectionQueueState> {
+		const queue = this.session.clearQueue();
+		this.session.requestAbort();
+		return queue;
 	}
 
 	async listCronJobs(_options: { includeInactive?: boolean } = {}): Promise<AgentCronJob[]> {
@@ -221,7 +227,7 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async abort(): Promise<void> {
-		await this.session.abort();
+		this.session.requestAbort();
 	}
 
 	async cancelRlmChild(childId: string): Promise<boolean> {

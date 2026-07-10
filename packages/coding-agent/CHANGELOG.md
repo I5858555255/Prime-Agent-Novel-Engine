@@ -3,8 +3,20 @@
 ## [Unreleased]
 
 - Changed scheduled heartbeat prompts to steer (interrupt the current turn) by default, with a `steer`/`follow_up` delivery mode selectable via `/heartbeat --steer|--follow-up` and the `rlm_heartbeat` skill's `delivery_mode` argument.
+
+## [0.2.8] - 2026-07-09
+
+- Added built-in Herdr integration that reports agent lifecycle state to Herdr panes automatically, without requiring `herdr integration install pi`.
+- Changed Escape to interrupt active work with a visible abort notice, double Escape to open the session tree from an empty prompt or clear an idle draft, and `?` to show shortcuts ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
+- Changed new-chat guidance to show concise shell, command, file, and shortcut hints, with Agents View first and `? for shortcuts` after the model and effort ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
+- Changed `?` shortcut help to appear as a temporary compact panel below the transcript, while `/hotkeys` shows the full reference without Ctrl+Z ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
+- Fixed Escape repeats around autocomplete, queued draft restoration, whitespace-only drafts, and active background work ([ENG-4489](https://linear.app/primeintellect/issue/ENG-4489/rewire-prime-agent-shortcuts-to-match-claude-code-flow)).
+- Fixed the agents-view splash shifting when opening an agent session ([ENG-4517](https://linear.app/primeintellect/issue/ENG-4517)).
+- Changed `/model` to sort featured flagship models above a provider's long tail (with a numeric-aware alphabetical tiebreak), so the full Prime Inference catalog doesn't flood the picker.
+- Fixed selector prompts and choices filling their background through the terminal's right edge.
 - Changed automatic harness refinement to be enabled by default while keeping `autoRefine.enabled: false` as the opt-out.
 - Fixed non-numeric `autoRefine.turnInterval` and `autoRefine.cooldownMs` settings falling back to defaults instead of silently enabling a noisy auto-refine loop.
+- Fixed all session-resume entry points to share a searchable full-screen picker, stream results while loading, and support renaming ([ENG-4513](https://linear.app/primeintellect/issue/ENG-4513/resume-in-agents-view-is-broken)).
 
 ## [0.2.7] - 2026-07-08
 
@@ -12,7 +24,9 @@
 - Changed `attach_image` to resize and compress large inline image attachments before storing them for rendering and replay ([#340](https://github.com/PrimeIntellect-ai/prime-agent/pull/340) by [@sethkarten](https://github.com/sethkarten)).
 - Fixed heartbeat and goal continuation prompts rendering like ordinary user messages ([ENG-4482](https://linear.app/primeintellect/issue/ENG-4482/heartbeat-message-should-have-a-different-ui-from-user-message)).
 - Fixed `/heartbeat` guidance to show `stop` and the `every <duration> <instruction>` interval syntax ([ENG-4484](https://linear.app/primeintellect/issue/ENG-4484/improve-heartbeat-command-syntax-guidance-in-ui)).
+- Fixed Ctrl+C canceling the active turn, bash command, and IPython kernel execution deterministically, with a compact recovery prompt and model-visible reset notice when an interrupted IPython cell keeps running ([ENG-4490](https://linear.app/primeintellect/issue/ENG-4490)).
 - Fixed login dialogs in fullscreen so sign-in URLs can be selected natively ([ENG-4480](https://linear.app/primeintellect/issue/ENG-4480/new-fullscreen-tui-makes-it-impossible-to-copy-login-url)).
+- Fixed `/model` opening and selection staying blocked on live model refreshes ([ENG-4505](https://linear.app/primeintellect/issue/ENG-4505/model-ui-is-extremely-slow)).
 - Fixed provider auth failures leaving stale credentials shown as connected in `/login` ([ENG-4491](https://linear.app/primeintellect/issue/ENG-4491/mark-provider-stale-after-repeated-401s)).
 - Fixed typing into the prompt after highlighting an inline subagent ([ENG-4494](https://linear.app/primeintellect/issue/ENG-4494/allow-typing-after-highlighting-a-subagent)).
 - Fixed session-targeted heartbeat jobs staying scheduled after sessions are killed or saved sessions are deleted ([#332](https://github.com/PrimeIntellect-ai/prime-agent/pull/332)).
