@@ -1,7 +1,7 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RestoreResult } from "../../../src/core/kernel/state-snapshot.js";
 import {
 	type CustomMessage,
@@ -17,6 +17,11 @@ import { createHarness, getMessageText, getUserTexts, type Harness } from "../ha
 
 type StateRestoreHost = {
 	_onIpythonStateRestored(result: RestoreResult): void;
+};
+
+type QueueDrainHost = {
+	_followUpMessages: Array<{ prefixMessages: CustomMessage[]; message: AgentMessage }>;
+	_drainQueuedMessagesAfterBash(): Promise<void>;
 };
 
 function stripAnsi(text: string): string {
@@ -132,5 +137,39 @@ describe("ENG-4530 IPython state restore message", () => {
 		expect(render(component)).toContain("Started fresh IPython kernel");
 		component.setExpanded(true);
 		expect(render(component)).not.toContain("restore details");
+	});
+
+	it("does not requeue prefixes already delivered before a drain failure", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.sendCustomMessage(
+			{
+				customType: IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
+				content: "restore context",
+				display: true,
+				details: { restored: true },
+			},
+			{ deliverAs: "nextTurn" },
+		);
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		await harness.session.prompt("queued prompt", { streamingBehavior: "followUp" });
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+
+		const queueHost = harness.session as unknown as QueueDrainHost;
+		const queued = queueHost._followUpMessages[0];
+		const deliveredPrefix = queued?.prefixMessages[0];
+		if (!queued || !deliveredPrefix) {
+			throw new Error("Expected queued restore context");
+		}
+		vi.spyOn(harness.session.agent, "prompt").mockImplementation(async () => {
+			harness.session.agent.state.messages.push(deliveredPrefix);
+			throw new Error("partial delivery failed");
+		});
+		const followUp = vi.spyOn(harness.session.agent, "followUp");
+
+		await queueHost._drainQueuedMessagesAfterBash();
+
+		expect(queued.prefixMessages).toEqual([]);
+		expect(followUp).toHaveBeenCalledWith([queued.message]);
 	});
 });

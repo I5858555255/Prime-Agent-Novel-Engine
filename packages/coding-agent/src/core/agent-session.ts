@@ -6345,16 +6345,21 @@ export class AgentSession {
 			await this.agent.prompt([...nextTurnMessages, ...queuedMessages]);
 			await this.waitForRetry();
 		} catch {
-			this._pendingNextTurnMessages.unshift(...nextTurnMessages.map((message) => ({ ...message })));
+			const deliveredMessages = new Set(this.agent.state.messages);
+			this._pendingNextTurnMessages.unshift(
+				...nextTurnMessages.filter((message) => !deliveredMessages.has(message)).map((message) => ({ ...message })),
+			);
 			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
 			const queuedFollowUps = new Set(this._followUpMessages.map((message) => message.message));
 			for (const queued of drainedSteeringMessages) {
-				if (queuedSteering.has(queued.message)) {
+				queued.prefixMessages = queued.prefixMessages.filter((message) => !deliveredMessages.has(message));
+				if (queuedSteering.has(queued.message) && !deliveredMessages.has(queued.message)) {
 					this.agent.steer([...queued.prefixMessages, queued.message]);
 				}
 			}
 			for (const queued of drainedFollowUpMessages) {
-				if (queuedFollowUps.has(queued.message)) {
+				queued.prefixMessages = queued.prefixMessages.filter((message) => !deliveredMessages.has(message));
+				if (queuedFollowUps.has(queued.message) && !deliveredMessages.has(queued.message)) {
 					this.agent.followUp([...queued.prefixMessages, queued.message]);
 				}
 			}
