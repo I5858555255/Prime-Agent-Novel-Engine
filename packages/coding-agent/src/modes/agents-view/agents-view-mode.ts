@@ -81,8 +81,7 @@ import {
 } from "./agents-view-state.js";
 
 const POLL_INTERVAL_MS = 1000;
-const RECONNECT_TIMEOUT_MS = 120000;
-const RECONNECT_RETRY_MS = 100;
+const RECONNECT_RETRY_MS = 1000;
 const EXIT_HINT_DURATION_MS = 2000;
 const DELETE_CONFIRM_DURATION_MS = 2000;
 const STATUS_MESSAGE_DURATION_MS = 4500;
@@ -1737,25 +1736,28 @@ class AgentsViewMode implements Component, Focusable {
 		try {
 			const response = await client.request(createAgentsViewListCommand());
 			const data = requireDaemonData(response);
-			const sessions = expectSessionList(data);
-			this.lastListedSummaries = sessions;
-			const visibleSessions = sessions.filter((summary) =>
-				shouldShowAgentsViewSession(summary, this.inactiveAgentIdentities.has(getSummaryIdentity(summary))),
-			);
-			this.lastVisibleSummaries = this.withPendingDeleteSession(visibleSessions);
-			this.rows = buildAgentsViewRows(
-				this.lastVisibleSummaries,
-				this.expandedSubagentParents,
-				this.programShownParents,
-			);
-			this.applyPendingAncestorExpansion();
-			this.restoreSelection();
-			this.ui.requestRender();
+			this.applySessionList(expectSessionList(data));
 		} catch (error) {
 			if (!this.reconnectPromise) {
 				this.setStatusMessage(formatError("Failed to refresh agents", error));
 			}
 		}
+	}
+
+	private applySessionList(sessions: SessionSummary[]): void {
+		this.lastListedSummaries = sessions;
+		const visibleSessions = sessions.filter((summary) =>
+			shouldShowAgentsViewSession(summary, this.inactiveAgentIdentities.has(getSummaryIdentity(summary))),
+		);
+		this.lastVisibleSummaries = this.withPendingDeleteSession(visibleSessions);
+		this.rows = buildAgentsViewRows(
+			this.lastVisibleSummaries,
+			this.expandedSubagentParents,
+			this.programShownParents,
+		);
+		this.applyPendingAncestorExpansion();
+		this.restoreSelection();
+		this.ui.requestRender();
 	}
 
 	private withPendingDeleteSession(sessions: readonly SessionSummary[]): SessionSummary[] {
@@ -1844,12 +1846,12 @@ class AgentsViewMode implements Component, Focusable {
 
 	private subscribeToClientClose(client: DaemonClient): void {
 		this.unsubscribeClientClose?.();
-		this.unsubscribeClientClose = client.onClose((error) => {
+		this.unsubscribeClientClose = client.onClose(() => {
 			if (this.stopped || client !== this.client || this.reconnectPromise) {
 				return;
 			}
 			this.setStatusMessage("Daemon restarted; reconnecting...", { sticky: true });
-			const reconnectPromise = this.reconnectClient(client, error).finally(() => {
+			const reconnectPromise = this.reconnectClient(client).finally(() => {
 				if (this.reconnectPromise === reconnectPromise) {
 					this.reconnectPromise = undefined;
 				}
@@ -1858,30 +1860,20 @@ class AgentsViewMode implements Component, Focusable {
 		});
 	}
 
-	private async reconnectClient(client: DaemonClient, closeError: Error): Promise<void> {
-		const deadline = Date.now() + RECONNECT_TIMEOUT_MS;
-		let lastError: unknown = closeError;
-		while (!this.stopped && client === this.client && Date.now() < deadline) {
+	private async reconnectClient(client: DaemonClient): Promise<void> {
+		while (!this.stopped && client === this.client) {
 			try {
 				await client.reconnect(1000);
 				const response = await client.request(createAgentsViewListCommand());
 				const data = requireDaemonData(response);
 				const sessions = expectSessionList(data);
-				this.lastListedSummaries = sessions;
-				this.reconnectPromise = undefined;
 				this.setStatusMessage("Reconnected after daemon restart", { render: false });
-				await this.refreshSessions();
+				this.applySessionList(sessions);
 				return;
-			} catch (error) {
-				lastError = error;
+			} catch {
+				// Keep the existing rows visible and retry until the view exits or the daemon returns.
 			}
 			await new Promise<void>((resolve) => setTimeout(resolve, RECONNECT_RETRY_MS));
-		}
-		if (!this.stopped && client === this.client) {
-			this.setStatusMessage(formatError("Failed to reconnect to daemon", lastError), {
-				tone: "error",
-				sticky: true,
-			});
 		}
 	}
 

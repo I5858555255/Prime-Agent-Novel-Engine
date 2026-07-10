@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import {
 	cleanupDaemonSocketPath,
@@ -78,6 +79,45 @@ describe("defaultDaemonSocketPath", () => {
 						}),
 				),
 			);
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not unlink a socket while another daemon owns the path lock", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const dir = mkdtempSync(join(tmpdir(), "pa-socket-lock-"));
+		const socketPath = join(dir, "daemon.sock");
+		const server = createServer();
+		let releaseLock: (() => Promise<void>) | undefined;
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(socketPath, resolve);
+			});
+			const identity = getDaemonSocketIdentity(socketPath);
+			if (!identity) {
+				throw new Error("Expected a Unix daemon socket identity");
+			}
+			releaseLock = await lockfile.lock(socketPath, { realpath: false });
+
+			cleanupDaemonSocketPath(socketPath, identity);
+
+			await expect(
+				new Promise<void>((resolve, reject) => {
+					const client = createConnection(socketPath);
+					client.once("connect", () => {
+						client.destroy();
+						resolve();
+					});
+					client.once("error", reject);
+				}),
+			).resolves.toBeUndefined();
+		} finally {
+			await releaseLock?.();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});

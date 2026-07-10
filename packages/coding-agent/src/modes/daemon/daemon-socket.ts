@@ -2,11 +2,14 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 
 const DAEMON_SOCKET_MODE = 0o600;
 const DAEMON_SOCKET_DIR_MODE = 0o700;
 const DAEMON_SOCKET_RELEASE_GRACE_MS = 1000;
 const DAEMON_SOCKET_RELEASE_POLL_MS = 25;
+const DAEMON_SOCKET_LOCK_STALE_MS = 10000;
+const DAEMON_SOCKET_LOCK_UPDATE_MS = 2000;
 
 export interface DaemonSocketIdentity {
 	dev: number;
@@ -23,7 +26,29 @@ export function defaultDaemonSocketPath(): string {
 export async function prepareDaemonSocketPath(socketPath: string): Promise<void> {
 	ensureDefaultDaemonSocketDir(socketPath);
 
-	if (process.platform === "win32" || !existsSync(socketPath)) {
+	if (process.platform === "win32") {
+		return;
+	}
+	const releaseLock = await lockfile.lock(socketPath, {
+		realpath: false,
+		stale: DAEMON_SOCKET_LOCK_STALE_MS,
+		update: DAEMON_SOCKET_LOCK_UPDATE_MS,
+		retries: {
+			retries: 600,
+			factor: 1,
+			minTimeout: DAEMON_SOCKET_RELEASE_POLL_MS,
+			maxTimeout: DAEMON_SOCKET_RELEASE_POLL_MS,
+		},
+	});
+	try {
+		await prepareUnixDaemonSocketPath(socketPath);
+	} finally {
+		await releaseLock();
+	}
+}
+
+async function prepareUnixDaemonSocketPath(socketPath: string): Promise<void> {
+	if (!existsSync(socketPath)) {
 		return;
 	}
 
@@ -89,6 +114,17 @@ export function cleanupDaemonSocketPath(socketPath: string, expectedIdentity?: D
 	if (process.platform === "win32") {
 		return;
 	}
+	let releaseLock: (() => void) | undefined;
+	try {
+		releaseLock = lockfile.lockSync(socketPath, {
+			realpath: false,
+			stale: DAEMON_SOCKET_LOCK_STALE_MS,
+			update: DAEMON_SOCKET_LOCK_UPDATE_MS,
+			retries: 0,
+		});
+	} catch {
+		return;
+	}
 	try {
 		if (!existsSync(socketPath)) {
 			return;
@@ -106,6 +142,12 @@ export function cleanupDaemonSocketPath(socketPath: string, expectedIdentity?: D
 		unlinkSync(socketPath);
 	} catch {
 		// Best effort cleanup; shutdown should not be blocked by socket unlink failures.
+	} finally {
+		try {
+			releaseLock();
+		} catch {
+			// Best effort cleanup; a failed release is recoverable as a stale lock.
+		}
 	}
 }
 
