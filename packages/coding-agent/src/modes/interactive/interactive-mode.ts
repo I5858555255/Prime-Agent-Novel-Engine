@@ -85,7 +85,6 @@ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.j
 import {
 	createCompactionSummaryMessage,
 	createHeartbeatPromptMessage,
-	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
@@ -2943,24 +2942,16 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/** Render the fixed-height recap area above the editor. */
+	/** Render the recap line above the editor when one exists. */
 	private renderRecap(): void {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
-		if (this.childAgentPanelMode) {
-			this.ui.requestRender();
-			return;
+		const recap = this.childAgentPanelMode ? undefined : this.sessionRecap?.trim();
+		if (recap) {
+			this.recapContainer.addChild(new TruncatedText(theme.fg("dim", `Recap: ${recap}`), 1, 0));
+			this.recapContainer.addChild(new Spacer(1));
 		}
-		const recap = this.sessionRecap?.trim();
-		this.recapContainer.addChild(new TruncatedText(recap ? theme.fg("dim", `Recap: ${recap}`) : "", 1, 0));
-		this.recapContainer.addChild(new Spacer(1));
 		this.ui.requestRender();
-	}
-
-	private clearStaleRecapForPromptTurn(): void {
-		this.sessionRecap = undefined;
-		this.renderRecap();
-		this.updatePendingMessagesDisplay();
 	}
 
 	private renderWidgetContainer(
@@ -4418,13 +4409,9 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
-					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
-						this.clearStaleRecapForPromptTurn();
-					}
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
-					this.clearStaleRecapForPromptTurn();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					this.startAssistantStreamingMessage(event.message);
