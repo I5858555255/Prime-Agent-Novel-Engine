@@ -3405,6 +3405,46 @@ describe("daemon mode helpers", () => {
 		expect(followUp).not.toHaveBeenCalled();
 	});
 
+	it("forwards queue keys when expanded daemon steer commands are queued", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const steer = vi.fn(async () => {});
+		const restoreSteeringMessage = vi.fn(async () => {});
+		const state = makeState("active-1") as ActiveSessionState & {
+			runtime: ActiveSessionState["runtime"] & {
+				session: {
+					steer: typeof steer;
+					restoreSteeringMessage: typeof restoreSteeringMessage;
+				};
+			};
+		};
+		state.runtime.session = { steer, restoreSteeringMessage } as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+
+		await internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+			id: "command-1",
+			type: "steer",
+			activeSessionId: state.activeSessionId,
+			message: "queued heartbeat",
+			queueKey: "heartbeat:job-1",
+			agentMessageId: "agentmsg_steer",
+		});
+
+		expect(steer).toHaveBeenCalledWith("queued heartbeat", undefined, {
+			queueKey: "heartbeat:job-1",
+			agentMessageId: "agentmsg_steer",
+		});
+		expect(restoreSteeringMessage).not.toHaveBeenCalled();
+	});
+
 	it("rejects invalid heartbeat delivery modes before persisting", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-delivery-mode-"));
 		try {

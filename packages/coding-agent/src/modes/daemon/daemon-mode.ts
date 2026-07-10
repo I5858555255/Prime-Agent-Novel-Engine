@@ -1482,7 +1482,10 @@ export class AgentDaemon {
 						customMessage: command.customMessage,
 					});
 				} else {
-					await state.runtime.session.steer(command.message, command.images);
+					await state.runtime.session.steer(command.message, command.images, {
+						queueKey: command.queueKey,
+						agentMessageId: command.agentMessageId,
+					});
 				}
 				return success(command.id, "steer");
 			}
