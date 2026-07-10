@@ -32,10 +32,7 @@ export type DaemonWorkerFrameHeader =
 			snapshotPurpose?: "attach" | "replacement" | "catchup";
 	  };
 
-export type DaemonCreateCommand = Extract<DaemonCommand, { type: "create" }> & {
-	/** Internal persisted cron identity used to guard worker runtime creation. */
-	cronJobId?: string;
-};
+export type DaemonCreateCommand = Extract<DaemonCommand, { type: "create" }>;
 
 export type DaemonWorkerCommand =
 	| { id?: string; type: "worker_auth"; token: string }

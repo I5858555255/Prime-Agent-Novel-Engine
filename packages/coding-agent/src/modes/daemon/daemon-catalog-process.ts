@@ -17,7 +17,6 @@ type CatalogRequest =
 	| { type: "request"; id: string; command: "resolve"; selector: string; cwd: string; sessionDir?: string }
 	| { type: "request"; id: string; command: "rename"; sessionPath: string; name: string }
 	| { type: "request"; id: string; command: "delete"; sessionPath: string }
-	| { type: "request"; id: string; command: "inspect"; sessionPath: string }
 	| { type: "request"; id: string; command: "archive"; sessionPath: string; sessionId: string }
 	| {
 			type: "request";
@@ -81,7 +80,6 @@ function isCatalogRequest(value: unknown): value is CatalogRequest {
 			candidate.command === "resolve" ||
 			candidate.command === "rename" ||
 			candidate.command === "delete" ||
-			candidate.command === "inspect" ||
 			candidate.command === "archive" ||
 			candidate.command === "mark_interrupted" ||
 			candidate.command === "shutdown")
@@ -176,16 +174,6 @@ async function handleCatalogRequest(request: CatalogRequest): Promise<void> {
 					data: await deleteSessionFile(request.sessionPath),
 				});
 				return;
-			case "inspect": {
-				const session = await readSessionInfo(request.sessionPath);
-				sendCatalogMessage({
-					type: "response",
-					id: request.id,
-					success: true,
-					data: { session: session ? serializeSessionInfo(session) : null },
-				});
-				return;
-			}
 			case "archive": {
 				const session = await readSessionInfo(request.sessionPath);
 				if (!session || session.id !== request.sessionId) {
@@ -289,16 +277,6 @@ export class DaemonCatalogClient {
 
 	delete(sessionPath: string): Promise<DeleteSessionFileResult> {
 		return this.request({ type: "request", id: randomUUID(), command: "delete", sessionPath });
-	}
-
-	async inspect(sessionPath: string): Promise<SessionInfo | null> {
-		const data = await this.request<{ session: SessionInfoWire | null }>({
-			type: "request",
-			id: randomUUID(),
-			command: "inspect",
-			sessionPath,
-		});
-		return data.session ? deserializeSessionInfo(data.session) : null;
 	}
 
 	async archive(sessionPath: string, sessionId: string): Promise<boolean> {

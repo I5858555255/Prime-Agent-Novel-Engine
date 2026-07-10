@@ -320,6 +320,52 @@ describe("daemon supervisor resident workers", () => {
 		await waitForSocketGone(socketPath);
 	}, 30_000);
 
+	it("cancels an orphan heartbeat instead of recreating a descriptorless active session", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const sessionDir = join(agentDir, "sessions");
+		const socketPath = join(tmpdir(), `prime-supervisor-orphan-cron-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+		mkdirSync(projectDir, { recursive: true });
+		const sessionManager = SessionManager.create(projectDir, sessionDir);
+		sessionManager.appendMessage({ role: "user", content: "old scheduled work", timestamp: 1 });
+		sessionManager.appendSessionState({ status: "active" });
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("Fixture session did not persist");
+		}
+		const cronStore = new AgentCronJobStore(getCronJobsPath(agentDir));
+		const heartbeat = cronStore.createHeartbeat({
+			activeSessionId: "deleted-worker",
+			sessionId: sessionManager.getSessionId(),
+			sessionFile,
+			cwd: projectDir,
+			scheduleText: "every 10s",
+			prompt: "continue old work",
+			now: new Date(Date.now() - 20_000),
+		});
+
+		const supervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, supervisor);
+		await waitForCondition(
+			() => cronStore.list().find((job) => job.id === heartbeat.id)?.status === "cancelled",
+			"Orphan heartbeat was not cancelled",
+		);
+
+		expect(countWorkerDescriptors(agentDir)).toBe(0);
+		const listed = await client.request({ type: "list" });
+		expect(listed.success).toBe(true);
+		expect(
+			requireSessionList(listed.success ? listed.data : undefined).filter(
+				(session) => session.activeSessionId || session.workerPid,
+			),
+		).toEqual([]);
+
+		await client.request({ type: "shutdown" });
+		client.close();
+		await waitForSocketGone(socketPath);
+	}, 30_000);
+
 	it("restarts an empty supervisor without requiring a resident worker", async () => {
 		const root = tempDir();
 		const agentDir = join(root, "agent");
@@ -346,6 +392,68 @@ describe("daemon supervisor resident workers", () => {
 		replacementClient.close();
 		await waitForSocketGone(socketPath);
 	});
+
+	it("archives resident roots and cancels their heartbeats on explicit daemon shutdown", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const sessionDir = join(agentDir, "sessions");
+		const socketPath = join(tmpdir(), `prime-supervisor-shutdown-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+		mkdirSync(projectDir, { recursive: true });
+		const sessionManager = SessionManager.create(projectDir, sessionDir);
+		sessionManager.appendMessage({ role: "user", content: "stop with daemon", timestamp: 1 });
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("Fixture session did not persist");
+		}
+
+		const supervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, supervisor);
+		const created = await client.request({
+			type: "create",
+			sessionPath: sessionFile,
+			config: { cwd: projectDir, agentDir, sessionDir, noTools: true, noExtensions: true },
+		});
+		if (!created.success) {
+			throw new Error(created.error);
+		}
+		const summary = requireSummary(created.data);
+		if (!summary.workerPid) {
+			throw new Error("Resident worker did not expose its pid");
+		}
+		workerPids.add(summary.workerPid);
+		const cronStore = new AgentCronJobStore(getCronJobsPath(agentDir));
+		const heartbeat = cronStore.createHeartbeat({
+			activeSessionId: summary.activeSessionId ?? summary.id,
+			sessionId: summary.sessionId,
+			sessionFile,
+			cwd: projectDir,
+			scheduleText: "every 1h",
+			prompt: "continue old work",
+		});
+
+		expect((await client.request({ type: "shutdown" })).success).toBe(true);
+		client.close();
+		await waitForSocketGone(socketPath);
+		await waitForProcessGone(summary.workerPid);
+		workerPids.delete(summary.workerPid);
+		expect(countWorkerDescriptors(agentDir)).toBe(0);
+		expect((await readSessionInfo(sessionFile))?.state).toEqual({ status: "archived" });
+		expect(cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({ status: "cancelled" });
+
+		const replacement = spawnSupervisor(agentDir, socketPath, projectDir);
+		const replacementClient = await connectEventually(socketPath, replacement);
+		const listed = await replacementClient.request({ type: "list" });
+		expect(listed.success).toBe(true);
+		expect(
+			requireSessionList(listed.success ? listed.data : undefined).filter(
+				(session) => session.activeSessionId || session.workerPid,
+			),
+		).toEqual([]);
+		await replacementClient.request({ type: "shutdown" });
+		replacementClient.close();
+		await waitForSocketGone(socketPath);
+	}, 30_000);
 
 	it("does not resurrect an intentionally stopped root when the supervisor dies during kill", async () => {
 		const root = tempDir();

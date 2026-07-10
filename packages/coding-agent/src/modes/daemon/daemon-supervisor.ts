@@ -32,7 +32,7 @@ import { createActiveSessionId, type DaemonSocketClient } from "./active-session
 import { CommandRecoveryJournal } from "./command-recovery-journal.js";
 import { CompactAssistantStreamReconstructor, isCompactAssistantDelta } from "./compact-session-stream.js";
 import { DAEMON_CATALOG_ROLE_ENV, DaemonCatalogClient } from "./daemon-catalog-process.js";
-import { deserializeDaemonError, RuntimeOpenCancelledError, serializeDaemonError } from "./daemon-errors.js";
+import { deserializeDaemonError, serializeDaemonError } from "./daemon-errors.js";
 import {
 	collectDaemonClientEnv,
 	createDaemonEventMeta,
@@ -678,7 +678,7 @@ export class DaemonSupervisor {
 			case "list_saved_sessions":
 				return this.handleSavedSessionList(client, command);
 			case "create": {
-				const worker = await this.createOrReuseWorker({ ...command, cronJobId: undefined });
+				const worker = await this.createOrReuseWorker(command);
 				const summary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 				if (!summary) {
 					throw new Error("Session worker started without a root session");
@@ -1999,39 +1999,15 @@ export class DaemonSupervisor {
 	}
 
 	private async runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> {
-		let runnableJob = this.cronStore.getDueJob(job.id);
+		const runnableJob = this.cronStore.getDueJob(job.id);
 		if (!runnableJob) {
 			return "skipped";
 		}
-		let match =
+		const match =
 			this.matchWorkers(runnableJob.activeSessionId)[0] ?? this.findWorkerBySessionFile(runnableJob.sessionFile);
 		if (!match) {
-			runnableJob = await this.getRunnablePersistedCronJob(job.id);
-			if (!runnableJob) {
-				return "skipped";
-			}
-			let worker: ResidentWorker;
-			try {
-				worker = await this.launchWorker({
-					type: "create",
-					sessionPath: runnableJob.sessionFile,
-					cronJobId: runnableJob.id,
-					config: {
-						...this.defaultSessionConfig,
-						cwd: runnableJob.cwd,
-					},
-				});
-			} catch (error) {
-				if (error instanceof RuntimeOpenCancelledError) {
-					return "skipped";
-				}
-				throw error;
-			}
-			const summary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
-			if (!summary) {
-				return "skipped";
-			}
-			match = { worker, summary };
+			this.cancelScheduledJobsForSessionFile(runnableJob.sessionFile);
+			return "skipped";
 		}
 		const currentJob = this.cronStore.getDueJob(runnableJob.id);
 		if (
@@ -2049,30 +2025,6 @@ export class DaemonSupervisor {
 		return response.success && (response.data as { result?: unknown } | undefined)?.result !== "skipped"
 			? undefined
 			: "skipped";
-	}
-
-	private async getRunnablePersistedCronJob(jobId: string): Promise<AgentCronJob | undefined> {
-		for (let attempt = 0; attempt < 2; attempt++) {
-			const job = this.cronStore.getDueJob(jobId);
-			if (!job) {
-				return undefined;
-			}
-			const sessionFile = resolve(job.sessionFile);
-			const sessionInfo = await this.catalog.inspect(sessionFile);
-			const current = this.cronStore.getDueJob(jobId);
-			if (!current) {
-				return undefined;
-			}
-			if (resolve(current.sessionFile) !== sessionFile || current.sessionId !== job.sessionId) {
-				continue;
-			}
-			if (!sessionInfo || sessionInfo.id !== current.sessionId || sessionInfo.state?.status !== "active") {
-				this.cancelScheduledJobsForSessionFile(current.sessionFile);
-				return undefined;
-			}
-			return current;
-		}
-		return undefined;
 	}
 
 	private cancelScheduledJobsForSessionFile(sessionFile: string): void {
@@ -2316,12 +2268,13 @@ export class DaemonSupervisor {
 		}
 		this.shuttingDown = true;
 		this.cronScheduler.stop();
-		await this.catalog.stop();
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
 		}
 		if (stopWorkers) {
-			await Promise.all([...this.workers.values()].map((worker) => this.stopWorker(worker, true, forceWorkers)));
+			await Promise.all(
+				[...this.workers.values()].map((worker) => this.stopWorker(worker, true, forceWorkers, true)),
+			);
 			if (!this.hasPersistedWorkerDescriptors()) {
 				rmSync(this.supervisorConfigPath, { force: true });
 			}
@@ -2332,6 +2285,7 @@ export class DaemonSupervisor {
 				worker.client = undefined;
 			}
 		}
+		await this.catalog.stop();
 		for (const client of this.clients) {
 			client.detachInput();
 			client.socket.end();
