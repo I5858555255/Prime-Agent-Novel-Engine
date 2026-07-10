@@ -4982,7 +4982,7 @@ export class InteractiveMode {
 	}
 
 	private getShortcutsTrayHint(): string | undefined {
-		if (!this.isNewChat()) {
+		if (!this.isNewChat() || this.editor.getText().length > 0) {
 			return undefined;
 		}
 		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : "/hotkeys for shortcuts";
@@ -5020,7 +5020,7 @@ export class InteractiveMode {
 		if (this.editor.getText().trim()) {
 			return undefined;
 		}
-		return keyHint("app.agents.back", "agents view");
+		return keyHint("app.agents.back", "Agents");
 	}
 
 	private getTrayContextLabel(): string | undefined {

@@ -19,12 +19,12 @@ describe("InteractiveMode startup hints", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	function createMode(sessionHasMessages = false, returnToAgentsView = false) {
+	function createMode(sessionHasMessages = false, returnToAgentsView = false, getEditorText = () => "") {
 		const mode = {
 			childAgentPanelMode: undefined,
 			sessionHasMessages,
 			options: { returnToAgentsView },
-			editor: { getText: () => "" },
+			editor: { getText: getEditorText },
 			connectionState: {
 				model: { name: "test-model", reasoning: true },
 				thinkingLevel: "high",
@@ -87,7 +87,24 @@ describe("InteractiveMode startup hints", () => {
 		const mode = createMode(false, true);
 		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(label)).toBe("← agents view  test-model • high  ? for shortcuts");
+		expect(stripAnsi(label)).toBe("← Agents  test-model • high  ? for shortcuts");
+	});
+
+	it("hides the fresh-chat shortcut hint while the prompt has text", () => {
+		let editorText = "";
+		const mode = createMode(false, false, () => editorText);
+		const getLabel = () => Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
+
+		expect(stripAnsi(getLabel())).toBe("test-model • high  ? for shortcuts");
+
+		editorText = "draft prompt";
+		expect(stripAnsi(getLabel())).toBe("test-model • high");
+
+		editorText = " ";
+		expect(stripAnsi(getLabel())).toBe("test-model • high");
+
+		editorText = "";
+		expect(stripAnsi(getLabel())).toBe("test-model • high  ? for shortcuts");
 	});
 
 	it("hides the tray shortcut guidance for chats with history", () => {
