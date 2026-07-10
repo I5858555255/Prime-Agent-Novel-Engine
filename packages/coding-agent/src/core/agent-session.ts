@@ -1034,17 +1034,17 @@ export class AgentSession {
 
 	private _rememberLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): boolean {
 		const messages = this._lateIpythonSentAgentMessages.get(toolCallId) ?? [];
-		if (messages.some((entry) => entry.id === message.id)) {
-			return false;
+		const isNew = !messages.some((entry) => entry.id === message.id);
+		if (isNew) {
+			messages.push(message);
+			this._lateIpythonSentAgentMessages.set(toolCallId, messages);
 		}
-		messages.push(message);
-		this._lateIpythonSentAgentMessages.set(toolCallId, messages);
 		for (let index = this.agent.state.messages.length - 1; index >= 0; index -= 1) {
 			if (appendSentAgentMessageToToolResult(this.agent.state.messages[index], toolCallId, message)) {
 				break;
 			}
 		}
-		return true;
+		return isNew;
 	}
 
 	private _applyLateIpythonSentAgentMessages(message: AgentMessage): void {
@@ -4234,6 +4234,7 @@ export class AgentSession {
 		);
 		const newEntries = this.sessionManager.getEntries();
 		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+		this._restoreLateIpythonSentAgentMessages();
 
 		// Get the saved compaction entry for the extension event
 		const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -6834,6 +6835,7 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			this._restoreLateIpythonSentAgentMessages();
 			this._reloadGoalStateFromBranch();
 
 			// Emit session_tree event

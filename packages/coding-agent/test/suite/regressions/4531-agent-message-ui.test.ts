@@ -177,6 +177,10 @@ describe("ENG-4531 agent message UI", () => {
 		expect(events).toContain("ipython_sent_agent_message");
 
 		toolResult.details = { status: "ok" };
+		host._restoreLateIpythonSentAgentMessages();
+		expect(toolResult.details).toMatchObject({ sentAgentMessages: [lateMessage] });
+
+		toolResult.details = { status: "ok" };
 		host._lateIpythonSentAgentMessages = new Map();
 		host._restoreLateIpythonSentAgentMessages();
 		expect(toolResult.details).toMatchObject({ sentAgentMessages: [lateMessage] });
