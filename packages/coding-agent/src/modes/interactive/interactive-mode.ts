@@ -185,12 +185,7 @@ import type {
 	InteractiveModeLocalToolRendererDefinition,
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
-import {
-	isOnboardingModelReady,
-	type OnboardingStartupState,
-	shouldRunOnboarding,
-	shouldRunPrimeCliOnboardingSplash,
-} from "./onboarding.js";
+import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -403,7 +398,7 @@ type GoalAnnouncementSnapshot = {
 
 type ModelSelectionResult = { status: "selected" } | { status: "cancelled" } | { status: "action"; actionId: string };
 
-type ModelFallbackWarningAction = "show" | "suppress" | "wait";
+type ModelFallbackWarningAction = "show" | "suppress";
 
 const MODEL_SELECTOR_ACTIONS: readonly ModelSelectorAction[] = [
 	{ id: "add_provider", label: "Add provider...", description: "subscription or API key" },
@@ -1258,10 +1253,9 @@ export class InteractiveMode {
 			}
 		};
 
-		const needsOnboarding = this.shouldRunOnboarding();
 		let deferredStartupNotificationsShown = false;
 		const showDeferredStartupNotifications = () => {
-			if (deferredStartupNotificationsShown || this.shouldRunOnboarding()) {
+			if (deferredStartupNotificationsShown) {
 				return;
 			}
 			deferredStartupNotificationsShown = true;
@@ -1303,42 +1297,24 @@ export class InteractiveMode {
 			if (modelFallbackWarningShown) {
 				return;
 			}
-			const action = this.getModelFallbackWarningAction(modelFallbackMessage, needsOnboarding);
-			if (action === "wait") {
-				return;
-			}
+			const action = this.getModelFallbackWarningAction(modelFallbackMessage);
 			modelFallbackWarningShown = true;
 			if (action === "show" && modelFallbackMessage) {
 				this.showWarning(modelFallbackMessage);
 			}
 		};
 
-		if (!needsOnboarding) {
-			showModelFallbackWarning();
-		}
-
-		let promptReady = !needsOnboarding;
-		if (needsOnboarding) {
-			promptReady = await this.runOnboardingFlow();
-		}
-
-		if (promptReady) {
-			showDeferredStartupNotifications();
-			showModelFallbackWarning();
-			void this.maybeWarnAboutAnthropicSubscriptionAuth();
-			await sendInitialPrompts();
-		}
+		await this.runStartupOnboarding();
+		showDeferredStartupNotifications();
+		showModelFallbackWarning();
+		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		await sendInitialPrompts();
 
 		// Main interactive loop
 		while (true) {
 			const userInput = await this.getUserInput();
 			if (userInput === undefined || this.returnToAgentsViewRequested) {
 				return "agents_view";
-			}
-			if (!(await this.ensurePromptReady())) {
-				this.editor.setText(userInput);
-				this.showStatus("Complete onboarding to send the restored prompt.");
-				continue;
 			}
 			showDeferredStartupNotifications();
 			showModelFallbackWarning();
@@ -1356,10 +1332,7 @@ export class InteractiveMode {
 		}
 	}
 
-	private getModelFallbackWarningAction(
-		modelFallbackMessage: string | undefined,
-		startupNeededOnboarding: boolean,
-	): ModelFallbackWarningAction {
+	private getModelFallbackWarningAction(modelFallbackMessage: string | undefined): ModelFallbackWarningAction {
 		if (!modelFallbackMessage) {
 			return "suppress";
 		}
@@ -1368,12 +1341,6 @@ export class InteractiveMode {
 		// visible to the daemon, or added after the snapshot was taken).
 		if (isNoModelsAvailableMessage(modelFallbackMessage) && this.getCurrentModel()) {
 			return "suppress";
-		}
-		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage) && !this.shouldRunOnboarding()) {
-			return "suppress";
-		}
-		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage)) {
-			return "wait";
 		}
 		return "show";
 	}
@@ -1394,81 +1361,50 @@ export class InteractiveMode {
 		return shouldRunPrimeCliOnboardingSplash(this.getOnboardingState());
 	}
 
-	private isCurrentModelReady(): boolean {
-		return isOnboardingModelReady(this.getOnboardingState());
-	}
-
-	private completeOnboarding(): void {
-		if (!this.settingsManager.getOnboardingCompleted()) {
-			this.settingsManager.setOnboardingCompleted(true);
+	private markOnboardingShown(): void {
+		if (!this.settingsManager.getOnboardingShown()) {
+			this.settingsManager.setOnboardingShown(true);
 		}
 	}
 
-	private completeOnboardingIfCurrentModelReady(): void {
-		if (this.isCurrentModelReady()) {
-			this.completeOnboarding();
-		}
-	}
-
-	private isOnboardingResolvedAfterModelPrompt(selectedModel: boolean): boolean {
-		if (selectedModel) {
-			this.completeOnboarding();
-			return true;
-		}
-		return !this.shouldRunOnboarding();
-	}
-
-	private async ensurePromptReady(): Promise<boolean> {
+	private async runStartupOnboarding(): Promise<boolean> {
 		if (!this.shouldRunOnboarding()) {
-			return true;
+			return false;
 		}
-		return this.runOnboardingFlow();
+
+		const showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash();
+		// Onboarding is a one-shot offer, never a runtime readiness gate. Persist
+		// before opening UI so any later process starts directly in the normal TUI.
+		this.markOnboardingShown();
+		await this.settingsManager.flush();
+		await this.runOnboardingFlow(showPrimeCliSplash);
+		return true;
 	}
 
-	private async runOnboardingFlow(): Promise<boolean> {
+	private async runOnboardingFlow(showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash()): Promise<void> {
 		this.modelRegistry.refresh();
-		if (this.shouldRunPrimeCliOnboardingSplash()) {
+		if (showPrimeCliSplash) {
 			const shouldContinue = await this.showOnboardingModelSelectionSplash();
 			if (!shouldContinue) {
-				this.showStatus("Model selection required. Use /model to continue.");
-				return false;
+				return;
 			}
 
-			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-				return true;
-			}
-
-			this.showStatus("Model selection required. Use /model to continue.");
-			return false;
+			await this.promptForModelSelection({ allowProviderSetup: true });
+			return;
 		}
 
 		const availableModels = await this.getModelCandidates();
 		if (availableModels.length > 0) {
-			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-				return true;
-			}
-
-			this.showStatus("Model selection required. Use /model to continue.");
-			return false;
+			await this.promptForModelSelection({ allowProviderSetup: true });
+			return;
 		}
 
 		const authResult = await this.showOnboardingPrimeLogin();
 		if (authResult.status !== "success") {
-			this.showStatus(
-				"Prime Intellect login required for onboarding. Use /login to configure other providers later.",
-			);
-			return false;
+			return;
 		}
 
-		const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-		if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-			return true;
-		}
-
-		this.showStatus("Model selection required. Use /model to continue.");
-		return false;
+		await this.promptForModelSelection({ allowProviderSetup: true });
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -6642,7 +6578,6 @@ export class InteractiveMode {
 			try {
 				this.showStatus(`Switching model: ${model.id}`);
 				await this.applySelectedModel(model);
-				this.completeOnboardingIfCurrentModelReady();
 				this.showStatus(`Model: ${model.id}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 				this.checkDaxnutsEasterEgg(model);
@@ -6950,7 +6885,6 @@ export class InteractiveMode {
 					this.showStatus(`Switching model: ${model.id}`);
 					try {
 						await this.applySelectedModel(model);
-						this.completeOnboardingIfCurrentModelReady();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 						this.checkDaxnutsEasterEgg(model);
@@ -7544,10 +7478,10 @@ export class InteractiveMode {
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
 		if (mode === "login") {
 			const authResult = await this.showLoginProviderSelector();
-			// Service credentials don't change the model, so skip the model picker.
+			// Refresh the model catalog lazily when the user explicitly opens /model.
+			// /login must never redirect into a separate command's UI.
 			if (authResult.status === "success" && authResult.kind !== "service") {
 				this.invalidateConnectionModels();
-				await this.promptForModelSelection();
 			}
 			// An MCP integration login enables its skill, so reload resources — but a
 			// reload is refused mid-turn, so tell the user to /reload (matching /mcp login).
