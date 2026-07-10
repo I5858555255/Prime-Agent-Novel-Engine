@@ -761,7 +761,7 @@ export class AgentDaemon {
 			runtimeKind: state.runtime.metadata.kind,
 			scheduleText: normalizeHeartbeatSchedule(schedule),
 			prompt: instruction,
-			deliveryMode,
+			deliveryMode: deliveryMode ?? previousHeartbeat?.deliveryMode,
 		});
 		if (previousHeartbeat) {
 			this.removeQueuedHeartbeatFollowUp(state, previousHeartbeat);

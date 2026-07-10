@@ -51,12 +51,11 @@ describe("parseHeartbeatCommand", () => {
 		expect(parseHeartbeatCommand("/heartbeat stop")).toEqual({ type: "clear" });
 	});
 
-	it("defaults new heartbeat instructions to every five minutes and steer delivery", () => {
+	it("leaves delivery mode unset when an instruction omits the delivery option", () => {
 		expect(parseHeartbeatCommand("/heartbeat check on me")).toEqual({
 			type: "set",
 			schedule: "every 5m",
 			instruction: "check on me",
-			deliveryMode: "steer",
 		});
 	});
 
@@ -65,19 +64,16 @@ describe("parseHeartbeatCommand", () => {
 			type: "set",
 			schedule: "every 30s",
 			instruction: "check on me",
-			deliveryMode: "steer",
 		});
 		expect(parseHeartbeatCommand("/heartbeat every 10m check status")).toEqual({
 			type: "set",
 			schedule: "every 10m",
 			instruction: "check status",
-			deliveryMode: "steer",
 		});
 		expect(parseHeartbeatCommand("/heartbeat every 10m -- check status")).toEqual({
 			type: "set",
 			schedule: "every 10m",
 			instruction: "check status",
-			deliveryMode: "steer",
 		});
 	});
 
@@ -145,7 +141,6 @@ describe("parseHeartbeatCommand", () => {
 			type: "set",
 			schedule: "every 5m",
 			instruction: "remind me to mention --follow-up in docs",
-			deliveryMode: "steer",
 		});
 	});
 

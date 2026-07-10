@@ -66,7 +66,7 @@ import {
 	uploadAgentTraceFile,
 } from "../../core/agent-traces.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
-import { type AgentCronJob, parseHeartbeatCommand } from "../../core/cron-jobs.js";
+import { type AgentCronJob, DEFAULT_HEARTBEAT_DELIVERY_MODE, parseHeartbeatCommand } from "../../core/cron-jobs.js";
 import type {
 	AutocompleteProviderFactory,
 	ContextUsage,
@@ -7879,7 +7879,7 @@ export class InteractiveMode {
 					);
 					this.patchConnectionState({ heartbeat });
 					this.showStatus(
-						`Heartbeat set\nDelivery: ${command.deliveryMode}\nNext run: ${heartbeat.nextRunAt ?? "-"}`,
+						`Heartbeat set\nDelivery: ${heartbeat.deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE}\nNext run: ${heartbeat.nextRunAt ?? "-"}`,
 					);
 					return;
 				}
@@ -7931,7 +7931,7 @@ export class InteractiveMode {
 			"",
 			`${theme.fg("dim", "Status:")} ${job.status}`,
 			`${theme.fg("dim", "Every:")} ${job.schedule.expression}`,
-			`${theme.fg("dim", "Delivery:")} ${job.deliveryMode ?? "steer"}`,
+			`${theme.fg("dim", "Delivery:")} ${job.deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE}`,
 			`${theme.fg("dim", "Instruction:")} ${job.prompt}`,
 			`${theme.fg("dim", "Next:")} ${next}`,
 			`${theme.fg("dim", "Last:")} ${last}`,

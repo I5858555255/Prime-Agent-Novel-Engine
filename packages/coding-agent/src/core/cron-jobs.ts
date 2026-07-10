@@ -91,7 +91,7 @@ export type ParsedHeartbeatCommand =
 	| { type: "pause" }
 	| { type: "resume" }
 	| { type: "clear" }
-	| { type: "set"; schedule: string; instruction: string; deliveryMode: AgentHeartbeatDeliveryMode };
+	| { type: "set"; schedule: string; instruction: string; deliveryMode?: AgentHeartbeatDeliveryMode };
 
 export interface AgentCronToolController {
 	getHeartbeat(): AgentCronJob | undefined;
@@ -811,7 +811,7 @@ export function parseHeartbeatCommand(input: string): ParsedHeartbeatCommand {
 			type: "set",
 			schedule: normalizeHeartbeatSchedule(option.interval),
 			instruction: trailingDelivery.rest,
-			deliveryMode: deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE,
+			...(deliveryMode ? { deliveryMode } : {}),
 		};
 	}
 
@@ -826,7 +826,7 @@ export function parseHeartbeatCommand(input: string): ParsedHeartbeatCommand {
 			type: "set",
 			schedule: normalizeHeartbeatSchedule(leadingSchedule.interval),
 			instruction: trailingDelivery.rest,
-			deliveryMode: deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE,
+			...(deliveryMode ? { deliveryMode } : {}),
 		};
 	}
 
@@ -838,7 +838,7 @@ export function parseHeartbeatCommand(input: string): ParsedHeartbeatCommand {
 		type: "set",
 		schedule: DEFAULT_HEARTBEAT_SCHEDULE,
 		instruction: remaining,
-		deliveryMode: deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE,
+		...(deliveryMode ? { deliveryMode } : {}),
 	};
 }
 

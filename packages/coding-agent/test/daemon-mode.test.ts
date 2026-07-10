@@ -3350,6 +3350,70 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("preserves the current heartbeat delivery mode when replacement omits it", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-heartbeat-preserve-delivery-mode-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const state = makeState("active-1") as ActiveSessionState & {
+				runtime: ActiveSessionState["runtime"] & {
+					session: ActiveSessionState["runtime"]["session"] & {
+						removeQueuedFollowUp: ReturnType<typeof vi.fn>;
+						sessionFile: string;
+						sessionId: string;
+					};
+				};
+			};
+			state.runtime = {
+				...state.runtime,
+				cwd: tempDir,
+				session: {
+					removeQueuedFollowUp: vi.fn(() => false),
+					sessionFile: join(tempDir, "session.jsonl"),
+					sessionId: "session-1",
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				handleCommand(
+					client: DaemonSocketClient,
+					command: DaemonCommand,
+				): Promise<{
+					data: { heartbeat: AgentCronJob };
+				}>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+			const client = makeClient("client-1", state.activeSessionId);
+
+			await internals.handleCommand(client, {
+				id: "command-1",
+				type: "heartbeat_set",
+				activeSessionId: state.activeSessionId,
+				schedule: "every 5m",
+				prompt: "first instruction",
+				deliveryMode: "follow_up",
+			});
+			const replacement = await internals.handleCommand(client, {
+				id: "command-2",
+				type: "heartbeat_set",
+				activeSessionId: state.activeSessionId,
+				schedule: "every 10m",
+				prompt: "replacement instruction",
+			});
+
+			expect(replacement.data.heartbeat).toMatchObject({
+				prompt: "replacement instruction",
+				deliveryMode: "follow_up",
+			});
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("removes queued RLM heartbeat follow-ups when only delivery mode changes", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-rlm-delivery-mode-"));
 		try {
