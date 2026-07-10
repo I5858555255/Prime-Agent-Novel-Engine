@@ -1,10 +1,9 @@
 /**
  * Benchmark: daemon fan-out and attach serialization with many clients.
  *
- * This uses real local sockets but no providers or agent runtimes. It reproduces
- * the daemon's current hot paths: serializeJsonLine() is called inside the
- * recipient loop for streaming events, and every attach independently builds
- * and serializes a full-history snapshot.
+ * This uses real local sockets but no providers or agent runtimes. It compares
+ * the legacy per-recipient serialization/full-history attach paths with v2's
+ * compact encode-once deltas and one cached, chunked transcript encoding.
  *
  * Run from packages/coding-agent:
  *
@@ -21,7 +20,11 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager } from "../src/core/session-manager.js";
+import { createCompactAssistantDelta } from "../src/modes/daemon/compact-session-stream.js";
+import type { DaemonOutbound } from "../src/modes/daemon/daemon-protocol.js";
+import { SnapshotTranscriptCache } from "../src/modes/daemon/snapshot-transcript-cache.js";
 import { serializeJsonLine } from "../src/modes/rpc/jsonl.js";
 
 const CLIENT_COUNTS = [1, 10, 50, 100, 250] as const;
@@ -41,7 +44,7 @@ interface Counters {
 }
 
 interface BenchmarkResult extends Counters {
-	scenario: "fanout" | "attach" | "session-attach";
+	scenario: "fanout" | "fanout-v2" | "attach" | "attach-v2" | "session-attach" | "session-attach-v2";
 	clients: number;
 	elapsedMs: number;
 	throughputMiBPerSecond: number;
@@ -209,7 +212,7 @@ async function createSocketHarness(clientCount: number): Promise<SocketHarness> 
 	};
 }
 
-function createAssistantMessage(text: string): object {
+function createAssistantMessage(text: string): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
@@ -343,6 +346,14 @@ function writeToRecipient(socket: Socket, message: object, counters: Counters): 
 	return bytes;
 }
 
+function writeBufferToRecipient(socket: Socket, buffer: string | Buffer, counters: Counters): number {
+	const bytes = typeof buffer === "string" ? Buffer.byteLength(buffer) : buffer.length;
+	counters.writes++;
+	counters.writtenBytes += bytes;
+	socket.write(buffer);
+	return bytes;
+}
+
 async function runScenario(
 	scenario: BenchmarkResult["scenario"],
 	clientCount: number,
@@ -406,6 +417,46 @@ async function runFanout(clientCount: number): Promise<BenchmarkResult> {
 	});
 }
 
+async function runFanoutV2(clientCount: number): Promise<BenchmarkResult> {
+	return runScenario("fanout-v2", clientCount, (harness, counters, expectedBytes) => {
+		for (let offset = 0, sequence = 1; offset < streamCorpus.length; sequence++) {
+			const nextOffset = Math.min(offset + STREAM_CHUNK_CHARS, streamCorpus.length);
+			const delta = streamCorpus.slice(offset, nextOffset);
+			const partial = createAssistantMessage(streamCorpus.slice(0, nextOffset));
+			const compact = createCompactAssistantDelta({
+				type: "session_event",
+				activeSessionId: "active-benchmark",
+				event: {
+					type: "message_update",
+					message: partial,
+					assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial },
+				},
+				meta: {
+					id: `active-benchmark:${sequence}`,
+					protocol: { name: "prime-agent.daemon", version: 2 },
+					activeSessionId: "active-benchmark",
+					sequence,
+					cursor: { generation: "benchmark-generation", sequence },
+					emittedAt: "2026-01-01T00:00:00.000Z",
+				},
+			} satisfies DaemonOutbound);
+			if (!compact) {
+				throw new Error("Expected compact assistant delta");
+			}
+			const serializationStart = performance.now();
+			const line = serializeJsonLine(compact);
+			const serializationMs = performance.now() - serializationStart;
+			counters.serializations++;
+			counters.serializationMs += serializationMs;
+			counters.maxSerializationMs = Math.max(counters.maxSerializationMs, serializationMs);
+			for (let index = 0; index < harness.senders.length; index++) {
+				expectedBytes[index]! += writeBufferToRecipient(harness.senders[index]!, line, counters);
+			}
+			offset = nextOffset;
+		}
+	});
+}
+
 async function runAttach(clientCount: number): Promise<BenchmarkResult> {
 	return runScenario("attach", clientCount, (harness, counters, expectedBytes) => {
 		for (let index = 0; index < harness.senders.length; index++) {
@@ -413,6 +464,77 @@ async function runAttach(clientCount: number): Promise<BenchmarkResult> {
 			expectedBytes[index]! += writeToRecipient(harness.senders[index]!, createAttachResponse(index), counters);
 		}
 	});
+}
+
+async function runAttachV2(
+	messages: readonly AgentMessage[],
+	clientCount: number,
+	scenario: "attach-v2" | "session-attach-v2",
+): Promise<BenchmarkResult> {
+	const cacheRoot = await mkdtemp(join(tmpdir(), "prime-agent-attach-v2-bench-"));
+	const transcript = new SnapshotTranscriptCache({
+		activeSessionId: "active-benchmark",
+		snapshotId: `snapshot-${randomUUID()}`,
+		messages,
+		cacheRoot,
+	});
+	try {
+		return await runScenario(scenario, clientCount, (harness, counters, expectedBytes) => {
+			const begin = serializeJsonLine({
+				type: "session_snapshot_begin",
+				activeSessionId: "active-benchmark",
+				snapshotId: transcript.snapshotId,
+				snapshot: {
+					activeSessionId: "active-benchmark",
+					summary: { sessionId: "session-benchmark", messageCount: messages.length },
+					state: { sessionId: "session-benchmark", messageCount: messages.length },
+					lastEventSequence: 0,
+					lastEventCursor: { generation: "benchmark-generation", sequence: 0 },
+				},
+				messageCount: messages.length,
+				targetChunkBytes: transcript.targetChunkBytes,
+			});
+			const end = serializeJsonLine({
+				type: "session_snapshot_end",
+				activeSessionId: "active-benchmark",
+				snapshotId: transcript.snapshotId,
+				chunkCount: transcript.chunkCount,
+				lastEventSequence: 0,
+				lastEventCursor: { generation: "benchmark-generation", sequence: 0 },
+			});
+			counters.serializations += 2;
+			for (let clientIndex = 0; clientIndex < harness.senders.length; clientIndex++) {
+				const sender = harness.senders[clientIndex]!;
+				const acknowledgement = {
+					id: `attach-${clientIndex}`,
+					type: "response",
+					command: "attach",
+					success: true,
+					data: {
+						activeSessionId: "active-benchmark",
+						snapshotStream: {
+							id: transcript.snapshotId,
+							messageCount: messages.length,
+							targetChunkBytes: transcript.targetChunkBytes,
+						},
+					},
+				};
+				expectedBytes[clientIndex]! += writeToRecipient(sender, acknowledgement, counters);
+				expectedBytes[clientIndex]! += writeBufferToRecipient(sender, begin, counters);
+				for (let chunkIndex = 0; chunkIndex < transcript.chunkCount; chunkIndex++) {
+					expectedBytes[clientIndex]! += writeBufferToRecipient(
+						sender,
+						transcript.readChunk(chunkIndex),
+						counters,
+					);
+				}
+				expectedBytes[clientIndex]! += writeBufferToRecipient(sender, end, counters);
+			}
+		});
+	} finally {
+		transcript.dispose();
+		await rm(cacheRoot, { recursive: true, force: true });
+	}
 }
 
 async function runSessionAttach(messages: readonly AgentMessage[], clientCount: number): Promise<BenchmarkResult> {
@@ -641,6 +763,7 @@ async function runRealSessionBenchmark(sessionFile: string): Promise<void> {
 		const results: BenchmarkResult[] = [];
 		for (const clientCount of SESSION_CLIENT_COUNTS) {
 			results.push(await runSessionAttach(fixture.messages, clientCount));
+			results.push(await runAttachV2(fixture.messages, clientCount, "session-attach-v2"));
 		}
 		console.log("Attach snapshot fan-out for the resolved active message path");
 		printResults(results, `session messages=${fixture.load.messageCount}`);
@@ -676,9 +799,11 @@ async function main(): Promise<void> {
 	const results: BenchmarkResult[] = [];
 	for (const clientCount of CLIENT_COUNTS) {
 		results.push(await runFanout(clientCount));
+		results.push(await runFanoutV2(clientCount));
 	}
 	for (const clientCount of CLIENT_COUNTS) {
 		results.push(await runAttach(clientCount));
+		results.push(await runAttachV2(attachMessages as AgentMessage[], clientCount, "attach-v2"));
 	}
 	printResults(results);
 }

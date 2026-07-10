@@ -243,6 +243,73 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt.mock.calls[0]?.[0]).toContain("report current progress");
 	});
 
+	it("lists and routes agent messages to peers hosted by another worker", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-worker-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+			worker: { authenticationToken: "worker-token" },
+		});
+		const source = makeState("source");
+		source.runtime = {
+			...source.runtime,
+			cwd: "/tmp",
+			session: {
+				sessionId: "session-source",
+				sessionName: "Source",
+				isStreaming: false,
+				pendingMessageCount: 0,
+			},
+		} as never;
+		const receipt = {
+			id: "agentmsg-remote",
+			source: "agent_message",
+			target: { activeSessionId: "remote", sessionId: "session-remote" },
+			message: "continue remotely",
+			deliveryStatus: "delivered",
+			deliveredAt: "2026-01-01T00:00:00.000Z",
+			deliveryMode: "auto",
+		};
+		const sendRemoteAgentSessionMessage = vi.fn().mockResolvedValue(receipt);
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			remoteAgentPeers: Map<string, Record<string, unknown>>;
+			createAgentMessageListResult(current: ActiveSessionState): { agents: Array<{ activeSessionId: string }> };
+			sendRemoteAgentSessionMessage: typeof sendRemoteAgentSessionMessage;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState: ActiveSessionState;
+				origin: "agent";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(source.activeSessionId, source);
+		internals.remoteAgentPeers.set("remote", {
+			activeSessionId: "remote",
+			sessionId: "session-remote",
+			sessionName: "Remote",
+			runtimeKind: "top-level",
+			cwd: "/tmp/remote",
+			isStreaming: false,
+			pendingMessageCount: 0,
+		});
+		internals.sendRemoteAgentSessionMessage = sendRemoteAgentSessionMessage;
+
+		expect(internals.createAgentMessageListResult(source).agents).toContainEqual(
+			expect.objectContaining({ activeSessionId: "remote" }),
+		);
+		await expect(
+			internals.sendAgentSessionMessage({
+				targetSelector: "remote",
+				message: "continue remotely",
+				fromState: source,
+				origin: "agent",
+			}),
+		).resolves.toEqual(receipt);
+		expect(sendRemoteAgentSessionMessage).toHaveBeenCalledWith(source, "remote", "continue remotely", undefined);
+	});
+
 	it("reports queued status when a direct accept races into the queue", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },

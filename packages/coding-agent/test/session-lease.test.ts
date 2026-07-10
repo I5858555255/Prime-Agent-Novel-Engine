@@ -1,0 +1,86 @@
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+	acquireSessionLease,
+	SESSION_LEASE_OWNER_ID_ENV,
+	SESSION_LEASES_ENABLED_ENV,
+	SessionAlreadyActiveError,
+} from "../src/core/session-lease.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+	for (const directory of tempDirs.splice(0)) {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+function createTempDir(): string {
+	const directory = mkdtempSync(join(tmpdir(), "prime-session-lease-test-"));
+	tempDirs.push(directory);
+	return directory;
+}
+
+function enabledEnvironment(owner: string): NodeJS.ProcessEnv {
+	return {
+		[SESSION_LEASES_ENABLED_ENV]: "1",
+		[SESSION_LEASE_OWNER_ID_ENV]: owner,
+	};
+}
+
+describe("session leases", () => {
+	it("rejects a second live owner with a typed active-session error", () => {
+		const agentDir = createTempDir();
+		const sessionPath = join(agentDir, "session.jsonl");
+		const first = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("resident-a"));
+
+		expect(() => acquireSessionLease(sessionPath, agentDir, enabledEnvironment("owned-b"))).toThrow(
+			SessionAlreadyActiveError,
+		);
+		try {
+			acquireSessionLease(sessionPath, agentDir, enabledEnvironment("owned-b"));
+		} catch (error) {
+			expect(error).toMatchObject({
+				code: "session_already_active",
+				activeSessionId: "resident-a",
+				sessionPath: resolve(sessionPath),
+			});
+		}
+
+		first?.release();
+		const second = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("owned-b"));
+		expect(second?.sessionPath).toBe(resolve(sessionPath));
+		second?.release();
+	});
+
+	it("reclaims a lease whose owner process is gone", () => {
+		const agentDir = createTempDir();
+		const sessionPath = resolve(agentDir, "stale.jsonl");
+		const key = createHash("sha256").update(sessionPath).digest("hex");
+		const lockDirectory = join(agentDir, "session-leases", `${key}.lock`);
+		mkdirSync(lockDirectory, { recursive: true });
+		writeFileSync(
+			join(lockDirectory, "owner.json"),
+			JSON.stringify({
+				version: 1,
+				token: "stale",
+				pid: 2_147_483_647,
+				activeSessionId: "dead-owner",
+				sessionPath,
+				createdAt: new Date(0).toISOString(),
+			}),
+		);
+
+		const lease = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("replacement"));
+		expect(lease?.sessionPath).toBe(sessionPath);
+		lease?.release();
+	});
+
+	it("is inert for direct SDK runtimes unless worker isolation enables it", () => {
+		const agentDir = createTempDir();
+		expect(acquireSessionLease(join(agentDir, "session.jsonl"), agentDir, {})).toBeUndefined();
+	});
+});

@@ -9,6 +9,13 @@ export interface DaemonSocketClient {
 	id: string;
 	socket: Socket;
 	attachedActiveSessionIds: Set<string>;
+	/** Session events are dropped while the socket is blocked and replaced with one catch-up snapshot on drain. */
+	catchupActiveSessionIds?: Set<string>;
+	backpressured?: boolean;
+	authenticated?: boolean;
+	transport?: "jsonl" | "private-framed";
+	snapshotStreaming?: boolean;
+	snapshotActiveSessionIds?: Set<string>;
 	detachInput: () => void;
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;
@@ -19,6 +26,7 @@ export interface ActiveSessionState {
 	runtime: AgentSessionRuntime;
 	clients: Set<DaemonSocketClient>;
 	extensionUiRequests: Map<string, ActiveSessionExtensionUiRequest>;
+	eventGeneration: string;
 	lastEventSequence: DaemonEventSequence;
 	unsubscribe?: () => void;
 	/** Latest background status summary, surfaced in the agents view. */

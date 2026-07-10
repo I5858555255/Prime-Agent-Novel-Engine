@@ -1,17 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { getDaemonLogPath } from "../../config.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
-import type {
-	DaemonClosingReason,
-	DaemonCommand,
-	DaemonOutbound,
-	DaemonRequestProgress,
-	DaemonResponse,
-	DaemonSavedSessionInfo,
+import {
+	createDaemonCommandEnvelope,
+	type DaemonClosingReason,
+	type DaemonCommand,
+	type DaemonCommandEnvelope,
+	type DaemonOutbound,
+	type DaemonRequestProgress,
+	type DaemonResponse,
+	type DaemonSavedSessionInfo,
+	isDaemonMutatingCommand,
 } from "./daemon-protocol.js";
+import type { DaemonWorkerCommand, DaemonWorkerCommandBody } from "./daemon-worker-protocol.js";
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
+
+type DaemonWireCommandBody = DaemonCommandBody | DaemonWorkerCommandBody;
 
 export type DaemonHello = Extract<DaemonOutbound, { type: "daemon_hello" }>;
 
@@ -58,9 +65,14 @@ export class DaemonClient {
 			reject: (error: Error) => void;
 			timeout: ReturnType<typeof setTimeout>;
 			onProgress?: DaemonClientProgressListener;
+			wireData: string;
+			awaitingReconnect: boolean;
+			acknowledgeResult: boolean;
 		}
 	>();
 	private requestId = 0;
+	private readonly protocolClientId = `daemon-client:${randomUUID()}`;
+	private requestRecoveryEnabled = false;
 	private helloMessage?: DaemonHello;
 	private daemonClosingReason?: DaemonClosingReason;
 	private reconnectPromise?: Promise<void>;
@@ -111,7 +123,6 @@ export class DaemonClient {
 		if (this.socket) {
 			throw new Error(`Prime Agent daemon client is already connected. ${daemonEndpointDetails(this.socketPath)}`);
 		}
-
 		this.helloMessage = undefined;
 		this.daemonClosingReason = undefined;
 		const socket = createConnection(this.socketPath);
@@ -207,10 +218,44 @@ export class DaemonClient {
 		};
 	}
 
+	/** Keep in-flight command promises alive and resend their stable envelopes after reconnect. */
+	enableRequestRecovery(): void {
+		this.requestRecoveryEnabled = true;
+	}
+
 	async request(
 		command: DaemonCommandBody,
 		timeoutMs = 30000,
 		options: DaemonClientRequestOptions = {},
+	): Promise<DaemonResponse> {
+		return this.requestWire(command, timeoutMs, options, true);
+	}
+
+	/** One-release compatibility path for preparing and stopping a v1 daemon. */
+	async requestLegacy(
+		command: DaemonCommandBody,
+		timeoutMs = 30000,
+		options: DaemonClientRequestOptions = {},
+	): Promise<DaemonResponse> {
+		return this.requestWire(command, timeoutMs, options, false);
+	}
+
+	async authenticateWorker(token: string, timeoutMs = 3000): Promise<void> {
+		const response = await this.requestWire({ type: "worker_auth", token }, timeoutMs, {}, false);
+		if (!response.success) {
+			throw new Error(response.error);
+		}
+	}
+
+	async requestWorker(command: DaemonWorkerCommandBody, timeoutMs = 30000): Promise<DaemonResponse> {
+		return this.requestWire(command, timeoutMs, {}, false);
+	}
+
+	private async requestWire(
+		command: DaemonWireCommandBody,
+		timeoutMs: number,
+		options: DaemonClientRequestOptions = {},
+		usePublicEnvelope: boolean,
 	): Promise<DaemonResponse> {
 		if (!this.socket || this.socket.destroyed) {
 			throw new Error(
@@ -219,7 +264,12 @@ export class DaemonClient {
 		}
 
 		const id = `daemon_${++this.requestId}`;
-		const fullCommand = { ...command, id } as DaemonCommand;
+		const fullCommand = { ...command, id } as DaemonCommand | DaemonWorkerCommand;
+		const wireCommand: DaemonCommand | DaemonWorkerCommand | DaemonCommandEnvelope = usePublicEnvelope
+			? createDaemonCommandEnvelope(fullCommand as DaemonCommand, id, this.protocolClientId)
+			: fullCommand;
+		const wireData = serializeJsonLine(wireCommand);
+		const acknowledgeResult = usePublicEnvelope && isDaemonMutatingCommand(fullCommand as DaemonCommand);
 
 		return new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
@@ -231,8 +281,16 @@ export class DaemonClient {
 				);
 			}, timeoutMs);
 
-			this.pendingRequests.set(id, { resolve, reject, timeout, onProgress: options.onProgress });
-			this.socket!.write(serializeJsonLine(fullCommand));
+			this.pendingRequests.set(id, {
+				resolve,
+				reject,
+				timeout,
+				onProgress: options.onProgress,
+				wireData,
+				awaitingReconnect: false,
+				acknowledgeResult,
+			});
+			this.socket!.write(wireData);
 		});
 	}
 
@@ -273,6 +331,15 @@ export class DaemonClient {
 				this.helloWaiters.delete(waiter);
 				waiter.resolve(message);
 			}
+			if (this.socket && !this.socket.destroyed) {
+				for (const pending of this.pendingRequests.values()) {
+					if (!pending.awaitingReconnect) {
+						continue;
+					}
+					pending.awaitingReconnect = false;
+					this.socket.write(pending.wireData);
+				}
+			}
 		}
 		if (isDaemonClosing(message)) {
 			this.daemonClosingReason = message.reason;
@@ -284,6 +351,9 @@ export class DaemonClient {
 				clearTimeout(pending.timeout);
 				this.pendingRequests.delete(message.id);
 				pending.resolve(message);
+				if (pending.acknowledgeResult) {
+					this.acknowledgeCommandResult(message.id);
+				}
 				return;
 			}
 		}
@@ -300,8 +370,21 @@ export class DaemonClient {
 		}
 	}
 
-	private rejectAll(error: Error): void {
+	private acknowledgeCommandResult(commandId: string): void {
+		if (!this.socket || this.socket.destroyed || (this.helloMessage?.protocol.version ?? 0) < 2) {
+			return;
+		}
+		const id = `daemon_ack_${++this.requestId}`;
+		const command: DaemonCommand = { id, type: "ack_result", commandId };
+		this.socket.write(serializeJsonLine(createDaemonCommandEnvelope(command, id, this.protocolClientId)));
+	}
+
+	private rejectAll(error: Error, preservePendingRequests = false): void {
 		for (const [id, pending] of this.pendingRequests) {
+			if (preservePendingRequests) {
+				pending.awaitingReconnect = true;
+				continue;
+			}
 			clearTimeout(pending.timeout);
 			pending.reject(error);
 			this.pendingRequests.delete(id);
@@ -318,7 +401,7 @@ export class DaemonClient {
 			return;
 		}
 		this.clearSocketReference(socket);
-		this.rejectAll(error);
+		this.rejectAll(error, this.requestRecoveryEnabled);
 		for (const listener of [...this.closeListeners]) {
 			listener(error);
 		}

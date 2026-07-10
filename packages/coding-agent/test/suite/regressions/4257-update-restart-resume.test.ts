@@ -76,6 +76,7 @@ function createState(
 		runtime,
 		clients: new Set(),
 		extensionUiRequests: new Map(),
+		eventGeneration: `generation-${activeSessionId}`,
 		lastEventSequence: 0,
 		...(options.clientEnv ? { clientEnv: options.clientEnv } : {}),
 	};

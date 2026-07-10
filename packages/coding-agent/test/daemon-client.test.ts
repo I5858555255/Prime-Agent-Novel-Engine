@@ -187,21 +187,27 @@ describe("DaemonClient", () => {
 
 		const response = client.request({ type: "attach", activeSessionId: "active-1" });
 		expect(socket.writes).toHaveLength(1);
-		const command = JSON.parse(socket.writes[0]!.trim()) as {
+		const envelope = JSON.parse(socket.writes[0]!.trim()) as {
 			id?: string;
 			type?: string;
-			activeSessionId?: string;
-			daemonSessionId?: unknown;
+			clientId?: string;
+			protocol?: { name?: string; version?: number };
+			command?: { type?: string; activeSessionId?: string; daemonSessionId?: unknown };
 		};
 
-		expect(command).toMatchObject({ type: "attach", activeSessionId: "active-1" });
-		expect(command).not.toHaveProperty("daemonSessionId");
+		expect(envelope).toMatchObject({
+			type: "command",
+			clientId: expect.any(String),
+			protocol: { name: "prime-agent.daemon", version: 2 },
+			command: { type: "attach", activeSessionId: "active-1" },
+		});
+		expect(envelope.command).not.toHaveProperty("daemonSessionId");
 
 		socket.emit(
 			"data",
-			`${JSON.stringify({ id: command.id, type: "response", command: "attach", success: true })}\n`,
+			`${JSON.stringify({ id: envelope.id, type: "response", command: "attach", success: true })}\n`,
 		);
-		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
+		await expect(response).resolves.toMatchObject({ id: envelope.id, success: true });
 
 		client.close();
 	});
@@ -217,16 +223,16 @@ describe("DaemonClient", () => {
 
 		const response = client.request({ type: "list", all: true });
 		expect(socket.writes).toHaveLength(1);
-		const command = JSON.parse(socket.writes[0]!.trim()) as {
+		const envelope = JSON.parse(socket.writes[0]!.trim()) as {
 			id?: string;
 			type?: string;
-			all?: boolean;
+			command?: { type?: string; all?: boolean };
 		};
 
-		expect(command).toMatchObject({ type: "list", all: true });
+		expect(envelope).toMatchObject({ type: "command", command: { type: "list", all: true } });
 
-		socket.emit("data", `${JSON.stringify({ id: command.id, type: "response", command: "list", success: true })}\n`);
-		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
+		socket.emit("data", `${JSON.stringify({ id: envelope.id, type: "response", command: "list", success: true })}\n`);
+		await expect(response).resolves.toMatchObject({ id: envelope.id, success: true });
 
 		client.close();
 	});
@@ -247,6 +253,25 @@ describe("DaemonClient", () => {
 		await expect(request).rejects.toMatchObject({
 			message: expect.stringContaining("Daemon log:"),
 		});
+	});
+
+	it("keeps a raw one-release request path for v1 daemon handoff", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const connect = client.connect();
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+
+		const response = client.requestLegacy({ type: "prepare_update_restart" });
+		const command = JSON.parse(socket.writes[0]!.trim()) as { id: string; type: string };
+		expect(command.type).toBe("prepare_update_restart");
+		expect(command).not.toHaveProperty("protocol");
+		socket.emit(
+			"data",
+			`${JSON.stringify({ id: command.id, type: "response", command: command.type, success: true })}\n`,
+		);
+		await expect(response).resolves.toMatchObject({ success: true });
+		client.close();
 	});
 
 	it("routes request progress by response id without notifying general listeners", async () => {
@@ -280,17 +305,16 @@ describe("DaemonClient", () => {
 			},
 		);
 		expect(socket.writes).toHaveLength(1);
-		const command = JSON.parse(socket.writes[0]!.trim()) as {
+		const envelope = JSON.parse(socket.writes[0]!.trim()) as {
 			id?: string;
 			type?: string;
-			activeSessionId?: string;
-			scope?: string;
+			command?: { activeSessionId?: string; scope?: string };
 		};
 
 		socket.emit(
 			"data",
 			`${JSON.stringify({
-				id: command.id,
+				id: envelope.id,
 				type: "session_list_progress",
 				command: "list_saved_sessions",
 				activeSessionId: "active-1",
@@ -301,7 +325,7 @@ describe("DaemonClient", () => {
 		socket.emit(
 			"data",
 			`${JSON.stringify({
-				id: command.id,
+				id: envelope.id,
 				type: "session_list_item",
 				command: "list_saved_sessions",
 				activeSessionId: "active-1",
@@ -325,7 +349,7 @@ describe("DaemonClient", () => {
 		socket.emit(
 			"data",
 			`${JSON.stringify({
-				id: command.id,
+				id: envelope.id,
 				type: "response",
 				command: "list_saved_sessions",
 				success: true,
@@ -333,7 +357,7 @@ describe("DaemonClient", () => {
 			})}\n`,
 		);
 
-		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
+		await expect(response).resolves.toMatchObject({ id: envelope.id, success: true });
 		expect(progress).toEqual([[1, 2]]);
 		expect(discovered).toEqual(["session-a"]);
 		expect(discoveredStatus).toEqual({
@@ -366,37 +390,77 @@ describe("DaemonClient", () => {
 			},
 		});
 		expect(socket.writes).toHaveLength(1);
-		const command = JSON.parse(socket.writes[0]!.trim()) as {
+		const envelope = JSON.parse(socket.writes[0]!.trim()) as {
 			id?: string;
 			type?: string;
-			name?: string;
-			config?: {
-				cwd?: string;
-				model?: string;
-				tools?: string[];
+			command?: {
+				type?: string;
+				name?: string;
+				config?: {
+					cwd?: string;
+					model?: string;
+					tools?: string[];
+				};
+				cwd?: unknown;
+				model?: unknown;
 			};
-			cwd?: unknown;
-			model?: unknown;
 		};
 
-		expect(command).toMatchObject({
-			type: "create",
-			name: "configured",
-			config: {
-				cwd: "/tmp/project",
-				model: "openai/gpt-4o-mini",
-				tools: ["bash"],
+		expect(envelope).toMatchObject({
+			type: "command",
+			command: {
+				type: "create",
+				name: "configured",
+				config: {
+					cwd: "/tmp/project",
+					model: "openai/gpt-4o-mini",
+					tools: ["bash"],
+				},
 			},
 		});
-		expect(command).not.toHaveProperty("cwd");
-		expect(command).not.toHaveProperty("model");
+		expect(envelope.command).not.toHaveProperty("cwd");
+		expect(envelope.command).not.toHaveProperty("model");
 
 		socket.emit(
 			"data",
-			`${JSON.stringify({ id: command.id, type: "response", command: "create", success: true })}\n`,
+			`${JSON.stringify({ id: envelope.id, type: "response", command: "create", success: true })}\n`,
 		);
-		await expect(response).resolves.toMatchObject({ id: command.id, success: true });
+		await expect(response).resolves.toMatchObject({ id: envelope.id, success: true });
 
+		client.close();
+	});
+
+	it("acknowledges durable mutating-command results on protocol v2", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const connect = client.connect();
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+		socket.emit(
+			"data",
+			`${JSON.stringify({
+				type: "daemon_hello",
+				socketPath: "/tmp/prime-agent.sock",
+				protocol: { name: "prime-agent.daemon", version: 2 },
+				appVersion: "9.9.9",
+				clientId: "client-1",
+				serverCapabilities: [],
+			})}\n`,
+		);
+
+		const response = client.request({ type: "create" });
+		const request = JSON.parse(socket.writes[0]!.trim()) as { id: string };
+		socket.emit(
+			"data",
+			`${JSON.stringify({ id: request.id, type: "response", command: "create", success: true })}\n`,
+		);
+		await response;
+
+		expect(socket.writes).toHaveLength(2);
+		expect(JSON.parse(socket.writes[1]!.trim())).toMatchObject({
+			type: "command",
+			command: { type: "ack_result", commandId: request.id },
+		});
 		client.close();
 	});
 
@@ -507,7 +571,6 @@ describe("DaemonClient", () => {
 
 	it("shares one reconnect attempt across concurrent callers", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
-
 		const firstConnect = client.connect();
 		const firstSocket = netMock.sockets[0]!;
 		firstSocket.emit("connect");
@@ -521,6 +584,44 @@ describe("DaemonClient", () => {
 		secondSocket.emit("connect");
 
 		await expect(Promise.all([reconnectA, reconnectB])).resolves.toEqual([undefined, undefined]);
+		client.close();
+	});
+
+	it("resends the same command envelope after a recoverable disconnect", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		client.enableRequestRecovery();
+		const firstConnect = client.connect();
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+
+		const response = client.request({ type: "prompt", activeSessionId: "active-1", message: "hello" });
+		const firstWireData = firstSocket.writes[0]!;
+		const firstEnvelope = JSON.parse(firstWireData) as { id: string };
+		firstSocket.emit("close");
+
+		const secondConnect = client.connect();
+		const secondSocket = netMock.sockets[1]!;
+		secondSocket.emit("connect");
+		await secondConnect;
+		expect(secondSocket.writes).toEqual([]);
+		secondSocket.emit(
+			"data",
+			`${JSON.stringify({
+				type: "daemon_hello",
+				socketPath: "/tmp/prime-agent.sock",
+				protocol: { name: "prime-agent.daemon", version: 2 },
+				clientId: "server-client-2",
+				serverCapabilities: [],
+			})}\n`,
+		);
+		expect(secondSocket.writes).toEqual([firstWireData]);
+
+		secondSocket.emit(
+			"data",
+			`${JSON.stringify({ id: firstEnvelope.id, type: "response", command: "prompt", success: true })}\n`,
+		);
+		await expect(response).resolves.toMatchObject({ id: firstEnvelope.id, success: true });
 		client.close();
 	});
 });

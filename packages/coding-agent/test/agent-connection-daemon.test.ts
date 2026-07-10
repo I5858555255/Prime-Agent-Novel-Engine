@@ -474,6 +474,7 @@ function createAttachResult(
 ): DaemonAttachResult {
 	const state = options.state ?? createConnectionState(activeSessionId, "session-current");
 	const messages = options.messages ?? [];
+	const lastEventCursor = { generation: `generation-${activeSessionId}`, sequence: lastEventSequence };
 	const summary = {
 		id: activeSessionId,
 		activeSessionId,
@@ -510,13 +511,16 @@ function createAttachResult(
 					}),
 			sessionTree: options.sessionTree ?? { tree: [], leafId: state.leafId },
 			lastEventSequence,
+			lastEventCursor,
 			...(options.parent ? { parent: options.parent } : {}),
 		},
 		replay: options.replay ?? {
 			status: "complete",
 			toSequence: lastEventSequence,
+			toCursor: lastEventCursor,
 		},
 		lastEventSequence,
+		lastEventCursor,
 		client: {
 			id: clientId ?? "client-1",
 			capabilities: (capabilities ?? ["attach_snapshot", "event_sequence"]).filter(
@@ -524,7 +528,8 @@ function createAttachResult(
 					capability === "attach_snapshot" ||
 					capability === "event_sequence" ||
 					capability === "extension_ui" ||
-					capability === "slim_attach",
+					capability === "slim_attach" ||
+					capability === "chunked_snapshot",
 			),
 		},
 	};
@@ -544,6 +549,7 @@ function emitSequencedQueueUpdate(client: FakeDaemonClient, activeSessionId: str
 			protocol: DAEMON_PROTOCOL_INFO,
 			activeSessionId,
 			sequence,
+			cursor: { generation: `generation-${activeSessionId}`, sequence },
 			emittedAt: "2026-01-01T00:00:00.000Z",
 		},
 	});
@@ -1080,6 +1086,70 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach"]);
 	});
 
+	it("assembles chunked attach snapshots even when chunks arrive before the attach response continuation", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "first", timestamp: 1 },
+			{ role: "user", content: "second", timestamp: 2 },
+		];
+		fakeClient.attachResultFactory = (command) => {
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-streamed"),
+				messages,
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			queueMicrotask(() => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-streamed",
+					snapshot: snapshotHeader,
+					messageCount: messages.length,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-streamed",
+					index: 0,
+					messages: [messages[0]!],
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-streamed",
+					index: 1,
+					messages: [messages[1]!],
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-streamed",
+					chunkCount: 2,
+					lastEventSequence: 23,
+				});
+			});
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: {
+					id: "snapshot-streamed",
+					messageCount: messages.length,
+					targetChunkBytes: 512 * 1024,
+				},
+			};
+		};
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+
+		await connection.attach();
+
+		await expect(connection.getInitialSnapshot()).resolves.toMatchObject({
+			state: { sessionId: "session-streamed" },
+			messages,
+			lastEventSequence: 23,
+		});
+	});
+
 	it("keeps attach snapshots usable when the daemon omits duplicate session context", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const messages: AgentMessage[] = [{ role: "user", content: "snapshot prompt", timestamp: 1 }];
@@ -1147,10 +1217,11 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.at(-1)).toMatchObject({
 			type: "attach",
 			activeSessionId: "active-1",
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach"],
+			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
 			resumeCursor: {
 				activeSessionId: "active-1",
-				eventSequence: 14,
+				generation: "generation-active-1",
+				sequence: 14,
 			},
 		});
 		await expect(connection.getInitialSnapshot()).resolves.toMatchObject({
@@ -1509,10 +1580,11 @@ describe("DaemonAgentConnection", () => {
 			type: "attach",
 			activeSessionId: "active-1",
 			clientId: expect.any(String),
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach"],
+			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
 			resumeCursor: {
 				activeSessionId: "active-1",
-				eventSequence: 14,
+				generation: "generation-active-1",
+				sequence: 14,
 			},
 		});
 
@@ -1520,10 +1592,11 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.at(-1)).toMatchObject({
 			type: "attach",
 			activeSessionId: "active-1",
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach"],
+			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
 			resumeCursor: {
 				activeSessionId: "active-1",
-				eventSequence: 14,
+				generation: "generation-active-1",
+				sequence: 14,
 			},
 		});
 	});
@@ -1541,7 +1614,7 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-1",
 			supportsExtensionUi: true,
 			clientId: expect.any(String),
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach"],
+			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
 		});
 
 		fakeClient.emitMessage({

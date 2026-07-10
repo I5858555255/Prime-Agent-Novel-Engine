@@ -14,6 +14,7 @@ import {
 	collectDaemonClientEnv,
 	type DaemonAttachResult,
 	type DaemonCommand,
+	type DaemonEventCursor,
 	type DaemonOutbound,
 	type DaemonReplayInfo,
 	type DaemonSessionClosedReason,
@@ -61,6 +62,15 @@ import type {
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
+type DaemonSnapshotBegin = Extract<DaemonOutbound, { type: "session_snapshot_begin" }>;
+
+interface DaemonSnapshotAssembly {
+	begin?: DaemonSnapshotBegin;
+	chunks: Map<number, AgentMessage[]>;
+	promise: Promise<DaemonSessionSnapshot>;
+	resolve: (snapshot: DaemonSessionSnapshot) => void;
+	reject: (error: Error) => void;
+}
 
 export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const UPDATE_RECONNECT_TIMEOUT_MS = 120000;
@@ -111,6 +121,8 @@ function reconnectDaemonTransportAfterUpdate(client: DaemonClient): Promise<void
 
 export interface DaemonAgentConnectionOptions {
 	closeClientOnDispose?: boolean;
+	/** Restart/probe the detached supervisor after a transient socket loss. */
+	recoverDaemon?: () => Promise<void>;
 	/**
 	 * Send this client's allowlisted env (herdr pane identity) with attach so
 	 * an env-less session (e.g. cron-created) adopts it. Set only by the
@@ -131,6 +143,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly unsubscribeDaemonMessages: () => void;
 	private readonly unsubscribeDaemonClose: () => void;
 	private readonly clientId = `daemon-agent-connection:${randomUUID()}`;
+	private lastEventCursor: DaemonEventCursor | undefined;
 	private lastEventSequence: number | undefined;
 	private latestSnapshot: AgentConnectionSnapshot | undefined;
 	private latestSnapshotIsFresh = false;
@@ -141,19 +154,25 @@ export class DaemonAgentConnection implements AgentConnection {
 	private updateReconnectFailed = false;
 	private terminalCloseEmitted = false;
 	private updateReconnectPromise?: Promise<void>;
-	private disposed = false;
 	private readonly activeSideQuestionIds = new Set<string>();
+	private readonly snapshotAssemblies = new Map<string, DaemonSnapshotAssembly>();
+	private reconnectPromise?: Promise<void>;
+	private disposed = false;
 
 	constructor(
 		private readonly client: DaemonClient,
 		private activeSessionId: string,
 		private readonly options: DaemonAgentConnectionOptions = {},
 	) {
+		if (options.recoverDaemon) {
+			this.client.enableRequestRecovery();
+		}
 		this.unsubscribeDaemonMessages = this.client.onMessage((message) => {
 			void this.handleDaemonMessage(message);
 		});
 		this.captureDaemonLogPath();
 		this.unsubscribeDaemonClose = this.client.onClose((error) => {
+			this.rejectSnapshotAssemblies(error);
 			if (this.disposed || this.terminalCloseEmitted) {
 				return;
 			}
@@ -166,6 +185,10 @@ export class DaemonAgentConnection implements AgentConnection {
 			if ((this.updateRestartPending || closeReason === "update") && !this.updateReconnectFailed) {
 				this.updateRestartPending = true;
 				void this.reconnectAfterUpdate();
+				return;
+			}
+			if (this.options.recoverDaemon) {
+				void this.reconnect(error);
 				return;
 			}
 			this.terminalCloseEmitted = true;
@@ -194,14 +217,14 @@ export class DaemonAgentConnection implements AgentConnection {
 			activeSessionId: this.activeSessionId,
 			supportsExtensionUi: true,
 			clientId: this.clientId,
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach"],
+			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
 			env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
 			resumeCursor:
-				this.lastEventSequence === undefined
+				this.lastEventCursor === undefined
 					? undefined
 					: {
 							activeSessionId: this.activeSessionId,
-							eventSequence: this.lastEventSequence,
+							...this.lastEventCursor,
 						},
 		});
 		this.activeSessionId = getAttachActiveSessionId(result);
@@ -212,11 +235,21 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.captureDaemonLogPath();
 		this.updateReconnectFailed = false;
 		this.terminalCloseEmitted = false;
+		const attachCursor = getAttachLastEventCursor(result);
+		if (attachCursor) {
+			this.lastEventCursor = maxEventCursor(this.lastEventCursor, attachCursor);
+		}
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 		if ("snapshot" in result) {
-			this.latestSnapshot = mapDaemonAttachSnapshot(result);
+			const snapshot = result.snapshotStream
+				? await this.waitForSnapshot(result.snapshotStream.id)
+				: result.snapshot;
+			this.latestSnapshot = mapDaemonSessionSnapshot(snapshot, result.replay);
 			if (this.lastEventSequence !== undefined) {
 				this.latestSnapshot.lastEventSequence = this.lastEventSequence;
+			}
+			if (this.lastEventCursor) {
+				this.latestSnapshot.lastEventCursor = this.lastEventCursor;
 			}
 			this.latestSnapshotIsFresh = true;
 		} else {
@@ -280,6 +313,9 @@ export class DaemonAgentConnection implements AgentConnection {
 		};
 		if (this.lastEventSequence !== undefined) {
 			this.latestSnapshot.lastEventSequence = this.lastEventSequence;
+		}
+		if (this.lastEventCursor) {
+			this.latestSnapshot.lastEventCursor = this.lastEventCursor;
 		}
 		this.latestSnapshotIsFresh = true;
 		return this.latestSnapshot;
@@ -805,6 +841,39 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (this.options.closeClientOnDispose) {
 			this.client.close();
 		}
+		this.rejectSnapshotAssemblies(new Error("Daemon connection disposed during snapshot transfer"));
+	}
+
+	private async reconnect(cause: Error): Promise<void> {
+		if (this.reconnectPromise) {
+			return this.reconnectPromise;
+		}
+		this.reconnectPromise = (async () => {
+			await this.emit({ type: "connection_status", status: "reconnecting", error: cause.message });
+			let attempt = 0;
+			while (!this.disposed) {
+				try {
+					await this.options.recoverDaemon?.();
+					await this.client.connect(1000);
+					await this.client.waitForHello(3000);
+					await this.attach();
+					if (!this.disposed) {
+						await this.emit({ type: "connection_status", status: "connected" });
+					}
+					return;
+				} catch {
+					if (this.disposed) {
+						return;
+					}
+					const delayMs = Math.min(5000, 100 * 2 ** Math.min(attempt, 6));
+					attempt++;
+					await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+				}
+			}
+		})().finally(() => {
+			this.reconnectPromise = undefined;
+		});
+		return this.reconnectPromise;
 	}
 
 	private async requestOk(command: DaemonCommandBody): Promise<void> {
@@ -824,6 +893,19 @@ export class DaemonAgentConnection implements AgentConnection {
 
 	private async handleDaemonMessage(message: DaemonOutbound): Promise<void> {
 		if (!this.isMessageForActiveSession(message)) {
+			return;
+		}
+		if (message.type === "session_snapshot_begin") {
+			const assembly = this.getSnapshotAssembly(message.snapshotId);
+			assembly.begin = message;
+			return;
+		}
+		if (message.type === "session_snapshot_chunk") {
+			this.getSnapshotAssembly(message.snapshotId).chunks.set(message.index, message.messages);
+			return;
+		}
+		if (message.type === "session_snapshot_end") {
+			await this.completeSnapshotAssembly(message);
 			return;
 		}
 		if (this.isStaleSequencedMessage(message)) {
@@ -855,12 +937,19 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (message.type === "session_replaced") {
 			this.attachedSessionId = message.state.sessionId;
 			this.attachedSessionFile = message.state.sessionFile;
+			if (message.snapshotFollows) {
+				this.latestSnapshotIsFresh = false;
+				return;
+			}
 			const latestSnapshot: AgentConnectionSnapshot = {
 				state: message.state,
 				messages: message.messages,
 			};
 			if (this.lastEventSequence !== undefined) {
 				latestSnapshot.lastEventSequence = this.lastEventSequence;
+			}
+			if (this.lastEventCursor) {
+				latestSnapshot.lastEventCursor = this.lastEventCursor;
 			}
 			this.latestSnapshot = latestSnapshot;
 			this.latestSnapshotIsFresh = true;
@@ -993,6 +1082,7 @@ export class DaemonAgentConnection implements AgentConnection {
 					}
 					this.activeSessionId = restored.activeSessionId;
 					this.lastEventSequence = undefined;
+					this.lastEventCursor = undefined;
 					await this.attach();
 					if (this.disposed) {
 						return;
@@ -1016,6 +1106,93 @@ export class DaemonAgentConnection implements AgentConnection {
 		throw lastError ?? new Error("the restored session did not become available");
 	}
 
+	private getSnapshotAssembly(snapshotId: string): DaemonSnapshotAssembly {
+		const existing = this.snapshotAssemblies.get(snapshotId);
+		if (existing) {
+			return existing;
+		}
+		let resolveSnapshot!: (snapshot: DaemonSessionSnapshot) => void;
+		let rejectSnapshot!: (error: Error) => void;
+		const promise = new Promise<DaemonSessionSnapshot>((resolve, reject) => {
+			resolveSnapshot = resolve;
+			rejectSnapshot = reject;
+		});
+		void promise.catch(() => undefined);
+		const assembly: DaemonSnapshotAssembly = {
+			chunks: new Map(),
+			promise,
+			resolve: resolveSnapshot,
+			reject: rejectSnapshot,
+		};
+		this.snapshotAssemblies.set(snapshotId, assembly);
+		return assembly;
+	}
+
+	private rejectSnapshotAssemblies(error: Error): void {
+		for (const assembly of this.snapshotAssemblies.values()) {
+			assembly.reject(error);
+		}
+		this.snapshotAssemblies.clear();
+	}
+
+	private async waitForSnapshot(snapshotId: string): Promise<DaemonSessionSnapshot> {
+		const assembly = this.getSnapshotAssembly(snapshotId);
+		try {
+			return await assembly.promise;
+		} finally {
+			this.snapshotAssemblies.delete(snapshotId);
+		}
+	}
+
+	private async completeSnapshotAssembly(
+		message: Extract<DaemonOutbound, { type: "session_snapshot_end" }>,
+	): Promise<void> {
+		const assembly = this.getSnapshotAssembly(message.snapshotId);
+		if (!assembly.begin) {
+			assembly.reject(new Error(`Snapshot ${message.snapshotId} ended before it began`));
+			return;
+		}
+		if (assembly.chunks.size !== message.chunkCount) {
+			assembly.reject(
+				new Error(
+					`Snapshot ${message.snapshotId} ended with ${assembly.chunks.size} of ${message.chunkCount} chunks`,
+				),
+			);
+			return;
+		}
+		const messages: AgentMessage[] = [];
+		for (let index = 0; index < message.chunkCount; index++) {
+			const chunk = assembly.chunks.get(index);
+			if (!chunk) {
+				assembly.reject(new Error(`Snapshot ${message.snapshotId} is missing chunk ${index}`));
+				return;
+			}
+			messages.push(...chunk);
+		}
+		if (messages.length !== assembly.begin.messageCount) {
+			assembly.reject(
+				new Error(
+					`Snapshot ${message.snapshotId} contained ${messages.length} of ${assembly.begin.messageCount} messages`,
+				),
+			);
+			return;
+		}
+		const snapshot: DaemonSessionSnapshot = {
+			...assembly.begin.snapshot,
+			messages,
+			lastEventSequence: message.lastEventSequence,
+			lastEventCursor: message.lastEventCursor,
+		};
+		if (message.lastEventCursor) {
+			this.lastEventCursor = maxEventCursor(this.lastEventCursor, message.lastEventCursor);
+		}
+		this.lastEventSequence = maxEventSequence(this.lastEventSequence, message.lastEventSequence);
+		this.latestSnapshot = mapDaemonSessionSnapshot(snapshot);
+		this.latestSnapshotIsFresh = true;
+		assembly.resolve(snapshot);
+		await this.emit({ type: "session_replaced", state: snapshot.state, messages });
+	}
+
 	private isMessageForActiveSession(message: DaemonOutbound): boolean {
 		if (!("activeSessionId" in message)) {
 			return false;
@@ -1024,17 +1201,35 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	private isStaleSequencedMessage(message: DaemonOutbound): boolean {
+		const cursor = getDaemonMessageCursor(message);
+		if (cursor) {
+			return (
+				this.lastEventCursor?.generation === cursor.generation && cursor.sequence <= this.lastEventCursor.sequence
+			);
+		}
 		const sequence = getDaemonMessageSequence(message);
 		return sequence !== undefined && this.lastEventSequence !== undefined && sequence <= this.lastEventSequence;
 	}
 
 	private observeDaemonEventSequence(message: DaemonOutbound): void {
+		const cursor = getDaemonMessageCursor(message);
+		if (cursor) {
+			this.lastEventCursor = cursor;
+			this.lastEventSequence = cursor.sequence;
+			return;
+		}
 		const sequence = getDaemonMessageSequence(message);
 		if (sequence === undefined) {
 			return;
 		}
 		this.lastEventSequence =
 			this.lastEventSequence === undefined ? sequence : Math.max(this.lastEventSequence, sequence);
+		if (this.lastEventCursor) {
+			this.lastEventCursor = {
+				...this.lastEventCursor,
+				sequence: Math.max(this.lastEventCursor.sequence, sequence),
+			};
+		}
 	}
 
 	private async emit(event: AgentConnectionEvent): Promise<void> {
@@ -1071,6 +1266,13 @@ function getAttachLastEventSequence(result: SessionSummary | DaemonAttachResult)
 	return undefined;
 }
 
+function getAttachLastEventCursor(result: SessionSummary | DaemonAttachResult): DaemonEventCursor | undefined {
+	if ("lastEventCursor" in result) {
+		return result.lastEventCursor;
+	}
+	return undefined;
+}
+
 function maxEventSequence(current: number | undefined, observed: number | undefined): number | undefined {
 	if (current === undefined) {
 		return observed;
@@ -1081,8 +1283,11 @@ function maxEventSequence(current: number | undefined, observed: number | undefi
 	return Math.max(current, observed);
 }
 
-function mapDaemonAttachSnapshot(result: DaemonAttachResult): AgentConnectionSnapshot {
-	return mapDaemonSessionSnapshot(result.snapshot, result.replay);
+function maxEventCursor(current: DaemonEventCursor | undefined, observed: DaemonEventCursor): DaemonEventCursor {
+	if (!current || current.generation !== observed.generation) {
+		return observed;
+	}
+	return current.sequence >= observed.sequence ? current : observed;
 }
 
 function mapDaemonSessionSnapshot(snapshot: DaemonSessionSnapshot, replay?: DaemonReplayInfo): AgentConnectionSnapshot {
@@ -1090,6 +1295,7 @@ function mapDaemonSessionSnapshot(snapshot: DaemonSessionSnapshot, replay?: Daem
 		state: snapshot.state,
 		messages: snapshot.messages,
 		lastEventSequence: snapshot.lastEventSequence,
+		lastEventCursor: snapshot.lastEventCursor,
 	};
 	if (snapshot.sessionContext) {
 		connectionSnapshot.sessionContext = snapshot.sessionContext;
@@ -1114,6 +1320,13 @@ function getDaemonMessageSequence(message: DaemonOutbound): number | undefined {
 		return undefined;
 	}
 	return message.meta?.sequence;
+}
+
+function getDaemonMessageCursor(message: DaemonOutbound): DaemonEventCursor | undefined {
+	if (!("meta" in message)) {
+		return undefined;
+	}
+	return message.meta?.cursor;
 }
 
 function invalidatesCachedSnapshot(commandType: DaemonCommandBody["type"]): boolean {

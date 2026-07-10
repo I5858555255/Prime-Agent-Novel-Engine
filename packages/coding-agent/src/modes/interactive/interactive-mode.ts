@@ -4134,6 +4134,8 @@ export class InteractiveMode {
 					this.handleSideQuestionEvent(event.event);
 				} else if (event.type === "extension_ui_request") {
 					await this.handleConnectionExtensionUiRequest(event.request);
+				} else if (event.type === "connection_status") {
+					this.showStatus(event.status === "connected" ? "Daemon reconnected" : "Daemon reconnecting");
 				} else if (event.type === "closed") {
 					this.showError(event.error ?? "Agent connection closed");
 				}

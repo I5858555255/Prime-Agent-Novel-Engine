@@ -229,7 +229,14 @@ export interface AgentConnectionReplayInfo {
 	status: AgentConnectionReplayStatus;
 	fromSequence?: number;
 	toSequence: number;
+	fromCursor?: AgentConnectionEventCursor;
+	toCursor?: AgentConnectionEventCursor;
 	reason?: string;
+}
+
+export interface AgentConnectionEventCursor {
+	generation: string;
+	sequence: number;
 }
 
 export interface AgentConnectionParentMetadata {
@@ -248,6 +255,7 @@ export interface AgentConnectionSnapshot {
 	/** Live RLM child agents (including grandchildren) known to the host at snapshot time. */
 	children?: AgentConnectionRlmChildAgentSnapshot[];
 	lastEventSequence?: number;
+	lastEventCursor?: AgentConnectionEventCursor;
 	replay?: AgentConnectionReplayInfo;
 }
 
@@ -511,6 +519,7 @@ export type AgentConnectionEvent =
 	| { type: "session_replaced"; state: AgentConnectionState; messages: AgentMessage[] }
 	| { type: "session_status"; recap?: string }
 	| { type: "extension_ui_request"; request: AgentConnectionExtensionUiRequest }
+	| { type: "connection_status"; status: "reconnecting" | "connected"; error?: string }
 	| { type: "closed"; error?: string };
 
 export type AgentConnectionEventListener = (event: AgentConnectionEvent) => void | Promise<void>;
