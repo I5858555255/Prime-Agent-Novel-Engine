@@ -98,6 +98,7 @@ export interface ExecuteOptions {
 	/** Aborting interrupts the kernel via the control channel. */
 	signal?: AbortSignal;
 	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
+	onLateSentAgentMessage?: (message: KernelSentAgentMessage) => void;
 	/** Cap stdout / stderr / result at this many characters. Default 65536. */
 	maxOutputChars?: number;
 	/** Synthetic host cell (snapshot/restore/list); excluded from lastCellCode attribution. */
@@ -529,6 +530,7 @@ export class KernelManager {
 	private executionQueue: Promise<unknown> = Promise.resolve();
 	private activeExecution?: ActiveExecution;
 	private readonly activeExecutionIdleWaiters = new Set<() => void>();
+	private readonly lateSentAgentMessageHandlers = new Map<string, (message: KernelSentAgentMessage) => void>();
 	// Source of the most recently started cell, retained after it finishes so
 	// rlm.run spawns from detached asyncio tasks (cell already idle) can still
 	// attribute their spawning program.
@@ -971,10 +973,15 @@ export class KernelManager {
 
 	private handleExecutionMessage(incoming: JupyterMessage): void {
 		const execution = this.activeExecution;
-		if (!execution) {
-			return;
-		}
-		if ((incoming.parent_header as { msg_id?: string }).msg_id !== execution.requestMsgId) {
+		const parentMessageId = (incoming.parent_header as { msg_id?: string }).msg_id;
+		if (!execution || parentMessageId !== execution.requestMsgId) {
+			if (incoming.header.msg_type === "display_data" || incoming.header.msg_type === "update_display_data") {
+				const content = incoming.content as { data?: Record<string, unknown> };
+				const sentAgentMessage = parseSentAgentMessage(content.data?.[AGENT_MESSAGE_DISPLAY_MIME]);
+				if (sentAgentMessage && parentMessageId) {
+					this.lateSentAgentMessageHandlers.get(parentMessageId)?.(sentAgentMessage);
+				}
+			}
 			return;
 		}
 
@@ -1038,6 +1045,9 @@ export class KernelManager {
 		const didClearActive = options.clearActive && this.activeExecution === execution;
 		if (options.clearActive && this.activeExecution === execution) {
 			this.activeExecution = undefined;
+		}
+		if (didClearActive && execution.opts.onLateSentAgentMessage) {
+			this.lateSentAgentMessageHandlers.set(execution.requestMsgId, execution.opts.onLateSentAgentMessage);
 		}
 
 		let stdout = execution.stdout;
@@ -1237,6 +1247,7 @@ export class KernelManager {
 
 	private cleanupResources(killSignal: NodeJS.Signals = "SIGTERM"): void {
 		this.clearSnapshotTimer();
+		this.lateSentAgentMessageHandlers.clear();
 		if (this.forkedLivenessTimer) {
 			globalThis.clearInterval(this.forkedLivenessTimer);
 			this.forkedLivenessTimer = undefined;

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getBundledSkillsDir } from "../src/config.js";
+import type { KernelSentAgentMessage } from "../src/core/kernel/index.js";
 import type { PythonSkillRuntimeInfo } from "../src/core/skills.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
@@ -133,5 +134,45 @@ except ValueError as error:
 `);
 		expect(result.status).toBe("ok");
 		expect(result.stdout.trim()).toBe('ValueError: mode must be "auto", "follow_up", or "steer"');
+	});
+
+	it("captures sent messages from detached tasks after the cell is idle", async () => {
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledAgentMessageSkill()],
+			hostHandlers: {
+				"agent_message.send": async (payload) => ({
+					id: "agentmsg-background",
+					source: "agent_message",
+					target: { activeSessionId: payload.target, sessionId: "session-beta", sessionName: "Beta" },
+					message: payload.message,
+					deliveryStatus: "delivered",
+					deliveredAt: "2026-07-10T00:00:00.000Z",
+					deliveryMode: payload.mode,
+				}),
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		let resolveLateMessage!: (message: KernelSentAgentMessage) => void;
+		const lateMessage = new Promise<KernelSentAgentMessage>((resolve) => {
+			resolveLateMessage = resolve;
+		});
+		const result = await manager.execute(
+			`async def send_later():
+    await asyncio.sleep(0.05)
+    await agent_message.send("beta", "background hello")
+
+background_send = asyncio.create_task(send_later())`,
+			{ onLateSentAgentMessage: (message) => resolveLateMessage(message) },
+		);
+
+		expect(result.status).toBe("ok");
+		expect(result.sentAgentMessages).toBeUndefined();
+		await expect(lateMessage).resolves.toEqual({
+			id: "agentmsg-background",
+			message: "background hello",
+			deliveryStatus: "delivered",
+			target: { activeSessionId: "beta", sessionId: "session-beta", sessionName: "Beta" },
+		});
 	});
 });

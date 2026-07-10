@@ -43,6 +43,7 @@ import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import {
+	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	AGENT_MESSAGE_SKILL_NAME,
 	type AgentSessionMessage,
 	type AgentSessionMessageController,
@@ -142,7 +143,7 @@ import {
 	validateGoalBudget,
 	validateGoalObjective,
 } from "./goals.js";
-import type { HostRequestHandlers } from "./kernel/index.js";
+import type { HostRequestHandlers, KernelSentAgentMessage } from "./kernel/index.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { McpManager } from "./mcp/mcp-manager.js";
 import {
@@ -240,6 +241,7 @@ export type CompactionReason = "manual" | "threshold" | "overflow" | "requested"
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
+	| { type: "ipython_sent_agent_message"; toolCallId: string; message: KernelSentAgentMessage }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -486,9 +488,67 @@ function queuedMessagePreview(message: { text: string; previewLabel?: string }):
 
 function queuedAgentMessagePreview(message: QueuedSteeringMessage | QueuedFollowUpMessage): string {
 	if (isAgentSessionMessage(message.message)) {
-		return `Agent message received: ${message.message.details.message}`;
+		return `${AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL}: ${message.message.details.message}`;
 	}
 	return queuedMessagePreview(message);
+}
+
+const IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY = "ipython_sent_agent_message";
+
+interface PersistedIpythonSentAgentMessage {
+	toolCallId: string;
+	message: KernelSentAgentMessage;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parsePersistedIpythonSentAgentMessage(value: unknown): PersistedIpythonSentAgentMessage | undefined {
+	if (!isObjectRecord(value) || typeof value.toolCallId !== "string" || !isObjectRecord(value.message)) {
+		return undefined;
+	}
+	const { id, message, deliveryStatus, target } = value.message;
+	if (
+		typeof id !== "string" ||
+		typeof message !== "string" ||
+		(deliveryStatus !== "delivered" && deliveryStatus !== "queued") ||
+		!isObjectRecord(target) ||
+		typeof target.activeSessionId !== "string" ||
+		typeof target.sessionId !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		toolCallId: value.toolCallId,
+		message: {
+			id,
+			message,
+			deliveryStatus,
+			target: {
+				activeSessionId: target.activeSessionId,
+				sessionId: target.sessionId,
+				...(typeof target.sessionName === "string" ? { sessionName: target.sessionName } : {}),
+			},
+		},
+	};
+}
+
+function appendSentAgentMessageToToolResult(
+	message: AgentMessage,
+	toolCallId: string,
+	sentMessage: KernelSentAgentMessage,
+): boolean {
+	if (message.role !== "toolResult" || message.toolName !== "ipython" || message.toolCallId !== toolCallId) {
+		return false;
+	}
+	const details = isObjectRecord(message.details) ? message.details : {};
+	const current = Array.isArray(details.sentAgentMessages) ? details.sentAgentMessages : [];
+	if (current.some((entry) => isObjectRecord(entry) && entry.id === sentMessage.id)) {
+		return true;
+	}
+	message.details = { ...details, sentAgentMessages: [...current, sentMessage] };
+	return true;
 }
 
 function injectedMessagePreviewLabel(message: CustomMessage): string | undefined {
@@ -705,6 +765,7 @@ export class AgentSession {
 	private _agentMessageDeliveryWaiters = new Map<string, AgentMessageDeliveryWaiter>();
 	private _deliveredAgentMessageIds = new Set<string>();
 	private _failedAgentMessageDeliveries = new Map<string, Error>();
+	private _lateIpythonSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -823,6 +884,7 @@ export class AgentSession {
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
 		this._goalState = this._loadPersistedGoalState();
+		this._restoreLateIpythonSentAgentMessages();
 		if (this._goalState.status === "active") {
 			this._goalAccountingStartedAt = Date.now();
 		}
@@ -956,6 +1018,54 @@ export class AgentSession {
 			steering: this._steeringMessages.map(queuedAgentMessagePreview),
 			followUp: this._followUpMessages.map(queuedAgentMessagePreview),
 		});
+	}
+
+	private _restoreLateIpythonSentAgentMessages(): void {
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "custom" || entry.customType !== IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY) {
+				continue;
+			}
+			const persisted = parsePersistedIpythonSentAgentMessage(entry.data);
+			if (persisted) {
+				this._rememberLateIpythonSentAgentMessage(persisted.toolCallId, persisted.message);
+			}
+		}
+	}
+
+	private _rememberLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): boolean {
+		const messages = this._lateIpythonSentAgentMessages.get(toolCallId) ?? [];
+		if (messages.some((entry) => entry.id === message.id)) {
+			return false;
+		}
+		messages.push(message);
+		this._lateIpythonSentAgentMessages.set(toolCallId, messages);
+		for (let index = this.agent.state.messages.length - 1; index >= 0; index -= 1) {
+			if (appendSentAgentMessageToToolResult(this.agent.state.messages[index], toolCallId, message)) {
+				break;
+			}
+		}
+		return true;
+	}
+
+	private _applyLateIpythonSentAgentMessages(message: AgentMessage): void {
+		if (message.role !== "toolResult" || message.toolName !== "ipython") {
+			return;
+		}
+		for (const sentMessage of this._lateIpythonSentAgentMessages.get(message.toolCallId) ?? []) {
+			appendSentAgentMessageToToolResult(message, message.toolCallId, sentMessage);
+		}
+	}
+
+	private _recordLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): void {
+		const record = () => {
+			if (this._disposed || !this._rememberLateIpythonSentAgentMessage(toolCallId, message)) {
+				return;
+			}
+			this.sessionManager.appendCustomEntry(IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY, { toolCallId, message });
+			this._emit({ type: "ipython_sent_agent_message", toolCallId, message });
+		};
+		this._agentEventQueue = this._agentEventQueue.then(record, record);
+		this._agentEventQueue.catch(() => {});
 	}
 
 	private _emitGoalUpdate(): void {
@@ -1814,6 +1924,9 @@ export class AgentSession {
 	}
 
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
+		if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "toolResult") {
+			this._applyLateIpythonSentAgentMessages(event.message);
+		}
 		const acceptedPrompt = this._acceptedAgentMessagePrompt;
 		if (acceptedPrompt && (event.type === "message_start" || event.type === "message_end")) {
 			if (event.message === acceptedPrompt.message) {
@@ -5200,6 +5313,8 @@ export class AgentSession {
 					provisioner: this._ipythonKernelProvisioner,
 					commandPrefix: this.settingsManager.getShellCommandPrefix(),
 					shellPath: this.settingsManager.getShellPath(),
+					onLateSentAgentMessage: (toolCallId, message) =>
+						this._recordLateIpythonSentAgentMessage(toolCallId, message),
 				},
 			});
 		}

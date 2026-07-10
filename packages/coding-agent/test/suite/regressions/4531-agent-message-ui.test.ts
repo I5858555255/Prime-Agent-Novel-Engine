@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -9,8 +9,10 @@ import {
 	createAgentSessionMessagePrompt,
 	isAgentSessionMessagePrompt,
 } from "../../../src/core/agent-messages.js";
+import type { KernelSentAgentMessage } from "../../../src/core/kernel/index.js";
 import { AgentMessageComponent } from "../../../src/modes/interactive/components/agent-message.js";
 import { IPythonCellComponent } from "../../../src/modes/interactive/components/ipython-cell.js";
+import { formatQueuedMessagePreview } from "../../../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.js";
 import { createHarness, getMessageText, getUserTexts, type Harness } from "../harness.js";
 
@@ -40,6 +42,13 @@ function stripAnsi(text: string): string {
 function render(component: AgentMessageComponent): string {
 	return stripAnsi(component.render(120).join("\n"));
 }
+
+type LateSentAgentMessageHost = {
+	_recordLateIpythonSentAgentMessage: (toolCallId: string, message: KernelSentAgentMessage) => void;
+	_agentEventQueue: Promise<void>;
+	_lateIpythonSentAgentMessages: Map<string, KernelSentAgentMessage[]>;
+	_restoreLateIpythonSentAgentMessages: () => void;
+};
 
 describe("ENG-4531 agent message UI", () => {
 	const harnesses: Harness[] = [];
@@ -117,6 +126,60 @@ describe("ENG-4531 agent message UI", () => {
 			steering: [],
 			followUp: [prompt],
 		});
+	});
+
+	it("does not add a second queue label to agent message previews", () => {
+		expect(formatQueuedMessagePreview("Agent message received: Use shard seven.", "Follow-up")).toBe(
+			"Agent message received: Use shard seven.",
+		);
+		expect(formatQueuedMessagePreview("Run the remaining checks.", "Steering")).toBe(
+			"Steering: Run the remaining checks.",
+		);
+	});
+
+	it("persists sent messages that arrive after their Python cell completes", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "ipython_4531",
+			toolName: "ipython",
+			content: [{ type: "text", text: "" }],
+			details: { status: "ok" },
+			isError: false,
+			timestamp: Date.now(),
+		};
+		harness.session.agent.state.messages.push(toolResult);
+		const lateMessage = {
+			id: "agentmsg_late_4531",
+			message: "Background review finished.",
+			deliveryStatus: "delivered" as const,
+			target: {
+				activeSessionId: "worker-active",
+				sessionId: "worker-session",
+				sessionName: "Worker",
+			},
+		};
+		const events: string[] = [];
+		const unsubscribe = harness.session.subscribe((event) => events.push(event.type));
+		const host = harness.session as unknown as LateSentAgentMessageHost;
+
+		host._recordLateIpythonSentAgentMessage(toolResult.toolCallId, lateMessage);
+		await host._agentEventQueue;
+		unsubscribe();
+
+		expect(toolResult.details).toMatchObject({ sentAgentMessages: [lateMessage] });
+		expect(
+			harness.session.sessionManager
+				.getEntries()
+				.some((entry) => entry.type === "custom" && entry.customType === "ipython_sent_agent_message"),
+		).toBe(true);
+		expect(events).toContain("ipython_sent_agent_message");
+
+		toolResult.details = { status: "ok" };
+		host._lateIpythonSentAgentMessages = new Map();
+		host._restoreLateIpythonSentAgentMessages();
+		expect(toolResult.details).toMatchObject({ sentAgentMessages: [lateMessage] });
 	});
 
 	it("preserves the custom message when direct delivery races with active work", async () => {
