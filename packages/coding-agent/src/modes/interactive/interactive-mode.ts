@@ -4020,8 +4020,6 @@ export class InteractiveMode {
 					return;
 				}
 
-				this.clearSideQuestion({ abort: true });
-
 				// Handle bash command (! for normal, !! for excluded from context)
 				if (text.startsWith("!")) {
 					const isExcluded = text.startsWith("!!");
@@ -4036,6 +4034,7 @@ export class InteractiveMode {
 						);
 						return;
 					}
+					this.clearSideQuestion({ abort: true });
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
 					// Optimistic: bash_start only fires after extension dispatch, and the
@@ -4056,6 +4055,8 @@ export class InteractiveMode {
 					}
 					return;
 				}
+
+				this.clearSideQuestion({ abort: true });
 
 				// Queue input during compaction (extension commands execute immediately)
 				if (this.isAgentCompacting()) {
