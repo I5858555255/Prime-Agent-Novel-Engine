@@ -123,7 +123,32 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		const summary = new ChildAgentSummaryComponent();
 		summary.setNodes([{ ...node("a"), label: "A starting prompt that is much too long for its fixed column" }]);
 		const out = summary.render(80).join("\n");
-		expect(out).toContain(theme.fg("dim", "…"));
+		const ellipsisIndex = out.indexOf("…");
+		const beforeEllipsis = out.slice(0, ellipsisIndex);
+		const dimStart = theme.fg("dim", "").replace("\x1b[39m", "");
+		expect(ellipsisIndex).toBeGreaterThan(0);
+		expect(beforeEllipsis.lastIndexOf(dimStart)).toBeGreaterThan(beforeEllipsis.lastIndexOf("\x1b[39m"));
+		expect(out[ellipsisIndex - 1]).not.toBe(" ");
+	});
+
+	it("keeps the selected background active across the entire row", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.focused = true;
+		summary.setNodes([
+			{
+				...node("a"),
+				label: "A starting prompt that is much too long for its fixed column",
+				recap: "A recap that is also much too long for its fixed column and must be truncated",
+				toolUseCount: 3,
+				tokenCount: 41_000,
+				durationMs: 5_000,
+			},
+		]);
+		const [line] = summary.render(80);
+		const backgroundStart = theme.bg("selectedBg", "").replace("\x1b[49m", "");
+		expect(line?.startsWith(backgroundStart)).toBe(true);
+		expect(line?.endsWith("\x1b[49m")).toBe(true);
+		expect(line).not.toContain("\x1b[0m");
 	});
 
 	it("adds extra space between token count and duration", () => {

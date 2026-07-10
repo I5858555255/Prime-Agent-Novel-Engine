@@ -185,7 +185,9 @@ function childAgentRecap(node: ChildAgentInspectorNode): string {
 }
 
 function padTableCell(value: string, width: number, ellipsis = ""): string {
-	const truncated = truncateToWidth(value, width, ellipsis);
+	// truncateToWidth emits full ANSI resets around its marker even for plain text.
+	// Strip those generated resets before applying foreground/background styling.
+	const truncated = truncateToWidth(value, width, ellipsis).replaceAll("\x1b[0m", "");
 	return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
 }
 
@@ -461,12 +463,16 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		return `${indent}${icon} ${agentCell}${gap}${promptCell}${gap}${recapCell}${gap}${theme.fg("muted", metrics)}`;
 	}
 
-	// Color the marker explicitly because the truncation helper resets ANSI before inserting it.
 	private elidePrompt(label: string, sharedPrefix: string, sharedSuffix: string, width: number): string {
 		const text = this.elideAroundDiff(label, sharedPrefix, sharedSuffix);
-		// truncateToWidth resets active ANSI colors before its marker, so the marker
-		// must carry the prompt color explicitly instead of inheriting it.
-		return truncateToWidth(theme.fg("dim", text), Math.max(0, width), theme.fg("dim", "…"), true);
+		const safeWidth = Math.max(0, width);
+		const truncated =
+			visibleWidth(text) > safeWidth
+				? `${truncateToWidth(text, Math.max(0, safeWidth - 1), "")
+						.replaceAll("\x1b[0m", "")
+						.trimEnd()}…`
+				: text;
+		return theme.fg("dim", padTableCell(truncated, safeWidth));
 	}
 
 	// Window the prompt around its divergence: "<leading context>…<~2 words before
