@@ -32,7 +32,10 @@ export type DaemonWorkerFrameHeader =
 			snapshotPurpose?: "attach" | "replacement" | "catchup";
 	  };
 
-export type DaemonCreateCommand = Extract<DaemonCommand, { type: "create" }>;
+export type DaemonCreateCommand = Extract<DaemonCommand, { type: "create" }> & {
+	/** Internal persisted cron identity used to guard worker runtime creation. */
+	cronJobId?: string;
+};
 
 export type DaemonWorkerCommand =
 	| { id?: string; type: "worker_auth"; token: string }
@@ -84,6 +87,8 @@ export interface DaemonWorkerDescriptor {
 	consecutiveFailures: number;
 	/** Durable intent written before root termination so replacement supervisors never recover it. */
 	stopRequestedAt?: string;
+	/** Complete the root's archived lifecycle state after its process has stopped. */
+	archiveOnStop?: boolean;
 	lastFailureAt?: string;
 	lastError?: string;
 }

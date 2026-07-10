@@ -106,7 +106,7 @@ import {
 import { createCompactAssistantDelta } from "./compact-session-stream.js";
 import { DaemonClient } from "./daemon-client.js";
 import { filterClientEnv, withClientEnv } from "./daemon-client-env.js";
-import { deserializeDaemonError, serializeDaemonError } from "./daemon-errors.js";
+import { deserializeDaemonError, RuntimeOpenCancelledError, serializeDaemonError } from "./daemon-errors.js";
 import { bindActiveSessionState } from "./daemon-extension-binding.js";
 import {
 	createDaemonEventMeta,
@@ -150,6 +150,7 @@ import {
 	DAEMON_WORKER_ROLE_ENV,
 	DAEMON_WORKER_SUPERVISOR_SOCKET_ENV,
 	DAEMON_WORKER_TOKEN_ENV,
+	type DaemonCreateCommand,
 	type DaemonWorkerCommand,
 	type DaemonWorkerFrameHeader,
 	isDaemonWorkerFrameHeader,
@@ -295,8 +296,6 @@ function delay(ms: number): Promise<void> {
 }
 
 type RuntimeOpenGuard = () => boolean | Promise<boolean>;
-
-class RuntimeOpenCancelledError extends Error {}
 
 export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
@@ -1927,7 +1926,12 @@ export class AgentDaemon {
 			}
 
 			case "create": {
-				const state = await this.createRuntime(command);
+				const createCommand = command as DaemonCreateCommand;
+				const cronJobId = this.options.worker ? createCommand.cronJobId : undefined;
+				const state = await this.createRuntime(
+					command,
+					cronJobId ? () => this.isPersistedCronJobRunnable(cronJobId) : undefined,
+				);
 				return success(command.id, "create", summaryForActiveSession(state));
 			}
 

@@ -3,6 +3,13 @@ import { SessionImportFileNotFoundError } from "../../core/session-import-errors
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
 import type { DaemonErrorInfo, DaemonResponse } from "./daemon-protocol.js";
 
+export class RuntimeOpenCancelledError extends Error {
+	constructor() {
+		super("Runtime opening was cancelled");
+		this.name = "RuntimeOpenCancelledError";
+	}
+}
+
 export function serializeDaemonError(error: unknown): DaemonErrorInfo | undefined {
 	if (error instanceof MissingSessionCwdError) {
 		return { code: "missing_session_cwd", issue: error.issue };
@@ -17,6 +24,9 @@ export function serializeDaemonError(error: unknown): DaemonErrorInfo | undefine
 			activeSessionId: error.activeSessionId,
 		};
 	}
+	if (error instanceof RuntimeOpenCancelledError) {
+		return { code: "runtime_open_cancelled" };
+	}
 	return undefined;
 }
 
@@ -30,6 +40,9 @@ export function deserializeDaemonError(response: Extract<DaemonResponse, { succe
 	}
 	if (errorInfo?.code === "session_already_active") {
 		return new SessionAlreadyActiveError(errorInfo.sessionPath, errorInfo.activeSessionId);
+	}
+	if (errorInfo?.code === "runtime_open_cancelled") {
+		return new RuntimeOpenCancelledError();
 	}
 	return new Error(response.error);
 }

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createCliSubprocessLaunchSpec } from "../../cli/subprocess-launch.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { deleteSessionFile } from "../../core/session-file-actions.js";
-import { type SessionInfo, SessionManager } from "../../core/session-manager.js";
+import { readSessionInfo, type SessionInfo, SessionManager } from "../../core/session-manager.js";
 
 export const DAEMON_CATALOG_ROLE_ENV = "PRIME_AGENT_INTERNAL_DAEMON_CATALOG";
 
@@ -17,6 +17,8 @@ type CatalogRequest =
 	| { type: "request"; id: string; command: "resolve"; selector: string; cwd: string; sessionDir?: string }
 	| { type: "request"; id: string; command: "rename"; sessionPath: string; name: string }
 	| { type: "request"; id: string; command: "delete"; sessionPath: string }
+	| { type: "request"; id: string; command: "inspect"; sessionPath: string }
+	| { type: "request"; id: string; command: "archive"; sessionPath: string; sessionId: string }
 	| {
 			type: "request";
 			id: string;
@@ -79,6 +81,8 @@ function isCatalogRequest(value: unknown): value is CatalogRequest {
 			candidate.command === "resolve" ||
 			candidate.command === "rename" ||
 			candidate.command === "delete" ||
+			candidate.command === "inspect" ||
+			candidate.command === "archive" ||
 			candidate.command === "mark_interrupted" ||
 			candidate.command === "shutdown")
 	);
@@ -172,6 +176,38 @@ async function handleCatalogRequest(request: CatalogRequest): Promise<void> {
 					data: await deleteSessionFile(request.sessionPath),
 				});
 				return;
+			case "inspect": {
+				const session = await readSessionInfo(request.sessionPath);
+				sendCatalogMessage({
+					type: "response",
+					id: request.id,
+					success: true,
+					data: { session: session ? serializeSessionInfo(session) : null },
+				});
+				return;
+			}
+			case "archive": {
+				const session = await readSessionInfo(request.sessionPath);
+				if (!session || session.id !== request.sessionId) {
+					sendCatalogMessage({
+						type: "response",
+						id: request.id,
+						success: true,
+						data: { archived: false },
+					});
+					return;
+				}
+				if (session.state?.status !== "archived") {
+					SessionManager.open(request.sessionPath).appendSessionState({ status: "archived" });
+				}
+				sendCatalogMessage({
+					type: "response",
+					id: request.id,
+					success: true,
+					data: { archived: true },
+				});
+				return;
+			}
 			case "mark_interrupted":
 				SessionManager.open(request.sessionPath).appendCustomMessageEntry(
 					"prime-agent.worker_recovery",
@@ -253,6 +289,27 @@ export class DaemonCatalogClient {
 
 	delete(sessionPath: string): Promise<DeleteSessionFileResult> {
 		return this.request({ type: "request", id: randomUUID(), command: "delete", sessionPath });
+	}
+
+	async inspect(sessionPath: string): Promise<SessionInfo | null> {
+		const data = await this.request<{ session: SessionInfoWire | null }>({
+			type: "request",
+			id: randomUUID(),
+			command: "inspect",
+			sessionPath,
+		});
+		return data.session ? deserializeSessionInfo(data.session) : null;
+	}
+
+	async archive(sessionPath: string, sessionId: string): Promise<boolean> {
+		const data = await this.request<{ archived: boolean }>({
+			type: "request",
+			id: randomUUID(),
+			command: "archive",
+			sessionPath,
+			sessionId,
+		});
+		return data.archived;
 	}
 
 	async markInterrupted(sessionPath: string, activeSessionId: string, operations: string[]): Promise<void> {

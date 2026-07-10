@@ -32,7 +32,7 @@ import { createActiveSessionId, type DaemonSocketClient } from "./active-session
 import { CommandRecoveryJournal } from "./command-recovery-journal.js";
 import { CompactAssistantStreamReconstructor, isCompactAssistantDelta } from "./compact-session-stream.js";
 import { DAEMON_CATALOG_ROLE_ENV, DaemonCatalogClient } from "./daemon-catalog-process.js";
-import { deserializeDaemonError, serializeDaemonError } from "./daemon-errors.js";
+import { deserializeDaemonError, RuntimeOpenCancelledError, serializeDaemonError } from "./daemon-errors.js";
 import {
 	collectDaemonClientEnv,
 	createDaemonEventMeta,
@@ -678,7 +678,7 @@ export class DaemonSupervisor {
 			case "list_saved_sessions":
 				return this.handleSavedSessionList(client, command);
 			case "create": {
-				const worker = await this.createOrReuseWorker(command);
+				const worker = await this.createOrReuseWorker({ ...command, cronJobId: undefined });
 				const summary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 				if (!summary) {
 					throw new Error("Session worker started without a root session");
@@ -892,12 +892,12 @@ export class DaemonSupervisor {
 		if (!isRootKill) {
 			return this.forwardToWorker(match.worker, resolvedCommand);
 		}
-		this.persistWorkerStopTombstone(match.worker);
+		this.persistWorkerStopTombstone(match.worker, true);
 		let response: DaemonResponse;
 		try {
 			response = await this.forwardToWorker(match.worker, resolvedCommand);
 		} finally {
-			await this.stopWorker(match.worker, true);
+			await this.stopWorker(match.worker, true, false, true);
 		}
 		return response;
 	}
@@ -1149,10 +1149,12 @@ export class DaemonSupervisor {
 	private async adoptOrRecoverWorker(worker: ResidentWorker): Promise<void> {
 		if (worker.descriptor.stopRequestedAt) {
 			try {
-				await this.stopWorker(worker, true, true);
+				await this.stopWorker(worker, true, true, worker.descriptor.archiveOnStop === true);
 				this.log(`Completed intentional stop for worker ${worker.descriptor.workerId} during supervisor adoption`);
 			} catch (error) {
-				this.workers.delete(worker.descriptor.workerId);
+				worker.descriptor.lifecycle = "failed";
+				worker.descriptor.lastError = error instanceof Error ? error.message : String(error);
+				this.persistWorker(worker);
 				this.log(`Could not complete intentional stop for worker ${worker.descriptor.workerId}: ${String(error)}`);
 			}
 			return;
@@ -1997,29 +1999,86 @@ export class DaemonSupervisor {
 	}
 
 	private async runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> {
-		let match = this.matchWorkers(job.activeSessionId)[0] ?? this.findWorkerBySessionFile(job.sessionFile);
+		let runnableJob = this.cronStore.getDueJob(job.id);
+		if (!runnableJob) {
+			return "skipped";
+		}
+		let match =
+			this.matchWorkers(runnableJob.activeSessionId)[0] ?? this.findWorkerBySessionFile(runnableJob.sessionFile);
 		if (!match) {
-			const worker = await this.launchWorker({
-				type: "create",
-				sessionPath: job.sessionFile,
-				config: {
-					...this.defaultSessionConfig,
-					cwd: job.cwd,
-				},
-			});
+			runnableJob = await this.getRunnablePersistedCronJob(job.id);
+			if (!runnableJob) {
+				return "skipped";
+			}
+			let worker: ResidentWorker;
+			try {
+				worker = await this.launchWorker({
+					type: "create",
+					sessionPath: runnableJob.sessionFile,
+					cronJobId: runnableJob.id,
+					config: {
+						...this.defaultSessionConfig,
+						cwd: runnableJob.cwd,
+					},
+				});
+			} catch (error) {
+				if (error instanceof RuntimeOpenCancelledError) {
+					return "skipped";
+				}
+				throw error;
+			}
 			const summary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 			if (!summary) {
 				return "skipped";
 			}
 			match = { worker, summary };
 		}
+		const currentJob = this.cronStore.getDueJob(runnableJob.id);
+		if (
+			!currentJob ||
+			currentJob.sessionId !== match.summary.sessionId ||
+			!match.summary.sessionFile ||
+			resolve(currentJob.sessionFile) !== resolve(match.summary.sessionFile)
+		) {
+			return "skipped";
+		}
 		if (!match.worker.client || match.worker.descriptor.lifecycle !== "ready") {
 			return "skipped";
 		}
-		const response = await match.worker.client.requestWorker({ type: "worker_run_cron", job });
+		const response = await match.worker.client.requestWorker({ type: "worker_run_cron", job: currentJob });
 		return response.success && (response.data as { result?: unknown } | undefined)?.result !== "skipped"
 			? undefined
 			: "skipped";
+	}
+
+	private async getRunnablePersistedCronJob(jobId: string): Promise<AgentCronJob | undefined> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const job = this.cronStore.getDueJob(jobId);
+			if (!job) {
+				return undefined;
+			}
+			const sessionFile = resolve(job.sessionFile);
+			const sessionInfo = await this.catalog.inspect(sessionFile);
+			const current = this.cronStore.getDueJob(jobId);
+			if (!current) {
+				return undefined;
+			}
+			if (resolve(current.sessionFile) !== sessionFile || current.sessionId !== job.sessionId) {
+				continue;
+			}
+			if (!sessionInfo || sessionInfo.id !== current.sessionId || sessionInfo.state?.status !== "active") {
+				this.cancelScheduledJobsForSessionFile(current.sessionFile);
+				return undefined;
+			}
+			return current;
+		}
+		return undefined;
+	}
+
+	private cancelScheduledJobsForSessionFile(sessionFile: string): void {
+		if (this.cronStore.cancelJobsForSession({ sessionFile }).length > 0) {
+			this.cronScheduler.wake();
+		}
 	}
 
 	private async removeQueuedCronFromWorker(worker: ResidentWorker, job: AgentCronJob): Promise<void> {
@@ -2130,9 +2189,14 @@ export class DaemonSupervisor {
 		renameSync(tempPath, path);
 	}
 
-	private async stopWorker(worker: ResidentWorker, removeDescriptor: boolean, force = false): Promise<void> {
+	private async stopWorker(
+		worker: ResidentWorker,
+		removeDescriptor: boolean,
+		force = false,
+		archiveSession = false,
+	): Promise<void> {
 		if (removeDescriptor) {
-			this.persistWorkerStopTombstone(worker);
+			this.persistWorkerStopTombstone(worker, archiveSession);
 		} else {
 			worker.intentionalStop = true;
 			worker.descriptor.lifecycle = "recovering";
@@ -2173,6 +2237,9 @@ export class DaemonSupervisor {
 			worker.intentionalStop = worker.descriptor.stopRequestedAt !== undefined;
 			throw new Error(`Session worker ${worker.descriptor.workerId} did not stop${force ? " after SIGKILL" : ""}`);
 		}
+		if (removeDescriptor && worker.descriptor.archiveOnStop) {
+			await this.finalizeArchivedWorkerStop(worker);
+		}
 		this.workers.delete(worker.descriptor.workerId);
 		if (removeDescriptor) {
 			this.deleteWorkerDescriptor(worker);
@@ -2182,9 +2249,21 @@ export class DaemonSupervisor {
 		}
 	}
 
-	private persistWorkerStopTombstone(worker: ResidentWorker): void {
+	private async finalizeArchivedWorkerStop(worker: ResidentWorker): Promise<void> {
+		const sessionFile = worker.descriptor.sessionFile ?? worker.descriptor.createCommand.sessionPath;
+		if (!sessionFile) {
+			return;
+		}
+		this.cancelScheduledJobsForSessionFile(sessionFile);
+		if (worker.descriptor.rootSessionId) {
+			await this.catalog.archive(sessionFile, worker.descriptor.rootSessionId);
+		}
+	}
+
+	private persistWorkerStopTombstone(worker: ResidentWorker, archiveSession = false): void {
 		worker.intentionalStop = true;
 		worker.descriptor.stopRequestedAt ??= new Date().toISOString();
+		worker.descriptor.archiveOnStop ||= archiveSession;
 		this.persistWorker(worker);
 	}
 

@@ -4,14 +4,15 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.js";
+import { ENV_AGENT_DIR, getCronJobsPath } from "../src/config.js";
+import { AgentCronJobStore } from "../src/core/cron-jobs.js";
 import { readActiveOrphanProcessPids } from "../src/core/orphan-process-journal.js";
 import {
 	acquireSessionLease,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 } from "../src/core/session-lease.js";
-import { SessionManager } from "../src/core/session-manager.js";
+import { readSessionInfo, SessionManager } from "../src/core/session-manager.js";
 import { DaemonAgentConnection } from "../src/modes/agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../src/modes/daemon/daemon-client.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
@@ -256,7 +257,69 @@ async function waitForProcessGone(pid: number): Promise<void> {
 	throw new Error(`Worker ${pid} remained alive after daemon shutdown`);
 }
 
+async function waitForCondition(predicate: () => boolean, failureMessage: string): Promise<void> {
+	const deadline = Date.now() + 10_000;
+	while (Date.now() < deadline) {
+		if (predicate()) {
+			return;
+		}
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+	}
+	throw new Error(failureMessage);
+}
+
 describe("daemon supervisor resident workers", () => {
+	it("cancels an archived session heartbeat without spawning a worker", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const sessionDir = join(agentDir, "sessions");
+		const socketPath = join(
+			tmpdir(),
+			`prime-supervisor-archived-cron-${process.pid}-${randomUUID().slice(0, 8)}.sock`,
+		);
+		mkdirSync(projectDir, { recursive: true });
+		const sessionManager = SessionManager.create(projectDir, sessionDir);
+		sessionManager.appendMessage({ role: "user", content: "do not revive me", timestamp: 1 });
+		sessionManager.appendSessionState({ status: "active" });
+		sessionManager.appendSessionState({ status: "archived" });
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) {
+			throw new Error("Fixture session did not persist");
+		}
+		const cronStore = new AgentCronJobStore(getCronJobsPath(agentDir));
+		const heartbeat = cronStore.createHeartbeat({
+			activeSessionId: "old-active-session",
+			sessionId: sessionManager.getSessionId(),
+			sessionFile,
+			cwd: projectDir,
+			scheduleText: "every 10s",
+			prompt: "continue old work",
+			now: new Date(Date.now() - 20_000),
+		});
+
+		const supervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, supervisor);
+		await waitForCondition(
+			() => cronStore.list().find((job) => job.id === heartbeat.id)?.status === "cancelled",
+			"Archived heartbeat was not cancelled",
+		);
+
+		expect(countWorkerDescriptors(agentDir)).toBe(0);
+		const listed = await client.request({ type: "list" });
+		expect(listed.success).toBe(true);
+		expect(
+			requireSessionList(listed.success ? listed.data : undefined).filter(
+				(session) => session.activeSessionId || session.workerPid,
+			),
+		).toEqual([]);
+		expect((await readSessionInfo(sessionFile))?.state).toEqual({ status: "archived" });
+
+		await client.request({ type: "shutdown" });
+		client.close();
+		await waitForSocketGone(socketPath);
+	}, 30_000);
+
 	it("restarts an empty supervisor without requiring a resident worker", async () => {
 		const root = tempDir();
 		const agentDir = join(root, "agent");
@@ -320,9 +383,19 @@ describe("daemon supervisor resident workers", () => {
 		process.kill(summary.workerPid, "SIGSTOP");
 
 		const activeSessionId = summary.activeSessionId ?? summary.id;
+		const cronStore = new AgentCronJobStore(getCronJobsPath(agentDir));
+		const heartbeat = cronStore.createHeartbeat({
+			activeSessionId,
+			sessionId: summary.sessionId,
+			sessionFile,
+			cwd: projectDir,
+			scheduleText: "every 1h",
+			prompt: "continue old work",
+		});
 		const killResult = client.request({ type: "kill", activeSessionId }).catch((error: unknown) => error);
 		const tombstone = await waitForWorkerStopTombstone(agentDir);
 		expect(tombstone.stopRequestedAt).toEqual(expect.any(String));
+		expect(tombstone.archiveOnStop).toBe(true);
 
 		process.kill(firstSupervisorPid, "SIGKILL");
 		await waitForExit(firstSupervisor);
@@ -339,6 +412,8 @@ describe("daemon supervisor resident workers", () => {
 		await waitForProcessGone(summary.workerPid);
 		workerPids.delete(summary.workerPid);
 		expect(countWorkerDescriptors(agentDir)).toBe(0);
+		expect((await readSessionInfo(sessionFile))?.state).toEqual({ status: "archived" });
+		expect(cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({ status: "cancelled" });
 
 		await replacementClient.request({ type: "shutdown" });
 		replacementClient.close();
