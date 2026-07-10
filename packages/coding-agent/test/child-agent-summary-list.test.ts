@@ -4,7 +4,7 @@ import {
 	type ChildAgentInspectorNode,
 	ChildAgentSummaryComponent,
 } from "../src/modes/interactive/components/child-agent-inspector.js";
-import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 import { setWorkingPulseFrame, workingIconFrame } from "../src/modes/interactive/theme/working-icon.js";
 
 function stripAnsi(text: string): string {
@@ -67,8 +67,8 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		const lines = summary.render(100).map(stripAnsi);
 		expect(lines.join("\n")).toContain("Inspecting the scheduler queue");
 		expect(lines.join("\n")).toContain("Executing ipython");
-		const dividers = lines.filter((line) => line.includes("│")).map((line) => line.indexOf("│"));
-		expect(dividers).toEqual([dividers[0], dividers[0]]);
+		expect(lines[0]?.indexOf("Inspecting")).toBe(lines[1]?.indexOf("Executing"));
+		expect(lines.join("\n")).not.toContain("│");
 	});
 
 	it("scrolls the window and updates the indicator as selection moves down", () => {
@@ -116,6 +116,21 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		expect(out).toContain("S1");
 		expect(out).toContain("S2");
 		expect(out).not.toContain("Subagent");
+		expect(out).not.toContain("↳");
+	});
+
+	it("keeps truncation ellipses in the prompt color", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([{ ...node("a"), label: "A starting prompt that is much too long for its fixed column" }]);
+		const out = summary.render(80).join("\n");
+		expect(out).toContain(theme.fg("dim", "…"));
+	});
+
+	it("adds extra space between token count and duration", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([{ ...node("a"), tokenCount: 41_000, durationMs: 5_000 }]);
+		const out = stripAnsi(summary.render(80).join("\n"));
+		expect(out).toMatch(/41k tok\s{3}5s/);
 	});
 
 	it("keeps the starting prompt compact so the recap gets more room", () => {
