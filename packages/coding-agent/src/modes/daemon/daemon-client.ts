@@ -37,6 +37,7 @@ export class DaemonClient {
 	>();
 	private requestId = 0;
 	private helloMessage?: DaemonHello;
+	private reconnectPromise?: Promise<void>;
 	private readonly helloWaiters = new Set<{
 		resolve: (hello: DaemonHello) => void;
 		reject: (error: Error) => void;
@@ -75,6 +76,7 @@ export class DaemonClient {
 			throw new Error("Daemon client is already connected");
 		}
 
+		this.helloMessage = undefined;
 		const socket = createConnection(this.socketPath);
 		this.socket = socket;
 		this.detachReader = attachJsonlLineReader(socket, (line) => this.handleLine(line));
@@ -106,6 +108,24 @@ export class DaemonClient {
 
 		socket.on("error", (error) => this.notifyClosed(socket, error));
 		socket.on("close", () => this.notifyClosed(socket, new Error("Daemon socket closed")));
+	}
+
+	async reconnect(timeoutMs = 3000): Promise<void> {
+		if (this.reconnectPromise) {
+			return this.reconnectPromise;
+		}
+		if (this.socket && !this.socket.destroyed) {
+			return;
+		}
+		const reconnectPromise = this.connect(timeoutMs);
+		this.reconnectPromise = reconnectPromise;
+		try {
+			await reconnectPromise;
+		} finally {
+			if (this.reconnectPromise === reconnectPromise) {
+				this.reconnectPromise = undefined;
+			}
+		}
 	}
 
 	onMessage(listener: DaemonClientMessageListener): () => void {

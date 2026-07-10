@@ -60,6 +60,12 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
 type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
 
 export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+const UPDATE_RECONNECT_TIMEOUT_MS = 120000;
+const UPDATE_RECONNECT_RETRY_MS = 100;
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export interface DaemonAgentConnectionOptions {
 	closeClientOnDispose?: boolean;
@@ -86,6 +92,11 @@ export class DaemonAgentConnection implements AgentConnection {
 	private lastEventSequence: number | undefined;
 	private latestSnapshot: AgentConnectionSnapshot | undefined;
 	private latestSnapshotIsFresh = false;
+	private attachedSessionId: string | undefined;
+	private attachedSessionFile: string | undefined;
+	private updateRestartPending = false;
+	private updateReconnectPromise?: Promise<void>;
+	private disposed = false;
 
 	constructor(
 		private readonly client: DaemonClient,
@@ -96,6 +107,10 @@ export class DaemonAgentConnection implements AgentConnection {
 			void this.handleDaemonMessage(message);
 		});
 		this.unsubscribeDaemonClose = this.client.onClose((error) => {
+			if (this.updateRestartPending && !this.disposed) {
+				void this.reconnectAfterUpdate();
+				return;
+			}
 			void this.emit({ type: "closed", error: error.message });
 		});
 	}
@@ -132,6 +147,9 @@ export class DaemonAgentConnection implements AgentConnection {
 						},
 		});
 		this.activeSessionId = getAttachActiveSessionId(result);
+		const summary = "snapshot" in result ? result.snapshot.summary : result;
+		this.attachedSessionId = summary.sessionId;
+		this.attachedSessionFile = summary.sessionFile;
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 		if ("snapshot" in result) {
 			this.latestSnapshot = mapDaemonAttachSnapshot(result);
@@ -683,6 +701,8 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async dispose(): Promise<void> {
+		this.disposed = true;
+		this.updateRestartPending = false;
 		this.unsubscribeDaemonMessages();
 		this.unsubscribeDaemonClose();
 		await this.requestOk({ type: "detach", activeSessionId: this.activeSessionId }).catch(() => undefined);
@@ -756,8 +776,76 @@ export class DaemonAgentConnection implements AgentConnection {
 			return;
 		}
 		if (message.type === "session_closed") {
+			if (message.reason === "update") {
+				this.updateRestartPending = true;
+				return;
+			}
 			await this.emit({ type: "closed", error: message.reason });
 		}
+	}
+
+	private reconnectAfterUpdate(): Promise<void> {
+		if (this.updateReconnectPromise) {
+			return this.updateReconnectPromise;
+		}
+		const reconnectPromise = this.restoreConnectionAfterUpdate()
+			.catch(async (error: unknown) => {
+				if (!this.disposed) {
+					await this.emit({
+						type: "closed",
+						error: `Failed to reconnect after update: ${error instanceof Error ? error.message : String(error)}`,
+					});
+				}
+			})
+			.finally(() => {
+				if (this.updateReconnectPromise === reconnectPromise) {
+					this.updateReconnectPromise = undefined;
+				}
+			});
+		this.updateReconnectPromise = reconnectPromise;
+		return reconnectPromise;
+	}
+
+	private async restoreConnectionAfterUpdate(): Promise<void> {
+		const sessionId = this.attachedSessionId;
+		const sessionFile = this.attachedSessionFile;
+		if (!sessionId && !sessionFile) {
+			throw new Error("the previous session identity is unavailable");
+		}
+		const deadline = Date.now() + UPDATE_RECONNECT_TIMEOUT_MS;
+		let lastError: unknown;
+		while (!this.disposed && Date.now() < deadline) {
+			try {
+				await this.client.reconnect(1000);
+				const response = await this.client.request({ type: "list" }, 30000);
+				if (!response.success) {
+					throw deserializeDaemonError(response);
+				}
+				const sessions = readSessionSummaries(response.data);
+				const restored = sessions.find(
+					(summary) =>
+						summary.activeSessionId !== undefined &&
+						((sessionFile !== undefined && summary.sessionFile === sessionFile) ||
+							(sessionId !== undefined && summary.sessionId === sessionId)),
+				);
+				if (restored?.activeSessionId) {
+					this.activeSessionId = restored.activeSessionId;
+					this.lastEventSequence = undefined;
+					await this.attach();
+					const snapshot = await this.getInitialSnapshot();
+					this.updateRestartPending = false;
+					await this.emit({ type: "session_replaced", state: snapshot.state, messages: snapshot.messages });
+					return;
+				}
+			} catch (error) {
+				lastError = error;
+			}
+			await delay(UPDATE_RECONNECT_RETRY_MS);
+		}
+		if (this.disposed) {
+			return;
+		}
+		throw lastError ?? new Error("the restored session did not become available");
 	}
 
 	private isMessageForActiveSession(message: DaemonOutbound): boolean {
@@ -786,6 +874,13 @@ export class DaemonAgentConnection implements AgentConnection {
 			await listener(event);
 		}
 	}
+}
+
+function readSessionSummaries(value: unknown): SessionSummary[] {
+	if (!value || typeof value !== "object" || !Array.isArray((value as { sessions?: unknown }).sessions)) {
+		throw new Error("Daemon returned an invalid session list response");
+	}
+	return (value as { sessions: SessionSummary[] }).sessions;
 }
 
 function getAttachActiveSessionId(result: SessionSummary | DaemonAttachResult): string {

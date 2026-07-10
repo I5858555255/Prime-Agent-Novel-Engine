@@ -107,10 +107,13 @@ export class StaleDaemonError extends Error {
 	}
 }
 
-async function waitForDaemonGone(socketPath: string, timeoutMs = 5000): Promise<boolean> {
+async function waitForDaemonGone(socketPath: string, timeoutMs = 5000, requireSocketCleanup = false): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (!(await canConnectToDaemon(socketPath, 250))) {
+		if (
+			!(await canConnectToDaemon(socketPath, 250)) &&
+			(!requireSocketCleanup || process.platform === "win32" || !existsSync(socketPath))
+		) {
 			return true;
 		}
 		await delay(25);
@@ -120,15 +123,17 @@ async function waitForDaemonGone(socketPath: string, timeoutMs = 5000): Promise<
 
 export async function shutdownDaemonAndWait(socketPath: string): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
+	let shutdownAccepted = false;
 	try {
 		await client.connect(1000);
-		await client.request({ type: "shutdown" }).catch(() => undefined);
+		const response = await client.request({ type: "shutdown" });
+		shutdownAccepted = response.success;
 	} catch {
 		// A connect failure isn't treated as "gone"; waitForDaemonGone is the source of truth.
 	} finally {
 		client.close();
 	}
-	return waitForDaemonGone(socketPath);
+	return waitForDaemonGone(socketPath, 5000, shutdownAccepted);
 }
 
 // activeSessions is undefined when the daemon is reachable but its sessions couldn't

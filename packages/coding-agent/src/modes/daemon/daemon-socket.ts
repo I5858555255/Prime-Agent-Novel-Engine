@@ -5,6 +5,13 @@ import { dirname, join } from "node:path";
 
 const DAEMON_SOCKET_MODE = 0o600;
 const DAEMON_SOCKET_DIR_MODE = 0o700;
+const DAEMON_SOCKET_RELEASE_GRACE_MS = 1000;
+const DAEMON_SOCKET_RELEASE_POLL_MS = 25;
+
+export interface DaemonSocketIdentity {
+	dev: number;
+	ino: number;
+}
 
 export function defaultDaemonSocketPath(): string {
 	if (process.platform === "win32") {
@@ -20,13 +27,44 @@ export async function prepareDaemonSocketPath(socketPath: string): Promise<void>
 		return;
 	}
 
-	const stat = lstatSync(socketPath);
+	let stat: ReturnType<typeof lstatSync>;
+	try {
+		stat = lstatSync(socketPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return;
+		}
+		throw error;
+	}
 	if (!stat.isSocket()) {
 		throw new Error(`Daemon socket path exists and is not a socket: ${socketPath}`);
 	}
 
+	const staleIdentity: DaemonSocketIdentity = { dev: stat.dev, ino: stat.ino };
 	if (await canConnectToUnixSocket(socketPath)) {
 		throw new Error(`Daemon socket already in use: ${socketPath}`);
+	}
+	const deadline = Date.now() + DAEMON_SOCKET_RELEASE_GRACE_MS;
+	while (Date.now() < deadline) {
+		await delay(DAEMON_SOCKET_RELEASE_POLL_MS);
+		if (!existsSync(socketPath)) {
+			return;
+		}
+		let currentIdentity: DaemonSocketIdentity | undefined;
+		try {
+			currentIdentity = getDaemonSocketIdentity(socketPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				return;
+			}
+			throw error;
+		}
+		if (!currentIdentity || currentIdentity.dev !== staleIdentity.dev || currentIdentity.ino !== staleIdentity.ino) {
+			throw new Error(`Daemon socket changed ownership while waiting for cleanup: ${socketPath}`);
+		}
+		if (await canConnectToUnixSocket(socketPath)) {
+			throw new Error(`Daemon socket already in use: ${socketPath}`);
+		}
 	}
 
 	unlinkSync(socketPath);
@@ -39,14 +77,33 @@ export function restrictDaemonSocketPath(socketPath: string): void {
 	chmodSync(socketPath, DAEMON_SOCKET_MODE);
 }
 
-export function cleanupDaemonSocketPath(socketPath: string): void {
+export function getDaemonSocketIdentity(socketPath: string): DaemonSocketIdentity | undefined {
+	if (process.platform === "win32") {
+		return undefined;
+	}
+	const stat = lstatSync(socketPath);
+	return { dev: stat.dev, ino: stat.ino };
+}
+
+export function cleanupDaemonSocketPath(socketPath: string, expectedIdentity?: DaemonSocketIdentity): void {
 	if (process.platform === "win32") {
 		return;
 	}
 	try {
-		if (existsSync(socketPath)) {
-			unlinkSync(socketPath);
+		if (!existsSync(socketPath)) {
+			return;
 		}
+		if (expectedIdentity) {
+			const currentIdentity = getDaemonSocketIdentity(socketPath);
+			if (
+				!currentIdentity ||
+				currentIdentity.dev !== expectedIdentity.dev ||
+				currentIdentity.ino !== expectedIdentity.ino
+			) {
+				return;
+			}
+		}
+		unlinkSync(socketPath);
 	} catch {
 		// Best effort cleanup; shutdown should not be blocked by socket unlink failures.
 	}
@@ -101,4 +158,8 @@ function canConnectToUnixSocket(socketPath: string): Promise<boolean> {
 		socket.once("connect", () => finish(true));
 		socket.once("error", () => finish(false));
 	});
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -1,7 +1,15 @@
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultDaemonSocketPath } from "../src/modes/daemon/daemon-socket.js";
+import {
+	cleanupDaemonSocketPath,
+	defaultDaemonSocketPath,
+	getDaemonSocketIdentity,
+	prepareDaemonSocketPath,
+} from "../src/modes/daemon/daemon-socket.js";
 
 describe("defaultDaemonSocketPath", () => {
 	it("uses a fixed Windows named pipe path", () => {
@@ -22,5 +30,129 @@ describe("defaultDaemonSocketPath", () => {
 
 		expect(dirname(socketPath)).toBe(join(tmpdir(), `prime-agent-${suffix}`));
 		expect(basename(socketPath)).toBe("daemon.sock");
+	});
+
+	it("does not unlink a replacement daemon's socket during delayed cleanup", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const dir = mkdtempSync(join(tmpdir(), "pa-socket-ownership-"));
+		const socketPath = join(dir, "daemon.sock");
+		const oldServer = createServer();
+		const replacementServer = createServer();
+		try {
+			await new Promise<void>((resolve, reject) => {
+				oldServer.once("error", reject);
+				oldServer.listen(socketPath, resolve);
+			});
+			const oldIdentity = getDaemonSocketIdentity(socketPath);
+			if (!oldIdentity) {
+				throw new Error("Expected a Unix daemon socket identity");
+			}
+
+			unlinkSync(socketPath);
+			await new Promise<void>((resolve, reject) => {
+				replacementServer.once("error", reject);
+				replacementServer.listen(socketPath, resolve);
+			});
+
+			cleanupDaemonSocketPath(socketPath, oldIdentity);
+
+			await expect(
+				new Promise<void>((resolve, reject) => {
+					const client = createConnection(socketPath);
+					client.once("connect", () => {
+						client.destroy();
+						resolve();
+					});
+					client.once("error", reject);
+				}),
+			).resolves.toBeUndefined();
+		} finally {
+			await Promise.all(
+				[oldServer, replacementServer].map(
+					(server) =>
+						new Promise<void>((resolve) => {
+							server.close(() => resolve());
+						}),
+				),
+			);
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not remove a replacement socket that appears while stale cleanup is pending", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const dir = mkdtempSync(join(tmpdir(), "pa-socket-startup-"));
+		const socketPath = join(dir, "daemon.sock");
+		const staleOwner = spawn(
+			process.execPath,
+			[
+				"-e",
+				"const { createServer } = require('node:net'); const server = createServer(); server.listen(process.argv[1], () => process.stdout.write('ready'));",
+				socketPath,
+			],
+			{ stdio: ["ignore", "pipe", "ignore"] },
+		);
+		const replacementServer = createServer();
+		let replacementTimer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await new Promise<void>((resolve, reject) => {
+				staleOwner.stdout?.once("data", () => resolve());
+				staleOwner.once("error", reject);
+				staleOwner.once("exit", (code) => {
+					if (code !== null && code !== 0) {
+						reject(new Error(`Stale socket owner exited before listening: ${code}`));
+					}
+				});
+			});
+			staleOwner.kill("SIGKILL");
+			await new Promise<void>((resolve) => staleOwner.once("close", () => resolve()));
+			expect(existsSync(socketPath)).toBe(true);
+
+			const replacementListening = new Promise<void>((resolve, reject) => {
+				replacementTimer = setTimeout(() => {
+					try {
+						if (existsSync(socketPath)) {
+							unlinkSync(socketPath);
+						}
+						replacementServer.once("error", reject);
+						replacementServer.listen(socketPath, resolve);
+					} catch (error) {
+						reject(error);
+					}
+				}, 50);
+			});
+
+			await expect(prepareDaemonSocketPath(socketPath)).rejects.toThrow(
+				/socket (already in use|changed ownership)/i,
+			);
+			await replacementListening;
+			await expect(
+				new Promise<void>((resolve, reject) => {
+					const client = createConnection(socketPath);
+					client.once("connect", () => {
+						client.destroy();
+						resolve();
+					});
+					client.once("error", reject);
+				}),
+			).resolves.toBeUndefined();
+		} finally {
+			if (replacementTimer) {
+				clearTimeout(replacementTimer);
+			}
+			if (staleOwner.exitCode === null && staleOwner.signalCode === null) {
+				staleOwner.kill("SIGKILL");
+			}
+			if (replacementServer.listening) {
+				await new Promise<void>((resolve) => replacementServer.close(() => resolve()));
+			}
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

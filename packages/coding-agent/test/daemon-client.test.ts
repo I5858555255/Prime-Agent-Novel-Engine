@@ -434,6 +434,25 @@ describe("DaemonClient", () => {
 
 		client.close();
 	});
+
+	it("shares one reconnect attempt across concurrent callers", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+
+		const firstConnect = client.connect();
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+		firstSocket.emit("close");
+
+		const reconnectA = client.reconnect();
+		const reconnectB = client.reconnect();
+		expect(netMock.sockets).toHaveLength(2);
+		const secondSocket = netMock.sockets[1]!;
+		secondSocket.emit("connect");
+
+		await expect(Promise.all([reconnectA, reconnectB])).resolves.toEqual([undefined, undefined]);
+		client.close();
+	});
 });
 
 async function captureRejection(promise: Promise<void>): Promise<Error> {

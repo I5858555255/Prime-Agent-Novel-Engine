@@ -81,6 +81,8 @@ import {
 } from "./agents-view-state.js";
 
 const POLL_INTERVAL_MS = 1000;
+const RECONNECT_TIMEOUT_MS = 120000;
+const RECONNECT_RETRY_MS = 100;
 const EXIT_HINT_DURATION_MS = 2000;
 const DELETE_CONFIRM_DURATION_MS = 2000;
 const STATUS_MESSAGE_DURATION_MS = 4500;
@@ -376,6 +378,8 @@ class AgentsViewMode implements Component, Focusable {
 	private readonly fullscreenDock: Component;
 	private readonly keybindings: KeybindingsManager;
 	private client: DaemonClient | undefined;
+	private unsubscribeClientClose: (() => void) | undefined;
+	private reconnectPromise: Promise<void> | undefined;
 	private resolveRun: ((result: AgentsViewRunResult) => void) | undefined;
 	private pollTimer: NodeJS.Timeout | undefined;
 	private animationTimer: NodeJS.Timeout | undefined;
@@ -470,6 +474,7 @@ class AgentsViewMode implements Component, Focusable {
 	async run(): Promise<AgentsViewRunResult> {
 		this.client = new DaemonClient(this.options.socketPath);
 		await this.client.connect();
+		this.subscribeToClientClose(this.client);
 
 		this.ui.addChild(this);
 		this.ui.setFocus(this);
@@ -1725,6 +1730,9 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private async refreshSessions(): Promise<void> {
+		if (this.reconnectPromise) {
+			return;
+		}
 		const client = this.requireClient();
 		try {
 			const response = await client.request(createAgentsViewListCommand());
@@ -1744,7 +1752,9 @@ class AgentsViewMode implements Component, Focusable {
 			this.restoreSelection();
 			this.ui.requestRender();
 		} catch (error) {
-			this.setStatusMessage(formatError("Failed to refresh agents", error));
+			if (!this.reconnectPromise) {
+				this.setStatusMessage(formatError("Failed to refresh agents", error));
+			}
 		}
 	}
 
@@ -1824,10 +1834,55 @@ class AgentsViewMode implements Component, Focusable {
 			flushFullscreen: false,
 		});
 		stopThemeWatcher();
+		this.unsubscribeClientClose?.();
+		this.unsubscribeClientClose = undefined;
 		this.client?.close();
 		this.client = undefined;
 		this.resolveRun?.(result);
 		this.resolveRun = undefined;
+	}
+
+	private subscribeToClientClose(client: DaemonClient): void {
+		this.unsubscribeClientClose?.();
+		this.unsubscribeClientClose = client.onClose((error) => {
+			if (this.stopped || client !== this.client || this.reconnectPromise) {
+				return;
+			}
+			this.setStatusMessage("Daemon restarted; reconnecting...", { sticky: true });
+			const reconnectPromise = this.reconnectClient(client, error).finally(() => {
+				if (this.reconnectPromise === reconnectPromise) {
+					this.reconnectPromise = undefined;
+				}
+			});
+			this.reconnectPromise = reconnectPromise;
+		});
+	}
+
+	private async reconnectClient(client: DaemonClient, closeError: Error): Promise<void> {
+		const deadline = Date.now() + RECONNECT_TIMEOUT_MS;
+		let lastError: unknown = closeError;
+		while (!this.stopped && client === this.client && Date.now() < deadline) {
+			try {
+				await client.reconnect(1000);
+				const response = await client.request(createAgentsViewListCommand());
+				const data = requireDaemonData(response);
+				const sessions = expectSessionList(data);
+				this.lastListedSummaries = sessions;
+				this.reconnectPromise = undefined;
+				this.setStatusMessage("Reconnected after daemon restart", { render: false });
+				await this.refreshSessions();
+				return;
+			} catch (error) {
+				lastError = error;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, RECONNECT_RETRY_MS));
+		}
+		if (!this.stopped && client === this.client) {
+			this.setStatusMessage(formatError("Failed to reconnect to daemon", lastError), {
+				tone: "error",
+				sticky: true,
+			});
+		}
 	}
 
 	private requireClient(): DaemonClient {
