@@ -41,6 +41,7 @@ const SNAPSHOT_DISPOSE_TIMEOUT_MS = 5000;
 const KERNEL_ABORT_GRACE_MS = 1000;
 const KERNEL_BUSY_REUSE_WAIT_MS = 5000;
 const KERNEL_BUSY_INTERRUPT_INTERVAL_MS = 500;
+const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS = 256;
 const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE =
 	"IPython kernel is still running the previously interrupted cell. Wait and try again, or kill the IPython kernel to start fresh.";
 
@@ -979,7 +980,12 @@ export class KernelManager {
 				const content = incoming.content as { data?: Record<string, unknown> };
 				const sentAgentMessage = parseSentAgentMessage(content.data?.[AGENT_MESSAGE_DISPLAY_MIME]);
 				if (sentAgentMessage && parentMessageId) {
-					this.lateSentAgentMessageHandlers.get(parentMessageId)?.(sentAgentMessage);
+					const handler = this.lateSentAgentMessageHandlers.get(parentMessageId);
+					if (handler) {
+						this.lateSentAgentMessageHandlers.delete(parentMessageId);
+						this.lateSentAgentMessageHandlers.set(parentMessageId, handler);
+						handler(sentAgentMessage);
+					}
 				}
 			}
 			return;
@@ -1047,7 +1053,7 @@ export class KernelManager {
 			this.activeExecution = undefined;
 		}
 		if (didClearActive && execution.opts.onLateSentAgentMessage) {
-			this.lateSentAgentMessageHandlers.set(execution.requestMsgId, execution.opts.onLateSentAgentMessage);
+			this.registerLateSentAgentMessageHandler(execution.requestMsgId, execution.opts.onLateSentAgentMessage);
 		}
 
 		let stdout = execution.stdout;
@@ -1075,6 +1081,20 @@ export class KernelManager {
 		});
 		if (didClearActive) {
 			this.notifyActiveExecutionIdle();
+		}
+	}
+
+	private registerLateSentAgentMessageHandler(
+		requestMessageId: string,
+		handler: (message: KernelSentAgentMessage) => void,
+	): void {
+		this.lateSentAgentMessageHandlers.set(requestMessageId, handler);
+		while (this.lateSentAgentMessageHandlers.size > MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS) {
+			const oldestRequestMessageId = this.lateSentAgentMessageHandlers.keys().next().value;
+			if (oldestRequestMessageId === undefined) {
+				break;
+			}
+			this.lateSentAgentMessageHandlers.delete(oldestRequestMessageId);
 		}
 	}
 

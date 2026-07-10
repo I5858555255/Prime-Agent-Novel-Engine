@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getBundledSkillsDir } from "../src/config.js";
-import type { KernelSentAgentMessage } from "../src/core/kernel/index.js";
+import { KernelManager, type KernelSentAgentMessage } from "../src/core/kernel/index.js";
 import type { PythonSkillRuntimeInfo } from "../src/core/skills.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 
@@ -16,6 +16,14 @@ function bundledAgentMessageSkill(): PythonSkillRuntimeInfo {
 		pyprojectPath: join(packagePath, "pyproject.toml"),
 	};
 }
+
+type LateHandlerRetentionHost = {
+	lateSentAgentMessageHandlers: Map<string, (message: KernelSentAgentMessage) => void>;
+	registerLateSentAgentMessageHandler: (
+		requestMessageId: string,
+		handler: (message: KernelSentAgentMessage) => void,
+	) => void;
+};
 
 describe("agent-message skill over the kernel host bridge", () => {
 	let tempDir: string;
@@ -174,5 +182,20 @@ background_send = asyncio.create_task(send_later())`,
 			deliveryStatus: "delivered",
 			target: { activeSessionId: "beta", sessionId: "session-beta", sessionName: "Beta" },
 		});
+	});
+
+	it("bounds retained handlers for late sent messages", async () => {
+		const manager = new KernelManager({ cwd: tempDir });
+		const host = manager as unknown as LateHandlerRetentionHost;
+		const handler = () => {};
+
+		for (let index = 0; index < 300; index += 1) {
+			host.registerLateSentAgentMessageHandler(`request-${index}`, handler);
+		}
+
+		expect(host.lateSentAgentMessageHandlers.size).toBe(256);
+		expect(host.lateSentAgentMessageHandlers.has("request-0")).toBe(false);
+		expect(host.lateSentAgentMessageHandlers.has("request-299")).toBe(true);
+		await manager.dispose();
 	});
 });

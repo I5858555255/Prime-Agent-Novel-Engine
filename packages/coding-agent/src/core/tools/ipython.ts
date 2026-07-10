@@ -566,7 +566,9 @@ async function executeWithBusyKernelChoice(
 				result: await m.execute(code, {
 					signal,
 					onStream,
-					onLateSentAgentMessage: (message) => onLateSentAgentMessage?.(toolCallId, message),
+					onLateSentAgentMessage: onLateSentAgentMessage
+						? (message) => onLateSentAgentMessage(toolCallId, message)
+						: undefined,
 				}),
 				kernelRestarted,
 			};
