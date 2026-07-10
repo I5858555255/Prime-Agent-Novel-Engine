@@ -1485,6 +1485,29 @@ describe("AgentSession persistent subagents", () => {
 		);
 	});
 
+	it("aborts the retained session before disposing it on inline reopen", async () => {
+		const root = createPersistentSession();
+		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+
+		// Inline mode (no subagent runtime host): the parent disposes the retained session
+		// directly and must abort its in-flight work first, so a late steer can't still be
+		// writing the shared JSONL when the reopen opens it.
+		const retained = root.getRlmChildSession(persistentSubagentNodeId("reviewer")) as AgentSession;
+		const order: string[] = [];
+		const abortSpy = vi.spyOn(retained, "abort").mockImplementation(async () => {
+			order.push("abort");
+		});
+		const disposeSpy = vi.spyOn(retained, "disposeAsync").mockImplementation(async () => {
+			order.push("dispose");
+		});
+
+		await root.runRlmChild("second", { persist: true, persistent_id: "reviewer" });
+
+		expect(abortSpy).toHaveBeenCalledOnce();
+		expect(disposeSpy).toHaveBeenCalledOnce();
+		expect(order).toEqual(["abort", "dispose"]);
+	});
+
 	it("routes retained-session eviction through the host on reopen", async () => {
 		const root = createPersistentSession();
 

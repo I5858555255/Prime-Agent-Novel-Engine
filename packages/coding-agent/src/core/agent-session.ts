@@ -5699,14 +5699,26 @@ export class AgentSession {
 			// If the host had nothing to close but the parent still holds the session, fall
 			// back to disposing it directly so it can't linger.
 			if (!closed && retained) {
-				await retained.disposeAsync().catch(() => undefined);
+				await this._abortAndDisposeRetainedSession(retained);
 			}
 			return;
 		}
 		// Inline mode: dispose the session we hold directly.
 		if (retained) {
-			await retained.disposeAsync().catch(() => undefined);
+			await this._abortAndDisposeRetainedSession(retained);
 		}
+	}
+
+	/**
+	 * Abort a retained session's in-flight work (turn + bash) before disposing it, so a
+	 * late steer that started after the reopen busy check can't still be writing the shared
+	 * JSONL when the next SessionManager.open runs. Mirrors the daemon "reopened" close,
+	 * which aborts before dispose; the daemon path handles this in closeSession, so this is
+	 * only for the inline / host-fallback paths that dispose the AgentSession directly.
+	 */
+	private async _abortAndDisposeRetainedSession(retained: AgentSession): Promise<void> {
+		await retained.abort().catch(() => undefined);
+		await retained.disposeAsync().catch(() => undefined);
 	}
 
 	/**
