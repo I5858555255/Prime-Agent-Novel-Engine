@@ -23,8 +23,6 @@ export interface DaemonClientRequestOptions {
 	onProgress?: DaemonClientProgressListener;
 }
 
-const LEGACY_DAEMON_SOCKET_CLOSED_MESSAGE = "Daemon socket closed";
-
 function daemonEndpointDetails(socketPath: string): string {
 	return `Socket: ${socketPath}. Daemon log: ${getDaemonLogPath(socketPath)}.`;
 }
@@ -42,10 +40,6 @@ export class DaemonSocketClosedError extends Error {
 		);
 		this.name = "DaemonSocketClosedError";
 	}
-}
-
-export function isDaemonSocketClosedError(error: Error): boolean {
-	return error instanceof DaemonSocketClosedError || error.message === LEGACY_DAEMON_SOCKET_CLOSED_MESSAGE;
 }
 
 export function getDaemonSocketCloseReason(error: Error): DaemonClosingReason | undefined {
@@ -186,6 +180,17 @@ export class DaemonClient {
 				this.reconnectPromise = undefined;
 			}
 		}
+	}
+
+	disconnectForReconnect(reason: DaemonClosingReason): void {
+		const socket = this.socket;
+		if (!socket || socket.destroyed) {
+			return;
+		}
+		this.daemonClosingReason = reason;
+		this.notifyClosed(socket, new DaemonSocketClosedError(this.socketPath, reason));
+		socket.end();
+		socket.destroy();
 	}
 
 	onMessage(listener: DaemonClientMessageListener): () => void {

@@ -443,6 +443,27 @@ describe("DaemonClient", () => {
 		client.close();
 	});
 
+	it("notifies every listener before disconnecting a shared client for update reconnect", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const connect = client.connect();
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+
+		const firstClosed: Error[] = [];
+		const secondClosed: Error[] = [];
+		client.onClose((error) => firstClosed.push(error));
+		client.onClose((error) => secondClosed.push(error));
+
+		client.disconnectForReconnect("update");
+
+		expect(client.isConnected).toBe(false);
+		expect(firstClosed).toHaveLength(1);
+		expect(secondClosed).toHaveLength(1);
+		expect(getDaemonSocketCloseReason(firstClosed[0]!)).toBe("update");
+		expect(getDaemonSocketCloseReason(secondClosed[0]!)).toBe("update");
+	});
+
 	it("notifies listeners once when a socket error is followed by close", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
 

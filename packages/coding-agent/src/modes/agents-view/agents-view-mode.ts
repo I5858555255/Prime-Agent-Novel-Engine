@@ -508,7 +508,6 @@ class AgentsViewMode implements Component, Focusable {
 		});
 
 		await this.refreshSessions();
-		await this.sendInitialPrompts();
 		this.loadStartupNotices();
 		this.pollTimer = setInterval(() => {
 			void this.refreshSessions();
@@ -1749,6 +1748,7 @@ class AgentsViewMode implements Component, Focusable {
 			const response = await client.request(createAgentsViewListCommand());
 			const data = requireDaemonData(response);
 			this.applySessionList(expectSessionList(data));
+			await this.sendInitialPrompts();
 		} catch (error) {
 			if (!this.reconnectPromise) {
 				if (client.isConnected) {
@@ -1912,6 +1912,7 @@ class AgentsViewMode implements Component, Focusable {
 				this.reconnectTimedOut = false;
 				this.setStatusMessage("Reconnected after daemon restart", { render: false });
 				this.applySessionList(sessions);
+				await this.sendInitialPrompts();
 				return;
 			} catch (error) {
 				lastError = error;

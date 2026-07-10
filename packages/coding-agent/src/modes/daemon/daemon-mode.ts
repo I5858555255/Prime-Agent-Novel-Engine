@@ -2980,7 +2980,7 @@ export class AgentDaemon {
 		}
 		this.cronScheduler.stop();
 		for (const state of [...this.sessions.values()]) {
-			await this.closeSession(state, "shutdown");
+			await this.closeSession(state, closingReason);
 		}
 		for (const client of this.clients) {
 			client.detachInput();

@@ -408,6 +408,12 @@ class FakeDaemonClient {
 			this.emitClose(new Error("Daemon socket closed"));
 		}
 	}
+
+	disconnectForReconnect(reason: "shutdown" | "update"): void {
+		this.closeCount++;
+		this.connected = false;
+		this.emitClose(new DaemonSocketClosedError("/tmp/prime-agent.sock", reason));
+	}
 }
 
 function asDaemonClient(client: FakeDaemonClient): DaemonClient {
@@ -602,7 +608,7 @@ describe("DaemonAgentConnection", () => {
 		]);
 	});
 
-	it("reattaches after a clean socket close arrives before the update notice", async () => {
+	it("reattaches when an update socket close arrives before the session notice", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const restoredMessages: AgentMessage[] = [{ role: "user", content: "restored prompt", timestamp: 2 }];
 		fakeClient.updateRestartSessions = [
@@ -628,7 +634,7 @@ describe("DaemonAgentConnection", () => {
 		});
 		await connection.attach();
 
-		fakeClient.emitClose(new Error("Daemon socket closed"));
+		fakeClient.emitClose(new DaemonSocketClosedError("/tmp/prime-agent.sock", "update"));
 
 		await expect(restored).resolves.toMatchObject({
 			type: "session_replaced",
@@ -799,6 +805,26 @@ describe("DaemonAgentConnection", () => {
 		expect(closedError).toContain("Diagnostic log:");
 	});
 
+	it("reports an unannounced clean socket close without treating it as an update", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const closedEvents: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			if (event.type === "closed") {
+				closedEvents.push(event);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.emitClose(new DaemonSocketClosedError("/tmp/prime-agent.sock"));
+		await Promise.resolve();
+
+		expect(fakeClient.reconnectCount).toBe(0);
+		expect(closedEvents).toHaveLength(1);
+		const closedError = closedEvents[0]?.type === "closed" ? closedEvents[0].error : undefined;
+		expect(closedError).toContain("Lost connection to the Prime Agent daemon.");
+	});
+
 	it("does not emit a restored session after disposal begins", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.updateRestartSessions = [
@@ -820,7 +846,7 @@ describe("DaemonAgentConnection", () => {
 		});
 		await connection.attach();
 
-		fakeClient.emitClose(new Error("Daemon socket closed"));
+		fakeClient.emitClose(new DaemonSocketClosedError("/tmp/prime-agent.sock", "update"));
 		await vi.waitFor(() => {
 			expect(
 				fakeClient.requests.some(
