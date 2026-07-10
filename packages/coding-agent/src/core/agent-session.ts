@@ -81,6 +81,7 @@ import {
 	autonomousStatus,
 	createAutonomousRuntimeState,
 	nextAutonomousContinuation,
+	refreshAutonomousQualityGates,
 	setAutonomousEnabled,
 } from "./autonomous.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
@@ -2542,6 +2543,10 @@ export class AgentSession {
 
 	recordHostAutonomousContinuation(): void {
 		addAutonomousContinuation(this._autonomousState);
+	}
+
+	refreshAutonomousGates(): void {
+		refreshAutonomousQualityGates(this._autonomousState, { cwd: this._cwd });
 	}
 
 	private async _runWithAutonomousContinuationSuppressed<T>(fn: () => Promise<T>): Promise<T> {

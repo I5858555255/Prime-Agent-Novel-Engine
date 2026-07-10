@@ -22,6 +22,7 @@ type FakeSession = {
 	reload: ReturnType<typeof vi.fn>;
 	getAutonomousStatus: ReturnType<typeof vi.fn>;
 	recordHostAutonomousContinuation: ReturnType<typeof vi.fn>;
+	refreshAutonomousGates: ReturnType<typeof vi.fn>;
 };
 
 type FakeRuntimeHost = {
@@ -88,6 +89,7 @@ function createRuntimeHost(
 		reload: vi.fn(async () => {}),
 		getAutonomousStatus: vi.fn(() => autonomousStatus),
 		recordHostAutonomousContinuation: vi.fn(),
+		refreshAutonomousGates: vi.fn(),
 	};
 
 	return {
@@ -200,6 +202,49 @@ describe("runPrintMode", () => {
 		expect(session.prompt).toHaveBeenCalledTimes(1);
 		expect(session.recordHostAutonomousContinuation).toHaveBeenCalledTimes(1);
 		expect(session.prompt.mock.calls[0][0]).toContain("Autonomous quality gate failed (attempt 4/3)");
+	});
+
+	it("refreshes autonomous gates after host-driven gate retries", async () => {
+		const failingStatus: AgentAutonomousStatus = {
+			enabled: true,
+			continuationsUsed: 0,
+			turnsUsed: 1,
+			tokensUsed: 100,
+			startedAt: Date.now(),
+			limits: { maxContinuations: 3, maxTurns: 20, maxTokens: 100_000, timeoutMs: 60_000 },
+			gates: { commands: ["verify-public"], maxRetries: 3, timeoutMs: 300_000 },
+			gateAttempts: { "verify-public": 1 },
+			lastGateFailure: {
+				command: "verify-public",
+				attempt: 1,
+				exitText: "exited 1",
+				output: "0/9",
+			},
+		};
+		const passingStatus: AgentAutonomousStatus = {
+			...failingStatus,
+			continuationsUsed: 1,
+			turnsUsed: 2,
+			tokensUsed: 200,
+			gateAttempts: { "verify-public": 0 },
+			lastGateFailure: undefined,
+		};
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "fixed the gate" }), failingStatus);
+		const { session } = runtimeHost;
+		let currentStatus = failingStatus;
+		session.getAutonomousStatus.mockImplementation(() => currentStatus);
+		session.refreshAutonomousGates.mockImplementation(() => {
+			currentStatus = passingStatus;
+		});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+		});
+
+		expect(exitCode).toBe(0);
+		expect(session.prompt).toHaveBeenCalledTimes(1);
+		expect(session.recordHostAutonomousContinuation).toHaveBeenCalledTimes(1);
+		expect(session.refreshAutonomousGates).toHaveBeenCalledTimes(1);
 	});
 
 	it("keeps autonomous gate prompting after a transient assistant error while limits remain", async () => {

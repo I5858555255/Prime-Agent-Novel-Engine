@@ -8,7 +8,12 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.js";
-import type { AgentAutonomousGateFailure, AgentAutonomousStatus } from "../core/autonomous.js";
+import {
+	type AgentAutonomousGateFailure,
+	type AgentAutonomousStatus,
+	type AutonomousLimitReason,
+	autonomousLimitReason,
+} from "../core/autonomous.js";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../utils/shell.js";
 
@@ -28,16 +33,6 @@ export interface PrintModeOptions {
 
 function latestGateAttempt(status: AgentAutonomousStatus): number {
 	return Math.max(status.lastGateFailure?.attempt ?? 0, 0, ...Object.values(status.gateAttempts));
-}
-
-type AutonomousLimitReason = "maxContinuations" | "maxTurns" | "maxTokens" | "timeoutMs";
-
-function autonomousLimitReason(status: AgentAutonomousStatus, now = Date.now()): AutonomousLimitReason | undefined {
-	if (status.continuationsUsed >= status.limits.maxContinuations) return "maxContinuations";
-	if (status.turnsUsed >= status.limits.maxTurns) return "maxTurns";
-	if (status.tokensUsed >= status.limits.maxTokens) return "maxTokens";
-	if (status.startedAt !== undefined && now - status.startedAt >= status.limits.timeoutMs) return "timeoutMs";
-	return undefined;
 }
 
 function describeAutonomousLimit(status: AgentAutonomousStatus, reason: AutonomousLimitReason): string {
@@ -123,6 +118,7 @@ async function waitForPrintModeIdleWithAutonomousGates(
 		// produced a new assistant message. Wait for the session to become idle again
 		// so an earlier assistant error does not get mistaken for this retry result.
 		await session.agent.waitForIdle();
+		session.refreshAutonomousGates();
 		const lastMessage = session.state.messages[session.state.messages.length - 1];
 		if (lastMessage?.role === "assistant") {
 			const assistantMessage = lastMessage as AssistantMessage;

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { AssistantMessage, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 
 export interface AgentAutonomousConfig {
 	enabled?: boolean;
@@ -68,6 +68,14 @@ export interface AutonomousRuntimeState {
 	lastGateFailureSnapshot?: GitWorktreeSnapshot;
 	gitBaseline?: GitWorktreeSnapshot;
 }
+
+export type AutonomousLimitReason = "maxContinuations" | "maxTurns" | "maxTokens" | "timeoutMs";
+export type AutonomousGateResult = "passed" | "failed" | "retry_exhausted";
+
+type AutonomousLimitState = Pick<
+	AgentAutonomousStatus,
+	"continuationsUsed" | "turnsUsed" | "tokensUsed" | "startedAt" | "limits"
+>;
 
 export interface AutonomousDecision {
 	shouldContinue: boolean;
@@ -212,46 +220,52 @@ export function shouldAutonomouslyContinue(
 	if (!state.enabled || message.stopReason === "error" || message.stopReason === "aborted") {
 		return { shouldContinue: false, reason: "not_needed" };
 	}
-	if (state.gates.commands.length > 0) {
-		const gateResult = runAutonomousQualityGates(state, options.cwd);
+	const gateResult = refreshAutonomousQualityGates(state, options);
+	if (gateResult) {
 		if (gateResult === "passed") {
 			return { shouldContinue: false, reason: "not_needed" };
 		}
-		if (gateResult === "retry_exhausted" || autonomousLimitReached(state, now)) {
+		if (gateResult === "retry_exhausted" || autonomousLimitReason(state, now)) {
 			return { shouldContinue: false, reason: "limit_reached" };
 		}
 		return { shouldContinue: true, reason: "gate_failed" };
 	}
-	if (autonomousLimitReached(state, now)) {
+	if (autonomousLimitReason(state, now)) {
 		return { shouldContinue: false, reason: "limit_reached" };
 	}
 	return { shouldContinue: true, reason: "missing_terminal_evidence" };
 }
 
-export function assistantText(message: AssistantMessage): string {
-	return message.content
-		.filter((part): part is TextContent => part.type === "text")
-		.map((part) => part.text)
-		.join("\n")
-		.trim();
-}
-
-function autonomousLimitReached(state: AutonomousRuntimeState, now: number): boolean {
+export function autonomousLimitReason(
+	state: AutonomousLimitState,
+	now = Date.now(),
+): AutonomousLimitReason | undefined {
 	if (state.continuationsUsed >= state.limits.maxContinuations) {
-		return true;
+		return "maxContinuations";
 	}
 	if (state.turnsUsed >= state.limits.maxTurns) {
-		return true;
+		return "maxTurns";
 	}
 	if (state.tokensUsed >= state.limits.maxTokens) {
-		return true;
+		return "maxTokens";
 	}
-	return state.startedAt !== undefined && now - state.startedAt >= state.limits.timeoutMs;
+	if (state.startedAt !== undefined && now - state.startedAt >= state.limits.timeoutMs) {
+		return "timeoutMs";
+	}
+	return undefined;
 }
 
-type GateResult = "passed" | "failed" | "retry_exhausted";
+export function refreshAutonomousQualityGates(
+	state: AutonomousRuntimeState,
+	options: { cwd?: string } = {},
+): AutonomousGateResult | undefined {
+	if (!state.enabled || state.gates.commands.length === 0) {
+		return undefined;
+	}
+	return runAutonomousQualityGates(state, options.cwd);
+}
 
-function runAutonomousQualityGates(state: AutonomousRuntimeState, cwd: string | undefined): GateResult {
+function runAutonomousQualityGates(state: AutonomousRuntimeState, cwd: string | undefined): AutonomousGateResult {
 	if (!cwd) {
 		return "failed";
 	}
