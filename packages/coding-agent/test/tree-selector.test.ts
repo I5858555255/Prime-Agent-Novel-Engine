@@ -87,23 +87,6 @@ function toolCallOnlyAssistant(id: string, parentId: string | null): AgentConnec
 	};
 }
 
-function toolResultMessage(id: string, parentId: string, toolCallId: string): AgentConnectionSessionMessageEntry {
-	return {
-		type: "message",
-		id,
-		parentId,
-		timestamp: new Date().toISOString(),
-		message: {
-			role: "toolResult",
-			toolCallId,
-			toolName: "ipython",
-			content: [{ type: "text", text: "file contents" }],
-			isError: false,
-			timestamp: Date.now(),
-		},
-	};
-}
-
 // Helper to create a model_change entry
 function modelChange(id: string, parentId: string | null): AgentConnectionModelChangeEntry {
 	return {
@@ -145,37 +128,9 @@ function buildTree(entries: Array<AgentConnectionSessionEntry>): AgentConnection
 }
 
 describe("TreeSelectorComponent", () => {
-	describe("default detail visibility", () => {
+	describe("default filter", () => {
 		test("defaults the tree filter setting to user messages", () => {
 			expect(SettingsManager.inMemory().getTreeFilterMode()).toBe("user-only");
-		});
-
-		test("toggles tool calls and other entries with o", () => {
-			const entries = [
-				userMessage("user-1", null, "inspect the repository"),
-				toolCallOnlyAssistant("tool-asst-1", "user-1"),
-				toolResultMessage("tool-1", "tool-asst-1", "tc-tool-asst-1"),
-				userMessage("user-2", "tool-1", "continue"),
-			];
-			const selector = new TreeSelectorComponent(
-				buildTree(entries),
-				"user-2",
-				24,
-				() => {},
-				() => {},
-				undefined,
-				undefined,
-				"user-only",
-			);
-			const list = selector.getTreeList();
-
-			expect(list.render(200).join("\n")).not.toContain("[ipython:");
-
-			selector.handleInput("o");
-			expect(list.render(200).join("\n")).toContain("[ipython: open('test.ts').read()]");
-
-			selector.handleInput("o");
-			expect(list.render(200).join("\n")).not.toContain("[ipython:");
 		});
 	});
 
