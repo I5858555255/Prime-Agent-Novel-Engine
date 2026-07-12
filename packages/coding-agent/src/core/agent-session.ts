@@ -186,7 +186,7 @@ import {
 	type RlmUsage,
 	type SubagentRuntimeHost,
 } from "./rlm-runtime.js";
-import type { BranchSummaryEntry, CompactionEntry, SessionMessageEntry } from "./session-manager.js";
+import type { BranchSummaryEntry, CompactionEntry, SessionContext, SessionMessageEntry } from "./session-manager.js";
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
@@ -2448,6 +2448,14 @@ export class AgentSession {
 	/** All messages including custom types like BashExecutionMessage */
 	get messages(): AgentMessage[] {
 		return this.agent.state.messages;
+	}
+
+	buildSessionContext(): SessionContext {
+		const context = this.sessionManager.buildSessionContext();
+		for (const message of context.messages) {
+			this._applyLateIpythonSentAgentMessages(message);
+		}
+		return context;
 	}
 
 	/** Current steering mode */

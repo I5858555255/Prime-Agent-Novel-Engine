@@ -170,6 +170,10 @@ describe("ENG-4531 agent message UI", () => {
 			isError: false,
 			timestamp: Date.now(),
 		};
+		harness.session.sessionManager.appendMessage(
+			fauxAssistantMessage(fauxToolCall("ipython", { code: "background_send" }), { stopReason: "toolUse" }),
+		);
+		harness.session.sessionManager.appendMessage(toolResult);
 		harness.session.agent.state.messages.push(toolResult);
 		const lateMessage = {
 			id: "agentmsg_late_4531",
@@ -196,6 +200,14 @@ describe("ENG-4531 agent message UI", () => {
 				.some((entry) => entry.type === "custom" && entry.customType === "ipython_sent_agent_message"),
 		).toBe(true);
 		expect(events).toContain("ipython_sent_agent_message");
+		expect(
+			harness.session
+				.buildSessionContext()
+				.messages.find(
+					(message): message is ToolResultMessage =>
+						message.role === "toolResult" && message.toolCallId === toolResult.toolCallId,
+				)?.details,
+		).toMatchObject({ sentAgentMessages: [lateMessage] });
 
 		toolResult.details = { status: "ok" };
 		host._restoreLateIpythonSentAgentMessages();

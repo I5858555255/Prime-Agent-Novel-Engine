@@ -2154,7 +2154,7 @@ export class AgentDaemon {
 			case "get_session_context": {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "get_session_context", {
-					context: state.runtime.session.sessionManager.buildSessionContext(),
+					context: state.runtime.session.buildSessionContext(),
 				});
 			}
 
