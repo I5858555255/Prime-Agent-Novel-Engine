@@ -108,6 +108,27 @@ describe("ENG-4531 agent message UI", () => {
 		expect(harness.session.messages[0]?.role).toBe("user");
 	});
 
+	it("preserves structured messages passed through the normal prompt path", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const payload = createPayload("Run the idle-session review.");
+		const prompt = createAgentSessionMessagePrompt(payload);
+		harness.setResponses([fauxAssistantMessage("Handled.")]);
+
+		await harness.session.prompt(prompt, {
+			expandPromptTemplates: false,
+			customMessage: createAgentSessionMessage(payload),
+		});
+		await harness.session.agent.waitForIdle();
+
+		expect(getUserTexts(harness)).toEqual([]);
+		expect(harness.session.messages[0]).toMatchObject({
+			role: "custom",
+			customType: "agent_message",
+			details: { id: "agentmsg_4531", message: "Run the idle-session review." },
+		});
+	});
+
 	it("keeps queued agent messages structured and removable by message identity", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -184,6 +205,17 @@ describe("ENG-4531 agent message UI", () => {
 		host._lateIpythonSentAgentMessages = new Map();
 		host._restoreLateIpythonSentAgentMessages();
 		expect(toolResult.details).toMatchObject({ sentAgentMessages: [lateMessage] });
+
+		host._lateIpythonSentAgentMessages.set("ipython_other_branch", [
+			{
+				id: "agentmsg_other_branch",
+				message: "Stale branch receipt.",
+				deliveryStatus: "delivered",
+				target: { activeSessionId: "other", sessionId: "other-session" },
+			},
+		]);
+		host._restoreLateIpythonSentAgentMessages();
+		expect(host._lateIpythonSentAgentMessages.has("ipython_other_branch")).toBe(false);
 	});
 
 	it("preserves the custom message when direct delivery races with active work", async () => {

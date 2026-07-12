@@ -1028,6 +1028,7 @@ export class AgentSession {
 	}
 
 	private _restoreLateIpythonSentAgentMessages(): void {
+		this._lateIpythonSentAgentMessages.clear();
 		for (const entry of this.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY) {
 				continue;
@@ -2942,19 +2943,21 @@ export class AgentSession {
 				}
 				this._pendingNextTurnMessages = [];
 
-				// Add user message
-				const userContent: (TextContent | ImageContent)[] = options?.content
-					? options.content.map((block) => ({ ...block }))
-					: [{ type: "text", text: expandedText }];
-				if (!options?.content && currentImages) {
-					userContent.push(...currentImages);
+				if (options?.customMessage) {
+					messages.push(cloneCustomMessage(options.customMessage));
+				} else {
+					const userContent: (TextContent | ImageContent)[] = options?.content
+						? options.content.map((block) => ({ ...block }))
+						: [{ type: "text", text: expandedText }];
+					if (!options?.content && currentImages) {
+						userContent.push(...currentImages);
+					}
+					messages.push({
+						role: "user",
+						content: userContent,
+						timestamp: Date.now(),
+					});
 				}
-				const userMessage: AgentMessage = {
-					role: "user",
-					content: userContent,
-					timestamp: Date.now(),
-				};
-				messages.push(userMessage);
 
 				// Emit before_agent_start extension event
 				const result = await this._extensionRunner.emitBeforeAgentStart(

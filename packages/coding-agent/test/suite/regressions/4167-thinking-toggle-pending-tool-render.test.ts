@@ -68,7 +68,7 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const pendingTools = new Map<string, ToolExecutionComponent>();
 	const pendingToolCreations = new Set<string>();
 	const startedToolCalls = new Set<string>();
-	return {
+	const fakeThis: RenderSessionContextThis = {
 		pendingTools,
 		pendingToolCreations,
 		startedToolCalls,
@@ -98,6 +98,8 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 			chatContainer.addChild(new Text(message.role, 0, 0));
 		},
 	};
+	Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+	return fakeThis;
 }
 
 function createAssistantToolCallMessage(): AssistantMessage {

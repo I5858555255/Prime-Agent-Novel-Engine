@@ -225,6 +225,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 					chatContainer.addChild({ render: () => ["assistant"], invalidate: () => {} });
 				}),
 			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 
 			await (InteractiveMode as any).prototype.renderSessionContext.call(fakeThis, {
 				messages: [
@@ -276,6 +277,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 					chatContainer.addChild({ render: () => ["assistant"], invalidate: () => {} });
 				}),
 			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 
 			await (InteractiveMode as any).prototype.renderSessionContext.call(fakeThis, {
 				messages: [
@@ -583,6 +585,8 @@ describe("InteractiveMode pending bash components", () => {
 			activeBashComponent: component,
 			pendingBashComponents: [component],
 			activityTracker: { reset: vi.fn() },
+			ipythonToolComponents: new Map(),
+			lateIpythonSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
 			resetChildAgentInspector: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
@@ -767,6 +771,8 @@ describe("InteractiveMode tool event rendering", () => {
 			pendingTools: new Map<string, ToolExecutionComponent>(),
 			pendingToolCreations: new Set<string>(),
 			startedToolCalls: new Set<string>(),
+			ipythonToolComponents: new Map(),
+			lateIpythonSentAgentMessages: new Map(),
 			loadToolDefinition: vi.fn(() => definitionPromise),
 			uiServices: {
 				settingsManager: {

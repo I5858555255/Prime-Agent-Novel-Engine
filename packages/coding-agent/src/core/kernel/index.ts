@@ -315,6 +315,7 @@ interface ActiveExecution {
 	sentAgentMessages: KernelSentAgentMessage[];
 	error?: ExecuteResult["error"];
 	status: ExecuteResult["status"];
+	settled: boolean;
 	resolve: (result: ExecuteResult) => void;
 	reject: (error: Error) => void;
 }
@@ -881,6 +882,7 @@ export class KernelManager {
 			attachments: [],
 			sentAgentMessages: [],
 			status: "ok",
+			settled: false,
 			resolve: result.resolve,
 			reject: result.reject,
 		};
@@ -978,20 +980,18 @@ export class KernelManager {
 		if (!execution || parentMessageId !== execution.requestMsgId) {
 			if (incoming.header.msg_type === "display_data" || incoming.header.msg_type === "update_display_data") {
 				const content = incoming.content as { data?: Record<string, unknown> };
-				const sentAgentMessage = parseSentAgentMessage(content.data?.[AGENT_MESSAGE_DISPLAY_MIME]);
-				if (sentAgentMessage && parentMessageId) {
-					const handler = this.lateSentAgentMessageHandlers.get(parentMessageId);
-					if (handler) {
-						this.lateSentAgentMessageHandlers.delete(parentMessageId);
-						this.lateSentAgentMessageHandlers.set(parentMessageId, handler);
-						handler(sentAgentMessage);
-					}
-				}
+				this.dispatchLateSentAgentMessage(parentMessageId, content.data?.[AGENT_MESSAGE_DISPLAY_MIME]);
 			}
 			return;
 		}
 
 		const t = incoming.header.msg_type;
+		if (execution.settled && (t === "display_data" || t === "update_display_data")) {
+			const content = incoming.content as { data?: Record<string, unknown> };
+			if (this.dispatchLateSentAgentMessage(parentMessageId, content.data?.[AGENT_MESSAGE_DISPLAY_MIME])) {
+				return;
+			}
+		}
 		if (t === "stream") {
 			const c = incoming.content as { name: "stdout" | "stderr"; text: string };
 			if (c.name === "stdout") {
@@ -1052,36 +1052,54 @@ export class KernelManager {
 		if (options.clearActive && this.activeExecution === execution) {
 			this.activeExecution = undefined;
 		}
-		if (didClearActive && execution.opts.onLateSentAgentMessage) {
-			this.registerLateSentAgentMessageHandler(execution.requestMsgId, execution.opts.onLateSentAgentMessage);
+		if (!execution.settled) {
+			execution.settled = true;
+			if (execution.opts.onLateSentAgentMessage) {
+				this.registerLateSentAgentMessageHandler(execution.requestMsgId, execution.opts.onLateSentAgentMessage);
+			}
+
+			let stdout = execution.stdout;
+			let stderr = execution.stderr;
+			let result = execution.result;
+			let status = execution.status;
+			if (execution.stdoutTruncated) stdout += `\n[... output truncated at ${execution.maxChars} chars ...]`;
+			if (execution.stderrTruncated) stderr += `\n[... output truncated at ${execution.maxChars} chars ...]`;
+			if (result !== undefined && result.length > execution.maxChars) {
+				result = `${result.slice(0, execution.maxChars)}\n[... output truncated at ${execution.maxChars} chars ...]`;
+			}
+
+			if (execution.opts.signal?.aborted) status = "aborted";
+
+			execution.resolve({
+				stdout,
+				stderr,
+				result,
+				diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
+				attachments: execution.attachments.length > 0 ? execution.attachments : undefined,
+				sentAgentMessages: execution.sentAgentMessages.length > 0 ? execution.sentAgentMessages : undefined,
+				error: execution.error,
+				status,
+				durationMs: Date.now() - execution.started,
+			});
 		}
-
-		let stdout = execution.stdout;
-		let stderr = execution.stderr;
-		let result = execution.result;
-		let status = execution.status;
-		if (execution.stdoutTruncated) stdout += `\n[... output truncated at ${execution.maxChars} chars ...]`;
-		if (execution.stderrTruncated) stderr += `\n[... output truncated at ${execution.maxChars} chars ...]`;
-		if (result !== undefined && result.length > execution.maxChars) {
-			result = `${result.slice(0, execution.maxChars)}\n[... output truncated at ${execution.maxChars} chars ...]`;
-		}
-
-		if (execution.opts.signal?.aborted) status = "aborted";
-
-		execution.resolve({
-			stdout,
-			stderr,
-			result,
-			diffs: execution.diffs.length > 0 ? execution.diffs : undefined,
-			attachments: execution.attachments.length > 0 ? execution.attachments : undefined,
-			sentAgentMessages: execution.sentAgentMessages.length > 0 ? execution.sentAgentMessages : undefined,
-			error: execution.error,
-			status,
-			durationMs: Date.now() - execution.started,
-		});
 		if (didClearActive) {
 			this.notifyActiveExecutionIdle();
 		}
+	}
+
+	private dispatchLateSentAgentMessage(parentMessageId: string | undefined, value: unknown): boolean {
+		const sentAgentMessage = parseSentAgentMessage(value);
+		if (!sentAgentMessage || !parentMessageId) {
+			return false;
+		}
+		const handler = this.lateSentAgentMessageHandlers.get(parentMessageId);
+		if (!handler) {
+			return false;
+		}
+		this.lateSentAgentMessageHandlers.delete(parentMessageId);
+		this.lateSentAgentMessageHandlers.set(parentMessageId, handler);
+		handler(sentAgentMessage);
+		return true;
 	}
 
 	private registerLateSentAgentMessageHandler(
