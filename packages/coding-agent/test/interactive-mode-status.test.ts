@@ -205,8 +205,12 @@ describe("InteractiveMode.renderSessionContext", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const chatContainer = new Container();
+			const ipythonToolComponents = new Map([["stale-tool", {}]]);
+			const lateIpythonSentAgentMessages = new Map([["stale-tool", []]]);
 			const fakeThis: any = {
 				pendingTools: new Map(),
+				ipythonToolComponents,
+				lateIpythonSentAgentMessages,
 				toolOutputExpanded: false,
 				chatContainer,
 				footer: { invalidate: vi.fn() },
@@ -247,6 +251,8 @@ describe("InteractiveMode.renderSessionContext", () => {
 			const rendered = renderAll(chatContainer);
 			expect(rendered).not.toContain("\x1b_G");
 			expect(normalizeRenderedOutput(chatContainer)).toContain("[Image: [image/png]]");
+			expect(ipythonToolComponents.size).toBe(0);
+			expect(lateIpythonSentAgentMessages.size).toBe(0);
 		} finally {
 			resetCapabilitiesCache();
 		}
@@ -259,6 +265,8 @@ describe("InteractiveMode.renderSessionContext", () => {
 			const pendingTools = new Map<string, ToolExecutionComponent>();
 			const fakeThis: any = {
 				pendingTools,
+				ipythonToolComponents: new Map(),
+				lateIpythonSentAgentMessages: new Map(),
 				toolOutputExpanded: false,
 				chatContainer,
 				footer: { invalidate: vi.fn() },

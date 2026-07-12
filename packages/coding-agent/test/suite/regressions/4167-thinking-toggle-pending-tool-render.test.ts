@@ -32,6 +32,8 @@ const EMPTY_USAGE: Usage = {
 
 type RenderSessionContextThis = {
 	pendingTools: Map<string, ToolExecutionComponent>;
+	ipythonToolComponents: Map<string, ToolExecutionComponent>;
+	lateIpythonSentAgentMessages: Map<string, unknown[]>;
 	pendingToolCreations: Set<string>;
 	startedToolCalls: Set<string>;
 	resetPendingToolState(): void;
@@ -70,6 +72,8 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const startedToolCalls = new Set<string>();
 	const fakeThis: RenderSessionContextThis = {
 		pendingTools,
+		ipythonToolComponents: new Map(),
+		lateIpythonSentAgentMessages: new Map(),
 		pendingToolCreations,
 		startedToolCalls,
 		resetPendingToolState() {
