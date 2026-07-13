@@ -62,6 +62,25 @@ describe("daemon mode helpers", () => {
 		expect(closeChildSessions).toHaveBeenCalledExactlyOnceWith(parentState, "replaced");
 	});
 
+	it("rejects RLM child creation after the parent is gone", async () => {
+		const createRuntime = vi.fn(async () => {
+			throw new Error("unexpected runtime creation");
+		});
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime,
+		});
+		const internals = daemon as unknown as {
+			createRlmSubagentRuntime(parent: ActiveSessionState, options: never): Promise<unknown>;
+		};
+
+		await expect(internals.createRlmSubagentRuntime(makeState("closed-parent"), {} as never)).rejects.toThrow(
+			"Parent session is no longer active",
+		);
+
+		expect(createRuntime).not.toHaveBeenCalled();
+	});
+
 	it("cancels pending extension UI requests when the last client detaches", () => {
 		const firstClient = makeClient("client-1", "active");
 		const secondClient = makeClient("client-2", "active");

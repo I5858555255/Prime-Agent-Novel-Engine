@@ -1171,6 +1171,13 @@ export class AgentDaemon {
 		return undefined;
 	}
 
+	private isRlmParentStateActive(parentState: ActiveSessionState): boolean {
+		return (
+			this.sessions.get(parentState.activeSessionId) === parentState &&
+			!this.closingSessions.has(parentState.activeSessionId)
+		);
+	}
+
 	private createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost {
 		return {
 			createRlmSubagentRuntime: async (options) => this.createRlmSubagentRuntime(parentState, options),
@@ -1214,6 +1221,9 @@ export class AgentDaemon {
 		parentState: ActiveSessionState,
 		options: CreateRlmSubagentRuntimeOptions,
 	): Promise<AgentSessionRuntime> {
+		if (!this.isRlmParentStateActive(parentState)) {
+			throw new Error("Parent session is no longer active");
+		}
 		const sessionManager = SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
 		if (options.parentSession.sessionFile) {
 			sessionManager.newSession({ parentSession: options.parentSession.sessionFile });
@@ -1281,9 +1291,15 @@ export class AgentDaemon {
 				},
 			}),
 		);
-		await this.addRuntime(runtime, undefined, parentState.clientEnv, (state) => {
-			stateRef = state;
-		});
+		await this.addRuntime(
+			runtime,
+			undefined,
+			parentState.clientEnv,
+			(state) => {
+				stateRef = state;
+			},
+			() => this.isRlmParentStateActive(parentState),
+		);
 		return runtime;
 	}
 
