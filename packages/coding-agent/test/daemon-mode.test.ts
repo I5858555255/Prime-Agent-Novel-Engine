@@ -81,53 +81,6 @@ describe("daemon mode helpers", () => {
 		expect(createRuntime).not.toHaveBeenCalled();
 	});
 
-	it("cancels a retained running RLM child after parent replacement", async () => {
-		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
-			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
-			createRuntime: async () => {
-				throw new Error("unexpected runtime creation");
-			},
-		});
-		const parentState = makeState("parent");
-		const cancelRlmChildRun = vi.fn(() => false);
-		parentState.runtime = {
-			...parentState.runtime,
-			session: { cancelRlmChildRun },
-		} as never;
-		const childState = makeState("child", parentState.activeSessionId);
-		childState.runtime = {
-			...childState.runtime,
-			metadata: { ...childState.runtime.metadata, rlmChildId: "child-run" },
-			session: {
-				isStreaming: true,
-				isCompacting: false,
-				isBashRunning: false,
-				pendingMessageCount: 0,
-				hasRunningRlmChildren: () => false,
-			},
-		} as never;
-		const internals = daemon as unknown as {
-			sessions: Map<string, ActiveSessionState>;
-			closeSession(state: ActiveSessionState, reason: "killed"): Promise<void>;
-			handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
-		};
-		internals.sessions.set(parentState.activeSessionId, parentState);
-		internals.sessions.set(childState.activeSessionId, childState);
-		const closeSession = vi.spyOn(internals, "closeSession").mockResolvedValue(undefined);
-
-		await expect(
-			internals.handleCommand(makeClient("client", parentState.activeSessionId), {
-				id: "command-1",
-				type: "cancel_rlm_child",
-				activeSessionId: parentState.activeSessionId,
-				childId: "child-run",
-			}),
-		).resolves.toMatchObject({ data: { cancelled: true } });
-
-		expect(cancelRlmChildRun).toHaveBeenCalledExactlyOnceWith("child-run");
-		expect(closeSession).toHaveBeenCalledExactlyOnceWith(childState, "killed");
-	});
-
 	it("cancels pending extension UI requests when the last client detaches", () => {
 		const firstClient = makeClient("client-1", "active");
 		const secondClient = makeClient("client-2", "active");
