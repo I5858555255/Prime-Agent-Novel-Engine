@@ -4,6 +4,8 @@ import { createReadStream } from "node:fs";
 import { lstat, readlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
+import { waitForChildProcess } from "../utils/child-process.js";
+import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../utils/shell.js";
 
 export interface AgentAutonomousConfig {
 	enabled?: boolean;
@@ -444,16 +446,19 @@ function runChildProcess(
 	return new Promise((resolve) => {
 		const child = spawn(command, args, {
 			cwd: options.cwd,
+			detached: process.platform !== "win32",
 			shell: options.shell === true,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		if (child.pid) {
+			trackDetachedChildPid(child.pid);
+		}
 		let stdout = "";
 		let stderr = "";
 		let error: Error | undefined;
 		let timedOut = false;
 		let outputTruncated = false;
 		let settled = false;
-		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		const maxOutputChars = options.maxOutputChars ?? MAX_CHILD_PROCESS_OUTPUT_CHARS;
 		const finish = (result: Pick<ChildProcessResult, "status" | "signal">) => {
 			if (settled) {
@@ -463,16 +468,19 @@ function runChildProcess(
 			if (timer) {
 				clearTimeout(timer);
 			}
-			if (killTimer) {
-				clearTimeout(killTimer);
+			if (child.pid) {
+				untrackDetachedChildPid(child.pid);
 			}
 			resolve({ ...result, stdout, stderr, error, timedOut, outputTruncated });
 		};
 		const timer = options.timeoutMs
 			? setTimeout(() => {
 					timedOut = true;
-					child.kill("SIGTERM");
-					killTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
+					if (child.pid) {
+						killProcessTree(child.pid);
+					} else {
+						child.kill("SIGKILL");
+					}
 				}, options.timeoutMs)
 			: undefined;
 		child.stdout?.setEncoding("utf8");
@@ -491,10 +499,13 @@ function runChildProcess(
 			}
 			outputTruncated ||= chunk.length > remaining;
 		});
-		child.on("error", (err) => {
-			error = err;
-		});
-		child.on("close", (status, signal) => finish({ status, signal }));
+		void waitForChildProcess(child).then(
+			(status) => finish({ status, signal: child.signalCode }),
+			(err: Error) => {
+				error = err;
+				finish({ status: child.exitCode, signal: child.signalCode });
+			},
+		);
 	});
 }
 

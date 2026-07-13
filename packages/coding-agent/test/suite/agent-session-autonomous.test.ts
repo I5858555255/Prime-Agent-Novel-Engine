@@ -13,6 +13,23 @@ import {
 import type { AgentCronJob } from "../../src/core/cron-jobs.js";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
 
+function isProcessRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 2000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (isProcessRunning(pid) && Date.now() < deadline) {
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+	}
+	return !isProcessRunning(pid);
+}
+
 describe("AgentSession autonomous mode", () => {
 	const harnesses: Harness[] = [];
 
@@ -392,6 +409,46 @@ describe("AgentSession autonomous mode", () => {
 
 		expect(state.lastGateFailure?.output).toContain("... [truncated]");
 		expect(state.lastGateFailure?.output.length).toBeLessThan(6100);
+	});
+
+	it("terminates the autonomous gate process tree when the timeout expires", async () => {
+		const tempDir = join(
+			process.cwd(),
+			`.tmp-autonomous-process-tree-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		execFileSync("mkdir", ["-p", tempDir]);
+		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		const pidFile = join(tempDir, "descendant.pid");
+		const script = join(tempDir, "gate.cjs");
+		writeFileSync(
+			script,
+			`const { spawn } = require("node:child_process");\n` +
+				`const { writeFileSync } = require("node:fs");\n` +
+				`const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" });\n` +
+				`writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));\n` +
+				`setTimeout(() => {}, 60000);\n`,
+		);
+		let descendantPid: number | undefined;
+		try {
+			const state = createAutonomousRuntimeState({
+				enabled: true,
+				maxContinuations: 1,
+				gates: { commands: [`${process.execPath} gate.cjs`], maxRetries: 1, timeoutMs: 250 },
+			});
+			const startedAt = Date.now();
+
+			await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
+			descendantPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+
+			expect(Date.now() - startedAt).toBeLessThan(3000);
+			expect(state.lastGateFailure?.exitText).toBe("timed out");
+			expect(await waitForProcessExit(descendantPid)).toBe(true);
+		} finally {
+			if (descendantPid && isProcessRunning(descendantPid)) {
+				process.kill(descendantPid, "SIGKILL");
+			}
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("stops autonomous continuation once gate retries are exhausted", async () => {
