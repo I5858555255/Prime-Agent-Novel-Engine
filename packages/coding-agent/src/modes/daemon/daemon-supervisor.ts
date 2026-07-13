@@ -17,8 +17,9 @@ import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "
 import { type AgentCronJob, AgentCronJobStore, migrateLegacyCronJobsToSessionArtifacts } from "../../core/cron-jobs.js";
 import {
 	clearOrphanProcessJournal,
+	isOrphanProcessIdentityCurrent,
 	ORPHAN_PROCESS_JOURNAL_ENV,
-	readActiveOrphanProcessPids,
+	readActiveOrphanProcesses,
 } from "../../core/orphan-process-journal.js";
 import { getProcessStartId } from "../../core/session-lease.js";
 import type { SessionInfo } from "../../core/session-manager.js";
@@ -1191,8 +1192,8 @@ export class DaemonSupervisor {
 			type: "worker_subscribe",
 			activeSessionId,
 			capabilities: supportsExtensionUi
-				? ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach"]
-				: ["attach_snapshot", "event_sequence", "slim_attach"],
+				? ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"]
+				: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
 			supportsExtensionUi,
 		});
 		if (!response.success) {
@@ -1340,7 +1341,11 @@ export class DaemonSupervisor {
 		const orphanProcessJournalPath = worker.descriptor.orphanProcessJournalPath;
 		if (orphanProcessJournalPath) {
 			try {
-				for (const pid of readActiveOrphanProcessPids(orphanProcessJournalPath, worker.descriptor.pid)) {
+				for (const orphan of readActiveOrphanProcesses(orphanProcessJournalPath, worker.descriptor.pid)) {
+					if (!isOrphanProcessIdentityCurrent(orphan)) {
+						continue;
+					}
+					const { pid } = orphan;
 					try {
 						process.kill(-pid, "SIGKILL");
 					} catch {

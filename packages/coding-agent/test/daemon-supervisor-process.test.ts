@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR, getCronJobsPath } from "../src/config.js";
 import { AgentCronJobStore } from "../src/core/cron-jobs.js";
-import { readActiveOrphanProcessPids } from "../src/core/orphan-process-journal.js";
+import { readActiveOrphanProcesses } from "../src/core/orphan-process-journal.js";
 import {
 	acquireSessionLease,
 	SESSION_LEASE_OWNER_ID_ENV,
@@ -835,7 +835,9 @@ describe("daemon supervisor resident workers", () => {
 		let orphanPids: number[] = [];
 		const orphanDeadline = Date.now() + 5000;
 		while (orphanPids.length === 0 && Date.now() < orphanDeadline) {
-			orphanPids = readActiveOrphanProcessPids(descriptor.orphanProcessJournalPath, descriptor.pid);
+			orphanPids = readActiveOrphanProcesses(descriptor.orphanProcessJournalPath, descriptor.pid).map(
+				(orphan) => orphan.pid,
+			);
 			if (orphanPids.length === 0) {
 				await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
 			}

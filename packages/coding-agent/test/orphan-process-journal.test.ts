@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	clearOrphanProcessJournal,
+	isOrphanProcessIdentityCurrent,
 	ORPHAN_PROCESS_JOURNAL_ENV,
-	readActiveOrphanProcessPids,
+	readActiveOrphanProcesses,
 	recordOrphanProcessState,
 } from "../src/core/orphan-process-journal.js";
 
@@ -30,12 +31,16 @@ describe("orphan process journal", () => {
 		const path = join(directory, "orphans.jsonl");
 		process.env[ORPHAN_PROCESS_JOURNAL_ENV] = path;
 
-		recordOrphanProcessState(12_345, true);
-		recordOrphanProcessState(12_346, true);
-		recordOrphanProcessState(12_346, false);
+		recordOrphanProcessState(process.pid, true);
 
-		expect(readActiveOrphanProcessPids(path, process.pid)).toEqual([12_345]);
-		expect(readActiveOrphanProcessPids(path, process.pid + 1)).toEqual([]);
+		const active = readActiveOrphanProcesses(path, process.pid);
+		expect(active).toHaveLength(1);
+		expect(active[0]?.pid).toBe(process.pid);
+		expect(active[0] && isOrphanProcessIdentityCurrent(active[0])).toBe(true);
+		expect(readActiveOrphanProcesses(path, process.pid + 1)).toEqual([]);
+
+		recordOrphanProcessState(process.pid, false);
+		expect(readActiveOrphanProcesses(path, process.pid)).toEqual([]);
 		clearOrphanProcessJournal(path);
 		expect(existsSync(path)).toBe(false);
 	});

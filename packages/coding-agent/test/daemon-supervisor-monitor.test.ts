@@ -247,6 +247,28 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(seed).toHaveBeenCalledWith(activeSessionId, streamingMessage);
 	});
 
+	it("subscribes to worker updates with chunked snapshots", async () => {
+		type SubscriptionWorker = {
+			client: { requestWorker: (command: unknown) => Promise<{ success: boolean }> };
+		};
+		const requestWorker = vi.fn(async () => ({ success: true }));
+		const worker: SubscriptionWorker = { client: { requestWorker } };
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			clients: new Set(),
+		}) as {
+			subscribeWorker(worker: SubscriptionWorker, activeSessionId: string): Promise<void>;
+		};
+
+		await supervisor.subscribeWorker(worker, "active-1");
+
+		expect(requestWorker).toHaveBeenCalledWith({
+			type: "worker_subscribe",
+			activeSessionId: "active-1",
+			capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+			supportsExtensionUi: false,
+		});
+	});
+
 	it("does not retain an attachment when snapshot loading fails", async () => {
 		type AttachClient = {
 			id: string;
@@ -307,10 +329,23 @@ describe("daemon worker supervisor monitoring", () => {
 				pid: number;
 				rootActiveSessionId: string;
 				recoveryJournalPath: string;
+				orphanProcessJournalPath: string;
 			};
 		};
 		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-recovery-test-"));
 		const journalPath = join(root, "worker.recovery.jsonl");
+		const orphanJournalPath = join(root, "worker.orphans.jsonl");
+		writeFileSync(
+			orphanJournalPath,
+			`${JSON.stringify({
+				version: 1,
+				pid: 987_654,
+				ownerPid: process.pid,
+				processStartId: "reused-process",
+				active: true,
+				recordedAt: new Date().toISOString(),
+			})}\n`,
+		);
 		const journal = new WorkerRecoveryJournal(journalPath);
 		journal.record({
 			activeSessionId: "root-active",
@@ -332,9 +367,11 @@ describe("daemon worker supervisor monitoring", () => {
 				pid: process.pid,
 				rootActiveSessionId: "root-active",
 				recoveryJournalPath: journalPath,
+				orphanProcessJournalPath: orphanJournalPath,
 			},
 		};
 		const markInterrupted = vi.fn(async () => undefined);
+		const kill = vi.spyOn(process, "kill").mockReturnValue(true);
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			catalog: { markInterrupted },
 			log: vi.fn(),
@@ -344,10 +381,12 @@ describe("daemon worker supervisor monitoring", () => {
 
 		try {
 			await supervisor.recoverUncertainWorkerOperations(worker, false);
+			expect(kill).not.toHaveBeenCalled();
 			expect(markInterrupted).toHaveBeenCalledTimes(2);
 			expect(markInterrupted).toHaveBeenCalledWith("/tmp/root.jsonl", "root-active", ["model_stream"]);
 			expect(markInterrupted).toHaveBeenCalledWith("/tmp/child.jsonl", "child-active", ["tool_execution"]);
 		} finally {
+			kill.mockRestore();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});

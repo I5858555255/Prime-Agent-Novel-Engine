@@ -7,8 +7,9 @@ import type { AgentSession } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.js";
 import {
 	clearOrphanProcessJournal,
+	isOrphanProcessIdentityCurrent,
 	ORPHAN_PROCESS_JOURNAL_ENV,
-	readActiveOrphanProcessPids,
+	readActiveOrphanProcesses,
 } from "../core/orphan-process-journal.js";
 import { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.js";
@@ -297,7 +298,11 @@ export async function runOwnedSessionWorkerFrontend(
 				// The worker process group may already be fully reaped.
 			}
 		}
-		for (const pid of readActiveOrphanProcessPids(orphanProcessJournalPath, workerPid)) {
+		for (const orphan of readActiveOrphanProcesses(orphanProcessJournalPath, workerPid)) {
+			if (!isOrphanProcessIdentityCurrent(orphan)) {
+				continue;
+			}
+			const { pid } = orphan;
 			try {
 				process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
 			} catch {

@@ -1,4 +1,5 @@
 import { closeSync, fsyncSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { getProcessStartId } from "./session-lease.js";
 
 export const ORPHAN_PROCESS_JOURNAL_ENV = "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL";
 
@@ -6,8 +7,14 @@ interface OrphanProcessRecord {
 	version: 1;
 	pid: number;
 	ownerPid: number;
+	processStartId?: string;
 	active: boolean;
 	recordedAt: string;
+}
+
+export interface ActiveOrphanProcess {
+	pid: number;
+	processStartId: string;
 }
 
 export function recordOrphanProcessState(pid: number, active: boolean): void {
@@ -15,10 +22,12 @@ export function recordOrphanProcessState(pid: number, active: boolean): void {
 	if (!path || !Number.isInteger(pid) || pid <= 0) {
 		return;
 	}
+	const processStartId = active ? getProcessStartId(pid) : undefined;
 	const record: OrphanProcessRecord = {
 		version: 1,
 		pid,
 		ownerPid: process.pid,
+		...(processStartId ? { processStartId } : {}),
 		active,
 		recordedAt: new Date().toISOString(),
 	};
@@ -35,7 +44,7 @@ export function recordOrphanProcessState(pid: number, active: boolean): void {
 	}
 }
 
-export function readActiveOrphanProcessPids(path: string, ownerPid: number): number[] {
+export function readActiveOrphanProcesses(path: string, ownerPid: number): ActiveOrphanProcess[] {
 	let contents: string;
 	try {
 		contents = readFileSync(path, "utf8");
@@ -66,7 +75,16 @@ export function readActiveOrphanProcessPids(path: string, ownerPid: number): num
 			// A crash can truncate only the final append.
 		}
 	}
-	return [...latest.values()].filter((record) => record.active).map((record) => record.pid);
+	return [...latest.values()]
+		.filter(
+			(record): record is OrphanProcessRecord & { processStartId: string } =>
+				record.active && typeof record.processStartId === "string",
+		)
+		.map((record) => ({ pid: record.pid, processStartId: record.processStartId }));
+}
+
+export function isOrphanProcessIdentityCurrent(orphan: ActiveOrphanProcess): boolean {
+	return getProcessStartId(orphan.pid) === orphan.processStartId;
 }
 
 export function clearOrphanProcessJournal(path: string): void {
