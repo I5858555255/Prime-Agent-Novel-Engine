@@ -172,6 +172,7 @@ interface ResidentWorker {
 	snapshotLoads: Map<string, Promise<DaemonAttachResult>>;
 	recovery?: Promise<void>;
 	intentionalStop: boolean;
+	stopRevision: number;
 }
 
 interface DaemonSupervisorOptions {
@@ -499,6 +500,7 @@ export class DaemonSupervisor {
 					incomingTranscriptActiveSessionIds: new Set(),
 					snapshotLoads: new Map(),
 					intentionalStop: descriptor.stopRequestedAt !== undefined,
+					stopRevision: 0,
 				});
 			} catch (error) {
 				this.log(`Ignoring invalid worker descriptor ${path}: ${String(error)}`);
@@ -1005,6 +1007,10 @@ export class DaemonSupervisor {
 	}
 
 	private async launchWorker(command: DaemonCreateCommand, existing?: ResidentWorker): Promise<ResidentWorker> {
+		if (existing && this.isWorkerRecoveryCancelled(existing)) {
+			throw new Error(`Session worker ${existing.descriptor.workerId} recovery was cancelled`);
+		}
+		const recoveryStopRevision = existing?.stopRevision;
 		const createCommand: DaemonCreateCommand = {
 			...command,
 			config: mergeAgentSessionRuntimeConfig(this.defaultSessionConfig, command.config),
@@ -1066,6 +1072,7 @@ export class DaemonSupervisor {
 			incomingTranscriptActiveSessionIds: new Set(),
 			snapshotLoads: new Map(),
 			intentionalStop: false,
+			stopRevision: 0,
 		};
 		worker.descriptor = descriptor;
 		worker.intentionalStop = false;
@@ -1090,6 +1097,9 @@ export class DaemonSupervisor {
 			worker.descriptor.sessionFile = summary.sessionFile;
 			await this.subscribeWorker(worker, rootActiveSessionId);
 			await this.refreshWorkerSummaries(worker);
+			if (existing && (this.isWorkerRecoveryCancelled(worker) || worker.stopRevision !== recoveryStopRevision)) {
+				throw new Error(`Session worker ${workerId} recovery was cancelled`);
+			}
 			worker.descriptor.lifecycle = "ready";
 			worker.descriptor.consecutiveFailures = 0;
 			worker.descriptor.lastError = undefined;
@@ -1097,10 +1107,20 @@ export class DaemonSupervisor {
 			await this.syncAgentPeers();
 			return worker;
 		} catch (error) {
-			await this.stopWorker(worker, existing === undefined, true).catch((stopError) =>
+			const shouldResumeRecovery =
+				existing !== undefined &&
+				!this.shuttingDown &&
+				worker.descriptor.stopRequestedAt === undefined &&
+				worker.stopRevision === recoveryStopRevision;
+			await this.stopWorker(worker, existing === undefined, true, false, existing !== undefined).catch((stopError) =>
 				this.log(`Could not stop failed worker ${workerId}: ${String(stopError)}`),
 			);
-			if (existing) {
+			if (
+				shouldResumeRecovery &&
+				!this.shuttingDown &&
+				worker.descriptor.stopRequestedAt === undefined &&
+				worker.stopRevision === recoveryStopRevision
+			) {
 				worker.intentionalStop = false;
 				worker.descriptor.lifecycle = "recovering";
 				this.workers.set(workerId, worker);
@@ -1204,17 +1224,26 @@ export class DaemonSupervisor {
 	}
 
 	private async recoverWorker(worker: ResidentWorker): Promise<void> {
+		if (this.isWorkerRecoveryCancelled(worker)) {
+			return;
+		}
 		if (worker.recovery) {
 			return worker.recovery;
 		}
 		worker.recovery = (async () => {
 			for (const retryDelay of WORKER_RETRY_DELAYS_MS) {
 				await delay(retryDelay);
+				if (this.isWorkerRecoveryCancelled(worker)) {
+					return;
+				}
 				try {
 					if (isProcessAlive(worker.descriptor.pid)) {
 						await this.connectWorker(worker, 1500);
 						await this.subscribeWorker(worker, worker.descriptor.rootActiveSessionId);
 						await this.refreshWorkerSummaries(worker);
+						if (this.isWorkerRecoveryCancelled(worker)) {
+							return;
+						}
 						worker.descriptor.lifecycle = "ready";
 						worker.descriptor.consecutiveFailures = 0;
 						this.persistWorker(worker);
@@ -1222,9 +1251,15 @@ export class DaemonSupervisor {
 						return;
 					}
 					await this.recoverUncertainWorkerOperations(worker);
+					if (this.isWorkerRecoveryCancelled(worker)) {
+						return;
+					}
 					await this.launchWorker(worker.descriptor.createCommand, worker);
 					return;
 				} catch (error) {
+					if (this.isWorkerRecoveryCancelled(worker)) {
+						return;
+					}
 					worker.client?.close();
 					worker.client = undefined;
 					worker.descriptor.consecutiveFailures++;
@@ -1241,6 +1276,15 @@ export class DaemonSupervisor {
 			worker.recovery = undefined;
 		});
 		return worker.recovery;
+	}
+
+	private isWorkerRecoveryCancelled(worker: ResidentWorker): boolean {
+		return (
+			this.shuttingDown ||
+			worker.intentionalStop ||
+			worker.descriptor.stopRequestedAt !== undefined ||
+			this.workers.get(worker.descriptor.workerId) !== worker
+		);
 	}
 
 	private async recoverUncertainWorkerOperations(worker: ResidentWorker): Promise<void> {
@@ -2138,7 +2182,11 @@ export class DaemonSupervisor {
 		removeDescriptor: boolean,
 		force = false,
 		archiveSession = false,
+		recoveryCleanup = false,
 	): Promise<void> {
+		if (!recoveryCleanup) {
+			worker.stopRevision++;
+		}
 		if (removeDescriptor) {
 			this.persistWorkerStopTombstone(worker, archiveSession);
 		} else {

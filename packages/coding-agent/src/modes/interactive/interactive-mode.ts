@@ -775,7 +775,6 @@ export class InteractiveMode {
 	private connectionModelsRefreshInFlight: { version: number; promise: Promise<AgentConnectionModel[]> } | undefined;
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
-	private initialConnectionSnapshotConsumed = false;
 	private sessionHasMessages = false;
 
 	// Registry of images pasted this session, keyed by the `[image #N]` marker
@@ -5706,22 +5705,11 @@ export class InteractiveMode {
 	}
 
 	async renderInitialMessages(): Promise<void> {
-		let context: AgentConnectionSessionContext;
-		let state: AgentConnectionState;
-		let streamingMessage: AgentMessage | undefined;
-		if (this.initialConnectionSnapshotConsumed) {
-			[context, state] = await Promise.all([
-				this.agentConnection.getSessionContext(),
-				this.agentConnection.getState(),
-			]);
-		} else {
-			const snapshot = await this.agentConnection.getInitialSnapshot();
-			this.initialConnectionSnapshotConsumed = true;
-			context = this.getSessionContextFromConnectionSnapshot(snapshot);
-			state = snapshot.state;
-			streamingMessage = snapshot.streamingMessage;
-			this.seedChildAgentInspector(snapshot.children);
-		}
+		const snapshot = await this.agentConnection.getInitialSnapshot();
+		const context = this.getSessionContextFromConnectionSnapshot(snapshot);
+		const state = snapshot.state;
+		const streamingMessage = snapshot.streamingMessage;
+		this.seedChildAgentInspector(snapshot.children);
 		this.setSessionHasMessages(context.messages.length > 0);
 		this.applyConnectionStateSnapshot(state);
 		await this.renderSessionContext(context, {

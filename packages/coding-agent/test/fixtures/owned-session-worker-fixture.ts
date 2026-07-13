@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import {
 	closeOwnedSessionWorkerOwnerWatch,
 	installOwnedSessionWorkerOwnerWatch,
@@ -25,6 +25,27 @@ if (process.env.PRIME_AGENT_INTERNAL_OWNED_WORKER === "1") {
 	if (args.includes("--mode") && args.includes("rpc")) {
 		attachJsonlLineReader(process.stdin, (line) => {
 			const command = JSON.parse(line) as { id?: string; type: string };
+			if (command.type === "ack_result") {
+				if (process.env.PRIME_AGENT_TEST_CRASH_ON_ACK === "1" && pidPath && !existsSync(`${pidPath}.crashed`)) {
+					writeFileSync(`${pidPath}.crashed`, "crashed\n");
+					const recoveryPath = process.env.PRIME_AGENT_INTERNAL_OWNED_RECOVERY_DESCRIPTOR;
+					if (recoveryPath) {
+						writeFileSync(
+							recoveryPath,
+							`${JSON.stringify({
+								version: 1,
+								profile: "rpc",
+								sessionId: "fixture-session",
+								sessionFile: `${pidPath}.jsonl`,
+								cwd: process.cwd(),
+								updatedAt: new Date().toISOString(),
+							})}\n`,
+						);
+					}
+					process.exit(1);
+				}
+				return;
+			}
 			if (process.env.PRIME_AGENT_TEST_INVALID_RPC_OUTPUT === "1") {
 				process.stdout.write("truncated-json\n");
 				process.stdout.write("null\n");

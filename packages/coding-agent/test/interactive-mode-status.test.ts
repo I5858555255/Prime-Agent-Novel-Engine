@@ -667,6 +667,45 @@ describe("InteractiveMode pending bash components", () => {
 });
 
 describe("InteractiveMode connection events", () => {
+	test("restores in-flight assistant state on every session render", async () => {
+		const streamingMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "still streaming" }],
+		} as AgentConnectionSnapshot["streamingMessage"];
+		const snapshots: AgentConnectionSnapshot[] = [
+			{ state: createConnectionState(), messages: [] },
+			{ state: createConnectionState({ isStreaming: true }), messages: [], streamingMessage },
+		];
+		const restoreStreamingMessageFromSnapshot = vi.fn(async () => {});
+		const fakeThis = {
+			agentConnection: { getInitialSnapshot: vi.fn(async () => snapshots.shift()!) },
+			getSessionContextFromConnectionSnapshot: vi.fn(() => ({
+				messages: [],
+				thinkingLevel: "medium",
+				model: null,
+			})),
+			seedChildAgentInspector: vi.fn(),
+			setSessionHasMessages: vi.fn(),
+			applyConnectionStateSnapshot: vi.fn(),
+			renderSessionContext: vi.fn(async () => {}),
+			restoreStreamingMessageFromSnapshot,
+			showStatus: vi.fn(),
+		} as unknown as InteractiveMode;
+
+		const renderInitialMessages = (
+			InteractiveMode.prototype as unknown as { renderInitialMessages(this: InteractiveMode): Promise<void> }
+		).renderInitialMessages;
+		await renderInitialMessages.call(fakeThis);
+		await renderInitialMessages.call(fakeThis);
+
+		expect(
+			(fakeThis as unknown as { agentConnection: { getInitialSnapshot: ReturnType<typeof vi.fn> } }).agentConnection
+				.getInitialSnapshot,
+		).toHaveBeenCalledTimes(2);
+		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(1, undefined);
+		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(2, streamingMessage);
+	});
+
 	test("clears extension UI when a connection-backed session is replaced", async () => {
 		type SessionReplacedEvent = { type: "session_replaced"; state: AgentConnectionState; messages: [] };
 		let listener: ((event: SessionReplacedEvent) => Promise<void> | void) | undefined;

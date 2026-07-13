@@ -1172,6 +1172,82 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach"]);
 	});
 
+	it("preserves the in-flight assistant message when refreshing a stale snapshot", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+		const streamingMessage: AgentMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "partial response" }],
+			api: "test-api",
+			provider: "test-provider",
+			model: "test-model",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		};
+		fakeClient.emitMessage({
+			type: "session_event",
+			activeSessionId: "active-1",
+			event: { type: "message_start", message: streamingMessage },
+			meta: {
+				id: "active-1:13",
+				protocol: DAEMON_PROTOCOL_INFO,
+				activeSessionId: "active-1",
+				sequence: 13,
+				cursor: { generation: "generation-active-1", sequence: 13 },
+				emittedAt: "2026-01-01T00:00:00.000Z",
+			},
+		});
+
+		await expect(connection.getInitialSnapshot()).resolves.toMatchObject({ streamingMessage });
+		expect(fakeClient.requests.map((request) => request.type)).toEqual([
+			"attach",
+			"get_connection_state",
+			"get_messages",
+			"get_session_context",
+		]);
+	});
+
+	it("times out an attach whose streamed snapshot never completes", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.attachResultFactory = (command) => {
+			const result = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			return {
+				...result,
+				snapshotStream: { id: "snapshot-stalled", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1", {
+			snapshotTimeoutMs: 10,
+		});
+
+		await expect(connection.attach()).rejects.toThrow("Timed out waiting for snapshot snapshot-stalled");
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-1",
+			snapshotId: "snapshot-stalled",
+			snapshot: createAttachResult("active-1", "client-1", undefined, 12).snapshot,
+			messageCount: 0,
+			targetChunkBytes: 512 * 1024,
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-1",
+			snapshotId: "snapshot-stalled",
+			chunkCount: 0,
+			lastEventSequence: 12,
+		});
+		expect((connection as unknown as { snapshotAssemblies: Map<string, unknown> }).snapshotAssemblies.size).toBe(0);
+	});
+
 	it("assembles chunked attach snapshots even when chunks arrive before the attach response continuation", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const messages: AgentMessage[] = [
@@ -1304,6 +1380,7 @@ describe("DaemonAgentConnection", () => {
 				state: expect.objectContaining({ sessionId: "session-next" }),
 			}),
 		]);
+		expect((connection as unknown as { snapshotAssemblies: Map<string, unknown> }).snapshotAssemblies.size).toBe(0);
 	});
 
 	it("keeps attach snapshots usable when the daemon omits duplicate session context", async () => {

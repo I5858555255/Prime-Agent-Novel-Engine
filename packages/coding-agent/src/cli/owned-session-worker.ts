@@ -220,7 +220,11 @@ export async function runOwnedSessionWorkerFrontend(
 	const trackRpcInput = (line: string) => {
 		try {
 			const command = JSON.parse(line) as { id?: unknown; type?: unknown };
-			if (typeof command.type !== "string" || command.type === "extension_ui_response") {
+			if (
+				typeof command.type !== "string" ||
+				command.type === "extension_ui_response" ||
+				command.type === "ack_result"
+			) {
 				return;
 			}
 			const id = typeof command.id === "string" ? command.id : undefined;

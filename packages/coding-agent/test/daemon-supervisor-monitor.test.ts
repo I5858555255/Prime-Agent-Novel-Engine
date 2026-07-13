@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentDaemon } from "../src/modes/daemon/daemon-mode.js";
+import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
 
 interface SupervisorMonitorHarness {
 	options: { worker: object };
@@ -48,5 +49,40 @@ describe("daemon worker supervisor monitoring", () => {
 		await vi.runAllTimersAsync();
 
 		expect(daemon.canConnectToSupervisor).not.toHaveBeenCalled();
+	});
+
+	it("cancels an in-flight recovery after an intentional stop tombstone", async () => {
+		vi.useFakeTimers();
+		type RecoveryWorker = {
+			descriptor: {
+				workerId: string;
+				pid: number;
+				rootActiveSessionId: string;
+				stopRequestedAt?: string;
+			};
+			intentionalStop: boolean;
+			recovery?: Promise<void>;
+		};
+		type RecoveryHarness = {
+			workers: Map<string, RecoveryWorker>;
+			shuttingDown: boolean;
+			recoverWorker(worker: RecoveryWorker): Promise<void>;
+		};
+		const worker: RecoveryWorker = {
+			descriptor: { workerId: "worker-1", pid: process.pid, rootActiveSessionId: "active-1" },
+			intentionalStop: false,
+		};
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			shuttingDown: false,
+		}) as RecoveryHarness;
+
+		const recovery = supervisor.recoverWorker(worker);
+		worker.intentionalStop = true;
+		worker.descriptor.stopRequestedAt = new Date().toISOString();
+		await vi.advanceTimersByTimeAsync(250);
+		await recovery;
+
+		expect(worker.recovery).toBeUndefined();
 	});
 });

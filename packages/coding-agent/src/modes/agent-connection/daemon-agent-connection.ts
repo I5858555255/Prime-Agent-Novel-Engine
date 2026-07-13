@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Transport } from "@earendil-works/pi-ai";
 import { getAgentLogPath, getDaemonLogPath } from "../../config.js";
+import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
 import type { AgentCronJob, AgentHeartbeatDeliveryMode, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
@@ -70,10 +71,13 @@ interface DaemonSnapshotAssembly {
 	promise: Promise<DaemonSessionSnapshot>;
 	resolve: (snapshot: DaemonSessionSnapshot) => void;
 	reject: (error: Error) => void;
+	timeout: ReturnType<typeof setTimeout>;
 }
 
 export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 export const DAEMON_RECONNECT_TIMEOUT_MS = 60_000;
+export const DAEMON_SNAPSHOT_TIMEOUT_MS = 30_000;
+const MAX_IGNORED_SNAPSHOT_IDS = 128;
 const UPDATE_RECONNECT_TIMEOUT_MS = 120000;
 const UPDATE_RECONNECT_RETRY_MS = 100;
 const updateTransportReconnects = new WeakMap<DaemonClient, Promise<void>>();
@@ -126,6 +130,8 @@ export interface DaemonAgentConnectionOptions {
 	recoverDaemon?: () => Promise<void>;
 	/** Bound supervisor recovery before surfacing a fatal connection error. */
 	reconnectTimeoutMs?: number;
+	/** Bound an incomplete streamed snapshot before failing the attach or resync. */
+	snapshotTimeoutMs?: number;
 	/**
 	 * Send this client's allowlisted env (herdr pane identity) with attach so
 	 * an env-less session (e.g. cron-created) adopts it. Set only by the
@@ -160,6 +166,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private updateReconnectPromise?: Promise<void>;
 	private readonly activeSideQuestionIds = new Set<string>();
 	private readonly snapshotAssemblies = new Map<string, DaemonSnapshotAssembly>();
+	private readonly ignoredSnapshotIds = new Set<string>();
 	private reconnectPromise?: Promise<void>;
 	private disposed = false;
 
@@ -309,11 +316,13 @@ export class DaemonAgentConnection implements AgentConnection {
 		// roster is still the best seed available (live rlm_child_update events
 		// overwrite each entry anyway).
 		const children = this.latestSnapshot?.children;
+		const streamingMessage = this.latestSnapshot?.streamingMessage;
 		this.latestSnapshot = {
 			state,
 			messages: messagesData.messages,
 			sessionContext: sessionContextData.context,
 			...(children ? { children } : {}),
+			...(streamingMessage ? { streamingMessage } : {}),
 		};
 		if (this.lastEventSequence !== undefined) {
 			this.latestSnapshot.lastEventSequence = this.lastEventSequence;
@@ -916,6 +925,12 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (!this.isMessageForActiveSession(message)) {
 			return;
 		}
+		if ("snapshotId" in message && this.ignoredSnapshotIds.has(message.snapshotId)) {
+			if (message.type === "session_snapshot_end") {
+				this.ignoredSnapshotIds.delete(message.snapshotId);
+			}
+			return;
+		}
 		if (message.type === "session_snapshot_begin") {
 			const assembly = this.getSnapshotAssembly(message.snapshotId);
 			assembly.begin = message;
@@ -935,6 +950,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.observeDaemonEventSequence(message);
 
 		if (message.type === "session_event") {
+			this.observeStreamingMessage(message.event);
 			this.latestSnapshotIsFresh = false;
 			await this.emit({ type: "session_event", event: message.event });
 			return;
@@ -1154,11 +1170,21 @@ export class DaemonAgentConnection implements AgentConnection {
 			rejectSnapshot = reject;
 		});
 		void promise.catch(() => undefined);
+		const timeout = setTimeout(() => {
+			const current = this.snapshotAssemblies.get(snapshotId);
+			if (current) {
+				current.reject(new Error(`Timed out waiting for snapshot ${snapshotId}`));
+				this.snapshotAssemblies.delete(snapshotId);
+				this.ignoreSnapshotId(snapshotId);
+			}
+		}, this.options.snapshotTimeoutMs ?? DAEMON_SNAPSHOT_TIMEOUT_MS);
+		timeout.unref();
 		const assembly: DaemonSnapshotAssembly = {
 			chunks: new Map(),
 			promise,
 			resolve: resolveSnapshot,
 			reject: rejectSnapshot,
+			timeout,
 		};
 		this.snapshotAssemblies.set(snapshotId, assembly);
 		return assembly;
@@ -1166,9 +1192,30 @@ export class DaemonAgentConnection implements AgentConnection {
 
 	private rejectSnapshotAssemblies(error: Error): void {
 		for (const assembly of this.snapshotAssemblies.values()) {
+			clearTimeout(assembly.timeout);
 			assembly.reject(error);
 		}
 		this.snapshotAssemblies.clear();
+		this.ignoredSnapshotIds.clear();
+	}
+
+	private ignoreSnapshotId(snapshotId: string): void {
+		this.ignoredSnapshotIds.add(snapshotId);
+		while (this.ignoredSnapshotIds.size > MAX_IGNORED_SNAPSHOT_IDS) {
+			const oldest = this.ignoredSnapshotIds.values().next().value;
+			if (oldest === undefined) {
+				break;
+			}
+			this.ignoredSnapshotIds.delete(oldest);
+		}
+	}
+
+	private rejectSnapshotAssembly(snapshotId: string, assembly: DaemonSnapshotAssembly, error: Error): void {
+		assembly.reject(error);
+		clearTimeout(assembly.timeout);
+		if (assembly.begin?.purpose && assembly.begin.purpose !== "attach") {
+			this.snapshotAssemblies.delete(snapshotId);
+		}
 	}
 
 	private async waitForSnapshot(snapshotId: string): Promise<DaemonSessionSnapshot> {
@@ -1176,6 +1223,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		try {
 			return await assembly.promise;
 		} finally {
+			clearTimeout(assembly.timeout);
 			this.snapshotAssemblies.delete(snapshotId);
 		}
 	}
@@ -1185,11 +1233,17 @@ export class DaemonAgentConnection implements AgentConnection {
 	): Promise<void> {
 		const assembly = this.getSnapshotAssembly(message.snapshotId);
 		if (!assembly.begin) {
-			assembly.reject(new Error(`Snapshot ${message.snapshotId} ended before it began`));
+			this.rejectSnapshotAssembly(
+				message.snapshotId,
+				assembly,
+				new Error(`Snapshot ${message.snapshotId} ended before it began`),
+			);
 			return;
 		}
 		if (assembly.chunks.size !== message.chunkCount) {
-			assembly.reject(
+			this.rejectSnapshotAssembly(
+				message.snapshotId,
+				assembly,
 				new Error(
 					`Snapshot ${message.snapshotId} ended with ${assembly.chunks.size} of ${message.chunkCount} chunks`,
 				),
@@ -1200,13 +1254,19 @@ export class DaemonAgentConnection implements AgentConnection {
 		for (let index = 0; index < message.chunkCount; index++) {
 			const chunk = assembly.chunks.get(index);
 			if (!chunk) {
-				assembly.reject(new Error(`Snapshot ${message.snapshotId} is missing chunk ${index}`));
+				this.rejectSnapshotAssembly(
+					message.snapshotId,
+					assembly,
+					new Error(`Snapshot ${message.snapshotId} is missing chunk ${index}`),
+				);
 				return;
 			}
 			messages.push(...chunk);
 		}
 		if (messages.length !== assembly.begin.messageCount) {
-			assembly.reject(
+			this.rejectSnapshotAssembly(
+				message.snapshotId,
+				assembly,
 				new Error(
 					`Snapshot ${message.snapshotId} contained ${messages.length} of ${assembly.begin.messageCount} messages`,
 				),
@@ -1229,10 +1289,28 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.latestSnapshotIsFresh = true;
 		assembly.resolve(snapshot);
 		const purpose = assembly.begin.purpose ?? "attach";
+		clearTimeout(assembly.timeout);
+		if (purpose !== "attach") {
+			this.snapshotAssemblies.delete(message.snapshotId);
+		}
 		if (purpose === "replacement") {
 			await this.emit({ type: "session_replaced", state: snapshot.state, messages });
 		} else if (purpose === "resync") {
 			await this.emit({ type: "session_resynced", snapshot: this.latestSnapshot });
+		}
+	}
+
+	private observeStreamingMessage(event: AgentSessionEvent): void {
+		if (!this.latestSnapshot) {
+			return;
+		}
+		if ((event.type === "message_start" || event.type === "message_update") && event.message.role === "assistant") {
+			this.latestSnapshot = { ...this.latestSnapshot, streamingMessage: event.message };
+			return;
+		}
+		if ((event.type === "message_end" && event.message.role === "assistant") || event.type === "agent_end") {
+			const { streamingMessage: _streamingMessage, ...snapshot } = this.latestSnapshot;
+			this.latestSnapshot = snapshot;
 		}
 	}
 

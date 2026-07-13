@@ -74,6 +74,21 @@ async function waitForWorkerPid(path: string): Promise<number> {
 	throw new Error("Owned worker did not publish its pid");
 }
 
+async function waitForReplacementWorkerPid(path: string, previousPid: number): Promise<number> {
+	const deadline = Date.now() + 10_000;
+	while (Date.now() < deadline) {
+		if (existsSync(path)) {
+			const pid = Number(readFileSync(path, "utf8").trim());
+			if (Number.isInteger(pid) && pid > 0 && pid !== previousPid) {
+				workerPids.add(pid);
+				return pid;
+			}
+		}
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+	}
+	throw new Error("Owned replacement worker did not publish its pid");
+}
+
 async function waitForExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
 	if (child.exitCode !== null || child.signalCode !== null) {
 		return { code: child.exitCode, signal: child.signalCode as NodeJS.Signals | null };
@@ -146,6 +161,32 @@ describe("owned session worker processes", () => {
 			`${JSON.stringify({ id: "request-1", type: "response", command: "get_state", success: true })}\n`,
 		);
 		await waitForProcessGone(workerPid);
+	});
+
+	it("does not fabricate a recovery response for response-less acknowledgements", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-owned-worker-test-"));
+		tempDirs.push(root);
+		const pidPath = join(root, "worker.pid");
+		const frontend = spawnFrontend(["--mode", "rpc"], pidPath, false, {
+			PRIME_AGENT_TEST_CRASH_ON_ACK: "1",
+		});
+		let stdout = "";
+		frontend.stdout?.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString("utf8");
+		});
+		const workerPid = await waitForWorkerPid(pidPath);
+		frontend.stdin?.write(`${JSON.stringify({ type: "ack_result", commandId: "command-1" })}\n`);
+		const replacementPid = await waitForReplacementWorkerPid(pidPath, workerPid);
+		frontend.stdin?.end(`${JSON.stringify({ id: "request-1", type: "get_state" })}\n`);
+		const exit = await waitForExit(frontend);
+		children.delete(frontend);
+
+		expect(exit).toEqual({ code: 0, signal: null });
+		expect(stdout).toBe(
+			`${JSON.stringify({ id: "request-1", type: "response", command: "get_state", success: true })}\n`,
+		);
+		await waitForProcessGone(workerPid);
+		await waitForProcessGone(replacementPid);
 	});
 
 	it("terminates the owned worker when its frontend is killed", async () => {
