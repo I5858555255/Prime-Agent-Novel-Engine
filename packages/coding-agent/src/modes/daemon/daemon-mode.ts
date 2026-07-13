@@ -1180,7 +1180,7 @@ export class AgentDaemon {
 
 	private findRunningRlmChildState(parentState: ActiveSessionState, childId: string): ActiveSessionState | undefined {
 		for (const childState of getChildActiveSessionStates(this.sessions, parentState)) {
-			if (childState.runtime.metadata.rlmChildId === childId && isActiveSessionBusy(childState)) {
+			if (childState.runtime.metadata.rlmChildId === childId && childState.isRlmRunActive) {
 				return childState;
 			}
 			const nested = this.findRunningRlmChildState(childState, childId);
@@ -1205,6 +1205,9 @@ export class AgentDaemon {
 			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
 				const state = this.findRuntimeState(runtime);
+				if (state) {
+					state.isRlmRunActive = false;
+				}
 				// A successful subagent stays resident so it's still viewable; fatal parent
 				// teardown later removes it via closeChildSessions. Errored/cancelled runs re-seed as "done", so close them.
 				if (state && status === "done") {
@@ -1309,6 +1312,7 @@ export class AgentDaemon {
 			undefined,
 			parentState.clientEnv,
 			(state) => {
+				state.isRlmRunActive = true;
 				stateRef = state;
 			},
 			() => this.isRlmParentStateActive(parentState),

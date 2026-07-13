@@ -387,6 +387,28 @@ describe("buildRlmChildSnapshots", () => {
 		expect(snapshots.map((snapshot) => [snapshot.id, snapshot.status])).toEqual([["sub-aaa", "running"]]);
 	});
 
+	it("keeps an idle retained child running after parent replacement", () => {
+		const parent = makeState({ activeSessionId: "parent", sessionFile: "/tmp/parent.jsonl" });
+		const idleChild = makeState({
+			activeSessionId: "child",
+			isStreaming: false,
+			isRlmRunActive: true,
+			metadata: {
+				kind: "subagent",
+				createdAt: 1,
+				parentActiveSessionId: "parent",
+				rlmChildId: "sub-aaa",
+				rlmParentNodeId: "sub-aaa",
+				prompt: "Slow task",
+				sessionDir: "/tmp/artifacts/sub-aaa",
+			},
+		});
+
+		const snapshots = buildRlmChildSnapshots("parent", [parent, idleChild]);
+
+		expect(snapshots.map((snapshot) => [snapshot.id, snapshot.status])).toEqual([["sub-aaa", "running"]]);
+	});
+
 	it("returns no snapshots for sessions without children", () => {
 		const solo = makeState({ activeSessionId: "solo" });
 		expect(buildRlmChildSnapshots("solo", [solo])).toEqual([]);
@@ -442,6 +464,7 @@ interface StateOptions {
 	childRunStatuses?: Record<string, "queued" | "running" | "done" | "error" | "cancelled">;
 	hasRunningRlmChildren?: boolean;
 	hasAcceptedPromptInFlight?: boolean;
+	isRlmRunActive?: boolean;
 	metadata?: {
 		kind: "top-level" | "subagent";
 		createdAt: number;
@@ -466,6 +489,7 @@ function makeState(options: StateOptions): ActiveSessionState {
 		clients,
 		lastEventSequence: 0,
 		summaryState: options.summaryState,
+		isRlmRunActive: options.isRlmRunActive,
 		runtime: {
 			metadata: options.metadata ?? { kind: "top-level", createdAt: 1 },
 			diagnostics: [],

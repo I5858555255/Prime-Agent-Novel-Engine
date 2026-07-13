@@ -23,6 +23,8 @@ export interface ActiveSessionState {
 	unsubscribe?: () => void;
 	/** Latest background status summary, surfaced in the agents view. */
 	summaryState?: AgentStatus;
+	/** True until the daemon host receives the child run's terminal release. */
+	isRlmRunActive?: boolean;
 	/**
 	 * Client env (e.g. herdr pane identity), merged over process.env for this
 	 * session's pi.exec() subprocesses. Bound when the runtime is created (or

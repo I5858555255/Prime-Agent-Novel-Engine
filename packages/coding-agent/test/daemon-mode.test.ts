@@ -95,11 +95,12 @@ describe("daemon mode helpers", () => {
 			session: { cancelRlmChildRun },
 		} as never;
 		const childState = makeState("child", parentState.activeSessionId);
+		childState.isRlmRunActive = true;
 		childState.runtime = {
 			...childState.runtime,
 			metadata: { ...childState.runtime.metadata, rlmChildId: "child-run" },
 			session: {
-				isStreaming: true,
+				isStreaming: false,
 				isCompacting: false,
 				isBashRunning: false,
 				pendingMessageCount: 0,
@@ -126,6 +127,18 @@ describe("daemon mode helpers", () => {
 
 		expect(cancelRlmChildRun).toHaveBeenCalledExactlyOnceWith("child-run");
 		expect(closeSession).toHaveBeenCalledExactlyOnceWith(childState, "killed");
+
+		childState.isRlmRunActive = false;
+		closeSession.mockClear();
+		await expect(
+			internals.handleCommand(makeClient("client", parentState.activeSessionId), {
+				id: "command-2",
+				type: "cancel_rlm_child",
+				activeSessionId: parentState.activeSessionId,
+				childId: "child-run",
+			}),
+		).resolves.toMatchObject({ data: { cancelled: false } });
+		expect(closeSession).not.toHaveBeenCalled();
 	});
 
 	it("cancels pending extension UI requests when the last client detaches", () => {

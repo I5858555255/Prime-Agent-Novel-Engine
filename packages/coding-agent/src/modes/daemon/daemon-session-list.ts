@@ -267,13 +267,16 @@ function rlmChildSnapshotForActiveSession(
 		}
 	}
 	// The parent session's run tracker is the source of truth for child status;
-	// a daemon-hosted child whose agent is momentarily idle is still part of an
-	// active run. The streaming heuristic only covers parents the daemon does
-	// not host (e.g. children attributed to a session created by an older build).
+	// daemon-owned run state preserves that status across parent runtime replacement.
+	// The streaming heuristic covers children created by an older build.
 	const runStatus = metadata.rlmChildId
 		? parent?.runtime.session.getRlmChildRunStatus(metadata.rlmChildId)
 		: undefined;
-	const status = runStatus ?? (session.isStreaming || effectivePendingMessageCount(session) > 0 ? "running" : "done");
+	const status =
+		runStatus ??
+		((activeSession.isRlmRunActive ?? (session.isStreaming || effectivePendingMessageCount(session) > 0))
+			? "running"
+			: "done");
 	return {
 		id: metadata.rlmChildId ?? activeSession.activeSessionId,
 		parentId: parentNodeId,
