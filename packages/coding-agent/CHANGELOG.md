@@ -14,6 +14,7 @@
 - Fixed compact daemon streams occasionally duplicating the first token of an assistant response.
 - Fixed subagent prompts and usage counters flickering or disappearing during daemon resyncs and large parallel runs, and added compact fixed-width recap rows.
 - Fixed stale heartbeat jobs reopening sessions after they were archived, deleted, explicitly shut down, concurrently terminated, or lost resident worker ownership ([ENG-4519](https://linear.app/primeintellect/issue/ENG-4519/heartbeats-rebirth-sessions-that-were-previously-killed)).
+- Fixed heartbeat starvation by moving durable schedules into per-session artifacts and running them concurrently in their owning resident workers, independent of supervisor replacement ([ENG-4527](https://linear.app/primeintellect/issue/ENG-4527/dispatch-heartbeats-concurrently-across-isolated-session-workers)).
 
 ## [0.2.8] - 2026-07-09
 - Added built-in Herdr integration that reports agent lifecycle state to Herdr panes automatically, without requiring `herdr integration install pi`.

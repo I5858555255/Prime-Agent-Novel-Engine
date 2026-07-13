@@ -3,7 +3,6 @@ import type {
 	AgentSessionMessageDeliveryMode,
 	AgentSessionMessageSender,
 } from "../../core/agent-messages.js";
-import type { AgentCronJob } from "../../core/cron-jobs.js";
 
 export { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../../core/session-lease.js";
 
@@ -45,8 +44,7 @@ export type DaemonWorkerCommand =
 	  }
 	| { id?: string; type: "worker_unsubscribe"; activeSessionId: string }
 	| { id?: string; type: "worker_sync_agent_peers"; peers: AgentSessionMessageAgentSummary[] }
-	| { id?: string; type: "worker_run_cron"; job: AgentCronJob }
-	| { id?: string; type: "worker_remove_queued_cron"; job: AgentCronJob }
+	| { id?: string; type: "worker_archive_and_shutdown" }
 	| {
 			id?: string;
 			type: "worker_deliver_message";

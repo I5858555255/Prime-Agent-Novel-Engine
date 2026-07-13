@@ -19,7 +19,7 @@ print / JSON / RPC / interactive --no-session
 frontend process --private owner channel--> owned worker + root tree
 ```
 
-The supervisor owns public sockets, client attachments, routing, cron and heartbeat storage and scheduling, global agent-message routing, worker health, and update coordination. Workers execute the prompts dispatched by global schedules. The supervisor does not execute providers, tools, compaction, bash, kernels, or session-history scans.
+The supervisor owns public sockets, client attachments, routing, global agent-message routing, worker health, and update coordination. Each resident worker owns scheduling and execution for its root tree. The supervisor does not execute providers, tools, compaction, bash, kernels, session schedules, or session-history scans.
 
 Each worker owns one root `AgentSessionRuntime` and every RLM descendant below it. New, switch, fork, and import operations replace the root runtime inside that worker while preserving the root active-session ID.
 
@@ -65,6 +65,20 @@ Persisted sessions use process-safe leases keyed by canonical JSONL path. Reside
 - Concurrent daemon creates for the same path share one worker launch.
 
 This prevents a script and resident daemon worker from writing the same session concurrently.
+
+## Scheduled Jobs
+
+Each resident worker runs one scheduler for the root and RLM descendant sessions it owns. Schedule state is persisted per session at `session-artifacts/<session-id>/scheduled-jobs.json`; workers never scan or write a shared global cron file.
+
+- Creating or changing a heartbeat writes its session store and wakes the same worker's scheduler.
+- Due ticks are claimed and advanced durably before prompt delivery, so a crash never replays an uncertain prompt.
+- The timer loop dispatches different target sessions independently and does not wait for complete model or tool turns before scheduling its next pass.
+- A still-active claim coalesces later missed ticks instead of accumulating a backlog.
+- Supervisor replacement does not pause timers or scheduled work because resident workers remain alive.
+- Worker recovery marks uncertain claims interrupted, preserves the advanced schedule, and resumes only future ticks.
+- The supervisor routes cron commands to workers and merges their job summaries for global listing.
+
+The first worker-owned release migrates the legacy global `cron-jobs.json` into the corresponding session artifact directories before adopting workers. Archived, deleted, or descriptorless sessions are cancelled rather than revived.
 
 ## Public Protocol v2
 
@@ -139,6 +153,7 @@ npx tsx test/daemon-multiclient-bench.ts
 npx tsx test/daemon-multiclient-bench.ts --generated-session-mib 100
 npx tsx test/daemon-multiclient-bench.ts --generated-session-mib 500
 npx tsx test/daemon-multiclient-bench.ts --session-file /path/to/session.jsonl
+PRIME_AGENT_STRESS_WORKERS=50 npx tsx ../../node_modules/vitest/dist/cli.js --run test/daemon-supervisor-process.test.ts -t "hosts resident roots"
 ```
 
-The benchmark reports legacy and v2 fanout/attach paths side by side, including serialization count, elapsed time, throughput, and sampled RSS growth.
+The benchmark reports legacy and v2 fanout/attach paths side by side, including serialization count, elapsed time, throughput, and sampled RSS growth. The process stress case starts the requested number of resident roots, gives every root a simultaneous heartbeat while its own session is busy, and verifies that all schedules advance independently.

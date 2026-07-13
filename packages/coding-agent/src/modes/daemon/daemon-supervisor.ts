@@ -14,12 +14,7 @@ import {
 } from "../../config.js";
 import type { AgentSessionMessageAgentSummary } from "../../core/agent-messages.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
-import {
-	type AgentCronJob,
-	AgentCronJobStore,
-	AgentCronScheduler,
-	normalizeHeartbeatSchedule,
-} from "../../core/cron-jobs.js";
+import { type AgentCronJob, AgentCronJobStore, migrateLegacyCronJobsToSessionArtifacts } from "../../core/cron-jobs.js";
 import {
 	clearOrphanProcessJournal,
 	ORPHAN_PROCESS_JOURNAL_ENV,
@@ -79,7 +74,7 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
 type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
 
 const structuredLog = getLogger("coding-agent.daemon-supervisor");
-const WORKER_CONNECT_TIMEOUT_MS = 10_000;
+const WORKER_CONNECT_TIMEOUT_MS = 30_000;
 const WORKER_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const WORKER_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
 const SUPERVISOR_CONFIG_FILE_NAME = "supervisor-config";
@@ -244,6 +239,29 @@ function attachResultFromResponse(response: DaemonResponse): DaemonAttachResult 
 	return candidate as DaemonAttachResult;
 }
 
+function cronJobsFromResponse(response: DaemonResponse): AgentCronJob[] {
+	if (!response.success || !response.data || typeof response.data !== "object") {
+		return [];
+	}
+	const jobs = (response.data as { jobs?: unknown }).jobs;
+	return Array.isArray(jobs) ? (jobs as AgentCronJob[]) : [];
+}
+
+function sortCronJobs(jobs: AgentCronJob[]): AgentCronJob[] {
+	return jobs.sort((left, right) => {
+		if (left.nextRunAt === right.nextRunAt) {
+			return 0;
+		}
+		if (left.nextRunAt === undefined) {
+			return 1;
+		}
+		if (right.nextRunAt === undefined) {
+			return -1;
+		}
+		return Date.parse(left.nextRunAt) - Date.parse(right.nextRunAt);
+	});
+}
+
 function serializeSavedSessionInfo(session: SessionInfo): DaemonSavedSessionInfo {
 	return {
 		path: session.path,
@@ -367,8 +385,6 @@ export class DaemonSupervisor {
 	private readonly streamReconstructor = new CompactAssistantStreamReconstructor();
 	private readonly compactCatchupInProgress = new Set<string>();
 	private agentPeerSyncQueue: Promise<void> = Promise.resolve();
-	private readonly cronStore: AgentCronJobStore;
-	private readonly cronScheduler: AgentCronScheduler;
 	private readonly catalog: DaemonCatalogClient;
 
 	constructor(
@@ -388,11 +404,6 @@ export class DaemonSupervisor {
 		this.snapshotCacheRoot = join(this.descriptorDir, "snapshot-cache");
 		this.commandJournal = new CommandRecoveryJournal(join(this.descriptorDir, "command-journal.jsonl"));
 		this.catalog = new DaemonCatalogClient((message) => this.log(message));
-		this.cronStore = new AgentCronJobStore(getCronJobsPath(this.defaultSessionConfig.agentDir ?? agentDir));
-		this.cronScheduler = new AgentCronScheduler(this.cronStore, {
-			runJob: (job) => this.runCronJob(job),
-			onError: (job, error) => this.log(`Cron job ${job.id} failed: ${String(error)}`),
-		});
 	}
 
 	async start(): Promise<void> {
@@ -429,7 +440,22 @@ export class DaemonSupervisor {
 		});
 
 		this.registerSignalHandlers();
-		this.cronScheduler.start();
+		const agentDir = this.defaultSessionConfig.agentDir;
+		if (!agentDir) {
+			throw new Error("Daemon supervisor config is missing agentDir");
+		}
+		const ownedSessionFiles = new Set(
+			[...this.workers.values()]
+				.flatMap((worker) => [worker.descriptor.sessionFile, worker.descriptor.createCommand.sessionPath])
+				.filter((path): path is string => typeof path === "string")
+				.map((path) => resolve(path)),
+		);
+		const migratedJobs = migrateLegacyCronJobsToSessionArtifacts(getCronJobsPath(agentDir), {
+			isSessionOwned: (job) => ownedSessionFiles.has(resolve(job.sessionFile)),
+		});
+		if (migratedJobs > 0) {
+			this.log(`Migrated ${migratedJobs} scheduled jobs into session artifacts`);
+		}
 		await this.catalog.start().catch((error) => this.log(`Could not start daemon catalog: ${String(error)}`));
 		await Promise.all(workersToAdopt.map((worker) => this.adoptOrRecoverWorker(worker)));
 		await this.syncAgentPeers().catch((error) => this.log(`Could not synchronize agent peers: ${String(error)}`));
@@ -747,90 +773,69 @@ export class DaemonSupervisor {
 				return failed ?? success(command.id, command.type, responses.find((response) => response.success)?.data);
 			}
 			case "cron_list": {
-				const activeSessionId = command.activeSessionId
-					? (await this.findWorker(command.activeSessionId)).summary.activeSessionId
-					: undefined;
-				return success(command.id, "cron_list", {
-					jobs: this.cronStore.list().filter((job) => {
-						if (!command.includeInactive && job.status !== "active" && job.status !== "paused") {
-							return false;
-						}
-						return !activeSessionId || job.activeSessionId === activeSessionId;
-					}),
-				});
+				if (command.activeSessionId) {
+					const match = await this.findWorker(command.activeSessionId);
+					return this.forwardToWorker(match.worker, command);
+				}
+				const jobs = new Map<string, AgentCronJob>();
+				const responses = await Promise.all(
+					[...this.workers.values()]
+						.filter((worker) => worker.client && worker.descriptor.lifecycle === "ready")
+						.map((worker) =>
+							this.forwardToWorker(worker, command, 5000).catch((error: unknown) =>
+								failure(command.id, command.type, error, serializeDaemonError(error)),
+							),
+						),
+				);
+				for (const response of responses) {
+					if (!response.success) {
+						this.log(`Could not list scheduled jobs from a worker: ${response.error}`);
+						continue;
+					}
+					for (const job of cronJobsFromResponse(response)) {
+						jobs.set(job.id, job);
+					}
+				}
+				return success(command.id, "cron_list", { jobs: sortCronJobs([...jobs.values()]) });
 			}
 			case "cron_add": {
 				const match = await this.findWorker(command.activeSessionId);
-				const sessionFile = match.summary.sessionFile;
-				if (!sessionFile) {
-					throw new Error("Cron jobs require a persisted session file");
-				}
-				const job = this.cronStore.create({
-					activeSessionId: match.summary.activeSessionId ?? match.summary.id,
-					sessionId: match.summary.sessionId,
-					sessionFile,
-					cwd: match.summary.cwd,
-					runtimeKind: match.summary.runtimeKind,
-					scheduleText: command.schedule,
-					prompt: command.prompt,
-				});
-				this.cronScheduler.wake();
-				return success(command.id, command.type, { job });
+				return this.forwardToWorker(match.worker, command);
 			}
 			case "cron_cancel": {
-				const job = this.cronStore.cancel(command.jobId);
-				if (!job) {
-					throw new Error(`No cron job found: ${command.jobId}`);
+				const listed = await Promise.all(
+					[...this.workers.values()]
+						.filter((worker) => worker.client && worker.descriptor.lifecycle === "ready")
+						.map(async (worker) => ({
+							worker,
+							response: await this.forwardToWorker(
+								worker,
+								{ type: "cron_list", includeInactive: true },
+								5000,
+							).catch(() => undefined),
+						})),
+				);
+				for (const candidate of listed) {
+					if (
+						candidate.response?.success &&
+						cronJobsFromResponse(candidate.response).some((job) => job.id === command.jobId)
+					) {
+						return this.forwardToWorker(candidate.worker, command);
+					}
 				}
-				const match = this.matchWorkers(job.activeSessionId)[0];
-				if (match) {
-					await this.removeQueuedCronFromWorker(match.worker, job);
-				}
-				this.cronScheduler.wake();
-				return success(command.id, command.type, { job });
+				throw new Error(`No cron job found: ${command.jobId}`);
 			}
 			case "heartbeat_get": {
 				const match = await this.findWorker(command.activeSessionId);
-				const heartbeat = this.cronStore.getHeartbeat(match.summary.activeSessionId ?? match.summary.id);
-				return success(command.id, command.type, { heartbeat: heartbeat ?? null });
+				return this.forwardToWorker(match.worker, command);
 			}
 			case "heartbeat_set": {
 				const match = await this.findWorker(command.activeSessionId);
-				const activeSessionId = match.summary.activeSessionId ?? match.summary.id;
-				const sessionFile = match.summary.sessionFile;
-				if (!sessionFile) {
-					throw new Error("Heartbeats require a persisted session file");
-				}
-				const previous = this.cronStore.getHeartbeat(activeSessionId);
-				const heartbeat = this.cronStore.createHeartbeat({
-					activeSessionId,
-					sessionId: match.summary.sessionId,
-					sessionFile,
-					cwd: match.summary.cwd,
-					runtimeKind: match.summary.runtimeKind,
-					scheduleText: normalizeHeartbeatSchedule(command.schedule),
-					prompt: command.prompt,
-				});
-				if (previous) {
-					await this.removeQueuedCronFromWorker(match.worker, previous);
-				}
-				this.cronScheduler.wake();
-				return success(command.id, command.type, { heartbeat });
+				return this.forwardToWorker(match.worker, command);
 			}
 			case "heartbeat_update": {
 				const match = await this.findWorker(command.activeSessionId);
-				const activeSessionId = match.summary.activeSessionId ?? match.summary.id;
-				const heartbeat =
-					command.action === "pause"
-						? this.cronStore.pauseHeartbeat(activeSessionId)
-						: command.action === "resume"
-							? this.cronStore.resumeHeartbeat(activeSessionId)
-							: this.cronStore.clearHeartbeat(activeSessionId);
-				if (heartbeat && command.action !== "resume") {
-					await this.removeQueuedCronFromWorker(match.worker, heartbeat);
-				}
-				this.cronScheduler.wake();
-				return success(command.id, command.type, { heartbeat: heartbeat ?? null });
+				return this.forwardToWorker(match.worker, command);
 			}
 			case "rename_saved_session":
 				if (!command.activeSessionId) {
@@ -1423,11 +1428,15 @@ export class DaemonSupervisor {
 		return undefined;
 	}
 
-	private async forwardToWorker(worker: ResidentWorker, command: DaemonCommand): Promise<DaemonResponse> {
+	private async forwardToWorker(
+		worker: ResidentWorker,
+		command: DaemonCommand,
+		timeoutMs = WORKER_REQUEST_TIMEOUT_MS,
+	): Promise<DaemonResponse> {
 		if (!worker.client || worker.descriptor.lifecycle !== "ready") {
 			throw new Error(`Session worker is ${worker.descriptor.lifecycle}`);
 		}
-		const response = await worker.client.request(withoutCommandId(command), WORKER_REQUEST_TIMEOUT_MS);
+		const response = await worker.client.request(withoutCommandId(command), timeoutMs);
 		if (command.type === "get_state" && response.success && isSessionSummary(response.data)) {
 			return { ...response, id: command.id, data: this.publicSummary(worker, response.data) };
 		}
@@ -2024,51 +2033,6 @@ export class DaemonSupervisor {
 		}
 	}
 
-	private async runCronJob(job: AgentCronJob): Promise<"skipped" | undefined> {
-		const runnableJob = this.cronStore.getDueJob(job.id);
-		if (!runnableJob) {
-			return "skipped";
-		}
-		const match =
-			this.matchWorkers(runnableJob.activeSessionId)[0] ?? this.findWorkerBySessionFile(runnableJob.sessionFile);
-		if (!match) {
-			this.cancelScheduledJobsForSessionFile(runnableJob.sessionFile);
-			return "skipped";
-		}
-		const currentJob = this.cronStore.getDueJob(runnableJob.id);
-		if (
-			!currentJob ||
-			currentJob.sessionId !== match.summary.sessionId ||
-			!match.summary.sessionFile ||
-			resolve(currentJob.sessionFile) !== resolve(match.summary.sessionFile)
-		) {
-			return "skipped";
-		}
-		if (!match.worker.client || match.worker.descriptor.lifecycle !== "ready") {
-			return "skipped";
-		}
-		const response = await match.worker.client.requestWorker({ type: "worker_run_cron", job: currentJob });
-		return response.success && (response.data as { result?: unknown } | undefined)?.result !== "skipped"
-			? undefined
-			: "skipped";
-	}
-
-	private cancelScheduledJobsForSessionFile(sessionFile: string): void {
-		if (this.cronStore.cancelJobsForSession({ sessionFile }).length > 0) {
-			this.cronScheduler.wake();
-		}
-	}
-
-	private async removeQueuedCronFromWorker(worker: ResidentWorker, job: AgentCronJob): Promise<void> {
-		if (!worker.client || worker.descriptor.lifecycle !== "ready") {
-			return;
-		}
-		const response = await worker.client.requestWorker({ type: "worker_remove_queued_cron", job }, 5000);
-		if (!response.success) {
-			throw new Error(response.error);
-		}
-	}
-
 	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
 		const workers = [...this.workers.values()].filter(
 			(worker): worker is ResidentWorker & { client: DaemonWorkerClient } => worker.client !== undefined,
@@ -2186,7 +2150,13 @@ export class DaemonSupervisor {
 		worker.transcriptCaches.clear();
 		worker.snapshotCache.clear();
 		if (worker.client) {
-			await worker.client.request({ type: "shutdown" }, force ? 1000 : 5000).catch(() => undefined);
+			if (archiveSession) {
+				await worker.client
+					.requestWorker({ type: "worker_archive_and_shutdown" }, force ? 1000 : 5000)
+					.catch(() => undefined);
+			} else {
+				await worker.client.request({ type: "shutdown" }, force ? 1000 : 5000).catch(() => undefined);
+			}
 			worker.client.close();
 			worker.client = undefined;
 		} else if (isProcessAlive(worker.descriptor.pid)) {
@@ -2232,8 +2202,16 @@ export class DaemonSupervisor {
 		if (!sessionFile) {
 			return;
 		}
-		this.cancelScheduledJobsForSessionFile(sessionFile);
 		if (worker.descriptor.rootSessionId) {
+			const cronStore = AgentCronJobStore.forSessionArtifacts();
+			cronStore.registerSessionArtifact(
+				worker.descriptor.rootSessionId,
+				join(dirname(dirname(sessionFile)), "session-artifacts", worker.descriptor.rootSessionId),
+			);
+			cronStore.cancelJobsForSession({
+				sessionId: worker.descriptor.rootSessionId,
+				sessionFile,
+			});
 			await this.catalog.archive(sessionFile, worker.descriptor.rootSessionId);
 		}
 	}
@@ -2293,7 +2271,6 @@ export class DaemonSupervisor {
 			process.exit(exitCode);
 		}
 		this.shuttingDown = true;
-		this.cronScheduler.stop();
 		for (const cleanup of this.signalCleanupHandlers) {
 			cleanup();
 		}

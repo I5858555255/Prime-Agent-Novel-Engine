@@ -364,7 +364,9 @@ export class AgentDaemon {
 			throw new Error("Daemon config is missing agentDir");
 		}
 		this.agentDir = options.defaultSessionConfig.agentDir;
-		this.cronStore = new AgentCronJobStore(getCronJobsPath(this.agentDir));
+		this.cronStore = options.worker
+			? AgentCronJobStore.forSessionArtifacts()
+			: new AgentCronJobStore(getCronJobsPath(this.agentDir));
 		this.restoreActiveSessionId = options.worker?.restoreActiveSessionId;
 		const recoveryJournalPath = process.env[DAEMON_WORKER_RECOVERY_JOURNAL_ENV];
 		if (options.worker && recoveryJournalPath) {
@@ -442,7 +444,7 @@ export class AgentDaemon {
 		this.summarizer.start();
 		this.log(`Prime Agent daemon listening on ${this.socketPath}`);
 		// No startup restore: on-disk sessions return only via /resume or --resume.
-		if (!this.shuttingDown && !this.options.worker) {
+		if (!this.shuttingDown) {
 			this.cronScheduler.start();
 		}
 		this.startSupervisorMonitor();
@@ -659,6 +661,7 @@ export class AgentDaemon {
 		} finally {
 			this.bindingSessions.delete(state.activeSessionId);
 		}
+		this.registerCronStoreForState(state);
 		this.rebindCronJobsToState(state);
 		if (runtime.metadata.kind !== "subagent") {
 			// Mark the session as daemon-resident so a restarted daemon can
@@ -688,7 +691,22 @@ export class AgentDaemon {
 			const summaryState = state.summaryState as ActiveSessionState["summaryState"];
 			state.runtime.session.setCurrentRecap(summaryState?.summary);
 		}
+		this.registerCronStoreForState(state);
 		this.rebindCronJobsToState(state);
+	}
+
+	private registerCronStoreForState(state: ActiveSessionState): void {
+		if (!this.options.worker) {
+			return;
+		}
+		const session = state.runtime.session;
+		const artifactDir = session.sessionManager.getSessionArtifactDir();
+		if (!artifactDir) {
+			return;
+		}
+		if (this.cronStore.registerSessionArtifact(session.sessionId, artifactDir)) {
+			this.cronStore.recoverSessionArtifact(session.sessionId);
+		}
 	}
 
 	private async createRuntime(
@@ -879,12 +897,12 @@ export class AgentDaemon {
 			return "skipped";
 		}
 		const requirePersistedJob = this.cronStore.list().some((candidate) => candidate.id === job.id);
-		const dueJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : job;
+		const dueJob = requirePersistedJob ? this.getRunnableCronJob(job.id) : job;
 		if (!dueJob) {
 			return "skipped";
 		}
 		const state = await this.getOrCreateCronJobSession(dueJob, requirePersistedJob);
-		const runnableJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : dueJob;
+		const runnableJob = requirePersistedJob ? this.getRunnableCronJob(job.id) : dueJob;
 		if (
 			!state ||
 			!runnableJob ||
@@ -919,7 +937,7 @@ export class AgentDaemon {
 			return;
 		}
 		const getRunnableJob = (): AgentCronJob | undefined => {
-			const current = requirePersistedJob ? this.cronStore.getDueJob(job.id) : runnableJob;
+			const current = requirePersistedJob ? this.getRunnableCronJob(job.id) : runnableJob;
 			return current && this.isCronJobRunnableForState(current, state, requirePersistedJob) ? current : undefined;
 		};
 		if (isHeartbeatCronJob(runnableJob)) {
@@ -947,6 +965,10 @@ export class AgentDaemon {
 			canPrompt,
 		);
 		return didPrompt ? undefined : "skipped";
+	}
+
+	private getRunnableCronJob(jobId: string): AgentCronJob | undefined {
+		return this.cronStore.getClaimedJob(jobId) ?? this.cronStore.getDueJob(jobId);
 	}
 
 	// Wraps session.prompt so the target counts as "preparing" until the turn
@@ -1256,7 +1278,7 @@ export class AgentDaemon {
 		if (this.updateRestartPreparing) {
 			return undefined;
 		}
-		const dueJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : job;
+		const dueJob = requirePersistedJob ? this.getRunnableCronJob(job.id) : job;
 		if (!dueJob) {
 			return undefined;
 		}
@@ -1270,7 +1292,7 @@ export class AgentDaemon {
 		// pending create for the same session file instead of prompting mid-bind.
 		if (current && !this.bindingSessions.has(current.activeSessionId)) {
 			this.rebindCronJobsToState(current);
-			const reboundJob = requirePersistedJob ? this.cronStore.getDueJob(job.id) : dueJob;
+			const reboundJob = requirePersistedJob ? this.getRunnableCronJob(job.id) : dueJob;
 			return reboundJob && this.isCronJobRunnableForState(reboundJob, current, requirePersistedJob)
 				? current
 				: undefined;
@@ -1303,13 +1325,13 @@ export class AgentDaemon {
 
 	private async isPersistedCronJobRunnable(jobId: string): Promise<boolean> {
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const job = this.cronStore.getDueJob(jobId);
+			const job = this.getRunnableCronJob(jobId);
 			if (!job) {
 				return false;
 			}
 			const sessionFile = resolve(job.sessionFile);
 			const sessionInfo = await readSessionInfo(sessionFile);
-			const current = this.cronStore.getDueJob(jobId);
+			const current = this.getRunnableCronJob(jobId);
 			if (!current) {
 				return false;
 			}
@@ -1336,7 +1358,7 @@ export class AgentDaemon {
 		if (!requirePersistedJob) {
 			return job.status === "active" && job.activeSessionId === state.activeSessionId;
 		}
-		const current = this.cronStore.getDueJob(job.id);
+		const current = this.getRunnableCronJob(job.id);
 		const sessionFile = state.runtime.session.sessionFile;
 		return (
 			current !== undefined &&
@@ -1768,21 +1790,9 @@ export class AgentDaemon {
 						success: true,
 					});
 					return;
-				case "worker_run_cron": {
-					const result = await this.runCronJob(command.job);
-					this.write(client, {
-						id: command.id,
-						type: "response",
-						command: command.type,
-						success: true,
-						data: { result: result ?? "ran" },
-					});
-					return;
-				}
-				case "worker_remove_queued_cron": {
-					const state = this.sessions.get(command.job.activeSessionId);
-					if (state) {
-						this.removeQueuedHeartbeatFollowUp(state, command.job);
+				case "worker_archive_and_shutdown": {
+					for (const state of [...this.sessions.values()]) {
+						await this.closeSession(state, "killed");
 					}
 					this.write(client, {
 						id: command.id,
@@ -1790,6 +1800,7 @@ export class AgentDaemon {
 						command: command.type,
 						success: true,
 					});
+					setImmediate(() => void this.shutdown(0));
 					return;
 				}
 				case "worker_deliver_message": {
@@ -3394,7 +3405,7 @@ export class AgentDaemon {
 	private cancelPreparedUpdateRestart(): void {
 		this.preparedUpdateRestartManifest = undefined;
 		this.updateRestartPreparing = false;
-		if (!this.options.worker && !this.shuttingDown) {
+		if (!this.shuttingDown) {
 			this.cronScheduler.start();
 		}
 	}
