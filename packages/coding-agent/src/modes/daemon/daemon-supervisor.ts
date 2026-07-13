@@ -1288,7 +1288,9 @@ export class DaemonSupervisor {
 							worker.descriptor.lifecycle = "ready";
 							worker.descriptor.consecutiveFailures = 0;
 							this.persistWorker(worker);
-							await this.syncAgentPeers();
+							await this.syncAgentPeers().catch((error) =>
+								this.log(`Could not synchronize agent peers after worker recovery: ${String(error)}`),
+							);
 							return;
 						} catch (error) {
 							worker.client?.close();

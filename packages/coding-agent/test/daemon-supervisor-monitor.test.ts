@@ -206,6 +206,72 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(worker.descriptor.lifecycle).toBe("failed");
 	});
 
+	it("keeps a recovered worker ready when peer synchronization fails", async () => {
+		vi.useFakeTimers();
+		type RecoveryWorker = {
+			descriptor: {
+				workerId: string;
+				pid: number;
+				processStartId?: string;
+				rootActiveSessionId: string;
+				createCommand: { type: "create" };
+				lifecycle?: string;
+				consecutiveFailures: number;
+			};
+			intentionalStop: boolean;
+			stopRevision: number;
+			recovery?: Promise<void>;
+		};
+		type RecoveryHarness = {
+			workers: Map<string, RecoveryWorker>;
+			shuttingDown: boolean;
+			connectWorker: ReturnType<typeof vi.fn>;
+			subscribeWorker: ReturnType<typeof vi.fn>;
+			refreshWorkerSummaries: ReturnType<typeof vi.fn>;
+			recoverUncertainWorkerOperations: ReturnType<typeof vi.fn>;
+			launchWorker: ReturnType<typeof vi.fn>;
+			persistWorker: ReturnType<typeof vi.fn>;
+			syncAgentPeers: ReturnType<typeof vi.fn>;
+			log: ReturnType<typeof vi.fn>;
+			recoverWorker(worker: RecoveryWorker): Promise<void>;
+		};
+		const worker: RecoveryWorker = {
+			descriptor: {
+				workerId: "worker-peer-sync-failure",
+				pid: process.pid,
+				rootActiveSessionId: "active-1",
+				createCommand: { type: "create" },
+				consecutiveFailures: 1,
+			},
+			intentionalStop: false,
+			stopRevision: 0,
+		};
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			shuttingDown: false,
+			connectWorker: vi.fn(async () => ({})),
+			subscribeWorker: vi.fn(async () => {}),
+			refreshWorkerSummaries: vi.fn(async () => {}),
+			recoverUncertainWorkerOperations: vi.fn(async () => {}),
+			launchWorker: vi.fn(async () => worker),
+			persistWorker: vi.fn(),
+			syncAgentPeers: vi.fn(async () => {
+				throw new Error("peer unavailable");
+			}),
+			log: vi.fn(),
+		}) as RecoveryHarness;
+
+		const recovery = supervisor.recoverWorker(worker);
+		await vi.advanceTimersByTimeAsync(250);
+		await recovery;
+
+		expect(supervisor.connectWorker).toHaveBeenCalledOnce();
+		expect(supervisor.recoverUncertainWorkerOperations).not.toHaveBeenCalled();
+		expect(supervisor.launchWorker).not.toHaveBeenCalled();
+		expect(worker.descriptor.lifecycle).toBe("ready");
+		expect(worker.descriptor.consecutiveFailures).toBe(0);
+	});
+
 	it("ignores malformed persisted worker descriptors", () => {
 		const descriptorDir = mkdtempSync(join(tmpdir(), "prime-supervisor-descriptor-test-"));
 		try {
