@@ -158,50 +158,36 @@ describe("runPrintMode", () => {
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
 
-	it("keeps prompting when gate retries are exhausted but autonomous limits remain", async () => {
-		const statuses: AgentAutonomousStatus[] = [
-			{
-				enabled: true,
-				continuationsUsed: 1,
-				turnsUsed: 2,
-				tokensUsed: 100,
-				startedAt: Date.now(),
-				limits: { maxContinuations: 10, maxTurns: 20, maxTokens: 100_000, timeoutMs: 60_000 },
-				gates: { commands: ["verify-public"], maxRetries: 3, timeoutMs: 300_000 },
-				gateAttempts: { "verify-public": 4 },
-				lastGateFailure: {
-					command: "verify-public",
-					attempt: 4,
-					exitText: "not rerun: workspace unchanged since previous failed gate",
-					output: "edit source files before attempting to finish again",
-				},
+	it("stops host-driven gate retries once gate maxRetries is exhausted", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "still failing" }), {
+			enabled: true,
+			continuationsUsed: 1,
+			turnsUsed: 2,
+			tokensUsed: 100,
+			startedAt: Date.now(),
+			limits: { maxContinuations: 10, maxTurns: 20, maxTokens: 100_000, timeoutMs: 60_000 },
+			gates: { commands: ["verify-public"], maxRetries: 3, timeoutMs: 300_000 },
+			gateAttempts: { "verify-public": 4 },
+			lastGateFailure: {
+				command: "verify-public",
+				attempt: 4,
+				exitText: "not rerun: workspace unchanged since previous failed gate",
+				output: "edit source files before attempting to finish again",
 			},
-			{
-				enabled: true,
-				continuationsUsed: 1,
-				turnsUsed: 3,
-				tokensUsed: 200,
-				startedAt: Date.now(),
-				limits: { maxContinuations: 10, maxTurns: 20, maxTokens: 100_000, timeoutMs: 60_000 },
-				gates: { commands: ["verify-public"], maxRetries: 3, timeoutMs: 300_000 },
-				gateAttempts: { "verify-public": 4 },
-			},
-		];
-		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "still failing" }), statuses[0]);
+		});
 		const { session } = runtimeHost;
-		let statusIndex = 0;
-		session.getAutonomousStatus.mockImplementation(
-			() => statuses[Math.min(statusIndex++, statuses.length - 1)] as AgentAutonomousStatus,
-		);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
 		});
 
-		expect(exitCode).toBe(0);
-		expect(session.prompt).toHaveBeenCalledTimes(1);
-		expect(session.recordHostAutonomousContinuation).toHaveBeenCalledTimes(1);
-		expect(session.prompt.mock.calls[0][0]).toContain("Autonomous quality gate failed (attempt 4/3)");
+		expect(exitCode).toBe(1);
+		expect(session.prompt).not.toHaveBeenCalled();
+		expect(session.recordHostAutonomousContinuation).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Autonomous quality gate still failing after attempt 4/3: not rerun: workspace unchanged since previous failed gate",
+		);
 	});
 
 	it("refreshes autonomous gates after host-driven gate retries", async () => {
@@ -479,6 +465,29 @@ describe("runPrintMode", () => {
 		expect(exitCode).toBe(1);
 		expect(errorSpy).toHaveBeenCalledWith(
 			"Autonomous quality gate still failing after attempt 34/999: exited 1; autonomous limit reached: maxTokens reached (2000000/2000000)",
+		);
+	});
+
+	it("returns non-zero when ungated autonomous runs stop at a limit", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "I still need more work." }), {
+			enabled: true,
+			continuationsUsed: 3,
+			turnsUsed: 4,
+			tokensUsed: 100,
+			startedAt: Date.now(),
+			limits: { maxContinuations: 3, maxTurns: 20, maxTokens: 100_000, timeoutMs: 60_000 },
+			gates: { commands: [], maxRetries: 3, timeoutMs: 300_000 },
+			gateAttempts: {},
+		});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+		});
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Autonomous run stopped before terminal evidence; maxContinuations reached (3/3)",
 		);
 	});
 

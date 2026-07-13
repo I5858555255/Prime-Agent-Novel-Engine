@@ -221,7 +221,9 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as {
-			_queueAutonomousContinuationForThresholdCompaction(message: AssistantMessage): AgentMessage | undefined;
+			_queueAutonomousContinuationForThresholdCompaction(
+				message: AssistantMessage,
+			): Promise<AgentMessage | undefined>;
 			_clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
 				shouldContinueAfterThreshold: boolean,
 				queuedMessages: AgentMessage[],
@@ -231,8 +233,8 @@ describe("AgentSession compaction characterization", () => {
 		const firstAssistant = createAssistant(harness, { stopReason: "toolUse", totalTokens: 10_000 });
 		const secondAssistant = createAssistant(harness, { stopReason: "toolUse", totalTokens: 10_000 });
 
-		const firstQueued = sessionInternals._queueAutonomousContinuationForThresholdCompaction(firstAssistant);
-		const secondQueued = sessionInternals._queueAutonomousContinuationForThresholdCompaction(secondAssistant);
+		const firstQueued = await sessionInternals._queueAutonomousContinuationForThresholdCompaction(firstAssistant);
+		const secondQueued = await sessionInternals._queueAutonomousContinuationForThresholdCompaction(secondAssistant);
 
 		expect(firstQueued).toBeDefined();
 		expect(secondQueued).toBeDefined();

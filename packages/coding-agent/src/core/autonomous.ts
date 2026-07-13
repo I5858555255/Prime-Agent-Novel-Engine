@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 
 export interface AgentAutonomousConfig {
@@ -66,7 +66,6 @@ export interface AutonomousRuntimeState {
 	gateAttempts: Record<string, number>;
 	lastGateFailure?: GateFailure;
 	lastGateFailureSnapshot?: GitWorktreeSnapshot;
-	gitBaseline?: GitWorktreeSnapshot;
 }
 
 export type AutonomousLimitReason = "maxContinuations" | "maxTurns" | "maxTokens" | "timeoutMs";
@@ -91,7 +90,7 @@ type GateFailure = AgentAutonomousGateFailure;
 
 export function createAutonomousRuntimeState(
 	config?: AgentAutonomousConfig,
-	options: { cwd?: string } = {},
+	_options: { cwd?: string } = {},
 ): AutonomousRuntimeState {
 	const enabled = config?.enabled === true;
 	return {
@@ -115,14 +114,13 @@ export function createAutonomousRuntimeState(
 		gateAttempts: {},
 		lastGateFailure: undefined,
 		lastGateFailureSnapshot: undefined,
-		gitBaseline: enabled ? captureGitWorktreeSnapshot(options.cwd) : undefined,
 	};
 }
 
 export function setAutonomousEnabled(
 	state: AutonomousRuntimeState,
 	enabled: boolean,
-	options: { cwd?: string } = {},
+	_options: { cwd?: string } = {},
 ): void {
 	state.enabled = enabled;
 	if (enabled) {
@@ -133,13 +131,11 @@ export function setAutonomousEnabled(
 		state.gateAttempts = {};
 		state.lastGateFailure = undefined;
 		state.lastGateFailureSnapshot = undefined;
-		state.gitBaseline = captureGitWorktreeSnapshot(options.cwd);
 	} else {
 		state.startedAt = undefined;
 		state.gateAttempts = {};
 		state.lastGateFailure = undefined;
 		state.lastGateFailureSnapshot = undefined;
-		state.gitBaseline = undefined;
 	}
 }
 
@@ -182,16 +178,16 @@ function autonomousTokenDelta(usage: Usage | undefined): number {
 	return usage.input + usage.output + usage.cacheWrite;
 }
 
-export function nextAutonomousContinuation(
+export async function nextAutonomousContinuation(
 	state: AutonomousRuntimeState,
 	message: AssistantMessage,
 	options: { cwd?: string } = {},
 	now = Date.now(),
-): UserMessage | undefined {
+): Promise<UserMessage | undefined> {
 	if (!state.enabled) {
 		return undefined;
 	}
-	const decision = shouldAutonomouslyContinue(state, message, options, now);
+	const decision = await shouldAutonomouslyContinue(state, message, options, now);
 	if (!decision.shouldContinue) {
 		return undefined;
 	}
@@ -211,16 +207,16 @@ export function nextAutonomousContinuation(
 	};
 }
 
-export function shouldAutonomouslyContinue(
+export async function shouldAutonomouslyContinue(
 	state: AutonomousRuntimeState,
 	message: AssistantMessage,
 	options: { cwd?: string } = {},
 	now = Date.now(),
-): AutonomousDecision {
+): Promise<AutonomousDecision> {
 	if (!state.enabled || message.stopReason === "error" || message.stopReason === "aborted") {
 		return { shouldContinue: false, reason: "not_needed" };
 	}
-	const gateResult = refreshAutonomousQualityGates(state, options);
+	const gateResult = await refreshAutonomousQualityGates(state, options);
 	if (gateResult) {
 		if (gateResult === "passed") {
 			return { shouldContinue: false, reason: "not_needed" };
@@ -255,22 +251,25 @@ export function autonomousLimitReason(
 	return undefined;
 }
 
-export function refreshAutonomousQualityGates(
+export async function refreshAutonomousQualityGates(
 	state: AutonomousRuntimeState,
 	options: { cwd?: string } = {},
-): AutonomousGateResult | undefined {
+): Promise<AutonomousGateResult | undefined> {
 	if (!state.enabled || state.gates.commands.length === 0) {
 		return undefined;
 	}
-	return runAutonomousQualityGates(state, options.cwd);
+	return await runAutonomousQualityGates(state, options.cwd);
 }
 
-function runAutonomousQualityGates(state: AutonomousRuntimeState, cwd: string | undefined): AutonomousGateResult {
+async function runAutonomousQualityGates(
+	state: AutonomousRuntimeState,
+	cwd: string | undefined,
+): Promise<AutonomousGateResult> {
 	if (!cwd) {
 		return "failed";
 	}
 	for (const command of state.gates.commands) {
-		const currentSnapshot = captureGitWorktreeSnapshot(cwd);
+		const currentSnapshot = await captureGitWorktreeSnapshot(cwd);
 		if (
 			state.lastGateFailure?.command === command &&
 			state.lastGateFailureSnapshot &&
@@ -287,15 +286,9 @@ function runAutonomousQualityGates(state: AutonomousRuntimeState, cwd: string | 
 			};
 			return attempt > state.gates.maxRetries ? "retry_exhausted" : "failed";
 		}
-		const result = spawnSync(command, {
-			cwd,
-			encoding: "utf8",
-			shell: true,
-			timeout: state.gates.timeoutMs,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		const postRunSnapshot = captureGitWorktreeSnapshot(cwd);
-		if (result.status === 0 && !result.error) {
+		const result = await runChildProcess(command, [], { cwd, shell: true, timeoutMs: state.gates.timeoutMs });
+		const postRunSnapshot = await captureGitWorktreeSnapshot(cwd);
+		if (result.status === 0 && !result.error && !result.timedOut) {
 			state.gateAttempts[command] = 0;
 			if (state.lastGateFailure?.command === command) {
 				state.lastGateFailure = undefined;
@@ -305,9 +298,7 @@ function runAutonomousQualityGates(state: AutonomousRuntimeState, cwd: string | 
 		}
 		const attempt = (state.gateAttempts[command] ?? 0) + 1;
 		state.gateAttempts[command] = attempt;
-		const exitText =
-			result.error?.message ??
-			(result.signal ? `terminated by ${result.signal}` : `exited ${result.status ?? "unknown"}`);
+		const exitText = formatProcessExit(result);
 		state.lastGateFailure = {
 			command,
 			attempt,
@@ -338,7 +329,7 @@ function gitWorktreeSnapshotsEqual(a: GitWorktreeSnapshot | undefined, b: GitWor
 	return !!a && !!b && a.status === b.status && a.diff === b.diff;
 }
 
-function captureGitWorktreeSnapshot(cwd: string | undefined): GitWorktreeSnapshot | undefined {
+async function captureGitWorktreeSnapshot(cwd: string | undefined): Promise<GitWorktreeSnapshot | undefined> {
 	if (!cwd) {
 		return undefined;
 	}
@@ -352,23 +343,100 @@ function captureGitWorktreeSnapshot(cwd: string | undefined): GitWorktreeSnapsho
 		":(exclude)submission.tar.gz",
 		":(exclude)runner_args.log",
 	];
-	const status = spawnSync("git", ["--no-optional-locks", "status", "--porcelain=v1", "-uall", ...pathspec], {
-		cwd,
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-	});
-	if (status.status !== 0 || typeof status.stdout !== "string") {
+	const status = await runChildProcess(
+		"git",
+		["--no-optional-locks", "status", "--porcelain=v1", "-uall", ...pathspec],
+		{
+			cwd,
+			timeoutMs: 10_000,
+		},
+	);
+	if (status.status !== 0 || status.error || status.timedOut) {
 		return undefined;
 	}
-	const diff = spawnSync("git", ["--no-optional-locks", "diff", "--no-ext-diff", "--binary", "HEAD", ...pathspec], {
-		cwd,
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-	});
+	const diff = await runChildProcess(
+		"git",
+		["--no-optional-locks", "diff", "--no-ext-diff", "--binary", "HEAD", ...pathspec],
+		{
+			cwd,
+			timeoutMs: 10_000,
+		},
+	);
 	return {
 		status: status.stdout,
-		diff: diff.status === 0 && typeof diff.stdout === "string" ? diff.stdout : "",
+		diff: diff.status === 0 && !diff.error && !diff.timedOut ? diff.stdout : "",
 	};
+}
+
+interface ChildProcessResult {
+	status: number | null;
+	signal: NodeJS.Signals | null;
+	stdout: string;
+	stderr: string;
+	error?: Error;
+	timedOut?: boolean;
+}
+
+function runChildProcess(
+	command: string,
+	args: string[],
+	options: { cwd?: string; shell?: boolean; timeoutMs?: number } = {},
+): Promise<ChildProcessResult> {
+	return new Promise((resolve) => {
+		const child = spawn(command, args, {
+			cwd: options.cwd,
+			shell: options.shell === true,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		let error: Error | undefined;
+		let timedOut = false;
+		let settled = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		const finish = (result: Pick<ChildProcessResult, "status" | "signal">) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			if (timer) {
+				clearTimeout(timer);
+			}
+			if (killTimer) {
+				clearTimeout(killTimer);
+			}
+			resolve({ ...result, stdout, stderr, error, timedOut });
+		};
+		const timer = options.timeoutMs
+			? setTimeout(() => {
+					timedOut = true;
+					child.kill("SIGTERM");
+					killTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
+				}, options.timeoutMs)
+			: undefined;
+		child.stdout?.setEncoding("utf8");
+		child.stderr?.setEncoding("utf8");
+		child.stdout?.on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr?.on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		child.on("error", (err) => {
+			error = err;
+		});
+		child.on("close", (status, signal) => finish({ status, signal }));
+	});
+}
+
+function formatProcessExit(result: ChildProcessResult): string {
+	if (result.timedOut) {
+		return "timed out";
+	}
+	if (result.error) {
+		return result.error.message;
+	}
+	return result.signal ? `terminated by ${result.signal}` : `exited ${result.status ?? "unknown"}`;
 }
 
 function truncateGateOutput(output: string, maxChars = 6000): string {

@@ -1545,7 +1545,7 @@ export class AgentSession {
 		return true;
 	}
 
-	private _shouldStopAfterTurn(context: ShouldStopAfterTurnContext): boolean {
+	private async _shouldStopAfterTurn(context: ShouldStopAfterTurnContext): Promise<boolean> {
 		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
 			return true;
 		}
@@ -1556,15 +1556,15 @@ export class AgentSession {
 		} catch {
 			// Goal accounting must not interrupt the core agent loop.
 		}
-		if (this._shouldStopForThresholdCompaction(context)) {
+		if (await this._shouldStopForThresholdCompaction(context)) {
 			return true;
 		}
 		return false;
 	}
 
-	private _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): boolean {
+	private async _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): Promise<boolean> {
 		this._continueAfterThresholdCompaction = false;
-		if (this._pendingRequestedCompaction === undefined && !this._thresholdCompactionNeeded(context)) {
+		if (this._pendingRequestedCompaction === undefined && !(await this._thresholdCompactionNeeded(context))) {
 			return false;
 		}
 
@@ -1573,7 +1573,7 @@ export class AgentSession {
 		return true;
 	}
 
-	private _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): boolean {
+	private async _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 
@@ -1589,7 +1589,7 @@ export class AgentSession {
 			return false;
 		}
 
-		if (this._queueAutonomousContinuationForThresholdCompaction(context.message)) {
+		if (await this._queueAutonomousContinuationForThresholdCompaction(context.message)) {
 			this._continueAfterThresholdCompaction = true;
 		}
 		return true;
@@ -1617,13 +1617,15 @@ export class AgentSession {
 			: undefined;
 	}
 
-	private _queueAutonomousContinuationForThresholdCompaction(message: AssistantMessage): AgentMessage | undefined {
+	private async _queueAutonomousContinuationForThresholdCompaction(
+		message: AssistantMessage,
+	): Promise<AgentMessage | undefined> {
 		const queuedMessage = this._queuedAutonomousThresholdContinuations.get(message);
 		if (queuedMessage && this._postCompactionContinuationMessages.includes(queuedMessage)) {
 			return queuedMessage;
 		}
 		const snapshot = this._snapshotAutonomousRuntimeState();
-		const autonomousMessage = nextAutonomousContinuation(this._autonomousState, message, { cwd: this._cwd });
+		const autonomousMessage = await nextAutonomousContinuation(this._autonomousState, message, { cwd: this._cwd });
 		if (!autonomousMessage) {
 			return undefined;
 		}
@@ -1999,7 +2001,9 @@ export class AgentSession {
 		) {
 			return [];
 		}
-		const autonomousMessage = nextAutonomousContinuation(this._autonomousState, context.message, { cwd: this._cwd });
+		const autonomousMessage = await nextAutonomousContinuation(this._autonomousState, context.message, {
+			cwd: this._cwd,
+		});
 		return autonomousMessage ? [autonomousMessage] : [];
 	}
 
@@ -2704,8 +2708,8 @@ export class AgentSession {
 		addAutonomousContinuation(this._autonomousState);
 	}
 
-	refreshAutonomousGates(): void {
-		refreshAutonomousQualityGates(this._autonomousState, { cwd: this._cwd });
+	async refreshAutonomousGates(): Promise<void> {
+		await refreshAutonomousQualityGates(this._autonomousState, { cwd: this._cwd });
 	}
 
 	private async _runWithAutonomousContinuationSuppressed<T>(fn: () => Promise<T>): Promise<T> {
@@ -5146,7 +5150,10 @@ export class AgentSession {
 		const contextTokens = this._getThresholdContextTokens(assistantMessage, compactionTimestamp);
 		if (contextTokens === undefined) return false;
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			if (queueAutonomousContinuation && this._queueAutonomousContinuationForThresholdCompaction(assistantMessage)) {
+			if (
+				queueAutonomousContinuation &&
+				(await this._queueAutonomousContinuationForThresholdCompaction(assistantMessage))
+			) {
 				this._continueAfterThresholdCompaction = true;
 			}
 			return await this._runAutoCompaction("threshold", false);

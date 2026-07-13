@@ -174,7 +174,7 @@ describe("AgentSession autonomous mode", () => {
 		expect(harness.session.getAutonomousStatus().continuationsUsed).toBeGreaterThan(0);
 	});
 
-	it("runs autonomous gates before applying usage limits", () => {
+	it("runs autonomous gates before applying usage limits", async () => {
 		const state = createAutonomousRuntimeState({
 			enabled: true,
 			maxTurns: 1,
@@ -188,7 +188,9 @@ describe("AgentSession autonomous mode", () => {
 			output: "stale failure",
 		};
 
-		expect(shouldAutonomouslyContinue(state, fauxAssistantMessage("Done."), { cwd: process.cwd() })).toMatchObject({
+		expect(
+			await shouldAutonomouslyContinue(state, fauxAssistantMessage("Done."), { cwd: process.cwd() }),
+		).toMatchObject({
 			shouldContinue: false,
 			reason: "not_needed",
 		});
@@ -303,7 +305,7 @@ describe("AgentSession autonomous mode", () => {
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
-	it("advances retry budget without rerunning a failed autonomous gate until the workspace changes", () => {
+	it("advances retry budget without rerunning a failed autonomous gate until the workspace changes", async () => {
 		const tempDir = join(process.cwd(), `.tmp-autonomous-gate-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		execFileSync("mkdir", ["-p", join(tempDir, "verification")]);
 		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
@@ -323,9 +325,9 @@ describe("AgentSession autonomous mode", () => {
 				{ cwd: tempDir },
 			);
 
-			const first = nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
+			const first = await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
 			writeFileSync(join(tempDir, "Cargo.lock"), "generated lockfile\n");
-			const second = nextAutonomousContinuation(state, fauxAssistantMessage("Still done."), { cwd: tempDir });
+			const second = await nextAutonomousContinuation(state, fauxAssistantMessage("Still done."), { cwd: tempDir });
 
 			expect(first).toBeDefined();
 			expect(second).toBeDefined();
@@ -338,22 +340,24 @@ describe("AgentSession autonomous mode", () => {
 		}
 	});
 
-	it("stops autonomous continuation once gate retries are exhausted", () => {
+	it("stops autonomous continuation once gate retries are exhausted", async () => {
 		const state = createAutonomousRuntimeState({
 			enabled: true,
 			maxContinuations: 5,
 			gates: { commands: [`${process.execPath} -e "process.exit(1)"`], maxRetries: 1 },
 		});
 
-		const first = nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: process.cwd() });
-		const second = nextAutonomousContinuation(state, fauxAssistantMessage("Still done."), { cwd: process.cwd() });
+		const first = await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: process.cwd() });
+		const second = await nextAutonomousContinuation(state, fauxAssistantMessage("Still done."), {
+			cwd: process.cwd(),
+		});
 
 		expect(first).toBeDefined();
 		expect(second).toBeUndefined();
 		expect(state.continuationsUsed).toBe(1);
 	});
 
-	it("records the post-failure worktree snapshot for gate rerun suppression", () => {
+	it("records the post-failure worktree snapshot for gate rerun suppression", async () => {
 		const tempDir = join(
 			process.cwd(),
 			`.tmp-autonomous-post-snapshot-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -376,8 +380,8 @@ describe("AgentSession autonomous mode", () => {
 				{ cwd: tempDir },
 			);
 
-			const first = nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
-			const second = nextAutonomousContinuation(state, fauxAssistantMessage("Still done."), { cwd: tempDir });
+			const first = await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
+			const second = await nextAutonomousContinuation(state, fauxAssistantMessage("Still done."), { cwd: tempDir });
 
 			expect(first).toBeDefined();
 			expect(second).toBeDefined();
@@ -388,7 +392,7 @@ describe("AgentSession autonomous mode", () => {
 		}
 	});
 
-	it("does not count cache-read tokens against the autonomous token budget", () => {
+	it("does not count cache-read tokens against the autonomous token budget", async () => {
 		const state = createAutonomousRuntimeState({ enabled: true, maxTokens: 10 });
 
 		addAutonomousUsage(state, {
@@ -401,22 +405,25 @@ describe("AgentSession autonomous mode", () => {
 		});
 
 		expect(state.tokensUsed).toBe(9);
-		expect(shouldAutonomouslyContinue(state, fauxAssistantMessage("Done."))).toMatchObject({
+		expect(await shouldAutonomouslyContinue(state, fauxAssistantMessage("Done."))).toMatchObject({
 			shouldContinue: true,
 		});
 	});
 
-	it("does not use assistant prose as terminal blocker evidence", () => {
+	it("does not use assistant prose as terminal blocker evidence", async () => {
 		const state = createAutonomousRuntimeState({ enabled: true });
 
 		expect(
-			shouldAutonomouslyContinue(state, fauxAssistantMessage("I'm blocked. What should I try next?")),
+			await shouldAutonomouslyContinue(state, fauxAssistantMessage("I'm blocked. What should I try next?")),
 		).toMatchObject({
 			shouldContinue: true,
 			reason: "missing_terminal_evidence",
 		});
 		expect(
-			shouldAutonomouslyContinue(state, fauxAssistantMessage("Blocked: this requires OAuth login from the user.")),
+			await shouldAutonomouslyContinue(
+				state,
+				fauxAssistantMessage("Blocked: this requires OAuth login from the user."),
+			),
 		).toMatchObject({
 			shouldContinue: true,
 			reason: "missing_terminal_evidence",

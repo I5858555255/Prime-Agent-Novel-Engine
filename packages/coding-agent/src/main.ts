@@ -748,7 +748,10 @@ export function resolveRuntimeSessionOptions(
 		rlmHeartbeatController: runtimeSessionOptions?.rlmHeartbeatController,
 		agentMessageController: runtimeSessionOptions?.agentMessageController,
 		agentObserveController: runtimeSessionOptions?.agentObserveController,
-		autonomous: mergeAutonomousConfig(sessionOptions.autonomous, runtimeSessionOptions?.autonomous),
+		autonomous:
+			(runtimeSessionOptions?.rlmDepth ?? 0) > 0
+				? mergeAutonomousConfig(sessionOptions.autonomous, { ...runtimeSessionOptions?.autonomous, enabled: false })
+				: mergeAutonomousConfig(sessionOptions.autonomous, runtimeSessionOptions?.autonomous),
 		rlmDepth: runtimeSessionOptions?.rlmDepth,
 		rlmMaxDepth: runtimeSessionOptions?.rlmMaxDepth,
 		rlmSessionDir: runtimeSessionOptions?.rlmSessionDir,

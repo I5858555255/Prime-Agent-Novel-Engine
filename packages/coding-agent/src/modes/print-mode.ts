@@ -51,7 +51,11 @@ function describeAutonomousLimit(status: AgentAutonomousStatus, reason: Autonomo
 
 function shouldContinuePrintModeAutonomousGates(status: AgentAutonomousStatus): boolean {
 	return (
-		status.enabled && status.gates.commands.length > 0 && !!status.lastGateFailure && !autonomousLimitReason(status)
+		status.enabled &&
+		status.gates.commands.length > 0 &&
+		!!status.lastGateFailure &&
+		latestGateAttempt(status) <= status.gates.maxRetries &&
+		!autonomousLimitReason(status)
 	);
 }
 
@@ -118,7 +122,7 @@ async function waitForPrintModeIdleWithAutonomousGates(
 		// produced a new assistant message. Wait for the session to become idle again
 		// so an earlier assistant error does not get mistaken for this retry result.
 		await session.agent.waitForIdle();
-		session.refreshAutonomousGates();
+		await session.refreshAutonomousGates();
 		const lastMessage = session.state.messages[session.state.messages.length - 1];
 		if (lastMessage?.role === "assistant") {
 			const assistantMessage = lastMessage as AssistantMessage;
@@ -255,13 +259,18 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		const autonomousStatus = session.getAutonomousStatus();
+		const autonomousLimit = autonomousLimitReason(autonomousStatus);
 		if (autonomousStatus.enabled && autonomousStatus.gates.commands.length > 0 && autonomousStatus.lastGateFailure) {
-			const limitReason = autonomousLimitReason(autonomousStatus);
-			const limitText = limitReason
-				? `; autonomous limit reached: ${describeAutonomousLimit(autonomousStatus, limitReason)}`
+			const limitText = autonomousLimit
+				? `; autonomous limit reached: ${describeAutonomousLimit(autonomousStatus, autonomousLimit)}`
 				: "";
 			console.error(
 				`Autonomous quality gate still failing after attempt ${latestGateAttempt(autonomousStatus)}/${autonomousStatus.gates.maxRetries}: ${autonomousStatus.lastGateFailure.exitText}${limitText}`,
+			);
+			exitCode = 1;
+		} else if (autonomousStatus.enabled && autonomousStatus.gates.commands.length === 0 && autonomousLimit) {
+			console.error(
+				`Autonomous run stopped before terminal evidence; ${describeAutonomousLimit(autonomousStatus, autonomousLimit)}`,
 			);
 			exitCode = 1;
 		}
