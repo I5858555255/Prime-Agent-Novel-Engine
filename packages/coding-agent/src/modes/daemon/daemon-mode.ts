@@ -2035,7 +2035,7 @@ export class AgentDaemon {
 							targetChunkBytes: transcript.targetChunkBytes,
 						},
 					};
-					setImmediate(() => void this.streamWorkerSnapshot(client, streamedResult, transcript));
+					setImmediate(() => void this.streamWorkerSnapshot(client, streamedResult, transcript, "attach", true));
 					return success(command.id, "attach", streamedResult);
 				}
 				// Slim clients consume only the command response; legacy clients (e.g.
@@ -2805,14 +2805,19 @@ export class AgentDaemon {
 		result: DaemonAttachResult,
 		transcript: SnapshotTranscriptCache,
 		purpose: "attach" | "replacement" | "catchup" = "attach",
+		snapshotAlreadyMarked = false,
 	): Promise<void> {
 		const stream = result.snapshotStream;
 		if (!stream) {
-			finishClientSnapshotStreaming(client, result.activeSessionId);
+			if (snapshotAlreadyMarked) {
+				finishClientSnapshotStreaming(client, result.activeSessionId);
+			}
 			transcript.dispose();
 			return;
 		}
-		markClientSnapshotStreaming(client, result.activeSessionId);
+		if (!snapshotAlreadyMarked) {
+			markClientSnapshotStreaming(client, result.activeSessionId);
+		}
 		if (client.socket.destroyed) {
 			finishClientSnapshotStreaming(client, result.activeSessionId);
 			transcript.dispose();
@@ -3682,41 +3687,65 @@ export class AgentDaemon {
 				client.transport === "private-framed" &&
 				daemonClientCapabilitiesForSession(client, state.activeSessionId).has("chunked_snapshot")
 			) {
-				const accepted = this.write(client, {
-					...sequencedMessage,
-					messages: [],
-					snapshotFollows: true,
-				});
-				if (!accepted) {
-					this.queueClientCatchup(client, state.activeSessionId, "replacement");
-					continue;
-				}
-				const result = this.createAttachResult(client, state, {
-					type: "attach",
-					activeSessionId: state.activeSessionId,
-				});
-				const transcript = new SnapshotTranscriptCache({
-					activeSessionId: state.activeSessionId,
-					snapshotId: `${state.activeSessionId}-${state.eventGeneration}-${state.lastEventSequence}`,
-					messages: result.snapshot.messages,
-					cacheRoot: join(this.agentDir, "worker-snapshot-cache"),
-					targetChunkBytes: SNAPSHOT_TARGET_CHUNK_BYTES,
-				});
-				void this.streamWorkerSnapshot(
-					client,
-					{
-						...result,
-						messages: result.messages ? [] : undefined,
-						snapshot: { ...result.snapshot, messages: [] },
-						snapshotStream: {
-							id: transcript.snapshotId,
-							messageCount: result.snapshot.messages.length,
-							targetChunkBytes: transcript.targetChunkBytes,
+				try {
+					const result = this.createAttachResult(client, state, {
+						type: "attach",
+						activeSessionId: state.activeSessionId,
+					});
+					const transcript = new SnapshotTranscriptCache({
+						activeSessionId: state.activeSessionId,
+						snapshotId: `${state.activeSessionId}-${state.eventGeneration}-${state.lastEventSequence}`,
+						messages: result.snapshot.messages,
+						cacheRoot: join(this.agentDir, "worker-snapshot-cache"),
+						targetChunkBytes: SNAPSHOT_TARGET_CHUNK_BYTES,
+					});
+					const accepted = this.write(client, {
+						...sequencedMessage,
+						messages: [],
+						snapshotFollows: true,
+					});
+					if (!accepted) {
+						transcript.dispose();
+						this.queueClientCatchup(client, state.activeSessionId, "replacement");
+						continue;
+					}
+					void this.streamWorkerSnapshot(
+						client,
+						{
+							...result,
+							messages: result.messages ? [] : undefined,
+							snapshot: { ...result.snapshot, messages: [] },
+							snapshotStream: {
+								id: transcript.snapshotId,
+								messageCount: result.snapshot.messages.length,
+								targetChunkBytes: transcript.targetChunkBytes,
+							},
 						},
-					},
-					transcript,
-					"replacement",
-				).catch((error) => this.log(`could not stream replacement snapshot: ${String(error)}`));
+						transcript,
+						"replacement",
+					).catch((error) => {
+						this.log(`could not stream replacement snapshot: ${String(error)}`);
+						this.queueClientCatchup(client, state.activeSessionId, "replacement");
+						if (!client.snapshotStreaming) {
+							void this.catchUpBackpressuredClient(client).catch((catchupError) =>
+								this.log(`could not catch up replacement snapshot: ${String(catchupError)}`),
+							);
+						}
+					});
+				} catch (error) {
+					this.log(`could not prepare replacement snapshot: ${String(error)}`);
+					// Continue below with the complete replacement event.
+					let accepted: boolean;
+					if (client.transport === "private-framed") {
+						accepted = this.write(client, sequencedMessage);
+					} else {
+						serialized ??= serializeJsonLine(sequencedMessage);
+						accepted = this.writeSerialized(client, serialized, sequencedMessage);
+					}
+					if (!accepted) {
+						this.queueClientCatchup(client, state.activeSessionId, "replacement");
+					}
+				}
 				continue;
 			}
 			let accepted: boolean;
@@ -4079,14 +4108,25 @@ function daemonClientSupportsExtensionUi(client: DaemonSocketClient, activeSessi
 	return client.capabilitiesByActiveSessionId?.get(activeSessionId)?.has("extension_ui") ?? client.supportsExtensionUi;
 }
 
-function markClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): void {
+export function markClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): void {
 	client.snapshotStreaming = true;
 	client.snapshotActiveSessionIds ??= new Set();
 	client.snapshotActiveSessionIds.add(activeSessionId);
+	client.snapshotActiveSessionCounts ??= new Map();
+	client.snapshotActiveSessionCounts.set(
+		activeSessionId,
+		(client.snapshotActiveSessionCounts.get(activeSessionId) ?? 0) + 1,
+	);
 }
 
-function finishClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): void {
-	client.snapshotActiveSessionIds?.delete(activeSessionId);
+export function finishClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): void {
+	const count = client.snapshotActiveSessionCounts?.get(activeSessionId) ?? 1;
+	if (count > 1) {
+		client.snapshotActiveSessionCounts?.set(activeSessionId, count - 1);
+	} else {
+		client.snapshotActiveSessionCounts?.delete(activeSessionId);
+		client.snapshotActiveSessionIds?.delete(activeSessionId);
+	}
 	client.snapshotStreaming = (client.snapshotActiveSessionIds?.size ?? 0) > 0;
 	if (!client.snapshotStreaming) {
 		client.backpressured = false;

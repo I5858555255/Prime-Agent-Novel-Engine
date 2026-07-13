@@ -18,6 +18,7 @@ export interface DaemonSocketClient {
 	transport?: "jsonl" | "private-framed";
 	snapshotStreaming?: boolean;
 	snapshotActiveSessionIds?: Set<string>;
+	snapshotActiveSessionCounts?: Map<string, number>;
 	detachInput: () => void;
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;

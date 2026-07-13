@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,9 @@ import {
 	AgentDaemon,
 	cancelPendingExtensionUiRequests,
 	detachClientFromActiveSession,
+	finishClientSnapshotStreaming,
 	getChildActiveSessionStates,
+	markClientSnapshotStreaming,
 	setDaemonClientSessionCapabilities,
 	shouldSendDaemonOutboundToClient,
 } from "../src/modes/daemon/daemon-mode.js";
@@ -2380,6 +2382,72 @@ describe("daemon mode helpers", () => {
 			expect(streamWorkerSnapshot).toHaveBeenCalledOnce();
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps overlapping snapshots active until every stream finishes", () => {
+		const client = makeClient("client-1", "active");
+
+		markClientSnapshotStreaming(client, "active");
+		markClientSnapshotStreaming(client, "active");
+		finishClientSnapshotStreaming(client, "active");
+
+		expect(client.snapshotStreaming).toBe(true);
+		expect(client.snapshotActiveSessionIds).toContain("active");
+		expect(client.snapshotActiveSessionCounts?.get("active")).toBe(1);
+
+		finishClientSnapshotStreaming(client, "active");
+		expect(client.snapshotStreaming).toBe(false);
+		expect(client.snapshotActiveSessionIds).not.toContain("active");
+	});
+
+	it("falls back to a full replacement when snapshot cache creation fails", () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-daemon-replacement-fallback-"));
+		try {
+			const invalidAgentDir = join(root, "not-a-directory");
+			writeFileSync(invalidAgentDir, "file");
+			const daemon = new AgentDaemon(join(root, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: invalidAgentDir, cwd: root },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const state = makeState("active");
+			state.eventGeneration = "generation-1";
+			const write = vi.fn((_data: unknown) => true);
+			const client = makeClient("client-1", state.activeSessionId);
+			client.socket = { destroyed: false, write } as unknown as Socket;
+			client.transport = "private-framed";
+			setDaemonClientSessionCapabilities(client, state.activeSessionId, new Set(["chunked_snapshot"]));
+			state.clients.add(client);
+			const result = {
+				activeSessionId: state.activeSessionId,
+				snapshot: {
+					summary: {},
+					state: {},
+					messages: [{ role: "user", content: "x".repeat(4 * 1024 * 1024 + 1), timestamp: 0 }],
+				},
+				lastEventSequence: 0,
+			} as unknown as DaemonAttachResult;
+			const internals = daemon as unknown as {
+				createAttachResult: () => DaemonAttachResult;
+				broadcastToSession(state: ActiveSessionState, message: unknown): void;
+			};
+			internals.createAttachResult = () => result;
+
+			internals.broadcastToSession(state, {
+				type: "session_replaced",
+				activeSessionId: state.activeSessionId,
+				state: {},
+				messages: [],
+			});
+
+			expect(write).toHaveBeenCalledTimes(1);
+			const replacementFrame = String(write.mock.calls[0]?.[0]);
+			expect(replacementFrame).toContain('"type":"session_replaced"');
+			expect(replacementFrame).not.toContain('"snapshotFollows":true');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 

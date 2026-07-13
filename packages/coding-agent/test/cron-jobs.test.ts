@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -394,6 +394,41 @@ describe("AgentCronJobStore", () => {
 			status: "paused",
 			updatedAt: "2026-01-01T12:35:00.000Z",
 		});
+	});
+
+	it("preserves session-artifact dispatches when a stale snapshot is written", () => {
+		const root = makeTempDir(tempDirs);
+		const artifactDir = join(root, "session-artifacts", "session-1");
+		const artifactPath = join(artifactDir, SESSION_SCHEDULED_JOBS_FILENAME);
+		const writer = AgentCronJobStore.forSessionArtifacts();
+		const dispatcher = AgentCronJobStore.forSessionArtifacts();
+		writer.registerSessionArtifact("session-1", artifactDir);
+		dispatcher.registerSessionArtifact("session-1", artifactDir);
+		const heartbeat = writer.createHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: join(root, "sessions", "session-1.jsonl"),
+			cwd: root,
+			scheduleText: "every 10s",
+			prompt: "check progress",
+			now: start,
+		});
+		const staleCancellation = {
+			...heartbeat,
+			status: "cancelled" as const,
+			nextRunAt: undefined,
+			updatedAt: "2026-01-01T12:34:20.000Z",
+		};
+
+		expect(dispatcher.claimDue(new Date("2026-01-01T12:34:10.000Z"))).toHaveLength(1);
+		writeJobsForTest(writer, [staleCancellation]);
+
+		const state = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+			jobs: AgentCronJob[];
+			dispatches: Array<{ jobId: string }>;
+		};
+		expect(state.jobs).toContainEqual(expect.objectContaining({ id: heartbeat.id, status: "cancelled" }));
+		expect(state.dispatches).toContainEqual(expect.objectContaining({ jobId: heartbeat.id }));
 	});
 
 	it("keeps one persistent heartbeat per active session", () => {
