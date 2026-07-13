@@ -110,7 +110,7 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
-function processStartId(pid: number): string | undefined {
+export function getProcessStartId(pid: number): string | undefined {
 	try {
 		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
 		const commandEnd = stat.lastIndexOf(")");
@@ -133,7 +133,7 @@ function processStartId(pid: number): string | undefined {
 	}
 }
 
-const CURRENT_PROCESS_START_ID = processStartId(process.pid);
+const CURRENT_PROCESS_START_ID = getProcessStartId(process.pid);
 
 function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
 	if (!isProcessAlive(owner.pid)) {
@@ -142,7 +142,7 @@ function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
 	if (!owner.processStartId) {
 		return true;
 	}
-	const currentStartId = processStartId(owner.pid);
+	const currentStartId = getProcessStartId(owner.pid);
 	return currentStartId === undefined || currentStartId === owner.processStartId;
 }
 

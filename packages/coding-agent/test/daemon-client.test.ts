@@ -654,6 +654,45 @@ describe("DaemonClient", () => {
 		client.close();
 	});
 
+	it("pauses request timeouts while a recoverable connection is disconnected", async () => {
+		vi.useFakeTimers();
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		client.enableRequestRecovery();
+		const firstConnect = client.connect();
+		const firstSocket = netMock.sockets[0]!;
+		firstSocket.emit("connect");
+		await firstConnect;
+		emitHello(firstSocket);
+
+		const response = client.request({ type: "list" }, 50);
+		let settled = false;
+		void response.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		const firstEnvelope = JSON.parse(firstSocket.writes[0]!) as { id: string };
+		firstSocket.emit("close");
+		await vi.advanceTimersByTimeAsync(500);
+		expect(settled).toBe(false);
+
+		const secondConnect = client.connect();
+		const secondSocket = netMock.sockets[1]!;
+		secondSocket.emit("connect");
+		await secondConnect;
+		emitHello(secondSocket);
+		secondSocket.emit(
+			"data",
+			`${JSON.stringify({ id: firstEnvelope.id, type: "response", command: "list", success: true })}\n`,
+		);
+
+		await expect(response).resolves.toMatchObject({ id: firstEnvelope.id, success: true });
+		client.close();
+	});
+
 	it("reconnects raw clients and replays pending commands after supervisor replacement", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
 		const firstConnect = client.connect();

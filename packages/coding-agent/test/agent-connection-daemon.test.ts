@@ -41,6 +41,7 @@ class FakeDaemonClient {
 	resetTransportCount = 0;
 	reconnectError: Error | undefined;
 	attachFailures = 0;
+	connectionStateGate: Promise<void> | undefined;
 	abortBashUnknownCommand = false;
 	abortAndClearQueueUnknownCommand = false;
 	updateRestartSessions: Array<Record<string, unknown>> = [];
@@ -95,6 +96,7 @@ class FakeDaemonClient {
 					data: { steering: ["steer"], followUp: ["follow"] },
 				};
 			case "get_connection_state":
+				await this.connectionStateGate;
 				return {
 					type: "response",
 					command: command.type,
@@ -1214,6 +1216,27 @@ describe("DaemonAgentConnection", () => {
 			"get_messages",
 			"get_session_context",
 		]);
+	});
+
+	it("does not stamp independently fetched snapshot data with an event cursor observed mid-fetch", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+		emitSequencedQueueUpdate(fakeClient, "active-1", 13);
+		let releaseState!: () => void;
+		fakeClient.connectionStateGate = new Promise<void>((resolveState) => {
+			releaseState = resolveState;
+		});
+
+		const snapshotPromise = connection.getInitialSnapshot();
+		await Promise.resolve();
+		emitSequencedQueueUpdate(fakeClient, "active-1", 14);
+		releaseState();
+		const snapshot = await snapshotPromise;
+
+		expect(snapshot.lastEventCursor).toEqual({ generation: "generation-active-1", sequence: 13 });
+		await connection.getState();
+		expect(fakeClient.requests.filter((request) => request.type === "get_connection_state")).toHaveLength(2);
 	});
 
 	it("times out an attach whose streamed snapshot never completes", async () => {

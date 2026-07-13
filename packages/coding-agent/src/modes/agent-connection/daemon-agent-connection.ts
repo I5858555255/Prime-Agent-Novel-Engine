@@ -297,6 +297,8 @@ export class DaemonAgentConnection implements AgentConnection {
 		// The session tree is intentionally not fetched here: it is large on long
 		// sessions and only needed when the user opens the tree/branch selector.
 		// getSessionTree() fetches it lazily via get_session_tree on first use.
+		const snapshotCursor = this.lastEventCursor;
+		const snapshotSequence = this.lastEventSequence;
 		const [state, messagesData, sessionContextData] = await Promise.all([
 			this.requestData<AgentConnectionState>({
 				type: "get_connection_state",
@@ -324,13 +326,16 @@ export class DaemonAgentConnection implements AgentConnection {
 			...(children ? { children } : {}),
 			...(streamingMessage ? { streamingMessage } : {}),
 		};
-		if (this.lastEventSequence !== undefined) {
-			this.latestSnapshot.lastEventSequence = this.lastEventSequence;
+		if (snapshotSequence !== undefined) {
+			this.latestSnapshot.lastEventSequence = snapshotSequence;
 		}
-		if (this.lastEventCursor) {
-			this.latestSnapshot.lastEventCursor = this.lastEventCursor;
+		if (snapshotCursor) {
+			this.latestSnapshot.lastEventCursor = snapshotCursor;
 		}
-		this.latestSnapshotIsFresh = true;
+		this.latestSnapshotIsFresh =
+			snapshotSequence === this.lastEventSequence &&
+			snapshotCursor?.generation === this.lastEventCursor?.generation &&
+			snapshotCursor?.sequence === this.lastEventCursor?.sequence;
 		return this.latestSnapshot;
 	}
 

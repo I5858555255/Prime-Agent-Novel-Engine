@@ -25,6 +25,9 @@ if (process.env.PRIME_AGENT_INTERNAL_OWNED_WORKER === "1") {
 	if (args.includes("--mode") && args.includes("rpc")) {
 		attachJsonlLineReader(process.stdin, (line) => {
 			const command = JSON.parse(line) as { id?: string; type: string };
+			if (process.env.PRIME_AGENT_TEST_CRASH_ON_COMMAND === command.type) {
+				process.exit(1);
+			}
 			if (command.type === "ack_result") {
 				if (process.env.PRIME_AGENT_TEST_CRASH_ON_ACK === "1" && pidPath && !existsSync(`${pidPath}.crashed`)) {
 					writeFileSync(`${pidPath}.crashed`, "crashed\n");

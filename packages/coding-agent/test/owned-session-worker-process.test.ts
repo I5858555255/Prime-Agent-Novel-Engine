@@ -189,6 +189,35 @@ describe("owned session worker processes", () => {
 		await waitForProcessGone(replacementPid);
 	});
 
+	it("fails pending RPC commands when stdin closes before the worker crashes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-owned-worker-test-"));
+		tempDirs.push(root);
+		const pidPath = join(root, "worker.pid");
+		const frontend = spawnFrontend(["--mode", "rpc"], pidPath, false, {
+			PRIME_AGENT_TEST_CRASH_ON_COMMAND: "get_state",
+		});
+		let stdout = "";
+		frontend.stdout?.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString("utf8");
+		});
+		frontend.stdin?.end(`${JSON.stringify({ id: "request-1", type: "get_state" })}\n`);
+		const workerPid = await waitForWorkerPid(pidPath);
+		const exit = await waitForExit(frontend);
+		children.delete(frontend);
+
+		expect(exit).toEqual({ code: 1, signal: null });
+		expect(stdout).toBe(
+			`${JSON.stringify({
+				id: "request-1",
+				type: "response",
+				command: "get_state",
+				success: false,
+				error: "The isolated session worker stopped during this command; its result is uncertain and was not replayed",
+			})}\n`,
+		);
+		await waitForProcessGone(workerPid);
+	});
+
 	it("terminates the owned worker when its frontend is killed", async () => {
 		const root = mkdtempSync(join(tmpdir(), "prime-owned-worker-test-"));
 		tempDirs.push(root);

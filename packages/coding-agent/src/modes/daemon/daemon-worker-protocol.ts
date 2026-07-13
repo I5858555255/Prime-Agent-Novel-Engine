@@ -67,6 +67,7 @@ export interface DaemonWorkerDescriptor {
 	version: 1;
 	workerId: string;
 	pid: number;
+	processStartId?: string;
 	socketPath: string;
 	recoveryJournalPath: string;
 	orphanProcessJournalPath?: string;

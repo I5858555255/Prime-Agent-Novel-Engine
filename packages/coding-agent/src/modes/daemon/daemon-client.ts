@@ -31,6 +31,18 @@ export interface DaemonClientRequestOptions {
 	onProgress?: DaemonClientProgressListener;
 }
 
+interface PendingDaemonRequest {
+	resolve: (response: DaemonResponse) => void;
+	reject: (error: Error) => void;
+	timeout?: ReturnType<typeof setTimeout>;
+	timeoutMs: number;
+	commandType: string;
+	onProgress?: DaemonClientProgressListener;
+	wireData: string;
+	awaitingReconnect: boolean;
+	acknowledgeResult: boolean;
+}
+
 function daemonEndpointDetails(socketPath: string): string {
 	return `Socket: ${socketPath}. Daemon log: ${getDaemonLogPath(socketPath)}.`;
 }
@@ -75,18 +87,7 @@ export class DaemonClient {
 	private detachReader?: () => void;
 	private readonly listeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
-	private readonly pendingRequests = new Map<
-		string,
-		{
-			resolve: (response: DaemonResponse) => void;
-			reject: (error: Error) => void;
-			timeout: ReturnType<typeof setTimeout>;
-			onProgress?: DaemonClientProgressListener;
-			wireData: string;
-			awaitingReconnect: boolean;
-			acknowledgeResult: boolean;
-		}
-	>();
+	private readonly pendingRequests = new Map<string, PendingDaemonRequest>();
 	private requestId = 0;
 	private readonly protocolClientId = `daemon-client:${randomUUID()}`;
 	private requestRecoveryEnabled = false;
@@ -318,26 +319,31 @@ export class DaemonClient {
 		const acknowledgeResult = usePublicEnvelope && isDaemonMutatingCommand(fullCommand as DaemonCommand);
 
 		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.pendingRequests.delete(id);
-				reject(
-					new Error(
-						`Timed out after ${timeoutMs}ms waiting for the Prime Agent daemon response to "${command.type}". ${daemonEndpointDetails(this.socketPath)}`,
-					),
-				);
-			}, timeoutMs);
-
-			this.pendingRequests.set(id, {
+			const pending: PendingDaemonRequest = {
 				resolve,
 				reject,
-				timeout,
+				timeoutMs,
+				commandType: command.type,
 				onProgress: options.onProgress,
 				wireData,
 				awaitingReconnect: false,
 				acknowledgeResult,
-			});
+			};
+			this.pendingRequests.set(id, pending);
+			this.armPendingRequestTimeout(id, pending);
 			this.socket!.write(wireData);
 		});
+	}
+
+	private armPendingRequestTimeout(id: string, pending: PendingDaemonRequest): void {
+		pending.timeout = setTimeout(() => {
+			this.pendingRequests.delete(id);
+			pending.reject(
+				new Error(
+					`Timed out after ${pending.timeoutMs}ms waiting for the Prime Agent daemon response to "${pending.commandType}". ${daemonEndpointDetails(this.socketPath)}`,
+				),
+			);
+		}, pending.timeoutMs);
 	}
 
 	close(): void {
@@ -380,11 +386,12 @@ export class DaemonClient {
 				waiter.resolve(message);
 			}
 			if (this.socket && !this.socket.destroyed) {
-				for (const pending of this.pendingRequests.values()) {
+				for (const [id, pending] of this.pendingRequests) {
 					if (!pending.awaitingReconnect) {
 						continue;
 					}
 					pending.awaitingReconnect = false;
+					this.armPendingRequestTimeout(id, pending);
 					this.socket.write(pending.wireData);
 				}
 			}
@@ -396,7 +403,9 @@ export class DaemonClient {
 		if (isDaemonResponse(message) && message.id) {
 			const pending = this.pendingRequests.get(message.id);
 			if (pending) {
-				clearTimeout(pending.timeout);
+				if (pending.timeout) {
+					clearTimeout(pending.timeout);
+				}
 				this.pendingRequests.delete(message.id);
 				pending.resolve(message);
 				if (pending.acknowledgeResult) {
@@ -430,10 +439,16 @@ export class DaemonClient {
 	private rejectAll(error: Error, preservePendingRequests = false): void {
 		for (const [id, pending] of this.pendingRequests) {
 			if (preservePendingRequests) {
+				if (pending.timeout) {
+					clearTimeout(pending.timeout);
+					pending.timeout = undefined;
+				}
 				pending.awaitingReconnect = true;
 				continue;
 			}
-			clearTimeout(pending.timeout);
+			if (pending.timeout) {
+				clearTimeout(pending.timeout);
+			}
 			pending.reject(error);
 			this.pendingRequests.delete(id);
 		}

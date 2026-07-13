@@ -432,15 +432,14 @@ export async function runOwnedSessionWorkerFrontend(
 				child.disconnect();
 			}
 			reapWorkerResources(workerPid);
-			const rpcCrashed =
-				profile === "rpc" && !terminating && !stdinEnded && (exit.code !== 0 || exit.signal !== null);
+			const rpcCrashed = profile === "rpc" && !terminating && (exit.code !== 0 || exit.signal !== null);
 			if (Date.now() - workerStartedAt >= 60_000) {
 				recoveryAttempt = 0;
 			}
 			if (rpcCrashed) {
 				failPendingRpcCommands();
 			}
-			const shouldRecover = rpcCrashed && recoveryAttempt < 3;
+			const shouldRecover = rpcCrashed && !stdinEnded && recoveryAttempt < 3;
 			if (!shouldRecover) {
 				return terminationSignal ? exitCodeForSignal(terminationSignal) : exit.code;
 			}

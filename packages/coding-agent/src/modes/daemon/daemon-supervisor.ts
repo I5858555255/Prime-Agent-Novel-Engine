@@ -20,6 +20,7 @@ import {
 	ORPHAN_PROCESS_JOURNAL_ENV,
 	readActiveOrphanProcessPids,
 } from "../../core/orphan-process-journal.js";
+import { getProcessStartId } from "../../core/session-lease.js";
 import type { SessionInfo } from "../../core/session-manager.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { PrivateFrame } from "../session-worker/private-framing.js";
@@ -217,6 +218,30 @@ function isSessionSummary(value: unknown): value is SessionSummary {
 	const candidate = value as { id?: unknown; sessionId?: unknown; cwd?: unknown };
 	return (
 		typeof candidate.id === "string" && typeof candidate.sessionId === "string" && typeof candidate.cwd === "string"
+	);
+}
+
+function isDaemonWorkerDescriptor(value: unknown, socketPath: string): value is DaemonWorkerDescriptor {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const descriptor = value as Partial<DaemonWorkerDescriptor>;
+	return (
+		descriptor.version === 1 &&
+		descriptor.supervisorSocketPath === socketPath &&
+		typeof descriptor.workerId === "string" &&
+		Number.isInteger(descriptor.pid) &&
+		(descriptor.pid ?? 0) > 0 &&
+		(descriptor.processStartId === undefined || typeof descriptor.processStartId === "string") &&
+		typeof descriptor.socketPath === "string" &&
+		typeof descriptor.authenticationToken === "string" &&
+		typeof descriptor.rootActiveSessionId === "string" &&
+		typeof descriptor.createdAt === "string" &&
+		typeof descriptor.updatedAt === "string" &&
+		Number.isInteger(descriptor.consecutiveFailures) &&
+		descriptor.createCommand !== undefined &&
+		typeof descriptor.createCommand === "object" &&
+		descriptor.createCommand.type === "create"
 	);
 }
 
@@ -479,13 +504,8 @@ export class DaemonSupervisor {
 			}
 			const path = join(this.descriptorDir, name);
 			try {
-				const descriptor = JSON.parse(readFileSync(path, "utf8")) as DaemonWorkerDescriptor;
-				if (
-					descriptor.version !== 1 ||
-					descriptor.supervisorSocketPath !== this.socketPath ||
-					typeof descriptor.workerId !== "string" ||
-					typeof descriptor.rootActiveSessionId !== "string"
-				) {
+				const descriptor: unknown = JSON.parse(readFileSync(path, "utf8"));
+				if (!isDaemonWorkerDescriptor(descriptor, this.socketPath)) {
 					continue;
 				}
 				descriptor.lifecycle = "recovering";
@@ -1045,12 +1065,14 @@ export class DaemonSupervisor {
 		if (!child.pid) {
 			throw new Error("Failed to obtain daemon session worker pid");
 		}
+		const childProcessStartId = getProcessStartId(child.pid);
 		child.unref();
 
 		const descriptor: DaemonWorkerDescriptor = {
 			version: 1,
 			workerId,
 			pid: child.pid,
+			...(childProcessStartId ? { processStartId: childProcessStartId } : {}),
 			socketPath,
 			recoveryJournalPath,
 			orphanProcessJournalPath,
@@ -1231,26 +1253,41 @@ export class DaemonSupervisor {
 			return worker.recovery;
 		}
 		worker.recovery = (async () => {
-			for (const retryDelay of WORKER_RETRY_DELAYS_MS) {
+			for (const [retryIndex, retryDelay] of WORKER_RETRY_DELAYS_MS.entries()) {
 				await delay(retryDelay);
 				if (this.isWorkerRecoveryCancelled(worker)) {
 					return;
 				}
 				try {
-					if (isProcessAlive(worker.descriptor.pid)) {
-						await this.connectWorker(worker, 1500);
-						await this.subscribeWorker(worker, worker.descriptor.rootActiveSessionId);
-						await this.refreshWorkerSummaries(worker);
-						if (this.isWorkerRecoveryCancelled(worker)) {
+					const processAlive = isProcessAlive(worker.descriptor.pid);
+					const observedProcessStartId = processAlive ? getProcessStartId(worker.descriptor.pid) : undefined;
+					const processIdentityMatches =
+						worker.descriptor.processStartId === undefined ||
+						observedProcessStartId === worker.descriptor.processStartId;
+					if (processAlive && processIdentityMatches) {
+						try {
+							await this.connectWorker(worker, 1500);
+							await this.subscribeWorker(worker, worker.descriptor.rootActiveSessionId);
+							await this.refreshWorkerSummaries(worker);
+							if (this.isWorkerRecoveryCancelled(worker)) {
+								return;
+							}
+							worker.descriptor.lifecycle = "ready";
+							worker.descriptor.consecutiveFailures = 0;
+							this.persistWorker(worker);
+							await this.syncAgentPeers();
 							return;
+						} catch (error) {
+							worker.client?.close();
+							worker.client = undefined;
+							if (retryIndex < WORKER_RETRY_DELAYS_MS.length - 1) {
+								throw error;
+							}
 						}
-						worker.descriptor.lifecycle = "ready";
-						worker.descriptor.consecutiveFailures = 0;
-						this.persistWorker(worker);
-						await this.syncAgentPeers();
-						return;
 					}
-					await this.recoverUncertainWorkerOperations(worker);
+					const safeToKillWorkerProcess =
+						processAlive && processIdentityMatches && worker.descriptor.processStartId !== undefined;
+					await this.recoverUncertainWorkerOperations(worker, safeToKillWorkerProcess);
 					if (this.isWorkerRecoveryCancelled(worker)) {
 						return;
 					}
@@ -1287,11 +1324,13 @@ export class DaemonSupervisor {
 		);
 	}
 
-	private async recoverUncertainWorkerOperations(worker: ResidentWorker): Promise<void> {
-		try {
-			process.kill(-worker.descriptor.pid, "SIGKILL");
-		} catch {
-			// The worker process group may already be fully reaped.
+	private async recoverUncertainWorkerOperations(worker: ResidentWorker, killWorkerProcess = true): Promise<void> {
+		if (killWorkerProcess) {
+			try {
+				process.kill(-worker.descriptor.pid, "SIGKILL");
+			} catch {
+				// The worker process group may already be fully reaped.
+			}
 		}
 		const orphanProcessJournalPath = worker.descriptor.orphanProcessJournalPath;
 		if (orphanProcessJournalPath) {
@@ -1559,11 +1598,15 @@ export class DaemonSupervisor {
 			result = await loading;
 		}
 		const publicSummary = this.publicSummary(match.worker, result.snapshot.summary);
-		for (let index = result.snapshot.messages.length - 1; index >= 0; index--) {
-			const latestMessage = result.snapshot.messages[index];
-			if (latestMessage?.role === "assistant") {
-				this.streamReconstructor.seed(activeSessionId, latestMessage);
-				break;
+		if (publicSummary.streamingMessage?.role === "assistant") {
+			this.streamReconstructor.seed(activeSessionId, publicSummary.streamingMessage);
+		} else {
+			for (let index = result.snapshot.messages.length - 1; index >= 0; index--) {
+				const latestMessage = result.snapshot.messages[index];
+				if (latestMessage?.role === "assistant") {
+					this.streamReconstructor.seed(activeSessionId, latestMessage);
+					break;
+				}
 			}
 		}
 		const publicResult: DaemonAttachResult = {
