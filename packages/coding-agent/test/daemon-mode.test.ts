@@ -197,7 +197,7 @@ describe("daemon mode helpers", () => {
 		});
 	});
 
-	it("lists and sends agent messages to live subagents", async () => {
+	it("lists and sends agent messages to retained subagents after a parent runtime replacement", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -250,6 +250,9 @@ describe("daemon mode helpers", () => {
 		} as never;
 		const internals = daemon as unknown as {
 			sessions: Map<string, ActiveSessionState>;
+			createSubagentRuntimeHost(parent: ActiveSessionState): {
+				disposeRlmSubagentRuntimes(options: { retain: boolean }): Promise<void>;
+			};
 			createAgentMessageListResult(current: ActiveSessionState): {
 				agents: Array<{
 					activeSessionId: string;
@@ -267,6 +270,7 @@ describe("daemon mode helpers", () => {
 		};
 		internals.sessions.set(parentState.activeSessionId, parentState);
 		internals.sessions.set(subagentState.activeSessionId, subagentState);
+		await internals.createSubagentRuntimeHost(parentState).disposeRlmSubagentRuntimes({ retain: true });
 
 		const subagentSummary = internals
 			.createAgentMessageListResult(parentState)
