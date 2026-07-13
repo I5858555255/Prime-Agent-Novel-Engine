@@ -448,6 +448,44 @@ describe("AgentSession rlm recursion", () => {
 		await expect(runPromise).rejects.toThrow();
 	});
 
+	it("keeps active rlm children running across a retained parent reset", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				if (text === "slow shard") {
+					childStarted = true;
+					void release.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				}
+				return stream;
+			},
+		});
+
+		const runPromise = root.runRlmChild("slow shard");
+		await waitFor(() => childStarted);
+		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		const run = [...runs.values()][0];
+		const child = run?.session;
+		if (!run || !child) {
+			throw new Error("Missing active child session");
+		}
+
+		await root.disposeAsync({ retainRlmChildSessions: true });
+
+		expect(run.status).toBe("running");
+		expect(root.retainFinishedRlmChildSession("finished-after-reset", child)).toBe(true);
+		releaseChild();
+		await expect(runPromise).resolves.toMatchObject({ answer: "child answer: slow shard" });
+		child.dispose();
+	});
+
 	it("cancels active rlm children when the parent session is aborted", async () => {
 		let releaseChild: () => void = () => {};
 		const release = new Promise<void>((resolve) => {

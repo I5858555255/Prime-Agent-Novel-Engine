@@ -233,7 +233,7 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(secondDispose).toHaveBeenCalledTimes(1);
 	});
 
-	it("disposes hosted RLM children during session replacement", async () => {
+	it("retains hosted RLM children during session replacement", async () => {
 		const disposeRlmSubagentRuntimes = vi.fn(async () => {});
 		const host: SubagentRuntimeHost = {
 			createRlmSubagentRuntime: async () => {
@@ -246,7 +246,23 @@ describe("AgentSessionRuntime characterization", () => {
 
 		await runtime.newSession();
 
-		expect(disposeRlmSubagentRuntimes).toHaveBeenCalledTimes(1);
+		expect(disposeRlmSubagentRuntimes).toHaveBeenCalledExactlyOnceWith({ retain: true });
+	});
+
+	it("disposes hosted RLM children when the runtime ends", async () => {
+		const disposeRlmSubagentRuntimes = vi.fn(async () => {});
+		const host: SubagentRuntimeHost = {
+			createRlmSubagentRuntime: async () => {
+				throw new Error("unexpected child creation");
+			},
+			disposeRlmSubagentRuntimes,
+		};
+		const { runtime } = await createRuntimeForTest(() => {});
+		runtime.setSubagentRuntimeHost(host);
+
+		await runtime.dispose();
+
+		expect(disposeRlmSubagentRuntimes).toHaveBeenCalledExactlyOnceWith({ retain: false });
 	});
 
 	it("persists message_end assistant replacements to the session manager", async () => {

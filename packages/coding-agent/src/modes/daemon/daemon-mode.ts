@@ -1174,7 +1174,10 @@ export class AgentDaemon {
 	private createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost {
 		return {
 			createRlmSubagentRuntime: async (options) => this.createRlmSubagentRuntime(parentState, options),
-			disposeRlmSubagentRuntimes: async () => {
+			disposeRlmSubagentRuntimes: async ({ retain }) => {
+				if (retain) {
+					return;
+				}
 				const cascadeError = await this.closeChildSessions(parentState, "replaced");
 				if (cascadeError) {
 					throw cascadeError;
@@ -1182,8 +1185,8 @@ export class AgentDaemon {
 			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
 				const state = this.findRuntimeState(runtime);
-				// A successful subagent stays resident so it's still viewable (torn down with the
-				// parent via closeChildSessions); errored/cancelled would re-seed as "done", so close them.
+				// A successful subagent stays resident so it's still viewable; fatal parent
+				// teardown later removes it via closeChildSessions. Errored/cancelled runs re-seed as "done", so close them.
 				if (state && status === "done") {
 					// Run shutdown side effects without disposing the still-readable session.
 					this.cancelSubagentRlmHeartbeats(state);

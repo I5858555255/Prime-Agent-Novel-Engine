@@ -631,6 +631,8 @@ interface RlmChildRun {
 	session?: AgentSession;
 	/** Re-emits the run's rlm_child_update snapshot with its current status. */
 	emitUpdate?: () => void;
+	/** Stops forwarding child updates after a parent runtime replacement. */
+	unsubscribe?: () => void;
 }
 
 // ============================================================================
@@ -813,6 +815,7 @@ export class AgentSession {
 	// Set at the start of async teardown so a child finishing mid-disposeAsync doesn't
 	// re-populate the retained map after it's been cleared.
 	private _disposing = false;
+	private _retainRlmChildSessionsOnDispose = false;
 	private _disposeAsyncPromise?: Promise<void>;
 	private _ipythonKernelProvisioner?: IpythonKernelProvisioner;
 	/** Artifact dir backing the current provisioner's kernel snapshot, if any. */
@@ -2279,10 +2282,11 @@ export class AgentSession {
 	 * (which flushes a final namespace snapshot) before the synchronous dispose, so
 	 * the latest state reaches disk instead of racing process exit.
 	 */
-	async disposeAsync(): Promise<void> {
+	async disposeAsync(options?: { retainRlmChildSessions?: boolean }): Promise<void> {
 		if (this._disposed) {
 			return;
 		}
+		this._retainRlmChildSessionsOnDispose ||= options?.retainRlmChildSessions === true;
 		// Concurrent callers await the same in-flight teardown so none resolves before
 		// the kernel snapshot flush finishes.
 		if (this._disposeAsyncPromise) {
@@ -2294,19 +2298,24 @@ export class AgentSession {
 	}
 
 	private async _disposeAsyncOnce(): Promise<void> {
-		// Flush kernels/traces for both still-running and retained children; the sync
-		// dispose() below only tears them down synchronously.
-		for (const run of this._activeRlmChildRuns.values()) {
-			if (run.session) {
-				await run.session.disposeAsync().catch(() => undefined);
+		if (!this._retainRlmChildSessionsOnDispose) {
+			// Flush kernels/traces for both still-running and retained children; the sync
+			// dispose() below only tears them down synchronously.
+			for (const run of this._activeRlmChildRuns.values()) {
+				if (run.session) {
+					await run.session.disposeAsync().catch(() => undefined);
+				}
 			}
 		}
+		this._detachRlmChildForwarders();
 		for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
 			unsubscribe();
 		}
 		this._retainedRlmChildUnsubscribes.clear();
-		for (const session of this._retainedRlmChildSessions.values()) {
-			await session.disposeAsync().catch(() => undefined);
+		if (!this._retainRlmChildSessionsOnDispose) {
+			for (const session of this._retainedRlmChildSessions.values()) {
+				await session.disposeAsync().catch(() => undefined);
+			}
 		}
 		this._retainedRlmChildSessions.clear();
 		try {
@@ -2328,13 +2337,21 @@ export class AgentSession {
 		this._refineAbortController?.abort();
 		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._autoRefineBranchVersion++;
-		this._cancelActiveRlmChildRuns("Parent session disposed");
+		if (!this._retainRlmChildSessionsOnDispose) {
+			this._cancelActiveRlmChildRuns("Parent session disposed");
+		}
+		this._detachRlmChildForwarders();
+		if (this._retainRlmChildSessionsOnDispose) {
+			this._activeRlmChildRuns.clear();
+		}
 		for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
 			unsubscribe();
 		}
 		this._retainedRlmChildUnsubscribes.clear();
-		for (const session of this._retainedRlmChildSessions.values()) {
-			session.dispose();
+		if (!this._retainRlmChildSessionsOnDispose) {
+			for (const session of this._retainedRlmChildSessions.values()) {
+				session.dispose();
+			}
 		}
 		this._retainedRlmChildSessions.clear();
 		this._pendingNextTurnMessages = [];
@@ -5769,6 +5786,13 @@ export class AgentSession {
 		return { session: child };
 	}
 
+	private _detachRlmChildForwarders(): void {
+		for (const run of this._activeRlmChildRuns.values()) {
+			run.unsubscribe?.();
+			run.unsubscribe = undefined;
+		}
+	}
+
 	private _cancelActiveRlmChildRuns(reason: string): void {
 		for (const run of this._activeRlmChildRuns.values()) {
 			this._cancelRlmChildRun(run, reason);
@@ -5795,14 +5819,16 @@ export class AgentSession {
 	}
 
 	/**
-	 * Retain a finished child session so the inspector can still read it; disposed with
-	 * the parent. Returns false (and disposes the child) when the parent is already
-	 * tearing down, so the caller can drop the matching event forwarder too.
+	 * Retain a finished child session so the inspector can still read it. A parent
+	 * runtime replacement leaves daemon-hosted children in the daemon registry, so a
+	 * child completing after that replacement is retained without reviving this old
+	 * parent session's local map.
 	 */
 	retainFinishedRlmChildSession(childId: string, session: AgentSession): boolean {
-		// A child can finish concurrently while the parent is (or has) torn down; don't
-		// resurrect the map (it would never be disposed), just drop the child now.
 		if (this._disposed || this._disposing) {
+			if (this._retainRlmChildSessionsOnDispose) {
+				return true;
+			}
 			void session.disposeAsync().catch(() => undefined);
 			return false;
 		}
@@ -5999,6 +6025,7 @@ export class AgentSession {
 						}
 					}
 				});
+				run.unsubscribe = unsubscribeChild;
 				if (isRlmChildRunCancelled(run)) {
 					await child.abort();
 					throw new Error(run.error ?? "RLM child cancelled");
@@ -6043,8 +6070,8 @@ export class AgentSession {
 				if (childRuntime) {
 					await this._releaseRlmSubagentRuntime(childRuntime, subagentOptions, releaseStatus);
 				}
-				// Keep the forwarder only if the child was actually retained (retention can
-				// decline when the parent is disposing); otherwise drop it.
+				// Keep the forwarder only if the child was actually retained by this live
+				// parent; a replaced parent leaves the daemon-owned child readable without it.
 				if (unsubscribeChild) {
 					if (this._retainedRlmChildSessions.has(run.id)) {
 						this._retainedRlmChildUnsubscribes.set(run.id, unsubscribeChild);
@@ -6052,6 +6079,7 @@ export class AgentSession {
 						unsubscribeChild();
 					}
 				}
+				run.unsubscribe = undefined;
 				run.abort = noopRlmChildAbort;
 				run.session = undefined;
 				this._activeRlmChildRuns.delete(run.id);

@@ -31,6 +31,37 @@ describe("daemon mode helpers", () => {
 		expect(getChildActiveSessionStates(sessions, parent).map((state) => state.activeSessionId)).toEqual(["child"]);
 	});
 
+	it("retains daemon children while the parent runtime is replaced", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const parentState = makeState("parent");
+		const childState = makeState("child", parentState.activeSessionId);
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createSubagentRuntimeHost(parent: ActiveSessionState): {
+				disposeRlmSubagentRuntimes(options: { retain: boolean }): Promise<void>;
+			};
+			closeChildSessions(parent: ActiveSessionState, reason: "replaced"): Promise<unknown>;
+		};
+		internals.sessions.set(parentState.activeSessionId, parentState);
+		internals.sessions.set(childState.activeSessionId, childState);
+		const closeChildSessions = vi.spyOn(internals, "closeChildSessions").mockResolvedValue(undefined);
+		const host = internals.createSubagentRuntimeHost(parentState);
+
+		await host.disposeRlmSubagentRuntimes({ retain: true });
+
+		expect(closeChildSessions).not.toHaveBeenCalled();
+		expect(internals.sessions.get(childState.activeSessionId)).toBe(childState);
+
+		await host.disposeRlmSubagentRuntimes({ retain: false });
+
+		expect(closeChildSessions).toHaveBeenCalledExactlyOnceWith(parentState, "replaced");
+	});
+
 	it("cancels pending extension UI requests when the last client detaches", () => {
 		const firstClient = makeClient("client-1", "active");
 		const secondClient = makeClient("client-2", "active");

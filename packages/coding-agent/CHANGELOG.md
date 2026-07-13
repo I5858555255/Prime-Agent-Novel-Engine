@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed Prime Inference credential and team-header precedence to prefer `PRIME_API_KEY`, then the Prime CLI config, then `auth.json`.
+- Fixed background subagents being stopped when their parent session runtime is replaced.
 
 ## [0.2.9] - 2026-07-13
 

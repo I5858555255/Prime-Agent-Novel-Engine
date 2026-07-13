@@ -13,6 +13,7 @@ import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } 
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
 import type {
 	CreateRlmSubagentRuntimeOptions,
+	DisposeRlmSubagentRuntimesOptions,
 	RlmSubagentReleaseStatus,
 	RlmSubagentRuntime,
 	SubagentRuntimeHost,
@@ -215,9 +216,12 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		});
 		await flushAgentTraceUpload(this.session.sessionManager).catch(() => undefined);
 		this.beforeSessionInvalidate?.();
+		// A replacement keeps the daemon's parent ActiveSessionState, so its hosted
+		// children remain targetable after the new runtime takes over.
+		const retainHostedRlmChildren = this.subagentRuntimeHost?.disposeRlmSubagentRuntimes !== undefined;
 		// Await the kernel's final snapshot flush before invalidating the session.
-		await this.session.disposeAsync();
-		await this.disposeHostedSubagentRuntimes();
+		await this.session.disposeAsync({ retainRlmChildSessions: retainHostedRlmChildren });
+		await this.disposeHostedSubagentRuntimes({ retain: retainHostedRlmChildren });
 	}
 
 	private bindRuntimeHost(): void {
@@ -248,10 +252,10 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		}
 	}
 
-	private async disposeHostedSubagentRuntimes(): Promise<void> {
+	private async disposeHostedSubagentRuntimes(options: DisposeRlmSubagentRuntimesOptions): Promise<void> {
 		let disposeError: unknown;
 		try {
-			await this.subagentRuntimeHost?.disposeRlmSubagentRuntimes?.();
+			await this.subagentRuntimeHost?.disposeRlmSubagentRuntimes?.(options);
 		} catch (error) {
 			disposeError ??= error;
 		}
@@ -591,7 +595,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 			disposeError ??= error;
 		}
 		try {
-			await this.disposeHostedSubagentRuntimes();
+			await this.disposeHostedSubagentRuntimes({ retain: false });
 		} catch (error) {
 			disposeError ??= error;
 		}
