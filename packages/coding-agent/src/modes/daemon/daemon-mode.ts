@@ -1178,6 +1178,19 @@ export class AgentDaemon {
 		);
 	}
 
+	private findRunningRlmChildState(parentState: ActiveSessionState, childId: string): ActiveSessionState | undefined {
+		for (const childState of getChildActiveSessionStates(this.sessions, parentState)) {
+			if (childState.runtime.metadata.rlmChildId === childId && isActiveSessionBusy(childState)) {
+				return childState;
+			}
+			const nested = this.findRunningRlmChildState(childState, childId);
+			if (nested) {
+				return nested;
+			}
+		}
+		return undefined;
+	}
+
 	private createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost {
 		return {
 			createRlmSubagentRuntime: async (options) => this.createRlmSubagentRuntime(parentState, options),
@@ -1866,7 +1879,14 @@ export class AgentDaemon {
 
 			case "cancel_rlm_child": {
 				const state = this.getSessionState(command.activeSessionId);
-				const cancelled = state.runtime.session.cancelRlmChildRun(command.childId);
+				let cancelled = state.runtime.session.cancelRlmChildRun(command.childId);
+				if (!cancelled) {
+					const retainedChild = this.findRunningRlmChildState(state, command.childId);
+					if (retainedChild) {
+						await this.closeSession(retainedChild, "killed");
+						cancelled = true;
+					}
+				}
 				return success(command.id, "cancel_rlm_child", { cancelled });
 			}
 
