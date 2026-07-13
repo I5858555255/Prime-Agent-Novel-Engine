@@ -37,6 +37,9 @@ if (process.env.PRIME_AGENT_INTERNAL_OWNED_WORKER === "1") {
 		};
 		attachJsonlLineReader(process.stdin, (line) => {
 			const command = JSON.parse(line) as { id?: string; type: string; marker?: string };
+			if (process.env.PRIME_AGENT_TEST_EXIT_ZERO_ON_COMMAND === command.type) {
+				process.exit(0);
+			}
 			if (process.env.PRIME_AGENT_TEST_CRASH_ON_COMMAND === command.type) {
 				process.exit(1);
 			}

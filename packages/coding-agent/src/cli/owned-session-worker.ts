@@ -440,7 +440,11 @@ export async function runOwnedSessionWorkerFrontend(
 				child.disconnect();
 			}
 			reapWorkerResources(workerPid);
-			const rpcCrashed = profile === "rpc" && !terminating && (exit.code !== 0 || exit.signal !== null);
+			const rpcCrashed =
+				profile === "rpc" &&
+				!terminating &&
+				(exit.code !== 0 || exit.signal !== null || pendingRpcCommands.size > 0);
+			const workerExitCode = rpcCrashed && exit.code === 0 ? 1 : exit.code;
 			if (Date.now() - workerStartedAt >= 60_000) {
 				recoveryAttempt = 0;
 			}
@@ -449,11 +453,11 @@ export async function runOwnedSessionWorkerFrontend(
 			}
 			const shouldRecover = rpcCrashed && !stdinEnded && recoveryAttempt < 3;
 			if (!shouldRecover) {
-				return terminationSignal ? exitCodeForSignal(terminationSignal) : exit.code;
+				return terminationSignal ? exitCodeForSignal(terminationSignal) : workerExitCode;
 			}
 			const descriptor = readOwnedRecoveryDescriptor(recoveryDescriptorPath);
 			if (!descriptor?.sessionFile) {
-				return terminationSignal ? exitCodeForSignal(terminationSignal) : exit.code;
+				return terminationSignal ? exitCodeForSignal(terminationSignal) : workerExitCode;
 			}
 			workerArgs = createRpcRecoveryArgs(args, descriptor.sessionFile);
 			const retryDelay = [250, 1000, 5000][recoveryAttempt] ?? 5000;
