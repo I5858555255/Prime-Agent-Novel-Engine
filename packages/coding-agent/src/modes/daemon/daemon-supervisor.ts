@@ -24,7 +24,7 @@ import type { SessionInfo } from "../../core/session-manager.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { PrivateFrame } from "../session-worker/private-framing.js";
 import { createActiveSessionId, type DaemonSocketClient } from "./active-session-state.js";
-import { CommandRecoveryJournal } from "./command-recovery-journal.js";
+import { CommandRecoveryJournal, createCommandIdempotencyKey } from "./command-recovery-journal.js";
 import { CompactAssistantStreamReconstructor, isCompactAssistantDelta } from "./compact-session-stream.js";
 import { DAEMON_CATALOG_ROLE_ENV, DaemonCatalogClient } from "./daemon-catalog-process.js";
 import { deserializeDaemonError, serializeDaemonError } from "./daemon-errors.js";
@@ -99,6 +99,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"agent_messages_resume",
 	"agent_messages_clear",
 	"abort",
+	"start_side_question",
+	"abort_side_question",
 	"execute_bash",
 	"abort_bash",
 	"cancel_rlm_child",
@@ -704,7 +706,7 @@ export class DaemonSupervisor {
 			case "list_saved_sessions":
 				return this.handleSavedSessionList(client, command);
 			case "create": {
-				const worker = await this.createOrReuseWorker(command);
+				const worker = await this.createOrReuseWorker(client.id, command);
 				const summary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 				if (!summary) {
 					throw new Error("Session worker started without a root session");
@@ -964,7 +966,7 @@ export class DaemonSupervisor {
 		return success(command.id, "list_saved_sessions", { sessions: saved.map(serializeSavedSessionInfo) });
 	}
 
-	private async createOrReuseWorker(command: DaemonCreateCommand): Promise<ResidentWorker> {
+	private async createOrReuseWorker(clientId: string, command: DaemonCreateCommand): Promise<ResidentWorker> {
 		let createCommand = command;
 		if (command.sessionPath) {
 			const activeMatches = this.matchWorkers(command.sessionPath);
@@ -986,7 +988,7 @@ export class DaemonSupervisor {
 		}
 		const key = createCommand.sessionPath
 			? resolve(createCommand.sessionPath)
-			: `new:${command.id ?? createActiveSessionId()}`;
+			: `new:${command.id ? createCommandIdempotencyKey(clientId, command.id) : createActiveSessionId()}`;
 		const pending = this.openingWorkers.get(key);
 		if (pending) {
 			return pending;

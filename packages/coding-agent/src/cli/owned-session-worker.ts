@@ -231,6 +231,16 @@ export async function runOwnedSessionWorkerFrontend(
 		}
 	};
 	const observeRpcOutput = (line: string) => {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(line) as unknown;
+		} catch {
+			return;
+		}
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return;
+		}
+		const response = parsed as { id?: unknown; type?: unknown; command?: unknown };
 		if (!process.stdout.write(`${line}\n`) && !rpcStdoutPaused) {
 			rpcStdoutPaused = true;
 			currentRpcOutput?.pause();
@@ -239,24 +249,19 @@ export async function runOwnedSessionWorkerFrontend(
 				currentRpcOutput?.resume();
 			});
 		}
-		try {
-			const response = JSON.parse(line) as { id?: unknown; type?: unknown; command?: unknown };
-			if (response.type !== "response" || typeof response.command !== "string") {
-				return;
+		if (response.type !== "response" || typeof response.command !== "string") {
+			return;
+		}
+		const id = typeof response.id === "string" ? response.id : undefined;
+		if (id) {
+			pendingRpcCommands.delete(`id:${id}`);
+			return;
+		}
+		for (const [key, pending] of pendingRpcCommands) {
+			if (pending.id === undefined && pending.command === response.command) {
+				pendingRpcCommands.delete(key);
+				break;
 			}
-			const id = typeof response.id === "string" ? response.id : undefined;
-			if (id) {
-				pendingRpcCommands.delete(`id:${id}`);
-				return;
-			}
-			for (const [key, pending] of pendingRpcCommands) {
-				if (pending.id === undefined && pending.command === response.command) {
-					pendingRpcCommands.delete(key);
-					break;
-				}
-			}
-		} catch {
-			// Non-response events remain byte-for-byte JSONL passthrough.
 		}
 	};
 	const failPendingRpcCommands = () => {
@@ -398,12 +403,15 @@ export async function runOwnedSessionWorkerFrontend(
 		let workerArgs = [...args];
 		let recoveryAttempt = 0;
 		while (true) {
+			if (terminating) {
+				return exitCodeForSignal(terminationSignal ?? null);
+			}
 			const workerStartedAt = Date.now();
 			const child = spawnWorker(workerArgs);
 			const workerPid = child.pid;
 			const exit = await new Promise<{ code: number; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
 				child.once("error", reject);
-				child.once("exit", (code, signal) => resolveExit({ code: code ?? exitCodeForSignal(signal), signal }));
+				child.once("close", (code, signal) => resolveExit({ code: code ?? exitCodeForSignal(signal), signal }));
 			});
 			currentChild = undefined;
 			currentRpcInput = undefined;
@@ -440,6 +448,9 @@ export async function runOwnedSessionWorkerFrontend(
 			const retryDelay = [250, 1000, 5000][recoveryAttempt] ?? 5000;
 			recoveryAttempt++;
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, retryDelay));
+			if (terminating) {
+				return exitCodeForSignal(terminationSignal ?? null);
+			}
 		}
 	} finally {
 		for (const { signal, handler } of signalHandlers) {

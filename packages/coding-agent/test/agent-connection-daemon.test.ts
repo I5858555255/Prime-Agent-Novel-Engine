@@ -1426,6 +1426,57 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.filter((request) => request.type === "attach")).toHaveLength(3);
 	});
 
+	it("does not reconnect after disposal while daemon recovery is pending", async () => {
+		const fakeClient = new FakeDaemonClient();
+		let finishRecovery: (() => void) | undefined;
+		const recoverDaemon = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					finishRecovery = resolve;
+				}),
+		);
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1", {
+			recoverDaemon,
+			reconnectTimeoutMs: 2000,
+		});
+		await connection.attach();
+
+		fakeClient.connected = false;
+		fakeClient.emitClose(new Error("Daemon socket closed"));
+		await vi.waitFor(() => expect(recoverDaemon).toHaveBeenCalledOnce());
+		await connection.dispose();
+		finishRecovery?.();
+		for (let flush = 0; flush < 5; flush++) {
+			await Promise.resolve();
+		}
+
+		expect(fakeClient.reconnectCount).toBe(0);
+	});
+
+	it("isolates subscriber failures during transport recovery", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1", {
+			recoverDaemon: async () => undefined,
+			reconnectTimeoutMs: 2000,
+		});
+		const statuses: string[] = [];
+		connection.subscribe(async () => {
+			throw new Error("broken subscriber");
+		});
+		connection.subscribe((event) => {
+			if (event.type === "connection_status") {
+				statuses.push(event.status);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.connected = false;
+		fakeClient.emitClose(new Error("Daemon socket closed"));
+
+		await vi.waitFor(() => expect(statuses).toEqual(["reconnecting", "connected"]));
+		expect(fakeClient.reconnectCount).toBe(1);
+	});
+
 	it("refreshes initial snapshots after live events make the cached snapshot stale", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.attachResultFactory = (command) =>
@@ -1780,6 +1831,43 @@ describe("DaemonAgentConnection", () => {
 				generation: "generation-active-1",
 				sequence: 14,
 			},
+		});
+	});
+
+	it("ignores delayed events from a retired daemon generation", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		const steeringUpdates: Array<readonly string[]> = [];
+		connection.subscribe((event) => {
+			if (event.type === "session_event" && event.event.type === "queue_update") {
+				steeringUpdates.push(event.event.steering);
+			}
+		});
+		await connection.attach();
+		const emitQueue = (generation: string, sequence: number, steering: string) => {
+			fakeClient.emitMessage({
+				type: "session_event",
+				activeSessionId: "active-1",
+				event: { type: "queue_update", steering: [steering], followUp: [] },
+				meta: {
+					id: `${generation}:${sequence}`,
+					protocol: DAEMON_PROTOCOL_INFO,
+					activeSessionId: "active-1",
+					sequence,
+					cursor: { generation, sequence },
+					emittedAt: "2026-01-01T00:00:00.000Z",
+				},
+			});
+		};
+
+		emitQueue("generation-new", 1, "new");
+		emitQueue("generation-active-1", 13, "old");
+		await vi.waitFor(() => expect(steeringUpdates).toEqual([["new"]]));
+
+		await connection.attach();
+		expect(fakeClient.requests.at(-1)).toMatchObject({
+			type: "attach",
+			resumeCursor: { generation: "generation-new", sequence: 1 },
 		});
 	});
 

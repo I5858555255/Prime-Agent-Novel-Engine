@@ -263,7 +263,11 @@ function rlmChildSnapshotForActiveSession(
 	const session = activeSession.runtime.session;
 	let answerPreview: string | undefined;
 	let toolUseCount = 0;
-	for (const message of session.messages) {
+	const messages =
+		session.state.streamingMessage?.role === "assistant"
+			? [...session.messages, session.state.streamingMessage]
+			: session.messages;
+	for (const message of messages) {
 		if (message.role === "assistant") {
 			const text = compactRlmText(readMessageText(message.content));
 			if (text) {

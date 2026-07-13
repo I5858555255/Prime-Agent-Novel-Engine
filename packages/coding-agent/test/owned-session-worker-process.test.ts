@@ -39,10 +39,16 @@ afterEach(async () => {
 	}
 });
 
-function spawnFrontend(args: string[], pidPath: string, keepAlive = false): ChildProcess {
+function spawnFrontend(
+	args: string[],
+	pidPath: string,
+	keepAlive = false,
+	environment: NodeJS.ProcessEnv = {},
+): ChildProcess {
 	const child = spawn(process.execPath, [tsxPath, fixturePath, ...args], {
 		env: {
 			...process.env,
+			...environment,
 			PRIME_AGENT_TEST_OWNED_PID_PATH: pidPath,
 			...(keepAlive ? { PRIME_AGENT_TEST_KEEP_ALIVE: "1" } : {}),
 			TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
@@ -103,6 +109,29 @@ describe("owned session worker processes", () => {
 		tempDirs.push(root);
 		const pidPath = join(root, "worker.pid");
 		const frontend = spawnFrontend(["--mode", "rpc"], pidPath);
+		let stdout = "";
+		frontend.stdout?.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString("utf8");
+		});
+		frontend.stdin?.end(`${JSON.stringify({ id: "request-1", type: "get_state" })}\n`);
+		const workerPid = await waitForWorkerPid(pidPath);
+		const exit = await waitForExit(frontend);
+		children.delete(frontend);
+
+		expect(exit).toEqual({ code: 0, signal: null });
+		expect(stdout).toBe(
+			`${JSON.stringify({ id: "request-1", type: "response", command: "get_state", success: true })}\n`,
+		);
+		await waitForProcessGone(workerPid);
+	});
+
+	it("drops malformed worker output instead of corrupting public RPC JSONL", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-owned-worker-test-"));
+		tempDirs.push(root);
+		const pidPath = join(root, "worker.pid");
+		const frontend = spawnFrontend(["--mode", "rpc"], pidPath, false, {
+			PRIME_AGENT_TEST_INVALID_RPC_OUTPUT: "1",
+		});
 		let stdout = "";
 		frontend.stdout?.on("data", (chunk: Buffer) => {
 			stdout += chunk.toString("utf8");

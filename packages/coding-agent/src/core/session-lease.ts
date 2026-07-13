@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { lockSync } from "proper-lockfile";
 
 export const SESSION_LEASES_ENABLED_ENV = "PRIME_AGENT_INTERNAL_SESSION_LEASES";
 export const SESSION_LEASE_OWNER_ID_ENV = "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID";
@@ -9,6 +11,7 @@ interface SessionLeaseOwner {
 	version: 1;
 	token: string;
 	pid: number;
+	processStartId?: string;
 	activeSessionId?: string;
 	sessionPath: string;
 	createdAt: string;
@@ -45,10 +48,12 @@ export class SessionLease {
 		}
 		this.released = true;
 		try {
-			const owner = readLeaseOwner(this.directory);
-			if (owner?.token === this.token) {
-				rmSync(this.directory, { recursive: true, force: true });
-			}
+			withLeaseGuard(this.directory, () => {
+				const owner = readLeaseOwner(this.directory);
+				if (owner?.token === this.token) {
+					rmSync(this.directory, { recursive: true, force: true });
+				}
+			});
 		} catch {
 			// Lease cleanup is best-effort. A stale owner is reclaimed by the next process.
 		}
@@ -63,6 +68,19 @@ function leasesEnabled(environment: NodeJS.ProcessEnv): boolean {
 function leaseDirectory(agentDir: string, sessionPath: string): string {
 	const key = createHash("sha256").update(sessionPath).digest("hex");
 	return join(agentDir, "session-leases", `${key}.lock`);
+}
+
+export function canonicalSessionPath(sessionPath: string): string {
+	const resolvedPath = resolve(sessionPath);
+	try {
+		return realpathSync(resolvedPath);
+	} catch {
+		try {
+			return join(realpathSync(dirname(resolvedPath)), basename(resolvedPath));
+		} catch {
+			return resolvedPath;
+		}
+	}
 }
 
 function readLeaseOwner(directory: string): SessionLeaseOwner | undefined {
@@ -92,6 +110,69 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
+function processStartId(pid: number): string | undefined {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		const commandEnd = stat.lastIndexOf(")");
+		const fields = stat.slice(commandEnd + 2).split(" ");
+		const startTime = fields[19];
+		if (startTime) {
+			return `proc:${startTime}`;
+		}
+	} catch {
+		// Fall through to the portable process listing used on macOS and BSD.
+	}
+	try {
+		const startTime = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return startTime ? `ps:${startTime}` : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+const CURRENT_PROCESS_START_ID = processStartId(process.pid);
+
+function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
+	if (!isProcessAlive(owner.pid)) {
+		return false;
+	}
+	if (!owner.processStartId) {
+		return true;
+	}
+	const currentStartId = processStartId(owner.pid);
+	return currentStartId === undefined || currentStartId === owner.processStartId;
+}
+
+function withLeaseGuard<T>(directory: string, action: () => T): T {
+	let release: (() => void) | undefined;
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			release = lockSync(directory, {
+				realpath: false,
+				lockfilePath: `${directory}.guard`,
+				stale: 5000,
+			});
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || attempt === 4) {
+				throw error;
+			}
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+		}
+	}
+	if (!release) {
+		throw new Error(`Could not coordinate session lease: ${directory}`);
+	}
+	try {
+		return action();
+	} finally {
+		release();
+	}
+}
+
 function reclaimStaleLease(directory: string): boolean {
 	const stalePath = `${directory}.stale-${process.pid}-${randomUUID()}`;
 	try {
@@ -114,42 +195,53 @@ export function acquireSessionLease(
 	if (!sessionPath || !leasesEnabled(environment)) {
 		return undefined;
 	}
-	const canonicalPath = resolve(sessionPath);
+	const canonicalPath = canonicalSessionPath(sessionPath);
 	const root = join(agentDir, "session-leases");
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	const directory = leaseDirectory(agentDir, canonicalPath);
 
-	for (let attempt = 0; attempt < 3; attempt++) {
-		const token = randomUUID();
-		const candidateDirectory = `${directory}.candidate-${process.pid}-${token}`;
-		const owner: SessionLeaseOwner = {
-			version: 1,
-			token,
-			pid: process.pid,
-			activeSessionId: environment[SESSION_LEASE_OWNER_ID_ENV],
-			sessionPath: canonicalPath,
-			createdAt: new Date().toISOString(),
-		};
-		mkdirSync(candidateDirectory, { mode: 0o700 });
-		writeFileSync(join(candidateDirectory, "owner.json"), `${JSON.stringify(owner, null, 2)}\n`, { mode: 0o600 });
-		try {
-			renameSync(candidateDirectory, directory);
-			return new SessionLease(canonicalPath, directory, token);
-		} catch (error) {
-			rmSync(candidateDirectory, { recursive: true, force: true });
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "EEXIST" && code !== "ENOTEMPTY") {
-				throw error;
+	try {
+		return withLeaseGuard(directory, () => {
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const token = randomUUID();
+				const candidateDirectory = `${directory}.candidate-${process.pid}-${token}`;
+				const owner: SessionLeaseOwner = {
+					version: 1,
+					token,
+					pid: process.pid,
+					processStartId: CURRENT_PROCESS_START_ID,
+					activeSessionId: environment[SESSION_LEASE_OWNER_ID_ENV],
+					sessionPath: canonicalPath,
+					createdAt: new Date().toISOString(),
+				};
+				mkdirSync(candidateDirectory, { mode: 0o700 });
+				writeFileSync(join(candidateDirectory, "owner.json"), `${JSON.stringify(owner, null, 2)}\n`, {
+					mode: 0o600,
+				});
+				try {
+					renameSync(candidateDirectory, directory);
+					return new SessionLease(canonicalPath, directory, token);
+				} catch (error) {
+					rmSync(candidateDirectory, { recursive: true, force: true });
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+						throw error;
+					}
+					const existingOwner = readLeaseOwner(directory);
+					if (existingOwner && isLeaseOwnerAlive(existingOwner)) {
+						throw new SessionAlreadyActiveError(canonicalPath, existingOwner.activeSessionId);
+					}
+					reclaimStaleLease(directory);
+				}
 			}
-			const owner = readLeaseOwner(directory);
-			if (owner && isProcessAlive(owner.pid)) {
-				throw new SessionAlreadyActiveError(canonicalPath, owner.activeSessionId);
-			}
-			if (!reclaimStaleLease(directory)) {
-			}
-		}
-	}
 
-	const owner = existsSync(directory) ? readLeaseOwner(directory) : undefined;
-	throw new SessionAlreadyActiveError(canonicalPath, owner?.activeSessionId);
+			const owner = existsSync(directory) ? readLeaseOwner(directory) : undefined;
+			throw new SessionAlreadyActiveError(canonicalPath, owner?.activeSessionId);
+		});
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+			throw new SessionAlreadyActiveError(canonicalPath, readLeaseOwner(directory)?.activeSessionId);
+		}
+		throw error;
+	}
 }

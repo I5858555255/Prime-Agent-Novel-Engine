@@ -2498,7 +2498,7 @@ export class InteractiveMode {
 			clearChat: true,
 			updateFooter: true,
 		});
-		this.restoreStreamingMessageFromSnapshot(snapshot.streamingMessage);
+		await this.restoreStreamingMessageFromSnapshot(snapshot.streamingMessage);
 		await this.refreshConnectionQueue();
 		if (compactionFinished) {
 			await this.flushCompactionQueue({ willRetry: false });
@@ -5728,7 +5728,7 @@ export class InteractiveMode {
 			updateFooter: true,
 			populateHistory: true,
 		});
-		this.restoreStreamingMessageFromSnapshot(streamingMessage);
+		await this.restoreStreamingMessageFromSnapshot(streamingMessage);
 
 		// Show compaction info if session was compacted
 		const compactionCount = state.compactionCount;
@@ -5738,9 +5738,15 @@ export class InteractiveMode {
 		}
 	}
 
-	private restoreStreamingMessageFromSnapshot(message: AgentMessage | undefined): void {
+	private async restoreStreamingMessageFromSnapshot(message: AgentMessage | undefined): Promise<void> {
 		if (message?.role === "assistant") {
 			this.startAssistantStreamingMessage(message);
+			for (const content of message.content) {
+				if (content.type === "toolCall") {
+					this.startedToolCalls.add(content.id);
+					await this.getOrCreatePendingToolComponent(content);
+				}
+			}
 		}
 	}
 

@@ -25,6 +25,12 @@ describe("CommandRecoveryJournal", () => {
 		expect(journal.begin("client-a", "command-a", "prompt")).toEqual({ status: "pending" });
 	});
 
+	it("does not collide when client and command ids contain separators", () => {
+		const journal = new CommandRecoveryJournal(createPath());
+		expect(journal.begin("client:a", "command", "prompt")).toEqual({ status: "new" });
+		expect(journal.begin("client", "a:command", "prompt")).toEqual({ status: "new" });
+	});
+
 	it("returns a durable stored result for a repeated idempotency key", () => {
 		const path = createPath();
 		const journal = new CommandRecoveryJournal(path);

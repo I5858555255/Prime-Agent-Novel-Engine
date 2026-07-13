@@ -296,6 +296,37 @@ describe("AgentCronJobStore", () => {
 		expect(migrated.list().map((job) => job.id)).toEqual(expect.arrayContaining([first.id, second.id]));
 	});
 
+	it("marks in-flight legacy dispatches interrupted during migration", () => {
+		const root = makeTempDir(tempDirs);
+		const legacyPath = join(root, "cron-jobs.json");
+		const legacy = new AgentCronJobStore(legacyPath);
+		const heartbeat = legacy.createHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: join(root, "sessions", "session-1.jsonl"),
+			cwd: root,
+			scheduleText: "every 10s",
+			prompt: "migrated heartbeat",
+			now: start,
+		});
+		legacy.claimDue(new Date("2026-01-01T12:34:10.000Z"));
+
+		expect(
+			migrateLegacyCronJobsToSessionArtifacts(legacyPath, {
+				now: new Date("2026-01-01T12:34:11.000Z"),
+			}),
+		).toBe(1);
+		const migrated = AgentCronJobStore.forSessionArtifacts();
+		migrated.registerSessionArtifact("session-1", join(root, "session-artifacts", "session-1"));
+		expect(migrated.list()).toEqual([
+			expect.objectContaining({
+				id: heartbeat.id,
+				lastError: "Interrupted before scheduled operation completion",
+				nextRunAt: "2026-01-01T12:34:20.000Z",
+			}),
+		]);
+	});
+
 	it("keeps overdue jobs eligible for the scheduler after restart", () => {
 		const store = new AgentCronJobStore(makeStorePath(tempDirs));
 		store.create({

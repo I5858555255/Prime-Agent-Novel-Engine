@@ -327,7 +327,13 @@ export class DaemonCatalogClient {
 		await new Promise<void>((resolveReady, rejectReady) => {
 			const timeout = setTimeout(() => {
 				cleanup();
-				rejectReady(new Error("Timed out starting daemon catalog"));
+				const error = new Error("Timed out starting daemon catalog");
+				this.handleClose(child, error);
+				if (child.connected) {
+					child.disconnect();
+				}
+				child.kill("SIGKILL");
+				rejectReady(error);
 			}, 5000);
 			const cleanup = () => {
 				clearTimeout(timeout);

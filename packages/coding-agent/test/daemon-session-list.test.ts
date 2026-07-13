@@ -396,6 +396,32 @@ describe("buildRlmChildSnapshots", () => {
 		expect(snapshots.map((snapshot) => [snapshot.id, snapshot.status])).toEqual([["sub-aaa", "running"]]);
 	});
 
+	it("includes in-flight assistant output in child snapshots", () => {
+		const parent = makeState({ activeSessionId: "parent" });
+		const child = makeState({
+			activeSessionId: "child",
+			isStreaming: true,
+			metadata: {
+				kind: "subagent",
+				createdAt: 1,
+				parentActiveSessionId: "parent",
+				rlmChildId: "sub-aaa",
+			},
+			streamingMessage: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Still investigating" },
+					{ type: "toolCall", id: "tool-1", name: "search", arguments: {} },
+				],
+			} as AgentMessage,
+		});
+
+		expect(buildRlmChildSnapshots("parent", [parent, child])[0]).toMatchObject({
+			answerPreview: "Still investigating",
+			toolUseCount: 1,
+		});
+	});
+
 	it("returns no snapshots for sessions without children", () => {
 		const solo = makeState({ activeSessionId: "solo" });
 		expect(buildRlmChildSnapshots("solo", [solo])).toEqual([]);
@@ -452,6 +478,7 @@ interface StateOptions {
 	hasRunningRlmChildren?: boolean;
 	hasAcceptedPromptInFlight?: boolean;
 	contextTokens?: number;
+	streamingMessage?: AgentMessage;
 	metadata?: {
 		kind: "top-level" | "subagent";
 		createdAt: number;
@@ -500,7 +527,7 @@ function makeState(options: StateOptions): ActiveSessionState {
 				_contextTokensForCurrentMessages: () => options.contextTokens,
 				pendingMessageCount: 0,
 				state: {
-					streamingMessage: undefined,
+					streamingMessage: options.streamingMessage,
 					pendingToolCalls: new Set(options.pendingToolCalls ?? []),
 				},
 			},

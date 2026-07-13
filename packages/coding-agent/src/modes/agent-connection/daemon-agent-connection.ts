@@ -147,6 +147,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly unsubscribeDaemonClose: () => void;
 	private readonly clientId = `daemon-agent-connection:${randomUUID()}`;
 	private lastEventCursor: DaemonEventCursor | undefined;
+	private readonly retiredEventGenerations = new Set<string>();
 	private lastEventSequence: number | undefined;
 	private latestSnapshot: AgentConnectionSnapshot | undefined;
 	private latestSnapshotIsFresh = false;
@@ -240,7 +241,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.terminalCloseEmitted = false;
 		const attachCursor = getAttachLastEventCursor(result);
 		if (attachCursor) {
-			this.lastEventCursor = maxEventCursor(this.lastEventCursor, attachCursor);
+			this.observeEventCursor(attachCursor);
 		}
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 		if ("snapshot" in result) {
@@ -859,6 +860,9 @@ export class DaemonAgentConnection implements AgentConnection {
 			while (!this.disposed && Date.now() < deadline) {
 				try {
 					await this.options.recoverDaemon?.();
+					if (this.disposed) {
+						return;
+					}
 					await this.client.connect(1000);
 					await this.client.waitForHello(3000);
 					await this.attach();
@@ -1114,6 +1118,7 @@ export class DaemonAgentConnection implements AgentConnection {
 					this.activeSessionId = restored.activeSessionId;
 					this.lastEventSequence = undefined;
 					this.lastEventCursor = undefined;
+					this.retiredEventGenerations.clear();
 					await this.attach();
 					if (this.disposed) {
 						return;
@@ -1215,7 +1220,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			lastEventCursor: message.lastEventCursor,
 		};
 		if (message.lastEventCursor) {
-			this.lastEventCursor = maxEventCursor(this.lastEventCursor, message.lastEventCursor);
+			this.observeEventCursor(message.lastEventCursor);
 		}
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, message.lastEventSequence);
 		this.attachedSessionId = snapshot.state.sessionId;
@@ -1241,6 +1246,9 @@ export class DaemonAgentConnection implements AgentConnection {
 	private isStaleSequencedMessage(message: DaemonOutbound): boolean {
 		const cursor = getDaemonMessageCursor(message);
 		if (cursor) {
+			if (this.retiredEventGenerations.has(cursor.generation)) {
+				return true;
+			}
 			return (
 				this.lastEventCursor?.generation === cursor.generation && cursor.sequence <= this.lastEventCursor.sequence
 			);
@@ -1252,7 +1260,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private observeDaemonEventSequence(message: DaemonOutbound): void {
 		const cursor = getDaemonMessageCursor(message);
 		if (cursor) {
-			this.lastEventCursor = cursor;
+			this.observeEventCursor(cursor);
 			this.lastEventSequence = cursor.sequence;
 			return;
 		}
@@ -1270,9 +1278,23 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 	}
 
+	private observeEventCursor(cursor: DaemonEventCursor): void {
+		const current = this.lastEventCursor;
+		if (current && current.generation !== cursor.generation) {
+			this.retiredEventGenerations.add(current.generation);
+		}
+		if (!current || current.generation !== cursor.generation || cursor.sequence > current.sequence) {
+			this.lastEventCursor = cursor;
+		}
+	}
+
 	private async emit(event: AgentConnectionEvent): Promise<void> {
 		for (const listener of [...this.listeners]) {
-			await listener(event);
+			try {
+				await listener(event);
+			} catch {
+				// One attachment must not interrupt delivery or transport recovery for the others.
+			}
 		}
 	}
 
@@ -1319,13 +1341,6 @@ function maxEventSequence(current: number | undefined, observed: number | undefi
 		return current;
 	}
 	return Math.max(current, observed);
-}
-
-function maxEventCursor(current: DaemonEventCursor | undefined, observed: DaemonEventCursor): DaemonEventCursor {
-	if (!current || current.generation !== observed.generation) {
-		return observed;
-	}
-	return current.sequence >= observed.sequence ? current : observed;
 }
 
 function mapDaemonSessionSnapshot(snapshot: DaemonSessionSnapshot, replay?: DaemonReplayInfo): AgentConnectionSnapshot {

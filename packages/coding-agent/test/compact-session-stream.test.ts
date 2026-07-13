@@ -139,4 +139,35 @@ describe("compact daemon assistant streaming", () => {
 			event: { message: { content: [{ type: "text", text: "Hello" }] } },
 		});
 	});
+
+	it("continues tool arguments after reconstructing from a snapshot", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		reconstructor.seed(
+			"active-tool",
+			assistant([{ type: "toolCall", id: "tool-1", name: "search", arguments: { query: "hel" } }]),
+		);
+		const updated = assistant([{ type: "toolCall", id: "tool-1", name: "search", arguments: { query: "hello" } }]);
+		const delta = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-tool",
+			event: {
+				type: "message_update",
+				message: updated,
+				assistantMessageEvent: {
+					type: "toolcall_delta",
+					contentIndex: 0,
+					delta: 'lo"}',
+					partial: updated,
+				},
+			},
+		});
+
+		expect(reconstructor.reconstruct(delta!)).toMatchObject({
+			event: {
+				message: {
+					content: [{ type: "toolCall", id: "tool-1", name: "search", arguments: { query: "hello" } }],
+				},
+			},
+		});
+	});
 });

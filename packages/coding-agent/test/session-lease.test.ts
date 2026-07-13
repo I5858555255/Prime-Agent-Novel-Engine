@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	acquireSessionLease,
+	canonicalSessionPath,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 	SessionAlreadyActiveError,
@@ -46,19 +47,19 @@ describe("session leases", () => {
 			expect(error).toMatchObject({
 				code: "session_already_active",
 				activeSessionId: "resident-a",
-				sessionPath: resolve(sessionPath),
+				sessionPath: canonicalSessionPath(sessionPath),
 			});
 		}
 
 		first?.release();
 		const second = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("owned-b"));
-		expect(second?.sessionPath).toBe(resolve(sessionPath));
+		expect(second?.sessionPath).toBe(canonicalSessionPath(sessionPath));
 		second?.release();
 	});
 
 	it("reclaims a lease whose owner process is gone", () => {
 		const agentDir = createTempDir();
-		const sessionPath = resolve(agentDir, "stale.jsonl");
+		const sessionPath = canonicalSessionPath(resolve(agentDir, "stale.jsonl"));
 		const key = createHash("sha256").update(sessionPath).digest("hex");
 		const lockDirectory = join(agentDir, "session-leases", `${key}.lock`);
 		mkdirSync(lockDirectory, { recursive: true });
@@ -69,6 +70,44 @@ describe("session leases", () => {
 				token: "stale",
 				pid: 2_147_483_647,
 				activeSessionId: "dead-owner",
+				sessionPath,
+				createdAt: new Date(0).toISOString(),
+			}),
+		);
+
+		const lease = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("replacement"));
+		expect(lease?.sessionPath).toBe(sessionPath);
+		lease?.release();
+	});
+
+	it("treats symlink aliases as the same persisted session", () => {
+		const agentDir = createTempDir();
+		const sessionPath = join(agentDir, "session.jsonl");
+		const aliasPath = join(agentDir, "session-alias.jsonl");
+		writeFileSync(sessionPath, "");
+		symlinkSync(sessionPath, aliasPath);
+		const first = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("resident-a"));
+
+		expect(() => acquireSessionLease(aliasPath, agentDir, enabledEnvironment("owned-b"))).toThrow(
+			SessionAlreadyActiveError,
+		);
+		first?.release();
+	});
+
+	it("reclaims a lease after its pid has been reused", () => {
+		const agentDir = createTempDir();
+		const sessionPath = canonicalSessionPath(resolve(agentDir, "reused-pid.jsonl"));
+		const key = createHash("sha256").update(sessionPath).digest("hex");
+		const lockDirectory = join(agentDir, "session-leases", `${key}.lock`);
+		mkdirSync(lockDirectory, { recursive: true });
+		writeFileSync(
+			join(lockDirectory, "owner.json"),
+			JSON.stringify({
+				version: 1,
+				token: "stale",
+				pid: process.pid,
+				processStartId: "different-process",
+				activeSessionId: "old-owner",
 				sessionPath,
 				createdAt: new Date(0).toISOString(),
 			}),

@@ -455,18 +455,44 @@ export class AgentDaemon {
 		if (!this.options.worker || !supervisorSocketPath) {
 			return;
 		}
-		const check = async () => {
-			if (this.shuttingDown) {
-				return;
-			}
-			if (!(await this.canConnectToSupervisor(supervisorSocketPath))) {
-				await this.launchReplacementSupervisor(supervisorSocketPath);
-			}
-			if (!this.shuttingDown) {
-				this.supervisorMonitorTimer = setTimeout(() => void check(), 1000);
-			}
-		};
-		this.supervisorMonitorTimer = setTimeout(() => void check(), 1500);
+		this.scheduleSupervisorAvailabilityCheck(supervisorSocketPath, 1500);
+	}
+
+	private scheduleSupervisorAvailabilityCheck(supervisorSocketPath: string, delayMs: number): void {
+		if (this.shuttingDown || this.hasAuthenticatedSupervisorConnection()) {
+			return;
+		}
+		if (this.supervisorMonitorTimer) {
+			clearTimeout(this.supervisorMonitorTimer);
+		}
+		this.supervisorMonitorTimer = setTimeout(() => {
+			this.supervisorMonitorTimer = undefined;
+			void this.checkSupervisorAvailability(supervisorSocketPath);
+		}, delayMs);
+	}
+
+	private async checkSupervisorAvailability(supervisorSocketPath: string): Promise<void> {
+		if (this.shuttingDown || this.hasAuthenticatedSupervisorConnection()) {
+			return;
+		}
+		if (await this.canConnectToSupervisor(supervisorSocketPath)) {
+			return;
+		}
+		await this.launchReplacementSupervisor(supervisorSocketPath);
+		if (!this.shuttingDown && !this.hasAuthenticatedSupervisorConnection()) {
+			this.scheduleSupervisorAvailabilityCheck(supervisorSocketPath, 5000);
+		}
+	}
+
+	private hasAuthenticatedSupervisorConnection(): boolean {
+		return [...this.clients].some((client) => client.authenticated === true);
+	}
+
+	private clearSupervisorAvailabilityCheck(): void {
+		if (this.supervisorMonitorTimer) {
+			clearTimeout(this.supervisorMonitorTimer);
+			this.supervisorMonitorTimer = undefined;
+		}
 	}
 
 	private canConnectToSupervisor(socketPath: string): Promise<boolean> {
@@ -743,6 +769,7 @@ export class AgentDaemon {
 		}
 		const createState = async (): Promise<ActiveSessionState> => {
 			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
+				sessionLease?.release();
 				throw new RuntimeOpenCancelledError();
 			}
 			const existing = this.findSessionBySessionFile(sessionManager.getSessionFile());
@@ -1686,6 +1713,10 @@ export class AgentDaemon {
 			this.detachClient(client);
 			client.detachInput();
 			this.clients.delete(client);
+			const supervisorSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+			if (this.options.worker && client.authenticated === true && supervisorSocketPath) {
+				this.scheduleSupervisorAvailabilityCheck(supervisorSocketPath, 100);
+			}
 		};
 		socket.on("close", cleanup);
 		socket.on("error", cleanup);
@@ -1722,6 +1753,7 @@ export class AgentDaemon {
 					return;
 				}
 				client.authenticated = true;
+				this.clearSupervisorAvailabilityCheck();
 				this.write(client, { id: commandId, type: "response", command: "worker_auth", success: true });
 				return;
 			}

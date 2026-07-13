@@ -25,6 +25,10 @@ if (process.env.PRIME_AGENT_INTERNAL_OWNED_WORKER === "1") {
 	if (args.includes("--mode") && args.includes("rpc")) {
 		attachJsonlLineReader(process.stdin, (line) => {
 			const command = JSON.parse(line) as { id?: string; type: string };
+			if (process.env.PRIME_AGENT_TEST_INVALID_RPC_OUTPUT === "1") {
+				process.stdout.write("truncated-json\n");
+				process.stdout.write("null\n");
+			}
 			process.stdout.write(
 				serializeJsonLine({
 					...(command.id ? { id: command.id } : {}),

@@ -11,6 +11,7 @@ export interface CompactAssistantDelta {
 	activeSessionId: string;
 	assistantMessageEvent: CompactAssistantMessageEvent;
 	contentStart?: AssistantMessage["content"][number];
+	toolCallArguments?: Record<string, unknown>;
 	meta?: DaemonEventMeta;
 }
 
@@ -26,13 +27,26 @@ export function createCompactAssistantDelta(message: DaemonOutbound): CompactAss
 		partial?: AssistantMessage;
 	};
 	const contentStart = compactContentStart(message.event.message, assistantMessageEvent);
+	const toolCallArguments = compactToolCallArguments(message.event.message, assistantMessageEvent);
 	return {
 		type: "assistant_stream_delta",
 		activeSessionId: message.activeSessionId,
 		assistantMessageEvent: assistantMessageEvent as CompactAssistantMessageEvent,
 		...(contentStart ? { contentStart } : {}),
+		...(toolCallArguments ? { toolCallArguments } : {}),
 		...(message.meta ? { meta: message.meta } : {}),
 	};
+}
+
+function compactToolCallArguments(
+	message: AssistantMessage,
+	event: CompactAssistantMessageEvent,
+): Record<string, unknown> | undefined {
+	if (event.type !== "toolcall_delta") {
+		return undefined;
+	}
+	const content = message.content[event.contentIndex];
+	return content?.type === "toolCall" ? content.arguments : undefined;
 }
 
 function compactContentStart(
@@ -140,10 +154,14 @@ export class CompactAssistantStreamReconstructor {
 				if (content?.type !== "toolCall") {
 					return undefined;
 				}
-				const key = this.toolCallKey(delta.activeSessionId, event.contentIndex);
-				const partialJson = `${this.toolCallJson.get(key) ?? ""}${event.delta}`;
-				this.toolCallJson.set(key, partialJson);
-				content.arguments = parseStreamingJson<Record<string, unknown>>(partialJson);
+				if (delta.toolCallArguments) {
+					content.arguments = delta.toolCallArguments;
+				} else {
+					const key = this.toolCallKey(delta.activeSessionId, event.contentIndex);
+					const partialJson = `${this.toolCallJson.get(key) ?? ""}${event.delta}`;
+					this.toolCallJson.set(key, partialJson);
+					content.arguments = parseStreamingJson<Record<string, unknown>>(partialJson);
+				}
 				break;
 			}
 			case "toolcall_end":

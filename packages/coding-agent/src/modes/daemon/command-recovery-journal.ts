@@ -1,14 +1,4 @@
-import {
-	chmodSync,
-	closeSync,
-	fsyncSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	renameSync,
-	writeFileSync,
-	writeSync,
-} from "node:fs";
+import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DaemonClientId, DaemonCommandId, DaemonResponse } from "./daemon-protocol.js";
 
@@ -52,7 +42,7 @@ export type CommandJournalBeginResult =
 const COMPACT_AFTER_RECORDS = 4096;
 
 export function createCommandIdempotencyKey(clientId: DaemonClientId, commandId: DaemonCommandId): string {
-	return `${clientId}:${commandId}`;
+	return JSON.stringify([clientId, commandId]);
 }
 
 /**
@@ -202,9 +192,20 @@ export class CommandRecoveryJournal {
 				});
 			}
 		}
-		writeFileSync(tempPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { mode: 0o600 });
-		chmodSync(tempPath, 0o600);
+		const descriptor = openSync(tempPath, "w", 0o600);
+		try {
+			writeSync(descriptor, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+			fsyncSync(descriptor);
+		} finally {
+			closeSync(descriptor);
+		}
 		renameSync(tempPath, this.path);
+		const directoryDescriptor = openSync(dirname(this.path), "r");
+		try {
+			fsyncSync(directoryDescriptor);
+		} finally {
+			closeSync(directoryDescriptor);
+		}
 		this.recordCount = records.length;
 	}
 }

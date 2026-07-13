@@ -767,7 +767,9 @@ export function migrateLegacyCronJobsToSessionArtifacts(
 	options: { isSessionOwned?: (job: AgentCronJob) => boolean; now?: Date } = {},
 ): number {
 	const now = options.now ?? new Date();
-	const jobs = readJobsFile(filePath).map((job) => {
+	const legacyState = readJobsState(filePath);
+	recoverInterruptedInState(legacyState, now, []);
+	const jobs = legacyState.jobs.map((job) => {
 		if (
 			!options.isSessionOwned ||
 			options.isSessionOwned(job) ||
@@ -1360,10 +1362,6 @@ function stripMatchingQuotes(value: string): string {
 
 function isDueJob(job: AgentCronJob, now: Date): boolean {
 	return job.status === "active" && job.nextRunAt !== undefined && Date.parse(job.nextRunAt) <= now.getTime();
-}
-
-function readJobsFile(path: string): AgentCronJob[] {
-	return readJobsState(path).jobs;
 }
 
 function readJobsState(path: string): CronJobsState {
