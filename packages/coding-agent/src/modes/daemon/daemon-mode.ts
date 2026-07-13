@@ -1797,8 +1797,11 @@ export class AgentDaemon {
 					return;
 				case "worker_subscribe": {
 					const state = this.getBoundSessionState(command.activeSessionId);
-					client.capabilities = normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi);
-					client.supportsExtensionUi = client.capabilities.has("extension_ui");
+					setDaemonClientSessionCapabilities(
+						client,
+						state.activeSessionId,
+						normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi),
+					);
 					state.clients.add(client);
 					client.attachedActiveSessionIds.add(state.activeSessionId);
 					this.write(client, success(command.id, "attach", summaryForActiveSession(state)));
@@ -1979,13 +1982,19 @@ export class AgentDaemon {
 				if (command.clientId) {
 					client.id = command.clientId;
 				}
-				client.capabilities = normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi);
-				client.supportsExtensionUi = client.capabilities.has("extension_ui");
+				setDaemonClientSessionCapabilities(
+					client,
+					state.activeSessionId,
+					normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi),
+				);
 				this.adoptClientEnv(state, filterClientEnv(command.env));
 				state.clients.add(client);
 				client.attachedActiveSessionIds.add(state.activeSessionId);
 				const result = this.createAttachResult(client, state, command);
-				if (client.transport === "private-framed" && client.capabilities.has("chunked_snapshot")) {
+				if (
+					client.transport === "private-framed" &&
+					daemonClientCapabilitiesForSession(client, state.activeSessionId).has("chunked_snapshot")
+				) {
 					const transcript = new SnapshotTranscriptCache({
 						activeSessionId: state.activeSessionId,
 						snapshotId: `${state.activeSessionId}-${state.eventGeneration}-${state.lastEventSequence}`,
@@ -2723,7 +2732,8 @@ export class AgentDaemon {
 				: createDaemonReplayInfo(command.resumeCursor, state.lastEventSequence, state.eventGeneration);
 		// Slim clients read summary/messages from the snapshot; duplicating them at
 		// the top level would serialize the full history twice more per attach.
-		const slim = client.capabilities.has("slim_attach");
+		const capabilities = daemonClientCapabilitiesForSession(client, state.activeSessionId);
+		const slim = capabilities.has("slim_attach");
 		return {
 			protocol: DAEMON_PROTOCOL_INFO,
 			activeSessionId: state.activeSessionId,
@@ -2734,7 +2744,7 @@ export class AgentDaemon {
 			lastEventCursor: { generation: state.eventGeneration, sequence: state.lastEventSequence },
 			client: {
 				id: client.id,
-				capabilities: [...client.capabilities],
+				capabilities: [...capabilities],
 			},
 		};
 	}
@@ -3562,6 +3572,7 @@ export class AgentDaemon {
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
 		for (const client of state.clients) {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
+			removeDaemonClientSessionCapabilities(client, state.activeSessionId);
 		}
 		state.clients.clear();
 		this.sessions.delete(state.activeSessionId);
@@ -3640,7 +3651,7 @@ export class AgentDaemon {
 			if (
 				sequencedMessage.type === "session_replaced" &&
 				client.transport === "private-framed" &&
-				client.capabilities.has("chunked_snapshot")
+				daemonClientCapabilitiesForSession(client, state.activeSessionId).has("chunked_snapshot")
 			) {
 				const accepted = this.write(client, {
 					...sequencedMessage,
@@ -3737,7 +3748,10 @@ export class AgentDaemon {
 				type: "attach",
 				activeSessionId,
 			});
-			if (client.transport === "private-framed" && client.capabilities.has("chunked_snapshot")) {
+			if (
+				client.transport === "private-framed" &&
+				daemonClientCapabilitiesForSession(client, activeSessionId).has("chunked_snapshot")
+			) {
 				if (purpose === "replacement") {
 					this.write(client, {
 						type: "session_replaced",
@@ -4000,9 +4014,40 @@ export function getChildActiveSessionStates(
 export function detachClientFromActiveSession(client: DaemonSocketClient, state: ActiveSessionState): void {
 	state.clients.delete(client);
 	client.attachedActiveSessionIds.delete(state.activeSessionId);
+	removeDaemonClientSessionCapabilities(client, state.activeSessionId);
 	if (state.clients.size === 0) {
 		cancelPendingExtensionUiRequests(state);
 	}
+}
+
+export function setDaemonClientSessionCapabilities(
+	client: DaemonSocketClient,
+	activeSessionId: string,
+	capabilities: ReadonlySet<DaemonClientCapability>,
+): void {
+	client.capabilitiesByActiveSessionId ??= new Map();
+	client.capabilitiesByActiveSessionId.set(activeSessionId, new Set(capabilities));
+	client.supportsExtensionUi = [...client.capabilitiesByActiveSessionId.values()].some((value) =>
+		value.has("extension_ui"),
+	);
+}
+
+function removeDaemonClientSessionCapabilities(client: DaemonSocketClient, activeSessionId: string): void {
+	client.capabilitiesByActiveSessionId?.delete(activeSessionId);
+	client.supportsExtensionUi = [...(client.capabilitiesByActiveSessionId?.values() ?? [])].some((value) =>
+		value.has("extension_ui"),
+	);
+}
+
+function daemonClientCapabilitiesForSession(
+	client: DaemonSocketClient,
+	activeSessionId: string,
+): ReadonlySet<DaemonClientCapability> {
+	return client.capabilitiesByActiveSessionId?.get(activeSessionId) ?? client.capabilities;
+}
+
+function daemonClientSupportsExtensionUi(client: DaemonSocketClient, activeSessionId: string): boolean {
+	return client.capabilitiesByActiveSessionId?.get(activeSessionId)?.has("extension_ui") ?? client.supportsExtensionUi;
 }
 
 export function cancelPendingExtensionUiRequests(state: ActiveSessionState): void {
@@ -4059,7 +4104,7 @@ export function shouldSendDaemonOutboundToClient(client: DaemonSocketClient, mes
 	return (
 		message.type !== "extension_ui_request" ||
 		!isDaemonDialogExtensionUiRequest(message.method) ||
-		client.supportsExtensionUi
+		daemonClientSupportsExtensionUi(client, message.activeSessionId)
 	);
 }
 

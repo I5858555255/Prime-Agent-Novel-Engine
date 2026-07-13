@@ -21,6 +21,7 @@ export interface DaemonSocketClient {
 	detachInput: () => void;
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;
+	capabilitiesByActiveSessionId?: Map<string, Set<DaemonClientCapability>>;
 }
 
 export interface ActiveSessionState {

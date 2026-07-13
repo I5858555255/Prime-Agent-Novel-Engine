@@ -13,6 +13,7 @@ import {
 	cancelPendingExtensionUiRequests,
 	detachClientFromActiveSession,
 	getChildActiveSessionStates,
+	setDaemonClientSessionCapabilities,
 	shouldSendDaemonOutboundToClient,
 } from "../src/modes/daemon/daemon-mode.js";
 import type { DaemonCommand } from "../src/modes/daemon/daemon-protocol.js";
@@ -2291,6 +2292,16 @@ describe("daemon mode helpers", () => {
 				method: "notify",
 			}),
 		).toBe(true);
+
+		setDaemonClientSessionCapabilities(uiClient, "active", new Set(["extension_ui"]));
+		setDaemonClientSessionCapabilities(uiClient, "other", new Set());
+		expect(shouldSendDaemonOutboundToClient(uiClient, dialogRequest)).toBe(true);
+		expect(
+			shouldSendDaemonOutboundToClient(uiClient, {
+				...dialogRequest,
+				activeSessionId: "other",
+			}),
+		).toBe(false);
 	});
 
 	it("deduplicates concurrent creates for the same session file", async () => {
