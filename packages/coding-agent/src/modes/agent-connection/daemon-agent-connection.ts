@@ -873,6 +873,7 @@ export class DaemonAgentConnection implements AgentConnection {
 					if (this.disposed) {
 						return;
 					}
+					this.client.resetTransportForReconnect();
 					const remainingMs = deadline - Date.now();
 					if (remainingMs <= 0) {
 						break;

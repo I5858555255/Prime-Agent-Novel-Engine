@@ -224,6 +224,20 @@ export class DaemonClient {
 		socket.destroy();
 	}
 
+	/** Discard a partially recovered transport so the next retry can reconnect cleanly. */
+	resetTransportForReconnect(): void {
+		const socket = this.socket;
+		if (!socket) {
+			return;
+		}
+		this.clearSocketReference(socket);
+		this.rejectAll(
+			new DaemonSocketClosedError(this.socketPath, undefined, "reconnect attempt did not complete"),
+			this.requestRecoveryEnabled,
+		);
+		socket.destroy();
+	}
+
 	onMessage(listener: DaemonClientMessageListener): () => void {
 		this.listeners.add(listener);
 		return () => {
@@ -490,15 +504,6 @@ export class DaemonClient {
 			this.autoReconnectPromise = undefined;
 		});
 		return this.autoReconnectPromise;
-	}
-
-	private resetTransportForReconnect(): void {
-		const socket = this.socket;
-		if (!socket) {
-			return;
-		}
-		this.clearSocketReference(socket);
-		socket.destroy();
 	}
 
 	private emitReconnectStatus(status: DaemonClientReconnectStatus): void {

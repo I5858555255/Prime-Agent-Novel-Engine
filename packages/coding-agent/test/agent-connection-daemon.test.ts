@@ -38,7 +38,9 @@ class FakeDaemonClient {
 	emitCloseOnClose = false;
 	connected = true;
 	reconnectCount = 0;
+	resetTransportCount = 0;
 	reconnectError: Error | undefined;
+	attachFailures = 0;
 	abortBashUnknownCommand = false;
 	abortAndClearQueueUnknownCommand = false;
 	updateRestartSessions: Array<Record<string, unknown>> = [];
@@ -61,6 +63,10 @@ class FakeDaemonClient {
 					data: { sessions: this.updateRestartSessions },
 				};
 			case "attach":
+				if (this.attachFailures > 0) {
+					this.attachFailures--;
+					throw new Error("attach failed");
+				}
 				if (command.activeSessionId === "active-restored" && this.restoredAttachGate) {
 					await this.restoredAttachGate;
 					this.restoredAttachCompleted++;
@@ -380,6 +386,26 @@ class FakeDaemonClient {
 		for (const listener of [...this.closeListeners]) {
 			listener(error);
 		}
+	}
+
+	enableRequestRecovery(): void {}
+
+	async connect(): Promise<void> {
+		if (this.connected) {
+			throw new Error("Prime Agent daemon client is already connected");
+		}
+		this.reconnectCount++;
+		if (this.reconnectError) {
+			throw this.reconnectError;
+		}
+		this.connected = true;
+	}
+
+	async waitForHello(): Promise<void> {}
+
+	resetTransportForReconnect(): void {
+		this.resetTransportCount++;
+		this.connected = false;
 	}
 
 	async reconnect(): Promise<void> {
@@ -1372,6 +1398,32 @@ describe("DaemonAgentConnection", () => {
 		});
 		await expect(connection.getMessages()).resolves.toEqual(reconnectedMessages);
 		expect(fakeClient.requests.map((request) => request.type)).toEqual(["attach", "attach"]);
+	});
+
+	it("resets a connected transport when reattach fails during supervisor recovery", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const recoverDaemon = vi.fn(async () => undefined);
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1", {
+			recoverDaemon,
+			reconnectTimeoutMs: 2000,
+		});
+		const statuses: string[] = [];
+		connection.subscribe((event) => {
+			if (event.type === "connection_status") {
+				statuses.push(event.status);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.attachFailures = 1;
+		fakeClient.connected = false;
+		fakeClient.emitClose(new Error("Daemon socket closed"));
+
+		await vi.waitFor(() => expect(statuses).toEqual(["reconnecting", "connected"]));
+		expect(recoverDaemon).toHaveBeenCalledTimes(2);
+		expect(fakeClient.reconnectCount).toBe(2);
+		expect(fakeClient.resetTransportCount).toBe(1);
+		expect(fakeClient.requests.filter((request) => request.type === "attach")).toHaveLength(3);
 	});
 
 	it("refreshes initial snapshots after live events make the cached snapshot stale", async () => {
