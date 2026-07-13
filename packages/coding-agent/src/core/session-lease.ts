@@ -148,7 +148,7 @@ function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
 
 function withLeaseGuard<T>(directory: string, action: () => T): T {
 	let release: (() => void) | undefined;
-	for (let attempt = 0; attempt < 5; attempt++) {
+	for (let attempt = 0; attempt < 100; attempt++) {
 		try {
 			release = lockSync(directory, {
 				realpath: false,
@@ -157,10 +157,13 @@ function withLeaseGuard<T>(directory: string, action: () => T): T {
 			});
 			break;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || attempt === 4) {
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED") {
 				throw error;
 			}
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+			if (attempt === 99) {
+				throw new Error(`Could not coordinate session lease: ${directory}`);
+			}
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
 		}
 	}
 	if (!release) {
@@ -200,48 +203,44 @@ export function acquireSessionLease(
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	const directory = leaseDirectory(agentDir, canonicalPath);
 
-	try {
-		return withLeaseGuard(directory, () => {
-			for (let attempt = 0; attempt < 3; attempt++) {
-				const token = randomUUID();
-				const candidateDirectory = `${directory}.candidate-${process.pid}-${token}`;
-				const owner: SessionLeaseOwner = {
-					version: 1,
-					token,
-					pid: process.pid,
-					processStartId: CURRENT_PROCESS_START_ID,
-					activeSessionId: environment[SESSION_LEASE_OWNER_ID_ENV],
-					sessionPath: canonicalPath,
-					createdAt: new Date().toISOString(),
-				};
-				mkdirSync(candidateDirectory, { mode: 0o700 });
-				writeFileSync(join(candidateDirectory, "owner.json"), `${JSON.stringify(owner, null, 2)}\n`, {
-					mode: 0o600,
-				});
-				try {
-					renameSync(candidateDirectory, directory);
-					return new SessionLease(canonicalPath, directory, token);
-				} catch (error) {
-					rmSync(candidateDirectory, { recursive: true, force: true });
-					const code = (error as NodeJS.ErrnoException).code;
-					if (code !== "EEXIST" && code !== "ENOTEMPTY") {
-						throw error;
-					}
-					const existingOwner = readLeaseOwner(directory);
-					if (existingOwner && isLeaseOwnerAlive(existingOwner)) {
-						throw new SessionAlreadyActiveError(canonicalPath, existingOwner.activeSessionId);
-					}
-					reclaimStaleLease(directory);
+	return withLeaseGuard(directory, () => {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const token = randomUUID();
+			const candidateDirectory = `${directory}.candidate-${process.pid}-${token}`;
+			const owner: SessionLeaseOwner = {
+				version: 1,
+				token,
+				pid: process.pid,
+				processStartId: CURRENT_PROCESS_START_ID,
+				activeSessionId: environment[SESSION_LEASE_OWNER_ID_ENV],
+				sessionPath: canonicalPath,
+				createdAt: new Date().toISOString(),
+			};
+			mkdirSync(candidateDirectory, { mode: 0o700 });
+			writeFileSync(join(candidateDirectory, "owner.json"), `${JSON.stringify(owner, null, 2)}\n`, {
+				mode: 0o600,
+			});
+			try {
+				renameSync(candidateDirectory, directory);
+				return new SessionLease(canonicalPath, directory, token);
+			} catch (error) {
+				rmSync(candidateDirectory, { recursive: true, force: true });
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+					throw error;
 				}
+				const existingOwner = readLeaseOwner(directory);
+				if (existingOwner && isLeaseOwnerAlive(existingOwner)) {
+					throw new SessionAlreadyActiveError(canonicalPath, existingOwner.activeSessionId);
+				}
+				reclaimStaleLease(directory);
 			}
-
-			const owner = existsSync(directory) ? readLeaseOwner(directory) : undefined;
-			throw new SessionAlreadyActiveError(canonicalPath, owner?.activeSessionId);
-		});
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
-			throw new SessionAlreadyActiveError(canonicalPath, readLeaseOwner(directory)?.activeSessionId);
 		}
-		throw error;
-	}
+
+		const owner = existsSync(directory) ? readLeaseOwner(directory) : undefined;
+		if (owner && isLeaseOwnerAlive(owner)) {
+			throw new SessionAlreadyActiveError(canonicalPath, owner.activeSessionId);
+		}
+		throw new Error(`Could not acquire session lease: ${canonicalPath}`);
+	});
 }

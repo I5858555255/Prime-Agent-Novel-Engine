@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { lockSync } from "proper-lockfile";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	acquireSessionLease,
@@ -78,6 +79,34 @@ describe("session leases", () => {
 		const lease = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("replacement"));
 		expect(lease?.sessionPath).toBe(sessionPath);
 		lease?.release();
+	});
+
+	it("reports guard contention as a coordination failure", () => {
+		const agentDir = createTempDir();
+		const sessionPath = canonicalSessionPath(join(agentDir, "session.jsonl"));
+		const key = createHash("sha256").update(sessionPath).digest("hex");
+		const leaseRoot = join(agentDir, "session-leases");
+		const lockDirectory = join(leaseRoot, `${key}.lock`);
+		mkdirSync(leaseRoot, { recursive: true });
+		const release = lockSync(lockDirectory, {
+			realpath: false,
+			lockfilePath: `${lockDirectory}.guard`,
+			stale: 5000,
+		});
+
+		try {
+			let thrown: unknown;
+			try {
+				acquireSessionLease(sessionPath, agentDir, enabledEnvironment("resident-a"));
+			} catch (error) {
+				thrown = error;
+			}
+			expect(thrown).toBeInstanceOf(Error);
+			expect(thrown).not.toBeInstanceOf(SessionAlreadyActiveError);
+			expect((thrown as Error).message).toContain("Could not coordinate session lease");
+		} finally {
+			release();
+		}
 	});
 
 	it("treats symlink aliases as the same persisted session", () => {
