@@ -846,6 +846,7 @@ export class AgentSession {
 	// Inline mode keeps finished child sessions so the inspector can still read them;
 	// the daemon does the same by leaving the child session resident in its registry.
 	private _retainedRlmChildSessions = new Map<string, AgentSession>();
+	private _retainedRlmChildDisposals = new Map<string, Promise<void>>();
 	// Kept alive for retained children so nested updates (e.g. a grandchild cancel)
 	// still forward to root; torn down when the retained child is disposed.
 	private _retainedRlmChildUnsubscribes = new Map<string, () => void>();
@@ -2338,6 +2339,10 @@ export class AgentSession {
 				await run.session.disposeAsync().catch(() => undefined);
 			}
 		}
+		for (const disposal of [...this._retainedRlmChildDisposals.values()]) {
+			await disposal.catch(() => undefined);
+		}
+		this._retainedRlmChildDisposals.clear();
 		for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
 			unsubscribe();
 		}
@@ -2366,6 +2371,7 @@ export class AgentSession {
 		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._autoRefineBranchVersion++;
 		this._cancelActiveRlmChildRuns("Parent session disposed");
+		this._retainedRlmChildDisposals.clear();
 		for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
 			unsubscribe();
 		}
@@ -5869,30 +5875,37 @@ export class AgentSession {
 	}
 
 	/**
-	 * Detach a retained (finished, resident) child session by id and drop its event
-	 * forwarder, returning a promise that settles once it is fully disposed. Used when a
-	 * persistent subagent is reopened under the same node id: the maps are cleared
-	 * synchronously (so nothing disposes it twice), and the caller awaits the returned
-	 * promise before opening the session file, so the prior child's kernel finishes
-	 * flushing its snapshot before the new run restores from it.
+	 * Dispose a retained (finished, resident) child session by id and drop its event
+	 * forwarder once teardown succeeds. Used when a persistent subagent is reopened
+	 * under the same node id; the caller awaits the returned promise before opening the
+	 * session file so the prior child's kernel finishes flushing its snapshot first.
 	 */
-	private async _disposeRetainedRlmChildSession(childId: string): Promise<void> {
-		const unsubscribe = this._retainedRlmChildUnsubscribes.get(childId);
-		if (unsubscribe) {
-			unsubscribe();
-			this._retainedRlmChildUnsubscribes.delete(childId);
+	private _disposeRetainedRlmChildSession(childId: string): Promise<void> {
+		const existing = this._retainedRlmChildDisposals.get(childId);
+		if (existing) {
+			return existing;
 		}
+		const disposal = this._disposeRetainedRlmChildSessionOnce(childId);
+		this._retainedRlmChildDisposals.set(childId, disposal);
+		void disposal
+			.finally(() => {
+				if (this._retainedRlmChildDisposals.get(childId) === disposal) {
+					this._retainedRlmChildDisposals.delete(childId);
+				}
+			})
+			.catch(() => undefined);
+		return disposal;
+	}
+
+	private async _disposeRetainedRlmChildSessionOnce(childId: string): Promise<void> {
 		const retained = this._retainedRlmChildSessions.get(childId);
-		if (retained) {
-			this._retainedRlmChildSessions.delete(childId);
-		}
 		// Host mode (daemon / in-process runtime): route through the host so its own
 		// registry entry (e.g. the daemon ActiveSessionState) is evicted, not just the
 		// AgentSession. Covers the case where the parent never held the session in
 		// _retainedRlmChildSessions but the host still owns the retained runtime. A teardown
-		// error is intentionally NOT swallowed here: it must fail the reopen rather than
-		// leave an orphaned nested session behind (the host returns false only when it found
-		// nothing to close).
+		// error is intentionally NOT swallowed here: it must fail the reopen. Keep the
+		// retained map entry until teardown succeeds so a failed host close cannot orphan a
+		// live child or let a later reopen skip the busy checks for that session.
 		const host = this._subagentRuntimeHost;
 		if (host?.closeRetainedRlmSubagentRuntime) {
 			const closed = await host.closeRetainedRlmSubagentRuntime(childId);
@@ -5901,12 +5914,25 @@ export class AgentSession {
 			if (!closed && retained) {
 				await this._abortAndDisposeRetainedSession(retained);
 			}
+			if (closed || retained) {
+				this._forgetRetainedRlmChildSession(childId);
+			}
 			return;
 		}
 		// Inline mode: dispose the session we hold directly.
 		if (retained) {
 			await this._abortAndDisposeRetainedSession(retained);
+			this._forgetRetainedRlmChildSession(childId);
 		}
+	}
+
+	private _forgetRetainedRlmChildSession(childId: string): void {
+		const unsubscribe = this._retainedRlmChildUnsubscribes.get(childId);
+		if (unsubscribe) {
+			unsubscribe();
+			this._retainedRlmChildUnsubscribes.delete(childId);
+		}
+		this._retainedRlmChildSessions.delete(childId);
 	}
 
 	/**

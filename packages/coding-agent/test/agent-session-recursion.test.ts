@@ -1595,16 +1595,19 @@ describe("AgentSession persistent subagents", () => {
 		expect(closeCalls.length).toBeGreaterThanOrEqual(1);
 	});
 
-	it("fails the reopen when the host's retained-session teardown throws", async () => {
+	it("keeps retained sessions tracked when the host's teardown throws", async () => {
 		const root = createPersistentSession();
 		const inspectable = root as unknown as {
 			_subagentRuntimeHost?: unknown;
+			_retainedRlmChildSessions: Map<string, AgentSession>;
 			_createInlineRlmSubagentRuntime(options: unknown): unknown;
 		};
 		let failNext = false;
+		let closeCalls = 0;
 		const host = {
 			createRlmSubagentRuntime: async (options: unknown) => inspectable._createInlineRlmSubagentRuntime(options),
 			closeRetainedRlmSubagentRuntime: async () => {
+				closeCalls += 1;
 				if (failNext) {
 					throw new Error("nested teardown failed");
 				}
@@ -1612,13 +1615,25 @@ describe("AgentSession persistent subagents", () => {
 			},
 		};
 		inspectable._subagentRuntimeHost = host;
+		const nodeId = persistentSubagentNodeId("reviewer");
 
 		await root.runRlmChild("first", { persist: true, persistent_id: "reviewer" });
+		const retained = inspectable._retainedRlmChildSessions.get(nodeId);
+		expect(retained).toBeDefined();
 		// The reopen must surface a failed retained-session teardown, not swallow it.
 		failNext = true;
 		await expect(root.runRlmChild("second", { persist: true, persistent_id: "reviewer" })).rejects.toThrow(
 			"nested teardown failed",
 		);
+		expect(inspectable._retainedRlmChildSessions.get(nodeId)).toBe(retained);
+
+		vi.spyOn(retained!, "isStreaming", "get").mockReturnValue(true);
+		failNext = false;
+		const closeCallsBeforeBusyCheck = closeCalls;
+		await expect(root.runRlmChild("third", { persist: true, persistent_id: "reviewer" })).rejects.toThrow(
+			"Persistent subagent reviewer is still busy; wait for it to finish before reopening",
+		);
+		expect(closeCalls).toBe(closeCallsBeforeBusyCheck);
 	});
 
 	it("rejects a non-persisted parent for persistent subagents", async () => {
