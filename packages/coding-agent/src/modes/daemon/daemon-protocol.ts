@@ -7,7 +7,7 @@ import type {
 } from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { AgentSessionRuntimeMetadata } from "../../core/agent-session-runtime.js";
-import type { AgentCronJob, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type { AgentCronJob, AgentHeartbeatDeliveryMode, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
 import type { CustomMessage } from "../../core/messages.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
@@ -22,6 +22,7 @@ import type {
 	AgentConnectionSessionContext,
 	AgentConnectionSessionEvent,
 	AgentConnectionSessionTreeNode,
+	AgentConnectionSideQuestionEvent,
 	AgentConnectionState,
 } from "../agent-connection/types.js";
 import type { SessionSummary } from "./daemon-session-list.js";
@@ -195,6 +196,7 @@ export interface DaemonUpdateRestartQueuedMessage {
 	queueKey?: string;
 	agentMessageId?: string;
 	customMessage?: CustomMessage;
+	prefixMessages?: CustomMessage[];
 }
 
 export interface DaemonUpdateRestartAcceptedPrompt extends DaemonUpdateRestartQueuedMessage {
@@ -276,6 +278,7 @@ export type DaemonCommand =
 			streamingBehavior?: "steer" | "followUp";
 			expandPromptTemplates?: boolean;
 			agentMessageId?: string;
+			customMessage?: CustomMessage;
 	  }
 	| {
 			id?: string;
@@ -284,9 +287,11 @@ export type DaemonCommand =
 			message: string;
 			content?: (TextContent | ImageContent)[];
 			images?: ImageContent[];
+			queueKey?: string;
 			expandPromptTemplates?: boolean;
 			agentMessageId?: string;
 			customMessage?: CustomMessage;
+			prefixMessages?: CustomMessage[];
 	  }
 	| {
 			id?: string;
@@ -299,6 +304,7 @@ export type DaemonCommand =
 			expandPromptTemplates?: boolean;
 			agentMessageId?: string;
 			customMessage?: CustomMessage;
+			prefixMessages?: CustomMessage[];
 	  }
 	| { id?: string; type: "restore_next_turn"; activeSessionId: string; messages: CustomMessage[] }
 	| { id?: string; type: "resume_queue"; activeSessionId: string }
@@ -315,6 +321,14 @@ export type DaemonCommand =
 	| { id?: string; type: "agent_messages_resume" }
 	| { id?: string; type: "agent_messages_clear"; activeSessionId: string }
 	| { id?: string; type: "abort"; activeSessionId: string }
+	| {
+			id?: string;
+			type: "start_side_question";
+			activeSessionId: string;
+			sideQuestionId: string;
+			question: string;
+	  }
+	| { id?: string; type: "abort_side_question"; activeSessionId: string; sideQuestionId: string }
 	| {
 			id?: string;
 			type: "execute_bash";
@@ -340,7 +354,14 @@ export type DaemonCommand =
 	| { id?: string; type: "cron_add"; activeSessionId: string; schedule: string; prompt: string }
 	| { id?: string; type: "cron_cancel"; jobId: string }
 	| { id?: string; type: "heartbeat_get"; activeSessionId: string }
-	| { id?: string; type: "heartbeat_set"; activeSessionId: string; schedule: string; prompt: string }
+	| {
+			id?: string;
+			type: "heartbeat_set";
+			activeSessionId: string;
+			schedule: string;
+			prompt: string;
+			deliveryMode?: AgentHeartbeatDeliveryMode;
+	  }
 	| { id?: string; type: "heartbeat_update"; activeSessionId: string; action: AgentHeartbeatUpdateAction }
 	| { id?: string; type: "set_model"; activeSessionId: string; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model"; activeSessionId: string; direction?: "forward" | "backward" }
@@ -418,6 +439,7 @@ export type DaemonErrorInfo =
 	| { code: "session_import_file_not_found"; filePath: string };
 
 export type DaemonSessionClosedReason = "killed" | "shutdown" | "completed" | "replaced" | "update" | "reopened";
+export type DaemonClosingReason = "shutdown" | "update";
 
 export type DaemonExtensionUIResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
 
@@ -485,7 +507,9 @@ export type DaemonOutbound =
 			clientId: DaemonClientId;
 			serverCapabilities: readonly DaemonClientCapability[];
 	  }
+	| { type: "daemon_closing"; reason: DaemonClosingReason }
 	| { type: "session_event"; activeSessionId: string; event: AgentConnectionSessionEvent; meta?: DaemonEventMeta }
+	| { type: "side_question_event"; activeSessionId: string; event: AgentConnectionSideQuestionEvent }
 	| { type: "session_status"; activeSessionId: string; recap?: string; meta?: DaemonEventMeta }
 	| {
 			type: "session_replaced";

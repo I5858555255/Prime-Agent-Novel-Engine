@@ -3,6 +3,7 @@
  * Handles TUI rendering and user interaction, delegating agent execution to AgentConnection.
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -60,13 +61,14 @@ import {
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 	VERSION,
 } from "../../config.js";
+import { AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL, isAgentSessionMessage } from "../../core/agent-messages.js";
 import {
 	type AgentTraceUploadResult,
 	getPrimeAgentTraceCredential,
 	uploadAgentTraceFile,
 } from "../../core/agent-traces.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
-import { type AgentCronJob, parseHeartbeatCommand } from "../../core/cron-jobs.js";
+import { type AgentCronJob, DEFAULT_HEARTBEAT_DELIVERY_MODE, parseHeartbeatCommand } from "../../core/cron-jobs.js";
 import type {
 	AutocompleteProviderFactory,
 	ContextUsage,
@@ -80,11 +82,11 @@ import type {
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { emptyGoalState, formatGoalUsage, GOAL_CONTEXT_PREVIEW_LABEL, type GoalState } from "../../core/goals.js";
+import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import {
 	createCompactionSummaryMessage,
 	createHeartbeatPromptMessage,
-	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
@@ -124,6 +126,7 @@ import type {
 	AgentConnectionSessionEvent,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
+	AgentConnectionSideQuestionEvent,
 	AgentConnectionSlashCommand,
 	AgentConnectionSnapshot,
 	AgentConnectionSourceInfo,
@@ -137,7 +140,13 @@ import {
 	formatUpdateAvailableNotice,
 } from "../shared/startup-notices.js";
 import { AGENT_ACTIVITY_LABELS, AgentActivityTracker, formatTokenCount } from "./agent-activity.js";
-import { type AuthenticationResult, getAnthropicSubscriptionAuthWarning, ProviderAuthFlows } from "./auth-flows.js";
+import {
+	type AuthenticationResult,
+	getAnthropicSubscriptionAuthWarning,
+	ProviderAuthFlows,
+	type ProviderLoginOptions,
+} from "./auth-flows.js";
+import { AgentMessageComponent } from "./components/agent-message.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -170,6 +179,7 @@ import { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 import { SessionPickerScreen } from "./components/session-picker-screen.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
+import { SideQuestionComponent } from "./components/side-question.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
 import { SubagentTreeView } from "./components/subagent-tree-view.js";
 import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
@@ -182,12 +192,7 @@ import type {
 	InteractiveModeLocalToolRendererDefinition,
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
-import {
-	isOnboardingModelReady,
-	type OnboardingStartupState,
-	shouldRunOnboarding,
-	shouldRunPrimeCliOnboardingSplash,
-} from "./onboarding.js";
+import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -242,8 +247,14 @@ export function getRandomStartHint(random = Math.random): (typeof START_HINTS)[n
 
 function isLabeledQueuedPreview(message: string): boolean {
 	return (
-		message.startsWith(`${HEARTBEAT_PROMPT_PREVIEW_LABEL}: `) || message.startsWith(`${GOAL_CONTEXT_PREVIEW_LABEL}: `)
+		message.startsWith(`${HEARTBEAT_PROMPT_PREVIEW_LABEL}: `) ||
+		message.startsWith(`${GOAL_CONTEXT_PREVIEW_LABEL}: `) ||
+		message.startsWith(`${AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL}: `)
 	);
+}
+
+export function formatQueuedMessagePreview(message: string, label: "Steering" | "Follow-up"): string {
+	return isLabeledQueuedPreview(message) ? message : `${label}: ${message}`;
 }
 
 function isExpandable(obj: unknown): obj is Expandable {
@@ -310,6 +321,7 @@ export interface BrandSplashMetadataLine {
 
 export interface BrandSplashHeaderOptions {
 	logo?: string;
+	topPadding?: boolean;
 	getExtraMetadata?: () => readonly BrandSplashMetadataLine[];
 	getHideStartHint?: () => boolean;
 	getStartHint?: () => string;
@@ -361,15 +373,20 @@ export class BrandSplashHeader implements Component {
 				]
 			: [];
 		const metaStart = Math.max(0, Math.floor((this.logoRaw.length - metaLines.length) / 2));
-		const lines = this.logoRaw.map((line, index) => {
-			const colored = theme.fg("text", line);
-			const meta = index >= metaStart && index < metaStart + metaLines.length ? metaLines[index - metaStart] : "";
-			const padding = showMeta
-				? " ".repeat(Math.max(0, this.logoCanvasWidth - visibleWidth(line) + this.gutter))
-				: "";
-			const content = truncateToWidth(colored + padding + meta, contentWidth, "");
-			return " ".repeat(paddingX) + content + " ".repeat(Math.max(0, safeWidth - paddingX - visibleWidth(content)));
-		});
+		const lines = this.options.topPadding ? [""] : [];
+		lines.push(
+			...this.logoRaw.map((line, index) => {
+				const colored = theme.fg("text", line);
+				const meta = index >= metaStart && index < metaStart + metaLines.length ? metaLines[index - metaStart] : "";
+				const padding = showMeta
+					? " ".repeat(Math.max(0, this.logoCanvasWidth - visibleWidth(line) + this.gutter))
+					: "";
+				const content = truncateToWidth(colored + padding + meta, contentWidth, "");
+				return (
+					" ".repeat(paddingX) + content + " ".repeat(Math.max(0, safeWidth - paddingX - visibleWidth(content)))
+				);
+			}),
+		);
 
 		if (this.verboseInstructions) {
 			lines.push(" ".repeat(safeWidth));
@@ -400,7 +417,7 @@ type GoalAnnouncementSnapshot = {
 
 type ModelSelectionResult = { status: "selected" } | { status: "cancelled" } | { status: "action"; actionId: string };
 
-type ModelFallbackWarningAction = "show" | "suppress" | "wait";
+type ModelFallbackWarningAction = "show" | "suppress";
 
 const MODEL_SELECTOR_ACTIONS: readonly ModelSelectorAction[] = [
 	{ id: "add_provider", label: "Add provider...", description: "subscription or API key" },
@@ -421,6 +438,16 @@ const HEARTBEAT_ARGUMENT_COMPLETIONS: AutocompleteItem[] = [
 		value: "every ",
 		label: "every <duration> <instruction>",
 		description: "Set an interval, then add an instruction: /heartbeat every 10s Scan the logs",
+	},
+	{
+		value: "--steer ",
+		label: "--steer <instruction>",
+		description: "Deliver by interrupting the current turn (default)",
+	},
+	{
+		value: "--follow-up ",
+		label: "--follow-up <instruction>",
+		description: "Deliver as a follow-up after the current turn finishes",
 	},
 ];
 
@@ -598,6 +625,7 @@ export class InteractiveMode {
 	private pendingMessagesContainer: Container;
 	private statusContainer: Container;
 	private queuedMessagesContainer: Container;
+	private sideQuestionContainer: Container;
 	private defaultEditor: CustomEditor;
 	private editor: EditorComponent;
 	private promptStash: PromptStash | undefined;
@@ -654,6 +682,9 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private sideQuestionComponent: SideQuestionComponent | undefined;
+	private sideQuestionEvent: AgentConnectionSideQuestionEvent | undefined;
+	private activeSideQuestionId: string | undefined;
 
 	// User bash execution tracking (! / !! prefix), driven by bash_* session events
 	private activeBashComponent: BashExecutionComponent | undefined = undefined;
@@ -664,6 +695,8 @@ export class InteractiveMode {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
+	private ipythonToolComponents = new Map<string, ToolExecutionComponent>();
+	private lateIpythonSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
 	private pendingToolCreations = new Set<string>();
 	private startedToolCalls = new Set<string>();
 	private pendingToolGeneration = 0;
@@ -789,6 +822,7 @@ export class InteractiveMode {
 		}
 		this.agentConnection.onBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
+			this.resetSideQuestion();
 		});
 		this.version = VERSION;
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
@@ -802,6 +836,7 @@ export class InteractiveMode {
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.queuedMessagesContainer = new Container();
+		this.sideQuestionContainer = new Container();
 		this.childAgentDetail = new ChildAgentDetailComponent(() => this.getChildAgentPanelRows(), {
 			ui: this.ui,
 		});
@@ -1077,6 +1112,7 @@ export class InteractiveMode {
 				() => this.getCurrentCwd(),
 				verboseInstructions,
 				{
+					topPadding: true,
 					getHideStartHint: () => this.childAgentPanelMode !== undefined || !this.isNewChat(),
 					getStartHint: () => this.startHint,
 				},
@@ -1095,11 +1131,13 @@ export class InteractiveMode {
 		this.renderRecap();
 		this.mainContainer.addChild(this.recapContainer);
 		this.mainContainer.addChild(this.queuedMessagesContainer);
+		this.mainContainer.addChild(this.sideQuestionContainer);
 		this.mainContainer.addChild(this.editorContainer);
 		this.mainContainer.addChild(this.childAgentSummary);
 		this.mainContainer.addChild(this.widgetContainerBelow);
 		this.footerSlot.addChild(this.footer);
 		this.mainContainer.addChild(this.footerSlot);
+		this.promptDock.addChild(this.sideQuestionContainer);
 		this.promptDock.addChild(this.editorContainer);
 		this.promptDock.addChild(this.childAgentSummary);
 		this.promptDock.addChild(this.footerSlot);
@@ -1214,6 +1252,13 @@ export class InteractiveMode {
 			if (initialPromptsSent) {
 				return;
 			}
+			if (!initialMessage && !initialMessages?.length) {
+				initialPromptsSent = true;
+				return;
+			}
+			if (!this.getCurrentModel()) {
+				return;
+			}
 			initialPromptsSent = true;
 
 			if (initialMessage) {
@@ -1237,10 +1282,9 @@ export class InteractiveMode {
 			}
 		};
 
-		const needsOnboarding = this.shouldRunOnboarding();
 		let deferredStartupNotificationsShown = false;
 		const showDeferredStartupNotifications = () => {
-			if (deferredStartupNotificationsShown || this.shouldRunOnboarding()) {
+			if (deferredStartupNotificationsShown) {
 				return;
 			}
 			deferredStartupNotificationsShown = true;
@@ -1282,42 +1326,24 @@ export class InteractiveMode {
 			if (modelFallbackWarningShown) {
 				return;
 			}
-			const action = this.getModelFallbackWarningAction(modelFallbackMessage, needsOnboarding);
-			if (action === "wait") {
-				return;
-			}
+			const action = this.getModelFallbackWarningAction(modelFallbackMessage);
 			modelFallbackWarningShown = true;
 			if (action === "show" && modelFallbackMessage) {
 				this.showWarning(modelFallbackMessage);
 			}
 		};
 
-		if (!needsOnboarding) {
-			showModelFallbackWarning();
-		}
-
-		let promptReady = !needsOnboarding;
-		if (needsOnboarding) {
-			promptReady = await this.runOnboardingFlow();
-		}
-
-		if (promptReady) {
-			showDeferredStartupNotifications();
-			showModelFallbackWarning();
-			void this.maybeWarnAboutAnthropicSubscriptionAuth();
-			await sendInitialPrompts();
-		}
+		await this.runStartupOnboarding();
+		showDeferredStartupNotifications();
+		showModelFallbackWarning();
+		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		await sendInitialPrompts();
 
 		// Main interactive loop
 		while (true) {
 			const userInput = await this.getUserInput();
 			if (userInput === undefined || this.returnToAgentsViewRequested) {
 				return "agents_view";
-			}
-			if (!(await this.ensurePromptReady())) {
-				this.editor.setText(userInput);
-				this.showStatus("Complete onboarding to send the restored prompt.");
-				continue;
 			}
 			showDeferredStartupNotifications();
 			showModelFallbackWarning();
@@ -1335,10 +1361,7 @@ export class InteractiveMode {
 		}
 	}
 
-	private getModelFallbackWarningAction(
-		modelFallbackMessage: string | undefined,
-		startupNeededOnboarding: boolean,
-	): ModelFallbackWarningAction {
+	private getModelFallbackWarningAction(modelFallbackMessage: string | undefined): ModelFallbackWarningAction {
 		if (!modelFallbackMessage) {
 			return "suppress";
 		}
@@ -1347,12 +1370,6 @@ export class InteractiveMode {
 		// visible to the daemon, or added after the snapshot was taken).
 		if (isNoModelsAvailableMessage(modelFallbackMessage) && this.getCurrentModel()) {
 			return "suppress";
-		}
-		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage) && !this.shouldRunOnboarding()) {
-			return "suppress";
-		}
-		if (startupNeededOnboarding && isNoModelsAvailableMessage(modelFallbackMessage)) {
-			return "wait";
 		}
 		return "show";
 	}
@@ -1373,81 +1390,48 @@ export class InteractiveMode {
 		return shouldRunPrimeCliOnboardingSplash(this.getOnboardingState());
 	}
 
-	private isCurrentModelReady(): boolean {
-		return isOnboardingModelReady(this.getOnboardingState());
-	}
-
-	private completeOnboarding(): void {
-		if (!this.settingsManager.getOnboardingCompleted()) {
-			this.settingsManager.setOnboardingCompleted(true);
+	private markOnboardingShown(): void {
+		if (!this.settingsManager.getOnboardingShown()) {
+			this.settingsManager.setOnboardingShown(true);
 		}
 	}
 
-	private completeOnboardingIfCurrentModelReady(): void {
-		if (this.isCurrentModelReady()) {
-			this.completeOnboarding();
-		}
-	}
-
-	private isOnboardingResolvedAfterModelPrompt(selectedModel: boolean): boolean {
-		if (selectedModel) {
-			this.completeOnboarding();
-			return true;
-		}
-		return !this.shouldRunOnboarding();
-	}
-
-	private async ensurePromptReady(): Promise<boolean> {
+	private async runStartupOnboarding(): Promise<boolean> {
 		if (!this.shouldRunOnboarding()) {
-			return true;
+			return false;
 		}
-		return this.runOnboardingFlow();
+
+		const showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash();
+		this.markOnboardingShown();
+		await this.settingsManager.flush();
+		await this.runOnboardingFlow(showPrimeCliSplash);
+		return true;
 	}
 
-	private async runOnboardingFlow(): Promise<boolean> {
+	private async runOnboardingFlow(showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash()): Promise<void> {
 		this.modelRegistry.refresh();
-		if (this.shouldRunPrimeCliOnboardingSplash()) {
+		if (showPrimeCliSplash) {
 			const shouldContinue = await this.showOnboardingModelSelectionSplash();
 			if (!shouldContinue) {
-				this.showStatus("Model selection required. Use /model to continue.");
-				return false;
+				return;
 			}
 
-			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-				return true;
-			}
-
-			this.showStatus("Model selection required. Use /model to continue.");
-			return false;
+			await this.promptForModelSelection({ allowProviderSetup: true });
+			return;
 		}
 
 		const availableModels = await this.getModelCandidates();
 		if (availableModels.length > 0) {
-			const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-			if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-				return true;
-			}
-
-			this.showStatus("Model selection required. Use /model to continue.");
-			return false;
+			await this.promptForModelSelection({ allowProviderSetup: true });
+			return;
 		}
 
 		const authResult = await this.showOnboardingPrimeLogin();
 		if (authResult.status !== "success") {
-			this.showStatus(
-				"Prime Intellect login required for onboarding. Use /login to configure other providers later.",
-			);
-			return false;
+			return;
 		}
 
-		const selectedModel = await this.promptForModelSelection({ allowProviderSetup: true });
-		if (this.isOnboardingResolvedAfterModelPrompt(selectedModel)) {
-			return true;
-		}
-
-		this.showStatus("Model selection required. Use /model to continue.");
-		return false;
+		await this.promptForModelSelection({ allowProviderSetup: true });
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -2124,13 +2108,7 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
-					this.chatContainer.clear();
-					await this.renderInitialMessages();
-					if (result.editorText && !this.editor.getText().trim()) {
-						this.editor.setText(result.editorText);
-					}
-					this.showStatus("Navigated to selected point");
-					void this.flushCompactionQueue({ willRetry: false });
+					await this.renderTreeNavigation(result);
 					return { cancelled: false };
 				},
 				switchSession: async (sessionPath, options) => {
@@ -2336,7 +2314,13 @@ export class InteractiveMode {
 	}
 
 	private hasInterruptibleWork(): boolean {
-		return this.isAgentStreaming() || this.isAgentCompacting() || this.isBashRunning() || this.getRetryAttempt() > 0;
+		return (
+			this.isAgentStreaming() ||
+			this.isAgentCompacting() ||
+			this.isBashRunning() ||
+			this.getRetryAttempt() > 0 ||
+			this.sideQuestionEvent?.status === "running"
+		);
 	}
 
 	private getRetryAttempt(): number {
@@ -2445,6 +2429,8 @@ export class InteractiveMode {
 		this.activityTracker.reset();
 		this.contextUsageTokenBaseline = 0;
 		this.resetPendingToolState();
+		this.ipythonToolComponents.clear();
+		this.lateIpythonSentAgentMessages.clear();
 		this.resetChildAgentInspector();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
 		this.syncGoalTray(this.getGoalState());
@@ -2484,6 +2470,16 @@ export class InteractiveMode {
 		return this.streamingMessage?.content.find(
 			(content): content is ToolCall => content.type === "toolCall" && content.id === toolCallId,
 		);
+	}
+
+	private registerIpythonToolComponent(toolName: string, toolCallId: string, component: ToolExecutionComponent): void {
+		if (toolName !== "ipython") {
+			return;
+		}
+		this.ipythonToolComponents.set(toolCallId, component);
+		for (const lateMessage of this.lateIpythonSentAgentMessages.get(toolCallId) ?? []) {
+			component.appendSentAgentMessage(lateMessage);
+		}
 	}
 
 	private async getOrCreatePendingToolComponent(
@@ -2531,6 +2527,7 @@ export class InteractiveMode {
 			}
 			this.chatContainer.addChild(component);
 			this.pendingTools.set(latestToolCall.id, component);
+			this.registerIpythonToolComponent(latestToolCall.name, latestToolCall.id, component);
 			return component;
 		} finally {
 			this.pendingToolCreations.delete(toolCall.id);
@@ -2922,24 +2919,16 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/** Render the recap line above the editor, only when one exists. */
+	/** Render the recap line above the editor when one exists. */
 	private renderRecap(): void {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
-		// The subagent panel shows its own recap; suppress the parent's while it's open.
 		const recap = this.childAgentPanelMode ? undefined : this.sessionRecap?.trim();
 		if (recap) {
-			this.recapContainer.addChild(new Text(theme.fg("dim", `Recap: ${recap}`), 1, 0));
-			// Blank line between the recap and the prompt bar below it.
+			this.recapContainer.addChild(new TruncatedText(theme.fg("dim", `Recap: ${recap}`), 1, 0));
 			this.recapContainer.addChild(new Spacer(1));
 		}
 		this.ui.requestRender();
-	}
-
-	private clearStaleRecapForPromptTurn(): void {
-		this.sessionRecap = undefined;
-		this.renderRecap();
-		this.updatePendingMessagesDisplay();
 	}
 
 	private renderWidgetContainer(
@@ -3689,6 +3678,105 @@ export class InteractiveMode {
 		return images.length > 0 ? images : undefined;
 	}
 
+	private async handleSideQuestion(question: string): Promise<void> {
+		if (!question) {
+			this.showWarning("Usage: /btw <question>");
+			return;
+		}
+		if (this.activeSideQuestionId) {
+			this.showWarning("Wait for the current side question to finish or cancel it first.");
+			return;
+		}
+
+		this.clearSideQuestion();
+		const event: AgentConnectionSideQuestionEvent = {
+			id: randomUUID(),
+			question,
+			answer: "",
+			status: "running",
+		};
+		this.activeSideQuestionId = event.id;
+		this.sideQuestionEvent = event;
+		this.sideQuestionComponent = new SideQuestionComponent(
+			event,
+			() => this.getSideQuestionMaxLines(),
+			this.settingsManager.getEditorPaddingX(),
+		);
+		this.sideQuestionContainer.addChild(new Spacer(1));
+		this.sideQuestionContainer.addChild(this.sideQuestionComponent);
+		this.ui.requestRender();
+
+		try {
+			await this.agentConnection.startSideQuestion(event.id, question);
+		} catch (error) {
+			this.handleSideQuestionEvent({
+				...event,
+				status: "error",
+				errorMessage: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	private handleSideQuestionEvent(event: AgentConnectionSideQuestionEvent): void {
+		if (event.id === this.activeSideQuestionId && event.status !== "running") {
+			this.activeSideQuestionId = undefined;
+		}
+		if (event.id !== this.sideQuestionEvent?.id || !this.sideQuestionComponent) {
+			return;
+		}
+		this.sideQuestionEvent = event;
+		this.sideQuestionComponent.update(event);
+		this.ui.requestRender();
+	}
+
+	private clearSideQuestion(options: { abort?: boolean } = {}): void {
+		const event = this.sideQuestionEvent;
+		if (options.abort && event?.status === "running") {
+			this.abortSideQuestion(event.id);
+		}
+		this.sideQuestionEvent = undefined;
+		this.sideQuestionComponent = undefined;
+		this.sideQuestionContainer.clear();
+		if (this.isInitialized) {
+			this.ui.requestRender();
+		}
+	}
+
+	private resetSideQuestion(): void {
+		this.clearSideQuestion({ abort: true });
+		this.activeSideQuestionId = undefined;
+	}
+
+	private abortSideQuestion(id: string, reportError = false): void {
+		void this.agentConnection
+			.abortSideQuestion(id)
+			.then((aborted) => {
+				if (!aborted && this.activeSideQuestionId === id) {
+					this.activeSideQuestionId = undefined;
+				}
+			})
+			.catch((error) => {
+				if (reportError) {
+					this.showError(error instanceof Error ? error.message : String(error));
+				}
+			});
+	}
+
+	private async renderTreeNavigation(result: { editorText?: string }): Promise<void> {
+		this.clearSideQuestion({ abort: true });
+		this.chatContainer.clear();
+		await this.renderInitialMessages();
+		if (result.editorText && !this.editor.getText().trim()) {
+			this.editor.setText(result.editorText);
+		}
+		this.showStatus("Navigated to selected point");
+		void this.flushCompactionQueue({ willRetry: false });
+	}
+
+	private getSideQuestionMaxLines(): number {
+		return Math.max(6, Math.min(12, Math.floor(this.ui.terminal.rows * 0.3)));
+	}
+
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
@@ -3704,6 +3792,11 @@ export class InteractiveMode {
 				const canonicalCommandText = commandName ? `/${commandName}${commandArgs ? ` ${commandArgs}` : ""}` : text;
 
 				// Handle commands
+				if (commandName === "btw") {
+					this.editor.setText("");
+					await this.handleSideQuestion(commandArgs);
+					return;
+				}
 				if (commandName === "settings" && !commandArgs) {
 					await this.showSettingsSelector();
 					this.editor.setText("");
@@ -3919,6 +4012,7 @@ export class InteractiveMode {
 						);
 						return;
 					}
+					this.clearSideQuestion({ abort: true });
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
 					// Optimistic: bash_start only fires after extension dispatch, and the
@@ -3939,6 +4033,8 @@ export class InteractiveMode {
 					}
 					return;
 				}
+
+				this.clearSideQuestion({ abort: true });
 
 				// Queue input during compaction (extension commands execute immediately)
 				if (this.isAgentCompacting()) {
@@ -3991,6 +4087,7 @@ export class InteractiveMode {
 					this.sessionEventQueue = run.catch(() => {});
 					await run;
 				} else if (event.type === "session_replaced") {
+					this.resetSideQuestion();
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
 					this.resetCurrentSessionRenderState({ clearPromptStash: true });
@@ -4001,6 +4098,8 @@ export class InteractiveMode {
 					this.sessionRecap = event.recap;
 					this.patchConnectionState({ recap: event.recap });
 					this.renderRecap();
+				} else if (event.type === "side_question_event") {
+					this.handleSideQuestionEvent(event.event);
 				} else if (event.type === "extension_ui_request") {
 					await this.handleConnectionExtensionUiRequest(event.request);
 				} else if (event.type === "closed") {
@@ -4196,7 +4295,7 @@ export class InteractiveMode {
 		this.updateConnectionStateFromEvent(event);
 		// A new user message resets the activity tracker to 0, so the in-flight baseline must
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
-		if (event.type === "message_start" && event.message.role === "user") {
+		if (event.type === "message_start" && (event.message.role === "user" || isAgentSessionMessage(event.message))) {
 			this.contextUsageTokenBaseline = 0;
 			this.setSessionHasMessages(true);
 			this.clearShortcutGuide();
@@ -4287,13 +4386,9 @@ export class InteractiveMode {
 			case "message_start":
 				if (event.message.role === "custom") {
 					this.addMessageToChat(event.message);
-					if (event.message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE) {
-						this.clearStaleRecapForPromptTurn();
-					}
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.addMessageToChat(event.message);
-					this.clearStaleRecapForPromptTurn();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					this.startAssistantStreamingMessage(event.message);
@@ -4392,6 +4487,17 @@ export class InteractiveMode {
 					this.startedToolCalls.delete(event.toolCallId);
 					this.ui.requestRender();
 				}
+				break;
+			}
+
+			case "ipython_sent_agent_message": {
+				const messages = this.lateIpythonSentAgentMessages.get(event.toolCallId) ?? [];
+				if (!messages.some((message) => message.id === event.message.id)) {
+					messages.push(event.message);
+					this.lateIpythonSentAgentMessages.set(event.toolCallId, messages);
+				}
+				this.ipythonToolComponents.get(event.toolCallId)?.appendSentAgentMessage(event.message);
+				this.ui.requestRender();
 				break;
 			}
 
@@ -4852,7 +4958,7 @@ export class InteractiveMode {
 	}
 
 	private getShortcutsTrayHint(): string | undefined {
-		if (!this.isNewChat()) {
+		if (!this.isNewChat() || this.editor.getText().length > 0) {
 			return undefined;
 		}
 		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : "/hotkeys for shortcuts";
@@ -4887,10 +4993,7 @@ export class InteractiveMode {
 		if (!this.options.returnToAgentsView) {
 			return undefined;
 		}
-		if (this.editor.getText().trim()) {
-			return undefined;
-		}
-		return keyHint("app.agents.back", "agents view");
+		return keyHint("app.agents.back", "agents");
 	}
 
 	private getTrayContextLabel(): string | undefined {
@@ -5298,15 +5401,17 @@ export class InteractiveMode {
 			}
 			case "custom": {
 				if (message.display) {
-					const component = isInjectedPromptMessage(message)
-						? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
-						: new CustomMessageComponent(
-								message,
-								this.bindLocalSessionExtensions
-									? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
-									: undefined,
-								this.getMarkdownThemeWithSettings(),
-							);
+					const component = isAgentSessionMessage(message)
+						? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings())
+						: isInjectedPromptMessage(message)
+							? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
+							: new CustomMessageComponent(
+									message,
+									this.bindLocalSessionExtensions
+										? this.getLocalSessionHost().getExtensionRunner().getMessageRenderer(message.customType)
+										: undefined,
+									this.getMarkdownThemeWithSettings(),
+								);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}
@@ -5406,6 +5511,8 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; populateHistory?: boolean; clearChat?: boolean } = {},
 	): Promise<void> {
 		this.resetPendingToolState();
+		this.ipythonToolComponents.clear();
+		this.lateIpythonSentAgentMessages.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		const toolNames: string[] = [];
 		for (const message of sessionContext.messages) {
@@ -5452,6 +5559,7 @@ export class InteractiveMode {
 						);
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
+						this.registerIpythonToolComponent(content.name, content.id, component);
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
 							let errorMessage: string;
@@ -5559,6 +5667,11 @@ export class InteractiveMode {
 
 	private handleEscape(): void {
 		this.clearCtrlCExitHint();
+		if (this.sideQuestionEvent) {
+			this.clearEscapeRepeat();
+			this.clearSideQuestion({ abort: true });
+			return;
+		}
 		const action = this.takeEscapeRepeatAction();
 		if (action === "tree") {
 			void this.showTreeSelector();
@@ -5618,6 +5731,9 @@ export class InteractiveMode {
 	}
 
 	private interruptOrClearInput(): void {
+		if (this.sideQuestionEvent?.status === "running") {
+			this.abortSideQuestion(this.sideQuestionEvent.id, true);
+		}
 		if (this.getRetryAttempt() > 0) {
 			void this.agentConnection.abortRetry();
 		}
@@ -6149,11 +6265,11 @@ export class InteractiveMode {
 		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
 			this.queuedMessagesContainer.addChild(new Spacer(1));
 			for (const message of steeringMessages) {
-				const text = theme.fg("dim", isLabeledQueuedPreview(message) ? message : `Steering: ${message}`);
+				const text = theme.fg("dim", formatQueuedMessagePreview(message, "Steering"));
 				this.queuedMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
 			for (const message of followUpMessages) {
-				const text = theme.fg("dim", isLabeledQueuedPreview(message) ? message : `Follow-up: ${message}`);
+				const text = theme.fg("dim", formatQueuedMessagePreview(message, "Follow-up"));
 				this.queuedMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
 			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
@@ -6503,7 +6619,6 @@ export class InteractiveMode {
 			try {
 				this.showStatus(`Switching model: ${model.id}`);
 				await this.applySelectedModel(model);
-				this.completeOnboardingIfCurrentModelReady();
 				this.showStatus(`Model: ${model.id}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 				this.checkDaxnutsEasterEgg(model);
@@ -6811,7 +6926,6 @@ export class InteractiveMode {
 					this.showStatus(`Switching model: ${model.id}`);
 					try {
 						await this.applySelectedModel(model);
-						this.completeOnboardingIfCurrentModelReady();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 						this.checkDaxnutsEasterEgg(model);
@@ -7109,14 +7223,7 @@ export class InteractiveMode {
 							return;
 						}
 
-						// Update UI
-						this.chatContainer.clear();
-						await this.renderInitialMessages();
-						if (result.editorText && !this.editor.getText().trim()) {
-							this.editor.setText(result.editorText);
-						}
-						this.showStatus("Navigated to selected point");
-						void this.flushCompactionQueue({ willRetry: false });
+						await this.renderTreeNavigation(result);
 					} catch (error) {
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
@@ -7346,16 +7453,21 @@ export class InteractiveMode {
 		});
 	}
 
-	private showLoginProviderSelector(authType?: "oauth" | "api_key"): Promise<AuthenticationResult> {
-		return this.createAuthFlows().runLogin(authType);
+	private showLoginProviderSelector(options: ProviderLoginOptions = {}): Promise<AuthenticationResult> {
+		return this.createAuthFlows().runLogin(options);
 	}
 
 	private async handleMcpCommand(args: string | undefined): Promise<void> {
 		const [sub, server] = (args ?? "").trim().split(/\s+/);
+		if (!sub) {
+			await this.showOAuthSelector("login", { initialCategory: "service" });
+			return;
+		}
+
 		const authStorage = this.modelRegistry.authStorage;
 		const isAuthed = (name: string) => authStorage.get(`mcp:${name}`) !== undefined;
 
-		if (!sub || sub === "list") {
+		if (sub === "list") {
 			const labels = new Map(BUILTIN_MCP_CATALOG.map((e) => [e.server, e.label]));
 			const names = new Set([...labels.keys(), ...Object.keys(this.settingsManager.getMcpServers() ?? {})]);
 			const lines = [...names].map((name) => {
@@ -7409,13 +7521,11 @@ export class InteractiveMode {
 		this.showError(`Unknown /mcp subcommand: ${sub}. Use list, login, or logout.`);
 	}
 
-	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {
+	private async showOAuthSelector(mode: "login" | "logout", loginOptions: ProviderLoginOptions = {}): Promise<void> {
 		if (mode === "login") {
-			const authResult = await this.showLoginProviderSelector();
-			// Service credentials don't change the model, so skip the model picker.
+			const authResult = await this.showLoginProviderSelector(loginOptions);
 			if (authResult.status === "success" && authResult.kind !== "service") {
 				this.invalidateConnectionModels();
-				await this.promptForModelSelection();
 			}
 			// An MCP integration login enables its skill, so reload resources — but a
 			// reload is refused mid-turn, so tell the user to /reload (matching /mcp login).
@@ -8074,9 +8184,15 @@ export class InteractiveMode {
 					return;
 				}
 				case "set": {
-					const heartbeat = await this.agentConnection.setHeartbeat(command.schedule, command.instruction);
+					const heartbeat = await this.agentConnection.setHeartbeat(
+						command.schedule,
+						command.instruction,
+						command.deliveryMode,
+					);
 					this.patchConnectionState({ heartbeat });
-					this.showStatus(`Heartbeat set\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
+					this.showStatus(
+						`Heartbeat set\nDelivery: ${heartbeat.deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE}\nNext run: ${heartbeat.nextRunAt ?? "-"}`,
+					);
 					return;
 				}
 				case "pause": {
@@ -8127,6 +8243,7 @@ export class InteractiveMode {
 			"",
 			`${theme.fg("dim", "Status:")} ${job.status}`,
 			`${theme.fg("dim", "Every:")} ${job.schedule.expression}`,
+			`${theme.fg("dim", "Delivery:")} ${job.deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE}`,
 			`${theme.fg("dim", "Instruction:")} ${job.prompt}`,
 			`${theme.fg("dim", "Next:")} ${next}`,
 			`${theme.fg("dim", "Last:")} ${last}`,

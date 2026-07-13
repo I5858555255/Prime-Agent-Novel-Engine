@@ -55,6 +55,8 @@ type ResetHarness = PromptStashLiveMarkerHarness & {
 	pendingBashComponents: unknown[];
 	activityTracker: { reset: Mock };
 	contextUsageTokenBaseline: number;
+	ipythonToolComponents: Map<string, unknown>;
+	lateIpythonSentAgentMessages: Map<string, unknown>;
 	resetPendingToolState: Mock;
 	resetChildAgentInspector: Mock;
 	setGoalAnnouncementBaseline: Mock;
@@ -64,6 +66,7 @@ type ResetHarness = PromptStashLiveMarkerHarness & {
 
 type SubmitHarness = PromptStashHarness & {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
+	sideQuestionContainer: { clear: Mock };
 	isAgentCompacting: () => boolean;
 	isAgentStreaming: () => boolean;
 	flushPendingBashComponents: Mock;
@@ -227,6 +230,7 @@ describe("InteractiveMode prompt stash", () => {
 		const mode: SubmitHarness = {
 			...createPromptStashHarness({ stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -248,6 +252,7 @@ describe("InteractiveMode prompt stash", () => {
 		mode = {
 			...createPromptStashHarness({ stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -275,6 +280,7 @@ describe("InteractiveMode prompt stash", () => {
 		mode = {
 			...createPromptStashHarness({ stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -305,6 +311,7 @@ describe("InteractiveMode prompt stash", () => {
 		const mode: SubmitHarness & { showSettingsSelector: Mock<() => Promise<void>> } = {
 			...createPromptStashHarness({ text: "/settings", stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => false,
 			flushPendingBashComponents: vi.fn(),
@@ -343,6 +350,8 @@ describe("InteractiveMode prompt stash", () => {
 			pendingBashComponents: [],
 			activityTracker: { reset: vi.fn() },
 			contextUsageTokenBaseline: 1,
+			ipythonToolComponents: new Map(),
+			lateIpythonSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
 			resetChildAgentInspector: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
@@ -374,6 +383,8 @@ describe("InteractiveMode prompt stash", () => {
 			pendingBashComponents: [],
 			activityTracker: { reset: vi.fn() },
 			contextUsageTokenBaseline: 1,
+			ipythonToolComponents: new Map(),
+			lateIpythonSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
 			resetChildAgentInspector: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
@@ -398,6 +409,7 @@ describe("InteractiveMode prompt stash", () => {
 		} = {
 			...createPromptStashHarness({ text: "quick follow-up", stash: "half-written draft" }),
 			defaultEditor: {},
+			sideQuestionContainer: { clear: vi.fn() },
 			isAgentCompacting: () => false,
 			isAgentStreaming: () => true,
 			flushPendingBashComponents: vi.fn(),

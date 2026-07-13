@@ -43,12 +43,15 @@ import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import {
+	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	AGENT_MESSAGE_SKILL_NAME,
+	type AgentSessionMessage,
 	type AgentSessionMessageController,
 	type AgentSessionMessageListResult,
 	type AgentSessionMessageReceipt,
 	assertDirectAgentMessageTarget,
 	createAgentMessageHostHandlers,
+	isAgentSessionMessage,
 	normalizeAgentSessionMessage,
 	normalizeAgentSessionMessageDeliveryMode,
 	parseAgentSessionMessagePromptId,
@@ -93,6 +96,7 @@ import {
 	loadContextTreeChildrenFromDisk,
 } from "./context-tree.js";
 import type { AgentCronJob, AgentRlmHeartbeatController, AgentRlmHeartbeatStatusUpdate } from "./cron-jobs.js";
+import { normalizeHeartbeatDeliveryMode } from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
@@ -139,7 +143,7 @@ import {
 	validateGoalBudget,
 	validateGoalObjective,
 } from "./goals.js";
-import type { HostRequestHandlers } from "./kernel/index.js";
+import type { HostRequestHandlers, KernelSentAgentMessage } from "./kernel/index.js";
 import { type RestoreResult, snapshotPathIn } from "./kernel/state-snapshot.js";
 import type { McpManager } from "./mcp/mcp-manager.js";
 import {
@@ -148,6 +152,7 @@ import {
 	createHeartbeatPromptMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
+	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import {
@@ -188,7 +193,7 @@ import {
 	type RlmUsage,
 	type SubagentRuntimeHost,
 } from "./rlm-runtime.js";
-import type { BranchSummaryEntry, CompactionEntry, SessionMessageEntry } from "./session-manager.js";
+import type { BranchSummaryEntry, CompactionEntry, SessionContext, SessionMessageEntry } from "./session-manager.js";
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
@@ -244,6 +249,7 @@ export type CompactionReason = "manual" | "threshold" | "overflow" | "requested"
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
+	| { type: "ipython_sent_agent_message"; toolCallId: string; message: KernelSentAgentMessage }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -416,6 +422,7 @@ export interface PromptOptions {
 	skipInputHandlers?: boolean;
 	agentMessageId?: string;
 	content?: (TextContent | ImageContent)[];
+	customMessage?: CustomMessage;
 }
 
 interface InternalPromptOptions extends PromptOptions {
@@ -429,7 +436,9 @@ type QueuedAgentMessage = UserMessage | CustomMessage;
 interface QueuedSteeringMessage {
 	text: string;
 	previewLabel?: string;
+	queueKey?: string;
 	agentMessageId?: string;
+	prefixMessages: CustomMessage[];
 	message: QueuedAgentMessage;
 }
 
@@ -438,6 +447,7 @@ interface QueuedFollowUpMessage {
 	previewLabel?: string;
 	queueKey?: string;
 	agentMessageId?: string;
+	prefixMessages: CustomMessage[];
 	message: QueuedAgentMessage;
 }
 
@@ -448,6 +458,7 @@ export interface QueuedAgentInputSnapshot {
 	queueKey?: string;
 	agentMessageId?: string;
 	customMessage?: CustomMessage;
+	prefixMessages?: CustomMessage[];
 }
 
 export interface AcceptedAgentInputSnapshot extends QueuedAgentInputSnapshot {
@@ -483,6 +494,9 @@ function createQueuedAgentInputSnapshot(
 	const snapshot = createQueuedAgentInputSnapshotFromUserMessage(message.text, message.message);
 	return {
 		...snapshot,
+		...(message.prefixMessages.length > 0
+			? { prefixMessages: message.prefixMessages.map((prefix) => cloneCustomMessage(prefix)) }
+			: {}),
 		...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 		...("queueKey" in message && message.queueKey ? { queueKey: message.queueKey } : {}),
 	};
@@ -490,6 +504,71 @@ function createQueuedAgentInputSnapshot(
 
 function queuedMessagePreview(message: { text: string; previewLabel?: string }): string {
 	return message.previewLabel ? `${message.previewLabel}: ${message.text}` : message.text;
+}
+
+function queuedAgentMessagePreview(message: QueuedSteeringMessage | QueuedFollowUpMessage): string {
+	if (isAgentSessionMessage(message.message)) {
+		return `${AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL}: ${message.message.details.message}`;
+	}
+	return queuedMessagePreview(message);
+}
+
+const IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY = "ipython_sent_agent_message";
+
+interface PersistedIpythonSentAgentMessage {
+	toolCallId: string;
+	message: KernelSentAgentMessage;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parsePersistedIpythonSentAgentMessage(value: unknown): PersistedIpythonSentAgentMessage | undefined {
+	if (!isObjectRecord(value) || typeof value.toolCallId !== "string" || !isObjectRecord(value.message)) {
+		return undefined;
+	}
+	const { id, message, deliveryStatus, target } = value.message;
+	if (
+		typeof id !== "string" ||
+		typeof message !== "string" ||
+		(deliveryStatus !== "delivered" && deliveryStatus !== "queued") ||
+		!isObjectRecord(target) ||
+		typeof target.activeSessionId !== "string" ||
+		typeof target.sessionId !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		toolCallId: value.toolCallId,
+		message: {
+			id,
+			message,
+			deliveryStatus,
+			target: {
+				activeSessionId: target.activeSessionId,
+				sessionId: target.sessionId,
+				...(typeof target.sessionName === "string" ? { sessionName: target.sessionName } : {}),
+			},
+		},
+	};
+}
+
+function appendSentAgentMessageToToolResult(
+	message: AgentMessage,
+	toolCallId: string,
+	sentMessage: KernelSentAgentMessage,
+): boolean {
+	if (message.role !== "toolResult" || message.toolName !== "ipython" || message.toolCallId !== toolCallId) {
+		return false;
+	}
+	const details = isObjectRecord(message.details) ? message.details : {};
+	const current = Array.isArray(details.sentAgentMessages) ? details.sentAgentMessages : [];
+	if (current.some((entry) => isObjectRecord(entry) && entry.id === sentMessage.id)) {
+		return true;
+	}
+	message.details = { ...details, sentAgentMessages: [...current, sentMessage] };
+	return true;
 }
 
 function injectedMessagePreviewLabel(message: CustomMessage): string | undefined {
@@ -506,7 +585,7 @@ function injectedMessagePreviewLabel(message: CustomMessage): string | undefined
 interface AcceptedAgentMessagePrompt {
 	text: string;
 	agentMessageId: string;
-	message: UserMessage;
+	message: QueuedAgentMessage;
 	messages: Set<AgentMessage>;
 	/** Pending nextTurn messages drained into this prompt; restored to the queue if the prompt is cleared. */
 	pendingNextTurnMessages: CustomMessage[];
@@ -709,6 +788,7 @@ export class AgentSession {
 	private _agentMessageDeliveryWaiters = new Map<string, AgentMessageDeliveryWaiter>();
 	private _deliveredAgentMessageIds = new Set<string>();
 	private _failedAgentMessageDeliveries = new Map<string, Error>();
+	private _lateIpythonSentAgentMessages = new Map<string, KernelSentAgentMessage[]>();
 
 	// Bash execution state
 	private _bashAbortController: AbortController | undefined = undefined;
@@ -829,6 +909,7 @@ export class AgentSession {
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
 		this._subagentSystemPrompt = config.subagentSystemPrompt;
 		this._goalState = this._loadPersistedGoalState();
+		this._restoreLateIpythonSentAgentMessages();
 		if (this._goalState.status === "active") {
 			this._goalAccountingStartedAt = Date.now();
 		}
@@ -959,9 +1040,58 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: this._steeringMessages.map(queuedMessagePreview),
-			followUp: this._followUpMessages.map(queuedMessagePreview),
+			steering: this._steeringMessages.map(queuedAgentMessagePreview),
+			followUp: this._followUpMessages.map(queuedAgentMessagePreview),
 		});
+	}
+
+	private _restoreLateIpythonSentAgentMessages(): void {
+		this._lateIpythonSentAgentMessages.clear();
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "custom" || entry.customType !== IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY) {
+				continue;
+			}
+			const persisted = parsePersistedIpythonSentAgentMessage(entry.data);
+			if (persisted) {
+				this._rememberLateIpythonSentAgentMessage(persisted.toolCallId, persisted.message);
+			}
+		}
+	}
+
+	private _rememberLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): boolean {
+		const messages = this._lateIpythonSentAgentMessages.get(toolCallId) ?? [];
+		const isNew = !messages.some((entry) => entry.id === message.id);
+		if (isNew) {
+			messages.push(message);
+			this._lateIpythonSentAgentMessages.set(toolCallId, messages);
+		}
+		for (let index = this.agent.state.messages.length - 1; index >= 0; index -= 1) {
+			if (appendSentAgentMessageToToolResult(this.agent.state.messages[index], toolCallId, message)) {
+				break;
+			}
+		}
+		return isNew;
+	}
+
+	private _applyLateIpythonSentAgentMessages(message: AgentMessage): void {
+		if (message.role !== "toolResult" || message.toolName !== "ipython") {
+			return;
+		}
+		for (const sentMessage of this._lateIpythonSentAgentMessages.get(message.toolCallId) ?? []) {
+			appendSentAgentMessageToToolResult(message, message.toolCallId, sentMessage);
+		}
+	}
+
+	private _recordLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): void {
+		const record = () => {
+			if (this._disposed || !this._rememberLateIpythonSentAgentMessage(toolCallId, message)) {
+				return;
+			}
+			this.sessionManager.appendCustomEntry(IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY, { toolCallId, message });
+			this._emit({ type: "ipython_sent_agent_message", toolCallId, message });
+		};
+		this._agentEventQueue = this._agentEventQueue.then(record, record);
+		this._agentEventQueue.catch(() => {});
 	}
 
 	private _emitGoalUpdate(): void {
@@ -1495,12 +1625,14 @@ export class AgentSession {
 				if (payload.label !== undefined && typeof payload.label !== "string") {
 					throw new Error("rlm_heartbeat.create label must be a string when provided");
 				}
+				const deliveryMode = normalizeHeartbeatDeliveryMode(payload.delivery_mode ?? payload.deliveryMode);
 				return {
 					heartbeat: rlmHeartbeatHostResponse(
 						controller.createRlmHeartbeat({
 							instruction: payload.instruction,
 							interval: payload.interval,
 							label: payload.label,
+							deliveryMode,
 						}),
 					),
 				};
@@ -1521,11 +1653,14 @@ export class AgentSession {
 				if (payload.status !== undefined && !isRlmHeartbeatStatusUpdate(payload.status)) {
 					throw new Error('rlm_heartbeat.update status must be "pause" or "resume" when provided');
 				}
+				const rawDeliveryMode = payload.delivery_mode ?? payload.deliveryMode;
+				const deliveryMode = normalizeHeartbeatDeliveryMode(rawDeliveryMode);
 				if (
 					payload.instruction === undefined &&
 					payload.interval === undefined &&
 					payload.label === undefined &&
-					payload.status === undefined
+					payload.status === undefined &&
+					rawDeliveryMode === undefined
 				) {
 					throw new Error("rlm_heartbeat.update requires at least one field to update");
 				}
@@ -1535,6 +1670,7 @@ export class AgentSession {
 					interval: payload.interval,
 					label: payload.label,
 					status: payload.status,
+					deliveryMode,
 				});
 				return { heartbeat: heartbeat ? rlmHeartbeatHostResponse(heartbeat) : null };
 			}
@@ -1814,6 +1950,9 @@ export class AgentSession {
 	}
 
 	private async _processAgentEvent(event: AgentEvent): Promise<void> {
+		if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "toolResult") {
+			this._applyLateIpythonSentAgentMessages(event.message);
+		}
 		const acceptedPrompt = this._acceptedAgentMessagePrompt;
 		if (acceptedPrompt && (event.type === "message_start" || event.type === "message_end")) {
 			if (event.message === acceptedPrompt.message) {
@@ -1991,7 +2130,9 @@ export class AgentSession {
 
 	private _isPromptTurnStartMessage(message: AgentMessage): boolean {
 		return (
-			message.role === "user" || (message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE)
+			message.role === "user" ||
+			isAgentSessionMessage(message) ||
+			(message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE)
 		);
 	}
 
@@ -2346,6 +2487,14 @@ export class AgentSession {
 		return this.agent.state.messages;
 	}
 
+	buildSessionContext(): SessionContext {
+		const context = this.sessionManager.buildSessionContext();
+		for (const message of context.messages) {
+			this._applyLateIpythonSentAgentMessages(message);
+		}
+		return context;
+	}
+
 	/** Current steering mode */
 	get steeringMode(): "all" | "one-at-a-time" {
 		return this.agent.steeringMode;
@@ -2476,23 +2625,30 @@ export class AgentSession {
 	}
 
 	async acceptAgentMessagePrompt(text: string, options?: PromptOptions): Promise<void> {
+		const customMessage =
+			options?.customMessage && isAgentSessionMessage(options.customMessage) ? options.customMessage : undefined;
 		return this._prompt(text, {
 			...options,
 			expandPromptTemplates: false,
 			skipInputHandlers: true,
 			skipPrePromptWork: true,
 			returnAfterAccepted: true,
-			agentMessageId: options?.agentMessageId ?? parseAgentSessionMessagePromptId(text),
+			agentMessageId: options?.agentMessageId ?? customMessage?.details.id ?? parseAgentSessionMessagePromptId(text),
+			customMessage,
 		});
 	}
 
-	async queueAgentMessagePrompt(text: string, streamingBehavior: "steer" | "followUp"): Promise<boolean> {
-		const agentMessageId = parseAgentSessionMessagePromptId(text);
+	async queueAgentMessagePrompt(
+		text: string,
+		streamingBehavior: "steer" | "followUp",
+		customMessage?: AgentSessionMessage,
+	): Promise<boolean> {
+		const agentMessageId = customMessage?.details.id ?? parseAgentSessionMessagePromptId(text);
 		if (streamingBehavior === "steer") {
-			await this._queueSteer(text, undefined, { agentMessageId });
+			await this._queueSteer(text, undefined, { agentMessageId, message: customMessage });
 			return true;
 		}
-		return this._queueFollowUp(text, undefined, { agentMessageId });
+		return this._queueFollowUp(text, undefined, { agentMessageId, message: customMessage });
 	}
 
 	async promptHeartbeat(job: AgentCronJob, options?: PromptOptions): Promise<void> {
@@ -2742,6 +2898,7 @@ export class AgentSession {
 					{
 						queueKey: options.followUpQueueKey,
 						agentMessageId: options.agentMessageId,
+						customMessage: options.customMessage,
 					},
 				);
 				if (!queued) {
@@ -2790,12 +2947,14 @@ export class AgentSession {
 				if (!options?.content && currentImages) {
 					userContent.push(...currentImages);
 				}
-				const userMessage: AgentMessage = {
-					role: "user",
-					content: userContent,
-					timestamp: Date.now(),
-				};
-				messages.push(userMessage);
+				const promptMessage: QueuedAgentMessage = options.customMessage
+					? cloneCustomMessage(options.customMessage)
+					: {
+							role: "user",
+							content: userContent,
+							timestamp: Date.now(),
+						};
+				messages.push(promptMessage);
 				if (options.agentMessageId !== undefined && options.returnAfterAccepted) {
 					let resolveAccepted = () => {};
 					let rejectAccepted = (_error: Error) => {};
@@ -2806,8 +2965,8 @@ export class AgentSession {
 					acceptedAgentMessagePrompt = {
 						text: expandedText,
 						agentMessageId: options.agentMessageId,
-						message: userMessage,
-						messages: new Set<AgentMessage>([...drainedNextTurnMessages, userMessage]),
+						message: promptMessage,
+						messages: new Set<AgentMessage>([...drainedNextTurnMessages, promptMessage]),
 						pendingNextTurnMessages: drainedNextTurnMessages,
 						deliveredPendingNextTurnMessages: new Set(),
 						accepted,
@@ -2834,19 +2993,21 @@ export class AgentSession {
 				}
 				this._pendingNextTurnMessages = [];
 
-				// Add user message
-				const userContent: (TextContent | ImageContent)[] = options?.content
-					? options.content.map((block) => ({ ...block }))
-					: [{ type: "text", text: expandedText }];
-				if (!options?.content && currentImages) {
-					userContent.push(...currentImages);
+				if (options?.customMessage) {
+					messages.push(cloneCustomMessage(options.customMessage));
+				} else {
+					const userContent: (TextContent | ImageContent)[] = options?.content
+						? options.content.map((block) => ({ ...block }))
+						: [{ type: "text", text: expandedText }];
+					if (!options?.content && currentImages) {
+						userContent.push(...currentImages);
+					}
+					messages.push({
+						role: "user",
+						content: userContent,
+						timestamp: Date.now(),
+					});
 				}
-				const userMessage: AgentMessage = {
-					role: "user",
-					content: userContent,
-					timestamp: Date.now(),
-				};
-				messages.push(userMessage);
 
 				// Emit before_agent_start extension event
 				const result = await this._extensionRunner.emitBeforeAgentStart(
@@ -2929,6 +3090,7 @@ export class AgentSession {
 				{
 					queueKey: options.followUpQueueKey,
 					agentMessageId: options.agentMessageId,
+					customMessage: options.customMessage,
 				},
 			);
 			if (!queued) {
@@ -3074,7 +3236,11 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	async steer(
+		text: string,
+		images?: ImageContent[],
+		options: { queueKey?: string; agentMessageId?: string } = {},
+	): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -3084,7 +3250,10 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images);
+		await this._queueSteer(expandedText, images, {
+			queueKey: options.queueKey,
+			agentMessageId: options.agentMessageId,
+		});
 	}
 
 	/**
@@ -3118,15 +3287,19 @@ export class AgentSession {
 		text: string,
 		images?: ImageContent[],
 		options: {
+			queueKey?: string;
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			customMessage?: CustomMessage;
+			prefixMessages?: CustomMessage[];
 		} = {},
 	): Promise<void> {
 		await this._queueSteer(text, images, {
+			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
 			content: options.content,
 			message: options.customMessage,
+			prefixMessages: options.prefixMessages,
 		});
 	}
 
@@ -3138,6 +3311,7 @@ export class AgentSession {
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			customMessage?: CustomMessage;
+			prefixMessages?: CustomMessage[];
 		} = {},
 	): Promise<boolean> {
 		return this._queueFollowUp(text, images, {
@@ -3145,22 +3319,12 @@ export class AgentSession {
 			agentMessageId: options.agentMessageId,
 			content: options.content,
 			message: options.customMessage,
+			prefixMessages: options.prefixMessages,
 		});
 	}
 
-	private _buildPromptContent(
-		text: string,
-		images?: ImageContent[],
-		prefixMessages: readonly CustomMessage[] = [],
-	): (TextContent | ImageContent)[] {
+	private _buildPromptContent(text: string, images?: ImageContent[]): (TextContent | ImageContent)[] {
 		const content: (TextContent | ImageContent)[] = [];
-		for (const message of prefixMessages) {
-			if (typeof message.content === "string") {
-				content.push({ type: "text", text: message.content });
-			} else {
-				content.push(...message.content);
-			}
-		}
 		content.push({ type: "text", text });
 		if (images) {
 			content.push(...images);
@@ -3172,20 +3336,29 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		streamingBehavior: "steer" | "followUp",
-		options: { queueKey?: string; agentMessageId?: string } = {},
+		options: { queueKey?: string; agentMessageId?: string; customMessage?: CustomMessage } = {},
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
-		const content = this._buildPromptContent(text, images, pendingNextTurnMessages);
 		try {
 			if (streamingBehavior === "followUp") {
-				const queued = await this._queueFollowUp(text, undefined, { ...options, content });
+				const queued = await this._queueFollowUp(text, images, {
+					queueKey: options.queueKey,
+					agentMessageId: options.agentMessageId,
+					message: options.customMessage,
+					prefixMessages: pendingNextTurnMessages,
+				});
 				if (!queued) {
 					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
 				}
 				return queued;
 			}
-			await this._queueSteer(text, undefined, { agentMessageId: options.agentMessageId, content });
+			await this._queueSteer(text, images, {
+				agentMessageId: options.agentMessageId,
+				queueKey: options.queueKey,
+				message: options.customMessage,
+				prefixMessages: pendingNextTurnMessages,
+			});
 			return true;
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
@@ -3201,15 +3374,12 @@ export class AgentSession {
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
-		const queuedMessage: CustomMessage = {
-			...message,
-			content: this._buildPromptContent(text, undefined, pendingNextTurnMessages),
-		};
 		try {
 			if (streamingBehavior === "followUp") {
 				const queued = await this._queueFollowUp(text, undefined, {
 					queueKey: options.queueKey,
-					message: queuedMessage,
+					message,
+					prefixMessages: pendingNextTurnMessages,
 					previewLabel: options.previewLabel,
 				});
 				if (!queued) {
@@ -3217,7 +3387,12 @@ export class AgentSession {
 				}
 				return queued;
 			}
-			await this._queueSteer(text, undefined, { message: queuedMessage, previewLabel: options.previewLabel });
+			await this._queueSteer(text, undefined, {
+				message,
+				prefixMessages: pendingNextTurnMessages,
+				previewLabel: options.previewLabel,
+				queueKey: options.queueKey,
+			});
 			return true;
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
@@ -3233,8 +3408,10 @@ export class AgentSession {
 		images?: ImageContent[],
 		options: {
 			agentMessageId?: string;
+			queueKey?: string;
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
+			prefixMessages?: CustomMessage[];
 			previewLabel?: string;
 		} = {},
 	): Promise<void> {
@@ -3249,10 +3426,12 @@ export class AgentSession {
 		this._steeringMessages.push({
 			text,
 			previewLabel: options.previewLabel,
+			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
+			prefixMessages: options.prefixMessages ?? [],
 			message,
 		});
-		this.agent.steer(message);
+		this.agent.steer(options.prefixMessages?.length ? [...options.prefixMessages, message] : message);
 		this._emitQueueUpdate();
 	}
 
@@ -3267,6 +3446,7 @@ export class AgentSession {
 			agentMessageId?: string;
 			content?: (TextContent | ImageContent)[];
 			message?: QueuedAgentMessage;
+			prefixMessages?: CustomMessage[];
 			previewLabel?: string;
 		} = {},
 	): Promise<boolean> {
@@ -3286,9 +3466,10 @@ export class AgentSession {
 			previewLabel: options.previewLabel,
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
+			prefixMessages: options.prefixMessages ?? [],
 			message,
 		});
-		this.agent.followUp(message);
+		this.agent.followUp(options.prefixMessages?.length ? [...options.prefixMessages, message] : message);
 		this._emitQueueUpdate();
 		return true;
 	}
@@ -3425,12 +3606,10 @@ export class AgentSession {
 		if (steering.length === 0 && followUp.length === 0 && !acceptedMatches) {
 			return { steering: [], followUp: [] };
 		}
-		const steeringToRemove = new Set(steering.map((message) => message.message));
-		const followUpToRemove = new Set(followUp.map((message) => message.message));
+		const steeringToRemove = new Set<AgentMessage>(steering.map((message) => message.message));
+		const followUpToRemove = new Set<AgentMessage>(followUp.map((message) => message.message));
 		const removedQueuedMessages = new Set(
-			this.agent.removeQueuedMessages(
-				(message) => message.role === "user" && (steeringToRemove.has(message) || followUpToRemove.has(message)),
-			),
+			this.agent.removeQueuedMessages((message) => steeringToRemove.has(message) || followUpToRemove.has(message)),
 		);
 		const removedSteeringMessages = steering.filter((message) => removedQueuedMessages.has(message.message));
 		const removedFollowUpMessages = followUp.filter((message) => removedQueuedMessages.has(message.message));
@@ -3484,7 +3663,7 @@ export class AgentSession {
 	}
 
 	getSteeringMessagePreviews(): readonly string[] {
-		return this._steeringMessages.map(queuedMessagePreview);
+		return this._steeringMessages.map(queuedAgentMessagePreview);
 	}
 
 	/** Get pending follow-up messages (read-only) */
@@ -3493,7 +3672,7 @@ export class AgentSession {
 	}
 
 	getFollowUpMessagePreviews(): readonly string[] {
-		return this._followUpMessages.map(queuedMessagePreview);
+		return this._followUpMessages.map(queuedAgentMessagePreview);
 	}
 
 	getSteeringQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
@@ -3534,13 +3713,18 @@ export class AgentSession {
 	}
 
 	removeQueuedFollowUp(queueKey: string): boolean {
-		const removed = this._followUpMessages.filter((message) => message.queueKey === queueKey);
-		if (removed.length === 0) {
+		const removedSteering = this._steeringMessages.filter((message) => message.queueKey === queueKey);
+		const removedFollowUp = this._followUpMessages.filter((message) => message.queueKey === queueKey);
+		if (removedSteering.length === 0 && removedFollowUp.length === 0) {
 			return false;
 		}
+		this._steeringMessages = this._steeringMessages.filter((message) => message.queueKey !== queueKey);
 		this._followUpMessages = this._followUpMessages.filter((message) => message.queueKey !== queueKey);
-		const removedMessages = new Set<AgentMessage>(removed.map((message) => message.message));
-		for (const message of removed) {
+		const removedMessages = new Set<AgentMessage>([
+			...removedSteering.map((message) => message.message),
+			...removedFollowUp.map((message) => message.message),
+		]);
+		for (const message of [...removedSteering, ...removedFollowUp]) {
 			this._rejectAgentMessageDelivery(
 				message.agentMessageId,
 				new Error("Queued agent message was cleared before delivery."),
@@ -3927,9 +4111,10 @@ export class AgentSession {
 		lines.push("</ipython_state_restored>");
 		void this.sendCustomMessage(
 			{
-				customType: "ipython_state_restored",
+				customType: IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 				content: lines.join("\n"),
-				display: false,
+				display: true,
+				details: { restored: result.restored.length > 0 },
 			},
 			{ deliverAs: "nextTurn" },
 		).catch(() => {});
@@ -4103,6 +4288,7 @@ export class AgentSession {
 		);
 		const newEntries = this.sessionManager.getEntries();
 		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+		this._restoreLateIpythonSentAgentMessages();
 
 		// Get the saved compaction entry for the extension event
 		const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -5182,6 +5368,8 @@ export class AgentSession {
 					provisioner: this._ipythonKernelProvisioner,
 					commandPrefix: this.settingsManager.getShellCommandPrefix(),
 					shellPath: this.settingsManager.getShellPath(),
+					onLateSentAgentMessage: (toolCallId, message) =>
+						this._recordLateIpythonSentAgentMessage(toolCallId, message),
 				},
 			});
 		}
@@ -6613,7 +6801,10 @@ export class AgentSession {
 		const followUpMessages = [...this._followUpMessages];
 		const drainedSteeringMessages = steeringMessages.length > 0 ? steeringMessages : [];
 		const drainedFollowUpMessages = steeringMessages.length > 0 ? [] : followUpMessages;
-		const queuedMessages = [...drainedSteeringMessages, ...drainedFollowUpMessages].map((message) => message.message);
+		const queuedMessages = [...drainedSteeringMessages, ...drainedFollowUpMessages].flatMap((message) => [
+			...message.prefixMessages,
+			message.message,
+		]);
 		if (queuedMessages.length === 0) {
 			return;
 		}
@@ -6627,17 +6818,22 @@ export class AgentSession {
 			await this.agent.prompt([...nextTurnMessages, ...queuedMessages]);
 			await this.waitForRetry();
 		} catch {
-			this._pendingNextTurnMessages.unshift(...nextTurnMessages.map((message) => ({ ...message })));
+			const deliveredMessages = new Set(this.agent.state.messages);
+			this._pendingNextTurnMessages.unshift(
+				...nextTurnMessages.filter((message) => !deliveredMessages.has(message)).map((message) => ({ ...message })),
+			);
 			const queuedSteering = new Set(this._steeringMessages.map((message) => message.message));
 			const queuedFollowUps = new Set(this._followUpMessages.map((message) => message.message));
 			for (const queued of drainedSteeringMessages) {
-				if (queuedSteering.has(queued.message)) {
-					this.agent.steer(queued.message);
+				queued.prefixMessages = queued.prefixMessages.filter((message) => !deliveredMessages.has(message));
+				if (queuedSteering.has(queued.message) && !deliveredMessages.has(queued.message)) {
+					this.agent.steer([...queued.prefixMessages, queued.message]);
 				}
 			}
 			for (const queued of drainedFollowUpMessages) {
-				if (queuedFollowUps.has(queued.message)) {
-					this.agent.followUp(queued.message);
+				queued.prefixMessages = queued.prefixMessages.filter((message) => !deliveredMessages.has(message));
+				if (queuedFollowUps.has(queued.message) && !deliveredMessages.has(queued.message)) {
+					this.agent.followUp([...queued.prefixMessages, queued.message]);
 				}
 			}
 		}
@@ -6988,6 +7184,7 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			this._restoreLateIpythonSentAgentMessages();
 			this._reloadGoalStateFromBranch();
 
 			// Emit session_tree event
@@ -7319,6 +7516,7 @@ function rlmHeartbeatHostResponse(job: AgentCronJob): Record<string, unknown> {
 		id: job.id,
 		status: job.status,
 		label: job.label ?? null,
+		delivery_mode: job.deliveryMode ?? "steer",
 		instruction: job.prompt,
 		schedule: job.schedule,
 		created_at: job.createdAt,
