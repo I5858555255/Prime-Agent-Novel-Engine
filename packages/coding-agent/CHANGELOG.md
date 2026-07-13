@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 - Added autonomous mode with host-side continuations, configurable limits, and quality gates for evaluator-controlled runs ([#278](https://github.com/PrimeIntellect-ai/prime-agent/pull/278) by [@sethkarten](https://github.com/sethkarten)).
+- Fixed Prime Inference credential and team-header precedence to prefer `PRIME_API_KEY`, then the Prime CLI config, then `auth.json`.
+
+## [0.2.9] - 2026-07-13
+
 - Changed tool call groups to use one blank row above and below without blank rows between consecutive calls.
 - Changed the session tree to show only user messages by default.
 - Changed agent-to-agent messages to render as directional rows, with received messages expandable in chat and sent messages shown below their Python cell ([ENG-4531](https://linear.app/primeintellect/issue/ENG-4531/collapse-and-simplify-agent2agent-messages-in-chat-tui)).
@@ -50,7 +54,6 @@
 - Fixed self-updates interrupting and automatically resuming daemon sessions instead of waiting for long-running work to finish.
 - Fixed provider errors being surfaced instead of retried within the retry budget ([ENG-4503](https://linear.app/primeintellect/issue/ENG-4503/restarting-old-session-returns-empty-model-response)).
 - Fixed Agents View returning from fullscreen sessions without flashing primary scrollback ([ENG-4508](https://linear.app/primeintellect/issue/ENG-4508/fullscreen-mode-agents-view-scroll)).
-
 
 ## [0.2.6] - 2026-07-06
 
