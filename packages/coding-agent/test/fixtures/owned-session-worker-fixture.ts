@@ -23,8 +23,20 @@ if (process.env.PRIME_AGENT_INTERNAL_OWNED_WORKER === "1") {
 		setInterval(() => {}, 1000);
 	}
 	if (args.includes("--mode") && args.includes("rpc")) {
+		const reversedCommands: Array<{ id?: string; type: string; marker?: string }> = [];
+		const outputResponse = (command: { id?: string; type: string; marker?: string }) => {
+			process.stdout.write(
+				serializeJsonLine({
+					...(command.id ? { id: command.id } : {}),
+					type: "response",
+					command: command.type,
+					success: true,
+					...(command.marker ? { marker: command.marker } : {}),
+				}),
+			);
+		};
 		attachJsonlLineReader(process.stdin, (line) => {
-			const command = JSON.parse(line) as { id?: string; type: string };
+			const command = JSON.parse(line) as { id?: string; type: string; marker?: string };
 			if (process.env.PRIME_AGENT_TEST_CRASH_ON_COMMAND === command.type) {
 				process.exit(1);
 			}
@@ -53,14 +65,16 @@ if (process.env.PRIME_AGENT_INTERNAL_OWNED_WORKER === "1") {
 				process.stdout.write("truncated-json\n");
 				process.stdout.write("null\n");
 			}
-			process.stdout.write(
-				serializeJsonLine({
-					...(command.id ? { id: command.id } : {}),
-					type: "response",
-					command: command.type,
-					success: true,
-				}),
-			);
+			if (process.env.PRIME_AGENT_TEST_REVERSE_RPC_RESPONSES === "1") {
+				reversedCommands.push(command);
+				if (reversedCommands.length === 2) {
+					for (const pending of reversedCommands.reverse()) {
+						outputResponse(pending);
+					}
+				}
+				return;
+			}
+			outputResponse(command);
 		});
 		process.stdin.once("end", closeOwnedSessionWorkerOwnerWatch);
 		process.stdin.resume();

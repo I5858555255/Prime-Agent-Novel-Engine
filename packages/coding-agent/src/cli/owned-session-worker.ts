@@ -214,24 +214,29 @@ export async function runOwnedSessionWorkerFrontend(
 	let detachRpcInput: (() => void) | undefined;
 	let detachRpcOutput: (() => void) | undefined;
 	const bufferedRpcInput: string[] = [];
-	const pendingRpcCommands = new Map<string, { id?: string; command: string }>();
+	const pendingRpcCommands = new Map<string, { publicId?: string; command: string }>();
+	const anonymousRpcIdPrefix = `prime-agent-owned-${randomUUID()}`;
 	let anonymousRpcCommandId = 0;
 
-	const trackRpcInput = (line: string) => {
+	const prepareRpcInput = (line: string): string => {
 		try {
-			const command = JSON.parse(line) as { id?: unknown; type?: unknown };
+			const command = JSON.parse(line) as { id?: unknown; type?: unknown } | null;
 			if (
+				!command ||
+				Array.isArray(command) ||
 				typeof command.type !== "string" ||
 				command.type === "extension_ui_response" ||
 				command.type === "ack_result"
 			) {
-				return;
+				return `${line}\n`;
 			}
-			const id = typeof command.id === "string" ? command.id : undefined;
-			const key = id ? `id:${id}` : `anonymous:${++anonymousRpcCommandId}`;
-			pendingRpcCommands.set(key, { id, command: command.type });
+			const publicId = typeof command.id === "string" ? command.id : undefined;
+			const internalId = publicId ?? `${anonymousRpcIdPrefix}-${++anonymousRpcCommandId}`;
+			pendingRpcCommands.set(internalId, { publicId, command: command.type });
+			return publicId !== undefined ? `${line}\n` : serializeJsonLine({ ...command, id: internalId });
 		} catch {
 			// The worker preserves the existing parse-error response contract.
+			return `${line}\n`;
 		}
 	};
 	const observeRpcOutput = (line: string) => {
@@ -245,7 +250,14 @@ export async function runOwnedSessionWorkerFrontend(
 			return;
 		}
 		const response = parsed as { id?: unknown; type?: unknown; command?: unknown };
-		if (!process.stdout.write(`${line}\n`) && !rpcStdoutPaused) {
+		const id = typeof response.id === "string" ? response.id : undefined;
+		const pending = id !== undefined ? pendingRpcCommands.get(id) : undefined;
+		let framed = `${line}\n`;
+		if (response.type === "response" && pending?.publicId === undefined) {
+			const { id: _internalId, ...publicResponse } = response;
+			framed = serializeJsonLine(publicResponse);
+		}
+		if (!process.stdout.write(framed) && !rpcStdoutPaused) {
 			rpcStdoutPaused = true;
 			currentRpcOutput?.pause();
 			process.stdout.once("drain", () => {
@@ -256,23 +268,15 @@ export async function runOwnedSessionWorkerFrontend(
 		if (response.type !== "response" || typeof response.command !== "string") {
 			return;
 		}
-		const id = typeof response.id === "string" ? response.id : undefined;
-		if (id) {
-			pendingRpcCommands.delete(`id:${id}`);
-			return;
-		}
-		for (const [key, pending] of pendingRpcCommands) {
-			if (pending.id === undefined && pending.command === response.command) {
-				pendingRpcCommands.delete(key);
-				break;
-			}
+		if (id !== undefined && pending?.command === response.command) {
+			pendingRpcCommands.delete(id);
 		}
 	};
 	const failPendingRpcCommands = () => {
 		for (const pending of pendingRpcCommands.values()) {
 			process.stdout.write(
 				serializeJsonLine({
-					...(pending.id ? { id: pending.id } : {}),
+					...(pending.publicId !== undefined ? { id: pending.publicId } : {}),
 					type: "response",
 					command: pending.command,
 					success: false,
@@ -309,8 +313,7 @@ export async function runOwnedSessionWorkerFrontend(
 
 	if (profile === "rpc") {
 		detachRpcInput = attachJsonlLineReader(process.stdin, (line) => {
-			trackRpcInput(line);
-			const framed = `${line}\n`;
+			const framed = prepareRpcInput(line);
 			const input = currentRpcInput;
 			if (input?.writable) {
 				if (!input.write(framed)) {

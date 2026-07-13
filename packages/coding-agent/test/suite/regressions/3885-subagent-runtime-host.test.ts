@@ -17,6 +17,7 @@ import {
 	acquireSessionLease,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
+	SessionAlreadyActiveError,
 } from "../../../src/core/session-lease.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
 
@@ -168,6 +169,8 @@ describe("ENG-3885 subagent runtime host", () => {
 		expect(result.session_dir).not.toBeNull();
 		const childSessions = await SessionManager.list(tempDir, result.session_dir!);
 		expect(childSessions.some((session) => session.parentSessionPath === runtime.session.sessionFile)).toBe(true);
+		expect(() => acquireSessionLease(childSessions[0]!.path, tempDir)).toThrow(SessionAlreadyActiveError);
+		await runtime.dispose();
 		const retainedChildLease = acquireSessionLease(childSessions[0]!.path, tempDir);
 		retainedChildLease?.release();
 		expect(runtime.listSubagentRuntimes()).toEqual([]);

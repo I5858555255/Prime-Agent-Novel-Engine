@@ -398,6 +398,32 @@ describe("daemon supervisor resident workers", () => {
 		await waitForSocketGone(socketPath);
 	});
 
+	it("survives a worker process spawn error", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const missingCwd = join(root, "missing-project");
+		const socketPath = join(tmpdir(), `prime-supervisor-spawn-error-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+		mkdirSync(projectDir, { recursive: true });
+
+		const supervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, supervisor);
+		const failed = await client.request({
+			type: "create",
+			config: { cwd: missingCwd, agentDir, noTools: true, noExtensions: true },
+		});
+
+		expect(failed).toMatchObject({ success: false });
+		expect(supervisor.exitCode).toBeNull();
+		const listed = await client.request({ type: "list" });
+		expect(listed.success).toBe(true);
+		expect(requireSessionList(listed.success ? listed.data : undefined)).toEqual([]);
+
+		await client.request({ type: "shutdown" });
+		client.close();
+		await waitForSocketGone(socketPath);
+	});
+
 	it("archives resident roots and cancels their heartbeats on explicit daemon shutdown", async () => {
 		const root = tempDir();
 		const agentDir = join(root, "agent");

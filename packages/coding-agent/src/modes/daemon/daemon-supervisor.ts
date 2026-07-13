@@ -1062,6 +1062,11 @@ export class DaemonSupervisor {
 			},
 			stdio: "ignore",
 		});
+		child.on("error", (error) => {
+			this.log(
+				`Session worker ${workerId} process error: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		});
 		if (!child.pid) {
 			throw new Error("Failed to obtain daemon session worker pid");
 		}
@@ -1357,14 +1362,34 @@ export class DaemonSupervisor {
 		if (uncertain.length === 0) {
 			return;
 		}
-		const rootRecord =
-			uncertain.find((record) => record.activeSessionId === worker.descriptor.rootActiveSessionId) ?? uncertain[0];
-		const sessionFile = rootRecord?.sessionFile ?? worker.descriptor.sessionFile;
-		if (sessionFile) {
-			await this.catalog.markInterrupted(sessionFile, worker.descriptor.rootActiveSessionId, [
-				...new Set(uncertain.map((record) => record.operation)),
-			]);
+		const interruptedSessions = new Map<
+			string,
+			{ activeSessionId: string; sessionFile: string; operations: Set<string> }
+		>();
+		for (const record of uncertain) {
+			const sessionFile =
+				record.sessionFile ??
+				(record.activeSessionId === worker.descriptor.rootActiveSessionId
+					? worker.descriptor.sessionFile
+					: undefined);
+			if (!sessionFile) {
+				continue;
+			}
+			const key = `${record.activeSessionId}\0${sessionFile}`;
+			let interrupted = interruptedSessions.get(key);
+			if (!interrupted) {
+				interrupted = { activeSessionId: record.activeSessionId, sessionFile, operations: new Set() };
+				interruptedSessions.set(key, interrupted);
+			}
+			interrupted.operations.add(record.operation);
 		}
+		await Promise.all(
+			[...interruptedSessions.values()].map((interrupted) =>
+				this.catalog.markInterrupted(interrupted.sessionFile, interrupted.activeSessionId, [
+					...interrupted.operations,
+				]),
+			),
+		);
 		for (const record of latest) {
 			journal.record({
 				activeSessionId: record.activeSessionId,
@@ -1543,7 +1568,6 @@ export class DaemonSupervisor {
 		}
 		client.capabilities = normalizeCapabilities(command.capabilities, command.supportsExtensionUi);
 		client.supportsExtensionUi = client.capabilities.has("extension_ui");
-		client.attachedActiveSessionIds.add(activeSessionId);
 
 		let result = match.worker.snapshotCache.get(activeSessionId);
 		if (
@@ -1597,37 +1621,43 @@ export class DaemonSupervisor {
 			}
 			result = await loading;
 		}
-		const publicSummary = this.publicSummary(match.worker, result.snapshot.summary);
-		if (publicSummary.streamingMessage?.role === "assistant") {
-			this.streamReconstructor.seed(activeSessionId, publicSummary.streamingMessage);
-		} else {
-			for (let index = result.snapshot.messages.length - 1; index >= 0; index--) {
-				const latestMessage = result.snapshot.messages[index];
-				if (latestMessage?.role === "assistant") {
-					this.streamReconstructor.seed(activeSessionId, latestMessage);
-					break;
+		client.attachedActiveSessionIds.add(activeSessionId);
+		try {
+			const publicSummary = this.publicSummary(match.worker, result.snapshot.summary);
+			if (publicSummary.streamingMessage?.role === "assistant") {
+				this.streamReconstructor.seed(activeSessionId, publicSummary.streamingMessage);
+			} else {
+				for (let index = result.snapshot.messages.length - 1; index >= 0; index--) {
+					const latestMessage = result.snapshot.messages[index];
+					if (latestMessage?.role === "assistant") {
+						this.streamReconstructor.seed(activeSessionId, latestMessage);
+						break;
+					}
 				}
 			}
+			const publicResult: DaemonAttachResult = {
+				...result,
+				state: result.state ? publicSummary : undefined,
+				snapshot: { ...result.snapshot, summary: publicSummary },
+				client: { id: client.id, capabilities: [...client.capabilities] },
+			};
+			if (publicResult.state && publicResult.messages) {
+				this.write(client, {
+					type: "session_attached",
+					activeSessionId,
+					state: publicResult.state,
+					messages: publicResult.messages,
+					snapshot: publicResult.snapshot,
+					replay: publicResult.replay,
+					lastEventSequence: publicResult.lastEventSequence,
+				});
+			}
+			await this.syncWorkerExtensionUi(activeSessionId);
+			return { result: publicResult, worker: match.worker };
+		} catch (error) {
+			client.attachedActiveSessionIds.delete(activeSessionId);
+			throw error;
 		}
-		const publicResult: DaemonAttachResult = {
-			...result,
-			state: result.state ? publicSummary : undefined,
-			snapshot: { ...result.snapshot, summary: publicSummary },
-			client: { id: client.id, capabilities: [...client.capabilities] },
-		};
-		if (publicResult.state && publicResult.messages) {
-			this.write(client, {
-				type: "session_attached",
-				activeSessionId,
-				state: publicResult.state,
-				messages: publicResult.messages,
-				snapshot: publicResult.snapshot,
-				replay: publicResult.replay,
-				lastEventSequence: publicResult.lastEventSequence,
-			});
-		}
-		await this.syncWorkerExtensionUi(activeSessionId);
-		return { result: publicResult, worker: match.worker };
 	}
 
 	private getOrCreateTranscriptCache(worker: ResidentWorker, result: DaemonAttachResult): SnapshotTranscriptCache {

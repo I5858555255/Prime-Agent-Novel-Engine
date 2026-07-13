@@ -140,6 +140,31 @@ describe("owned session worker processes", () => {
 		await waitForProcessGone(workerPid);
 	});
 
+	it("correlates overlapping anonymous RPC commands without exposing internal ids", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-owned-worker-test-"));
+		tempDirs.push(root);
+		const pidPath = join(root, "worker.pid");
+		const frontend = spawnFrontend(["--mode", "rpc"], pidPath, false, {
+			PRIME_AGENT_TEST_REVERSE_RPC_RESPONSES: "1",
+		});
+		let stdout = "";
+		frontend.stdout?.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString("utf8");
+		});
+		frontend.stdin?.end(
+			`${JSON.stringify({ type: "get_state", marker: "first" })}\n${JSON.stringify({ type: "get_state", marker: "second" })}\n`,
+		);
+		const workerPid = await waitForWorkerPid(pidPath);
+		const exit = await waitForExit(frontend);
+		children.delete(frontend);
+
+		expect(exit).toEqual({ code: 0, signal: null });
+		expect(stdout).toBe(
+			`${JSON.stringify({ type: "response", command: "get_state", success: true, marker: "second" })}\n${JSON.stringify({ type: "response", command: "get_state", success: true, marker: "first" })}\n`,
+		);
+		await waitForProcessGone(workerPid);
+	});
+
 	it("drops malformed worker output instead of corrupting public RPC JSONL", async () => {
 		const root = mkdtempSync(join(tmpdir(), "prime-owned-worker-test-"));
 		tempDirs.push(root);

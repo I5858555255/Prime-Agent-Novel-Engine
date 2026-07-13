@@ -810,6 +810,7 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _disposed = false;
+	private readonly _disposeCallbacks = new Set<() => void>();
 	// Set at the start of async teardown so a child finishing mid-disposeAsync doesn't
 	// re-populate the retained map after it's been cleared.
 	private _disposing = false;
@@ -2322,32 +2323,51 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
-		// Invalidate scheduled timers and abort any in-flight review so a late
-		// resolution cannot write harness state or re-subscribe handlers.
-		this._autoRefineReviewAbort?.abort();
-		this._refineAbortController?.abort();
-		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
-		this._autoRefineBranchVersion++;
-		this._cancelActiveRlmChildRuns("Parent session disposed");
-		for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
-			unsubscribe();
+		try {
+			// Invalidate scheduled timers and abort any in-flight review so a late
+			// resolution cannot write harness state or re-subscribe handlers.
+			this._autoRefineReviewAbort?.abort();
+			this._refineAbortController?.abort();
+			this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
+			this._autoRefineBranchVersion++;
+			this._cancelActiveRlmChildRuns("Parent session disposed");
+			for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
+				unsubscribe();
+			}
+			this._retainedRlmChildUnsubscribes.clear();
+			for (const session of this._retainedRlmChildSessions.values()) {
+				session.dispose();
+			}
+			this._retainedRlmChildSessions.clear();
+			this._pendingNextTurnMessages = [];
+			this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
+			this._steeringMessages = [];
+			this._followUpMessages = [];
+			this.agent.clearAllQueues();
+			this._extensionRunner.invalidate(
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			);
+			this._disconnectFromAgent();
+			this._eventListeners = [];
+			cleanupSessionResources(this.sessionId);
+		} finally {
+			for (const callback of this._disposeCallbacks) {
+				try {
+					callback();
+				} catch {
+					// Disposal remains best-effort; one owner must not block the rest.
+				}
+			}
+			this._disposeCallbacks.clear();
 		}
-		this._retainedRlmChildUnsubscribes.clear();
-		for (const session of this._retainedRlmChildSessions.values()) {
-			session.dispose();
+	}
+
+	registerDisposeCallback(callback: () => void): void {
+		if (this._disposed) {
+			callback();
+			return;
 		}
-		this._retainedRlmChildSessions.clear();
-		this._pendingNextTurnMessages = [];
-		this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
-		this._steeringMessages = [];
-		this._followUpMessages = [];
-		this.agent.clearAllQueues();
-		this._extensionRunner.invalidate(
-			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
-		);
-		this._disconnectFromAgent();
-		this._eventListeners = [];
-		cleanupSessionResources(this.sessionId);
+		this._disposeCallbacks.add(callback);
 	}
 
 	// =========================================================================

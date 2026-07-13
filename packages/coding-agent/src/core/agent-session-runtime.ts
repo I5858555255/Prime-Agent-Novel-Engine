@@ -258,6 +258,15 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		this._sessionLease = undefined;
 	}
 
+	private transferSessionLeaseToSession(): void {
+		const lease = this._sessionLease;
+		if (!lease) {
+			return;
+		}
+		this._sessionLease = undefined;
+		this.session.registerDisposeCallback(() => lease.release());
+	}
+
 	private commitReplacementLease(lease: SessionLease | undefined): void {
 		if (lease === this._sessionLease) {
 			return;
@@ -396,12 +405,12 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		if (status === "done") {
 			// Flush traces now since the runtime's own shutdown path is skipped while retained.
 			await flushAgentTraceUpload(runtime.session.sessionManager).catch(() => undefined);
+			if (runtime instanceof AgentSessionRuntime) {
+				runtime.transferSessionLeaseToSession();
+			}
 			// Retention can decline if the parent is already tearing down; if so, fall
 			// through and dispose the runtime instead of leaving it dangling.
 			if (options.parentSession.retainFinishedRlmChildSession(options.id, runtime.session)) {
-				if (runtime instanceof AgentSessionRuntime) {
-					runtime.releaseSessionLease();
-				}
 				return;
 			}
 		}

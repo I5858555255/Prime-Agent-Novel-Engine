@@ -7,6 +7,7 @@ import { AgentDaemon } from "../src/modes/daemon/daemon-mode.js";
 import type { DaemonAttachResult } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
+import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
 
 interface SupervisorMonitorHarness {
 	options: { worker: object };
@@ -244,5 +245,110 @@ describe("daemon worker supervisor monitoring", () => {
 		await supervisor.attachClient(client, { type: "attach", activeSessionId });
 
 		expect(seed).toHaveBeenCalledWith(activeSessionId, streamingMessage);
+	});
+
+	it("does not retain an attachment when snapshot loading fails", async () => {
+		type AttachClient = {
+			id: string;
+			capabilities: Set<string>;
+			supportsExtensionUi: boolean;
+			attachedActiveSessionIds: Set<string>;
+		};
+		const activeSessionId = "active-failed-attach";
+		const summary = {
+			id: activeSessionId,
+			activeSessionId,
+			lifecycle: "live",
+			activity: "idle",
+			sessionId: "session-failed-attach",
+			cwd: "/tmp/project",
+			isStreaming: false,
+			isCompacting: false,
+			attachedClients: 0,
+			messageCount: 0,
+			pendingMessageCount: 0,
+		} satisfies SessionSummary;
+		const worker = {
+			descriptor: { workerId: "worker-1", lifecycle: "ready", pid: 1234 },
+			client: {
+				request: vi.fn(async () => {
+					throw new Error("snapshot failed");
+				}),
+			},
+			summaries: new Map([[activeSessionId, summary]]),
+			snapshotCache: new Map(),
+			transcriptCaches: new Map(),
+			incomingTranscriptActiveSessionIds: new Set(),
+			snapshotLoads: new Map(),
+		};
+		const client: AttachClient = {
+			id: "client-1",
+			capabilities: new Set<string>(),
+			supportsExtensionUi: false,
+			attachedActiveSessionIds: new Set<string>(),
+		};
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			clients: new Set([client]),
+		}) as {
+			attachClient(client: AttachClient, command: { type: "attach"; activeSessionId: string }): Promise<unknown>;
+		};
+
+		await expect(supervisor.attachClient(client, { type: "attach", activeSessionId })).rejects.toThrow(
+			"snapshot failed",
+		);
+		expect(client.attachedActiveSessionIds).toEqual(new Set());
+	});
+
+	it("marks each busy worker session interrupted independently", async () => {
+		type RecoveryWorker = {
+			descriptor: {
+				workerId: string;
+				pid: number;
+				rootActiveSessionId: string;
+				recoveryJournalPath: string;
+			};
+		};
+		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-recovery-test-"));
+		const journalPath = join(root, "worker.recovery.jsonl");
+		const journal = new WorkerRecoveryJournal(journalPath);
+		journal.record({
+			activeSessionId: "root-active",
+			sessionId: "root-session",
+			sessionFile: "/tmp/root.jsonl",
+			busy: true,
+			operation: "model_stream",
+		});
+		journal.record({
+			activeSessionId: "child-active",
+			sessionId: "child-session",
+			sessionFile: "/tmp/child.jsonl",
+			busy: true,
+			operation: "tool_execution",
+		});
+		const worker: RecoveryWorker = {
+			descriptor: {
+				workerId: "worker-1",
+				pid: process.pid,
+				rootActiveSessionId: "root-active",
+				recoveryJournalPath: journalPath,
+			},
+		};
+		const markInterrupted = vi.fn(async () => undefined);
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			catalog: { markInterrupted },
+			log: vi.fn(),
+		}) as {
+			recoverUncertainWorkerOperations(worker: RecoveryWorker, killWorkerProcess: boolean): Promise<void>;
+		};
+
+		try {
+			await supervisor.recoverUncertainWorkerOperations(worker, false);
+			expect(markInterrupted).toHaveBeenCalledTimes(2);
+			expect(markInterrupted).toHaveBeenCalledWith("/tmp/root.jsonl", "root-active", ["model_stream"]);
+			expect(markInterrupted).toHaveBeenCalledWith("/tmp/child.jsonl", "child-active", ["tool_execution"]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
