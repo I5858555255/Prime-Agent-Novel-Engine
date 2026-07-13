@@ -506,6 +506,7 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 	const content = readOptionalMessageContent(value.content, "queue.content");
 	const images = readOptionalImages(value.images, "queue.images");
 	const queueKey = readOptionalString(value.queueKey, "queue.queueKey");
+	const prefixMessages = readCustomMessages(value.prefixMessages, "queue.prefixMessages");
 	const customMessage =
 		value.customMessage === undefined
 			? undefined
@@ -524,6 +525,7 @@ function parseDaemonUpdateRestartQueuedMessage(value: unknown): DaemonUpdateRest
 		...(queueKey ? { queueKey } : {}),
 		...(agentMessageId ? { agentMessageId } : {}),
 		...(customMessage ? { customMessage } : {}),
+		...(prefixMessages.length > 0 ? { prefixMessages } : {}),
 	};
 }
 
@@ -845,6 +847,7 @@ async function restoreDaemonUpdateRestartSession(
 				expandPromptTemplates: false,
 				agentMessageId: queued.agentMessageId,
 				customMessage: queued.customMessage,
+				prefixMessages: queued.prefixMessages,
 			},
 			30000,
 		);
@@ -870,6 +873,7 @@ async function restoreDaemonUpdateRestartSession(
 				expandPromptTemplates: false,
 				agentMessageId: queued.agentMessageId,
 				customMessage: queued.customMessage,
+				prefixMessages: queued.prefixMessages,
 			},
 			30000,
 		);
@@ -893,6 +897,7 @@ async function restoreDaemonUpdateRestartSession(
 				images: acceptedPrompt.images,
 				expandPromptTemplates: false,
 				agentMessageId: acceptedPrompt.agentMessageId,
+				customMessage: acceptedPrompt.customMessage,
 			},
 			120000,
 		);

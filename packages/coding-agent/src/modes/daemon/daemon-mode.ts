@@ -32,8 +32,8 @@ import {
 	type AgentSessionMessageSender,
 	assertAgentMessageQueueCapacity,
 	assertDirectAgentMessageTarget,
+	createAgentSessionMessage,
 	createAgentSessionMessageId,
-	createAgentSessionMessagePrompt,
 	createAgentSessionMessageReceipt,
 	DEFAULT_AGENT_MESSAGE_MAX_CHARS,
 	DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
@@ -2065,6 +2065,7 @@ export class AgentDaemon {
 					streamingBehavior: command.streamingBehavior,
 					expandPromptTemplates: command.expandPromptTemplates,
 					agentMessageId: command.agentMessageId,
+					customMessage: command.customMessage,
 					skipInputHandlers: command.expandPromptTemplates === false ? true : undefined,
 					source: "rpc",
 					preflightResult: (didSucceed) => {
@@ -2095,6 +2096,7 @@ export class AgentDaemon {
 						agentMessageId: command.agentMessageId,
 						content: command.content,
 						customMessage: command.customMessage,
+						prefixMessages: command.prefixMessages,
 					});
 				} else {
 					await state.runtime.session.steer(command.message, command.images, {
@@ -2115,6 +2117,7 @@ export class AgentDaemon {
 						agentMessageId: command.agentMessageId,
 						content: command.content,
 						customMessage: command.customMessage,
+						prefixMessages: command.prefixMessages,
 					});
 				} else {
 					queued = await state.runtime.session.followUp(command.message, command.images, {
@@ -2584,7 +2587,7 @@ export class AgentDaemon {
 			case "get_session_context": {
 				const state = this.getSessionState(command.activeSessionId);
 				return success(command.id, "get_session_context", {
-					context: state.runtime.session.sessionManager.buildSessionContext(),
+					context: state.runtime.session.buildSessionContext(),
 				});
 			}
 
@@ -3125,10 +3128,11 @@ export class AgentDaemon {
 		const streamingBehavior =
 			resolveAgentSessionMessageStreamingBehavior(shouldQueue, payload.deliveryMode) ??
 			(payload.deliveryMode === "follow_up" ? "followUp" : "steer");
-		const prompt = createAgentSessionMessagePrompt(payload);
+		const message = createAgentSessionMessage(payload);
+		const prompt = message.content;
 
 		if (shouldQueue) {
-			const didQueue = await session.queueAgentMessagePrompt(prompt, streamingBehavior);
+			const didQueue = await session.queueAgentMessagePrompt(prompt, streamingBehavior, message);
 			if (!didQueue) {
 				throw new Error("Agent message was not queued");
 			}
@@ -3144,11 +3148,7 @@ export class AgentDaemon {
 		let preflightFailed = false;
 		let preflightQueued = false;
 		try {
-			const acceptPrompt =
-				typeof session.acceptAgentMessagePrompt === "function"
-					? session.acceptAgentMessagePrompt.bind(session)
-					: session.prompt.bind(session);
-			await acceptPrompt(prompt, {
+			const promptOptions: PromptOptions = {
 				expandPromptTemplates: false,
 				streamingBehavior,
 				queueIfBusy: true,
@@ -3156,7 +3156,12 @@ export class AgentDaemon {
 					preflightFailed = !didSucceed;
 					preflightQueued = didSucceed && didQueue === true;
 				},
-			});
+			};
+			if (typeof session.acceptAgentMessagePrompt === "function") {
+				await session.acceptAgentMessagePrompt(prompt, { ...promptOptions, customMessage: message });
+			} else {
+				await session.prompt(prompt, promptOptions);
+			}
 			if (preflightFailed) {
 				throw new Error("Agent message was not accepted");
 			}
@@ -3225,6 +3230,7 @@ export class AgentDaemon {
 				...(message.queueKey ? { queueKey: message.queueKey } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 				...(message.customMessage ? { customMessage: message.customMessage } : {}),
+				...(message.prefixMessages ? { prefixMessages: message.prefixMessages } : {}),
 			})),
 			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
 				message: message.text,
@@ -3233,6 +3239,7 @@ export class AgentDaemon {
 				...(message.queueKey ? { queueKey: message.queueKey } : {}),
 				...(message.agentMessageId ? { agentMessageId: message.agentMessageId } : {}),
 				...(message.customMessage ? { customMessage: message.customMessage } : {}),
+				...(message.prefixMessages ? { prefixMessages: message.prefixMessages } : {}),
 			})),
 			nextTurn: [...session.getPendingNextTurnMessageSnapshots()],
 		};
@@ -3245,6 +3252,7 @@ export class AgentDaemon {
 							message: acceptedPrompt.text,
 							...(acceptedPrompt.content ? { content: acceptedPrompt.content } : {}),
 							...(acceptedPrompt.images ? { images: acceptedPrompt.images } : {}),
+							...(acceptedPrompt.customMessage ? { customMessage: acceptedPrompt.customMessage } : {}),
 							agentMessageId: acceptedPrompt.agentMessageId,
 							nextTurn: acceptedPrompt.nextTurn,
 						},

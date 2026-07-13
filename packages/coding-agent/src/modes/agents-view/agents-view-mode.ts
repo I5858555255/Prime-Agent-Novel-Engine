@@ -483,6 +483,7 @@ class AgentsViewMode implements Component, Focusable {
 			() => this.getSplashCwd(),
 			undefined,
 			{
+				topPadding: true,
 				getExtraMetadata: () => [{ label: "agents", value: this.getAgentCountsText() }],
 			},
 		);

@@ -26,12 +26,14 @@ type QueueInternals = {
 		text: string;
 		queueKey?: string;
 		agentMessageId?: string;
+		prefixMessages: CustomMessage[];
 		message: UserMessage | CustomMessage;
 	}>;
 	_followUpMessages: Array<{
 		text: string;
 		queueKey?: string;
 		agentMessageId?: string;
+		prefixMessages: CustomMessage[];
 		message: UserMessage | CustomMessage;
 	}>;
 	_pendingNextTurnMessages: CustomMessage[];
@@ -301,16 +303,11 @@ describe("issue #4257 update restart resume", () => {
 		harnesses.push(parentHarness, childHarness);
 
 		const image: ImageContent = { type: "image", data: "ZmFrZQ==", mimeType: "image/png" };
-		const content: (TextContent | ImageContent)[] = [
-			{ type: "text", text: "queued context" },
-			{ type: "text", text: "queued work" },
-			image,
-		];
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: "queued work" }, image];
+		const queuedContext = createCustomMessage("queued context");
 		const message: UserMessage = { role: "user", content, timestamp: Date.now() };
-		const followUpContent: TextContent[] = [
-			{ type: "text", text: "follow-up context" },
-			{ type: "text", text: "heartbeat" },
-		];
+		const followUpContent: TextContent[] = [{ type: "text", text: "heartbeat" }];
+		const followUpContext = createCustomMessage("follow-up context");
 		const followUpMessage: UserMessage = {
 			role: "user",
 			content: followUpContent,
@@ -319,19 +316,27 @@ describe("issue #4257 update restart resume", () => {
 		const customFollowUp = createCustomMessage("custom heartbeat");
 		const queueInternals = parentHarness.session as unknown as QueueInternals;
 		queueInternals._steeringMessages = [
-			{ text: "queued work", queueKey: "heartbeat:steer", agentMessageId: "agentmsg_steer", message },
+			{
+				text: "queued work",
+				queueKey: "heartbeat:steer",
+				agentMessageId: "agentmsg_steer",
+				prefixMessages: [queuedContext],
+				message,
+			},
 		];
 		queueInternals._followUpMessages = [
 			{
 				text: "heartbeat",
 				queueKey: "heartbeat:job-1",
 				agentMessageId: "agentmsg_followup",
+				prefixMessages: [followUpContext],
 				message: followUpMessage,
 			},
 			{
 				text: "custom heartbeat",
 				queueKey: "heartbeat:custom",
 				agentMessageId: "agentmsg_custom",
+				prefixMessages: [],
 				message: customFollowUp,
 			},
 		];
@@ -384,6 +389,7 @@ describe("issue #4257 update restart resume", () => {
 						message: "queued work",
 						content,
 						images: [image],
+						prefixMessages: [queuedContext],
 						queueKey: "heartbeat:steer",
 						agentMessageId: "agentmsg_steer",
 					},
@@ -392,6 +398,7 @@ describe("issue #4257 update restart resume", () => {
 					{
 						message: "heartbeat",
 						content: followUpContent,
+						prefixMessages: [followUpContext],
 						queueKey: "heartbeat:job-1",
 						agentMessageId: "agentmsg_followup",
 					},
@@ -497,6 +504,7 @@ describe("issue #4257 update restart resume", () => {
 				text: "queued follow-up",
 				queueKey: "heartbeat:job-1",
 				agentMessageId: "agentmsg_followup",
+				prefixMessages: [],
 				message: { role: "user", content: followUpContent, timestamp: Date.now() },
 			},
 		];
@@ -754,11 +762,13 @@ describe("issue #4257 update restart resume", () => {
 			{ type: "text", text: "restored follow-up context" },
 			{ type: "text", text: "restored follow-up" },
 		];
+		const restoredPrefix = createCustomMessage("restored custom prefix");
 		queueInternals._followUpMessages = [
 			{
 				text: "existing",
 				queueKey: "heartbeat:job-1",
 				agentMessageId: "agentmsg_existing",
+				prefixMessages: [],
 				message: { role: "user", content: [{ type: "text", text: "existing" }], timestamp: Date.now() },
 			},
 		];
@@ -789,6 +799,7 @@ describe("issue #4257 update restart resume", () => {
 				queueKey: "heartbeat:steer",
 				expandPromptTemplates: false,
 				agentMessageId: "agentmsg_restored_steer",
+				prefixMessages: [restoredPrefix],
 			}),
 		);
 		await internals.handleLine(
@@ -831,6 +842,7 @@ describe("issue #4257 update restart resume", () => {
 			expect.objectContaining({
 				text: "restored steer",
 				content: restoredSteerContent,
+				prefixMessages: [restoredPrefix],
 				queueKey: "heartbeat:steer",
 				agentMessageId: "agentmsg_restored_steer",
 			}),
