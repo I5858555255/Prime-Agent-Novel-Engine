@@ -436,7 +436,7 @@ describe("default model selection", () => {
 		expect(result.model?.id).toBe("openai/ghost-model");
 	});
 
-	test("findInitialModel uses xhigh as the built-in default thinking level", async () => {
+	test("findInitialModel uses medium as the built-in default thinking level", async () => {
 		const reasoningModel = mockModels[0];
 		const registry = {
 			getAvailable: async () => [reasoningModel],
@@ -449,7 +449,7 @@ describe("default model selection", () => {
 		});
 
 		expect(result.model).toBe(reasoningModel);
-		expect(result.thinkingLevel).toBe("xhigh");
+		expect(result.thinkingLevel).toBe("medium");
 	});
 
 	test("findInitialModel selects ai-gateway default when available", async () => {

@@ -1,4 +1,8 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { lstat, readlink } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 
 export interface AgentAutonomousConfig {
@@ -54,6 +58,9 @@ export const DEFAULT_AUTONOMOUS_GATES: Required<AgentAutonomousGateConfig> = {
 	timeoutMs: 5 * 60 * 1000,
 };
 
+const MAX_GATE_OUTPUT_CHARS = 6000;
+const MAX_CHILD_PROCESS_OUTPUT_CHARS = 1024 * 1024;
+
 export interface AutonomousRuntimeState {
 	enabled: boolean;
 	continuationsUsed: number;
@@ -84,6 +91,7 @@ export interface AutonomousDecision {
 interface GitWorktreeSnapshot {
 	status: string;
 	diff: string;
+	untrackedHash: string;
 }
 
 type GateFailure = AgentAutonomousGateFailure;
@@ -286,7 +294,12 @@ async function runAutonomousQualityGates(
 			};
 			return attempt > state.gates.maxRetries ? "retry_exhausted" : "failed";
 		}
-		const result = await runChildProcess(command, [], { cwd, shell: true, timeoutMs: state.gates.timeoutMs });
+		const result = await runChildProcess(command, [], {
+			cwd,
+			shell: true,
+			timeoutMs: state.gates.timeoutMs,
+			maxOutputChars: MAX_GATE_OUTPUT_CHARS,
+		});
 		const postRunSnapshot = await captureGitWorktreeSnapshot(cwd);
 		if (result.status === 0 && !result.error && !result.timedOut) {
 			state.gateAttempts[command] = 0;
@@ -303,7 +316,10 @@ async function runAutonomousQualityGates(
 			command,
 			attempt,
 			exitText,
-			output: truncateGateOutput([result.stdout, result.stderr].filter(Boolean).join("\n").trim()),
+			output: truncateGateOutput(
+				[result.stdout, result.stderr].filter(Boolean).join("\n").trim(),
+				result.outputTruncated,
+			),
 		};
 		state.lastGateFailureSnapshot = postRunSnapshot;
 		return attempt > state.gates.maxRetries ? "retry_exhausted" : "failed";
@@ -326,7 +342,7 @@ function buildGateFailureContinuation(state: AutonomousRuntimeState, timestamp: 
 }
 
 function gitWorktreeSnapshotsEqual(a: GitWorktreeSnapshot | undefined, b: GitWorktreeSnapshot | undefined): boolean {
-	return !!a && !!b && a.status === b.status && a.diff === b.diff;
+	return !!a && !!b && a.status === b.status && a.diff === b.diff && a.untrackedHash === b.untrackedHash;
 }
 
 async function captureGitWorktreeSnapshot(cwd: string | undefined): Promise<GitWorktreeSnapshot | undefined> {
@@ -345,13 +361,13 @@ async function captureGitWorktreeSnapshot(cwd: string | undefined): Promise<GitW
 	];
 	const status = await runChildProcess(
 		"git",
-		["--no-optional-locks", "status", "--porcelain=v1", "-uall", ...pathspec],
+		["--no-optional-locks", "status", "--porcelain=v1", "-z", "-uall", "--no-renames", ...pathspec],
 		{
 			cwd,
 			timeoutMs: 10_000,
 		},
 	);
-	if (status.status !== 0 || status.error || status.timedOut) {
+	if (status.status !== 0 || status.error || status.timedOut || status.outputTruncated) {
 		return undefined;
 	}
 	const diff = await runChildProcess(
@@ -362,10 +378,52 @@ async function captureGitWorktreeSnapshot(cwd: string | undefined): Promise<GitW
 			timeoutMs: 10_000,
 		},
 	);
+	if (diff.status !== 0 || diff.error || diff.timedOut || diff.outputTruncated) {
+		return undefined;
+	}
 	return {
 		status: status.stdout,
-		diff: diff.status === 0 && !diff.error && !diff.timedOut ? diff.stdout : "",
+		diff: diff.stdout,
+		untrackedHash: await hashUntrackedFiles(cwd, status.stdout),
 	};
+}
+
+function untrackedPathsFromStatus(status: string): string[] {
+	return status
+		.split("\0")
+		.filter((entry) => entry.startsWith("?? "))
+		.map((entry) => entry.slice(3))
+		.sort();
+}
+
+async function hashUntrackedFiles(cwd: string, status: string): Promise<string> {
+	const aggregate = createHash("sha256");
+	for (const path of untrackedPathsFromStatus(status)) {
+		aggregate.update(path);
+		aggregate.update("\0");
+		aggregate.update(await hashUntrackedPath(resolve(cwd, path)));
+		aggregate.update("\0");
+	}
+	return aggregate.digest("hex");
+}
+
+async function hashUntrackedPath(path: string): Promise<string> {
+	try {
+		const stat = await lstat(path);
+		if (stat.isSymbolicLink()) {
+			return `symlink:${await readlink(path)}`;
+		}
+		if (!stat.isFile()) {
+			return `other:${stat.mode}:${stat.size}:${stat.mtimeMs}`;
+		}
+		const hash = createHash("sha256");
+		for await (const chunk of createReadStream(path)) {
+			hash.update(chunk);
+		}
+		return `file:${hash.digest("hex")}`;
+	} catch (error) {
+		return `error:${error instanceof Error ? error.message : String(error)}`;
+	}
 }
 
 interface ChildProcessResult {
@@ -375,12 +433,13 @@ interface ChildProcessResult {
 	stderr: string;
 	error?: Error;
 	timedOut?: boolean;
+	outputTruncated: boolean;
 }
 
 function runChildProcess(
 	command: string,
 	args: string[],
-	options: { cwd?: string; shell?: boolean; timeoutMs?: number } = {},
+	options: { cwd?: string; shell?: boolean; timeoutMs?: number; maxOutputChars?: number } = {},
 ): Promise<ChildProcessResult> {
 	return new Promise((resolve) => {
 		const child = spawn(command, args, {
@@ -392,8 +451,10 @@ function runChildProcess(
 		let stderr = "";
 		let error: Error | undefined;
 		let timedOut = false;
+		let outputTruncated = false;
 		let settled = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		const maxOutputChars = options.maxOutputChars ?? MAX_CHILD_PROCESS_OUTPUT_CHARS;
 		const finish = (result: Pick<ChildProcessResult, "status" | "signal">) => {
 			if (settled) {
 				return;
@@ -405,7 +466,7 @@ function runChildProcess(
 			if (killTimer) {
 				clearTimeout(killTimer);
 			}
-			resolve({ ...result, stdout, stderr, error, timedOut });
+			resolve({ ...result, stdout, stderr, error, timedOut, outputTruncated });
 		};
 		const timer = options.timeoutMs
 			? setTimeout(() => {
@@ -417,10 +478,18 @@ function runChildProcess(
 		child.stdout?.setEncoding("utf8");
 		child.stderr?.setEncoding("utf8");
 		child.stdout?.on("data", (chunk: string) => {
-			stdout += chunk;
+			const remaining = maxOutputChars - stdout.length;
+			if (remaining > 0) {
+				stdout += chunk.slice(0, remaining);
+			}
+			outputTruncated ||= chunk.length > remaining;
 		});
 		child.stderr?.on("data", (chunk: string) => {
-			stderr += chunk;
+			const remaining = maxOutputChars - stderr.length;
+			if (remaining > 0) {
+				stderr += chunk.slice(0, remaining);
+			}
+			outputTruncated ||= chunk.length > remaining;
 		});
 		child.on("error", (err) => {
 			error = err;
@@ -439,11 +508,11 @@ function formatProcessExit(result: ChildProcessResult): string {
 	return result.signal ? `terminated by ${result.signal}` : `exited ${result.status ?? "unknown"}`;
 }
 
-function truncateGateOutput(output: string, maxChars = 6000): string {
-	if (output.length <= maxChars) {
+function truncateGateOutput(output: string, outputAlreadyTruncated = false, maxChars = MAX_GATE_OUTPUT_CHARS): string {
+	if (output.length <= maxChars && !outputAlreadyTruncated) {
 		return output;
 	}
-	return `${output.slice(0, maxChars)}\n... [truncated ${output.length - maxChars} chars]`;
+	return `${output.slice(0, maxChars)}\n... [truncated]`;
 }
 
 function normalizeLimit(value: number | undefined, fallback: number): number {

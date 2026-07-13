@@ -340,6 +340,60 @@ describe("AgentSession autonomous mode", () => {
 		}
 	});
 
+	it("reruns a failed autonomous gate when untracked file contents change", async () => {
+		const tempDir = join(
+			process.cwd(),
+			`.tmp-autonomous-untracked-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		execFileSync("mkdir", ["-p", tempDir]);
+		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+		writeFileSync(join(tempDir, "src.rs"), "initial\n");
+		execFileSync("git", ["add", "src.rs"], { cwd: tempDir });
+		execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
+			cwd: tempDir,
+			stdio: "ignore",
+		});
+		try {
+			const candidate = join(tempDir, "candidate.txt");
+			writeFileSync(candidate, "bad\n");
+			const gate = `${process.execPath} -e "const fs=require('fs'); process.exit(fs.readFileSync('candidate.txt','utf8').trim()==='good'?0:1)"`;
+			const state = createAutonomousRuntimeState({
+				enabled: true,
+				maxContinuations: 3,
+				gates: { commands: [gate], maxRetries: 3 },
+			});
+
+			const first = await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
+			writeFileSync(candidate, "good\n");
+			const second = await nextAutonomousContinuation(state, fauxAssistantMessage("Still done."), {
+				cwd: tempDir,
+			});
+
+			expect(first).toBeDefined();
+			expect(second).toBeUndefined();
+			expect(state.lastGateFailure).toBeUndefined();
+			expect(state.gateAttempts[gate]).toBe(0);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("bounds captured autonomous gate output", async () => {
+		const gate = `${process.execPath} -e "process.stdout.write('x'.repeat(20000)); process.exit(1)"`;
+		const state = createAutonomousRuntimeState({
+			enabled: true,
+			maxContinuations: 1,
+			gates: { commands: [gate], maxRetries: 1 },
+		});
+
+		await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: process.cwd() });
+
+		expect(state.lastGateFailure?.output).toContain("... [truncated]");
+		expect(state.lastGateFailure?.output.length).toBeLessThan(6100);
+	});
+
 	it("stops autonomous continuation once gate retries are exhausted", async () => {
 		const state = createAutonomousRuntimeState({
 			enabled: true,
