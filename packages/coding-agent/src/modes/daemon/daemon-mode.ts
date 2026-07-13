@@ -1987,21 +1987,44 @@ export class AgentDaemon {
 					state.activeSessionId,
 					normalizeClientCapabilities(command.capabilities, command.supportsExtensionUi),
 				);
+				const streamsSnapshot =
+					client.transport === "private-framed" &&
+					daemonClientCapabilitiesForSession(client, state.activeSessionId).has("chunked_snapshot");
 				this.adoptClientEnv(state, filterClientEnv(command.env));
+				if (streamsSnapshot) {
+					markClientSnapshotStreaming(client, state.activeSessionId);
+				}
 				state.clients.add(client);
 				client.attachedActiveSessionIds.add(state.activeSessionId);
-				const result = this.createAttachResult(client, state, command);
-				if (
-					client.transport === "private-framed" &&
-					daemonClientCapabilitiesForSession(client, state.activeSessionId).has("chunked_snapshot")
-				) {
-					const transcript = new SnapshotTranscriptCache({
-						activeSessionId: state.activeSessionId,
-						snapshotId: `${state.activeSessionId}-${state.eventGeneration}-${state.lastEventSequence}`,
-						messages: result.snapshot.messages,
-						cacheRoot: join(this.agentDir, "worker-snapshot-cache"),
-						targetChunkBytes: SNAPSHOT_TARGET_CHUNK_BYTES,
-					});
+				let result: DaemonAttachResult;
+				try {
+					result = this.createAttachResult(client, state, command);
+				} catch (error) {
+					state.clients.delete(client);
+					client.attachedActiveSessionIds.delete(state.activeSessionId);
+					removeDaemonClientSessionCapabilities(client, state.activeSessionId);
+					if (streamsSnapshot) {
+						finishClientSnapshotStreaming(client, state.activeSessionId);
+					}
+					throw error;
+				}
+				if (streamsSnapshot) {
+					let transcript: SnapshotTranscriptCache;
+					try {
+						transcript = new SnapshotTranscriptCache({
+							activeSessionId: state.activeSessionId,
+							snapshotId: `${state.activeSessionId}-${state.eventGeneration}-${state.lastEventSequence}`,
+							messages: result.snapshot.messages,
+							cacheRoot: join(this.agentDir, "worker-snapshot-cache"),
+							targetChunkBytes: SNAPSHOT_TARGET_CHUNK_BYTES,
+						});
+					} catch (error) {
+						state.clients.delete(client);
+						client.attachedActiveSessionIds.delete(state.activeSessionId);
+						removeDaemonClientSessionCapabilities(client, state.activeSessionId);
+						finishClientSnapshotStreaming(client, state.activeSessionId);
+						throw error;
+					}
 					const streamedResult: DaemonAttachResult = {
 						...result,
 						messages: result.messages ? [] : undefined,
@@ -2784,13 +2807,17 @@ export class AgentDaemon {
 		purpose: "attach" | "replacement" | "catchup" = "attach",
 	): Promise<void> {
 		const stream = result.snapshotStream;
-		if (!stream || client.socket.destroyed) {
+		if (!stream) {
+			finishClientSnapshotStreaming(client, result.activeSessionId);
 			transcript.dispose();
 			return;
 		}
-		client.snapshotStreaming = true;
-		client.snapshotActiveSessionIds ??= new Set();
-		client.snapshotActiveSessionIds.add(result.activeSessionId);
+		markClientSnapshotStreaming(client, result.activeSessionId);
+		if (client.socket.destroyed) {
+			finishClientSnapshotStreaming(client, result.activeSessionId);
+			transcript.dispose();
+			return;
+		}
 		const { messages: _messages, ...snapshot } = result.snapshot;
 		try {
 			if (
@@ -2835,11 +2862,7 @@ export class AgentDaemon {
 				purpose,
 			);
 		} finally {
-			client.snapshotActiveSessionIds?.delete(result.activeSessionId);
-			client.snapshotStreaming = (client.snapshotActiveSessionIds?.size ?? 0) > 0;
-			if (!client.snapshotStreaming) {
-				client.backpressured = false;
-			}
+			finishClientSnapshotStreaming(client, result.activeSessionId);
 			transcript.dispose();
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpBackpressuredClient(client);
@@ -3632,6 +3655,12 @@ export class AgentDaemon {
 			if (!shouldSendDaemonOutboundToClient(client, sequencedMessage)) {
 				continue;
 			}
+			if (sequencedMessage.type === "session_closed") {
+				client.catchupActiveSessionIds?.delete(state.activeSessionId);
+				client.catchupPurposes?.delete(state.activeSessionId);
+				this.write(client, sequencedMessage);
+				continue;
+			}
 			if (client.snapshotActiveSessionIds?.has(state.activeSessionId)) {
 				this.queueClientCatchup(
 					client,
@@ -4048,6 +4077,20 @@ function daemonClientCapabilitiesForSession(
 
 function daemonClientSupportsExtensionUi(client: DaemonSocketClient, activeSessionId: string): boolean {
 	return client.capabilitiesByActiveSessionId?.get(activeSessionId)?.has("extension_ui") ?? client.supportsExtensionUi;
+}
+
+function markClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): void {
+	client.snapshotStreaming = true;
+	client.snapshotActiveSessionIds ??= new Set();
+	client.snapshotActiveSessionIds.add(activeSessionId);
+}
+
+function finishClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): void {
+	client.snapshotActiveSessionIds?.delete(activeSessionId);
+	client.snapshotStreaming = (client.snapshotActiveSessionIds?.size ?? 0) > 0;
+	if (!client.snapshotStreaming) {
+		client.backpressured = false;
+	}
 }
 
 export function cancelPendingExtensionUiRequests(state: ActiveSessionState): void {

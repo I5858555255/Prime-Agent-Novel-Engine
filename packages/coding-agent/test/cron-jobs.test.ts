@@ -1171,6 +1171,34 @@ describe("AgentCronScheduler", () => {
 		});
 	});
 
+	it("reschedules a skipped dispatch from the skip time", () => {
+		const store = new AgentCronJobStore(makeStorePath(tempDirs));
+		const heartbeat = store.createHeartbeat({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "every 10s",
+			prompt: "check progress",
+			now: start,
+		});
+		const [dispatch] = store.claimDue(new Date("2026-01-01T12:34:10.000Z"));
+		if (!dispatch) {
+			throw new Error("Expected heartbeat dispatch");
+		}
+
+		store.recordDispatchResult(dispatch.id, {
+			now: new Date("2026-01-01T12:34:17.000Z"),
+			outcome: "skipped",
+		});
+
+		expect(store.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+			nextRunAt: "2026-01-01T12:34:27.000Z",
+			lastSkippedAt: "2026-01-01T12:34:17.000Z",
+			runCount: 0,
+		});
+	});
+
 	it("does not replay an uncertain claimed dispatch after recovery", () => {
 		const storePath = makeStorePath(tempDirs);
 		const store = new AgentCronJobStore(storePath);

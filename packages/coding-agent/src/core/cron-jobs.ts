@@ -661,9 +661,11 @@ export class AgentCronJobStore {
 					return job;
 				}
 				if (result.outcome === "skipped" && result.error === undefined) {
+					const nextRunAt = nextRunAtForSchedule(job.schedule, now);
 					updated = {
 						...job,
 						status: job.schedule.kind === "once" ? "completed" : job.status,
+						nextRunAt: nextRunAt?.toISOString(),
 						lastSkippedAt: now.toISOString(),
 						updatedAt: now.toISOString(),
 					};
