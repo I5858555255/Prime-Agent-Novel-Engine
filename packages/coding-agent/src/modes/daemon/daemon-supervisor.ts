@@ -1218,9 +1218,13 @@ export class DaemonSupervisor {
 			if (!isProcessAlive(worker.descriptor.pid)) {
 				throw new Error("Session worker process is no longer running");
 			}
+			const observedProcessStartId = getProcessStartId(worker.descriptor.pid);
 			await this.connectWorker(worker, 2000);
 			await this.subscribeWorker(worker, worker.descriptor.rootActiveSessionId);
 			await this.refreshWorkerSummaries(worker);
+			if (worker.descriptor.processStartId === undefined && observedProcessStartId) {
+				worker.descriptor.processStartId = observedProcessStartId;
+			}
 			worker.descriptor.lifecycle = "ready";
 			worker.descriptor.consecutiveFailures = 0;
 			this.persistWorker(worker);
@@ -1278,6 +1282,9 @@ export class DaemonSupervisor {
 							if (this.isWorkerRecoveryCancelled(worker)) {
 								return;
 							}
+							if (worker.descriptor.processStartId === undefined && observedProcessStartId) {
+								worker.descriptor.processStartId = observedProcessStartId;
+							}
 							worker.descriptor.lifecycle = "ready";
 							worker.descriptor.consecutiveFailures = 0;
 							this.persistWorker(worker);
@@ -1290,6 +1297,14 @@ export class DaemonSupervisor {
 								throw error;
 							}
 						}
+					}
+					if (
+						processAlive &&
+						(worker.descriptor.processStartId === undefined || observedProcessStartId === undefined)
+					) {
+						throw new Error(
+							`Cannot safely replace live session worker ${worker.descriptor.workerId} without a verified process identity`,
+						);
 					}
 					const safeToKillWorkerProcess =
 						processAlive && processIdentityMatches && worker.descriptor.processStartId !== undefined;

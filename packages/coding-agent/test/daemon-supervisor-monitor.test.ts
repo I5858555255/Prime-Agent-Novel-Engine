@@ -143,6 +143,69 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(supervisor.launchWorker).toHaveBeenCalledWith(worker.descriptor.createCommand, worker);
 	});
 
+	it("does not relaunch a live worker whose process identity is unknown", async () => {
+		vi.useFakeTimers();
+		type RecoveryWorker = {
+			descriptor: {
+				workerId: string;
+				pid: number;
+				rootActiveSessionId: string;
+				createCommand: { type: "create" };
+				lifecycle?: string;
+				consecutiveFailures: number;
+				lastFailureAt?: string;
+				lastError?: string;
+			};
+			intentionalStop: boolean;
+			stopRevision: number;
+			recovery?: Promise<void>;
+			client?: { close(): void };
+		};
+		type RecoveryHarness = {
+			workers: Map<string, RecoveryWorker>;
+			shuttingDown: boolean;
+			connectWorker: ReturnType<typeof vi.fn>;
+			recoverUncertainWorkerOperations: ReturnType<typeof vi.fn>;
+			launchWorker: ReturnType<typeof vi.fn>;
+			persistWorker: ReturnType<typeof vi.fn>;
+			syncAgentPeers: ReturnType<typeof vi.fn>;
+			log: ReturnType<typeof vi.fn>;
+			recoverWorker(worker: RecoveryWorker): Promise<void>;
+		};
+		const worker: RecoveryWorker = {
+			descriptor: {
+				workerId: "worker-unknown-identity",
+				pid: process.pid,
+				rootActiveSessionId: "active-1",
+				createCommand: { type: "create" },
+				consecutiveFailures: 0,
+			},
+			intentionalStop: false,
+			stopRevision: 0,
+		};
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			shuttingDown: false,
+			connectWorker: vi.fn(async () => {
+				throw new Error("worker socket unavailable");
+			}),
+			recoverUncertainWorkerOperations: vi.fn(async () => {}),
+			launchWorker: vi.fn(async () => worker),
+			persistWorker: vi.fn(),
+			syncAgentPeers: vi.fn(async () => {}),
+			log: vi.fn(),
+		}) as RecoveryHarness;
+
+		const recovery = supervisor.recoverWorker(worker);
+		await vi.runAllTimersAsync();
+		await recovery;
+
+		expect(supervisor.connectWorker).toHaveBeenCalledTimes(3);
+		expect(supervisor.recoverUncertainWorkerOperations).not.toHaveBeenCalled();
+		expect(supervisor.launchWorker).not.toHaveBeenCalled();
+		expect(worker.descriptor.lifecycle).toBe("failed");
+	});
+
 	it("ignores malformed persisted worker descriptors", () => {
 		const descriptorDir = mkdtempSync(join(tmpdir(), "prime-supervisor-descriptor-test-"));
 		try {
