@@ -829,6 +829,7 @@ export class AgentSession {
 	private _rlmParentNodeId?: string;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
+	private _rlmChildForwardersDetached = false;
 	// Inline mode keeps finished child sessions so the inspector can still read them;
 	// the daemon does the same by leaving the child session resident in its registry.
 	private _retainedRlmChildSessions = new Map<string, AgentSession>();
@@ -5787,6 +5788,7 @@ export class AgentSession {
 	}
 
 	private _detachRlmChildForwarders(): void {
+		this._rlmChildForwardersDetached = true;
 		for (const run of this._activeRlmChildRuns.values()) {
 			run.unsubscribe?.();
 			run.unsubscribe = undefined;
@@ -6025,7 +6027,11 @@ export class AgentSession {
 						}
 					}
 				});
-				run.unsubscribe = unsubscribeChild;
+				if (this._rlmChildForwardersDetached) {
+					unsubscribeChild();
+				} else {
+					run.unsubscribe = unsubscribeChild;
+				}
 				if (isRlmChildRunCancelled(run)) {
 					await child.abort();
 					throw new Error(run.error ?? "RLM child cancelled");

@@ -108,6 +108,7 @@ interface InspectableRlmRun {
 	status: string;
 	error?: string;
 	session?: AgentSession;
+	unsubscribe?: () => void;
 }
 
 interface InspectableRlmSession {
@@ -481,6 +482,56 @@ describe("AgentSession rlm recursion", () => {
 
 		expect(run.status).toBe("running");
 		expect(root.retainFinishedRlmChildSession("finished-after-reset", child)).toBe(true);
+		releaseChild();
+		await expect(runPromise).resolves.toMatchObject({ answer: "child answer: slow shard" });
+		child.dispose();
+	});
+
+	it("does not attach late child forwarders after a retained parent reset", async () => {
+		let releaseEnsureTool: () => void = () => {};
+		const ensureTool = new Promise<void>((resolve) => {
+			releaseEnsureTool = resolve;
+		});
+		toolsManagerMock.ensureTool.mockImplementationOnce(async () => {
+			await ensureTool;
+			return "rg";
+		});
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				const stream = createAssistantMessageEventStream();
+				if (text === "slow shard") {
+					childStarted = true;
+					void release.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage(`child answer: ${text}`) });
+					});
+				}
+				return stream;
+			},
+		});
+
+		const runPromise = root.runRlmChild("slow shard");
+		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		await waitFor(() => runs.size === 1);
+		const run = [...runs.values()][0];
+		if (!run) {
+			throw new Error("Missing pending child run");
+		}
+
+		await root.disposeAsync({ retainRlmChildSessions: true });
+		releaseEnsureTool();
+		await waitFor(() => childStarted);
+
+		expect(run.unsubscribe).toBeUndefined();
+		const child = run.session;
+		if (!child) {
+			throw new Error("Missing child session");
+		}
 		releaseChild();
 		await expect(runPromise).resolves.toMatchObject({ answer: "child answer: slow shard" });
 		child.dispose();
