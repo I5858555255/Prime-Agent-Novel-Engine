@@ -4,7 +4,14 @@ import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, getAgentTracesLogPath } from "../src/config.js";
-import { flushAgentTraceUpload, installAgentTraceUpload, uploadAgentTraceFile } from "../src/core/agent-traces.js";
+import {
+	findAgentTraceFiles,
+	flushAgentTraceUpload,
+	installAgentTraceUpload,
+	previewAgentTraceFile,
+	uploadAgentTraceFile,
+	uploadAllAgentTraces,
+} from "../src/core/agent-traces.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { PRIME_AGENT_TRACES_PROVIDER_ID, PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -136,6 +143,25 @@ describe("agent trace upload", () => {
 
 		expect(result).toEqual({ status: "disabled" });
 		expect(calls).toHaveLength(0);
+	});
+
+	it("allows an explicit one-shot upload without enabling automatic sharing", async () => {
+		const sessionManager = writeSession(tempDir, join(tempDir, "sessions"), "one-shot-session");
+		const calls: FetchCall[] = [];
+		const result = await uploadAgentTraceFile({
+			sessionFile: sessionManager.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: false } }),
+			requireEnabled: false,
+			baseUrl: "https://api.example.test",
+			fetchFn: createFetchRecorder(calls),
+			reloadConfig: false,
+		});
+
+		expect(result.status).toBe("uploaded");
+		expect(calls).toHaveLength(1);
 	});
 
 	it("stops before reading the session body when trace sharing is disabled after upload starts", async () => {
@@ -442,6 +468,100 @@ describe("agent trace upload", () => {
 		expect(calls).toHaveLength(1);
 	});
 
+	it("uses bounded exponential backoff with jitter for transient failures", async () => {
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "bounded-retry-session");
+		let attempts = 0;
+		const failingFetch: typeof fetch = async () => {
+			attempts += 1;
+			const error = new TypeError("fetch failed");
+			(error as { cause?: unknown }).cause = { code: "ECONNRESET" };
+			throw error;
+		};
+
+		const result = await uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn: failingFetch,
+			reloadConfig: false,
+		});
+		expect(attempts).toBe(4);
+		expect(result.status).toBe("failed");
+		const retryDelays = timeoutSpy.mock.calls.map((call) => Number(call[1])).filter((delay) => delay < 15_000);
+		expect(retryDelays).toEqual([400, 800, 1_600]);
+		randomSpy.mockRestore();
+	});
+
+	it("retries request timeouts within the retry bound", async () => {
+		vi.useFakeTimers();
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "timeout-retry-session");
+		let markFirstAttemptStarted: () => void = () => {};
+		const firstAttemptStarted = new Promise<void>((resolve) => {
+			markFirstAttemptStarted = resolve;
+		});
+		let attempts = 0;
+		const timeoutFetch: typeof fetch = async (_input, init) => {
+			attempts += 1;
+			if (attempts === 1) {
+				markFirstAttemptStarted();
+			}
+			return await new Promise<Response>((_resolve, reject) => {
+				const signal = init?.signal;
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+			});
+		};
+
+		const upload = uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn: timeoutFetch,
+			requestTimeoutMs: 100,
+			reloadConfig: false,
+		});
+
+		await firstAttemptStarted;
+		await vi.runAllTimersAsync();
+		const result = await upload;
+		expect(attempts).toBe(4);
+		expect(result).toEqual({ status: "failed", message: "Trace upload timed out after 100ms" });
+	});
+
+	it("retries transient HTTP responses but not permanent HTTP responses", async () => {
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "http-retry-session");
+		let attempts = 0;
+		const fetchFn: typeof fetch = async () => {
+			attempts += 1;
+			if (attempts < 3) {
+				return new Response(JSON.stringify({ detail: "temporarily unavailable" }), { status: 503 });
+			}
+			return new Response(JSON.stringify({ bytes_stored: 42 }), { status: 200 });
+		};
+
+		const result = await uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn,
+			reloadConfig: false,
+		});
+		expect(attempts).toBe(3);
+		expect(result.status).toBe("uploaded");
+		randomSpy.mockRestore();
+	});
+
 	it("surfaces the cancellation reason when aborted during the retry backoff", async () => {
 		const session = writeSession(tempDir, join(tempDir, "sessions"), "aborted-retry-session");
 		const controller = new AbortController();
@@ -529,6 +649,81 @@ describe("agent trace upload", () => {
 		if (result.status === "failed") {
 			expect(result.statusCode).toBe(400);
 		}
+	});
+
+	it("previews the current trace without requiring sharing or credentials", async () => {
+		const cwd = join(tempDir, "project");
+		const sessionDir = join(tempDir, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		const parent = writeSession(cwd, sessionDir, "preview-parent");
+		const child = writeSession(cwd, sessionDir, "preview-child", parent.getSessionFile());
+
+		const result = await previewAgentTraceFile({
+			sessionFile: child.getSessionFile(),
+			baseUrl: "https://api.example.test",
+			maxContentChars: 256,
+		});
+
+		expect(result.status).toBe("ready");
+		if (result.status === "ready") {
+			expect(result).toMatchObject({
+				sessionId: "preview-child",
+				traceId: "preview-parent",
+				parentSessionId: "preview-parent",
+				cwd,
+				uploadable: true,
+				endpoint: "https://api.example.test/api/v1/agent-traces/sessions/preview-child",
+				truncated: true,
+			});
+			expect(result.contentPreview).toContain("middle of trace omitted");
+			expect(result.contentPreview).toContain("preview-child");
+		}
+	});
+
+	it("discovers and uploads saved parent and subagent traces", async () => {
+		const cwd = join(tempDir, "project");
+		const sessionDir = join(tempDir, "sessions");
+		mkdirSync(cwd, { recursive: true });
+		const parent = writeSession(cwd, sessionDir, "all-parent");
+		const childDir = join(tempDir, "session-artifacts", "all-parent", "sub-12345678");
+		const child = writeSession(cwd, childDir, "all-child", parent.getSessionFile());
+		const grandchildDir = join(childDir, "sub-87654321");
+		const grandchild = writeSession(cwd, grandchildDir, "all-grandchild", child.getSessionFile());
+		writeFileSync(join(childDir, "not-a-session.jsonl"), '{"type":"diagnostic"}\n');
+
+		const discovered = await findAgentTraceFiles(sessionDir);
+		expect(discovered).toEqual([child.getSessionFile(), grandchild.getSessionFile(), parent.getSessionFile()].sort());
+
+		const calls: FetchCall[] = [];
+		const progress: Array<{ completed: number; total: number }> = [];
+		const result = await uploadAllAgentTraces({
+			sessionDir,
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: false } }),
+			requireEnabled: false,
+			baseUrl: "https://api.example.test",
+			fetchFn: createFetchRecorder(calls),
+			reloadConfig: false,
+			concurrency: 2,
+			onProgress: ({ completed, total }) => progress.push({ completed, total }),
+		});
+
+		expect(result).toMatchObject({ total: 3, uploaded: 3, failed: 0, skipped: 0, bytesStored: 369 });
+		expect(calls.map((call) => call.url).sort()).toEqual(
+			[
+				"https://api.example.test/api/v1/agent-traces/sessions/all-child",
+				"https://api.example.test/api/v1/agent-traces/sessions/all-grandchild",
+				"https://api.example.test/api/v1/agent-traces/sessions/all-parent",
+			].sort(),
+		);
+		const grandchildCall = calls.find((call) => call.url.endsWith("/all-grandchild"));
+		const grandchildHeaders = new Headers(grandchildCall?.init.headers);
+		expect(grandchildHeaders.get("x-trace-id")).toBe("all-parent");
+		expect(grandchildHeaders.get("x-parent-session")).toBe("all-child");
+		expect(progress[0]).toEqual({ completed: 0, total: 3 });
+		expect(progress.at(-1)).toEqual({ completed: 3, total: 3 });
 	});
 
 	it("prefers the prime-inference credential over the prime-cli config key", async () => {
