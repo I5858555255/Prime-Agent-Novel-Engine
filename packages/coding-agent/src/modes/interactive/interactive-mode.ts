@@ -91,6 +91,7 @@ import {
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
+import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
@@ -1468,6 +1469,7 @@ export class InteractiveMode {
 			return;
 		}
 
+		await this.prepareForModelSelectionAfterLogin(authResult);
 		await this.promptForModelSelection({ allowProviderSetup: true });
 	}
 
@@ -6971,8 +6973,8 @@ export class InteractiveMode {
 			if (result.status !== "action") {
 				return;
 			}
-			await this.showLoginProviderSelector();
-			this.invalidateConnectionModels();
+			const authResult = await this.showLoginProviderSelector();
+			await this.prepareForModelSelectionAfterLogin(authResult);
 			nextSearchInput = undefined;
 		}
 	}
@@ -6996,8 +6998,8 @@ export class InteractiveMode {
 				return false;
 			}
 
-			await this.showLoginProviderSelector();
-			this.invalidateConnectionModels();
+			const authResult = await this.showLoginProviderSelector();
+			await this.prepareForModelSelectionAfterLogin(authResult);
 		}
 	}
 
@@ -7564,6 +7566,33 @@ export class InteractiveMode {
 		return this.createAuthFlows().runLogin(options);
 	}
 
+	private async prepareForModelSelectionAfterLogin(authResult: AuthenticationResult): Promise<boolean> {
+		if (authResult.status === "success" && authResult.kind !== "service") {
+			this.invalidateConnectionModels();
+		}
+
+		const currentModel = this.getCurrentModel();
+		const action = resolvePrimeInferencePostLoginModelAction(authResult, currentModel, this.modelRegistry);
+		if (!action.openModelPicker) {
+			return false;
+		}
+
+		if (action.fallbackModel) {
+			try {
+				await this.applySelectedModel(action.fallbackModel);
+				await this.settingsManager.flush();
+			} catch (error) {
+				this.showError(
+					`Prime Inference login succeeded, but the default model could not be selected: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		} else if (!currentModel) {
+			this.showError("Prime Inference login succeeded, but the default GLM 5.2 model is unavailable.");
+		}
+
+		return true;
+	}
+
 	private async handleMcpCommand(args: string | undefined): Promise<void> {
 		const [sub, server] = (args ?? "").trim().split(/\s+/);
 		if (!sub) {
@@ -7631,9 +7660,7 @@ export class InteractiveMode {
 	private async showOAuthSelector(mode: "login" | "logout", loginOptions: ProviderLoginOptions = {}): Promise<void> {
 		if (mode === "login") {
 			const authResult = await this.showLoginProviderSelector(loginOptions);
-			if (authResult.status === "success" && authResult.kind !== "service") {
-				this.invalidateConnectionModels();
-			}
+			const shouldOpenModelPicker = await this.prepareForModelSelectionAfterLogin(authResult);
 			// An MCP integration login enables its skill, so reload resources — but a
 			// reload is refused mid-turn, so tell the user to /reload (matching /mcp login).
 			if (authResult.status === "success" && authResult.providerId.startsWith("mcp:")) {
@@ -7642,6 +7669,9 @@ export class InteractiveMode {
 				} else {
 					await this.handleReloadCommand();
 				}
+			}
+			if (shouldOpenModelPicker) {
+				await this.showModelSelectorWithProviderSetup();
 			}
 			return;
 		}
