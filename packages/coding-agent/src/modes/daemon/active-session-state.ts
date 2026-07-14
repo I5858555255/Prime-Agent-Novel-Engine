@@ -4,6 +4,12 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentStatus } from "../../core/session-manager.js";
 import type { DaemonClientCapability, DaemonEventSequence, DaemonExtensionUIResponse } from "./daemon-protocol.js";
 import { formatSessionDisplayId, matchesSessionIdSuffix } from "./daemon-session-id.js";
+import type { SnapshotTransferRegistry } from "./snapshot-transfer-controller.js";
+
+export interface SnapshotCatchupHandle {
+	controller: AbortController;
+	promise: Promise<void>;
+}
 
 export interface DaemonSocketClient {
 	id: string;
@@ -19,6 +25,8 @@ export interface DaemonSocketClient {
 	snapshotStreaming?: boolean;
 	snapshotActiveSessionIds?: Set<string>;
 	snapshotActiveSessionCounts?: Map<string, number>;
+	snapshotTransfers?: SnapshotTransferRegistry;
+	snapshotCatchup?: SnapshotCatchupHandle;
 	detachInput: () => void;
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;

@@ -1245,7 +1245,12 @@ describe("DaemonAgentConnection", () => {
 			const result = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
 			return {
 				...result,
-				snapshotStream: { id: "snapshot-stalled", messageCount: 0, targetChunkBytes: 512 * 1024 },
+				snapshotStream: {
+					id: "snapshot-stalled",
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+					transcriptRevision: "stalled-revision",
+				},
 			};
 		};
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1", {
@@ -1260,12 +1265,14 @@ describe("DaemonAgentConnection", () => {
 			snapshot: createAttachResult("active-1", "client-1", undefined, 12).snapshot,
 			messageCount: 0,
 			targetChunkBytes: 512 * 1024,
+			transcriptRevision: "stalled-revision",
 		});
 		fakeClient.emitMessage({
 			type: "session_snapshot_end",
 			activeSessionId: "active-1",
 			snapshotId: "snapshot-stalled",
 			chunkCount: 0,
+			transcriptRevision: "stalled-revision",
 			lastEventSequence: 12,
 		});
 		expect((connection as unknown as { snapshotAssemblies: Map<string, unknown> }).snapshotAssemblies.size).toBe(0);
@@ -1291,6 +1298,7 @@ describe("DaemonAgentConnection", () => {
 					snapshot: snapshotHeader,
 					messageCount: messages.length,
 					targetChunkBytes: 512 * 1024,
+					transcriptRevision: "streamed-revision",
 				});
 				fakeClient.emitMessage({
 					type: "session_snapshot_chunk",
@@ -1311,7 +1319,9 @@ describe("DaemonAgentConnection", () => {
 					activeSessionId: command.activeSessionId,
 					snapshotId: "snapshot-streamed",
 					chunkCount: 2,
+					transcriptRevision: "streamed-revision",
 					lastEventSequence: 23,
+					lastEventCursor: { generation: "generation-active-1", sequence: 23 },
 				});
 			});
 			return {
@@ -1321,6 +1331,7 @@ describe("DaemonAgentConnection", () => {
 					id: "snapshot-streamed",
 					messageCount: messages.length,
 					targetChunkBytes: 512 * 1024,
+					transcriptRevision: "streamed-revision",
 				},
 			};
 		};
@@ -1338,6 +1349,122 @@ describe("DaemonAgentConnection", () => {
 			lastEventSequence: 23,
 		});
 		expect(events).toEqual([]);
+	});
+
+	it("rejects only the matching streamed attach when the daemon reports a session-scoped failure", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.attachResultFactory = (command) => {
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23);
+			queueMicrotask(() => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_failed",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-failed",
+					error: "encoder failed after begin",
+				});
+			});
+			return {
+				...full,
+				snapshotStream: {
+					id: "snapshot-failed",
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+					transcriptRevision: "failed-revision",
+				},
+			};
+		};
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1", {
+			snapshotTimeoutMs: 10_000,
+		});
+
+		await expect(connection.attach()).rejects.toThrow("encoder failed after begin");
+
+		expect(fakeClient.closeCount).toBe(0);
+		expect((connection as unknown as { snapshotAssemblies: Map<string, unknown> }).snapshotAssemblies.size).toBe(0);
+	});
+
+	it("resets an incomplete same-ID stream and drains an identical completed duplicate", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const first: AgentMessage = { role: "user", content: "partial", timestamp: 1 };
+		const retried: AgentMessage = { role: "user", content: "retried", timestamp: 2 };
+		let emitDuplicate = () => {};
+		fakeClient.attachResultFactory = (command) => {
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				messages: [retried],
+			});
+			const { messages: _messages, ...snapshot } = full.snapshot;
+			const begin: DaemonOutbound = {
+				type: "session_snapshot_begin",
+				activeSessionId: command.activeSessionId,
+				snapshotId: "snapshot-retry",
+				snapshot,
+				messageCount: 1,
+				targetChunkBytes: 512 * 1024,
+				transcriptRevision: "retry-revision",
+			};
+			const end: DaemonOutbound = {
+				type: "session_snapshot_end",
+				activeSessionId: command.activeSessionId,
+				snapshotId: "snapshot-retry",
+				chunkCount: 1,
+				transcriptRevision: "retry-revision",
+				lastEventSequence: 23,
+				lastEventCursor: { generation: "generation-active-1", sequence: 23 },
+			};
+			queueMicrotask(() => {
+				fakeClient.emitMessage(begin);
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-retry",
+					index: 0,
+					messages: [first],
+				});
+				fakeClient.emitMessage(begin);
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-retry",
+					index: 0,
+					messages: [retried],
+				});
+				fakeClient.emitMessage(end);
+			});
+			emitDuplicate = () => {
+				fakeClient.emitMessage(begin);
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-retry",
+					index: 0,
+					messages: [retried],
+				});
+				fakeClient.emitMessage(end);
+			};
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: {
+					id: "snapshot-retry",
+					messageCount: 1,
+					targetChunkBytes: 512 * 1024,
+					transcriptRevision: "retry-revision",
+				},
+			};
+		};
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+
+		await connection.attach();
+		await expect(connection.getInitialSnapshot()).resolves.toMatchObject({ messages: [retried] });
+		emitDuplicate();
+		await Promise.resolve();
+
+		expect(events).toEqual([]);
+		expect((connection as unknown as { snapshotAssemblies: Map<string, unknown> }).snapshotAssemblies.size).toBe(0);
 	});
 
 	it("distinguishes chunked catch-up snapshots from runtime replacements", async () => {
@@ -1368,6 +1495,7 @@ describe("DaemonAgentConnection", () => {
 				snapshot,
 				messageCount: messages.length,
 				targetChunkBytes: 512 * 1024,
+				transcriptRevision: `${snapshotId}-revision`,
 				purpose,
 			});
 			fakeClient.emitMessage({
@@ -1382,6 +1510,7 @@ describe("DaemonAgentConnection", () => {
 				activeSessionId: "active-1",
 				snapshotId,
 				chunkCount: 1,
+				transcriptRevision: `${snapshotId}-revision`,
 				lastEventSequence: sequence,
 				lastEventCursor: { generation: "generation-active-1", sequence },
 			});

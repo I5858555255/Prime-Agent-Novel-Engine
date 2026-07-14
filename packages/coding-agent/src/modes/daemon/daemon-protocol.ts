@@ -203,6 +203,7 @@ export interface DaemonAttachResult {
 		id: string;
 		messageCount: number;
 		targetChunkBytes: number;
+		transcriptRevision: string;
 	};
 	client: {
 		id: DaemonClientId;
@@ -571,6 +572,7 @@ export type DaemonOutbound =
 			snapshot: Omit<DaemonSessionSnapshot, "messages">;
 			messageCount: number;
 			targetChunkBytes: number;
+			transcriptRevision: string;
 			purpose?: "attach" | "replacement" | "resync";
 	  }
 	| {
@@ -585,8 +587,15 @@ export type DaemonOutbound =
 			activeSessionId: string;
 			snapshotId: string;
 			chunkCount: number;
+			transcriptRevision: string;
 			lastEventSequence: DaemonEventSequence;
 			lastEventCursor?: DaemonEventCursor;
+	  }
+	| {
+			type: "session_snapshot_failed";
+			activeSessionId: string;
+			snapshotId: string;
+			error: string;
 	  }
 	| { type: "session_detached"; activeSessionId: string }
 	| { type: "session_closed"; activeSessionId: string; reason: DaemonSessionClosedReason; meta?: DaemonEventMeta }

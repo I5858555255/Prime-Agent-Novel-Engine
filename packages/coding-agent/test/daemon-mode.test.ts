@@ -2401,7 +2401,7 @@ describe("daemon mode helpers", () => {
 		expect(client.snapshotActiveSessionIds).not.toContain("active");
 	});
 
-	it("falls back to a full replacement when snapshot cache creation fails", () => {
+	it("fails an announced replacement snapshot when cache creation fails", async () => {
 		const root = mkdtempSync(join(tmpdir(), "prime-agent-daemon-replacement-fallback-"));
 		try {
 			const invalidAgentDir = join(root, "not-a-directory");
@@ -2442,10 +2442,12 @@ describe("daemon mode helpers", () => {
 				messages: [],
 			});
 
-			expect(write).toHaveBeenCalledTimes(1);
+			await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
 			const replacementFrame = String(write.mock.calls[0]?.[0]);
 			expect(replacementFrame).toContain('"type":"session_replaced"');
-			expect(replacementFrame).not.toContain('"snapshotFollows":true');
+			expect(replacementFrame).toContain('"snapshotFollows":true');
+			expect(String(write.mock.calls[1]?.[0])).toContain('"type":"session_snapshot_begin"');
+			expect(String(write.mock.calls[2]?.[0])).toContain('"type":"session_snapshot_failed"');
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

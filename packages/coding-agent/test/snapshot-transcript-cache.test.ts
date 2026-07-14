@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
-import { SnapshotTranscriptCache } from "../src/modes/daemon/snapshot-transcript-cache.js";
+import {
+	SnapshotTranscriptCache,
+	type SnapshotTranscriptIdentity,
+} from "../src/modes/daemon/snapshot-transcript-cache.js";
+import { SnapshotTransferCancelledError } from "../src/modes/daemon/snapshot-transfer-controller.js";
 
 const tempDirs: string[] = [];
 
@@ -25,6 +29,19 @@ function messages(count: number, chars: number): AgentMessage[] {
 		content: `${index}:${"x".repeat(chars)}`,
 		timestamp: index,
 	}));
+}
+
+function identity(activeSessionId: string, snapshotId: string): SnapshotTranscriptIdentity {
+	return {
+		activeSessionId,
+		snapshotId,
+		sessionId: `session-${activeSessionId}`,
+		messageCount: 0,
+		targetChunkBytes: 512 * 1024,
+		eventGeneration: `generation-${activeSessionId}`,
+		eventSequence: 1,
+		transcriptRevision: `revision-${snapshotId}`,
+	};
 }
 
 describe("snapshot transcript cache", () => {
@@ -95,6 +112,66 @@ describe("snapshot transcript cache", () => {
 
 		expect(cache.readChunk(0)).toEqual(firstChunk);
 		release();
-		expect(() => cache.readChunk(0)).toThrow("Unknown snapshot transcript chunk");
+		expect(() => cache.readChunk(0)).toThrow("was disposed");
+	});
+
+	it("fails pending readers before deferred disposal and releases exactly once", async () => {
+		const cache = new SnapshotTranscriptCache({
+			activeSessionId: "active-e",
+			snapshotId: "snapshot-e",
+			cacheRoot: tempDir(),
+			identity: identity("active-e", "snapshot-e"),
+		});
+		const release = cache.retain();
+		const pending = cache.waitForChunk(1);
+		const failure = new Error("encoder failed after begin");
+
+		cache.markFailed(failure);
+		cache.dispose();
+
+		await expect(pending).rejects.toBe(failure);
+		expect(cache.state).toBe("failed");
+		release();
+		release();
+		expect(cache.state).toBe("disposed");
+	});
+
+	it("removes aborted waiters without failing the cache", async () => {
+		const cache = new SnapshotTranscriptCache({
+			activeSessionId: "active-f",
+			snapshotId: "snapshot-f",
+			cacheRoot: tempDir(),
+		});
+		const controller = new AbortController();
+		const pending = cache.waitForChunk(0, controller.signal);
+		const cancellation = new SnapshotTransferCancelledError("attachment detached");
+
+		controller.abort(cancellation);
+
+		await expect(pending).rejects.toBe(cancellation);
+		expect(cache.state).toBe("open");
+		cache.appendEncodedChunk(Buffer.from("chunk"));
+		cache.markComplete(1);
+		expect(cache.state).toBe("complete");
+		cache.dispose();
+	});
+
+	it("keeps an immutable fingerprint and completes identical endings idempotently", () => {
+		const snapshotIdentity = identity("active-g", "snapshot-g");
+		const cache = new SnapshotTranscriptCache({
+			activeSessionId: "active-g",
+			snapshotId: "snapshot-g",
+			cacheRoot: tempDir(),
+			identity: snapshotIdentity,
+		});
+		cache.appendEncodedChunk(Buffer.from("chunk"));
+
+		cache.markComplete(1);
+		cache.markComplete(1);
+
+		expect(cache.fingerprint).toEqual({ ...snapshotIdentity, chunkCount: 1 });
+		expect(Object.isFrozen(cache.fingerprint)).toBe(true);
+		expect(() => cache.appendEncodedChunk(Buffer.from("duplicate"))).toThrow("is complete");
+		cache.dispose();
 	});
 });
