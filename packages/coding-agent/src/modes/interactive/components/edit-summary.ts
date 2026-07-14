@@ -1,10 +1,10 @@
-import { resolve } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EditToolDetails } from "../../../core/tools/edit.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
 import type { IpythonToolDetails } from "../../../core/tools/ipython.js";
+import { resolveToCwd } from "../../../core/tools/path-utils.js";
 import { formatPathRelativeToCwdOrAbsolute } from "../../../utils/paths.js";
 import { theme } from "../theme/theme.js";
 
@@ -28,7 +28,7 @@ function countChangedLines(diff: string): { added: number; removed: number } {
 
 function mergeFileChange(target: Map<string, FileChangeSummary>, change: FileChangeSummary, cwd: string): void {
 	if (change.added === 0 && change.removed === 0) return;
-	const key = resolve(cwd, change.path);
+	const key = resolveToCwd(change.path, cwd);
 	const existing = target.get(key);
 	if (existing) {
 		existing.added += change.added;

@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -95,5 +96,24 @@ describe("edit summaries", () => {
 			"/tmp",
 		);
 		expect([...changes.values()]).toEqual([{ path: "a.ts", added: 2, removed: 2 }]);
+	});
+
+	test("coalesces home-relative and absolute paths", () => {
+		const absolutePath = `${homedir()}/same.ts`;
+		const message = assistant([
+			{ type: "toolCall", id: "one", name: "edit", arguments: { path: "~/same.ts" } },
+			{ type: "toolCall", id: "two", name: "ipython", arguments: {} },
+		]);
+		const changes = new Map();
+		mergeTurnFileChanges(
+			changes,
+			message,
+			[
+				result("one", "edit", { diff: "-1 old\n+1 new" }),
+				result("two", "ipython", { diffs: [{ path: absolutePath, oldStr: "new", newStr: "newer" }] }),
+			],
+			"/tmp",
+		);
+		expect([...changes.values()]).toEqual([{ path: "~/same.ts", added: 2, removed: 2 }]);
 	});
 });
