@@ -4,6 +4,14 @@ export interface TerminalCapabilities {
 	images: ImageProtocol;
 	trueColor: boolean;
 	hyperlinks: boolean;
+	/**
+	 * Kitty-compatible image placement varies by terminal. Most terminals are
+	 * drawn from the last reserved row with a cursor shim so old image rows are
+	 * cleared first; Ghostty spaces images more reliably when the escape is
+	 * emitted on the first reserved row and the TUI advances through the
+	 * remaining reserved rows normally.
+	 */
+	imagePlacement?: "first-row";
 }
 
 export interface CellDimensions {
@@ -59,7 +67,7 @@ export function detectCapabilities(): TerminalCapabilities {
 	}
 
 	if (termProgram === "ghostty" || term.includes("ghostty") || process.env.GHOSTTY_RESOURCES_DIR) {
-		return { images: "kitty", trueColor: true, hyperlinks: true };
+		return { images: "kitty", trueColor: true, hyperlinks: true, imagePlacement: "first-row" };
 	}
 
 	if (process.env.WEZTERM_PANE || termProgram === "wezterm") {
