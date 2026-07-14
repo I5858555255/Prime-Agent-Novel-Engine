@@ -9,6 +9,7 @@ import {
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 } from "../src/config.js";
 import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
+import type * as DaemonSocketModule from "../src/modes/daemon/daemon-socket.js";
 import { handlePackageCommand } from "../src/package-manager-cli.js";
 
 interface MockSessionSummary {
@@ -121,7 +122,8 @@ vi.mock("child_process", () => ({
 	})),
 }));
 
-vi.mock("../src/modes/daemon/daemon-socket.js", () => ({
+vi.mock("../src/modes/daemon/daemon-socket.js", async (importOriginal) => ({
+	...(await importOriginal<typeof DaemonSocketModule>()),
 	defaultDaemonSocketPath: () => mockState.socketPath,
 }));
 
