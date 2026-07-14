@@ -1,7 +1,7 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ENV_AGENT_DIR,
 	PACKAGE_NAME,
@@ -10,6 +10,10 @@ import {
 } from "../src/config.js";
 import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
 import type * as DaemonSocketModule from "../src/modes/daemon/daemon-socket.js";
+import {
+	DAEMON_SUPERVISOR_REGISTRY_DIR_ENV,
+	defaultDaemonSupervisorRegistryDir,
+} from "../src/modes/daemon/daemon-supervisor-ownership.js";
 import { handlePackageCommand } from "../src/package-manager-cli.js";
 
 interface MockSessionSummary {
@@ -98,6 +102,7 @@ const mockState = vi.hoisted(() => ({
 	spawnExitCodes: [] as number[],
 	shutdownResult: true,
 }));
+const inheritedSupervisorRegistryDir = process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV];
 
 vi.mock("child_process", () => ({
 	spawn: vi.fn((command: string, args: string[]) => {
@@ -201,6 +206,7 @@ describe("self-update daemon restart", () => {
 	let packageDir: string;
 	let originalAgentDir: string | undefined;
 	let originalPiPackageDir: string | undefined;
+	let originalSupervisorRegistryDir: string | undefined;
 	let originalCwd: string;
 	let originalExecPath: string;
 	let originalExitCode: typeof process.exitCode;
@@ -228,12 +234,14 @@ describe("self-update daemon restart", () => {
 
 		originalAgentDir = process.env[ENV_AGENT_DIR];
 		originalPiPackageDir = process.env.PI_PACKAGE_DIR;
+		originalSupervisorRegistryDir = process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV];
 		originalCwd = process.cwd();
 		originalExecPath = process.execPath;
 		originalExitCode = process.exitCode;
 		process.exitCode = undefined;
 		process.env[ENV_AGENT_DIR] = agentDir;
 		process.env.PI_PACKAGE_DIR = packageDir;
+		process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV] = join(tempDir, "supervisor-owners");
 		process.chdir(projectDir);
 		Object.defineProperty(process, "execPath", {
 			value: join(packageDir, "dist", "cli.js"),
@@ -260,9 +268,18 @@ describe("self-update daemon restart", () => {
 		} else {
 			process.env.PI_PACKAGE_DIR = originalPiPackageDir;
 		}
+		if (originalSupervisorRegistryDir === undefined) {
+			delete process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV];
+		} else {
+			process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV] = originalSupervisorRegistryDir;
+		}
 		delete process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
 		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	afterAll(() => {
+		expect(process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV]).toBe(inheritedSupervisorRegistryDir);
 	});
 
 	it("uses the interactive no-change sentinel only when self-update is unchanged", async () => {
@@ -327,7 +344,11 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
+			const isolatedRegistryDir = join(tempDir, "supervisor-owners");
+			expect(defaultDaemonSupervisorRegistryDir()).toBe(isolatedRegistryDir);
+			expect(isolatedRegistryDir).not.toBe(defaultDaemonSupervisorRegistryDir({}));
 			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			expect(existsSync(join(isolatedRegistryDir, "startup-fences"))).toBe(true);
 
 			expect(process.exitCode).toBeUndefined();
 			const spawnIndex = mockState.calls.findIndex((call) => call.startsWith("spawn:npm "));
