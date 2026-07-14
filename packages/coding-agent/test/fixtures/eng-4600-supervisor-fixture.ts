@@ -1,0 +1,160 @@
+import { existsSync, unlinkSync } from "node:fs";
+import { createServer, type Server } from "node:net";
+import lockfile from "proper-lockfile";
+import { isDaemonCatalogProcess, runDaemonCatalogProcess } from "../../src/modes/daemon/daemon-catalog-process.js";
+import { DaemonSupervisor, type DaemonSupervisorStartupPhase } from "../../src/modes/daemon/daemon-supervisor.js";
+import {
+	acquireDaemonSupervisorOwnership,
+	type DaemonSupervisorOwnership,
+} from "../../src/modes/daemon/daemon-supervisor-ownership.js";
+
+type ControlMessage = { type: "go" | "resume" | "shutdown" | "cleanup" };
+
+function requiredEnvironment(name: string): string {
+	const value = process.env[name];
+	if (!value) {
+		throw new Error(`Missing ${name}`);
+	}
+	return value;
+}
+
+function send(message: Record<string, unknown>): void {
+	process.send?.(message);
+}
+
+function waitForControl(type: ControlMessage["type"]): Promise<void> {
+	return new Promise((resolve) => {
+		const onMessage = (message: unknown) => {
+			if (!message || typeof message !== "object" || (message as Partial<ControlMessage>).type !== type) {
+				return;
+			}
+			process.off("message", onMessage);
+			resolve();
+		};
+		process.on("message", onMessage);
+	});
+}
+
+async function closeServer(server: Server): Promise<void> {
+	if (!server.listening) {
+		return;
+	}
+	await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+}
+
+async function runOwnershipHolder(): Promise<never> {
+	const ownership: DaemonSupervisorOwnership = await acquireDaemonSupervisorOwnership({
+		socketPath: requiredEnvironment("ENG_4600_SOCKET_PATH"),
+		descriptorDir: requiredEnvironment("ENG_4600_DESCRIPTOR_DIR"),
+		agentDir: requiredEnvironment("ENG_4600_AGENT_DIR"),
+		generation: requiredEnvironment("ENG_4600_GENERATION"),
+		appVersion: "test",
+		registryDir: requiredEnvironment("ENG_4600_REGISTRY_DIR"),
+	});
+	send({ type: "ready", generation: ownership.record.generation });
+	await waitForControl("shutdown");
+	await ownership.release();
+	process.exit(0);
+}
+
+async function runSupervisor(): Promise<never> {
+	const socketPath = requiredEnvironment("ENG_4600_SOCKET_PATH");
+	const agentDir = requiredEnvironment("ENG_4600_AGENT_DIR");
+	const descriptorDir = requiredEnvironment("ENG_4600_DESCRIPTOR_DIR");
+	const failPhase = process.env.ENG_4600_FAIL_PHASE as DaemonSupervisorStartupPhase | undefined;
+	const pausePhase = process.env.ENG_4600_PAUSE_PHASE as DaemonSupervisorStartupPhase | undefined;
+	const supervisor = new DaemonSupervisor(socketPath, {
+		descriptorDir,
+		defaultSessionConfig: {
+			agentDir,
+			cwd: agentDir,
+			noContextFiles: true,
+			noExtensions: true,
+			noSkills: true,
+			noTools: true,
+		},
+		startupHook: async (phase) => {
+			send({ type: "phase", phase });
+			if (phase === pausePhase) {
+				await waitForControl("resume");
+			}
+			if (phase === failPhase) {
+				throw new Error(`Injected startup failure at ${phase}`);
+			}
+		},
+	});
+	try {
+		await supervisor.start();
+		send({ type: "ready" });
+		return await new Promise<never>(() => {});
+	} catch (error) {
+		send({ type: "failed", error: error instanceof Error ? error.message : String(error) });
+		process.exit(0);
+	}
+}
+
+async function runLegacySupervisor(): Promise<never> {
+	const socketPath = requiredEnvironment("ENG_4600_SOCKET_PATH");
+	const server = createServer();
+	await new Promise<void>((resolveListen, rejectListen) => {
+		server.once("error", rejectListen);
+		server.listen(socketPath, resolveListen);
+	});
+	send({ type: "ready" });
+	await waitForControl("shutdown");
+	await closeServer(server);
+	if (process.platform !== "win32" && existsSync(socketPath)) {
+		unlinkSync(socketPath);
+	}
+	send({ type: "path_released" });
+	await waitForControl("cleanup");
+	let skipped = false;
+	if (process.platform !== "win32") {
+		let releaseLock: (() => void) | undefined;
+		try {
+			releaseLock = lockfile.lockSync(socketPath, {
+				realpath: false,
+				stale: 5000,
+				update: 1000,
+				retries: 0,
+			});
+		} catch {
+			skipped = true;
+		}
+		if (releaseLock) {
+			try {
+				if (existsSync(socketPath)) {
+					unlinkSync(socketPath);
+				}
+			} finally {
+				releaseLock();
+			}
+		}
+	}
+	send({ type: "cleanup_complete", skipped });
+	process.exit(0);
+}
+
+async function main(): Promise<never> {
+	if (isDaemonCatalogProcess()) {
+		return runDaemonCatalogProcess();
+	}
+	send({ type: "booted" });
+	const mode = requiredEnvironment("ENG_4600_FIXTURE_MODE");
+	if (mode === "legacy") {
+		return runLegacySupervisor();
+	}
+	await waitForControl("go");
+	if (mode === "owner") {
+		return runOwnershipHolder();
+	}
+	if (mode === "supervisor") {
+		return runSupervisor();
+	}
+	throw new Error(`Unknown fixture mode: ${mode}`);
+}
+
+void main().catch((error) => {
+	send({ type: "failed", error: error instanceof Error ? error.message : String(error) });
+	process.exit(1);
+});
