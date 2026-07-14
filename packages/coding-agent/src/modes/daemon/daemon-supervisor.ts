@@ -14,7 +14,12 @@ import {
 } from "../../config.js";
 import type { AgentSessionMessageAgentSummary } from "../../core/agent-messages.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
-import { type AgentCronJob, AgentCronJobStore, migrateLegacyCronJobsToSessionArtifacts } from "../../core/cron-jobs.js";
+import {
+	type AgentCronJob,
+	AgentCronJobStore,
+	migrateLegacyCronJobsToSessionArtifacts,
+	SESSION_SCHEDULED_JOBS_FILENAME,
+} from "../../core/cron-jobs.js";
 import {
 	clearOrphanProcessJournal,
 	isOrphanProcessIdentityCurrent,
@@ -334,6 +339,20 @@ function isProcessAlive(pid: number): boolean {
 		return true;
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
+	try {
+		process.kill(-pid, signal);
+		return;
+	} catch {
+		// Fall back when process groups are unavailable or the group already exited.
+	}
+	try {
+		process.kill(pid, signal);
+	} catch {
+		// The process may already be fully reaped.
 	}
 }
 
@@ -1204,6 +1223,9 @@ export class DaemonSupervisor {
 	private async adoptOrRecoverWorker(worker: ResidentWorker): Promise<void> {
 		if (worker.descriptor.stopRequestedAt) {
 			try {
+				// A tombstoned worker must not run long enough to elect another
+				// supervisor while its intentional stop is being adopted.
+				signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
 				await this.stopWorker(worker, true, true, worker.descriptor.archiveOnStop === true);
 				this.log(`Completed intentional stop for worker ${worker.descriptor.workerId} during supervisor adoption`);
 			} catch (error) {
@@ -1349,11 +1371,7 @@ export class DaemonSupervisor {
 
 	private async recoverUncertainWorkerOperations(worker: ResidentWorker, killWorkerProcess = true): Promise<void> {
 		if (killWorkerProcess) {
-			try {
-				process.kill(-worker.descriptor.pid, "SIGKILL");
-			} catch {
-				// The worker process group may already be fully reaped.
-			}
+			signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
 		}
 		const orphanProcessJournalPath = worker.descriptor.orphanProcessJournalPath;
 		if (orphanProcessJournalPath) {
@@ -2305,22 +2323,14 @@ export class DaemonSupervisor {
 			worker.client.close();
 			worker.client = undefined;
 		} else if (isProcessAlive(worker.descriptor.pid)) {
-			try {
-				process.kill(-worker.descriptor.pid, "SIGTERM");
-			} catch {
-				process.kill(worker.descriptor.pid, "SIGTERM");
-			}
+			signalProcessGroupOrProcess(worker.descriptor.pid, "SIGTERM");
 		}
 		const gracefulDeadline = Date.now() + (force ? 500 : 2000);
 		while (isProcessAlive(worker.descriptor.pid) && Date.now() < gracefulDeadline) {
 			await delay(25);
 		}
 		if (force && isProcessAlive(worker.descriptor.pid)) {
-			try {
-				process.kill(-worker.descriptor.pid, "SIGKILL");
-			} catch {
-				process.kill(worker.descriptor.pid, "SIGKILL");
-			}
+			signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
 			const forceDeadline = Date.now() + 1000;
 			while (isProcessAlive(worker.descriptor.pid) && Date.now() < forceDeadline) {
 				await delay(25);
@@ -2331,6 +2341,9 @@ export class DaemonSupervisor {
 			throw new Error(`Session worker ${worker.descriptor.workerId} did not stop${force ? " after SIGKILL" : ""}`);
 		}
 		if (removeDescriptor && worker.descriptor.archiveOnStop) {
+			if (force) {
+				this.reclaimStoppedWorkerCronLock(worker);
+			}
 			await this.finalizeArchivedWorkerStop(worker);
 		}
 		this.workers.delete(worker.descriptor.workerId);
@@ -2343,22 +2356,40 @@ export class DaemonSupervisor {
 	}
 
 	private async finalizeArchivedWorkerStop(worker: ResidentWorker): Promise<void> {
-		const sessionFile = worker.descriptor.sessionFile ?? worker.descriptor.createCommand.sessionPath;
-		if (!sessionFile) {
+		const context = this.workerSessionArtifactContext(worker);
+		if (!context) {
 			return;
 		}
 		if (worker.descriptor.rootSessionId) {
 			const cronStore = AgentCronJobStore.forSessionArtifacts();
-			cronStore.registerSessionArtifact(
-				worker.descriptor.rootSessionId,
-				join(dirname(dirname(sessionFile)), "session-artifacts", worker.descriptor.rootSessionId),
-			);
+			cronStore.registerSessionArtifact(worker.descriptor.rootSessionId, context.artifactDir);
 			cronStore.cancelJobsForSession({
 				sessionId: worker.descriptor.rootSessionId,
-				sessionFile,
+				sessionFile: context.sessionFile,
 			});
-			await this.catalog.archive(sessionFile, worker.descriptor.rootSessionId);
+			await this.catalog.archive(context.sessionFile, worker.descriptor.rootSessionId);
 		}
+	}
+
+	private reclaimStoppedWorkerCronLock(worker: ResidentWorker): void {
+		const context = this.workerSessionArtifactContext(worker);
+		if (!context) {
+			return;
+		}
+		rmSync(join(context.artifactDir, `${SESSION_SCHEDULED_JOBS_FILENAME}.lock`), { recursive: true, force: true });
+	}
+
+	private workerSessionArtifactContext(
+		worker: ResidentWorker,
+	): { sessionFile: string; artifactDir: string } | undefined {
+		const sessionFile = worker.descriptor.sessionFile ?? worker.descriptor.createCommand.sessionPath;
+		if (!sessionFile || !worker.descriptor.rootSessionId) {
+			return undefined;
+		}
+		return {
+			sessionFile,
+			artifactDir: join(dirname(dirname(sessionFile)), "session-artifacts", worker.descriptor.rootSessionId),
+		};
 	}
 
 	private persistWorkerStopTombstone(worker: ResidentWorker, archiveSession = false): void {

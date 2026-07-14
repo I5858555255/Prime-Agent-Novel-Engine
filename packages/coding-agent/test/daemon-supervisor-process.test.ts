@@ -557,6 +557,10 @@ describe("daemon supervisor resident workers", () => {
 		expect(sessions.filter((session) => session.activeSessionId || session.workerPid)).toEqual([]);
 		await waitForProcessGone(summary.workerPid);
 		workerPids.delete(summary.workerPid);
+		await waitForCondition(
+			() => countWorkerDescriptors(agentDir) === 0,
+			"Intentional worker stop descriptor was not removed",
+		);
 		expect(countWorkerDescriptors(agentDir)).toBe(0);
 		expect((await readSessionInfo(sessionFile))?.state).toEqual({ status: "archived" });
 		expect(cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({ status: "cancelled" });

@@ -28,7 +28,11 @@ import { listModels } from "./cli/list-models.js";
 import { installOwnedSessionRecoveryTracking } from "./cli/owned-session-worker.js";
 import { selectSession } from "./cli/session-picker.js";
 import { expandTildePath, getAgentDir, getSessionDirEnvOverride, VERSION } from "./config.js";
-import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "./core/agent-session-config.js";
+import {
+	type AgentSessionRuntimeConfig,
+	mergeAgentSessionRuntimeConfig,
+	mergeAutonomousConfig,
+} from "./core/agent-session-config.js";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
@@ -653,12 +657,48 @@ function buildSessionOptions(
 	if (config.tools) {
 		options.tools = [...config.tools];
 	}
+	if (config.autonomous) {
+		options.autonomous = mergeAutonomousConfig(undefined, config.autonomous);
+	}
 
 	return { options, cliThinkingFromModel, diagnostics };
 }
 
 function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | undefined {
 	return paths?.map((value) => (isLocalPath(value) ? resolve(cwd, value) : value));
+}
+
+function runtimeAutonomousConfigFromArgs(parsed: Args): AgentSessionRuntimeConfig["autonomous"] {
+	const hasAutonomousOptions =
+		parsed.autonomous === true ||
+		parsed.autonomousGates !== undefined ||
+		parsed.autonomousGateRetries !== undefined ||
+		parsed.autonomousGateTimeoutMs !== undefined ||
+		parsed.autonomousMaxContinuations !== undefined ||
+		parsed.autonomousMaxTurns !== undefined ||
+		parsed.autonomousMaxTokens !== undefined ||
+		parsed.autonomousTimeoutMs !== undefined;
+	if (!hasAutonomousOptions) {
+		return undefined;
+	}
+	const hasGateOptions =
+		parsed.autonomousGates !== undefined ||
+		parsed.autonomousGateRetries !== undefined ||
+		parsed.autonomousGateTimeoutMs !== undefined;
+	return {
+		enabled: true,
+		maxContinuations: parsed.autonomousMaxContinuations,
+		maxTurns: parsed.autonomousMaxTurns,
+		maxTokens: parsed.autonomousMaxTokens,
+		timeoutMs: parsed.autonomousTimeoutMs,
+		gates: hasGateOptions
+			? {
+					commands: parsed.autonomousGates,
+					maxRetries: parsed.autonomousGateRetries,
+					timeoutMs: parsed.autonomousGateTimeoutMs,
+				}
+			: undefined,
+	};
 }
 
 function runtimeConfigFromArgs(
@@ -690,6 +730,7 @@ function runtimeConfigFromArgs(
 		themes: resolveCliPaths(cwd, parsed.themes),
 		noThemes: parsed.noThemes,
 		noContextFiles: parsed.noContextFiles,
+		autonomous: runtimeAutonomousConfigFromArgs(parsed),
 		extensionFlagValues: parsed.unknownFlags.size > 0 ? Object.fromEntries(parsed.unknownFlags.entries()) : undefined,
 	};
 }
@@ -720,6 +761,10 @@ export function resolveRuntimeSessionOptions(
 		rlmHeartbeatController: runtimeSessionOptions?.rlmHeartbeatController,
 		agentMessageController: runtimeSessionOptions?.agentMessageController,
 		agentObserveController: runtimeSessionOptions?.agentObserveController,
+		autonomous:
+			(runtimeSessionOptions?.rlmDepth ?? 0) > 0
+				? mergeAutonomousConfig(sessionOptions.autonomous, { ...runtimeSessionOptions?.autonomous, enabled: false })
+				: mergeAutonomousConfig(sessionOptions.autonomous, runtimeSessionOptions?.autonomous),
 		rlmDepth: runtimeSessionOptions?.rlmDepth,
 		rlmMaxDepth: runtimeSessionOptions?.rlmMaxDepth,
 		rlmSessionDir: runtimeSessionOptions?.rlmSessionDir,
