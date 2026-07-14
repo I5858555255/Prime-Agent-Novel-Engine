@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -5,7 +6,7 @@ import type { EditToolDetails } from "../../../core/tools/edit.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
 import type { IpythonToolDetails } from "../../../core/tools/ipython.js";
 import { resolveToCwd } from "../../../core/tools/path-utils.js";
-import { formatPathRelativeToCwdOrAbsolute } from "../../../utils/paths.js";
+import { canonicalizePath, formatPathRelativeToCwdOrAbsolute } from "../../../utils/paths.js";
 import { theme } from "../theme/theme.js";
 
 export interface FileChangeSummary {
@@ -28,7 +29,7 @@ function countChangedLines(diff: string): { added: number; removed: number } {
 
 function mergeFileChange(target: Map<string, FileChangeSummary>, change: FileChangeSummary, cwd: string): void {
 	if (change.added === 0 && change.removed === 0) return;
-	const key = resolveToCwd(change.path, cwd);
+	const key = canonicalizePath(resolveToCwd(change.path, cwd));
 	const existing = target.get(key);
 	if (existing) {
 		existing.added += change.added;
@@ -36,6 +37,15 @@ function mergeFileChange(target: Map<string, FileChangeSummary>, change: FileCha
 	} else {
 		target.set(key, { ...change });
 	}
+}
+
+function formatFileChangePath(path: string, cwd: string): string {
+	const resolvedPath = resolveToCwd(path, cwd);
+	const lexicalPath = formatPathRelativeToCwdOrAbsolute(resolvedPath, cwd);
+	if (!isAbsolute(lexicalPath)) {
+		return lexicalPath;
+	}
+	return formatPathRelativeToCwdOrAbsolute(canonicalizePath(resolvedPath), canonicalizePath(cwd));
 }
 
 export function getToolFileChanges(
@@ -96,7 +106,7 @@ export class FileChangeSummaryComponent implements Component {
 		const shown = this.changes.slice(0, FILE_SUMMARY_LIMIT).map((change) => {
 			const suffix = `${theme.fg("dim", " ")}${counts(change)}`;
 			const available = Math.max(1, safeWidth - visibleWidth(prefix) - visibleWidth(suffix));
-			const path = truncateToWidth(formatPathRelativeToCwdOrAbsolute(change.path, this.cwd), available, "…");
+			const path = truncateToWidth(formatFileChangePath(change.path, this.cwd), available, "…");
 			return truncateToWidth(`${prefix}${theme.fg("muted", path)}${suffix}`, safeWidth, "");
 		});
 		if (this.changes.length > FILE_SUMMARY_LIMIT) {

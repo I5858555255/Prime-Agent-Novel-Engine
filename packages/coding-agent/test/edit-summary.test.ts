@@ -1,4 +1,6 @@
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -115,5 +117,38 @@ describe("edit summaries", () => {
 			"/tmp",
 		);
 		expect([...changes.values()]).toEqual([{ path: "~/same.ts", added: 2, removed: 2 }]);
+	});
+
+	test("coalesces canonical paths and renders them relative to a symlinked cwd", () => {
+		const root = mkdtempSync(join(tmpdir(), "edit-summary-symlink-"));
+		try {
+			const realCwd = join(root, "real");
+			const linkedCwd = join(root, "linked");
+			const file = join(realCwd, "same.ts");
+			mkdirSync(realCwd);
+			writeFileSync(file, "old");
+			symlinkSync(realCwd, linkedCwd, "dir");
+
+			const message = assistant([
+				{ type: "toolCall", id: "one", name: "ipython", arguments: {} },
+				{ type: "toolCall", id: "two", name: "edit", arguments: { path: "same.ts" } },
+			]);
+			const changes = new Map();
+			mergeTurnFileChanges(
+				changes,
+				message,
+				[
+					result("one", "ipython", { diffs: [{ path: realpathSync(file), oldStr: "old", newStr: "new" }] }),
+					result("two", "edit", { diff: "-1 new\n+1 newer" }),
+				],
+				linkedCwd,
+			);
+
+			expect([...changes.values()]).toEqual([{ path: realpathSync(file), added: 2, removed: 2 }]);
+			const lines = new FileChangeSummaryComponent([...changes.values()], linkedCwd).render(80).map(stripAnsi);
+			expect(lines).toEqual(["    ╰─ same.ts +2 -2"]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
