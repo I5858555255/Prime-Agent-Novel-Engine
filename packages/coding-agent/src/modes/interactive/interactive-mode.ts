@@ -6982,7 +6982,7 @@ export class InteractiveMode {
 				if (!refreshPromise) return;
 				void refreshPromise
 					.then((models) => {
-						if (!settled) menu.updateAvailableModels(models);
+						if (!settled) menu.updateModels(this.getCurrentModel(), models);
 					})
 					.catch((error) => {
 						if (!settled) this.showError(error instanceof Error ? error.message : String(error));
@@ -7011,7 +7011,7 @@ export class InteractiveMode {
 						}
 
 						await this.prepareForModelSelectionAfterLogin(authResult);
-						menu.updateAvailableModels(this.getCachedModelCandidates());
+						menu.updateModels(this.getCurrentModel());
 						menu.setActiveTab("models");
 						refreshModels(true);
 					})

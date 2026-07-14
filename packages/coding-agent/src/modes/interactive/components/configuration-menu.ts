@@ -172,8 +172,8 @@ export class ConfigurationMenuComponent extends Container implements Focusable {
 		this.options.requestRender();
 	}
 
-	updateAvailableModels(models: ReadonlyArray<Model<Api>>): void {
-		this.bodies.models.updateAvailableModels(models);
+	updateModels(currentModel: Model<Api> | undefined, models?: ReadonlyArray<Model<Api>>): void {
+		this.bodies.models.updateState(currentModel, models);
 	}
 
 	handleInput(keyData: string): void {

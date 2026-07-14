@@ -1095,7 +1095,7 @@ class AgentsViewMode implements Component, Focusable {
 						if (authResult.status !== "success" || tab === "mcp-connections") return;
 
 						await this.applyPrimeInferenceFallbackAfterLogin(authResult);
-						menu.updateAvailableModels(modelRegistry.getAvailable());
+						menu.updateModels(this.getDefaultModelForNewAgents(), modelRegistry.getAvailable());
 						menu.setActiveTab("models");
 					})
 					.catch((error) => {

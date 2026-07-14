@@ -185,6 +185,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	updateAvailableModels(availableModels: ReadonlyArray<Model<any>>): void {
+		this.updateState(this.currentModel, availableModels);
+	}
+
+	updateState(currentModel: Model<any> | undefined, availableModels = this.availableModels): void {
+		this.currentModel = currentModel;
 		this.availableModels = availableModels;
 		const query = this.searchInput.getValue();
 		const selectedKey = this.getSelectedModelKey();

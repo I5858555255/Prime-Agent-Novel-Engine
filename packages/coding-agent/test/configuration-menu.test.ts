@@ -126,4 +126,42 @@ describe("ConfigurationMenuComponent", () => {
 		menu.handleInput("\x19");
 		expect(menu.getActiveTab()).toBe("models");
 	});
+
+	it("keeps the existing catalog while syncing a post-login current model", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "Faux One", reasoning: true },
+				{ id: "faux-2", name: "Faux Two", reasoning: true },
+			],
+		});
+		harnesses.push(harness);
+		const firstModel = harness.getModel("faux-1")!;
+		const postLoginModel = harness.getModel("faux-2")!;
+		const menu = new ConfigurationMenuComponent({
+			initialTab: "models",
+			tui: createFakeTui(),
+			authStorage: harness.session.modelRegistry.authStorage,
+			providerOptions: [],
+			modelRegistry: harness.session.modelRegistry,
+			currentModel: undefined,
+			scopedModels: [],
+			availableModels: [firstModel],
+			initialModelSearch: "faux",
+			requestRender: () => {},
+			onSelectProvider: () => {},
+			onSelectMcpConnection: () => {},
+			onSelectModel: () => {},
+			onCancel: () => {},
+		});
+
+		menu.updateModels(postLoginModel);
+		let output = stripAnsi(menu.render(120).join("\n"));
+		expect(output).toContain("faux-1");
+		expect(menu.getSearchValue("models")).toBe("faux");
+
+		menu.updateModels(postLoginModel, [firstModel, postLoginModel]);
+		output = stripAnsi(menu.render(120).join("\n"));
+		const postLoginRow = output.split("\n").find((line) => line.includes("faux-2"));
+		expect(postLoginRow).toContain("current");
+	});
 });
