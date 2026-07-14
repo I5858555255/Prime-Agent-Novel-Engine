@@ -694,6 +694,44 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(client.attachedActiveSessionIds).toContain(result.activeSessionId);
 	});
 
+	it("cancels a pending alias attach when detach resolves the canonical session", async () => {
+		const result = createStreamedResult([]);
+		const worker = createWorkerHarness();
+		worker.snapshotCache.set(result.activeSessionId, result);
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-alias-detach.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-alias-detach-state",
+		}) as unknown as SupervisorSnapshotInternals & {
+			findWorker: ReturnType<typeof vi.fn>;
+			matchWorkers: ReturnType<typeof vi.fn>;
+		};
+		let resolveMatch!: (match: { worker: SupervisorWorkerHarness; summary: SessionSummary }) => void;
+		supervisor.findWorker = vi.fn(
+			() =>
+				new Promise((resolve) => {
+					resolveMatch = resolve;
+				}),
+		);
+		supervisor.matchWorkers = vi
+			.fn()
+			.mockReturnValueOnce([])
+			.mockReturnValue([{ worker, summary: result.snapshot.summary }]);
+		const client = createSocketClient("alias-client");
+		const command = {
+			type: "attach" as const,
+			activeSessionId: "session-alias",
+			capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+		};
+		const pendingAttach = supervisor.attachClient(client, command);
+		await vi.waitFor(() => expect(supervisor.findWorker).toHaveBeenCalledOnce());
+
+		await supervisor.detachClient(client, command.activeSessionId);
+		resolveMatch({ worker, summary: result.snapshot.summary });
+
+		await expect(pendingAttach).rejects.toThrow("superseded");
+		expect(client.attachedActiveSessionIds).not.toContain(result.activeSessionId);
+	});
+
 	it("preserves a concurrent worker reattach after membership is removed before cancellation", async () => {
 		const daemon = new AgentDaemon("/tmp/eng-4602-worker-detach-epoch.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },

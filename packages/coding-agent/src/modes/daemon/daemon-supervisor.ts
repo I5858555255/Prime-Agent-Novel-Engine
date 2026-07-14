@@ -2289,7 +2289,10 @@ export class DaemonSupervisor {
 		for (const selector of targets) {
 			const match = this.matchWorkers(selector)[0];
 			const resolvedId = match ? (match.summary.activeSessionId ?? match.summary.id) : selector;
-			this.advanceClientAttachmentEpoch(client, resolvedId);
+			this.advanceClientAttachmentEpoch(client, selector);
+			if (resolvedId !== selector) {
+				this.advanceClientAttachmentEpoch(client, resolvedId);
+			}
 			const wasAttached = client.attachedActiveSessionIds.delete(resolvedId);
 			await this.cancelClientSnapshotWork(
 				client,
