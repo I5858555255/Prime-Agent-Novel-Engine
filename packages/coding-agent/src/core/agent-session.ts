@@ -5040,11 +5040,12 @@ export class AgentSession {
 			if (this._disposed || refineAbort.signal.aborted) {
 				throw new Error("Refinement cancelled because the session was disposed.");
 			}
+			const currentPackageHarnessState = this._resourceLoader.getHarness?.().state;
 			const result = applyRefinementProposal(state, proposal, {
 				id: plan.id,
 				rollbackOf: plan.rollbackOf,
 				scope: targetScope,
-				packageState: packageHarnessState,
+				packageState: currentPackageHarnessState,
 			});
 			result.harnessStatePath = saveHarnessState(targetHarnessStateDir, state);
 			if (targetScope === "global") {
