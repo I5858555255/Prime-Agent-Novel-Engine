@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Changed IPython kernels to set `NO_COLOR=1`, preventing ANSI color escapes from inflating `%%bash` output.
+- Fixed missing ripgrep blocking subagents and added actionable installation guidance for the optional search helper ([ENG-4572](https://linear.app/primeintellect/issue/ENG-4572/ripgrep-not-installed)).
 
 ## [0.3.0] - 2026-07-13
 
