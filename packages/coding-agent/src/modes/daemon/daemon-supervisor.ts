@@ -194,6 +194,7 @@ interface ResidentWorker {
 export type DaemonSupervisorStartupPhase =
 	| "owner"
 	| "socket_lock"
+	| "startup_fence_wait"
 	| "socket_prepare"
 	| "bind"
 	| "socket_restrict"
@@ -501,7 +502,9 @@ export class DaemonSupervisor {
 			await this.runStartupHook("owner");
 			this.socketLease = await acquireDaemonSocketPathLease(this.socketPath);
 			await this.runStartupHook("socket_lock");
-			await waitForDaemonStartupFence(this.socketPath);
+			await waitForDaemonStartupFence(this.socketPath, 10_000, undefined, () =>
+				this.runStartupHook("startup_fence_wait"),
+			);
 			await prepareDaemonSocketPath(this.socketPath, this.socketLease);
 			await this.runStartupHook("socket_prepare");
 
@@ -705,7 +708,10 @@ export class DaemonSupervisor {
 						protocol: DAEMON_PROTOCOL_INFO,
 						appVersion: VERSION,
 						supervisorGeneration: this.generation,
+						supervisorOwnerToken: this.ownership?.record.token,
 						supervisorPid: process.pid,
+						supervisorProcessStartId: this.ownership?.record.processStartId,
+						supervisorSocketPath: this.ownership?.record.socketPath,
 						clientId: client.id,
 						serverCapabilities: [
 							"attach_snapshot",

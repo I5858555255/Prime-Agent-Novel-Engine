@@ -1,5 +1,4 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { createServer, type Server } from "node:net";
 import lockfile from "proper-lockfile";
 import { isDaemonCatalogProcess, runDaemonCatalogProcess } from "../../src/modes/daemon/daemon-catalog-process.js";
 import { DaemonSupervisor, type DaemonSupervisorStartupPhase } from "../../src/modes/daemon/daemon-supervisor.js";
@@ -8,7 +7,7 @@ import {
 	type DaemonSupervisorOwnership,
 } from "../../src/modes/daemon/daemon-supervisor-ownership.js";
 
-type ControlMessage = { type: "go" | "resume" | "shutdown" | "cleanup" };
+type ControlMessage = { type: "go" | "resume" | "release" | "shutdown" | "cleanup" };
 
 function requiredEnvironment(name: string): string {
 	const value = process.env[name];
@@ -35,13 +34,6 @@ function waitForControl(type: ControlMessage["type"]): Promise<void> {
 	});
 }
 
-async function closeServer(server: Server): Promise<void> {
-	if (!server.listening) {
-		return;
-	}
-	await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-}
-
 async function runOwnershipHolder(): Promise<never> {
 	const ownership: DaemonSupervisorOwnership = await acquireDaemonSupervisorOwnership({
 		socketPath: requiredEnvironment("ENG_4600_SOCKET_PATH"),
@@ -52,8 +44,10 @@ async function runOwnershipHolder(): Promise<never> {
 		registryDir: requiredEnvironment("ENG_4600_REGISTRY_DIR"),
 	});
 	send({ type: "ready", generation: ownership.record.generation });
-	await waitForControl("shutdown");
+	await waitForControl("release");
 	await ownership.release();
+	send({ type: "owner_released" });
+	await waitForControl("shutdown");
 	process.exit(0);
 }
 
@@ -93,22 +87,12 @@ async function runSupervisor(): Promise<never> {
 	}
 }
 
-async function runLegacySupervisor(): Promise<never> {
+async function runLegacyCleanup(): Promise<never> {
 	const socketPath = requiredEnvironment("ENG_4600_SOCKET_PATH");
-	const server = createServer();
-	await new Promise<void>((resolveListen, rejectListen) => {
-		server.once("error", rejectListen);
-		server.listen(socketPath, resolveListen);
-	});
 	send({ type: "ready" });
-	await waitForControl("shutdown");
-	await closeServer(server);
-	if (process.platform !== "win32" && existsSync(socketPath)) {
-		unlinkSync(socketPath);
-	}
-	send({ type: "path_released" });
 	await waitForControl("cleanup");
 	let skipped = false;
+	// This lock/unlink sequence is frozen from the v0.3.0 daemon socket cleanup.
 	if (process.platform !== "win32") {
 		let releaseLock: (() => void) | undefined;
 		try {
@@ -141,8 +125,8 @@ async function main(): Promise<never> {
 	}
 	send({ type: "booted" });
 	const mode = requiredEnvironment("ENG_4600_FIXTURE_MODE");
-	if (mode === "legacy") {
-		return runLegacySupervisor();
+	if (mode === "legacy_cleanup") {
+		return runLegacyCleanup();
 	}
 	await waitForControl("go");
 	if (mode === "owner") {

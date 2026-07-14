@@ -28,7 +28,6 @@ import { parseAgentSessionMessagePromptId } from "./core/agent-messages.js";
 import type { AgentSessionRuntimeMetadata } from "./core/agent-session-runtime.js";
 import type { CustomMessage } from "./core/messages.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
-import { getProcessStartId } from "./core/session-lease.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { DaemonClient } from "./modes/daemon/daemon-client.js";
 import {
@@ -39,7 +38,7 @@ import {
 	isUnknownDaemonCommandError,
 } from "./modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "./modes/daemon/daemon-socket.js";
-import { persistDaemonStartupFence } from "./modes/daemon/daemon-supervisor-ownership.js";
+import { persistDaemonStartupFenceFromOwner } from "./modes/daemon/daemon-supervisor-ownership.js";
 import { shouldUseWindowsShell } from "./utils/child-process.js";
 import { getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.js";
 
@@ -708,12 +707,8 @@ export async function prepareDaemonUpdateRestart(
 		await client.connect(1000);
 		connected = true;
 		const hello = await client.waitForHello(2000).catch(() => undefined);
-		if (hello?.supervisorPid && Number.isInteger(hello.supervisorPid) && hello.supervisorPid > 0) {
-			await persistDaemonStartupFence(socketPath, {
-				pid: hello.supervisorPid,
-				processStartId: getProcessStartId(hello.supervisorPid),
-				supervisorGeneration: hello.supervisorGeneration,
-			});
+		if (hello) {
+			await persistDaemonStartupFenceFromOwner(socketPath, hello);
 		}
 		const useLegacyProtocol = hello !== undefined && hello.protocol.version < DAEMON_PROTOCOL_VERSION;
 		if (pendingManifest && pendingManifest.sessions.length > 0) {
@@ -945,7 +940,10 @@ async function restoreDaemonUpdateRestartSession(
 	return { restored: true, resumed: resumedSession };
 }
 
-async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUpdateRestartManifest): Promise<void> {
+export async function restoreDaemonUpdateRestart(
+	socketPath: string,
+	manifest: DaemonUpdateRestartManifest,
+): Promise<void> {
 	if (manifest.sessions.length === 0) {
 		return;
 	}
