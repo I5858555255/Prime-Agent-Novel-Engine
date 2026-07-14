@@ -189,6 +189,7 @@ describe("ENG-4602 real-process snapshot transfer containment", () => {
 			}
 			workerPids.add(summary.workerPid);
 			const interrupted = await connectEventually(socketPath, supervisor);
+			let interruptedSnapshotId: string | undefined;
 			let resolveBegin = () => {};
 			const began = new Promise<void>((resolveBeginPromise) => {
 				resolveBegin = resolveBeginPromise;
@@ -197,6 +198,7 @@ describe("ENG-4602 real-process snapshot transfer containment", () => {
 				if (message.type !== "session_snapshot_begin" || message.activeSessionId !== activeSessionId) {
 					return;
 				}
+				interruptedSnapshotId = message.snapshotId;
 				resolveBegin();
 				supervisor.kill("SIGTERM");
 				interrupted.close();
@@ -235,6 +237,40 @@ describe("ENG-4602 real-process snapshot transfer containment", () => {
 				await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
 			}
 			expect(adopted).toMatchObject({ workerState: "ready", workerPid: summary.workerPid });
+			let retrySnapshotId: string | undefined;
+			let resolveRetryEnd = () => {};
+			const retryEnded = new Promise<void>((resolveRetryEndPromise) => {
+				resolveRetryEnd = resolveRetryEndPromise;
+			});
+			const unsubscribeRetry = replacement.onMessage((message: DaemonOutbound) => {
+				if (!("activeSessionId" in message) || message.activeSessionId !== activeSessionId) {
+					return;
+				}
+				if (message.type === "session_snapshot_begin") {
+					retrySnapshotId = message.snapshotId;
+				}
+				if (message.type === "session_snapshot_end") {
+					expect(message.snapshotId).toBe(interruptedSnapshotId);
+					resolveRetryEnd();
+				}
+			});
+			const retried = await replacement.request({
+				type: "attach",
+				activeSessionId,
+				capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+			});
+			if (!retried.success) {
+				throw new Error(retried.error);
+			}
+			await Promise.race([
+				retryEnded,
+				new Promise<never>((_resolve, reject) =>
+					setTimeout(() => reject(new Error("Fresh same-ID retry did not complete")), 30_000),
+				),
+			]);
+			unsubscribeRetry();
+			expect(interruptedSnapshotId).toBeDefined();
+			expect(retrySnapshotId).toBe(interruptedSnapshotId);
 			expect(daemonLogs(agentDir)).not.toContain("unhandled rejection");
 			await replacement.request({ type: "shutdown", force: true });
 			replacement.close();

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	SnapshotTransferCancelledError,
 	SnapshotTransferRegistry,
+	waitForSnapshotTransferPromise,
 } from "../src/modes/daemon/snapshot-transfer-controller.js";
 
 describe("snapshot transfer registry", () => {
@@ -22,9 +23,57 @@ describe("snapshot transfer registry", () => {
 		await transfer.promise;
 
 		expect(onError).toHaveBeenCalledOnce();
-		expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "deferred encoder failure" }));
+		expect(onError).toHaveBeenCalledWith(
+			expect.objectContaining({ message: "deferred encoder failure" }),
+			transfer.signal,
+		);
 		expect(reportInternalError).not.toHaveBeenCalled();
 		expect(registry.get("active-1")).toBeUndefined();
+	});
+
+	it("cancels failure delivery with the active transfer signal", async () => {
+		const reportInternalError = vi.fn();
+		const registry = new SnapshotTransferRegistry(reportInternalError);
+		let started!: () => void;
+		const failureDeliveryStarted = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const transfer = registry.launch({
+			activeSessionId: "active-1",
+			snapshotId: "snapshot-1",
+			defer: false,
+			run: async () => {
+				throw new Error("source failed");
+			},
+			onError: (_error, signal) =>
+				new Promise<void>((_resolve, reject) => {
+					started();
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		});
+		await failureDeliveryStarted;
+		const cancellation = new SnapshotTransferCancelledError("client detached");
+
+		await registry.cancel("active-1", cancellation);
+
+		expect(transfer.signal.reason).toBe(cancellation);
+		expect(reportInternalError).not.toHaveBeenCalled();
+		expect(registry.get("active-1")).toBeUndefined();
+	});
+
+	it("aborts a waiter without cancelling its shared operation", async () => {
+		let finishShared!: (value: string) => void;
+		const shared = new Promise<string>((resolve) => {
+			finishShared = resolve;
+		});
+		const controller = new AbortController();
+		const waiting = waitForSnapshotTransferPromise(shared, controller.signal);
+		const cancellation = new SnapshotTransferCancelledError("client detached");
+
+		controller.abort(cancellation);
+		await expect(waiting).rejects.toBe(cancellation);
+		finishShared("cached");
+		await expect(shared).resolves.toBe("cached");
 	});
 
 	it("aborts and settles a previous same-session transfer before starting its replacement", async () => {

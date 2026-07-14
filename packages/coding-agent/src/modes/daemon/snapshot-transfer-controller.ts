@@ -24,7 +24,7 @@ export interface SnapshotTransferLaunchOptions {
 	activeSessionId: string;
 	snapshotId: string;
 	run: (signal: AbortSignal) => Promise<void>;
-	onError: (error: Error) => void | Promise<void>;
+	onError: (error: Error, signal: AbortSignal) => void | Promise<void>;
 	onFinally?: () => void | Promise<void>;
 	defer?: boolean;
 }
@@ -59,9 +59,11 @@ export class SnapshotTransferRegistry {
 			} catch (error) {
 				if (!isSnapshotTransferCancellation(error, controller.signal)) {
 					try {
-						await options.onError(toError(error));
+						await options.onError(toError(error), controller.signal);
 					} catch (handlerError) {
-						this.reportInternalError(toError(handlerError));
+						if (!isSnapshotTransferCancellation(handlerError, controller.signal)) {
+							this.reportInternalError(toError(handlerError));
+						}
 					}
 				}
 			}
@@ -182,6 +184,38 @@ export function waitForSnapshotTransferTurn(signal: AbortSignal): Promise<void> 
 			);
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+export function waitForSnapshotTransferPromise<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	throwIfSnapshotTransferAborted(signal);
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => signal.removeEventListener("abort", onAbort);
+		const finish = (settle: () => void) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			cleanup();
+			settle();
+		};
+		const onAbort = () =>
+			finish(() =>
+				reject(
+					signal.reason instanceof Error
+						? signal.reason
+						: new SnapshotTransferCancelledError("Snapshot transfer was cancelled"),
+				),
+			);
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => finish(() => resolve(value)),
+			(error) => finish(() => reject(error)),
+		);
+		if (signal.aborted) {
+			onAbort();
+		}
 	});
 }
 

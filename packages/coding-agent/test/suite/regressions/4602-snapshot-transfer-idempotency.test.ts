@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import type { DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
+import type { ActiveSessionState, DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
 import { AgentDaemon, type SnapshotChunkSourceFactory } from "../../../src/modes/daemon/daemon-mode.js";
 import {
 	DAEMON_PROTOCOL_INFO,
@@ -34,7 +34,33 @@ interface SupervisorWorkerHarness {
 
 interface SupervisorSnapshotInternals {
 	clients: Set<DaemonSocketClient>;
+	shuttingDown: boolean;
 	acceptLoadedWorkerSnapshot(worker: SupervisorWorkerHarness, loaded: DaemonAttachResult): DaemonAttachResult;
+	attachClient(
+		client: DaemonSocketClient,
+		command: { type: "attach"; activeSessionId: string; capabilities?: string[]; supportsExtensionUi?: boolean },
+		signal?: AbortSignal,
+	): Promise<{ result: DaemonAttachResult; worker: SupervisorWorkerHarness }>;
+	cancelClientSnapshotWork(
+		client: DaemonSocketClient,
+		activeSessionId: string | undefined,
+		reason: Error,
+	): Promise<void>;
+	detachClient(client: DaemonSocketClient, activeSessionId?: string): Promise<void>;
+	reloadWorkerSnapshot(
+		client: DaemonSocketClient,
+		worker: SupervisorWorkerHarness,
+		activeSessionId: string,
+		failedTranscript: SnapshotTranscriptCache,
+		signal: AbortSignal,
+	): Promise<{ result: DaemonAttachResult; worker: SupervisorWorkerHarness }>;
+	handlePublicSnapshotTransferError(
+		client: DaemonSocketClient,
+		activeSessionId: string,
+		snapshotId: string,
+		error: Error,
+		signal: AbortSignal,
+	): Promise<void>;
 	handleWorkerFrame(worker: SupervisorWorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): Promise<void>;
 	queueCatchup(client: DaemonSocketClient, activeSessionId: string, purpose?: "replacement" | "resync"): void;
 	scheduleClientCatchup(client: DaemonSocketClient): Promise<void>;
@@ -52,6 +78,14 @@ interface AgentDaemonSnapshotInternals {
 		activeSessionId: string | undefined,
 		reason: Error,
 	): Promise<void>;
+	handleWorkerSnapshotTransferError(
+		client: DaemonSocketClient,
+		result: DaemonAttachResult,
+		purpose: "attach" | "replacement" | "catchup",
+		error: Error,
+		signal: AbortSignal,
+	): Promise<void>;
+	detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): Promise<void>;
 	log: (message: string) => void;
 }
 
@@ -167,8 +201,22 @@ function createWorkerHarness(): SupervisorWorkerHarness {
 	};
 }
 
+function createSocketClient(id: string, activeSessionIds: string[] = []): DaemonSocketClient {
+	return {
+		id,
+		socket: new PassThrough() as unknown as Socket,
+		attachedActiveSessionIds: new Set(activeSessionIds),
+		catchupActiveSessionIds: new Set(),
+		backpressured: false,
+		authenticated: true,
+		detachInput: () => {},
+		supportsExtensionUi: false,
+		capabilities: new Set(["chunked_snapshot"]),
+	};
+}
+
 describe("ENG-4602 snapshot transfer containment", () => {
-	it("aborts an active transfer before awaiting the catch-up loop that owns it", async () => {
+	it("cancels a session transfer without aborting its client-wide catch-up loop", async () => {
 		const daemon = new AgentDaemon("/tmp/eng-4602-cancel.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -192,13 +240,19 @@ describe("ENG-4602 snapshot transfer containment", () => {
 			catchupActiveSessionIds: new Set(["active-4602"]),
 			catchupPurposes: new Map([["active-4602", "resync" as const]]),
 			snapshotTransfers: registry,
-			snapshotCatchup: { controller: catchupController, promise: transfer.promise },
+			snapshotCatchup: {
+				controller: catchupController,
+				promise: transfer.promise,
+				activeSessionId: "active-4602",
+				cancelledActiveSessionIds: new Set(),
+			},
 		} as unknown as DaemonSocketClient;
 		const cancellation = new SnapshotTransferCancelledError("session closed");
 
 		await internals.cancelClientSnapshotWork(client, "active-4602", cancellation);
 
-		expect(catchupController.signal.reason).toBe(cancellation);
+		expect(catchupController.signal.aborted).toBe(false);
+		expect(client.snapshotCatchup?.cancelledActiveSessionIds).toContain("active-4602");
 		expect(transfer.signal.reason).toBe(cancellation);
 		expect(registry.get("active-4602")).toBeUndefined();
 	});
@@ -394,5 +448,340 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(scheduleClientCatchup).toHaveBeenCalledWith(client);
 		expect(worker.incomingTranscripts.size).toBe(0);
 		expect(worker.transcriptCaches.size).toBe(0);
+	});
+
+	it("cancels backpressured worker and public failure delivery", async () => {
+		const result = createStreamedResult([]);
+		const workerDaemon = new AgentDaemon("/tmp/eng-4602-worker-failure-delivery.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const workerInternals = workerDaemon as unknown as AgentDaemonSnapshotInternals;
+		workerInternals.log = vi.fn();
+		const workerClient = createSocketClient("worker-supervisor", [result.activeSessionId]);
+		workerClient.transport = "private-framed";
+		vi.spyOn(workerClient.socket, "write").mockReturnValue(false);
+		const workerController = new AbortController();
+		const workerDelivery = workerInternals.handleWorkerSnapshotTransferError(
+			workerClient,
+			result,
+			"attach",
+			new Error("encoder failed"),
+			workerController.signal,
+		);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		workerController.abort(new SnapshotTransferCancelledError("worker client detached"));
+		await workerDelivery;
+		expect(workerClient.socket.destroyed).toBe(false);
+
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-public-failure-delivery.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-public-failure-delivery-state",
+		}) as unknown as SupervisorSnapshotInternals;
+		Object.assign(supervisor, { log: vi.fn() });
+		const publicClient = createSocketClient("public", [result.activeSessionId]);
+		vi.spyOn(publicClient.socket, "write").mockReturnValue(false);
+		const publicController = new AbortController();
+		const publicDelivery = supervisor.handlePublicSnapshotTransferError(
+			publicClient,
+			result.activeSessionId,
+			result.snapshotStream!.id,
+			new Error("cache read failed"),
+			publicController.signal,
+		);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		publicController.abort(new SnapshotTransferCancelledError("public client detached"));
+		await publicDelivery;
+		expect(publicClient.socket.destroyed).toBe(false);
+	});
+
+	it("makes exactly one fresh public attempt after a source failure", async () => {
+		const result = createStreamedResult([]);
+		const identity = {
+			activeSessionId: result.activeSessionId,
+			snapshotId: result.snapshotStream!.id,
+			sessionId: result.snapshot.summary.sessionId,
+			messageCount: 0,
+			targetChunkBytes: result.snapshotStream!.targetChunkBytes,
+			eventGeneration: result.lastEventCursor!.generation,
+			eventSequence: result.lastEventSequence,
+			transcriptRevision: result.snapshotStream!.transcriptRevision,
+		};
+		const transcript = { identity } as SnapshotTranscriptCache;
+		const worker = createWorkerHarness();
+		const client = createSocketClient("retry-client", [result.activeSessionId]);
+		const streamSnapshotAttempt = vi
+			.fn<() => Promise<void>>()
+			.mockRejectedValueOnce(new Error("cache read failed"))
+			.mockResolvedValueOnce(undefined);
+		const reloadWorkerSnapshot = vi.fn(async () => ({ worker, result }));
+		const getOrCreateTranscriptCache = vi.fn(() => transcript);
+		const supervisor = Object.assign(
+			new DaemonSupervisor("/tmp/eng-4602-public-retry.sock", {
+				defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+				descriptorDir: "/tmp/eng-4602-public-retry-state",
+			}),
+			{ streamSnapshotAttempt, reloadWorkerSnapshot, getOrCreateTranscriptCache },
+		) as unknown as {
+			streamSnapshotWithRetry(
+				client: DaemonSocketClient,
+				worker: SupervisorWorkerHarness,
+				result: DaemonAttachResult,
+				transcript: SnapshotTranscriptCache,
+				purpose: "attach",
+				snapshotId: string,
+				signal: AbortSignal,
+			): Promise<void>;
+		};
+
+		await supervisor.streamSnapshotWithRetry(
+			client,
+			worker,
+			result,
+			transcript,
+			"attach",
+			result.snapshotStream!.id,
+			new AbortController().signal,
+		);
+
+		expect(streamSnapshotAttempt).toHaveBeenCalledTimes(2);
+		expect(reloadWorkerSnapshot).toHaveBeenCalledOnce();
+		expect(getOrCreateTranscriptCache).toHaveBeenCalledOnce();
+	});
+
+	it("stops waiting for a shared public reload without cancelling it", async () => {
+		const result = createStreamedResult([]);
+		const worker = createWorkerHarness();
+		const client = createSocketClient("reload-client", [result.activeSessionId]);
+		let resolveReload!: (value: { worker: SupervisorWorkerHarness; result: DaemonAttachResult }) => void;
+		const sharedReload = new Promise<{ worker: SupervisorWorkerHarness; result: DaemonAttachResult }>((resolve) => {
+			resolveReload = resolve;
+		});
+		worker.snapshotRetries.set(result.activeSessionId, sharedReload);
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-cancel-reload.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-cancel-reload-state",
+		}) as unknown as SupervisorSnapshotInternals;
+		const controller = new AbortController();
+		const waiting = supervisor.reloadWorkerSnapshot(
+			client,
+			worker,
+			result.activeSessionId,
+			{} as SnapshotTranscriptCache,
+			controller.signal,
+		);
+		const cancellation = new SnapshotTransferCancelledError("client detached during reload");
+
+		controller.abort(cancellation);
+		await expect(waiting).rejects.toBe(cancellation);
+		resolveReload({ worker, result });
+		await expect(sharedReload).resolves.toEqual({ worker, result });
+		expect(client.attachedActiveSessionIds).toContain(result.activeSessionId);
+	});
+
+	it("keeps a shared worker load alive while a cancelled client stops waiting", async () => {
+		const result = createStreamedResult([]);
+		let resolveRequest!: (response: { success: true; data: DaemonAttachResult }) => void;
+		const response = new Promise<{ success: true; data: DaemonAttachResult }>((resolve) => {
+			resolveRequest = resolve;
+		});
+		const request = vi.fn(() => response);
+		const worker = Object.assign(createWorkerHarness(), { client: { request } });
+		const summary = result.snapshot.summary;
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-stale-load.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-stale-load-state",
+		}) as unknown as SupervisorSnapshotInternals & {
+			findWorker: ReturnType<typeof vi.fn>;
+		};
+		supervisor.findWorker = vi.fn(async () => ({ worker, summary }));
+		const cancelledClient = createSocketClient("cancelled-client", [result.activeSessionId]);
+		const survivingClient = createSocketClient("surviving-client");
+		supervisor.clients.add(cancelledClient);
+		supervisor.clients.add(survivingClient);
+		const command = {
+			type: "attach" as const,
+			activeSessionId: result.activeSessionId,
+			capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+		};
+		cancelledClient.catchupActiveSessionIds!.add(result.activeSessionId);
+		const cancelledCatchup = supervisor.scheduleClientCatchup(cancelledClient);
+		const survivingAttach = supervisor.attachClient(survivingClient, command);
+		await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+
+		await expect(supervisor.detachClient(cancelledClient, result.activeSessionId)).resolves.toBeUndefined();
+		await cancelledCatchup;
+		resolveRequest({ success: true, data: result });
+		await expect(survivingAttach).resolves.toMatchObject({ result: { activeSessionId: result.activeSessionId } });
+		await vi.waitFor(() => expect(worker.snapshotLoads.size).toBe(0));
+
+		expect(request).toHaveBeenCalledOnce();
+		expect(cancelledClient.attachedActiveSessionIds).not.toContain(result.activeSessionId);
+		expect(survivingClient.attachedActiveSessionIds).toContain(result.activeSessionId);
+		expect(worker.snapshotCache.has(result.activeSessionId)).toBe(true);
+		for (const cache of worker.transcriptCaches.values()) {
+			cache.dispose();
+		}
+	});
+
+	it("detaches session A without awaiting a stalled catch-up for session B", async () => {
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-isolated-detach.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-isolated-detach-state",
+		}) as unknown as SupervisorSnapshotInternals;
+		const client = createSocketClient("shared-client", ["session-a", "session-b"]);
+		let finishCatchup!: () => void;
+		const catchupPromise = new Promise<void>((resolve) => {
+			finishCatchup = resolve;
+		});
+		const catchupController = new AbortController();
+		client.snapshotCatchup = {
+			controller: catchupController,
+			promise: catchupPromise,
+			activeSessionId: "session-b",
+			cancelledActiveSessionIds: new Set(),
+		};
+
+		await supervisor.cancelClientSnapshotWork(
+			client,
+			"session-a",
+			new SnapshotTransferCancelledError("session A detached"),
+		);
+
+		expect(catchupController.signal.aborted).toBe(false);
+		expect(client.snapshotCatchup.cancelledActiveSessionIds).toContain("session-a");
+		finishCatchup();
+		await catchupPromise;
+	});
+
+	it("preserves a concurrent reattach after membership is removed before cancellation", async () => {
+		const result = createStreamedResult([]);
+		const worker = createWorkerHarness();
+		worker.snapshotCache.set(result.activeSessionId, result);
+		let finishExtensionSync!: () => void;
+		const extensionSync = new Promise<void>((resolve) => {
+			finishExtensionSync = resolve;
+		});
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-detach-epoch.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-detach-epoch-state",
+		}) as unknown as SupervisorSnapshotInternals & {
+			findWorker: ReturnType<typeof vi.fn>;
+			syncWorkerExtensionUi: ReturnType<typeof vi.fn>;
+		};
+		supervisor.findWorker = vi.fn(async () => ({ worker, summary: result.snapshot.summary }));
+		supervisor.syncWorkerExtensionUi = vi.fn(() => extensionSync);
+		const client = createSocketClient("reattach-client");
+		supervisor.clients.add(client);
+		const command = {
+			type: "attach" as const,
+			activeSessionId: result.activeSessionId,
+			capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+		};
+		const staleAttach = supervisor.attachClient(client, command);
+		await vi.waitFor(() => expect(client.attachedActiveSessionIds).toContain(result.activeSessionId));
+
+		await supervisor.detachClient(client, result.activeSessionId);
+		expect(client.attachedActiveSessionIds).not.toContain(result.activeSessionId);
+		const currentAttach = supervisor.attachClient(client, command);
+		await vi.waitFor(() => expect(client.attachedActiveSessionIds).toContain(result.activeSessionId));
+		finishExtensionSync();
+
+		await expect(staleAttach).rejects.toThrow("superseded");
+		await expect(currentAttach).resolves.toMatchObject({ result: { activeSessionId: result.activeSessionId } });
+		expect(client.attachedActiveSessionIds).toContain(result.activeSessionId);
+	});
+
+	it("preserves a concurrent worker reattach after membership is removed before cancellation", async () => {
+		const daemon = new AgentDaemon("/tmp/eng-4602-worker-detach-epoch.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+			worker: { authenticationToken: "test-token" },
+		});
+		const internals = daemon as unknown as AgentDaemonSnapshotInternals;
+		const client = createSocketClient("worker-reattach-client", ["session-a"]);
+		const state = {
+			activeSessionId: "session-a",
+			clients: new Set([client]),
+			extensionUiRequests: new Map(),
+		} as unknown as ActiveSessionState;
+		let finishCancellation!: () => void;
+		const cancellation = new Promise<void>((resolve) => {
+			finishCancellation = resolve;
+		});
+		const cancelClientSnapshotWork = vi.fn(() => cancellation);
+		Object.assign(internals, { cancelClientSnapshotWork });
+
+		const detaching = internals.detachClientFromSession(client, state);
+		expect(client.attachedActiveSessionIds).not.toContain("session-a");
+		expect(state.clients).not.toContain(client);
+		client.attachedActiveSessionIds.add("session-a");
+		state.clients.add(client);
+		finishCancellation();
+		await detaching;
+
+		expect(cancelClientSnapshotWork).toHaveBeenCalledOnce();
+		expect(client.attachedActiveSessionIds).toContain("session-a");
+		expect(state.clients).toContain(client);
+	});
+
+	it("does not reschedule catch-up work after terminal shutdown begins", async () => {
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-shutdown-catchup.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-shutdown-catchup-state",
+		}) as unknown as SupervisorSnapshotInternals & {
+			catchUpClient: ReturnType<typeof vi.fn>;
+		};
+		const client = createSocketClient("shutdown-client", ["session-a"]);
+		client.catchupActiveSessionIds!.add("session-a");
+		let rejectCatchup!: (error: Error) => void;
+		const catchUpClient = vi.fn(
+			() =>
+				new Promise<void>((_resolve, reject) => {
+					rejectCatchup = reject;
+				}),
+		);
+		supervisor.catchUpClient = catchUpClient;
+		const scheduled = supervisor.scheduleClientCatchup(client);
+		supervisor.shuttingDown = true;
+		client.snapshotWorkClosed = true;
+		rejectCatchup(new SnapshotTransferCancelledError("supervisor shutdown"));
+		await scheduled;
+		await supervisor.scheduleClientCatchup(client);
+
+		expect(catchUpClient).toHaveBeenCalledOnce();
+		expect(client.snapshotCatchup).toBeUndefined();
+	});
+
+	it("accepts matching snapshot frames without an event cursor", async () => {
+		const messages: AgentMessage[] = [{ role: "user", content: "cursor optional", timestamp: 1 }];
+		const withCursor = createStreamedResult(messages);
+		const { lastEventCursor: _snapshotCursor, ...snapshot } = withCursor.snapshot;
+		const { lastEventCursor: _resultCursor, ...resultWithoutCursor } = withCursor;
+		const result: DaemonAttachResult = {
+			...resultWithoutCursor,
+			snapshot,
+			replay: { status: "complete", toSequence: withCursor.lastEventSequence },
+		};
+		const frames = snapshotFrames(result, messages);
+		const { lastEventCursor: _endCursor, ...end } = frames.end;
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-optional-cursor.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-optional-cursor-state",
+		}) as unknown as SupervisorSnapshotInternals;
+		const worker = createWorkerHarness();
+		supervisor.acceptLoadedWorkerSnapshot(worker, result);
+
+		await supervisor.handleWorkerFrame(worker, workerFrame(frames.begin));
+		await supervisor.handleWorkerFrame(worker, workerFrame(frames.chunk));
+		await supervisor.handleWorkerFrame(worker, workerFrame(end));
+
+		expect(worker.transcriptCaches.get(result.activeSessionId)?.state).toBe("complete");
+		expect(worker.incomingTranscripts.size).toBe(0);
+		worker.transcriptCaches.get(result.activeSessionId)?.dispose();
 	});
 });

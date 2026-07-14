@@ -9,12 +9,16 @@ import type { SnapshotTransferRegistry } from "./snapshot-transfer-controller.js
 export interface SnapshotCatchupHandle {
 	controller: AbortController;
 	promise: Promise<void>;
+	activeSessionId?: string;
+	activeTransferStarted?: boolean;
+	cancelledActiveSessionIds: Set<string>;
 }
 
 export interface DaemonSocketClient {
 	id: string;
 	socket: Socket;
 	attachedActiveSessionIds: Set<string>;
+	attachmentEpochs?: Map<string, number>;
 	/** Session events are dropped while the socket is blocked and replaced with one catch-up snapshot on drain. */
 	catchupActiveSessionIds?: Set<string>;
 	/** A real runtime replacement takes precedence over an ordinary resync for the same queued catch-up. */
@@ -27,6 +31,7 @@ export interface DaemonSocketClient {
 	snapshotActiveSessionCounts?: Map<string, number>;
 	snapshotTransfers?: SnapshotTransferRegistry;
 	snapshotCatchup?: SnapshotCatchupHandle;
+	snapshotWorkClosed?: boolean;
 	detachInput: () => void;
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;

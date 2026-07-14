@@ -103,6 +103,7 @@ import {
 	createActiveSessionId,
 	type DaemonSocketClient,
 	resolveActiveSessionState,
+	type SnapshotCatchupHandle,
 } from "./active-session-state.js";
 import { createCompactAssistantDelta } from "./compact-session-stream.js";
 import { DaemonClient } from "./daemon-client.js";
@@ -1769,6 +1770,7 @@ export class AgentDaemon {
 				return;
 			}
 			cleanedUp = true;
+			client.snapshotWorkClosed = true;
 			socket.off("close", cleanup);
 			socket.off("error", cleanup);
 			client.detachInput();
@@ -2856,6 +2858,9 @@ export class AgentDaemon {
 		messages: readonly AgentMessage[],
 		purpose: "attach" | "replacement" | "catchup",
 	): Promise<void> | undefined {
+		if (this.shuttingDown || client.snapshotWorkClosed) {
+			throw new SnapshotTransferCancelledError("Snapshot client is closing");
+		}
 		const stream = result.snapshotStream;
 		if (!stream) {
 			return undefined;
@@ -2868,7 +2873,7 @@ export class AgentDaemon {
 			activeSessionId: result.activeSessionId,
 			snapshotId: stream.id,
 			run: (signal) => this.streamWorkerSnapshot(client, result, messages, purpose, signal),
-			onError: (error) => this.handleWorkerSnapshotTransferError(client, result, purpose, error),
+			onError: (error, signal) => this.handleWorkerSnapshotTransferError(client, result, purpose, error, signal),
 			onFinally: () => {
 				finishClientSnapshotStreaming(client, result.activeSessionId);
 				if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
@@ -2975,6 +2980,7 @@ export class AgentDaemon {
 		result: DaemonAttachResult,
 		purpose: "attach" | "replacement" | "catchup",
 		error: Error,
+		signal: AbortSignal,
 	): Promise<void> {
 		const stream = result.snapshotStream;
 		if (!stream || isSnapshotTransferCancellation(error)) {
@@ -2995,9 +3001,12 @@ export class AgentDaemon {
 					error: error.message,
 				},
 				purpose,
-				new AbortController().signal,
+				signal,
 			);
 		} catch (deliveryError) {
+			if (isSnapshotTransferCancellation(deliveryError, signal)) {
+				return;
+			}
 			client.socket.destroy(toError(deliveryError));
 		}
 	}
@@ -3404,23 +3413,27 @@ export class AgentDaemon {
 			client.catchupPurposes?.clear();
 		}
 		const catchup = client.snapshotCatchup;
-		if (catchup) {
+		let cancelledCatchup: Promise<void> | undefined;
+		if (catchup && activeSessionId) {
+			catchup.cancelledActiveSessionIds.add(activeSessionId);
+		} else if (catchup) {
 			catchup.controller.abort(reason);
+			cancelledCatchup = catchup.promise;
 		}
 		const cancelTransfers = activeSessionId
 			? client.snapshotTransfers?.cancel(activeSessionId, reason)
 			: client.snapshotTransfers?.cancelAll(reason);
-		await Promise.all([catchup?.promise, cancelTransfers]);
+		await Promise.all([cancelledCatchup, cancelTransfers]);
 	}
 
 	private async detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): Promise<void> {
+		this.abortSideQuestionsFor(client, state.activeSessionId);
+		detachClientFromActiveSession(client, state);
 		await this.cancelClientSnapshotWork(
 			client,
 			state.activeSessionId,
 			new SnapshotTransferCancelledError(`Client detached from session ${state.activeSessionId}`),
 		);
-		this.abortSideQuestionsFor(client, state.activeSessionId);
-		detachClientFromActiveSession(client, state);
 		this.write(client, { type: "session_detached", activeSessionId: state.activeSessionId });
 		// Abandoned new-chat: discard it so it doesn't linger in memory or leave an
 		// empty file. Replaces the old DeferredAgentConnection.
@@ -3950,30 +3963,50 @@ export class AgentDaemon {
 		if (client.snapshotCatchup) {
 			return client.snapshotCatchup.promise;
 		}
-		if (client.socket.destroyed || !client.catchupActiveSessionIds?.size) {
+		if (
+			this.shuttingDown ||
+			client.snapshotWorkClosed ||
+			client.socket.destroyed ||
+			!client.catchupActiveSessionIds?.size
+		) {
 			return Promise.resolve();
 		}
 		const controller = new AbortController();
-		const promise = this.catchUpBackpressuredClient(client, controller.signal)
+		const catchupHandle: SnapshotCatchupHandle = {
+			controller,
+			promise: Promise.resolve(),
+			cancelledActiveSessionIds: new Set(),
+		};
+		client.snapshotCatchup = catchupHandle;
+		const promise = this.catchUpBackpressuredClient(client, catchupHandle)
 			.catch((error) => {
 				if (!isSnapshotTransferCancellation(error, controller.signal)) {
 					this.log(`could not catch up snapshot client ${client.id}: ${toError(error).stack ?? String(error)}`);
 				}
 			})
 			.finally(() => {
-				if (client.snapshotCatchup?.controller === controller) {
+				if (client.snapshotCatchup === catchupHandle) {
 					client.snapshotCatchup = undefined;
 				}
-				if (!client.socket.destroyed && client.catchupActiveSessionIds?.size) {
+				if (
+					!this.shuttingDown &&
+					!client.snapshotWorkClosed &&
+					!client.socket.destroyed &&
+					client.catchupActiveSessionIds?.size
+				) {
 					this.scheduleClientCatchup(client);
 				}
 			});
-		client.snapshotCatchup = { controller, promise };
+		catchupHandle.promise = promise;
 		return promise;
 	}
 
-	private async catchUpBackpressuredClient(client: DaemonSocketClient, signal: AbortSignal): Promise<void> {
-		while (!client.socket.destroyed) {
+	private async catchUpBackpressuredClient(
+		client: DaemonSocketClient,
+		catchupHandle: SnapshotCatchupHandle,
+	): Promise<void> {
+		const signal = catchupHandle.controller.signal;
+		while (!this.shuttingDown && !client.snapshotWorkClosed && !client.socket.destroyed) {
 			throwIfSnapshotTransferAborted(signal);
 			client.backpressured = false;
 			const pending = [...(client.catchupActiveSessionIds ?? [])].map((activeSessionId) => ({
@@ -3988,6 +4021,11 @@ export class AgentDaemon {
 			for (let index = 0; index < pending.length; index++) {
 				throwIfSnapshotTransferAborted(signal);
 				const { activeSessionId, purpose } = pending[index]!;
+				if (catchupHandle.cancelledActiveSessionIds.delete(activeSessionId)) {
+					continue;
+				}
+				catchupHandle.activeSessionId = activeSessionId;
+				catchupHandle.activeTransferStarted = false;
 				const state = this.sessions.get(activeSessionId);
 				if (!state || !state.clients.has(client)) {
 					continue;
@@ -4016,6 +4054,7 @@ export class AgentDaemon {
 						});
 					}
 					const streamedResult = this.createStreamedWorkerSnapshotResult(state, result);
+					catchupHandle.activeTransferStarted = true;
 					await this.launchWorkerSnapshotTransfer(
 						client,
 						streamedResult,
@@ -4055,6 +4094,9 @@ export class AgentDaemon {
 		activeSessionId: string,
 		purpose: "replacement" | "resync" = "resync",
 	): void {
+		if (this.shuttingDown || client.snapshotWorkClosed) {
+			return;
+		}
 		if (!client.catchupActiveSessionIds) {
 			client.catchupActiveSessionIds = new Set();
 		}
@@ -4182,6 +4224,9 @@ export class AgentDaemon {
 			process.exit(exitCode);
 		}
 		this.shuttingDown = true;
+		for (const client of this.clients) {
+			client.snapshotWorkClosed = true;
+		}
 		if (this.supervisorMonitorTimer) {
 			clearTimeout(this.supervisorMonitorTimer);
 			this.supervisorMonitorTimer = undefined;
@@ -4197,6 +4242,15 @@ export class AgentDaemon {
 			cleanup();
 		}
 		this.cronScheduler.stop();
+		await Promise.all(
+			[...this.clients].map((client) =>
+				this.cancelClientSnapshotWork(
+					client,
+					undefined,
+					new SnapshotTransferCancelledError("Daemon worker is shutting down"),
+				),
+			),
+		);
 		for (const state of [...this.sessions.values()]) {
 			await this.closeSession(state, closingReason);
 		}
