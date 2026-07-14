@@ -182,7 +182,11 @@ import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SideQuestionComponent } from "./components/side-question.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
-import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
+import {
+	selectLatestToolExpandHint,
+	ToolExecutionComponent,
+	type ToolExecutionDefinition,
+} from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
@@ -2595,6 +2599,7 @@ export class InteractiveMode {
 			if (this.startedToolCalls.has(latestToolCall.id)) {
 				component.markExecutionStarted();
 			}
+			selectLatestToolExpandHint(this.chatContainer.children, component);
 			this.chatContainer.addChild(component);
 			this.pendingTools.set(latestToolCall.id, component);
 			this.registerIpythonToolComponent(latestToolCall.name, latestToolCall.id, component);
@@ -2993,14 +2998,14 @@ export class InteractiveMode {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
 		const recap = this.childAgentPanelMode ? undefined : this.sessionRecap?.trim();
-		if (recap) {
-			this.recapContainer.addChild(new TruncatedText(theme.fg("dim", `Recap: ${recap}`), 1, 0));
-		}
 		const showChanges = !this.childAgentPanelMode && !this.isAgentStreaming() && this.agentRunFileChanges.size > 0;
 		if (showChanges) {
 			this.recapContainer.addChild(
 				new TruncatedText(formatTotalChangeSummary([...this.agentRunFileChanges.values()]), 1, 0),
 			);
+		}
+		if (recap) {
+			this.recapContainer.addChild(new TruncatedText(theme.fg("dim", `Recap: ${recap}`), 1, 0));
 		}
 		if (recap || showChanges) {
 			this.recapContainer.addChild(new Spacer(1));
@@ -5681,6 +5686,7 @@ export class InteractiveMode {
 							this.getCurrentCwd(),
 						);
 						component.setExpanded(this.toolOutputExpanded);
+						selectLatestToolExpandHint(this.chatContainer.children, component);
 						this.chatContainer.addChild(component);
 						this.registerIpythonToolComponent(content.name, content.id, component);
 

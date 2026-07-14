@@ -30,6 +30,7 @@ export interface IPythonCellState {
 	isPartial?: boolean;
 	isError?: boolean;
 	expanded?: boolean;
+	showExpandHint?: boolean;
 	executionStarted?: boolean;
 	argsComplete?: boolean;
 	showImages?: boolean;
@@ -402,7 +403,9 @@ export class IPythonCellComponent implements Component {
 			parts.push(theme.fg("error", errorName));
 		}
 
-		parts.push(keyHint("app.tools.expand", this.state.expanded ? "to collapse" : "to expand"));
+		if (this.state.showExpandHint !== false) {
+			parts.push(keyHint("app.tools.expand", this.state.expanded ? "to collapse" : "to expand"));
+		}
 		return parts.join(theme.fg("dim", " · "));
 	}
 

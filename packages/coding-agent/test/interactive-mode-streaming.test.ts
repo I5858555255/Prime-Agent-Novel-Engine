@@ -211,7 +211,7 @@ describe("InteractiveMode streaming events", () => {
 		const recap = renderChat(fakeThis.recapContainer);
 		expect(recap).toContain("Recap: Updated files");
 		expect(recap).toContain("1 file changed | +1 -1");
-		expect(recap.indexOf("Recap:")).toBeLessThan(recap.indexOf("1 file changed"));
+		expect(recap.indexOf("1 file changed")).toBeLessThan(recap.indexOf("Recap:"));
 		expect(renderChat(fakeThis.chatContainer)).not.toContain("file changed");
 
 		const unchanged = createFakeInteractiveModeThis();
