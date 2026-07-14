@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added read-only package continual harness resources with minimal prompt, memory, Python skill, and subagent schemas plus package diagnostics in `/status`.
+- Changed IPython kernels to set `NO_COLOR=1`, preventing ANSI color escapes from inflating `%%bash` output.
 
 ## [0.3.0] - 2026-07-13
 
