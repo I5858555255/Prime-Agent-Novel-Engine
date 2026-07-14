@@ -1,5 +1,6 @@
 import { type Model, modelsAreEqual } from "@earendil-works/pi-ai";
 import {
+	type Component,
 	Container,
 	type Focusable,
 	fuzzyFilterScored,
@@ -38,9 +39,10 @@ export interface ModelSelectorAction {
 	description: string;
 }
 
-interface ModelSelectorOptions {
+export interface ModelSelectorOptions {
 	actions?: ReadonlyArray<ModelSelectorAction>;
 	availableModels?: ReadonlyArray<Model<any>>;
+	header?: Component;
 	onAction?: (actionId: string) => void;
 	subtitle?: string;
 	getRows?: () => number;
@@ -104,6 +106,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	});
 	private responsiveLayoutKey = "";
 	private readonly viewport: MenuViewportProvider;
+	private readonly headerRows: number;
 
 	constructor(
 		tui: TUI,
@@ -129,12 +132,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.onActionCallback = options.onAction;
 		this.recentRank = new Map((options.recentModels ?? []).map((key, i) => [key, i]));
 		this.viewport = { getRows: options.getRows };
+		this.headerRows = options.header ? 2 : 0;
 
 		this.panel = new MenuPanel({
 			title: "Models",
 			subtitle: options.subtitle ?? "Available from configured providers.",
 		});
 		this.addChild(this.panel);
+		if (options.header) {
+			this.panel.addChild(options.header);
+			this.panel.addChild(new Spacer(1));
+		}
 
 		// Add hint about model filtering
 		if (scopedModels.length > 0) {
@@ -470,6 +478,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 		const reservedRows =
 			MODEL_LIST_RESERVED_ROWS.base +
+			this.headerRows +
 			headerHelpRows +
 			(this.shouldShowSelectedDetails() ? MODEL_LIST_RESERVED_ROWS.detail : 0);
 		this.listLayout = getMenuListLayout({
