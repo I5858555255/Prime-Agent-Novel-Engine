@@ -4391,6 +4391,8 @@ export class InteractiveMode {
 			this.contextUsageTokenBaseline = 0;
 			this.setSessionHasMessages(true);
 			this.clearShortcutGuide();
+			this.agentRunFileChanges.clear();
+			this.renderRecap();
 		}
 		this.activityTracker.handleEvent(event);
 		this.updateWorkingLoaderMessage();
@@ -4398,9 +4400,6 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.resetPendingToolState();
-				if (this.getRetryAttempt() === 0) {
-					this.agentRunFileChanges.clear();
-				}
 				this.renderRecap();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);

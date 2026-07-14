@@ -50,6 +50,9 @@ type HandleEventThis = {
 	stopWorkingLoader(): void;
 	resetPendingToolState(): void;
 	checkShutdownRequested(): Promise<void>;
+	setSessionHasMessages(hasMessages: boolean): void;
+	clearShortcutGuide(): void;
+	addMessageToChat(): void;
 };
 
 type HandleEvent = (this: HandleEventThis, event: AgentConnectionSessionEvent) => Promise<void>;
@@ -97,6 +100,9 @@ function createFakeInteractiveModeThis(): HandleEventThis {
 		stopWorkingLoader: vi.fn(),
 		resetPendingToolState: vi.fn(),
 		checkShutdownRequested: vi.fn(async () => {}),
+		setSessionHasMessages: vi.fn(),
+		clearShortcutGuide: vi.fn(),
+		addMessageToChat: vi.fn(),
 	};
 	Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 	return fakeThis;
@@ -228,6 +234,29 @@ describe("InteractiveMode streaming events", () => {
 		await handleEvent.call(fakeThis, { type: "agent_start" });
 
 		expect([...fakeThis.agentRunFileChanges.values()]).toEqual([{ path: "a.ts", added: 1, removed: 1 }]);
+	});
+
+	test("keeps edit totals when compaction restarts the agent", async () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		fakeThis.agentRunFileChanges.set("/tmp/a.ts", { path: "a.ts", added: 1, removed: 1 });
+		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+
+		await handleEvent.call(fakeThis, { type: "agent_start" });
+
+		expect([...fakeThis.agentRunFileChanges.values()]).toEqual([{ path: "a.ts", added: 1, removed: 1 }]);
+	});
+
+	test("clears edit totals when a new user prompt starts", async () => {
+		const fakeThis = createFakeInteractiveModeThis();
+		fakeThis.agentRunFileChanges.set("/tmp/a.ts", { path: "a.ts", added: 1, removed: 1 });
+		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+
+		await handleEvent.call(fakeThis, {
+			type: "message_start",
+			message: { role: "user", content: "next task", timestamp: Date.now() },
+		});
+
+		expect(fakeThis.agentRunFileChanges.size).toBe(0);
 	});
 
 	test("resolves input immediately after return to agents view was requested", async () => {
