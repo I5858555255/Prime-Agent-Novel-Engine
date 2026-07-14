@@ -3,7 +3,11 @@ import { PassThrough } from "node:stream";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import type { ActiveSessionState, DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
+import type {
+	ActiveSessionState,
+	DaemonSocketClient,
+	SnapshotCatchupHandle,
+} from "../../../src/modes/daemon/active-session-state.js";
 import { AgentDaemon, type SnapshotChunkSourceFactory } from "../../../src/modes/daemon/daemon-mode.js";
 import {
 	DAEMON_PROTOCOL_INFO,
@@ -46,6 +50,7 @@ interface SupervisorSnapshotInternals {
 		activeSessionId: string | undefined,
 		reason: Error,
 	): Promise<void>;
+	catchUpClient(client: DaemonSocketClient, catchup: SnapshotCatchupHandle): Promise<void>;
 	detachClient(client: DaemonSocketClient, activeSessionId?: string): Promise<void>;
 	reloadWorkerSnapshot(
 		client: DaemonSocketClient,
@@ -61,12 +66,28 @@ interface SupervisorSnapshotInternals {
 		error: Error,
 		signal: AbortSignal,
 	): Promise<void>;
+	handleCommand(
+		client: DaemonSocketClient,
+		command: { id: string; type: "attach"; activeSessionId: string; capabilities: string[] },
+	): Promise<unknown>;
 	handleWorkerFrame(worker: SupervisorWorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): Promise<void>;
+	launchPublicSnapshotTransfer(
+		client: DaemonSocketClient,
+		worker: SupervisorWorkerHarness,
+		result: DaemonAttachResult,
+		transcript: SnapshotTranscriptCache,
+		purpose?: "attach" | "replacement" | "resync",
+	): Promise<void> | undefined;
 	queueCatchup(client: DaemonSocketClient, activeSessionId: string, purpose?: "replacement" | "resync"): void;
 	scheduleClientCatchup(client: DaemonSocketClient): Promise<void>;
 }
 
 interface AgentDaemonSnapshotInternals {
+	catchUpBackpressuredClient(client: DaemonSocketClient, catchup: SnapshotCatchupHandle): Promise<void>;
+	handleCommand(
+		client: DaemonSocketClient,
+		command: { id: string; type: "attach"; activeSessionId: string; capabilities: string[] },
+	): Promise<unknown>;
 	launchWorkerSnapshotTransfer(
 		client: DaemonSocketClient,
 		result: DaemonAttachResult,
@@ -87,6 +108,8 @@ interface AgentDaemonSnapshotInternals {
 	): Promise<void>;
 	detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): Promise<void>;
 	log: (message: string) => void;
+	queueClientCatchup(client: DaemonSocketClient, activeSessionId: string): void;
+	sessions: Map<string, ActiveSessionState>;
 }
 
 function createSummary(activeSessionId: string, sessionId: string, messageCount: number): SessionSummary {
@@ -212,6 +235,16 @@ function createSocketClient(id: string, activeSessionIds: string[] = []): Daemon
 		detachInput: () => {},
 		supportsExtensionUi: false,
 		capabilities: new Set(["chunked_snapshot"]),
+	};
+}
+
+function createCatchupHandle(activeSessionId: string): SnapshotCatchupHandle {
+	return {
+		controller: new AbortController(),
+		promise: Promise.resolve(),
+		activeSessionId,
+		activeTransferStarted: true,
+		cancelledActiveSessionIds: new Set(),
 	};
 }
 
@@ -732,6 +765,62 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(client.attachedActiveSessionIds).not.toContain(result.activeSessionId);
 	});
 
+	it("runs a supervisor resync queued by a reattach after an older detach", async () => {
+		const streamedResult = createStreamedResult([]);
+		const { snapshotStream: _snapshotStream, ...result } = streamedResult;
+		const worker = createWorkerHarness();
+		worker.snapshotCache.set(result.activeSessionId, result);
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-supervisor-tombstone.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-supervisor-tombstone-state",
+		}) as unknown as SupervisorSnapshotInternals & {
+			findWorker: ReturnType<typeof vi.fn>;
+			launchPublicSnapshotTransfer: ReturnType<typeof vi.fn>;
+			write(client: DaemonSocketClient, message: DaemonOutbound): boolean;
+		};
+		const client = createSocketClient("supervisor-tombstone-client", [result.activeSessionId, "session-b"]);
+		const oldCatchup = createCatchupHandle("session-b");
+		client.snapshotCatchup = oldCatchup;
+		supervisor.findWorker = vi.fn(async () => ({ worker, summary: result.snapshot.summary }));
+		const write = vi.fn((_client: DaemonSocketClient, _message: DaemonOutbound) => true);
+		supervisor.write = write;
+		let finishNewSnapshot!: () => void;
+		const newSnapshot = new Promise<void>((resolve) => {
+			finishNewSnapshot = resolve;
+		});
+		const launchPublicSnapshotTransfer = vi.fn(
+			(
+				_client: DaemonSocketClient,
+				_worker: SupervisorWorkerHarness,
+				_result: DaemonAttachResult,
+				_transcript: SnapshotTranscriptCache,
+				purpose: "attach" | "replacement" | "resync" = "attach",
+			) => (purpose === "attach" ? newSnapshot : Promise.resolve()),
+		);
+		supervisor.launchPublicSnapshotTransfer = launchPublicSnapshotTransfer;
+
+		await supervisor.detachClient(client, result.activeSessionId);
+		expect(oldCatchup.cancelledActiveSessionIds).toContain(result.activeSessionId);
+		await supervisor.handleCommand(client, {
+			id: "reattach",
+			type: "attach",
+			activeSessionId: result.activeSessionId,
+			capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+		});
+		expect(client.attachedActiveSessionIds).toContain(result.activeSessionId);
+		expect(launchPublicSnapshotTransfer).toHaveBeenCalledOnce();
+		supervisor.queueCatchup(client, result.activeSessionId);
+
+		await supervisor.catchUpClient(client, oldCatchup);
+		finishNewSnapshot();
+		await newSnapshot;
+
+		expect(launchPublicSnapshotTransfer.mock.calls.filter((call) => call[4] === "resync")).toHaveLength(1);
+		for (const cache of worker.transcriptCaches.values()) {
+			cache.dispose();
+		}
+	});
+
 	it("preserves a concurrent worker reattach after membership is removed before cancellation", async () => {
 		const daemon = new AgentDaemon("/tmp/eng-4602-worker-detach-epoch.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
@@ -765,6 +854,67 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(cancelClientSnapshotWork).toHaveBeenCalledOnce();
 		expect(client.attachedActiveSessionIds).toContain("session-a");
 		expect(state.clients).toContain(client);
+	});
+
+	it("runs a worker resync queued by a reattach after an older detach", async () => {
+		const streamedResult = createStreamedResult([]);
+		const { snapshotStream: _snapshotStream, ...result } = streamedResult;
+		const daemon = new AgentDaemon("/tmp/eng-4602-worker-tombstone.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+			worker: { authenticationToken: "test-token" },
+		});
+		const internals = daemon as unknown as AgentDaemonSnapshotInternals & {
+			createAttachResult(client: DaemonSocketClient, state: ActiveSessionState): DaemonAttachResult;
+		};
+		const client = createSocketClient("worker-tombstone-client", [result.activeSessionId, "session-b"]);
+		client.transport = "private-framed";
+		const state = {
+			activeSessionId: result.activeSessionId,
+			clients: new Set([client]),
+			extensionUiRequests: new Map(),
+			eventGeneration: result.lastEventCursor?.generation ?? result.activeSessionId,
+			lastEventSequence: result.lastEventSequence,
+		} as unknown as ActiveSessionState;
+		internals.sessions.set(result.activeSessionId, state);
+		const createAttachResult = vi.fn(() => result);
+		internals.createAttachResult = createAttachResult;
+		let finishNewSnapshot!: () => void;
+		const newSnapshot = new Promise<void>((resolve) => {
+			finishNewSnapshot = resolve;
+		});
+		const launchWorkerSnapshotTransfer = vi.fn(
+			(
+				_client: DaemonSocketClient,
+				_result: DaemonAttachResult,
+				_messages: readonly AgentMessage[],
+				purpose: "attach" | "replacement" | "catchup",
+			) => (purpose === "attach" ? newSnapshot : Promise.resolve()),
+		);
+		internals.launchWorkerSnapshotTransfer = launchWorkerSnapshotTransfer;
+		const oldCatchup = createCatchupHandle("session-b");
+		client.snapshotCatchup = oldCatchup;
+
+		await internals.detachClientFromSession(client, state);
+		expect(oldCatchup.cancelledActiveSessionIds).toContain(result.activeSessionId);
+		await internals.handleCommand(client, {
+			id: "reattach",
+			type: "attach",
+			activeSessionId: result.activeSessionId,
+			capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+		});
+		expect(state.clients).toContain(client);
+		expect(launchWorkerSnapshotTransfer).toHaveBeenCalledOnce();
+		internals.queueClientCatchup(client, result.activeSessionId);
+
+		await internals.catchUpBackpressuredClient(client, oldCatchup);
+		finishNewSnapshot();
+		await newSnapshot;
+
+		expect(launchWorkerSnapshotTransfer.mock.calls.filter((call) => call[3] === "catchup")).toHaveLength(1);
+		expect(createAttachResult).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not reschedule catch-up work after terminal shutdown begins", async () => {

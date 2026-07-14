@@ -4021,12 +4021,12 @@ export class AgentDaemon {
 			for (let index = 0; index < pending.length; index++) {
 				throwIfSnapshotTransferAborted(signal);
 				const { activeSessionId, purpose } = pending[index]!;
-				if (catchupHandle.cancelledActiveSessionIds.delete(activeSessionId)) {
+				const state = this.sessions.get(activeSessionId);
+				if (catchupHandle.cancelledActiveSessionIds.delete(activeSessionId) && !state?.clients.has(client)) {
 					continue;
 				}
 				catchupHandle.activeSessionId = activeSessionId;
 				catchupHandle.activeTransferStarted = false;
-				const state = this.sessions.get(activeSessionId);
 				if (!state || !state.clients.has(client)) {
 					continue;
 				}

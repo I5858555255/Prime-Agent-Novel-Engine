@@ -2881,7 +2881,10 @@ export class DaemonSupervisor {
 			for (let index = 0; index < pending.length; index++) {
 				throwIfSnapshotTransferAborted(signal);
 				const { activeSessionId, purpose } = pending[index]!;
-				if (catchup.cancelledActiveSessionIds.delete(activeSessionId)) {
+				if (
+					catchup.cancelledActiveSessionIds.delete(activeSessionId) &&
+					!client.attachedActiveSessionIds.has(activeSessionId)
+				) {
 					continue;
 				}
 				catchup.activeSessionId = activeSessionId;
