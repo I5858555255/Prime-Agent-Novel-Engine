@@ -1,8 +1,8 @@
-> pi can help you create pi packages. Ask it to bundle your extensions, skills, prompt templates, or themes.
+> pi can help you create pi packages. Ask it to bundle your extensions, Agent Skills, prompt templates, themes, or continual harness entries.
 
 # Pi Packages
 
-Pi packages bundle extensions, skills, prompt templates, and themes so you can share them through npm or git. A package can declare resources in `package.json` under the `pi` key, or use conventional directories.
+Pi packages bundle extensions, Agent Skills, prompt templates, themes, and read-only continual harness entries so you can share them through npm or git. A package can declare resources in `package.json` under the `pi` key, or use conventional directories.
 
 ## Table of Contents
 
@@ -17,7 +17,7 @@ Pi packages bundle extensions, skills, prompt templates, and themes so you can s
 
 ## Install and Manage
 
-> **Security:** Pi packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
+> **Security:** Pi packages run with full system access. Extensions execute arbitrary code, while Agent Skills and continual harness entries can instruct the model to perform actions including running executables. Review source code before installing third-party packages.
 
 ```bash
 pi install npm:@foo/bar@1.0.0
@@ -120,7 +120,8 @@ Add a `pi` manifest to `package.json` or use conventional directories. Include t
     "extensions": ["./extensions"],
     "skills": ["./skills"],
     "prompts": ["./prompts"],
-    "themes": ["./themes"]
+    "themes": ["./themes"],
+    "harness": ["./harness"]
   }
 }
 ```
@@ -155,13 +156,33 @@ If both are set, video takes precedence.
 If no `pi` manifest is present, pi auto-discovers resources from these directories:
 
 - `extensions/` loads `.ts` and `.js` files
-- `skills/` recursively finds `SKILL.md` folders and loads top-level `.md` files as skills
+- `skills/` recursively finds `SKILL.md` folders and loads top-level `.md` files as Agent Skills
 - `prompts/` loads `.md` files
 - `themes/` loads `.json` files
+- `harness/` loads continual harness JSON files using the layout below
+
+### Continual Harness Entries
+
+Package continual harness files must use `harness/<kind>/<id>.json`, where `<kind>` is `prompt`, `memory`, `skill`, or `subagent`. The file must be a JSON object whose `kind` and `id` match the directory and filename. IDs must match `[A-Za-z0-9_.-]+`; names inherited from `Object.prototype` (such as `__proto__`, `constructor`, and `toString`) plus `prototype` are reserved.
+
+```json
+{
+  "kind": "memory",
+  "id": "review_policy",
+  "title": "Shared review policy",
+  "content": "Review security-sensitive changes before committing."
+}
+```
+
+Only `kind`, `id`, `title`, and `content` are required shared fields, and each must be nonempty. `path` defaults to `policy` for prompts and `general` for every other kind. `reference`, `arguments`, and `metadata` default to `{}`, while `version` defaults to `1`. Prime Agent derives runtime `source` from the resolved package source and supplies stable package timestamps, so packages do not declare provenance fields. Optional object fields must be objects and an explicitly supplied version must be a positive integer. A `skill` entry must additionally declare a Python `reference` with `type: "python"`, a nonempty `import` or `python_import`, and a nonempty `callable` or `call_pattern`.
+
+Package entries are runtime-only, read-only overlays. Prime Agent never copies them into `harness_state.json` or refinement history. `/refine` cannot update or delete them, but it can create an editable local or global entry with the same kind and id to override one. Reloading resources re-reads package files, so package removal or update takes effect without stale entries.
+
+Editable local or global entries hide a package entry with the same `(kind, id)` while preserving the existing local-plus-global display behavior. Among packages, project scope beats user scope; within one scope, the first package wins and Prime Agent reports a collision diagnostic. The same id in different kinds does not collide. Prompt and refinement context shows each package entry's configured source and exact file path; URL and SCP-like source credentials plus credential-bearing query parameters are removed from displayed provenance and diagnostics.
 
 ## Dependencies
 
-Third party runtime dependencies belong in `dependencies` in `package.json`. Dependencies that do not register extensions, skills, prompt templates, or themes also belong in `dependencies`. When pi installs a package from npm or git, it runs `npm install`, so those dependencies are installed automatically.
+Third party runtime dependencies belong in `dependencies` in `package.json`. Dependencies that do not register extensions, Agent Skills, prompt templates, themes, or continual harness entries also belong in `dependencies`. When pi installs a package from npm or git, it runs `npm install`, so those dependencies are installed automatically.
 
 Pi bundles core packages for extensions and skills. If you import any of these, list them in `peerDependencies` with a `"*"` range and do not bundle them: `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`.
 
@@ -195,7 +216,8 @@ Filter what a package loads using the object form in settings:
       "extensions": ["extensions/*.ts", "!extensions/legacy.ts"],
       "skills": [],
       "prompts": ["prompts/review.md"],
-      "themes": ["+themes/legacy.json"]
+      "themes": ["+themes/legacy.json"],
+      "harness": ["harness/memory/*.json"]
     }
   ]
 }

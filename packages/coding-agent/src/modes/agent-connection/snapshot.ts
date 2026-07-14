@@ -106,6 +106,7 @@ export function createAgentConnectionResourceSnapshot(session: AgentSession): Ag
 	const promptsResult = session.resourceLoader.getPrompts();
 	const themesResult = session.resourceLoader.getThemes();
 	const extensionsResult = session.resourceLoader.getExtensions();
+	const harnessResult = session.resourceLoader.getHarness?.();
 
 	return {
 		contextFiles: session.resourceLoader.getAgentsFiles().agentsFiles.map((entry) => ({
@@ -147,6 +148,7 @@ export function createAgentConnectionResourceSnapshot(session: AgentSession): Ag
 				path: error.path,
 			})),
 			themes: themesResult.diagnostics,
+			harness: harnessResult?.diagnostics ?? [],
 		},
 	};
 }

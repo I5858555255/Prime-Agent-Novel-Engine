@@ -87,6 +87,7 @@ export type PackageSource =
 			skills?: string[];
 			prompts?: string[];
 			themes?: string[];
+			harness?: string[];
 	  };
 
 /**

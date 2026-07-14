@@ -2526,6 +2526,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 		extensions?: ExtensionFixture[];
 		skills?: Array<{ filePath: string; name: string }>;
 		skillDiagnostics?: AgentConnectionResourceDiagnostic[];
+		harnessDiagnostics?: AgentConnectionResourceDiagnostic[];
 		useRealScopeGroups?: boolean;
 		useRealDiagnostics?: boolean;
 	}) {
@@ -2540,6 +2541,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 				prompts: [],
 				extensions: [],
 				themes: [],
+				harness: options.harnessDiagnostics ?? [],
 			},
 		};
 		const extensionRunner = {
@@ -3173,6 +3175,32 @@ describe("InteractiveMode.showLoadedResources", () => {
 		const output = renderAll(fakeThis.chatContainer);
 		expect(output).toContain("[Skill warning]");
 		expect(output).not.toContain("[Skills]");
+	});
+
+	test("shows package harness diagnostics in status output", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: true,
+			harnessDiagnostics: [
+				{
+					type: "collision",
+					message: "package harness memory:shared collision; keeping project-package",
+				},
+			],
+			useRealDiagnostics: true,
+		});
+
+		const showLoadedResources = Reflect.get(InteractiveMode.prototype, "showLoadedResources") as (options: {
+			force: boolean;
+			showDiagnosticsWhenQuiet: boolean;
+		}) => void;
+		showLoadedResources.call(fakeThis, {
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+
+		const output = renderAll(fakeThis.chatContainer);
+		expect(output).toContain("[Harness conflicts]");
+		expect(output).toContain("package harness memory:shared collision; keeping project-package");
 	});
 
 	test("formats a multi-line skill warning without path noise", () => {

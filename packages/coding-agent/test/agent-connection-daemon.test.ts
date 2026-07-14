@@ -139,6 +139,7 @@ class FakeDaemonClient {
 							prompts: [],
 							extensions: [],
 							themes: [],
+							harness: [],
 						},
 					},
 				};
@@ -1755,7 +1756,7 @@ describe("DaemonAgentConnection", () => {
 		await expect(connection.getResourceSnapshot()).resolves.toMatchObject({
 			contextFiles: [{ path: "/tmp/AGENTS.md" }],
 			skills: [{ name: "demo-skill", filePath: "/tmp/skills/demo-skill/SKILL.md" }],
-			diagnostics: { skills: [], prompts: [], extensions: [], themes: [] },
+			diagnostics: { skills: [], prompts: [], extensions: [], themes: [], harness: [] },
 		});
 
 		expect(fakeClient.requests[1]).toMatchObject({

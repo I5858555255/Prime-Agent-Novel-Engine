@@ -4896,12 +4896,13 @@ export class AgentSession {
 		);
 	}
 
-	/** Global harness state overlaid with this session's local state, when persisted. */
+	/** Global harness state overlaid with this session's local state and read-only package entries. */
 	private _loadMergedHarnessState(): HarnessState {
 		const localHarnessStateDir = this._localHarnessStateDir();
 		return mergeHarnessStates(
 			loadHarnessState(getGlobalHarnessStateDir(), "global"),
 			localHarnessStateDir ? loadHarnessState(localHarnessStateDir, "local") : undefined,
+			this._resourceLoader.getHarness?.().state,
 		);
 	}
 
@@ -4976,9 +4977,10 @@ export class AgentSession {
 			if (!options.rollbackId && requestedScope === "local" && !localHarnessStateDir) {
 				throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
 			}
+			const packageHarnessState = this._resourceLoader.getHarness?.().state;
 			const planningState =
 				requestedScope === "global"
-					? loadHarnessState(globalHarnessStateDir, "global")
+					? mergeHarnessStates(loadHarnessState(globalHarnessStateDir, "global"), undefined, packageHarnessState)
 					: this._loadMergedHarnessState();
 			const history = this._loadRefinementHistory();
 			const rollbackTarget = options.rollbackId ? history.find((item) => item.id === options.rollbackId) : undefined;
@@ -5022,13 +5024,16 @@ export class AgentSession {
 				edits: plan.proposal.edits.map((edit) => {
 					const localPrefix = "local:";
 					const globalPrefix = "global:";
+					const packagePrefix = "package:";
 					return {
 						...edit,
 						id: edit.id?.startsWith(localPrefix)
 							? edit.id.slice(localPrefix.length)
 							: edit.id?.startsWith(globalPrefix)
 								? edit.id.slice(globalPrefix.length)
-								: edit.id,
+								: edit.id?.startsWith(packagePrefix)
+									? edit.id.slice(packagePrefix.length)
+									: edit.id,
 					};
 				}),
 			};
@@ -5039,6 +5044,7 @@ export class AgentSession {
 				id: plan.id,
 				rollbackOf: plan.rollbackOf,
 				scope: targetScope,
+				packageState: packageHarnessState,
 			});
 			result.harnessStatePath = saveHarnessState(targetHarnessStateDir, state);
 			if (targetScope === "global") {

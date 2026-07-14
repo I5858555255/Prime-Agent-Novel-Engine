@@ -395,9 +395,9 @@ Place in `~/.prime/agent/themes/`, `.prime/agent/themes/`, or a [Prime Agent pac
 
 ### Prime Agent Packages
 
-Bundle and share extensions, skills, prompts, and themes via npm or git.
+Bundle and share extensions, Agent Skills, prompts, themes, and read-only continual harness entries via npm or git.
 
-> **Security:** Prime Agent packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
+> **Security:** Prime Agent packages run with full system access. Extensions execute arbitrary code, while Agent Skills and continual harness entries can instruct the model to perform actions including running executables. Review source code before installing third-party packages.
 
 ```bash
 prime-agent install npm:@foo/prime-agent-tools
@@ -433,12 +433,13 @@ Create a package by adding the inherited `pi` manifest key to `package.json`:
     "extensions": ["./extensions"],
     "skills": ["./skills"],
     "prompts": ["./prompts"],
-    "themes": ["./themes"]
+    "themes": ["./themes"],
+    "harness": ["./harness"]
   }
 }
 ```
 
-Without a `pi` manifest, Prime Agent auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`).
+Without a `pi` manifest, Prime Agent auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`, `harness/`). Harness files use `harness/<prompt|memory|skill|subagent>/<id>.json`; the shared schema requires only nonempty `kind`, `id`, `title`, and `content` fields. Prompt paths default to `policy`, other paths to `general`, `reference`/`arguments`/`metadata` to `{}`, and `version` to `1`; Prime Agent derives source and timestamps from package provenance and stable runtime values. IDs must match `[A-Za-z0-9_.-]+` and cannot use names inherited from `Object.prototype` or the name `prototype`. Entries remain read-only package overlays: editable local/global entries override matching `(kind, id)` values, `/refine` can create an override but cannot update or delete the package entry, and `/reload` re-reads package updates or removals without copying entries into editable harness state or history.
 
 See [docs/packages.md](docs/packages.md).
 
