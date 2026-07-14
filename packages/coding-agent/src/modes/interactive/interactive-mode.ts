@@ -4392,6 +4392,7 @@ export class InteractiveMode {
 			this.setSessionHasMessages(true);
 			this.clearShortcutGuide();
 			this.agentRunFileChanges.clear();
+			this.renderRecap();
 		}
 		this.activityTracker.handleEvent(event);
 		this.updateWorkingLoaderMessage();

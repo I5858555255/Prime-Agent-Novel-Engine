@@ -250,6 +250,8 @@ describe("InteractiveMode streaming events", () => {
 		const fakeThis = createFakeInteractiveModeThis();
 		fakeThis.agentRunFileChanges.set("/tmp/a.ts", { path: "a.ts", added: 1, removed: 1 });
 		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+		await handleEvent.call(fakeThis, { type: "agent_end", messages: [] });
+		expect(renderChat(fakeThis.recapContainer)).toContain("1 file changed");
 
 		await handleEvent.call(fakeThis, {
 			type: "message_start",
@@ -257,6 +259,8 @@ describe("InteractiveMode streaming events", () => {
 		});
 
 		expect(fakeThis.agentRunFileChanges.size).toBe(0);
+		expect(renderChat(fakeThis.recapContainer)).not.toContain("file changed");
+		expect(renderChat(fakeThis.recapContainer)).toContain("Recap: Updated files");
 	});
 
 	test("resolves input immediately after return to agents view was requested", async () => {

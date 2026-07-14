@@ -96,7 +96,7 @@ describe("ENG-4533 recap layout", () => {
 
 		expect(mode.addMessageToChat).toHaveBeenCalledWith(message);
 		expect(mode.sessionRecap).toBe("previous recap");
-		expect(mode.renderRecap).not.toHaveBeenCalled();
+		expect(mode.renderRecap).toHaveBeenCalledOnce();
 		expect(mode.updatePendingMessagesDisplay).not.toHaveBeenCalled();
 	});
 
