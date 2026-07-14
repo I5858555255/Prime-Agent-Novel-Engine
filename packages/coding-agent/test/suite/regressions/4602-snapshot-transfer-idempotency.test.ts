@@ -44,6 +44,7 @@ interface SupervisorSnapshotInternals {
 		client: DaemonSocketClient,
 		command: { type: "attach"; activeSessionId: string; capabilities?: string[]; supportsExtensionUi?: boolean },
 		signal?: AbortSignal,
+		attachMembership?: boolean,
 	): Promise<{ result: DaemonAttachResult; worker: SupervisorWorkerHarness }>;
 	cancelClientSnapshotWork(
 		client: DaemonSocketClient,
@@ -776,6 +777,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		}) as unknown as SupervisorSnapshotInternals & {
 			findWorker: ReturnType<typeof vi.fn>;
 			launchPublicSnapshotTransfer: ReturnType<typeof vi.fn>;
+			syncWorkerExtensionUi: ReturnType<typeof vi.fn>;
 			write(client: DaemonSocketClient, message: DaemonOutbound): boolean;
 		};
 		const client = createSocketClient("supervisor-tombstone-client", [result.activeSessionId, "session-b"]);
@@ -784,9 +786,9 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		supervisor.findWorker = vi.fn(async () => ({ worker, summary: result.snapshot.summary }));
 		const write = vi.fn((_client: DaemonSocketClient, _message: DaemonOutbound) => true);
 		supervisor.write = write;
-		let finishNewSnapshot!: () => void;
-		const newSnapshot = new Promise<void>((resolve) => {
-			finishNewSnapshot = resolve;
+		let finishExtensionSync!: () => void;
+		const extensionSync = new Promise<void>((resolve) => {
+			finishExtensionSync = resolve;
 		});
 		const launchPublicSnapshotTransfer = vi.fn(
 			(
@@ -794,28 +796,39 @@ describe("ENG-4602 snapshot transfer containment", () => {
 				_worker: SupervisorWorkerHarness,
 				_result: DaemonAttachResult,
 				_transcript: SnapshotTranscriptCache,
-				purpose: "attach" | "replacement" | "resync" = "attach",
-			) => (purpose === "attach" ? newSnapshot : Promise.resolve()),
+				_purpose: "attach" | "replacement" | "resync" = "attach",
+			) => Promise.resolve(),
 		);
 		supervisor.launchPublicSnapshotTransfer = launchPublicSnapshotTransfer;
 
 		await supervisor.detachClient(client, result.activeSessionId);
 		expect(oldCatchup.cancelledActiveSessionIds).toContain(result.activeSessionId);
-		await supervisor.handleCommand(client, {
-			id: "reattach",
-			type: "attach",
-			activeSessionId: result.activeSessionId,
-			capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
-		});
+		supervisor.syncWorkerExtensionUi = vi.fn(() => extensionSync);
+		let reattachSettled = false;
+		const reattach = supervisor
+			.handleCommand(client, {
+				id: "reattach",
+				type: "attach",
+				activeSessionId: result.activeSessionId,
+				capabilities: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+			})
+			.finally(() => {
+				reattachSettled = true;
+			});
+		await vi.waitFor(() => expect(supervisor.syncWorkerExtensionUi).toHaveBeenCalledOnce());
 		expect(client.attachedActiveSessionIds).toContain(result.activeSessionId);
-		expect(launchPublicSnapshotTransfer).toHaveBeenCalledOnce();
+		expect(reattachSettled).toBe(false);
 		supervisor.queueCatchup(client, result.activeSessionId);
 
 		await supervisor.catchUpClient(client, oldCatchup);
-		finishNewSnapshot();
-		await newSnapshot;
+		expect(reattachSettled).toBe(false);
+		finishExtensionSync();
+		await expect(reattach).resolves.toBeUndefined();
 
 		expect(launchPublicSnapshotTransfer.mock.calls.filter((call) => call[4] === "resync")).toHaveLength(1);
+		expect(launchPublicSnapshotTransfer.mock.calls.filter((call) => (call[4] ?? "attach") === "attach")).toHaveLength(
+			1,
+		);
 		for (const cache of worker.transcriptCaches.values()) {
 			cache.dispose();
 		}

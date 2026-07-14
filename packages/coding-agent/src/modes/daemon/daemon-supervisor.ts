@@ -2881,12 +2881,11 @@ export class DaemonSupervisor {
 			for (let index = 0; index < pending.length; index++) {
 				throwIfSnapshotTransferAborted(signal);
 				const { activeSessionId, purpose } = pending[index]!;
-				if (
-					catchup.cancelledActiveSessionIds.delete(activeSessionId) &&
-					!client.attachedActiveSessionIds.has(activeSessionId)
-				) {
+				catchup.cancelledActiveSessionIds.delete(activeSessionId);
+				if (!client.attachedActiveSessionIds.has(activeSessionId)) {
 					continue;
 				}
+				const attachmentEpoch = client.attachmentEpochs?.get(activeSessionId);
 				catchup.activeSessionId = activeSessionId;
 				catchup.activeTransferStarted = false;
 				try {
@@ -2899,7 +2898,14 @@ export class DaemonSupervisor {
 							supportsExtensionUi: client.supportsExtensionUi,
 						},
 						signal,
+						false,
 					);
+					if (
+						!client.attachedActiveSessionIds.has(activeSessionId) ||
+						client.attachmentEpochs?.get(activeSessionId) !== attachmentEpoch
+					) {
+						continue;
+					}
 					if (client.capabilities.has("chunked_snapshot")) {
 						const transcript = this.getOrCreateTranscriptCache(attached.worker, attached.result);
 						if (purpose === "replacement") {
