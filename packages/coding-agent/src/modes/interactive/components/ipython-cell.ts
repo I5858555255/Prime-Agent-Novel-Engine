@@ -358,8 +358,7 @@ export class IPythonCellComponent implements Component {
 		const lines = [truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "")];
 
 		const hasDiffs = (details.diffs?.length ?? 0) > 0;
-		// Edits always show their diff under the top line, regardless of expand state.
-		if (hasDiffs) {
+		if (hasDiffs && this.state.expanded) {
 			this.renderDiffs(lines, safeWidth, details.diffs ?? [], this.marker(details));
 		}
 		if ((details.sentAgentMessages?.length ?? 0) > 0) {
@@ -628,7 +627,6 @@ export class IPythonCellComponent implements Component {
 		}
 	}
 
-	// Edits always render in full, regardless of expand state. Grouped by file.
 	private renderDiffs(lines: string[], width: number, diffs: readonly DiffDisplay[], marker: string): void {
 		const diffsByPath = new Map<string, DiffDisplay[]>();
 		for (const diff of diffs) {

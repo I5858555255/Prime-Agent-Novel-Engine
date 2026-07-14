@@ -546,4 +546,55 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom_tool");
 		expect(rendered).toContain("done");
 	});
+	test("does not add built-in edit stats to custom IPython renderers", () => {
+		const component = new ToolExecutionComponent(
+			"ipython",
+			"custom-ipython",
+			{},
+			{},
+			{
+				...createBaseToolDefinition("ipython"),
+				renderCall: () => new Text("custom ipython", 0, 0),
+			},
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult({
+			content: [],
+			details: { diffs: [{ path: "README.md", oldStr: "before", newStr: "after" }] },
+			isError: false,
+		});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("custom ipython");
+		expect(rendered).not.toContain("README.md | +1 -1");
+	});
+
+	test("collapses built-in edit diffs to a one-line file stat", () => {
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-collapsed-edit",
+			{ path: "README.md", edits: [{ oldText: "before", newText: "after" }] },
+			{},
+			createEditToolDefinition(process.cwd()),
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.setArgsComplete();
+		component.updateResult(
+			{ content: [], details: { diff: "-1 before\n+1 after", firstChangedLine: 1 }, isError: false },
+			false,
+		);
+
+		const collapsed = stripAnsi(component.render(120).join("\n"));
+		expect(collapsed).toContain("╰─ README.md | +1 -1");
+		expect(collapsed).not.toContain("before");
+		expect(collapsed).not.toContain("after");
+
+		component.setExpanded(true);
+		const expanded = stripAnsi(component.render(120).join("\n"));
+		expect(expanded).toContain("before");
+		expect(expanded).toContain("after");
+		expect(expanded).not.toContain("README.md | +1 -1");
+	});
 });

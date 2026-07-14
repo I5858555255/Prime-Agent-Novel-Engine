@@ -72,7 +72,7 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 		}).split("\n");
 		// Summary line and header share the same single-space indent.
 		expect(done[0]).toMatch(/^ ✓ python/);
@@ -83,7 +83,7 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "error", diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 			isError: true,
 		});
 		expect(failed).toMatch(/✗ a\.ts/);
@@ -97,7 +97,7 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "ok", diffs: [{ path: `${cwd}/src/app.ts`, oldStr: "x", newStr: "X", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 		});
 		expect(inside).toContain("src/app.ts");
 		expect(inside).not.toContain(`${cwd}/src/app.ts`);
@@ -108,7 +108,7 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "ok", diffs: [{ path: "/etc/hosts", oldStr: "a", newStr: "b", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 		});
 		expect(outside).toContain("/etc/hosts");
 	});
@@ -121,7 +121,7 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "const x = 1;", newStr: longLine, startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 		}).render(width);
 
 		// No rendered row may exceed the terminal width (the TUI throws if one does).
@@ -142,7 +142,7 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "ok", diffs: [{ path: longPath, oldStr: "x", newStr: "X", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 		}).render(width);
 		expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		const header = lines.map(stripAnsi).find((line) => line.includes("…"));
@@ -161,7 +161,7 @@ describe("IPythonCellComponent diff rendering", () => {
 				details: { status: "ok", diffs: [{ path: "big.txt", oldStr, newStr, startLine: 1 }] },
 				executionStarted: true,
 				argsComplete: true,
-				expanded: false,
+				expanded: true,
 			}).render(80),
 		).not.toThrow();
 	});
@@ -173,7 +173,7 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "ok", diffs: [{ path: "a.ts", oldStr: "const x = 1;", newStr: longLine, startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 		}).split("\n");
 		// The added line wraps; every row carrying its content shows a "+" gutter.
 		const addedRows = out.filter((line) => /arg\d/.test(line));
@@ -187,52 +187,24 @@ describe("IPythonCellComponent diff rendering", () => {
 			details: { status: "ok", durationMs: 4, diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
-			expanded: false,
+			expanded: true,
 		}).split("\n");
-		expect(out[0]).toContain("to expand");
+		expect(out[0]).toContain("to collapse");
 		expect(out[1].trim()).toBe("");
 		expect(out[2]).toContain("a.ts");
 	});
 
-	it("shows the full diff in the collapsed view so file changes never hide behind expand", () => {
-		const oldStr = Array.from({ length: 30 }, (_, i) => `row ${i}`).join("\n");
-		const newStr = oldStr
-			.split("\n")
-			.map((line, i) => (i % 2 === 0 ? line.toUpperCase() : line))
-			.join("\n");
-
+	it("hides the full diff when collapsed", () => {
 		const collapsed = renderCell({
 			code: "await edit(...)",
-			details: { status: "ok", durationMs: 9, diffs: [{ path: "big.py", oldStr, newStr, startLine: 1 }] },
+			details: { status: "ok", diffs: [{ path: "big.py", oldStr: "old", newStr: "NEW", startLine: 1 }] },
 			executionStarted: true,
 			argsComplete: true,
 			expanded: false,
 		});
 		expect(collapsed).toContain("to expand");
-		expect(collapsed).toContain("big.py");
-		expect(collapsed).toContain("ROW");
-		// Every changed row is present — the diff is never truncated when collapsed.
-		expect((collapsed.match(/\+.*ROW \d+/g) ?? []).length).toBe(15);
-	});
-
-	it("renders multiple files' diffs in the collapsed view", () => {
-		const collapsed = renderCell({
-			code: "await edit(...); await edit(...)",
-			details: {
-				status: "ok",
-				diffs: [
-					{ path: "a.py", oldStr: "one", newStr: "ONE", startLine: 1 },
-					{ path: "b.py", oldStr: "two", newStr: "TWO", startLine: 2 },
-				],
-			},
-			executionStarted: true,
-			argsComplete: true,
-			expanded: false,
-		});
-		expect(collapsed).toContain("a.py");
-		expect(collapsed).toContain("b.py");
-		expect(collapsed).toContain("ONE");
-		expect(collapsed).toContain("TWO");
+		expect(collapsed).not.toContain("big.py");
+		expect(collapsed).not.toContain("NEW");
 	});
 
 	it("keeps non-edit cells collapsed to a single summary line", () => {

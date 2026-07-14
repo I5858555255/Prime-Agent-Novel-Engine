@@ -1,0 +1,99 @@
+import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
+import stripAnsi from "strip-ansi";
+import { beforeAll, describe, expect, test } from "vitest";
+import {
+	FileChangeSummaryComponent,
+	formatTotalChangeSummary,
+	getToolFileChanges,
+	mergeTurnFileChanges,
+} from "../src/modes/interactive/components/edit-summary.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+
+const usage: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function assistant(content: AssistantMessage["content"]): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: "test",
+		provider: "test",
+		model: "test",
+		usage,
+		stopReason: "toolUse",
+		timestamp: 0,
+	};
+}
+
+function result(toolCallId: string, toolName: string, details: unknown, isError = false): ToolResultMessage {
+	return { role: "toolResult", toolCallId, toolName, content: [], details, isError, timestamp: 0 };
+}
+
+describe("edit summaries", () => {
+	beforeAll(() => initTheme("dark"));
+
+	test("only reports successful edits that changed lines", () => {
+		expect(getToolFileChanges("edit", { path: "a.ts" }, { details: { diff: "" }, isError: false }, "/tmp")).toEqual(
+			[],
+		);
+		expect(
+			getToolFileChanges("edit", { path: "a.ts" }, { details: { diff: "-1 old\n+1 new" }, isError: true }, "/tmp"),
+		).toEqual([]);
+		expect(
+			getToolFileChanges("edit", { path: "a.ts" }, { details: { diff: "-1 old\n+1 new" }, isError: false }, "/tmp"),
+		).toEqual([{ path: "a.ts", added: 1, removed: 1 }]);
+		expect(
+			getToolFileChanges(
+				"ipython",
+				{},
+				{ details: { diffs: [{ path: "b.ts", oldStr: "old", newStr: "new" }] }, isError: true },
+				"/tmp",
+			),
+		).toEqual([{ path: "b.ts", added: 1, removed: 1 }]);
+	});
+
+	test("limits a collapsed tool summary to five files plus hidden totals", () => {
+		const changes = Array.from({ length: 7 }, (_, index) => ({
+			path: `src/${index}.ts`,
+			added: index + 1,
+			removed: 1,
+		}));
+		const lines = new FileChangeSummaryComponent(changes, "/tmp").render(80).map(stripAnsi);
+		expect(lines).toHaveLength(6);
+		expect(lines[0]).toBe("    ╰─ src/0.ts | +1 -1");
+		expect(lines[4]).toBe("    ╰─ src/4.ts | +5 -1");
+		expect(lines[5]).toBe("    ╰─ [2 more files | +13 -2]");
+	});
+
+	test("renders one total line for all changed files in an agent run", () => {
+		const line = formatTotalChangeSummary([
+			{ path: "a.ts", added: 2, removed: 1 },
+			{ path: "b.ts", added: 3, removed: 4 },
+		]);
+		expect(stripAnsi(line)).toBe("2 files changed | +5 -5");
+	});
+
+	test("coalesces direct and IPython edits by file", () => {
+		const message = assistant([
+			{ type: "toolCall", id: "one", name: "edit", arguments: { path: "a.ts" } },
+			{ type: "toolCall", id: "two", name: "ipython", arguments: {} },
+		]);
+		const changes = new Map();
+		mergeTurnFileChanges(
+			changes,
+			message,
+			[
+				result("one", "edit", { diff: "-1 old\n+1 new" }),
+				result("two", "ipython", { diffs: [{ path: "a.ts", oldStr: "new", newStr: "newer" }] }),
+			],
+			"/tmp",
+		);
+		expect([...changes.values()]).toEqual([{ path: "a.ts", added: 2, removed: 2 }]);
+	});
+});

@@ -167,6 +167,7 @@ import { CustomMessageComponent } from "./components/custom-message.js";
 import { DaxnutsComponent } from "./components/daxnuts.js";
 import { DynamicBorder } from "./components/dynamic-border.js";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.js";
+import { type FileChangeSummary, formatTotalChangeSummary, mergeTurnFileChanges } from "./components/edit-summary.js";
 import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
@@ -742,6 +743,7 @@ export class InteractiveMode {
 	private startedToolCalls = new Set<string>();
 	private pendingToolGeneration = 0;
 	private toolDefinitionCache = new Map<string, ToolExecutionDefinition | undefined>();
+	private agentRunFileChanges = new Map<string, FileChangeSummary>();
 
 	// RLM child-agent tray: inline list below the editor, full-screen detail on open.
 	private childAgentSummary: ChildAgentSummaryComponent;
@@ -2466,6 +2468,8 @@ export class InteractiveMode {
 		this.activityTracker.reset();
 		this.contextUsageTokenBaseline = 0;
 		this.resetPendingToolState();
+		this.agentRunFileChanges.clear();
+		this.renderRecap();
 		this.ipythonToolComponents.clear();
 		this.lateIpythonSentAgentMessages.clear();
 		this.resetChildAgentInspector();
@@ -2985,13 +2989,20 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/** Render the recap line above the editor when one exists. */
 	private renderRecap(): void {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
 		const recap = this.childAgentPanelMode ? undefined : this.sessionRecap?.trim();
 		if (recap) {
 			this.recapContainer.addChild(new TruncatedText(theme.fg("dim", `Recap: ${recap}`), 1, 0));
+		}
+		const showChanges = !this.childAgentPanelMode && !this.isAgentStreaming() && this.agentRunFileChanges.size > 0;
+		if (showChanges) {
+			this.recapContainer.addChild(
+				new TruncatedText(formatTotalChangeSummary([...this.agentRunFileChanges.values()]), 1, 0),
+			);
+		}
+		if (recap || showChanges) {
 			this.recapContainer.addChild(new Spacer(1));
 		}
 		this.ui.requestRender();
@@ -4368,6 +4379,7 @@ export class InteractiveMode {
 		}
 
 		this.footer.invalidate();
+		const retryAttempt = this.getRetryAttempt();
 		this.updateConnectionStateFromEvent(event);
 		// A new user message resets the activity tracker to 0, so the in-flight baseline must
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
@@ -4382,6 +4394,10 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.resetPendingToolState();
+				if (retryAttempt === 0) {
+					this.agentRunFileChanges.clear();
+				}
+				this.renderRecap();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -4577,6 +4593,10 @@ export class InteractiveMode {
 				break;
 			}
 
+			case "turn_end":
+				mergeTurnFileChanges(this.agentRunFileChanges, event.message, event.toolResults, this.getCurrentCwd());
+				break;
+
 			case "agent_end":
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
@@ -4594,6 +4614,7 @@ export class InteractiveMode {
 				}
 				this.flushPendingBashComponents();
 				this.resetPendingToolState();
+				this.renderRecap();
 
 				this.applyOptimisticContextUsage();
 				await this.refreshConnectionContextUsage();

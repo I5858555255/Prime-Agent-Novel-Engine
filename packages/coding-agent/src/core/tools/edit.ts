@@ -251,19 +251,23 @@ function buildEditCallComponent(
 	component: EditCallRenderComponent,
 	args: RenderableEditArgs | undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
+	expanded: boolean,
 ): EditCallRenderComponent {
 	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
 	component.clear();
 	component.addChild(new Text(formatEditCall(args, theme), 0, 0));
 
-	if (!component.preview) {
-		return component;
-	}
-
 	const body =
-		"error" in component.preview ? theme.fg("error", component.preview.error) : renderDiff(component.preview.diff);
-	component.addChild(new Spacer(1));
-	component.addChild(new Text(body, 0, 0));
+		component.preview &&
+		("error" in component.preview
+			? theme.fg("error", component.preview.error)
+			: expanded
+				? renderDiff(component.preview.diff)
+				: undefined);
+	if (body) {
+		component.addChild(new Spacer(1));
+		component.addChild(new Text(body, 0, 0));
+	}
 	return component;
 }
 
@@ -438,7 +442,7 @@ export function createEditToolDefinition(
 				});
 			}
 
-			return buildEditCallComponent(component, args, theme);
+			return buildEditCallComponent(component, args, theme, context.expanded);
 		},
 		renderResult(result, _options, theme, context) {
 			const callComponent = context.state.callComponent;
@@ -463,7 +467,12 @@ export function createEditToolDefinition(
 					changed = true;
 				}
 				if (changed) {
-					buildEditCallComponent(callComponent, context.args as RenderableEditArgs | undefined, theme);
+					buildEditCallComponent(
+						callComponent,
+						context.args as RenderableEditArgs | undefined,
+						theme,
+						context.expanded,
+					);
 				}
 			}
 
