@@ -4379,7 +4379,6 @@ export class InteractiveMode {
 		}
 
 		this.footer.invalidate();
-		const retryAttempt = this.getRetryAttempt();
 		this.updateConnectionStateFromEvent(event);
 		// A new user message resets the activity tracker to 0, so the in-flight baseline must
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
@@ -4394,7 +4393,7 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.resetPendingToolState();
-				if (retryAttempt === 0) {
+				if (this.getRetryAttempt() === 0) {
 					this.agentRunFileChanges.clear();
 				}
 				this.renderRecap();

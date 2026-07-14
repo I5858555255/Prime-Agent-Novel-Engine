@@ -8,6 +8,8 @@ type RecapRenderMode = {
 	recapContainer: Container;
 	childAgentPanelMode?: "detail";
 	sessionRecap?: string;
+	agentRunFileChanges: Map<string, never>;
+	isAgentStreaming: () => boolean;
 	ui: { requestRender: () => void };
 };
 
@@ -42,6 +44,8 @@ function createRenderMode(sessionRecap?: string): RecapRenderMode {
 	return Object.assign(Object.create(InteractiveMode.prototype), {
 		recapContainer: new Container(),
 		sessionRecap,
+		agentRunFileChanges: new Map(),
+		isAgentStreaming: () => false,
 		ui: { requestRender: vi.fn() },
 	}) as RecapRenderMode;
 }
