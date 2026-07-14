@@ -67,9 +67,9 @@ describe("edit summaries", () => {
 		}));
 		const lines = new FileChangeSummaryComponent(changes, "/tmp").render(80).map(stripAnsi);
 		expect(lines).toHaveLength(6);
-		expect(lines[0]).toBe("    ╰─ src/0.ts | +1 -1");
-		expect(lines[4]).toBe("    ╰─ src/4.ts | +5 -1");
-		expect(lines[5]).toBe("    ╰─ [2 more files | +13 -2]");
+		expect(lines[0]).toBe("    ╰─ src/0.ts +1 -1");
+		expect(lines[4]).toBe("    ╰─ src/4.ts +5 -1");
+		expect(lines[5]).toBe("    ╰─ [2 more files +13 -2]");
 	});
 
 	test("renders one total line for all changed files in an agent run", () => {

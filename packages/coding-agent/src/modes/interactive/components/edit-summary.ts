@@ -94,7 +94,7 @@ export class FileChangeSummaryComponent implements Component {
 		const safeWidth = Math.max(1, width);
 		const prefix = theme.fg("dim", "    ╰─ ");
 		const shown = this.changes.slice(0, FILE_SUMMARY_LIMIT).map((change) => {
-			const suffix = `${theme.fg("dim", " | ")}${counts(change)}`;
+			const suffix = `${theme.fg("dim", " ")}${counts(change)}`;
 			const available = Math.max(1, safeWidth - visibleWidth(prefix) - visibleWidth(suffix));
 			const path = truncateToWidth(formatPathRelativeToCwdOrAbsolute(change.path, this.cwd), available, "…");
 			return truncateToWidth(`${prefix}${theme.fg("muted", path)}${suffix}`, safeWidth, "");
@@ -108,7 +108,7 @@ export class FileChangeSummaryComponent implements Component {
 			const files = `${hidden.length} more file${hidden.length === 1 ? "" : "s"}`;
 			shown.push(
 				truncateToWidth(
-					`${prefix}${theme.fg("muted", `[${files}`)}${theme.fg("dim", " | ")}${counts(hiddenTotals)}${theme.fg("muted", "]")}`,
+					`${prefix}${theme.fg("muted", `[${files}`)}${theme.fg("dim", " ")}${counts(hiddenTotals)}${theme.fg("muted", "]")}`,
 					safeWidth,
 					"",
 				),

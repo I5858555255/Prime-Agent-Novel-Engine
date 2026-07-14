@@ -370,7 +370,7 @@ export class IPythonCellComponent implements Component {
 			return this.renderCache.set(safeWidth, cacheVersion, lines);
 		}
 
-		const hasCode = this.renderCode(lines, safeWidth, hasDiffs);
+		const hasCode = this.renderCode(lines, safeWidth);
 		this.renderOutput(lines, safeWidth, details, hasCode);
 		return this.renderCache.set(safeWidth, cacheVersion, lines);
 	}
@@ -481,11 +481,7 @@ export class IPythonCellComponent implements Component {
 	}
 
 	// Only runs when expanded — shows the full source below the fixed top line.
-	// Edits skip the source: their diff already renders above and conveys the change.
-	private renderCode(lines: string[], width: number, hasDiffs: boolean): boolean {
-		if (hasDiffs) {
-			return false;
-		}
+	private renderCode(lines: string[], width: number): boolean {
 		const code = this.state.code.trimEnd();
 		if (!code) {
 			this.addBlank(lines, width);

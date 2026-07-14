@@ -45,6 +45,8 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(out).toMatch(/10 .*alpha/);
 		// The redundant "Edited sample.py" confirmation must not render as its own line.
 		expect(out.split("\n").some((line) => /^\s*'?Edited sample\.py'?\s*$/.test(line.trim()))).toBe(false);
+		// Expanded edit cells still show the full source that produced the diff.
+		expect(out).toContain('await edit(path="sample.py", old_str="gamma", new_str="GAMMA")');
 	});
 
 	it("renders diff rows as full-width colored blocks", () => {
@@ -205,6 +207,21 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(collapsed).toContain("to expand");
 		expect(collapsed).not.toContain("big.py");
 		expect(collapsed).not.toContain("NEW");
+	});
+
+	it("hides edit source when collapsed and shows it when globally expanded", () => {
+		const state = {
+			code: 'hidden_side_effect = "only in full source"\nawait edit(path="a.py", old_str="old", new_str="new")',
+			details: { status: "ok", diffs: [{ path: "a.py", oldStr: "old", newStr: "new", startLine: 1 }] },
+			executionStarted: true,
+			argsComplete: true,
+		};
+		const collapsed = renderCell({ ...state, expanded: false });
+		const expanded = renderCell({ ...state, expanded: true });
+
+		expect(collapsed).not.toContain("hidden_side_effect");
+		expect(expanded).toContain('hidden_side_effect = "only in full source"');
+		expect(expanded).toContain("a.py");
 	});
 
 	it("keeps non-edit cells collapsed to a single summary line", () => {
