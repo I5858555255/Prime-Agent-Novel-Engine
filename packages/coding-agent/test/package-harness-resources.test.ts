@@ -293,8 +293,9 @@ describe("package continual harness resources", () => {
 		writeHarnessPackage(firstPackage, [harnessEntry("memory", "shared", { content: "first" })]);
 		writeHarnessPackage(secondPackage, [harnessEntry("memory", "shared", { content: "second" })]);
 		const firstSource =
-			"git:https://oauth2:ghp_winnersecret@example.com/acme/shared.git?access_token=ghp_winnerquery&ref=main";
-		const secondSource = "git:github.com/acme/shared.git?api_key=sk-loserquery&channel=stable";
+			"git:https://oauth2:ghp_winnersecret@example.com/acme/shared.git?access_token=ghp_winnerquery&ref=main#access_token=winnerfragment";
+		const secondSource =
+			"git:github.com/acme/shared.git?api_key=sk-loserquery&channel=stable#github_pat_loserfragment";
 		const resources: ResolvedResource[] = [
 			{
 				path: join(firstPackage, "harness", "memory", "shared.json"),
@@ -323,17 +324,19 @@ describe("package continual harness resources", () => {
 		const exposedData = `${prompt}\n${JSON.stringify(loaded)}`;
 
 		expect(loaded.state.entries.memory.shared.provenance?.source).toBe(
-			"git:https://example.com/acme/shared.git?ref=main",
+			"git:https://example.com/acme/shared.git?ref=main#access_token=[redacted]",
 		);
 		expect(loaded.diagnostics[0]?.collision).toMatchObject({
-			winnerSource: "git:https://example.com/acme/shared.git?ref=main",
-			loserSource: "git:github.com/acme/shared.git?api_key=[redacted]&channel=stable",
+			winnerSource: "git:https://example.com/acme/shared.git?ref=main#access_token=[redacted]",
+			loserSource: "git:github.com/acme/shared.git?api_key=[redacted]&channel=stable#[redacted]",
 		});
 		expect(exposedData).not.toContain("oauth2");
 		expect(exposedData).not.toContain("ghp_winnersecret");
 		expect(exposedData).not.toContain("ghp_winnerquery");
+		expect(exposedData).not.toContain("winnerfragment");
 		expect(exposedData).not.toContain(secondSource);
 		expect(exposedData).not.toContain("sk-loserquery");
+		expect(exposedData).not.toContain("github_pat_loserfragment");
 		expect(resources[0]?.metadata.source).toBe(firstSource);
 		expect(resources[1]?.metadata.source).toBe(secondSource);
 	});

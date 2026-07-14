@@ -202,12 +202,24 @@ function validatePackageHarnessEntry(
 	};
 }
 
-function redactCredentialQueryParameters(source: string): string {
-	return source.replace(/([?&])([^=&]+)=([^&#]*)/g, (match, separator, key, value) => {
+function redactCredentialParameters(source: string): string {
+	const redacted = source.replace(/([?&#])([^=&]+)=([^&#]*)/g, (match, separator, key, value) => {
 		return CREDENTIAL_QUERY_KEY.test(key) || CREDENTIAL_QUERY_VALUE.test(value)
 			? `${separator}${key}=[redacted]`
 			: match;
 	});
+	const fragmentIndex = redacted.indexOf("#");
+	if (fragmentIndex < 0) {
+		return redacted;
+	}
+	const fragment = redacted.slice(fragmentIndex + 1);
+	let decodedFragment = fragment;
+	try {
+		decodedFragment = decodeURIComponent(fragment);
+	} catch {
+		// Keep malformed fragments unchanged unless the raw value matches below.
+	}
+	return CREDENTIAL_QUERY_VALUE.test(decodedFragment) ? `${redacted.slice(0, fragmentIndex)}#[redacted]` : redacted;
 }
 
 function redactScpLikeCredentials(source: string): string {
@@ -236,7 +248,7 @@ function redactScpLikeCredentials(source: string): string {
 function sanitizePackageSource(source: string): string {
 	const urlIndex = source.search(/[A-Za-z][A-Za-z0-9+.-]*:\/\//);
 	if (urlIndex < 0) {
-		return redactCredentialQueryParameters(redactScpLikeCredentials(source));
+		return redactCredentialParameters(redactScpLikeCredentials(source));
 	}
 
 	try {
@@ -253,9 +265,9 @@ function sanitizePackageSource(source: string): string {
 		for (const key of queryKeysToDelete) {
 			url.searchParams.delete(key);
 		}
-		return `${prefix}${url.toString()}`;
+		return redactCredentialParameters(`${prefix}${url.toString()}`);
 	} catch {
-		return redactCredentialQueryParameters(source.replace(/(\/\/)[^/@\s]+@/, "$1"));
+		return redactCredentialParameters(source.replace(/(\/\/)[^/@\s]+@/, "$1"));
 	}
 }
 
