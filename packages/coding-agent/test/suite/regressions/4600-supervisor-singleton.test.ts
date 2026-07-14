@@ -12,8 +12,7 @@ import {
 } from "node:fs";
 import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { shutdownDaemonAndWait } from "../../../src/cli/daemon-launch.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../../../src/config.js";
 import { DaemonAgentConnection } from "../../../src/modes/agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../../../src/modes/daemon/daemon-client.js";
@@ -27,7 +26,6 @@ import {
 	readDaemonSupervisorOwner,
 	waitForDaemonStartupFence,
 } from "../../../src/modes/daemon/daemon-supervisor-ownership.js";
-import { prepareDaemonUpdateRestart, restoreDaemonUpdateRestart } from "../../../src/package-manager-cli.js";
 import { createHarness, type Harness } from "../harness.js";
 
 type FixtureMessage =
@@ -59,7 +57,6 @@ const handles = new Set<FixtureHandle>();
 const harnesses: Harness[] = [];
 
 afterEach(async () => {
-	vi.unstubAllEnvs();
 	for (const handle of handles) {
 		if (handle.child.exitCode === null && handle.child.signalCode === null) {
 			handle.child.kill("SIGKILL");
@@ -267,6 +264,35 @@ async function connectEventually(socketPath: string): Promise<DaemonClient> {
 	throw new Error(`Timed out connecting to replacement supervisor: ${String(lastError)}`);
 }
 
+function waitForConnectionStatus(
+	connection: DaemonAgentConnection,
+	status: "reconnecting" | "connected",
+	timeoutMs = 30_000,
+): Promise<void> {
+	return new Promise((resolveStatus, rejectStatus) => {
+		const timeout = setTimeout(() => {
+			unsubscribe();
+			rejectStatus(new Error(`Timed out waiting for daemon client status ${status}`));
+		}, timeoutMs);
+		const unsubscribe = connection.subscribe((event) => {
+			if (event.type !== "connection_status" || event.status !== status) {
+				return;
+			}
+			clearTimeout(timeout);
+			unsubscribe();
+			resolveStatus();
+		});
+	});
+}
+
+function readStableIdentity(target: object, property: "clientId" | "protocolClientId"): string {
+	const identity: unknown = Reflect.get(target, property);
+	if (typeof identity !== "string") {
+		throw new Error(`Missing daemon client identity ${property}`);
+	}
+	return identity;
+}
+
 function requireSessionSummary(value: unknown): SessionSummary {
 	if (!value || typeof value !== "object" || typeof (value as Partial<SessionSummary>).id !== "string") {
 		throw new Error("Fixture did not return a session summary");
@@ -348,7 +374,6 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 			return;
 		}
 		const paths = await createPaths();
-		vi.stubEnv(DAEMON_SUPERVISOR_REGISTRY_DIR_ENV, paths.registryDir);
 		const legacyCleanup = spawnFixture("legacy_cleanup", paths);
 		await waitForType(legacyCleanup, "booted");
 		await waitForType(legacyCleanup, "ready");
@@ -401,53 +426,58 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 				content: [expect.objectContaining({ text: "upgrade response 1" })],
 			}),
 		);
-
-		const manifest = await prepareDaemonUpdateRestart(paths.socketPath, paths.agentDir);
-		expect(manifest.sessions).toHaveLength(1);
-		await connection.dispose();
-		client.close();
-		expect(await shutdownDaemonAndWait(paths.socketPath)).toBe(true);
+		const originalClient = client;
+		const originalConnection = connection;
+		const originalProtocolClientId = readStableIdentity(client, "protocolClientId");
+		const originalAttachedClientId = readStableIdentity(connection, "clientId");
+		const originalWorkerPid = summary.workerPid;
+		const originalState = await connection.getState();
+		const reconnecting = waitForConnectionStatus(connection, "reconnecting");
+		const reconnected = waitForConnectionStatus(connection, "connected", 60_000);
+		const restarted = await client.request({ type: "restart" }, 10_000);
+		expect(restarted.success).toBe(true);
+		await reconnecting;
 		await waitForExit(predecessor);
-
-		const replacement = spawnRealSupervisor(paths, {});
-		const replacementClient = await connectEventually(paths.socketPath);
+		await reconnected;
+		expect(client).toBe(originalClient);
+		expect(connection).toBe(originalConnection);
+		expect(readStableIdentity(client, "protocolClientId")).toBe(originalProtocolClientId);
+		expect(readStableIdentity(connection, "clientId")).toBe(originalAttachedClientId);
+		expect((await connection.getState()).activeSessionId).toBe(originalState.activeSessionId);
 		const successorIdentity = statSync(paths.socketPath);
 		send(legacyCleanup, "cleanup");
 		const cleanup = await waitForType(legacyCleanup, "cleanup_complete");
 		expect(cleanup.skipped).toBe(true);
-		expect(statSync(paths.socketPath).ino).toBe(successorIdentity.ino);
+		const identityAfterLegacyCleanup = statSync(paths.socketPath);
+		expect(identityAfterLegacyCleanup.dev).toBe(successorIdentity.dev);
+		expect(identityAfterLegacyCleanup.ino).toBe(successorIdentity.ino);
 		expect(await listDaemonSupervisorOwners(paths.registryDir)).toHaveLength(1);
 		const [successorOwner] = await listDaemonSupervisorOwners(paths.registryDir);
 		if (!successorOwner) {
 			throw new Error("Replacement supervisor did not publish its owner record");
 		}
-		await restoreDaemonUpdateRestart(paths.socketPath, manifest);
 		expect(readdirSync(successorOwner.descriptorDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
-		const listed = await replacementClient.request({ type: "list" });
+		const listed = await client.request({ type: "list" });
 		if (!listed.success) {
 			throw new Error(listed.error);
 		}
-		const restored = requireSessionSummary((listed.data as { sessions: unknown[] }).sessions[0]);
-		expect(restored.workerPid).toBeDefined();
-		expect(restored.workerPid).not.toBe(summary.workerPid);
-		const restoredConnection = await DaemonAgentConnection.attach(
-			replacementClient,
-			restored.activeSessionId ?? restored.id,
-			{ recoverDaemon: async () => {} },
-		);
-		await restoredConnection.getInitialSnapshot();
-		await restoredConnection.prompt("after replacement");
-		await restoredConnection.waitForIdle();
-		expect(await restoredConnection.getMessages()).toContainEqual(
+		const listedSessions = (listed.data as { sessions: unknown[] }).sessions;
+		expect(listedSessions).toHaveLength(1);
+		const restored = requireSessionSummary(listedSessions[0]);
+		expect(restored.workerPid).toBe(originalWorkerPid);
+		expect(restored.activeSessionId ?? restored.id).toBe(activeSessionId);
+		expect((await connection.getState()).activeSessionId).toBe(originalState.activeSessionId);
+		await connection.prompt("after replacement");
+		await connection.waitForIdle();
+		expect(await connection.getMessages()).toContainEqual(
 			expect.objectContaining({
 				role: "assistant",
-				content: [expect.objectContaining({ text: "upgrade response 1" })],
+				content: [expect.objectContaining({ text: "upgrade response 2" })],
 			}),
 		);
-		await restoredConnection.dispose();
-		await replacementClient.request({ type: "shutdown" }, 10_000);
-		replacementClient.close();
-		await waitForExit(replacement);
+		await connection.dispose();
+		await client.request({ type: "shutdown" }, 10_000);
+		client.close();
 		await waitForExit(legacyCleanup);
 		const shutdownDeadline = Date.now() + 15_000;
 		while ((await listDaemonSupervisorOwners(paths.registryDir)).length > 0 && Date.now() < shutdownDeadline) {

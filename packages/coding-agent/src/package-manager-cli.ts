@@ -940,10 +940,7 @@ async function restoreDaemonUpdateRestartSession(
 	return { restored: true, resumed: resumedSession };
 }
 
-export async function restoreDaemonUpdateRestart(
-	socketPath: string,
-	manifest: DaemonUpdateRestartManifest,
-): Promise<void> {
+async function restoreDaemonUpdateRestart(socketPath: string, manifest: DaemonUpdateRestartManifest): Promise<void> {
 	if (manifest.sessions.length === 0) {
 		return;
 	}
