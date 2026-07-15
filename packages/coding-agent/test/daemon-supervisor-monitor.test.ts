@@ -9,9 +9,14 @@ import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js"
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
 import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
 
+const supervisorRegistryDirEnv = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
+const previousSupervisorRegistryDir = process.env[supervisorRegistryDirEnv];
+const supervisorRegistryDirs = new Set<string>();
+
 interface SupervisorMonitorHarness {
 	options: { worker: object };
 	clients: Set<{ authenticated: boolean }>;
+	supervisorClaims: Map<object, object>;
 	shuttingDown: boolean;
 	supervisorMonitorTimer?: ReturnType<typeof setTimeout>;
 	canConnectToSupervisor: (socketPath: string) => Promise<boolean>;
@@ -20,9 +25,13 @@ interface SupervisorMonitorHarness {
 }
 
 function createHarness(canConnect: () => Promise<boolean>): SupervisorMonitorHarness {
+	const registryDir = mkdtempSync(join(tmpdir(), "prime-supervisor-registry-test-"));
+	supervisorRegistryDirs.add(registryDir);
+	process.env[supervisorRegistryDirEnv] = registryDir;
 	return Object.assign(Object.create(AgentDaemon.prototype), {
 		options: { worker: {} },
 		clients: new Set<{ authenticated: boolean }>(),
+		supervisorClaims: new Map<object, object>(),
 		shuttingDown: false,
 		canConnectToSupervisor: vi.fn(canConnect),
 		launchReplacementSupervisor: vi.fn(async () => undefined),
@@ -32,14 +41,31 @@ function createHarness(canConnect: () => Promise<boolean>): SupervisorMonitorHar
 describe("daemon worker supervisor monitoring", () => {
 	afterEach(() => {
 		vi.useRealTimers();
+		for (const registryDir of supervisorRegistryDirs) {
+			rmSync(registryDir, { recursive: true, force: true });
+		}
+		supervisorRegistryDirs.clear();
+		if (previousSupervisorRegistryDir === undefined) {
+			delete process.env[supervisorRegistryDirEnv];
+		} else {
+			process.env[supervisorRegistryDirEnv] = previousSupervisorRegistryDir;
+		}
 	});
 
 	it("does not poll a healthy supervisor after the startup check", async () => {
 		vi.useFakeTimers();
-		const daemon = createHarness(async () => true);
+		let resolveProbe: () => void = () => undefined;
+		const probeCompleted = new Promise<void>((resolve) => {
+			resolveProbe = resolve;
+		});
+		const daemon = createHarness(async () => {
+			resolveProbe();
+			return true;
+		});
 
 		daemon.scheduleSupervisorAvailabilityCheck("/tmp/supervisor.sock", 1500);
 		await vi.advanceTimersByTimeAsync(1500);
+		await probeCompleted;
 		expect(daemon.canConnectToSupervisor).toHaveBeenCalledOnce();
 
 		await vi.advanceTimersByTimeAsync(60_000);
@@ -51,6 +77,7 @@ describe("daemon worker supervisor monitoring", () => {
 		vi.useFakeTimers();
 		const daemon = createHarness(async () => true);
 		daemon.clients.add({ authenticated: true });
+		daemon.supervisorClaims.set({}, {});
 
 		daemon.scheduleSupervisorAvailabilityCheck("/tmp/supervisor.sock", 0);
 		await vi.runAllTimersAsync();
@@ -113,6 +140,7 @@ describe("daemon worker supervisor monitoring", () => {
 			connectWorker: ReturnType<typeof vi.fn>;
 			recoverUncertainWorkerOperations: ReturnType<typeof vi.fn>;
 			launchWorker: ReturnType<typeof vi.fn>;
+			assertRecoveryAllowed: ReturnType<typeof vi.fn>;
 			recoverWorker(worker: RecoveryWorker): Promise<void>;
 		};
 		const worker: RecoveryWorker = {
@@ -132,6 +160,7 @@ describe("daemon worker supervisor monitoring", () => {
 			connectWorker: vi.fn(),
 			recoverUncertainWorkerOperations: vi.fn(async () => {}),
 			launchWorker: vi.fn(async () => worker),
+			assertRecoveryAllowed: vi.fn(async () => {}),
 		}) as RecoveryHarness;
 
 		const recovery = supervisor.recoverWorker(worker);
@@ -170,6 +199,7 @@ describe("daemon worker supervisor monitoring", () => {
 			persistWorker: ReturnType<typeof vi.fn>;
 			syncAgentPeers: ReturnType<typeof vi.fn>;
 			log: ReturnType<typeof vi.fn>;
+			assertRecoveryAllowed: ReturnType<typeof vi.fn>;
 			recoverWorker(worker: RecoveryWorker): Promise<void>;
 		};
 		const worker: RecoveryWorker = {
@@ -194,6 +224,7 @@ describe("daemon worker supervisor monitoring", () => {
 			persistWorker: vi.fn(),
 			syncAgentPeers: vi.fn(async () => {}),
 			log: vi.fn(),
+			assertRecoveryAllowed: vi.fn(async () => {}),
 		}) as RecoveryHarness;
 
 		const recovery = supervisor.recoverWorker(worker);
@@ -233,6 +264,7 @@ describe("daemon worker supervisor monitoring", () => {
 			persistWorker: ReturnType<typeof vi.fn>;
 			syncAgentPeers: ReturnType<typeof vi.fn>;
 			log: ReturnType<typeof vi.fn>;
+			assertRecoveryAllowed: ReturnType<typeof vi.fn>;
 			recoverWorker(worker: RecoveryWorker): Promise<void>;
 		};
 		const worker: RecoveryWorker = {
@@ -259,6 +291,7 @@ describe("daemon worker supervisor monitoring", () => {
 				throw new Error("peer unavailable");
 			}),
 			log: vi.fn(),
+			assertRecoveryAllowed: vi.fn(async () => {}),
 		}) as RecoveryHarness;
 
 		const recovery = supervisor.recoverWorker(worker);
@@ -504,6 +537,7 @@ describe("daemon worker supervisor monitoring", () => {
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			catalog: { markInterrupted },
 			log: vi.fn(),
+			assertRecoveryAllowed: vi.fn(async () => {}),
 		}) as {
 			recoverUncertainWorkerOperations(worker: RecoveryWorker, killWorkerProcess: boolean): Promise<void>;
 		};
