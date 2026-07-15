@@ -19,6 +19,7 @@ export type AgentCronScheduleKind = "once" | "cron" | "interval";
 export type AgentCronJobSource = "cron" | "heartbeat" | "rlm_heartbeat";
 export type AgentCronJobRuntimeKind = "top-level" | "subagent";
 export type AgentHeartbeatUpdateAction = "pause" | "resume" | "clear";
+export type AgentHeartbeatManagementAction = "pause" | "resume" | "stop";
 export type AgentRlmHeartbeatStatusUpdate = "pause" | "resume";
 /**
  * How a scheduled heartbeat prompt is delivered when the target session is busy:
@@ -148,6 +149,7 @@ export interface AgentRlmHeartbeatController {
 
 export class AgentCronJobStore {
 	private readonly sessionArtifactFiles = new Map<string, string>();
+	private readonly changeListeners = new Set<() => void>();
 
 	constructor(
 		private readonly filePath?: string,
@@ -160,6 +162,11 @@ export class AgentCronJobStore {
 
 	static forSessionArtifacts(): AgentCronJobStore {
 		return new AgentCronJobStore(undefined, true);
+	}
+
+	onChange(listener: () => void): () => void {
+		this.changeListeners.add(listener);
+		return () => this.changeListeners.delete(listener);
 	}
 
 	registerSessionArtifact(sessionId: string, artifactDir: string): boolean {
@@ -553,6 +560,46 @@ export class AgentCronJobStore {
 		return cleared;
 	}
 
+	manageHeartbeat(
+		activeSessionId: string,
+		id: string,
+		action: AgentHeartbeatManagementAction,
+		now = new Date(),
+	): AgentCronJob | undefined {
+		let updated: AgentCronJob | undefined;
+		const jobs = this.readJobs().map((job) => {
+			if (job.id !== id || job.activeSessionId !== activeSessionId || !isHeartbeatCronJob(job)) {
+				return job;
+			}
+			if (job.status === "cancelled" || job.status === "completed") {
+				return job;
+			}
+			if (action === "pause") {
+				updated = withoutNextRunAt({ ...job, status: "paused", updatedAt: now.toISOString() });
+				return updated;
+			}
+			if (action === "stop") {
+				updated = withoutNextRunAt({ ...job, status: "cancelled", updatedAt: now.toISOString() });
+				return updated;
+			}
+			const nextRunAt = nextRunAtForSchedule(job.schedule, now);
+			if (!nextRunAt) {
+				throw new Error("Heartbeat schedule must be recurring");
+			}
+			updated = {
+				...job,
+				status: "active",
+				nextRunAt: nextRunAt.toISOString(),
+				updatedAt: now.toISOString(),
+			};
+			return updated;
+		});
+		if (updated) {
+			this.writeJobs(jobs);
+		}
+		return updated;
+	}
+
 	cancel(id: string, now = new Date()): AgentCronJob | undefined {
 		let cancelled: AgentCronJob | undefined;
 		const jobs = this.readJobs().map((job) => {
@@ -724,7 +771,8 @@ export class AgentCronJobStore {
 
 	private mutateStates(mutator: (state: CronJobsState) => AgentCronDispatch[]): AgentCronDispatch[] {
 		const paths = this.sessionArtifactMode ? [...this.sessionArtifactFiles.values()] : [this.requireFilePath()];
-		return withCronJobsStateLocks(paths, () => {
+		let changed = false;
+		const dispatches = withCronJobsStateLocks(paths, () => {
 			const dispatches: AgentCronDispatch[] = [];
 			for (const path of paths) {
 				const state = readJobsState(path);
@@ -732,10 +780,15 @@ export class AgentCronJobStore {
 				dispatches.push(...mutator(state));
 				if (JSON.stringify(state) !== before) {
 					writeJobsState(path, state);
+					changed = true;
 				}
 			}
 			return dispatches;
 		});
+		if (changed) {
+			this.notifyChange();
+		}
+		return dispatches;
 	}
 
 	private writeJobs(jobs: readonly AgentCronJob[]): void {
@@ -782,10 +835,18 @@ export class AgentCronJobStore {
 					}
 				}
 			});
+			this.notifyChange();
 			return;
 		}
 		const path = this.requireFilePath();
 		withCronJobsStateLocks([path], () => writeJobsFile(path, jobs, true));
+		this.notifyChange();
+	}
+
+	private notifyChange(): void {
+		for (const listener of this.changeListeners) {
+			listener();
+		}
 	}
 
 	private requireFilePath(): string {

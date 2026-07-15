@@ -68,7 +68,12 @@ import {
 	uploadAgentTraceFile,
 } from "../../core/agent-traces.js";
 import { isNoModelsAvailableMessage } from "../../core/auth-guidance.js";
-import { type AgentCronJob, DEFAULT_HEARTBEAT_DELIVERY_MODE, parseHeartbeatCommand } from "../../core/cron-jobs.js";
+import {
+	type AgentCronJob,
+	type AgentHeartbeatManagementAction,
+	DEFAULT_HEARTBEAT_DELIVERY_MODE,
+	parseHeartbeatCommand,
+} from "../../core/cron-jobs.js";
 import type {
 	AutocompleteProviderFactory,
 	ContextUsage,
@@ -118,6 +123,7 @@ import type {
 	AgentConnection,
 	AgentConnectionExtensionUiRequest,
 	AgentConnectionExtensionUiResponse,
+	AgentConnectionHeartbeat,
 	AgentConnectionModel,
 	AgentConnectionQueueState,
 	AgentConnectionResourceDiagnostic,
@@ -169,6 +175,7 @@ import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FooterComponent } from "./components/footer.js";
+import { HeartbeatManagerComponent } from "./components/heartbeat-manager.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
 import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import type { AuthSelectorProvider } from "./components/oauth-selector.js";
@@ -773,6 +780,11 @@ export class InteractiveMode {
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private sessionHasMessages = false;
+	private heartbeats: AgentConnectionHeartbeat[] = [];
+	private heartbeatRefreshPromise: Promise<void> | undefined;
+	private heartbeatRefreshRequested = false;
+	private heartbeatManager: HeartbeatManagerComponent | undefined;
+	private heartbeatManagerHandle: OverlayHandle | undefined;
 
 	// Registry of images pasted this session, keyed by the `[image #N]` marker
 	// shown to the user. Insertion-ordered; the bytes persist (bounded by
@@ -2205,6 +2217,31 @@ export class InteractiveMode {
 		this.connectionResourceSnapshot = resources;
 	}
 
+	private refreshHeartbeatCatalog(): Promise<void> {
+		if (this.heartbeatRefreshPromise) {
+			this.heartbeatRefreshRequested = true;
+			return this.heartbeatRefreshPromise;
+		}
+		const connection = this.agentConnection;
+		const refresh = (async () => {
+			do {
+				this.heartbeatRefreshRequested = false;
+				const heartbeats = await connection.listHeartbeats();
+				if (this.agentConnection !== connection) return;
+				this.heartbeats = heartbeats;
+				this.heartbeatManager?.setHeartbeats(heartbeats);
+				this.childAgentSummary.invalidate();
+				this.ui.requestRender();
+			} while (this.heartbeatRefreshRequested);
+		})().finally(() => {
+			if (this.heartbeatRefreshPromise === refresh) {
+				this.heartbeatRefreshPromise = undefined;
+			}
+		});
+		this.heartbeatRefreshPromise = refresh;
+		return refresh;
+	}
+
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
 		this.connectionState = state;
 		// Don't touch contextUsageTokenBaseline: a mid-stream snapshot reflects only completed
@@ -2407,7 +2444,7 @@ export class InteractiveMode {
 			this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
 		}
 		this.subscribeToAgent();
-		await this.refreshConnectionQueue();
+		await Promise.all([this.refreshConnectionQueue(), this.refreshHeartbeatCatalog()]);
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
@@ -2937,6 +2974,7 @@ export class InteractiveMode {
 
 	private resetExtensionUI(): void {
 		this.cancelActiveConnectionExtensionUiRequests();
+		this.closeHeartbeatManager();
 		if (this.extensionSelector) {
 			this.hideExtensionSelector();
 		}
@@ -3568,6 +3606,9 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
 		this.defaultEditor.onAction("app.subagents.focus", () => this.focusChildAgentSummary());
+		this.defaultEditor.onAction("app.heartbeats.open", () => {
+			void this.showHeartbeatManager();
+		});
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
 		this.defaultEditor.onAction("app.prompt.stash", () => this.handlePromptStash());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
@@ -3951,6 +3992,11 @@ export class InteractiveMode {
 					this.editor.setText("");
 					return;
 				}
+				if (commandName === "heartbeats") {
+					this.editor.setText("");
+					await this.showHeartbeatManager();
+					return;
+				}
 				if (commandName === "changelog" && !commandArgs) {
 					this.echoLocalCommand(text);
 					this.handleChangelogCommand();
@@ -4180,6 +4226,11 @@ export class InteractiveMode {
 						event.status === "connected" ? "Daemon reconnected" : "Daemon connection lost; reconnecting…",
 						event.status === "reconnecting" ? "warning" : "dim",
 					);
+					if (event.status === "connected") {
+						await this.refreshHeartbeatCatalog();
+					}
+				} else if (event.type === "heartbeats_changed") {
+					await this.refreshHeartbeatCatalog();
 				} else if (event.type === "closed") {
 					this.showError(event.error ?? "Agent connection closed");
 				}
@@ -5117,30 +5168,14 @@ export class InteractiveMode {
 	}
 
 	private getTrayHeartbeatLabel(): string | undefined {
-		const heartbeat = this.connectionState?.heartbeat;
-		if (!heartbeat) {
+		if (this.heartbeats.length === 0) {
 			return undefined;
 		}
-		const schedule = this.formatHeartbeatScheduleLabel(heartbeat);
-		const suffix = schedule ? ` (${schedule})` : "";
-		switch (heartbeat.status) {
-			case "active":
-				return `Heartbeat active${suffix}`;
-			case "paused":
-				return `Heartbeat paused${suffix}`;
-			case "completed":
-			case "cancelled":
-				return undefined;
-			default: {
-				const _exhaustive: never = heartbeat.status;
-				return _exhaustive;
-			}
-		}
-	}
-
-	private formatHeartbeatScheduleLabel(heartbeat: AgentCronJob): string | undefined {
-		const schedule = heartbeat.schedule.expression.trim().replace(/^every\s+/i, "");
-		return schedule || undefined;
+		const paused = this.heartbeats.filter((heartbeat) => heartbeat.job.status === "paused").length;
+		const count = `${this.heartbeats.length} heartbeat${this.heartbeats.length === 1 ? "" : "s"}`;
+		const pausedLabel = paused ? ` · ${paused} paused` : "";
+		const shortcut = keyText("app.heartbeats.open");
+		return `${count}${pausedLabel}${shortcut ? ` (${shortcut})` : ""}`;
 	}
 
 	private getTrayGoalLabel(): string | undefined {
@@ -8274,6 +8309,7 @@ export class InteractiveMode {
 				case "status": {
 					const heartbeat = await this.agentConnection.getHeartbeat();
 					this.patchConnectionState({ heartbeat: heartbeat ?? null });
+					await this.refreshHeartbeatCatalog();
 					this.showHeartbeat(heartbeat);
 					return;
 				}
@@ -8284,6 +8320,7 @@ export class InteractiveMode {
 						command.deliveryMode,
 					);
 					this.patchConnectionState({ heartbeat });
+					await this.refreshHeartbeatCatalog();
 					this.showStatus(
 						`Heartbeat set\nDelivery: ${heartbeat.deliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE}\nNext run: ${heartbeat.nextRunAt ?? "-"}`,
 					);
@@ -8296,6 +8333,7 @@ export class InteractiveMode {
 						return;
 					}
 					this.patchConnectionState({ heartbeat });
+					await this.refreshHeartbeatCatalog();
 					this.showStatus("Heartbeat paused");
 					return;
 				}
@@ -8306,6 +8344,7 @@ export class InteractiveMode {
 						return;
 					}
 					this.patchConnectionState({ heartbeat });
+					await this.refreshHeartbeatCatalog();
 					this.showStatus(`Heartbeat resumed\nNext run: ${heartbeat.nextRunAt ?? "-"}`);
 					return;
 				}
@@ -8316,6 +8355,7 @@ export class InteractiveMode {
 						return;
 					}
 					this.patchConnectionState({ heartbeat });
+					await this.refreshHeartbeatCatalog();
 					this.showStatus("Heartbeat cleared");
 					return;
 				}
@@ -8323,6 +8363,52 @@ export class InteractiveMode {
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	private async showHeartbeatManager(): Promise<void> {
+		if (this.heartbeatManagerHandle) {
+			this.heartbeatManagerHandle.focus();
+			return;
+		}
+		try {
+			await this.refreshHeartbeatCatalog();
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		const manager = new HeartbeatManagerComponent(this.heartbeats, {
+			getRows: () => this.ui.terminal.rows,
+			onAction: (heartbeat, action) => this.manageHeartbeat(heartbeat, action),
+			onClose: () => this.closeHeartbeatManager(),
+			requestRender: () => this.ui.requestRender(),
+		});
+		this.heartbeatManager = manager;
+		this.heartbeatManagerHandle = this.showFullPaneOverlay(manager, {
+			fullWidth: true,
+			suspendFullscreenMouse: true,
+		});
+	}
+
+	private closeHeartbeatManager(): void {
+		this.heartbeatManagerHandle?.hide();
+		this.heartbeatManagerHandle = undefined;
+		this.heartbeatManager = undefined;
+		this.ui.requestRender();
+	}
+
+	private async manageHeartbeat(
+		heartbeat: AgentConnectionHeartbeat,
+		action: AgentHeartbeatManagementAction,
+	): Promise<void> {
+		const updated = await this.agentConnection.manageHeartbeat(
+			heartbeat.job.activeSessionId,
+			heartbeat.job.id,
+			action,
+		);
+		if (updated.source === "heartbeat" && updated.activeSessionId === this.connectionState?.activeSessionId) {
+			this.patchConnectionState({ heartbeat: updated });
+		}
+		await this.refreshHeartbeatCatalog();
 	}
 
 	private showHeartbeat(job: AgentCronJob | undefined): void {
@@ -8461,6 +8547,7 @@ ${shortcutsKey ? `\`${shortcutsKey}\` quick shortcuts · ` : ""}\`/hotkeys\` ful
 		const expandTools = this.getAppKeyDisplay("app.tools.expand");
 		const toggleThinking = this.getAppKeyDisplay("app.thinking.toggle");
 		const focusSubagents = this.getAppKeyDisplay("app.subagents.focus");
+		const manageHeartbeats = this.getAppKeyDisplay("app.heartbeats.open");
 		const externalEditor = this.getAppKeyDisplay("app.editor.external");
 		const promptStash = this.getAppKeyDisplay("app.prompt.stash");
 		const followUp = this.getAppKeyDisplay("app.message.followUp");
@@ -8507,6 +8594,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 | \`${expandTools}\` | Toggle tool output expansion |
 | \`${toggleThinking}\` | Toggle thinking block visibility |
 | \`${focusSubagents}\` | Open subagent inspector |
+| \`${manageHeartbeats}\` | Manage heartbeats |
 | \`${externalEditor}\` | Edit message in external editor |
 | \`${promptStash}\` | Stash or restore draft prompt |
 | \`${followUp}\` | Queue follow-up message |
@@ -8740,6 +8828,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 		this.stopWorkingLoader();
 		this.stopWorkingPulse();
 		this.stopGoalTrayTimer();
+		this.closeHeartbeatManager();
 		this.clearExtensionTerminalInputListeners();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();
