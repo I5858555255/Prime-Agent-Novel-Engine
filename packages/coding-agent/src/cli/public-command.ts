@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { APP_NAME } from "../config.js";
-import { handlePackageCommand } from "../package-manager-cli.js";
+import { handlePackageCommand, isSelfUpdateSource } from "../package-manager-cli.js";
 import {
 	findCommandSuggestion,
 	formatCommandHelp,
@@ -31,7 +31,7 @@ export async function handlePublicCommand(args: string[]): Promise<PublicCommand
 }
 
 async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
-	if (args[0] === "help") {
+	if (args[0] === "help" && isHelpRequest(args.slice(1))) {
 		return printRequestedHelp(args.slice(1));
 	}
 
@@ -127,6 +127,15 @@ function printRequestedHelp(path: string[]): PublicCommandResult {
 	);
 }
 
+function isHelpRequest(path: string[]): boolean {
+	if (path.length === 0 || getCommandSpec(path)) {
+		return true;
+	}
+	const parent = path.slice(0, -1);
+	const candidates = getChildCommandSpecs(parent).map((spec) => spec.path.at(-1)!);
+	return findCommandSuggestion(path.at(-1)!, candidates) !== undefined;
+}
+
 function rejectRemovedCommand(args: string[]): PublicCommandResult {
 	const [command, subcommand] = args;
 	let replacement: string | undefined;
@@ -218,6 +227,9 @@ async function runPackage(args: string[]): Promise<PublicCommandResult> {
 		}
 		if (rest.length > 1) {
 			return fail(`Usage: ${APP_NAME} package update [source]`);
+		}
+		if (rest[0] && isSelfUpdateSource(rest[0])) {
+			return fail('Use "prime-agent update" to update Prime Agent.');
 		}
 		await handlePackageCommand(["update", ...(rest.length === 0 ? ["--extensions"] : rest)]);
 		return HANDLED;

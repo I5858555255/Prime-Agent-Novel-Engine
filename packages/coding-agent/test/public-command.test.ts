@@ -20,6 +20,7 @@ vi.mock("../src/package-manager-cli.js", () => ({
 		mocks.packageCommands.push(args);
 		return true;
 	},
+	isSelfUpdateSource: (source: string) => source === "self" || source === "pi" || source === "prime-agent",
 }));
 
 vi.mock("../src/cli/daemon-ps.js", () => ({
@@ -80,6 +81,15 @@ describe("public command routing", () => {
 		]);
 	});
 
+	it("rejects self-update aliases on the package update path", async () => {
+		for (const source of ["self", "pi", "prime-agent"]) {
+			await handlePublicCommand(["package", "update", source]);
+		}
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Use "prime-agent update"'));
+	});
+
 	it("maps model listing and session export to the existing runtime flags", async () => {
 		await expect(handlePublicCommand(["model", "list", "sonnet"])).resolves.toMatchObject({
 			handled: false,
@@ -120,6 +130,15 @@ describe("public command routing", () => {
 	it("treats help-like message text after the separator literally", async () => {
 		await handlePublicCommand(["send", "worker", "--", "--help"]);
 		expect(mocks.daemonCommands).toEqual([["daemon", "send", "worker", "--", "--help"]]);
+	});
+
+	it("leaves natural-language prompts beginning with help on the prompt path", async () => {
+		const args = ["help", "me", "fix", "this"];
+		await expect(handlePublicCommand(args)).resolves.toEqual({
+			handled: false,
+			args,
+			explicitAgentsView: false,
+		});
 	});
 
 	it("leaves top-level help flags on the full CLI help path", async () => {

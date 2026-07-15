@@ -45,6 +45,10 @@ export type PackageCommand = "install" | "remove" | "update" | "list";
 
 type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string };
 
+export function isSelfUpdateSource(source: string): boolean {
+	return source === "self" || source === "pi" || source === APP_NAME;
+}
+
 interface PackageCommandOptions {
 	command: PackageCommand;
 	source?: string;
@@ -254,7 +258,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			}
 			updateTarget = { type: "extensions", source: extensionFlagSource };
 		} else if (source) {
-			const sourceIsSelf = source === "self" || source === "pi" || source === APP_NAME;
+			const sourceIsSelf = isSelfUpdateSource(source);
 			if (sourceIsSelf) {
 				updateTarget = extensionsFlag ? { type: "all" } : { type: "self" };
 			} else {
