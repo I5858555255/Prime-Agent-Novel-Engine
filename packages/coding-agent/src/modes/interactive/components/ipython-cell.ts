@@ -359,19 +359,21 @@ export class IPythonCellComponent implements Component {
 		const lines = [truncateToWidth(` ${this.collapsedLine(details)}`, safeWidth, "")];
 
 		const hasDiffs = (details.diffs?.length ?? 0) > 0;
-		if (hasDiffs && this.state.expanded) {
-			this.renderDiffs(lines, safeWidth, details.diffs ?? [], this.marker(details));
-		}
-		if ((details.sentAgentMessages?.length ?? 0) > 0) {
-			this.renderSentAgentMessages(lines, safeWidth, details.sentAgentMessages ?? []);
-		}
-
 		if (!this.state.expanded) {
+			if ((details.sentAgentMessages?.length ?? 0) > 0) {
+				this.renderSentAgentMessages(lines, safeWidth, details.sentAgentMessages ?? []);
+			}
 			return this.renderCache.set(safeWidth, cacheVersion, lines);
 		}
 
 		const hasCode = this.renderCode(lines, safeWidth);
+		if (hasDiffs) {
+			this.renderDiffs(lines, safeWidth, details.diffs ?? [], this.marker(details));
+		}
 		this.renderOutput(lines, safeWidth, details, hasCode);
+		if ((details.sentAgentMessages?.length ?? 0) > 0) {
+			this.renderSentAgentMessages(lines, safeWidth, details.sentAgentMessages ?? []);
+		}
 		return this.renderCache.set(safeWidth, cacheVersion, lines);
 	}
 

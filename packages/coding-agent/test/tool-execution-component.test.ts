@@ -586,9 +586,10 @@ describe("ToolExecutionComponent parity", () => {
 		component.setArgsComplete();
 		component.updateResult(
 			{
-				content: [],
+				content: [{ type: "text", text: "side effect complete" }],
 				details: {
 					status: "ok",
+					stdout: "side effect complete",
 					diffs: [{ path: "README.md", oldStr: "before", newStr: "after", startLine: 1 }],
 				},
 				isError: false,
@@ -602,9 +603,15 @@ describe("ToolExecutionComponent parity", () => {
 
 		component.setExpanded(true);
 		const expanded = stripAnsi(component.render(120).join("\n"));
-		expect(expanded).toContain('hidden_side_effect = "only in full source"');
+		const sourceIndex = expanded.indexOf('hidden_side_effect = "only in full source"');
+		const diffIndex = expanded.indexOf("README.md  +1 -1");
+		const outputIndex = expanded.indexOf("side effect complete");
+		expect(sourceIndex).toBeGreaterThan(-1);
+		expect(diffIndex).toBeGreaterThan(sourceIndex);
+		expect(outputIndex).toBeGreaterThan(diffIndex);
 		expect(expanded).toContain("before");
 		expect(expanded).toContain("after");
+		expect(expanded).not.toContain("╰─ README.md +1 -1");
 	});
 
 	test("collapses built-in edit diffs to a one-line file stat", () => {

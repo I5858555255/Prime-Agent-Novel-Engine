@@ -183,17 +183,26 @@ describe("IPythonCellComponent diff rendering", () => {
 		expect(addedRows.every((line) => /^\s*\+ /.test(line) || /\d+ \+ /.test(line))).toBe(true);
 	});
 
-	it("separates the diff from the summary line with a blank line", () => {
+	it("renders expanded source before diffs and output", () => {
 		const out = renderCell({
-			code: "await edit(...)",
-			details: { status: "ok", durationMs: 4, diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }] },
+			code: 'side_effect = "visible"\nawait edit(path="a.ts", old_str="x", new_str="X")',
+			details: {
+				status: "ok",
+				durationMs: 4,
+				stdout: "side effect complete",
+				diffs: [{ path: "a.ts", oldStr: "x", newStr: "X", startLine: 1 }],
+			},
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
 		}).split("\n");
-		expect(out[0]).toContain("to collapse");
 		expect(out[1].trim()).toBe("");
-		expect(out[2]).toContain("a.ts");
+		const sourceIndex = out.findIndex((line) => line.includes('side_effect = "visible"'));
+		const diffIndex = out.findIndex((line) => line.includes("a.ts") && line.includes("+1 -1"));
+		const outputIndex = out.findIndex((line) => line.includes("side effect complete"));
+		expect(sourceIndex).toBeGreaterThan(0);
+		expect(diffIndex).toBeGreaterThan(sourceIndex);
+		expect(outputIndex).toBeGreaterThan(diffIndex);
 	});
 
 	it("hides the full diff when collapsed", () => {
