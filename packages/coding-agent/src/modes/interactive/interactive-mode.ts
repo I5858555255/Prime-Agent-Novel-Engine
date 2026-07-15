@@ -6989,15 +6989,23 @@ export class InteractiveMode {
 			this.showStatus(unavailableMessage);
 			return;
 		}
+		const connection = this.agentConnection;
+		const sessionId = this.connectionState?.sessionId;
 		this.fastModeToggleQueue = this.fastModeToggleQueue
 			.then(async () => {
+				if (this.agentConnection !== connection || this.connectionState?.sessionId !== sessionId) {
+					return;
+				}
 				if (!this.currentModelSupportsFastMode()) {
 					this.showStatus(unavailableMessage);
 					return;
 				}
 				const enabled = this.connectionState?.serviceTier === "priority";
 				const serviceTier: ServiceTier = enabled ? "default" : "priority";
-				await this.agentConnection.setServiceTier(serviceTier);
+				await connection.setServiceTier(serviceTier);
+				if (this.agentConnection !== connection || this.connectionState?.sessionId !== sessionId) {
+					return;
+				}
 				this.patchConnectionState({ serviceTier });
 				this.footer.invalidate();
 				this.childAgentSummary.invalidate();

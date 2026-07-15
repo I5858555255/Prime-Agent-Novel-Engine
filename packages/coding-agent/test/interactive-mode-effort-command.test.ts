@@ -30,7 +30,7 @@ type InteractiveModePrototype = {
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
 
 type FastCommandContext = {
-	connectionState?: { serviceTier: ServiceTier; thinkingLevel: ThinkingLevel };
+	connectionState?: { sessionId: string; serviceTier: ServiceTier; thinkingLevel: ThinkingLevel };
 	fastModeToggleQueue: Promise<void>;
 	agentConnection: { setServiceTier: (serviceTier: ServiceTier) => Promise<void> };
 	footer: { invalidate: () => void };
@@ -67,7 +67,7 @@ function testModel(provider: string, id: string, api: Api): Model<Api> {
 
 function makeFastContext(model: Model<Api> = testModel("openai-codex", "gpt-5.5", "openai-codex-responses")) {
 	const context: FastCommandContext = {
-		connectionState: { serviceTier: "default", thinkingLevel: "high" },
+		connectionState: { sessionId: "session-1", serviceTier: "default", thinkingLevel: "high" },
 		fastModeToggleQueue: Promise.resolve(),
 		agentConnection: { setServiceTier: vi.fn(async () => {}) },
 		footer: { invalidate: vi.fn() },
@@ -251,7 +251,7 @@ describe("InteractiveMode /effort", () => {
 
 		it("disables Fast mode when it is already enabled", async () => {
 			const context = makeFastContext();
-			context.connectionState = { serviceTier: "priority", thinkingLevel: "high" };
+			context.connectionState = { sessionId: "session-1", serviceTier: "priority", thinkingLevel: "high" };
 
 			fastInteractiveModePrototype.handleFastCommand.call(context);
 			await vi.waitFor(() => expect(context.showStatus).toHaveBeenCalledWith("Fast mode: off"));
@@ -271,6 +271,47 @@ describe("InteractiveMode /effort", () => {
 			expect(context.agentConnection.setServiceTier).toHaveBeenNthCalledWith(2, "default");
 		});
 
+		it("drops a queued toggle after switching sessions", async () => {
+			let releaseQueue!: () => void;
+			const context = makeFastContext();
+			const originalConnection = context.agentConnection;
+			context.fastModeToggleQueue = new Promise<void>((resolve) => {
+				releaseQueue = resolve;
+			});
+
+			fastInteractiveModePrototype.handleFastCommand.call(context);
+			context.agentConnection = { setServiceTier: vi.fn(async () => {}) };
+			context.connectionState = { sessionId: "session-2", serviceTier: "default", thinkingLevel: "high" };
+			releaseQueue();
+			await context.fastModeToggleQueue;
+
+			expect(originalConnection.setServiceTier).not.toHaveBeenCalled();
+			expect(context.agentConnection.setServiceTier).not.toHaveBeenCalled();
+		});
+
+		it("does not apply an in-flight toggle result to a replacement session", async () => {
+			let finishToggle!: () => void;
+			const context = makeFastContext();
+			const originalConnection = context.agentConnection;
+			originalConnection.setServiceTier = vi.fn(
+				() =>
+					new Promise<void>((resolve) => {
+						finishToggle = resolve;
+					}),
+			);
+
+			fastInteractiveModePrototype.handleFastCommand.call(context);
+			await vi.waitFor(() => expect(originalConnection.setServiceTier).toHaveBeenCalledWith("priority"));
+
+			context.agentConnection = { setServiceTier: vi.fn(async () => {}) };
+			context.connectionState = { sessionId: "session-2", serviceTier: "default", thinkingLevel: "high" };
+			finishToggle();
+			await context.fastModeToggleQueue;
+
+			expect(context.patchConnectionState).not.toHaveBeenCalled();
+			expect(context.showStatus).not.toHaveBeenCalled();
+		});
+
 		it("reports unsupported models without changing the service tier", () => {
 			const context = makeFastContext(testModel("anthropic", "claude-opus", "anthropic-messages"));
 
@@ -284,7 +325,7 @@ describe("InteractiveMode /effort", () => {
 
 		it("shows Fast mode beside the model and effort level", () => {
 			const context = makeFastContext();
-			context.connectionState = { serviceTier: "priority", thinkingLevel: "high" };
+			context.connectionState = { sessionId: "session-1", serviceTier: "priority", thinkingLevel: "high" };
 
 			expect(fastInteractiveModePrototype.getModelTrayLabel.call(context)).toBe("gpt-5.5 • high • fast");
 		});
