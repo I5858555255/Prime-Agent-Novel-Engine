@@ -61,6 +61,12 @@ interface FixtureHandle {
 	}>;
 }
 
+interface CleanupProcessIdentity {
+	pid: number;
+	processStartId: string;
+	label: string;
+}
+
 const fixturePath = resolve(__dirname, "../../fixtures/eng-4600-supervisor-fixture.ts");
 const fauxExtensionPath = resolve(__dirname, "../../fixtures/eng-4600-faux-extension.ts");
 const cliPath = resolve(__dirname, "../../../src/cli.ts");
@@ -69,15 +75,23 @@ const tsconfigPath = resolve(__dirname, "../../../../../tsconfig.json");
 const supervisorRegistryDirEnv = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
 const handles = new Set<FixtureHandle>();
 const harnesses: Harness[] = [];
+const cleanupProcesses = new Map<string, CleanupProcessIdentity>();
+const cleanupRegistryDirs = new Set<string>();
 
 afterEach(async () => {
+	for (const registryDir of cleanupRegistryDirs) {
+		registerOwnerRecordsForCleanup(registryDir);
+	}
 	for (const handle of handles) {
 		if (handle.child.exitCode === null && handle.child.signalCode === null) {
 			handle.child.kill("SIGKILL");
 			await waitForExit(handle).catch(() => undefined);
 		}
 	}
+	await cleanupRegisteredProcesses();
 	handles.clear();
+	cleanupProcesses.clear();
+	cleanupRegistryDirs.clear();
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
 	}
@@ -345,28 +359,100 @@ async function waitForOwnerCount(registryDir: string, count: number, timeoutMs =
 	throw new Error(`Timed out waiting for ${count} supervisor owner records`);
 }
 
-function ownerProcessStillMatches(owner: OwnerRecord): boolean {
-	try {
-		process.kill(owner.pid, 0);
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-	if (!owner.processStartId) {
-		return true;
-	}
-	const observedStartId = getProcessStartId(owner.pid);
-	return observedStartId === undefined || observedStartId === owner.processStartId;
+function cleanupIdentityKey(identity: Pick<CleanupProcessIdentity, "pid" | "processStartId">): string {
+	return `${identity.pid}:${identity.processStartId}`;
 }
 
-async function waitForOwnerProcessExit(owner: OwnerRecord, timeoutMs = 20_000): Promise<void> {
+function registerCleanupProcess(identity: CleanupProcessIdentity): CleanupProcessIdentity {
+	cleanupProcesses.set(cleanupIdentityKey(identity), identity);
+	return identity;
+}
+
+async function captureCleanupProcess(pid: number, label: string, timeoutMs = 5000): Promise<CleanupProcessIdentity> {
 	const deadline = Date.now() + timeoutMs;
-	while (ownerProcessStillMatches(owner) && Date.now() < deadline) {
+	while (Date.now() < deadline) {
+		const processStartId = getProcessStartId(pid);
+		if (processStartId) {
+			return registerCleanupProcess({ pid, processStartId, label });
+		}
 		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
 	}
-	if (ownerProcessStillMatches(owner)) {
-		throw new Error(
-			`Timed out waiting for supervisor ${owner.pid} (${owner.processStartId ?? "unknown start"}) to exit`,
-		);
+	throw new Error(`Could not capture the process-start identity for ${label} ${pid}`);
+}
+
+function registerOwnerRecordsForCleanup(registryDir: string): void {
+	for (const owner of listOwnerRecords(registryDir)) {
+		if (owner.processStartId) {
+			registerCleanupProcess({
+				pid: owner.pid,
+				processStartId: owner.processStartId,
+				label: `supervisor ${owner.generation}`,
+			});
+		}
+	}
+}
+
+function cleanupProcessState(identity: CleanupProcessIdentity): "exited" | "matching" | "unknown" {
+	try {
+		process.kill(identity.pid, 0);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EPERM") {
+			return "exited";
+		}
+	}
+	const observedStartId = getProcessStartId(identity.pid);
+	if (observedStartId === undefined) {
+		return "unknown";
+	}
+	return observedStartId === identity.processStartId ? "matching" : "exited";
+}
+
+async function waitForCleanupProcessExit(identity: CleanupProcessIdentity, timeoutMs = 20_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (cleanupProcessState(identity) !== "exited" && Date.now() < deadline) {
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+	}
+	if (cleanupProcessState(identity) !== "exited") {
+		throw new Error(`Timed out waiting for ${identity.label} ${identity.pid} (${identity.processStartId}) to exit`);
+	}
+	cleanupProcesses.delete(cleanupIdentityKey(identity));
+}
+
+async function cleanupRegisteredProcesses(): Promise<void> {
+	const errors: unknown[] = [];
+	for (const identity of [...cleanupProcesses.values()]) {
+		try {
+			if (cleanupProcessState(identity) === "matching") {
+				process.kill(identity.pid, "SIGKILL");
+			}
+			await waitForCleanupProcessExit(identity);
+		} catch (error) {
+			errors.push(error);
+		}
+	}
+	if (errors.length > 0) {
+		throw new AggregateError(errors, "Failed to clean up ENG-4600 fixture processes");
+	}
+}
+
+async function forceShutdownReachableSupervisor(socketPath: string, existingClient?: DaemonClient): Promise<void> {
+	if (existingClient?.isConnected) {
+		try {
+			await existingClient.request({ type: "shutdown", force: true }, 5000);
+			return;
+		} catch {
+			// Retry through a fresh connection before exact-identity process cleanup.
+		}
+	}
+	const cleanupClient = new DaemonClient(socketPath);
+	try {
+		await cleanupClient.connect(1000);
+		await cleanupClient.waitForHello(2000);
+		await cleanupClient.request({ type: "shutdown", force: true }, 5000);
+	} catch {
+		// The exact-identity fallback handles an unreachable supervisor.
+	} finally {
+		cleanupClient.close();
 	}
 }
 
@@ -449,109 +535,130 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 		await waitForType(legacyCleanup, "booted");
 		await waitForType(legacyCleanup, "ready");
 		const predecessor = spawnRealSupervisor(paths, {});
-		const client = await connectEventually(paths.socketPath);
-		let created: Awaited<ReturnType<DaemonClient["request"]>>;
+		cleanupRegistryDirs.add(paths.registryDir);
+		let client: DaemonClient | undefined;
+		let connection: DaemonAgentConnection | undefined;
 		try {
-			created = await client.request(
-				{
-					type: "create",
-					config: {
-						agentDir: paths.agentDir,
-						apiKey: "faux-key",
-						cwd: paths.agentDir,
-						extensions: [fauxExtensionPath],
-						model: "faux",
-						noContextFiles: true,
-						noExtensions: false,
-						noSkills: true,
-						noTools: true,
-						provider: "faux",
+			client = await connectEventually(paths.socketPath);
+			let created: Awaited<ReturnType<DaemonClient["request"]>>;
+			try {
+				created = await client.request(
+					{
+						type: "create",
+						config: {
+							agentDir: paths.agentDir,
+							apiKey: "faux-key",
+							cwd: paths.agentDir,
+							extensions: [fauxExtensionPath],
+							model: "faux",
+							noContextFiles: true,
+							noExtensions: false,
+							noSkills: true,
+							noTools: true,
+							provider: "faux",
+						},
 					},
-				},
-				60_000,
+					60_000,
+				);
+			} catch (error) {
+				const logsDir = join(paths.agentDir, "logs");
+				const logs = existsSync(logsDir)
+					? readdirSync(logsDir)
+							.map((name) => `${name}:\n${readFileSync(join(logsDir, name), "utf8")}`)
+							.join("\n")
+					: "no daemon logs";
+				throw new Error(`${String(error)}\nfixture stderr:\n${predecessor.diagnostics.stderr}\n${logs}`);
+			}
+			if (!created.success) {
+				throw new Error(`${created.error}\nfixture stderr:\n${predecessor.diagnostics.stderr}`);
+			}
+			const summary = requireSessionSummary(created.data);
+			if (!summary.workerPid) {
+				throw new Error("Real resident worker did not expose its pid");
+			}
+			const workerCleanupIdentity = await captureCleanupProcess(summary.workerPid, "resident worker");
+			const activeSessionId = summary.activeSessionId ?? summary.id;
+			connection = await DaemonAgentConnection.attach(client, activeSessionId, { recoverDaemon: async () => {} });
+			await connection.getInitialSnapshot();
+			await connection.prompt("before replacement");
+			await connection.waitForIdle();
+			expect(await connection.getMessages()).toContainEqual(
+				expect.objectContaining({
+					role: "assistant",
+					content: [expect.objectContaining({ text: "upgrade response 1" })],
+				}),
 			);
-		} catch (error) {
-			const logsDir = join(paths.agentDir, "logs");
-			const logs = existsSync(logsDir)
-				? readdirSync(logsDir)
-						.map((name) => `${name}:\n${readFileSync(join(logsDir, name), "utf8")}`)
-						.join("\n")
-				: "no daemon logs";
-			throw new Error(`${String(error)}\nfixture stderr:\n${predecessor.diagnostics.stderr}\n${logs}`);
+			const originalClient = client;
+			const originalConnection = connection;
+			const originalProtocolClientId = readStableIdentity(client, "protocolClientId");
+			const originalAttachedClientId = readStableIdentity(connection, "clientId");
+			const originalWorkerPid = summary.workerPid;
+			const originalState = await connection.getState();
+			const reconnecting = waitForConnectionStatus(connection, "reconnecting");
+			const reconnected = waitForConnectionStatus(connection, "connected", 60_000);
+			const restarted = await client.request({ type: "restart" }, 10_000);
+			expect(restarted.success).toBe(true);
+			await reconnecting;
+			await waitForExit(predecessor);
+			await reconnected;
+			const [successorOwner] = await waitForOwnerCount(paths.registryDir, 1);
+			if (!successorOwner?.processStartId) {
+				throw new Error("Replacement supervisor did not publish a process-start identity");
+			}
+			const successorCleanupIdentity = registerCleanupProcess({
+				pid: successorOwner.pid,
+				processStartId: successorOwner.processStartId,
+				label: `replacement supervisor ${successorOwner.generation}`,
+			});
+			if (cleanupProcessState(successorCleanupIdentity) !== "matching") {
+				throw new Error("Replacement supervisor owner identity does not match its live process");
+			}
+			expect(client).toBe(originalClient);
+			expect(connection).toBe(originalConnection);
+			expect(readStableIdentity(client, "protocolClientId")).toBe(originalProtocolClientId);
+			expect(readStableIdentity(connection, "clientId")).toBe(originalAttachedClientId);
+			expect((await connection.getState()).activeSessionId).toBe(originalState.activeSessionId);
+			const successorIdentity = statSync(paths.socketPath);
+			send(legacyCleanup, "cleanup");
+			const cleanup = await waitForType(legacyCleanup, "cleanup_complete");
+			expect(cleanup.skipped).toBe(true);
+			const identityAfterLegacyCleanup = statSync(paths.socketPath);
+			expect(identityAfterLegacyCleanup.dev).toBe(successorIdentity.dev);
+			expect(identityAfterLegacyCleanup.ino).toBe(successorIdentity.ino);
+			expect(readdirSync(successorOwner.descriptorDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+			const listed = await client.request({ type: "list" });
+			if (!listed.success) {
+				throw new Error(listed.error);
+			}
+			const listedSessions = (listed.data as { sessions: unknown[] }).sessions;
+			expect(listedSessions).toHaveLength(1);
+			const restored = requireSessionSummary(listedSessions[0]);
+			expect(restored.workerPid).toBe(originalWorkerPid);
+			expect(restored.activeSessionId ?? restored.id).toBe(activeSessionId);
+			expect((await connection.getState()).activeSessionId).toBe(originalState.activeSessionId);
+			await connection.prompt("after replacement");
+			await connection.waitForIdle();
+			expect(await connection.getMessages()).toContainEqual(
+				expect.objectContaining({
+					role: "assistant",
+					content: [expect.objectContaining({ text: "upgrade response 2" })],
+				}),
+			);
+			await connection.dispose();
+			connection = undefined;
+			await client.request({ type: "shutdown", force: true }, 10_000);
+			client.close();
+			await waitForExit(legacyCleanup);
+			await waitForCleanupProcessExit(workerCleanupIdentity);
+			await waitForCleanupProcessExit(successorCleanupIdentity);
+			expect(listOwnerRecords(paths.registryDir)).toEqual([]);
+		} finally {
+			await connection?.dispose().catch(() => undefined);
+			registerOwnerRecordsForCleanup(paths.registryDir);
+			await forceShutdownReachableSupervisor(paths.socketPath, client);
+			client?.close();
+			await cleanupRegisteredProcesses();
 		}
-		if (!created.success) {
-			throw new Error(`${created.error}\nfixture stderr:\n${predecessor.diagnostics.stderr}`);
-		}
-		const summary = requireSessionSummary(created.data);
-		if (!summary.workerPid) {
-			throw new Error("Real resident worker did not expose its pid");
-		}
-		const activeSessionId = summary.activeSessionId ?? summary.id;
-		const connection = await DaemonAgentConnection.attach(client, activeSessionId, { recoverDaemon: async () => {} });
-		await connection.getInitialSnapshot();
-		await connection.prompt("before replacement");
-		await connection.waitForIdle();
-		expect(await connection.getMessages()).toContainEqual(
-			expect.objectContaining({
-				role: "assistant",
-				content: [expect.objectContaining({ text: "upgrade response 1" })],
-			}),
-		);
-		const originalClient = client;
-		const originalConnection = connection;
-		const originalProtocolClientId = readStableIdentity(client, "protocolClientId");
-		const originalAttachedClientId = readStableIdentity(connection, "clientId");
-		const originalWorkerPid = summary.workerPid;
-		const originalState = await connection.getState();
-		const reconnecting = waitForConnectionStatus(connection, "reconnecting");
-		const reconnected = waitForConnectionStatus(connection, "connected", 60_000);
-		const restarted = await client.request({ type: "restart" }, 10_000);
-		expect(restarted.success).toBe(true);
-		await reconnecting;
-		await waitForExit(predecessor);
-		await reconnected;
-		expect(client).toBe(originalClient);
-		expect(connection).toBe(originalConnection);
-		expect(readStableIdentity(client, "protocolClientId")).toBe(originalProtocolClientId);
-		expect(readStableIdentity(connection, "clientId")).toBe(originalAttachedClientId);
-		expect((await connection.getState()).activeSessionId).toBe(originalState.activeSessionId);
-		const successorIdentity = statSync(paths.socketPath);
-		send(legacyCleanup, "cleanup");
-		const cleanup = await waitForType(legacyCleanup, "cleanup_complete");
-		expect(cleanup.skipped).toBe(true);
-		const identityAfterLegacyCleanup = statSync(paths.socketPath);
-		expect(identityAfterLegacyCleanup.dev).toBe(successorIdentity.dev);
-		expect(identityAfterLegacyCleanup.ino).toBe(successorIdentity.ino);
-		expect(listOwnerRecords(paths.registryDir)).toHaveLength(1);
-		const [successorOwner] = listOwnerRecords(paths.registryDir);
-		if (!successorOwner) {
-			throw new Error("Replacement supervisor did not publish its owner record");
-		}
-		expect(readdirSync(successorOwner.descriptorDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
-		const listed = await client.request({ type: "list" });
-		if (!listed.success) {
-			throw new Error(listed.error);
-		}
-		const listedSessions = (listed.data as { sessions: unknown[] }).sessions;
-		expect(listedSessions).toHaveLength(1);
-		const restored = requireSessionSummary(listedSessions[0]);
-		expect(restored.workerPid).toBe(originalWorkerPid);
-		expect(restored.activeSessionId ?? restored.id).toBe(activeSessionId);
-		expect((await connection.getState()).activeSessionId).toBe(originalState.activeSessionId);
-		await connection.prompt("after replacement");
-		await connection.waitForIdle();
-		expect(await connection.getMessages()).toContainEqual(
-			expect.objectContaining({
-				role: "assistant",
-				content: [expect.objectContaining({ text: "upgrade response 2" })],
-			}),
-		);
-		await connection.dispose();
-		await client.request({ type: "shutdown", force: true }, 10_000);
-		client.close();
-		await waitForExit(legacyCleanup);
-		await waitForOwnerProcessExit(successorOwner);
-		expect(listOwnerRecords(paths.registryDir)).toEqual([]);
 	}, 90_000);
 
 	it("waits for the exact persisted predecessor identity during update handoff", async () => {
