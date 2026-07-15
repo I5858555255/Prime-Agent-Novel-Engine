@@ -1,7 +1,10 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../../../src/core/session-manager.js";
 import { startSideQuestion } from "../../../src/core/side-question.js";
+import type { DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
+import type { DaemonCommand, DaemonResponse } from "../../../src/modes/daemon/daemon-protocol.js";
+import { DaemonSupervisor } from "../../../src/modes/daemon/daemon-supervisor.js";
 import { createHarness } from "../harness.js";
 
 const fastModel = {
@@ -10,7 +13,44 @@ const fastModel = {
 	models: [{ id: "gpt-5.4" }],
 };
 
+interface SupervisorHarness {
+	handleLine(client: DaemonSocketClient, line: string): Promise<void>;
+}
+
 describe("ENG-4620 fast mode child agents", () => {
+	it("allows service-tier changes through the daemon supervisor", async () => {
+		const handleCommand = vi.fn(
+			async (_client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse> => ({
+				id: command.id,
+				type: "response",
+				command: command.type,
+				success: true,
+			}),
+		);
+		const write = vi.fn();
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			ready: Promise.resolve(),
+			handleCommand,
+			write,
+			log: vi.fn(),
+		}) as SupervisorHarness;
+		const client = { id: "client-1" } as DaemonSocketClient;
+		const command = {
+			id: "tier-1",
+			type: "set_service_tier",
+			activeSessionId: "active-1",
+			serviceTier: "priority",
+		} satisfies DaemonCommand;
+
+		await supervisor.handleLine(client, JSON.stringify(command));
+
+		expect(handleCommand).toHaveBeenCalledWith(client, command);
+		expect(write).toHaveBeenCalledWith(
+			client,
+			expect.objectContaining({ command: "set_service_tier", success: true }),
+		);
+	});
+
 	it("passes fast mode to side questions", async () => {
 		const harness = await createHarness(fastModel);
 		try {
