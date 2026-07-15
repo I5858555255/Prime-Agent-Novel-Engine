@@ -242,13 +242,14 @@ export function shouldUseEphemeralSessionManagerForDaemonInteractive(
 export interface DaemonActiveSessionLookupDecision {
 	useDaemonInteractive: boolean;
 	resumeSelector?: string;
+	explicitAttach?: boolean;
 }
 
 export function shouldEnsureDaemonBeforeActiveSessionLookup(options: DaemonActiveSessionLookupDecision): boolean {
 	return (
 		options.useDaemonInteractive &&
 		options.resumeSelector !== undefined &&
-		!looksLikeSessionPath(options.resumeSelector)
+		(options.explicitAttach || !looksLikeSessionPath(options.resumeSelector))
 	);
 }
 
@@ -1167,6 +1168,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const shouldLookupDaemonActiveSession = shouldEnsureDaemonBeforeActiveSessionLookup({
 		useDaemonInteractive,
 		resumeSelector,
+		explicitAttach: publicCommand.attachAgent !== undefined,
 	});
 	if (shouldLookupDaemonActiveSession && daemonReady) {
 		daemonReady = (await awaitDaemonReady(daemonReady)).ready;

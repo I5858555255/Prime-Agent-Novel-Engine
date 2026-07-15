@@ -139,6 +139,13 @@ describe("daemon-backed interactive session manager routing", () => {
 		).toBe(false);
 		expect(
 			shouldEnsureDaemonBeforeActiveSessionLookup({
+				useDaemonInteractive: true,
+				resumeSelector: "/tmp/session.jsonl",
+				explicitAttach: true,
+			}),
+		).toBe(true);
+		expect(
+			shouldEnsureDaemonBeforeActiveSessionLookup({
 				useDaemonInteractive: false,
 				resumeSelector: "active-1",
 			}),
