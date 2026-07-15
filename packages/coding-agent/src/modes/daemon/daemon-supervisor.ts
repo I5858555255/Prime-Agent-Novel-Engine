@@ -2737,14 +2737,16 @@ export class DaemonSupervisor {
 			client.socket.end();
 		}
 		await new Promise<void>((resolveClose) => this.server?.close(() => resolveClose()) ?? resolveClose());
-		this.cleanupSocket();
-		rmSync(this.snapshotCacheRoot, { recursive: true, force: true });
+		await this.runCleanupStep("daemon socket", () => this.cleanupSocket());
+		await this.runCleanupStep("supervisor cache", () => {
+			rmSync(this.snapshotCacheRoot, { recursive: true, force: true });
+		});
 		const lease = this.socketLease;
 		this.socketLease = undefined;
-		await lease?.release();
+		await this.runCleanupStep("daemon socket lock", async () => lease?.release());
 		const ownership = this.ownership;
 		this.ownership = undefined;
-		await ownership?.release();
+		await this.runCleanupStep("daemon ownership", async () => ownership?.release());
 		if (relaunch) {
 			const launch = createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", this.socketPath]);
 			const environment = { ...process.env };
