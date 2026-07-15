@@ -98,7 +98,6 @@ const ALL_PHASES: ReadonlySet<DaemonUpdateRestartPhase> = new Set([
 	"skipped",
 	"failed",
 ]);
-const DEFAULT_COORDINATOR_TIMEOUT_MS = 180_000;
 const COORDINATOR_REGISTRY_LOCK_STALE_MS = 5000;
 const COORDINATOR_REGISTRY_LOCK_UPDATE_MS = 1000;
 const COORDINATOR_REGISTRY_LOCK_RETRIES = 500;
@@ -419,8 +418,8 @@ export async function launchDaemonUpdateRestartCoordinator(
 	});
 	child.unref();
 
-	const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS);
-	while (Date.now() < deadline) {
+	const deadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
+	while (deadline === undefined || Date.now() < deadline) {
 		const status = readDaemonUpdateRestartStatus(statusPath);
 		if (status && TERMINAL_PHASES.has(status.phase)) {
 			return status;
