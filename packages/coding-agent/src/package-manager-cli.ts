@@ -963,23 +963,31 @@ async function restoreDaemonUpdateRestartSession(
 	const activeSessionId = readCreatedActiveSessionId(createResponse.data);
 	restoredActiveSessionIds.set(session.activeSessionId, activeSessionId);
 	if (session.activeSessionId === restartOriginActiveSessionId) {
-		const noticeResponse = await client.request(
-			{
-				type: "append_custom_message",
-				activeSessionId,
-				message: {
-					customType: "prime-agent.update_complete",
-					content: `Prime Agent updated to v${VERSION}. This daemon session was restored after the update.`,
-					display: true,
-					details: { version: VERSION },
+		try {
+			const noticeResponse = await client.request(
+				{
+					type: "append_custom_message",
+					activeSessionId,
+					message: {
+						customType: "prime-agent.update_complete",
+						content: `Prime Agent updated to v${VERSION}. This daemon session was restored after the update.`,
+						display: true,
+						details: { version: VERSION },
+					},
 				},
-			},
-			30000,
-		);
-		if (!noticeResponse.success) {
+				30000,
+			);
+			if (!noticeResponse.success) {
+				console.error(
+					chalk.yellow(
+						`Warning: could not record update completion in ${session.sessionFile}: ${noticeResponse.error}`,
+					),
+				);
+			}
+		} catch (error: unknown) {
 			console.error(
 				chalk.yellow(
-					`Warning: could not record update completion in ${session.sessionFile}: ${noticeResponse.error}`,
+					`Warning: could not record update completion in ${session.sessionFile}: ${formatUnknownError(error)}`,
 				),
 			);
 		}

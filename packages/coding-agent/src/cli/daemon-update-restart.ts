@@ -382,6 +382,14 @@ export async function launchDaemonUpdateRestartCoordinator(
 		env: coordinatorEnvironment(),
 		stdio: "ignore",
 	});
+	let launchError: Error | undefined;
+	let exitDescription: string | undefined;
+	child.once("error", (error) => {
+		launchError = error;
+	});
+	child.once("exit", (code, signal) => {
+		exitDescription = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+	});
 	child.unref();
 
 	const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS);
@@ -389,6 +397,12 @@ export async function launchDaemonUpdateRestartCoordinator(
 		const status = readDaemonUpdateRestartStatus(statusPath);
 		if (status && TERMINAL_PHASES.has(status.phase)) {
 			return status;
+		}
+		if (launchError) {
+			throw launchError;
+		}
+		if (exitDescription) {
+			throw new Error(`Daemon update restart coordinator exited with ${exitDescription}`);
 		}
 		await delay(50);
 	}

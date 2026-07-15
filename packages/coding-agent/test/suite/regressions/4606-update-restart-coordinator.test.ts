@@ -2,7 +2,10 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readDaemonUpdateRestartStatus } from "../../../src/cli/daemon-update-restart.js";
+import {
+	launchDaemonUpdateRestartCoordinator,
+	readDaemonUpdateRestartStatus,
+} from "../../../src/cli/daemon-update-restart.js";
 import { ENV_AGENT_DIR } from "../../../src/config.js";
 import { DaemonAgentConnection } from "../../../src/modes/agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../../../src/modes/daemon/daemon-client.js";
@@ -231,6 +234,20 @@ afterEach(async () => {
 });
 
 describe("ENG-4606 update restart coordinator", () => {
+	it("rejects coordinator spawn errors without terminating the updater", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await expect(
+			launchDaemonUpdateRestartCoordinator({
+				socketPath: join(harness.tempDir, "missing-daemon.sock"),
+				agentDir: harness.tempDir,
+				cwd: join(harness.tempDir, "missing-cwd"),
+				timeoutMs: 5000,
+			}),
+		).rejects.toThrow();
+	});
+
 	it("outlives a daemon-owned updater and restores the exact custom socket", async () => {
 		if (process.platform === "win32") {
 			return;

@@ -107,6 +107,7 @@ const mockState = vi.hoisted(() => ({
 	},
 	helloCount: 0,
 	lastCoordinatorStatus: undefined as DaemonUpdateRestartStatus | undefined,
+	noticeError: undefined as string | undefined,
 	prepareError: undefined as string | undefined,
 	prepareManifest: { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] } as MockUpdateRestartManifest,
 	preparedManifestPath: "",
@@ -250,6 +251,9 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 		async request(request: MockDaemonRequest): Promise<MockDaemonResponse> {
 			mockState.calls.push(`daemon-request:${request.type}`);
 			mockState.requestPayloads.push(request);
+			if (request.type === "append_custom_message" && mockState.noticeError) {
+				throw new Error(mockState.noticeError);
+			}
 			if (request.type === "prepare_update_restart") {
 				if (mockState.prepareError) {
 					return { success: false, error: mockState.prepareError };
@@ -311,6 +315,7 @@ describe("self-update daemon restart", () => {
 		mockState.hello = { protocol: { version: 2 } };
 		mockState.helloCount = 0;
 		mockState.lastCoordinatorStatus = undefined;
+		mockState.noticeError = undefined;
 		mockState.prepareError = undefined;
 		mockState.socketPath = join(tempDir, "daemon.sock");
 		mockState.successorProcessStartId = "replacement-start";
@@ -524,6 +529,55 @@ describe("self-update daemon restart", () => {
 			counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
 		});
 		expect(existsSync(mockState.preparedManifestPath)).toBe(false);
+	});
+
+	it("continues queued-work restoration when the update notice request rejects", async () => {
+		mockState.noticeError = "socket closed";
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "old-active",
+					sessionId: "session-id",
+					sessionFile: join(tempDir, "session.jsonl"),
+					cwd: tempDir,
+					config: {},
+					queue: {
+						steering: [],
+						followUp: [],
+						nextTurn: [
+							{
+								role: "custom",
+								customType: "queued-context",
+								content: "preserve me",
+								display: false,
+								timestamp: 1,
+							},
+						],
+					},
+					shouldResume: false,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await performUpdateAndRunCoordinator("old-active");
+
+			expect(mockState.lastCoordinatorStatus).toMatchObject({
+				phase: "complete",
+				counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
+			});
+			expect(mockState.requestPayloads.map((request) => request.type)).toContain("restore_next_turn");
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	it("restarts an idle legacy daemon without a restorable manifest", async () => {
