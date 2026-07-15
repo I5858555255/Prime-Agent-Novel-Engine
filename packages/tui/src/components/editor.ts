@@ -538,6 +538,10 @@ export class Editor implements Component, Focusable {
 		};
 	}
 
+	protected getAutocompleteAnchorMarker(): string {
+		return this.autocompleteOverlay && this.focused ? this.autocompleteAnchorMarker : "";
+	}
+
 	render(width: number): string[] {
 		const { useBackgroundSurface, paddingX, promptPrefixText, promptPrefixWidth, inputWidth } =
 			this.getRenderMetrics(width);
@@ -607,10 +611,6 @@ export class Editor implements Component, Focusable {
 			const line = this.scrollOffset > 0 ? this.borderColor(` ↑ ${this.scrollOffset} more`) : "";
 			result.push(renderSurfaceLine(truncateToWidth(line, width)));
 		}
-		if (this.autocompleteOverlay && this.focused) {
-			result[0] = this.autocompleteAnchorMarker + result[0];
-		}
-
 		// Render each visible layout line
 		// Emit hardware cursor marker only when focused and not showing autocomplete
 		const emitCursorMarker = this.focused && !this.autocompleteState;
@@ -665,7 +665,8 @@ export class Editor implements Component, Focusable {
 
 			// Render the line (no side borders, just horizontal lines above and below)
 			const contentLine = `${promptLeadingPadding}${linePromptPrefix}${promptTrailingPadding}${displayText}${padding}${lineRightPadding}`;
-			result.push(useBackgroundSurface ? renderSurfaceLine(contentLine) : contentLine);
+			const anchorMarker = layoutLine.hasCursor ? this.getAutocompleteAnchorMarker() : "";
+			result.push(anchorMarker + (useBackgroundSurface ? renderSurfaceLine(contentLine) : contentLine));
 		}
 
 		// Render bottom border (with scroll indicator if more content below)
@@ -1282,7 +1283,7 @@ export class Editor implements Component, Focusable {
 				}
 			}
 		} else {
-			this.updateAutocomplete();
+			this.refreshAutocompleteAfterEdit();
 		}
 	}
 

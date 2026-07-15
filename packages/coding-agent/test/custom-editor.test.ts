@@ -182,6 +182,7 @@ describe("CustomEditor", () => {
 		const line = editor.render(40)[1]!;
 
 		expect(line).not.toContain(CURSOR_MARKER);
+		expect(line).toContain("\x1b_pi:autocomplete:");
 		expect(line).toContain("\x1b[7m \x1b[0mtype to start");
 	});
 
