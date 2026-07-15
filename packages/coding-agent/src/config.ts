@@ -560,8 +560,10 @@ export function getDaemonLogPath(socketPath: string): string {
 	return join(getLogsDir(), `${basename(socketPath)}.${hash}.log`);
 }
 
-export function getDaemonUpdateRestartManifestPath(agentDir: string = getAgentDir()): string {
-	return join(agentDir, "daemon-update-restart.json");
+export function getDaemonUpdateRestartManifestPath(socketPath: string, agentDir: string = getAgentDir()): string {
+	const normalizedSocketPath = process.platform === "win32" ? resolve(socketPath).toLowerCase() : resolve(socketPath);
+	const socketHash = createHash("sha256").update(normalizedSocketPath).digest("hex");
+	return join(agentDir, "daemon-update-restarts", `${socketHash}.json`);
 }
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;

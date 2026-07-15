@@ -105,7 +105,8 @@ const ALL_PHASES: ReadonlySet<DaemonUpdateRestartPhase> = new Set([
 	"skipped",
 	"failed",
 ]);
-const DEFAULT_COORDINATOR_STALL_TIMEOUT_MS = 180_000;
+const DEFAULT_COORDINATOR_PROGRESS_TIMEOUT_MS = 30 * 60_000;
+const COORDINATOR_LIVENESS_TIMEOUT_MS = 180_000;
 const COORDINATOR_STATUS_HEARTBEAT_MS = 5000;
 const COORDINATOR_REGISTRY_LOCK_STALE_MS = 5000;
 const COORDINATOR_REGISTRY_LOCK_UPDATE_MS = 1000;
@@ -139,6 +140,10 @@ export function buildDaemonUpdateRestartReport(status: DaemonUpdateRestartStatus
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function statusLivenessId(status: DaemonUpdateRestartStatus): string {
+	return status.heartbeatAt ?? status.updatedAt;
 }
 
 function socketKey(socketPath: string): string {
@@ -429,15 +434,21 @@ export async function acquireDaemonUpdateRestartCoordinator(
 
 export async function waitForActiveDaemonUpdateRestartCoordinator(
 	record: DaemonUpdateRestartCoordinatorRecord,
-	timeoutMs = DEFAULT_COORDINATOR_STALL_TIMEOUT_MS,
+	progressTimeoutMs = DEFAULT_COORDINATOR_PROGRESS_TIMEOUT_MS,
 ): Promise<DaemonUpdateRestartStatus> {
 	let observedUpdatedAt: string | undefined;
+	let observedLivenessId: string | undefined;
 	let lastProgressAt = Date.now();
+	let lastLivenessAt = Date.now();
 	while (true) {
 		const status = readDaemonUpdateRestartStatus(record.statusPath);
 		if (status && status.updatedAt !== observedUpdatedAt) {
 			observedUpdatedAt = status.updatedAt;
 			lastProgressAt = Date.now();
+		}
+		if (status && statusLivenessId(status) !== observedLivenessId) {
+			observedLivenessId = statusLivenessId(status);
+			lastLivenessAt = Date.now();
 		}
 		if (status && TERMINAL_PHASES.has(status.phase)) {
 			return status;
@@ -445,7 +456,10 @@ export async function waitForActiveDaemonUpdateRestartCoordinator(
 		if (!isProcessIdentityAlive(record)) {
 			throw new Error(`Active daemon update restart coordinator exited for ${record.socketPath}`);
 		}
-		if (Date.now() - lastProgressAt >= timeoutMs) {
+		if (Date.now() - lastLivenessAt >= COORDINATOR_LIVENESS_TIMEOUT_MS) {
+			throw new Error(`Active daemon update restart coordinator stopped reporting liveness on ${record.socketPath}`);
+		}
+		if (Date.now() - lastProgressAt >= progressTimeoutMs) {
 			throw new Error(`Timed out waiting for active daemon update restart progress on ${record.socketPath}`);
 		}
 		await delay(50);
@@ -504,14 +518,20 @@ export async function launchDaemonUpdateRestartCoordinator(
 	});
 	child.unref();
 
-	const stallTimeoutMs = options.timeoutMs ?? DEFAULT_COORDINATOR_STALL_TIMEOUT_MS;
+	const progressTimeoutMs = options.timeoutMs ?? DEFAULT_COORDINATOR_PROGRESS_TIMEOUT_MS;
 	let observedUpdatedAt: string | undefined;
+	let observedLivenessId: string | undefined;
 	let lastProgressAt = Date.now();
+	let lastLivenessAt = Date.now();
 	while (true) {
 		const status = readDaemonUpdateRestartStatus(statusPath);
 		if (status && status.updatedAt !== observedUpdatedAt) {
 			observedUpdatedAt = status.updatedAt;
 			lastProgressAt = Date.now();
+		}
+		if (status && statusLivenessId(status) !== observedLivenessId) {
+			observedLivenessId = statusLivenessId(status);
+			lastLivenessAt = Date.now();
 		}
 		if (status && TERMINAL_PHASES.has(status.phase)) {
 			return status;
@@ -522,7 +542,10 @@ export async function launchDaemonUpdateRestartCoordinator(
 		if (exitDescription) {
 			throw new Error(`Daemon update restart coordinator exited with ${exitDescription}`);
 		}
-		if (Date.now() - lastProgressAt >= stallTimeoutMs) {
+		if (Date.now() - lastLivenessAt >= COORDINATOR_LIVENESS_TIMEOUT_MS) {
+			throw new Error(`Daemon update restart coordinator stopped reporting liveness on ${options.socketPath}`);
+		}
+		if (Date.now() - lastProgressAt >= progressTimeoutMs) {
 			throw new Error(`Timed out waiting for daemon update restart progress on ${options.socketPath}`);
 		}
 		await delay(50);

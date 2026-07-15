@@ -3410,7 +3410,7 @@ export class AgentDaemon {
 	}
 
 	private writeUpdateRestartManifest(manifest: DaemonUpdateRestartManifest): void {
-		const path = getDaemonUpdateRestartManifestPath(this.agentDir);
+		const path = getDaemonUpdateRestartManifestPath(this.socketPath, this.agentDir);
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, `${JSON.stringify(manifest)}\n`);
 	}

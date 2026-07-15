@@ -743,19 +743,20 @@ function parseDaemonUpdateRestartManifest(value: unknown): DaemonUpdateRestartMa
 	};
 }
 
-function clearPreparedDaemonUpdateRestartManifest(agentDir: string): void {
+function clearPreparedDaemonUpdateRestartManifest(socketPath: string, agentDir: string): void {
 	try {
-		rmSync(getDaemonUpdateRestartManifestPath(agentDir), { force: true });
+		rmSync(getDaemonUpdateRestartManifestPath(socketPath, agentDir), { force: true });
 	} catch {
 		// Best effort only; the mtime guard below prevents stale fallback use.
 	}
 }
 
 function readPreparedDaemonUpdateRestartManifest(
+	socketPath: string,
 	agentDir: string,
 	notBeforeMs?: number,
 ): DaemonUpdateRestartManifest | undefined {
-	const manifestPath = getDaemonUpdateRestartManifestPath(agentDir);
+	const manifestPath = getDaemonUpdateRestartManifestPath(socketPath, agentDir);
 	let modifiedAt: number;
 	try {
 		modifiedAt = statSync(manifestPath).mtimeMs;
@@ -769,9 +770,12 @@ function readPreparedDaemonUpdateRestartManifest(
 	return parseDaemonUpdateRestartManifest(parsed);
 }
 
-function tryReadPreparedDaemonUpdateRestartManifest(agentDir: string): DaemonUpdateRestartManifest | undefined {
+function tryReadPreparedDaemonUpdateRestartManifest(
+	socketPath: string,
+	agentDir: string,
+): DaemonUpdateRestartManifest | undefined {
 	try {
-		return readPreparedDaemonUpdateRestartManifest(agentDir);
+		return readPreparedDaemonUpdateRestartManifest(socketPath, agentDir);
 	} catch {
 		return undefined;
 	}
@@ -816,7 +820,7 @@ async function prepareConnectedDaemonUpdateRestart(
 	agentDir: string,
 	hello: DaemonHello | undefined,
 ): Promise<DaemonUpdateRestartManifest> {
-	const pendingManifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
+	const pendingManifest = tryReadPreparedDaemonUpdateRestartManifest(socketPath, agentDir);
 	let startedAt: number | undefined;
 	let fixedOwnerIdentity: FixedDaemonSupervisorOwnerIdentity | undefined;
 	let fencePersistenceStarted = false;
@@ -845,7 +849,7 @@ async function prepareConnectedDaemonUpdateRestart(
 				return pendingManifest;
 			}
 		}
-		clearPreparedDaemonUpdateRestartManifest(agentDir);
+		clearPreparedDaemonUpdateRestartManifest(socketPath, agentDir);
 		startedAt = Date.now();
 		const response = useLegacyProtocol
 			? await client.requestLegacy({ type: "prepare_update_restart" }, 120000)
@@ -861,7 +865,7 @@ async function prepareConnectedDaemonUpdateRestart(
 			throw error;
 		}
 		if (startedAt !== undefined) {
-			const fallback = readPreparedDaemonUpdateRestartManifest(agentDir, startedAt);
+			const fallback = readPreparedDaemonUpdateRestartManifest(socketPath, agentDir, startedAt);
 			if (fallback) {
 				await persistPreparedRestartFence();
 				return fallback;
@@ -875,7 +879,7 @@ export async function prepareDaemonUpdateRestart(
 	socketPath: string,
 	agentDir: string,
 ): Promise<DaemonUpdateRestartManifest> {
-	const pendingManifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
+	const pendingManifest = tryReadPreparedDaemonUpdateRestartManifest(socketPath, agentDir);
 	const client = new DaemonClient(socketPath);
 	let connected = false;
 	try {
@@ -1129,6 +1133,7 @@ async function restoreDaemonUpdateRestart(
 	socketPath: string,
 	manifest: DaemonUpdateRestartManifest,
 	restartOriginActiveSessionId?: string,
+	onProgress?: (progress: RestoreDaemonUpdateRestartResult) => void,
 ): Promise<RestoreDaemonUpdateRestartResult> {
 	const restoredActiveSessionIds = new Map<string, string>();
 	if (manifest.sessions.length === 0) {
@@ -1165,6 +1170,13 @@ async function restoreDaemonUpdateRestart(
 				console.error(chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${message}`));
 				failures.push({ sessionFile: session.sessionFile, message });
 			}
+			onProgress?.({
+				total: manifest.sessions.length,
+				restored,
+				resumed,
+				failed: failures.length,
+				failures: [...failures],
+			});
 		}
 	} finally {
 		client.close();
@@ -1277,6 +1289,10 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 			return statusWriter.current();
 		}
 		const daemonProbe = await probeRunningDaemonSessions(options.socketPath);
+		const reportRestoreProgress = (progress: RestoreDaemonUpdateRestartResult) => {
+			const { failures, ...counts } = progress;
+			statusWriter.update({ counts, failures });
+		};
 		let predecessor: DaemonUpdateRestartProcessIdentity | undefined;
 		if (daemonProbe.reachable) {
 			connectedClient = new DaemonClient(options.socketPath);
@@ -1317,9 +1333,10 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 							options.socketPath,
 							manifest,
 							options.originActiveSessionId,
+							reportRestoreProgress,
 						);
 						const { failures: restoreFailures, ...counts } = restoreResult;
-						clearPreparedDaemonUpdateRestartManifest(options.agentDir);
+						clearPreparedDaemonUpdateRestartManifest(options.socketPath, options.agentDir);
 						statusWriter.update({
 							counts,
 							...(restoreFailures.length > 0 ? { failures: restoreFailures } : {}),
@@ -1331,7 +1348,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 				throw new Error(`Could not stop the predecessor daemon on ${options.socketPath}`);
 			}
 		} else {
-			manifest = tryReadPreparedDaemonUpdateRestartManifest(options.agentDir);
+			manifest = tryReadPreparedDaemonUpdateRestartManifest(options.socketPath, options.agentDir);
 			if (!hasRestorableDaemonUpdateRestart(manifest)) {
 				statusWriter.update({ phase: "skipped", message: "No running daemon needed to be restarted" });
 				return statusWriter.current();
@@ -1358,6 +1375,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 				options.socketPath,
 				manifest,
 				options.originActiveSessionId,
+				reportRestoreProgress,
 			);
 			counts = {
 				total: restoreResult.total,
@@ -1366,7 +1384,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 				failed: restoreResult.failed,
 			};
 			failures = restoreResult.failures;
-			clearPreparedDaemonUpdateRestartManifest(options.agentDir);
+			clearPreparedDaemonUpdateRestartManifest(options.socketPath, options.agentDir);
 		}
 		statusWriter.update({
 			phase: "complete",

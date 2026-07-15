@@ -379,7 +379,7 @@ describe("self-update daemon restart", () => {
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.disconnectRequestTypes = [];
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
-		mockState.preparedManifestPath = getDaemonUpdateRestartManifestPath(agentDir);
+		mockState.preparedManifestPath = getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir);
 		mockState.prepareResponse = undefined;
 		mockState.helloWaitFailures = 0;
 		mockState.promptFailures = 0;
@@ -390,6 +390,7 @@ describe("self-update daemon restart", () => {
 		mockState.spawnExitCodes = [];
 		mockState.shutdownResult = true;
 		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(join(agentDir, "daemon-update-restarts"), { recursive: true });
 		mkdirSync(projectDir, { recursive: true });
 		mkdirSync(packageDir, { recursive: true });
 
@@ -430,6 +431,14 @@ describe("self-update daemon restart", () => {
 		delete process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
 		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("scopes prepared restart manifests to the exact daemon socket", () => {
+		const otherSocketPath = join(tempDir, "other-daemon.sock");
+
+		expect(getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir)).not.toBe(
+			getDaemonUpdateRestartManifestPath(otherSocketPath, agentDir),
+		);
 	});
 
 	it("uses the interactive no-change sentinel only when self-update is unchanged", async () => {
@@ -772,7 +781,10 @@ describe("self-update daemon restart", () => {
 				},
 			],
 		};
-		writeFileSync(getDaemonUpdateRestartManifestPath(agentDir), JSON.stringify(pendingManifest));
+		writeFileSync(
+			getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir),
+			JSON.stringify(pendingManifest),
+		);
 		mockState.requestThrowTypes = ["list"];
 
 		await expect(prepareDaemonUpdateRestart(mockState.socketPath, agentDir)).rejects.toThrow("list failed");
@@ -803,12 +815,15 @@ describe("self-update daemon restart", () => {
 			},
 		};
 		mockState.disconnectRequestTypes = ["prepare_update_restart"];
-		writeFileSync(getDaemonUpdateRestartManifestPath(agentDir), JSON.stringify(pendingManifest));
+		writeFileSync(
+			getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir),
+			JSON.stringify(pendingManifest),
+		);
 
 		await expect(prepareDaemonUpdateRestart(mockState.socketPath, agentDir)).rejects.toThrow(
 			"prepare_update_restart disconnected",
 		);
-		expect(existsSync(getDaemonUpdateRestartManifestPath(agentDir))).toBe(false);
+		expect(existsSync(getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir))).toBe(false);
 	});
 
 	it("skips predecessor fencing when the daemon hello has no fixed-owner identity", async () => {
