@@ -1,16 +1,22 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as DaemonUpdateRestartModule from "../src/cli/daemon-update-restart.js";
+import {
+	acquireDaemonUpdateRestartCoordinator,
+	type DaemonUpdateRestartStatus,
+} from "../src/cli/daemon-update-restart.js";
 import {
 	ENV_AGENT_DIR,
 	PACKAGE_NAME,
 	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
+	VERSION,
 } from "../src/config.js";
 import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
 import type * as DaemonSocketModule from "../src/modes/daemon/daemon-socket.js";
-import { handlePackageCommand } from "../src/package-manager-cli.js";
+import { handlePackageCommand, runDaemonUpdateRestartCoordinator } from "../src/package-manager-cli.js";
 
 interface MockSessionSummary {
 	id: string;
@@ -98,11 +104,16 @@ const mockState = vi.hoisted(() => ({
 		supervisorProcessStartId?: string;
 		supervisorSocketPath?: string;
 	},
+	helloCount: 0,
+	lastCoordinatorStatus: undefined as DaemonUpdateRestartStatus | undefined,
+	prepareError: undefined as string | undefined,
 	prepareManifest: { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] } as MockUpdateRestartManifest,
 	promptFailures: 0,
+	probeSocketPaths: [] as string[],
 	requestPayloads: [] as MockDaemonRequest[],
 	restoreNextTurnFailures: 0,
 	socketPath: "",
+	successorSocketPath: undefined as string | undefined,
 	spawnExitCodes: [] as number[],
 	shutdownResult: true,
 }));
@@ -129,6 +140,26 @@ vi.mock("child_process", () => ({
 		stderr: "",
 	})),
 }));
+
+vi.mock("../src/cli/daemon-update-restart.js", async (importOriginal) => {
+	const original = await importOriginal<typeof DaemonUpdateRestartModule>();
+	return {
+		...original,
+		launchDaemonUpdateRestartCoordinator: vi.fn(async (options: { socketPath: string }) => {
+			mockState.calls.push(`launch-coordinator:${options.socketPath}`);
+			return {
+				version: 1,
+				requestId: "test-request",
+				socketPath: options.socketPath,
+				phase: "complete",
+				coordinator: { pid: process.pid },
+				counts: { total: 0, restored: 0, resumed: 0, failed: 0 },
+				startedAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+			};
+		}),
+	};
+});
 
 vi.mock("../src/modes/daemon/daemon-socket.js", async (importOriginal) => ({
 	...(await importOriginal<typeof DaemonSocketModule>()),
@@ -158,11 +189,12 @@ vi.mock("../src/cli/daemon-launch.js", () => ({
 		summary.isBashRunning === true ||
 		summary.hasRunningRlmChildren === true ||
 		summary.pendingMessageCount > 0,
-	probeRunningDaemonSessions: vi.fn(async () => {
+	probeRunningDaemonSessions: vi.fn(async (socketPath: string) => {
 		mockState.calls.push("probe-daemon");
+		mockState.probeSocketPaths.push(socketPath);
 		return mockState.daemonProbe;
 	}),
-	shutdownDaemonAndWait: vi.fn(async () => {
+	shutdownConnectedDaemonAndWait: vi.fn(async () => {
 		mockState.calls.push("shutdown-daemon");
 		return mockState.shutdownResult;
 	}),
@@ -176,14 +208,45 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 			mockState.calls.push(`daemon-connect:${this.socketPath}`);
 		}
 
-		async waitForHello(): Promise<typeof mockState.hello> {
-			return mockState.hello;
+		get isConnected(): boolean {
+			return true;
+		}
+
+		async waitForHello(): Promise<{
+			protocol: { version: number };
+			appVersion: string;
+			supervisorGeneration?: string;
+			supervisorOwnerToken?: string;
+			supervisorPid?: number;
+			supervisorProcessStartId?: string;
+			supervisorSocketPath?: string;
+		}> {
+			const helloCount = mockState.helloCount++;
+			return helloCount === 0
+				? {
+						appVersion: VERSION,
+						...mockState.hello,
+					}
+				: {
+						protocol: { version: 2 },
+						appVersion: VERSION,
+						supervisorPid: 1002,
+						supervisorProcessStartId: "replacement-start",
+						supervisorSocketPath: mockState.successorSocketPath ?? mockState.socketPath,
+					};
+		}
+
+		async requestLegacy(request: MockDaemonRequest): Promise<MockDaemonResponse> {
+			return this.request(request);
 		}
 
 		async request(request: MockDaemonRequest): Promise<MockDaemonResponse> {
 			mockState.calls.push(`daemon-request:${request.type}`);
 			mockState.requestPayloads.push(request);
 			if (request.type === "prepare_update_restart") {
+				if (mockState.prepareError) {
+					return { success: false, error: mockState.prepareError };
+				}
 				return { success: true, data: mockState.prepareManifest };
 			}
 			if (request.type === "create") {
@@ -219,6 +282,18 @@ describe("self-update daemon restart", () => {
 	let originalExecPath: string;
 	let originalExitCode: typeof process.exitCode;
 
+	async function performUpdateAndRunCoordinator(originActiveSessionId?: string): Promise<void> {
+		await handlePackageCommand(["update", "--self", "--daemon-socket", mockState.socketPath]);
+		const restartDirectory = join(agentDir, "update-restarts");
+		mkdirSync(restartDirectory, { recursive: true });
+		mockState.lastCoordinatorStatus = await runDaemonUpdateRestartCoordinator({
+			socketPath: mockState.socketPath,
+			agentDir,
+			statusPath: join(restartDirectory, "test-status.json"),
+			originActiveSessionId,
+		});
+	}
+
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `pi-self-update-daemon-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
@@ -226,13 +301,18 @@ describe("self-update daemon restart", () => {
 		packageDir = join(tempDir, "global-prefix", "lib", "node_modules", PACKAGE_NAME);
 		mockState.globalPackageRoot = join(tempDir, "global-prefix", "lib", "node_modules");
 		mockState.hello = { protocol: { version: 2 } };
+		mockState.helloCount = 0;
+		mockState.lastCoordinatorStatus = undefined;
+		mockState.prepareError = undefined;
 		mockState.socketPath = join(tempDir, "daemon.sock");
+		mockState.successorSocketPath = undefined;
 		mockState.calls = [];
 		mockState.createActiveSessionIds = [];
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
 		mockState.promptFailures = 0;
+		mockState.probeSocketPaths = [];
 		mockState.requestPayloads = [];
 		mockState.restoreNextTurnFailures = 0;
 		mockState.spawnExitCodes = [];
@@ -337,6 +417,65 @@ describe("self-update daemon restart", () => {
 		}
 	});
 
+	it("defers the exact custom-socket restart to the interactive parent", async () => {
+		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] = "1";
+		const customSocketPath = join(tempDir, "custom", "daemon.sock");
+
+		await expect(handlePackageCommand(["update", "--self", "--daemon-socket", customSocketPath])).resolves.toBe(true);
+
+		expect(mockState.probeSocketPaths).toEqual([customSocketPath]);
+		expect(mockState.calls.some((call) => call.startsWith("spawn:npm "))).toBe(true);
+		expect(mockState.calls.some((call) => call.startsWith("launch-coordinator:"))).toBe(false);
+	});
+
+	it("serializes coordinators per exact socket", async () => {
+		const registryDir = join(tempDir, "restart-registry");
+		const first = await acquireDaemonUpdateRestartCoordinator({
+			requestId: "first",
+			socketPath: mockState.socketPath,
+			statusPath: join(agentDir, "first.json"),
+			registryDir,
+		});
+		try {
+			await expect(
+				acquireDaemonUpdateRestartCoordinator({
+					requestId: "second",
+					socketPath: mockState.socketPath,
+					statusPath: join(agentDir, "second.json"),
+					registryDir,
+				}),
+			).rejects.toThrow("already running");
+		} finally {
+			await first.release();
+		}
+	});
+
+	it("rejects a successor that answers for another socket", async () => {
+		mockState.successorSocketPath = join(tempDir, "wrong-daemon.sock");
+
+		await performUpdateAndRunCoordinator();
+
+		expect(mockState.lastCoordinatorStatus).toMatchObject({
+			phase: "failed",
+			message: expect.stringContaining("does not match"),
+		});
+		expect(mockState.requestPayloads.some((request) => request.type === "create")).toBe(false);
+	});
+
+	it("restarts an idle legacy daemon without a restorable manifest", async () => {
+		mockState.hello = { protocol: { version: 1 } };
+		mockState.prepareError = "Unknown daemon command: prepare_update_restart";
+
+		await performUpdateAndRunCoordinator();
+
+		expect(mockState.lastCoordinatorStatus).toMatchObject({
+			phase: "complete",
+			counts: { total: 0, restored: 0, resumed: 0, failed: 0 },
+		});
+		expect(mockState.calls).toContain("shutdown-daemon");
+		expect(mockState.calls).toContain("ensure-daemon");
+	});
+
 	it("restarts the daemon only after the package update succeeds", async () => {
 		mockState.hello = {
 			protocol: { version: 2 },
@@ -350,19 +489,22 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			await expect(performUpdateAndRunCoordinator()).resolves.toBeUndefined();
 
 			expect(process.exitCode).toBeUndefined();
 			const spawnIndex = mockState.calls.findIndex((call) => call.startsWith("spawn:npm "));
+			const launchIndex = mockState.calls.indexOf(`launch-coordinator:${mockState.socketPath}`);
 			const fenceIndex = mockState.calls.indexOf("persist-daemon-startup-fence");
 			const prepareIndex = mockState.calls.indexOf("daemon-request:prepare_update_restart");
 			const shutdownIndex = mockState.calls.indexOf("shutdown-daemon");
 			const ensureIndex = mockState.calls.indexOf("ensure-daemon");
 			expect(spawnIndex).toBeGreaterThanOrEqual(0);
-			expect(fenceIndex).toBeGreaterThan(spawnIndex);
+			expect(launchIndex).toBeGreaterThan(spawnIndex);
+			expect(fenceIndex).toBeGreaterThan(launchIndex);
 			expect(prepareIndex).toBeGreaterThan(fenceIndex);
 			expect(shutdownIndex).toBeGreaterThan(prepareIndex);
 			expect(ensureIndex).toBeGreaterThan(shutdownIndex);
+			expect(statSync(join(agentDir, "update-restarts", "test-status.json")).mode & 0o777).toBe(0o600);
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
@@ -374,7 +516,7 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			await expect(performUpdateAndRunCoordinator()).resolves.toBeUndefined();
 
 			expect(mockState.calls).not.toContain("persist-daemon-startup-fence");
 			expect(mockState.calls).toContain("daemon-request:prepare_update_restart");
@@ -436,7 +578,7 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			await expect(performUpdateAndRunCoordinator("old-active")).resolves.toBeUndefined();
 
 			const promptRequests = mockState.requestPayloads.filter((request) => request.type === "prompt");
 			expect(promptRequests).toEqual([
@@ -446,7 +588,12 @@ describe("self-update daemon restart", () => {
 					agentMessageId: "agentmsg_accepted",
 				}),
 			]);
+			const noticeIndex = mockState.requestPayloads.findIndex(
+				(request) => request.type === "append_custom_message" && request.activeSessionId === "restored-active",
+			);
 			const promptIndex = mockState.requestPayloads.findIndex((request) => request.type === "prompt");
+			expect(noticeIndex).toBeGreaterThanOrEqual(0);
+			expect(promptIndex).toBeGreaterThan(noticeIndex);
 			const subsequentNextTurnIndex = mockState.requestPayloads.findIndex(
 				(request) =>
 					request.type === "restore_next_turn" &&
@@ -503,7 +650,7 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			await expect(performUpdateAndRunCoordinator()).resolves.toBeUndefined();
 
 			expect(
 				mockState.requestPayloads
@@ -515,6 +662,12 @@ describe("self-update daemon restart", () => {
 					(request) => request.type === "prompt" && request.activeSessionId === "restored-active",
 				),
 			).toBe(true);
+			expect(mockState.lastCoordinatorStatus?.counts).toEqual({
+				total: 2,
+				restored: 1,
+				resumed: 1,
+				failed: 1,
+			});
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
@@ -574,7 +727,7 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			await expect(performUpdateAndRunCoordinator()).resolves.toBeUndefined();
 
 			const createRequests = mockState.requestPayloads.filter((request) => request.type === "create");
 			expect(createRequests).toHaveLength(2);
@@ -651,7 +804,7 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			await expect(performUpdateAndRunCoordinator()).resolves.toBeUndefined();
 
 			expect(mockState.requestPayloads).toContainEqual(
 				expect.objectContaining({
@@ -705,7 +858,7 @@ describe("self-update daemon restart", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+			await expect(performUpdateAndRunCoordinator()).resolves.toBeUndefined();
 
 			expect(mockState.requestPayloads.some((request) => request.type === "follow_up")).toBe(true);
 			expect(mockState.requestPayloads.some((request) => request.type === "resume_queue")).toBe(false);

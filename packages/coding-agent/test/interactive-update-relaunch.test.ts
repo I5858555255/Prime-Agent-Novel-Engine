@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildUpdateRelaunchArgs } from "../src/modes/interactive/interactive-mode.js";
+import {
+	buildUpdateChildArgs,
+	buildUpdateRelaunchArgs,
+	resolveInteractiveUpdateDaemonSocketPath,
+	updateArgsIncludeSelf,
+} from "../src/modes/interactive/interactive-mode.js";
 
 describe("buildUpdateRelaunchArgs", () => {
 	it("relaunches the current session with the supported resume flag", () => {
@@ -25,5 +30,31 @@ describe("buildUpdateRelaunchArgs", () => {
 			"--resume",
 			"/tmp/session.jsonl",
 		]);
+	});
+});
+
+describe("buildUpdateChildArgs", () => {
+	it("passes the active custom socket to the deferred self-update child", () => {
+		expect(buildUpdateChildArgs(["--self", "--force"], "/tmp/custom-daemon.sock")).toEqual([
+			"--self",
+			"--force",
+			"--daemon-socket",
+			"/tmp/custom-daemon.sock",
+		]);
+	});
+
+	it("keeps an explicitly selected update socket", () => {
+		expect(buildUpdateChildArgs(["--self", "--daemon-socket", "/tmp/explicit.sock"], "/tmp/active.sock")).toEqual([
+			"--self",
+			"--daemon-socket",
+			"/tmp/explicit.sock",
+		]);
+		expect(
+			resolveInteractiveUpdateDaemonSocketPath(
+				["--self", "--daemon-socket", "/tmp/explicit.sock"],
+				"/tmp/active.sock",
+			),
+		).toBe("/tmp/explicit.sock");
+		expect(updateArgsIncludeSelf(["--daemon-socket", "/tmp/explicit.sock"])).toBe(true);
 	});
 });

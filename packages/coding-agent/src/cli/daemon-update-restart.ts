@@ -1,0 +1,392 @@
+import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import lockfile from "proper-lockfile";
+import { SELF_UPDATE_INTERACTIVE_CHILD_ENV } from "../config.js";
+import { ORPHAN_PROCESS_JOURNAL_ENV } from "../core/orphan-process-journal.js";
+import { getProcessStartId, SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
+import { defaultDaemonSocketDir } from "../modes/daemon/daemon-socket.js";
+import {
+	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
+	DAEMON_WORKER_RECOVERY_JOURNAL_ENV,
+	DAEMON_WORKER_ROLE_ENV,
+	DAEMON_WORKER_SUPERVISOR_SOCKET_ENV,
+	DAEMON_WORKER_TOKEN_ENV,
+} from "../modes/daemon/daemon-worker-protocol.js";
+import { createCliSubprocessLaunchSpec } from "./subprocess-launch.js";
+
+export const DAEMON_UPDATE_RESTART_COORDINATOR_FLAG = "--internal-update-restart-coordinator";
+export const DAEMON_UPDATE_RESTART_STATUS_FLAG = "--internal-update-restart-status";
+export const DAEMON_UPDATE_RESTART_ORIGIN_FLAG = "--internal-update-restart-origin";
+
+export type DaemonUpdateRestartPhase =
+	| "starting"
+	| "preparing"
+	| "stopping"
+	| "starting_daemon"
+	| "restoring"
+	| "complete"
+	| "skipped"
+	| "failed";
+
+export interface DaemonUpdateRestartCounts {
+	total: number;
+	restored: number;
+	resumed: number;
+	failed: number;
+}
+
+export interface DaemonUpdateRestartProcessIdentity {
+	pid: number;
+	processStartId?: string;
+}
+
+export interface DaemonUpdateRestartStatus {
+	version: 1;
+	requestId: string;
+	socketPath: string;
+	phase: DaemonUpdateRestartPhase;
+	coordinator: DaemonUpdateRestartProcessIdentity;
+	predecessor?: DaemonUpdateRestartProcessIdentity;
+	successor?: DaemonUpdateRestartProcessIdentity;
+	counts: DaemonUpdateRestartCounts;
+	message?: string;
+	startedAt: string;
+	updatedAt: string;
+}
+
+export interface DaemonUpdateRestartCoordinatorRecord extends DaemonUpdateRestartProcessIdentity {
+	version: 1;
+	token: string;
+	requestId: string;
+	socketPath: string;
+	statusPath: string;
+	createdAt: string;
+}
+
+export interface LaunchDaemonUpdateRestartCoordinatorOptions {
+	socketPath: string;
+	agentDir: string;
+	cwd?: string;
+	originActiveSessionId?: string;
+	timeoutMs?: number;
+}
+
+export interface AcquireDaemonUpdateRestartCoordinatorOptions {
+	requestId: string;
+	socketPath: string;
+	statusPath: string;
+	registryDir?: string;
+}
+
+const TERMINAL_PHASES: ReadonlySet<DaemonUpdateRestartPhase> = new Set(["complete", "skipped", "failed"]);
+const ALL_PHASES: ReadonlySet<DaemonUpdateRestartPhase> = new Set([
+	"starting",
+	"preparing",
+	"stopping",
+	"starting_daemon",
+	"restoring",
+	"complete",
+	"skipped",
+	"failed",
+]);
+const DEFAULT_COORDINATOR_TIMEOUT_MS = 180_000;
+const COORDINATOR_REGISTRY_LOCK_STALE_MS = 5000;
+const COORDINATOR_REGISTRY_LOCK_UPDATE_MS = 1000;
+const COORDINATOR_REGISTRY_LOCK_RETRIES = 500;
+const COORDINATOR_REGISTRY_LOCK_RETRY_MS = 10;
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function socketKey(socketPath: string): string {
+	const normalized = process.platform === "win32" ? socketPath.toLowerCase() : resolve(socketPath);
+	return createHash("sha256").update(normalized).digest("hex");
+}
+
+function writeJsonAtomically(path: string, value: unknown): void {
+	const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+		renameSync(tempPath, path);
+	} catch (error) {
+		rmSync(tempPath, { force: true });
+		throw error;
+	}
+}
+
+function isProcessIdentity(value: unknown): value is DaemonUpdateRestartProcessIdentity {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const identity = value as Partial<DaemonUpdateRestartProcessIdentity>;
+	return (
+		Number.isInteger(identity.pid) &&
+		(identity.pid ?? 0) > 0 &&
+		(identity.processStartId === undefined || typeof identity.processStartId === "string")
+	);
+}
+
+function isCounts(value: unknown): value is DaemonUpdateRestartCounts {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const counts = value as Partial<DaemonUpdateRestartCounts>;
+	return [counts.total, counts.restored, counts.resumed, counts.failed].every(
+		(entry) => Number.isInteger(entry) && (entry ?? -1) >= 0,
+	);
+}
+
+function isDaemonUpdateRestartStatus(value: unknown): value is DaemonUpdateRestartStatus {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const status = value as Partial<DaemonUpdateRestartStatus>;
+	return (
+		status.version === 1 &&
+		typeof status.requestId === "string" &&
+		typeof status.socketPath === "string" &&
+		typeof status.phase === "string" &&
+		ALL_PHASES.has(status.phase as DaemonUpdateRestartPhase) &&
+		isProcessIdentity(status.coordinator) &&
+		(status.predecessor === undefined || isProcessIdentity(status.predecessor)) &&
+		(status.successor === undefined || isProcessIdentity(status.successor)) &&
+		isCounts(status.counts) &&
+		(status.message === undefined || typeof status.message === "string") &&
+		typeof status.startedAt === "string" &&
+		typeof status.updatedAt === "string"
+	);
+}
+
+export function readDaemonUpdateRestartStatus(path: string): DaemonUpdateRestartStatus | undefined {
+	try {
+		const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+		return isDaemonUpdateRestartStatus(value) ? value : undefined;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+}
+
+export class DaemonUpdateRestartStatusWriter {
+	private status: DaemonUpdateRestartStatus;
+
+	constructor(
+		private readonly path: string,
+		requestId: string,
+		socketPath: string,
+	) {
+		const now = new Date().toISOString();
+		const processStartId = getProcessStartId(process.pid);
+		this.status = {
+			version: 1,
+			requestId,
+			socketPath,
+			phase: "starting",
+			coordinator: { pid: process.pid, ...(processStartId ? { processStartId } : {}) },
+			counts: { total: 0, restored: 0, resumed: 0, failed: 0 },
+			startedAt: now,
+			updatedAt: now,
+		};
+		this.persist();
+	}
+
+	update(
+		update: Partial<Omit<DaemonUpdateRestartStatus, "version" | "requestId" | "socketPath" | "coordinator">>,
+	): void {
+		this.status = {
+			...this.status,
+			...update,
+			counts: update.counts ? { ...update.counts } : this.status.counts,
+			updatedAt: new Date().toISOString(),
+		};
+		this.persist();
+	}
+
+	current(): DaemonUpdateRestartStatus {
+		return { ...this.status, counts: { ...this.status.counts } };
+	}
+
+	private persist(): void {
+		writeJsonAtomically(this.path, this.status);
+	}
+}
+
+function defaultCoordinatorRegistryDir(): string {
+	return resolve(defaultDaemonSocketDir(), "update-restart-coordinators");
+}
+
+function coordinatorRecordPath(registryDir: string, socketPath: string): string {
+	return resolve(registryDir, `${socketKey(socketPath)}.json`);
+}
+
+async function withCoordinatorRegistryGuard<T>(registryDir: string, action: () => T | Promise<T>): Promise<T> {
+	mkdirSync(registryDir, { recursive: true, mode: 0o700 });
+	const release = await lockfile.lock(registryDir, {
+		realpath: false,
+		lockfilePath: resolve(registryDir, ".guard"),
+		stale: COORDINATOR_REGISTRY_LOCK_STALE_MS,
+		update: COORDINATOR_REGISTRY_LOCK_UPDATE_MS,
+		retries: {
+			retries: COORDINATOR_REGISTRY_LOCK_RETRIES,
+			factor: 1,
+			minTimeout: COORDINATOR_REGISTRY_LOCK_RETRY_MS,
+			maxTimeout: COORDINATOR_REGISTRY_LOCK_RETRY_MS,
+		},
+	});
+	try {
+		return await action();
+	} finally {
+		await release();
+	}
+}
+
+function isProcessIdentityAlive(identity: DaemonUpdateRestartProcessIdentity): boolean {
+	try {
+		process.kill(identity.pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+	if (!identity.processStartId) {
+		return true;
+	}
+	const observed = getProcessStartId(identity.pid);
+	return observed === undefined || observed === identity.processStartId;
+}
+
+function readCoordinatorRecord(path: string): DaemonUpdateRestartCoordinatorRecord | undefined {
+	try {
+		const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+		if (!value || typeof value !== "object") {
+			return undefined;
+		}
+		const record = value as Partial<DaemonUpdateRestartCoordinatorRecord>;
+		if (
+			record.version !== 1 ||
+			typeof record.token !== "string" ||
+			typeof record.requestId !== "string" ||
+			typeof record.socketPath !== "string" ||
+			typeof record.statusPath !== "string" ||
+			typeof record.createdAt !== "string" ||
+			!isProcessIdentity(record)
+		) {
+			return undefined;
+		}
+		return record as DaemonUpdateRestartCoordinatorRecord;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+}
+
+export class DaemonUpdateRestartCoordinatorLease {
+	private released = false;
+
+	constructor(
+		readonly record: DaemonUpdateRestartCoordinatorRecord,
+		private readonly registryDir: string,
+		private readonly path: string,
+	) {}
+
+	async release(): Promise<void> {
+		if (this.released) {
+			return;
+		}
+		await withCoordinatorRegistryGuard(this.registryDir, () => {
+			const current = readCoordinatorRecord(this.path);
+			if (current?.token === this.record.token) {
+				rmSync(this.path, { force: true });
+			}
+		});
+		this.released = true;
+	}
+}
+
+export async function acquireDaemonUpdateRestartCoordinator(
+	options: AcquireDaemonUpdateRestartCoordinatorOptions,
+): Promise<DaemonUpdateRestartCoordinatorLease> {
+	const registryDir = options.registryDir ?? defaultCoordinatorRegistryDir();
+	const path = coordinatorRecordPath(registryDir, options.socketPath);
+	const token = randomUUID();
+	const processStartId = getProcessStartId(process.pid);
+	const record: DaemonUpdateRestartCoordinatorRecord = {
+		version: 1,
+		token,
+		requestId: options.requestId,
+		pid: process.pid,
+		...(processStartId ? { processStartId } : {}),
+		socketPath: options.socketPath,
+		statusPath: options.statusPath,
+		createdAt: new Date().toISOString(),
+	};
+	await withCoordinatorRegistryGuard(registryDir, () => {
+		const current = readCoordinatorRecord(path);
+		if (current && isProcessIdentityAlive(current)) {
+			throw new Error(`Another daemon update restart is already running for ${options.socketPath}`);
+		}
+		rmSync(path, { force: true });
+		writeJsonAtomically(path, record);
+	});
+	return new DaemonUpdateRestartCoordinatorLease(record, registryDir, path);
+}
+
+function createStatusPath(agentDir: string, socketPath: string, requestId: string): string {
+	const directory = resolve(agentDir, "update-restarts");
+	mkdirSync(directory, { recursive: true, mode: 0o700 });
+	return resolve(directory, `${socketKey(socketPath).slice(0, 16)}-${requestId}.json`);
+}
+
+function coordinatorEnvironment(): NodeJS.ProcessEnv {
+	const environment = { ...process.env };
+	delete environment[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
+	delete environment[DAEMON_WORKER_ROLE_ENV];
+	delete environment[DAEMON_WORKER_TOKEN_ENV];
+	delete environment[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV];
+	delete environment[DAEMON_WORKER_RECOVERY_JOURNAL_ENV];
+	delete environment[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+	delete environment[ORPHAN_PROCESS_JOURNAL_ENV];
+	delete environment[SESSION_LEASES_ENABLED_ENV];
+	delete environment[SESSION_LEASE_OWNER_ID_ENV];
+	return environment;
+}
+
+export async function launchDaemonUpdateRestartCoordinator(
+	options: LaunchDaemonUpdateRestartCoordinatorOptions,
+): Promise<DaemonUpdateRestartStatus> {
+	const requestId = randomUUID();
+	const statusPath = createStatusPath(options.agentDir, options.socketPath, requestId);
+	const inheritedOrigin = process.env[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV];
+	const originActiveSessionId = options.originActiveSessionId ?? inheritedOrigin;
+	const launch = createCliSubprocessLaunchSpec([
+		"update",
+		DAEMON_UPDATE_RESTART_COORDINATOR_FLAG,
+		"--daemon-socket",
+		options.socketPath,
+		DAEMON_UPDATE_RESTART_STATUS_FLAG,
+		statusPath,
+		...(originActiveSessionId ? [DAEMON_UPDATE_RESTART_ORIGIN_FLAG, originActiveSessionId] : []),
+	]);
+	const child = spawn(launch.command, launch.args, {
+		cwd: options.cwd ?? process.cwd(),
+		detached: true,
+		env: coordinatorEnvironment(),
+		stdio: "ignore",
+	});
+	child.unref();
+
+	const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_COORDINATOR_TIMEOUT_MS);
+	while (Date.now() < deadline) {
+		const status = readDaemonUpdateRestartStatus(statusPath);
+		if (status && TERMINAL_PHASES.has(status.phase)) {
+			return status;
+		}
+		await delay(50);
+	}
+	throw new Error(`Timed out waiting for daemon update restart on ${options.socketPath}`);
+}

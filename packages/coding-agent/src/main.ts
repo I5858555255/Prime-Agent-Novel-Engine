@@ -1453,6 +1453,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 		const interactiveMode = new InteractiveMode({
 			agentConnection,
+			daemonSocketPath,
 			uiServices: daemonUiServices,
 			bindLocalSessionExtensions: false,
 			migratedProviders,

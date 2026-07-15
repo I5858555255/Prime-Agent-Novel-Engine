@@ -347,6 +347,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			const uiServices = await resolveAgentsViewSessionUiServices(options, opened.summary);
 			const interactiveMode = new InteractiveMode({
 				agentConnection: opened.connection,
+				daemonSocketPath: options.socketPath,
 				uiServices,
 				bindLocalSessionExtensions: false,
 				migratedProviders: options.migratedProviders,
