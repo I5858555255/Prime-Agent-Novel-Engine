@@ -296,7 +296,8 @@ export class DaemonClient {
 	}
 
 	async authenticateWorker(token: string, timeoutMs = 3000): Promise<void> {
-		const response = await this.requestWire({ type: "worker_auth", token }, timeoutMs);
+		const legacyAuthentication = { type: "worker_auth", token } as DaemonWorkerCommandBody;
+		const response = await this.requestWire(legacyAuthentication, timeoutMs);
 		if (!response.success) {
 			throw new Error(response.error);
 		}
