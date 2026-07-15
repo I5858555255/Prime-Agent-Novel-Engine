@@ -64,6 +64,14 @@ describe("public command routing", () => {
 		});
 	});
 
+	it("forwards global options when opening the agents view", async () => {
+		await expect(handlePublicCommand(["agents", "--verbose", "--provider", "anthropic"])).resolves.toEqual({
+			handled: false,
+			args: ["--verbose", "--provider", "anthropic"],
+			explicitAgentsView: true,
+		});
+	});
+
 	it("routes agent operations through the internal protocol adapter", async () => {
 		await expect(handlePublicCommand(["list", "--all", "--json"])).resolves.toMatchObject({ handled: true });
 		expect(mocks.daemonCommands).toEqual([["daemon", "list", "--all", "--json"]]);

@@ -59,8 +59,7 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 
 	switch (command) {
 		case "agents":
-			if (!requireArgumentCount(args.slice(1), 0, "agents")) return HANDLED;
-			return { handled: false, args: [], explicitAgentsView: true };
+			return { handled: false, args: args.slice(1), explicitAgentsView: true };
 		case "list":
 			return runInternalAgentCommand("list", args.slice(1));
 		case "attach": {
