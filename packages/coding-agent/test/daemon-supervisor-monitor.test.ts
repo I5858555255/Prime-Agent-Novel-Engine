@@ -254,80 +254,72 @@ describe("daemon worker supervisor monitoring", () => {
 		}
 	});
 
-	it("keeps unidentifiable workers gated through descriptor publication", async () => {
+	it.each([
+		{
+			name: "first post-spawn ownership check",
+			assertionCall: 3,
+			error: recoveryDeniedError("supervisor_generation_stale"),
+		},
+		{
+			name: "pre-publication ownership check",
+			assertionCall: 4,
+			error: recoveryDeniedError("supervisor_generation_stale"),
+		},
+		{ name: "descriptor persistence", persistFailure: true, error: new Error("descriptor persistence failed") },
+	] as const)("keeps unidentifiable workers gated after $name fails", async (scenario) => {
 		workerLaunchTestState.capture = true;
 		workerLaunchTestState.forceMissingProcessStartId = true;
 		workerLaunchTestState.tsxCliPath = join(process.cwd(), "../../node_modules/tsx/dist/cli.mjs");
 		workerLaunchTestState.cliEntrypoint = join(process.cwd(), "src/cli.ts");
-		const evidence: Array<{
-			child: ChildProcess;
-			descriptorDir: string;
-			registryDir: string;
-			workerSocketPath: string;
-			workers: Map<string, unknown>;
-		}> = [];
-		const scenarios = [
-			{ assertionCall: 3, error: recoveryDeniedError("supervisor_generation_stale") },
-			{ assertionCall: 4, error: recoveryDeniedError("supervisor_generation_stale") },
-			{ persistFailure: true, error: new Error("descriptor persistence failed") },
-		] as const;
-
-		for (const scenario of scenarios) {
-			const root = mkdtempSync(join(tmpdir(), "prime-supervisor-launch-gate-test-"));
-			const descriptorDir = join(root, "descriptors");
-			const registryDir = join(root, "registry");
-			mkdirSync(descriptorDir, { recursive: true });
-			mkdirSync(registryDir, { recursive: true });
-			supervisorRegistryDirs.add(root);
-			process.env[supervisorRegistryDirEnv] = registryDir;
-			let assertionCount = 0;
-			const workers = new Map<string, unknown>();
-			const spawnedBefore = workerLaunchTestState.spawned.length;
-			const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
-				defaultSessionConfig: { cwd: root, agentDir: root },
-				descriptorDir,
-				socketPath: join(root, "supervisor.sock"),
-				workers,
-				assertRecoveryAllowed: vi.fn(async () => {
-					assertionCount++;
-					if ("assertionCall" in scenario && assertionCount === scenario.assertionCall) {
-						throw scenario.error;
+		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-launch-gate-test-"));
+		const descriptorDir = join(root, "descriptors");
+		const registryDir = join(root, "registry");
+		mkdirSync(descriptorDir, { recursive: true });
+		mkdirSync(registryDir, { recursive: true });
+		supervisorRegistryDirs.add(root);
+		process.env[supervisorRegistryDirEnv] = registryDir;
+		let assertionCount = 0;
+		const workers = new Map<string, unknown>();
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			defaultSessionConfig: { cwd: root, agentDir: root },
+			descriptorDir,
+			socketPath: join(root, "supervisor.sock"),
+			workers,
+			assertRecoveryAllowed: vi.fn(async () => {
+				assertionCount++;
+				if ("assertionCall" in scenario && assertionCount === scenario.assertionCall) {
+					throw scenario.error;
+				}
+			}),
+			...("persistFailure" in scenario
+				? {
+						persistWorker: vi.fn(() => {
+							throw scenario.error;
+						}),
 					}
-				}),
-				...("persistFailure" in scenario
-					? {
-							persistWorker: vi.fn(() => {
-								throw scenario.error;
-							}),
-						}
-					: {}),
-				log: vi.fn(),
-			}) as {
-				launchWorker(command: { type: "create"; config: { cwd: string; agentDir: string } }): Promise<unknown>;
-			};
+				: {}),
+			log: vi.fn(),
+		}) as {
+			launchWorker(command: { type: "create"; config: { cwd: string; agentDir: string } }): Promise<unknown>;
+		};
 
-			await expect(supervisor.launchWorker({ type: "create", config: { cwd: root, agentDir: root } })).rejects.toBe(
-				scenario.error,
-			);
+		await expect(supervisor.launchWorker({ type: "create", config: { cwd: root, agentDir: root } })).rejects.toBe(
+			scenario.error,
+		);
 
-			expect(assertionCount).toBe("assertionCall" in scenario ? scenario.assertionCall : 4);
-			expect(workerLaunchTestState.spawned).toHaveLength(spawnedBefore + 1);
-			const { child, args } = workerLaunchTestState.spawned[spawnedBefore]!;
-			const socketFlagIndex = args.indexOf("--daemon-socket");
-			expect(socketFlagIndex).toBeGreaterThanOrEqual(0);
-			const workerSocketPath = args[socketFlagIndex + 1];
-			expect(workerSocketPath).toBeDefined();
-			evidence.push({ child, descriptorDir, registryDir, workerSocketPath: workerSocketPath!, workers });
-		}
+		expect(assertionCount).toBe("assertionCall" in scenario ? scenario.assertionCall : 4);
+		expect(workerLaunchTestState.spawned).toHaveLength(1);
+		const { child, args } = workerLaunchTestState.spawned[0]!;
+		const socketFlagIndex = args.indexOf("--daemon-socket");
+		expect(socketFlagIndex).toBeGreaterThanOrEqual(0);
+		const workerSocketPath = args[socketFlagIndex + 1];
+		expect(workerSocketPath).toBeDefined();
 
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 5500));
-		for (const { child, descriptorDir, registryDir, workerSocketPath, workers } of evidence) {
-			expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
-			expect(existsSync(workerSocketPath)).toBe(false);
-			expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);
-			expect(readdirSync(registryDir)).toEqual([]);
-			expect(workers.size).toBe(0);
-		}
+		expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+		expect(existsSync(workerSocketPath!)).toBe(false);
+		expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);
+		expect(readdirSync(registryDir)).toEqual([]);
+		expect(workers.size).toBe(0);
 	});
 
 	it("rolls back promptly when the child closes its startup gate before commit", async () => {
