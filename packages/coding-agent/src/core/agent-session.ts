@@ -7279,11 +7279,6 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
-			const previousServiceTier = this.serviceTier;
-			this.agent.state.serviceTier = this._getEffectiveServiceTier(sessionContext.serviceTier);
-			if (this.serviceTier !== previousServiceTier) {
-				this._emit({ type: "service_tier_changed", serviceTier: this.serviceTier });
-			}
 			this._restoreLateIpythonSentAgentMessages();
 			this._reloadGoalStateFromBranch();
 
