@@ -1912,6 +1912,11 @@ export class DaemonSupervisor {
 			client.snapshotActiveSessionIds = new Set();
 		}
 		client.snapshotActiveSessionIds.add(result.activeSessionId);
+		client.snapshotActiveSessionCounts ??= new Map();
+		client.snapshotActiveSessionCounts.set(
+			result.activeSessionId,
+			(client.snapshotActiveSessionCounts.get(result.activeSessionId) ?? 0) + 1,
+		);
 		const { messages: _messages, ...snapshotHeader } = result.snapshot;
 		try {
 			if (
@@ -1952,7 +1957,13 @@ export class DaemonSupervisor {
 			client.socket.destroy(streamError);
 			throw streamError;
 		} finally {
-			client.snapshotActiveSessionIds?.delete(result.activeSessionId);
+			const streamCount = client.snapshotActiveSessionCounts?.get(result.activeSessionId) ?? 1;
+			if (streamCount > 1) {
+				client.snapshotActiveSessionCounts?.set(result.activeSessionId, streamCount - 1);
+			} else {
+				client.snapshotActiveSessionCounts?.delete(result.activeSessionId);
+				client.snapshotActiveSessionIds?.delete(result.activeSessionId);
+			}
 			client.snapshotStreaming = (client.snapshotActiveSessionIds?.size ?? 0) > 0;
 			if (!client.snapshotStreaming) {
 				client.backpressured = false;

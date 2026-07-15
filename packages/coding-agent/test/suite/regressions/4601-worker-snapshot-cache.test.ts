@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActiveSessionState, DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
 import { AgentDaemon, markClientSnapshotStreaming } from "../../../src/modes/daemon/daemon-mode.js";
 import {
@@ -12,6 +12,7 @@ import {
 	type DaemonAttachResult,
 	type DaemonOutbound,
 } from "../../../src/modes/daemon/daemon-protocol.js";
+import { DaemonSupervisor } from "../../../src/modes/daemon/daemon-supervisor.js";
 import {
 	createSnapshotTranscriptChunks,
 	SnapshotTranscriptCache,
@@ -248,6 +249,112 @@ describe("ENG-4601 worker snapshot cache", () => {
 		expect(socket.listenerCount("close")).toBe(0);
 		expect(socket.listenerCount("error")).toBe(0);
 		expect(socket.destroyed).toBe(false);
+		socket.destroy();
+	});
+
+	it("keeps supervisor snapshot state active until overlapping same-session streams finish", async () => {
+		const root = tempDirectory();
+		const supervisor = new DaemonSupervisor(join(root, "supervisor.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			descriptorDir: join(root, "state"),
+		});
+		const { client, socket } = socketClient("supervisor-overlap");
+		const firstTranscript = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId: "snapshot-first",
+			messages: messages("first"),
+			cacheRoot: root,
+		});
+		const secondTranscript = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId: "snapshot-second",
+			messages: messages("second"),
+			cacheRoot: root,
+		});
+		const replacementTranscript = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId: "snapshot-replacement",
+			messages: messages("replacement"),
+			cacheRoot: root,
+		});
+		const supervisorWorker = {
+			transcriptCaches: new Map([[activeSessionId, replacementTranscript]]),
+		};
+		const firstResult = {
+			...streamedResult(2),
+			snapshotStream: { id: firstTranscript.snapshotId, messageCount: 2, targetChunkBytes: 1 },
+		};
+		const secondResult = {
+			...streamedResult(2),
+			snapshotStream: { id: secondTranscript.snapshotId, messageCount: 2, targetChunkBytes: 1 },
+		};
+		const replacementResult = {
+			...streamedResult(2),
+			snapshotStream: { id: replacementTranscript.snapshotId, messageCount: 2, targetChunkBytes: 1 },
+		};
+		const written: DaemonOutbound[] = [];
+		let releaseSecondBegin!: (accepted: boolean) => void;
+		const secondBegin = new Promise<boolean>((resolve) => {
+			releaseSecondBegin = resolve;
+		});
+		const writeSnapshotBuffer = vi.fn((_client: DaemonSocketClient, buffer: Uint8Array) => {
+			const message = JSON.parse(Buffer.from(buffer).toString("utf8")) as DaemonOutbound;
+			written.push(message);
+			if (message.type === "session_snapshot_begin" && message.snapshotId === secondTranscript.snapshotId) {
+				return secondBegin;
+			}
+			return Promise.resolve(true);
+		});
+		const internals = supervisor as unknown as {
+			clients: Set<DaemonSocketClient>;
+			pendingReplacementSnapshots: WeakMap<DaemonSocketClient, Map<string, unknown>>;
+			writeSnapshotBuffer: typeof writeSnapshotBuffer;
+			streamSnapshot(
+				client: DaemonSocketClient,
+				worker: typeof supervisorWorker,
+				result: DaemonAttachResult,
+				transcript: SnapshotTranscriptCache,
+				purpose: "attach" | "replacement" | "resync",
+			): Promise<void>;
+			streamReplacementSnapshot(
+				worker: typeof supervisorWorker,
+				activeSessionId: string,
+				result: DaemonAttachResult,
+				transcript: SnapshotTranscriptCache,
+			): void;
+		};
+		internals.clients.add(client);
+		internals.writeSnapshotBuffer = writeSnapshotBuffer;
+
+		const firstStream = internals.streamSnapshot(client, supervisorWorker, firstResult, firstTranscript, "attach");
+		const secondStream = internals.streamSnapshot(client, supervisorWorker, secondResult, secondTranscript, "attach");
+		internals.streamReplacementSnapshot(supervisorWorker, activeSessionId, replacementResult, replacementTranscript);
+
+		await firstStream;
+
+		expect(client.snapshotActiveSessionCounts?.get(activeSessionId)).toBe(1);
+		expect(client.snapshotActiveSessionIds?.has(activeSessionId)).toBe(true);
+		expect(client.snapshotStreaming).toBe(true);
+		expect(internals.pendingReplacementSnapshots.get(client)?.size).toBe(1);
+		expect(
+			written.some((message) => message.type === "session_snapshot_begin" && message.purpose === "replacement"),
+		).toBe(false);
+
+		releaseSecondBegin(true);
+		await secondStream;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		const secondEndIndex = written.findIndex(
+			(message) => message.type === "session_snapshot_end" && message.snapshotId === secondTranscript.snapshotId,
+		);
+		const replacementBeginIndex = written.findIndex(
+			(message) => message.type === "session_snapshot_begin" && message.purpose === "replacement",
+		);
+		expect(replacementBeginIndex).toBeGreaterThan(secondEndIndex);
+		expect(client.snapshotActiveSessionCounts?.size).toBe(0);
+		expect(client.snapshotActiveSessionIds?.size).toBe(0);
+		expect(client.snapshotStreaming).toBe(false);
+		expect(internals.pendingReplacementSnapshots.get(client)?.size ?? 0).toBe(0);
 		socket.destroy();
 	});
 
