@@ -723,7 +723,7 @@ describe("TUI fullscreen mode", () => {
 
 		const tableRegions = chat.getSelectionRegions();
 		const { tableTop: top, tableBottom: bottom, tableLeft: left, tableRight: right } = tableRegions[0];
-		terminal.sendInput(`\x1b[<0;${left + 1};${top + 1}M`);
+		terminal.sendInput(`\x1b[<0;${left};${top + 1}M`);
 		terminal.sendInput(`\x1b[<32;${right};${bottom + 1}M`);
 		await terminal.waitForRender();
 		assert.ok(terminal.getWrites().includes("\x1b[7m"), "table cell contents should be highlighted");

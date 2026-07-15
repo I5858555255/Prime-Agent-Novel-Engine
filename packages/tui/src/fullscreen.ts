@@ -404,8 +404,8 @@ export class FullscreenViewport {
 				region &&
 				point.line >= region.tableTop &&
 				point.line <= region.tableBottom &&
-				point.col >= region.tableLeft &&
-				point.col < region.tableRight
+				point.col >= Math.max(0, region.tableLeft - 1) &&
+				point.col <= region.tableRight
 			) {
 				return table;
 			}
