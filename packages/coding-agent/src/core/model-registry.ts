@@ -726,6 +726,18 @@ export class ModelRegistry {
 		return this.getAvailable();
 	}
 
+	async canUseModel(model: Model<Api>): Promise<boolean> {
+		if (!this.hasConfiguredAuth(model)) {
+			return false;
+		}
+		if (!isPrivatePrimeInferenceModel(model)) {
+			return true;
+		}
+
+		const availableModels = await this.refreshAvailableModels();
+		return availableModels.some((candidate) => candidate.provider === model.provider && candidate.id === model.id);
+	}
+
 	/**
 	 * Find a model by provider and ID.
 	 */

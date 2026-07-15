@@ -191,6 +191,33 @@ describe("ENG-4645 internal GLM configuration", () => {
 		expect(result?.model.id).toBe("internal/glm-5.2-fast");
 	});
 
+	test("rejects unauthorized direct and scoped model switches", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.authStorage.set("prime-inference", {
+			type: "api_key",
+			key: "prime-key",
+			primeTeam: { teamId: "other-team", name: "Other Team" },
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })),
+		);
+		const currentModel = harness.session.model;
+		const privateModel = harness.session.modelRegistry.find("prime-inference", "internal/glm-5.2-fast");
+		expect(currentModel).toBeDefined();
+		expect(privateModel).toBeDefined();
+		if (!currentModel || !privateModel) {
+			throw new Error("Expected current and private models");
+		}
+
+		await expect(harness.session.setModel(privateModel)).rejects.toThrow("not available for the current Prime team");
+		harness.session.setScopedModels([{ model: currentModel }, { model: privateModel }]);
+
+		expect(await harness.session.cycleModel()).toBeUndefined();
+		expect(harness.session.model).toBe(currentModel);
+	});
+
 	test("loads the private route explicitly without inheriting Z.ai compatibility", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
