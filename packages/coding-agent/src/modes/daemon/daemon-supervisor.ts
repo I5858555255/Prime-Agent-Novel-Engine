@@ -1690,7 +1690,7 @@ export class DaemonSupervisor {
 	): Promise<WorkerAttachData> {
 		const match = await this.findWorker(command.activeSessionId);
 		const activeSessionId = match.summary.activeSessionId ?? match.summary.id;
-		const duplicateValidation = match.worker.snapshotTransferFrames.get(activeSessionId)?.validation;
+		const duplicateValidation = match.worker.snapshotTransferFrames?.get(activeSessionId)?.validation;
 		if (duplicateValidation) {
 			await duplicateValidation.promise;
 		}
