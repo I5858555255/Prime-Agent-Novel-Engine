@@ -477,7 +477,11 @@ export class AgentDaemon {
 		}
 		this.supervisorMonitorTimer = setTimeout(() => {
 			this.supervisorMonitorTimer = undefined;
-			void this.checkSupervisorAvailability(supervisorSocketPath);
+			void this.checkSupervisorAvailability(supervisorSocketPath).catch(() => {
+				if (!this.shuttingDown && !this.hasAuthenticatedSupervisorConnection()) {
+					this.scheduleSupervisorAvailabilityCheck(supervisorSocketPath, 5000);
+				}
+			});
 		}, delayMs);
 	}
 

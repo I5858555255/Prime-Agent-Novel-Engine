@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -83,6 +83,33 @@ describe("daemon worker supervisor monitoring", () => {
 		await vi.runAllTimersAsync();
 
 		expect(daemon.canConnectToSupervisor).not.toHaveBeenCalled();
+	});
+
+	it("retries when shutdown admission lookup fails", async () => {
+		vi.useFakeTimers();
+		let resolveProbe: () => void = () => undefined;
+		const probeCompleted = new Promise<void>((resolve) => {
+			resolveProbe = resolve;
+		});
+		const daemon = createHarness(async () => {
+			resolveProbe();
+			return true;
+		});
+		const registryDir = process.env[supervisorRegistryDirEnv];
+		if (!registryDir) throw new Error("Supervisor registry test directory was not set");
+		rmSync(registryDir, { recursive: true, force: true });
+		writeFileSync(registryDir, "not a directory");
+
+		daemon.scheduleSupervisorAvailabilityCheck("/tmp/supervisor.sock", 0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(daemon.canConnectToSupervisor).not.toHaveBeenCalled();
+		expect(daemon.supervisorMonitorTimer).toBeDefined();
+
+		rmSync(registryDir, { force: true });
+		mkdirSync(registryDir, { recursive: true });
+		await vi.advanceTimersByTimeAsync(5000);
+		await probeCompleted;
+		expect(daemon.canConnectToSupervisor).toHaveBeenCalledOnce();
 	});
 
 	it("cancels an in-flight recovery after an intentional stop tombstone", async () => {

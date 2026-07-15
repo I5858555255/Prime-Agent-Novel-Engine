@@ -591,6 +591,9 @@ async function terminateVerifiedListener(
 		return false;
 	}
 	await assertAdmission();
+	if (getProcessStartId(listener.pid) !== processStartId) {
+		return false;
+	}
 	killDaemon(listener.pid);
 	const deadline = Date.now() + 1000;
 	while (getProcessStartId(listener.pid) === processStartId && Date.now() < deadline) {
@@ -598,6 +601,9 @@ async function terminateVerifiedListener(
 	}
 	if (getProcessStartId(listener.pid) === processStartId) {
 		await assertAdmission();
+		if (getProcessStartId(listener.pid) !== processStartId) {
+			return false;
+		}
 		try {
 			process.kill(listener.pid, "SIGKILL");
 		} catch {
