@@ -31,6 +31,7 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
 
 type FastCommandContext = {
 	connectionState?: { serviceTier: ServiceTier; thinkingLevel: ThinkingLevel };
+	fastModeToggleQueue: Promise<void>;
 	agentConnection: { setServiceTier: (serviceTier: ServiceTier) => Promise<void> };
 	footer: { invalidate: () => void };
 	childAgentSummary: { invalidate: () => void };
@@ -67,12 +68,15 @@ function testModel(provider: string, id: string, api: Api): Model<Api> {
 function makeFastContext(model: Model<Api> = testModel("openai-codex", "gpt-5.5", "openai-codex-responses")) {
 	const context: FastCommandContext = {
 		connectionState: { serviceTier: "default", thinkingLevel: "high" },
+		fastModeToggleQueue: Promise.resolve(),
 		agentConnection: { setServiceTier: vi.fn(async () => {}) },
 		footer: { invalidate: vi.fn() },
 		childAgentSummary: { invalidate: vi.fn() },
 		showStatus: vi.fn(),
 		showError: vi.fn(),
-		patchConnectionState: vi.fn(),
+		patchConnectionState: vi.fn((patch: Record<string, unknown>) => {
+			context.connectionState = { ...context.connectionState, ...patch } as FastCommandContext["connectionState"];
+		}),
 		getCurrentModel: () => model,
 		currentModelSupportsFastMode: () => fastInteractiveModePrototype.currentModelSupportsFastMode.call(context),
 	};
@@ -254,6 +258,17 @@ describe("InteractiveMode /effort", () => {
 
 			expect(context.agentConnection.setServiceTier).toHaveBeenCalledWith("default");
 			expect(context.patchConnectionState).toHaveBeenCalledWith({ serviceTier: "default" });
+		});
+
+		it("serializes rapid toggles", async () => {
+			const context = makeFastContext();
+
+			fastInteractiveModePrototype.handleFastCommand.call(context);
+			fastInteractiveModePrototype.handleFastCommand.call(context);
+
+			await vi.waitFor(() => expect(context.agentConnection.setServiceTier).toHaveBeenCalledTimes(2));
+			expect(context.agentConnection.setServiceTier).toHaveBeenNthCalledWith(1, "priority");
+			expect(context.agentConnection.setServiceTier).toHaveBeenNthCalledWith(2, "default");
 		});
 
 		it("reports unsupported models without changing the service tier", () => {

@@ -731,6 +731,7 @@ export class InteractiveMode {
 
 	// Serializes session event handling; see subscribeToAgent
 	private sessionEventQueue: Promise<void> = Promise.resolve();
+	private fastModeToggleQueue: Promise<void> = Promise.resolve();
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -6974,15 +6975,20 @@ export class InteractiveMode {
 	}
 
 	private handleFastCommand(): void {
+		const unavailableMessage = "Fast mode requires GPT-5.4, GPT-5.5, or GPT-5.6 with ChatGPT authentication";
 		if (!this.currentModelSupportsFastMode()) {
-			this.showStatus("Fast mode requires GPT-5.4, GPT-5.5, or GPT-5.6 with ChatGPT authentication");
+			this.showStatus(unavailableMessage);
 			return;
 		}
-		const enabled = this.connectionState?.serviceTier === "priority";
-		const serviceTier: ServiceTier = enabled ? "default" : "priority";
-		void this.agentConnection
-			.setServiceTier(serviceTier)
-			.then(() => {
+		this.fastModeToggleQueue = this.fastModeToggleQueue
+			.then(async () => {
+				if (!this.currentModelSupportsFastMode()) {
+					this.showStatus(unavailableMessage);
+					return;
+				}
+				const enabled = this.connectionState?.serviceTier === "priority";
+				const serviceTier: ServiceTier = enabled ? "default" : "priority";
+				await this.agentConnection.setServiceTier(serviceTier);
 				this.patchConnectionState({ serviceTier });
 				this.footer.invalidate();
 				this.childAgentSummary.invalidate();
