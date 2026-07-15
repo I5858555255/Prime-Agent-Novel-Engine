@@ -184,6 +184,87 @@ describe("ENG-4601 worker snapshot cache", () => {
 		},
 	);
 
+	it("terminates a pre-begin abort without interrupting a sibling stream", async () => {
+		const root = tempDirectory();
+		const daemon = new AgentDaemon(join(root, "worker.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const { client, socket } = socketClient("worker-pre-begin-abort");
+		const siblingActiveSessionId = "active-4601-pre-begin-sibling";
+		const siblingSnapshotId = "snapshot-4601-pre-begin-sibling";
+		client.attachedActiveSessionIds.add(siblingActiveSessionId);
+		const state = {
+			activeSessionId,
+			clients: new Set([client]),
+			extensionUiRequests: new Map(),
+			runtime: { metadata: { kind: "subagent" } },
+		} as unknown as ActiveSessionState;
+		const written: DaemonOutbound[] = [];
+		const signal = markClientSnapshotStreaming(client, activeSessionId);
+		const siblingSignal = markClientSnapshotStreaming(client, siblingActiveSessionId);
+		const internals = daemon as unknown as {
+			writeSerialized(client: DaemonSocketClient, buffer: string | Buffer, message?: DaemonOutbound): boolean;
+			streamWorkerSnapshot(
+				client: DaemonSocketClient,
+				result: DaemonAttachResult,
+				transcript: SnapshotTranscriptChunkSource,
+				purpose: "attach",
+				signal: AbortSignal,
+				snapshotAlreadyMarked: boolean,
+			): Promise<void>;
+			detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void;
+		};
+		internals.writeSerialized = (_client, _buffer, message) => {
+			if (message) written.push(message);
+			return true;
+		};
+
+		internals.detachClientFromSession(client, state);
+		await Promise.all([
+			internals.streamWorkerSnapshot(
+				client,
+				streamedResult(2),
+				createSnapshotTranscriptChunks({ activeSessionId, snapshotId, messages: messages("aborted"), signal }),
+				"attach",
+				signal,
+				true,
+			),
+			internals.streamWorkerSnapshot(
+				client,
+				streamedResult(2, 1, siblingActiveSessionId, siblingSnapshotId),
+				createSnapshotTranscriptChunks({
+					activeSessionId: siblingActiveSessionId,
+					snapshotId: siblingSnapshotId,
+					messages: messages("sibling"),
+					signal: siblingSignal,
+				}),
+				"attach",
+				siblingSignal,
+				true,
+			),
+		]);
+
+		expect(
+			written
+				.filter((message) => "snapshotId" in message && message.activeSessionId === activeSessionId)
+				.map((message) => message.type),
+		).toEqual(["session_snapshot_begin", "session_snapshot_failed"]);
+		expect(written).toContainEqual(
+			expect.objectContaining({
+				type: "session_snapshot_end",
+				activeSessionId: siblingActiveSessionId,
+				snapshotId: siblingSnapshotId,
+			}),
+		);
+		expect(client.attachedActiveSessionIds.has(siblingActiveSessionId)).toBe(true);
+		expect(client.snapshotStreaming).toBe(false);
+		expect(socket.destroyed).toBe(false);
+		socket.destroy();
+	});
+
 	it("terminates an aborted worker snapshot without interrupting a sibling stream", async () => {
 		const root = tempDirectory();
 		const daemon = new AgentDaemon(join(root, "worker.sock"), {
@@ -295,6 +376,72 @@ describe("ENG-4601 worker snapshot cache", () => {
 		expect(socket.listenerCount("error")).toBe(0);
 		expect(socket.destroyed).toBe(false);
 		socket.destroy();
+	});
+
+	it("closes a permanently backpressured worker channel after an aborted snapshot", async () => {
+		vi.useFakeTimers();
+		try {
+			const root = tempDirectory();
+			const daemon = new AgentDaemon(join(root, "worker.sock"), {
+				defaultSessionConfig: { agentDir: root, cwd: root },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const { client, socket } = socketClient("worker-permanent-backpressure");
+			const siblingActiveSessionId = "active-4601-backpressure-sibling";
+			client.attachedActiveSessionIds.add(siblingActiveSessionId);
+			socket.on("error", () => {});
+			const state = {
+				activeSessionId,
+				clients: new Set([client]),
+				extensionUiRequests: new Map(),
+				runtime: { metadata: { kind: "subagent" } },
+			} as unknown as ActiveSessionState;
+			const signal = markClientSnapshotStreaming(client, activeSessionId);
+			const internals = daemon as unknown as {
+				writeSerialized(client: DaemonSocketClient, buffer: string | Buffer, message?: DaemonOutbound): boolean;
+				streamWorkerSnapshot(
+					client: DaemonSocketClient,
+					result: DaemonAttachResult,
+					transcript: SnapshotTranscriptChunkSource,
+					purpose: "attach",
+					signal: AbortSignal,
+					snapshotAlreadyMarked: boolean,
+				): Promise<void>;
+				detachClientFromSession(client: DaemonSocketClient, state: ActiveSessionState): void;
+			};
+			internals.writeSerialized = () => false;
+			const stream = internals.streamWorkerSnapshot(
+				client,
+				streamedResult(2),
+				createSnapshotTranscriptChunks({ activeSessionId, snapshotId, messages: messages("blocked"), signal }),
+				"attach",
+				signal,
+				true,
+			);
+			for (let attempt = 0; attempt < 10 && socket.listenerCount("drain") === 0; attempt++) {
+				await Promise.resolve();
+			}
+
+			internals.detachClientFromSession(client, state);
+			for (let attempt = 0; attempt < 10 && vi.getTimerCount() === 0; attempt++) {
+				await Promise.resolve();
+			}
+			expect(vi.getTimerCount()).toBe(1);
+			await vi.advanceTimersByTimeAsync(1_000);
+			await stream;
+
+			expect(socket.destroyed).toBe(true);
+			expect(client.attachedActiveSessionIds.has(siblingActiveSessionId)).toBe(true);
+			expect(client.snapshotStreaming).toBe(false);
+			expect(client.snapshotActiveSessionIds?.size).toBe(0);
+			expect(client.snapshotTransferAbortControllers?.size).toBe(0);
+			expect(socket.listenerCount("drain")).toBe(0);
+			expect(socket.listenerCount("close")).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps supervisor snapshot state active until overlapping same-session streams finish", async () => {

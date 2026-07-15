@@ -178,6 +178,7 @@ export type { SessionActivity, SessionLifecycle, SessionSummary } from "./daemon
 export { defaultDaemonSocketPath } from "./daemon-socket.js";
 
 const structuredLog = getLogger("coding-agent.daemon");
+const WORKER_SNAPSHOT_TERMINAL_DRAIN_TIMEOUT_MS = 1_000;
 
 const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"ack_result",
@@ -2841,14 +2842,36 @@ export class AgentDaemon {
 			return;
 		}
 		const { messages: _messages, ...snapshot } = result.snapshot;
-		let beginWritten = false;
-		const failAbortedTransfer = async (): Promise<void> => {
-			if (!beginWritten || client.socket.destroyed) {
+		const snapshotBegin: DaemonOutbound = {
+			type: "session_snapshot_begin",
+			activeSessionId: result.activeSessionId,
+			snapshotId: stream.id,
+			snapshot,
+			messageCount: stream.messageCount,
+			targetChunkBytes: stream.targetChunkBytes,
+			purpose: purpose === "catchup" ? "resync" : purpose,
+		};
+		const deliverSnapshotFailure = async (streamError: Error, includeBegin = false): Promise<void> => {
+			transcript.markFailed?.(streamError);
+			if (client.socket.destroyed) {
 				return;
 			}
-			const streamError = new Error(`Snapshot ${stream.id} was aborted`);
-			transcript.markFailed?.(streamError);
 			try {
+				if (
+					includeBegin &&
+					!(await this.writeWorkerSnapshotRecord(
+						client,
+						snapshotBegin,
+						purpose,
+						undefined,
+						WORKER_SNAPSHOT_TERMINAL_DRAIN_TIMEOUT_MS,
+					))
+				) {
+					if (!client.socket.destroyed) {
+						client.socket.destroy(streamError);
+					}
+					return;
+				}
 				const delivered = await this.writeWorkerSnapshotRecord(
 					client,
 					{
@@ -2858,6 +2881,8 @@ export class AgentDaemon {
 						error: streamError.message,
 					},
 					purpose,
+					undefined,
+					WORKER_SNAPSHOT_TERMINAL_DRAIN_TIMEOUT_MS,
 				);
 				if (!delivered && !client.socket.destroyed) {
 					client.socket.destroy(streamError);
@@ -2868,34 +2893,19 @@ export class AgentDaemon {
 		};
 		try {
 			if (transferSignal.aborted) {
+				await deliverSnapshotFailure(new Error(`Snapshot ${stream.id} was aborted`), true);
 				return;
 			}
-			beginWritten = true;
-			if (
-				!(await this.writeWorkerSnapshotRecord(
-					client,
-					{
-						type: "session_snapshot_begin",
-						activeSessionId: result.activeSessionId,
-						snapshotId: stream.id,
-						snapshot,
-						messageCount: stream.messageCount,
-						targetChunkBytes: stream.targetChunkBytes,
-						purpose: purpose === "catchup" ? "resync" : purpose,
-					},
-					purpose,
-					transferSignal,
-				))
-			) {
+			if (!(await this.writeWorkerSnapshotRecord(client, snapshotBegin, purpose, transferSignal))) {
 				if (transferSignal.aborted) {
-					await failAbortedTransfer();
+					await deliverSnapshotFailure(new Error(`Snapshot ${stream.id} was aborted`));
 				}
 				return;
 			}
 			let chunkCount = 0;
 			for await (const chunk of transcript) {
 				if (transferSignal.aborted) {
-					await failAbortedTransfer();
+					await deliverSnapshotFailure(new Error(`Snapshot ${stream.id} was aborted`));
 					return;
 				}
 				const headerMessage: DaemonOutbound = {
@@ -2907,14 +2917,14 @@ export class AgentDaemon {
 				};
 				if (!(await this.writeWorkerSnapshotBuffer(client, chunk, headerMessage, purpose, transferSignal))) {
 					if (transferSignal.aborted) {
-						await failAbortedTransfer();
+						await deliverSnapshotFailure(new Error(`Snapshot ${stream.id} was aborted`));
 					}
 					return;
 				}
 				chunkCount++;
 			}
 			if (transferSignal.aborted) {
-				await failAbortedTransfer();
+				await deliverSnapshotFailure(new Error(`Snapshot ${stream.id} was aborted`));
 				return;
 			}
 			await this.writeWorkerSnapshotRecord(
@@ -2932,31 +2942,11 @@ export class AgentDaemon {
 			);
 		} catch (error) {
 			if (transferSignal.aborted) {
-				await failAbortedTransfer();
+				await deliverSnapshotFailure(new Error(`Snapshot ${stream.id} was aborted`));
 				return;
 			}
 			const streamError = error instanceof Error ? error : new Error(String(error));
-			transcript.markFailed?.(streamError);
-			if (!client.socket.destroyed) {
-				try {
-					const delivered = await this.writeWorkerSnapshotRecord(
-						client,
-						{
-							type: "session_snapshot_failed",
-							activeSessionId: result.activeSessionId,
-							snapshotId: stream.id,
-							error: streamError.message,
-						},
-						purpose,
-						transferSignal,
-					);
-					if (!delivered && !transferSignal.aborted && !client.socket.destroyed) {
-						client.socket.destroy(streamError);
-					}
-				} catch (deliveryError) {
-					client.socket.destroy(deliveryError instanceof Error ? deliveryError : new Error(String(deliveryError)));
-				}
-			}
+			await deliverSnapshotFailure(streamError);
 			throw streamError;
 		} finally {
 			finishClientSnapshotStreaming(client, result.activeSessionId);
@@ -2974,8 +2964,16 @@ export class AgentDaemon {
 		message: DaemonOutbound,
 		purpose: "attach" | "replacement" | "catchup",
 		signal?: AbortSignal,
+		drainTimeoutMs?: number,
 	): Promise<boolean> {
-		return this.writeWorkerSnapshotBuffer(client, Buffer.from(serializeJsonLine(message)), message, purpose, signal);
+		return this.writeWorkerSnapshotBuffer(
+			client,
+			Buffer.from(serializeJsonLine(message)),
+			message,
+			purpose,
+			signal,
+			drainTimeoutMs,
+		);
 	}
 
 	private async writeWorkerSnapshotBuffer(
@@ -2984,6 +2982,7 @@ export class AgentDaemon {
 		message: DaemonOutbound,
 		purpose: "attach" | "replacement" | "catchup",
 		signal?: AbortSignal,
+		drainTimeoutMs?: number,
 	): Promise<boolean> {
 		if (signal?.aborted || client.socket.destroyed) {
 			return false;
@@ -2993,6 +2992,7 @@ export class AgentDaemon {
 		}
 		return new Promise<boolean>((resolveDrain) => {
 			let settled = false;
+			let drainTimeout: NodeJS.Timeout | undefined;
 			const finish = (value: boolean) => {
 				if (settled) {
 					return;
@@ -3002,6 +3002,9 @@ export class AgentDaemon {
 				client.socket.off("close", onClose);
 				client.socket.off("error", onClose);
 				signal?.removeEventListener("abort", onAbort);
+				if (drainTimeout) {
+					clearTimeout(drainTimeout);
+				}
 				resolveDrain(value);
 			};
 			const onDrain = () => finish(true);
@@ -3011,6 +3014,10 @@ export class AgentDaemon {
 			client.socket.once("close", onClose);
 			client.socket.once("error", onClose);
 			signal?.addEventListener("abort", onAbort, { once: true });
+			if (drainTimeoutMs !== undefined) {
+				drainTimeout = setTimeout(() => finish(false), drainTimeoutMs);
+				drainTimeout.unref();
+			}
 			if (signal?.aborted || client.socket.destroyed) {
 				finish(false);
 			}
