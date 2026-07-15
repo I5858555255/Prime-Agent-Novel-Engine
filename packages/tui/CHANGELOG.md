@@ -8,6 +8,8 @@
 - Fixed focused full-pane overlays becoming slow to navigate on wider terminals.
 - Fixed plain-text truncation emitting ANSI resets, marked shortened descriptions with an ellipsis, and rendered autocomplete in content-sized popup surfaces that close when editing leaves the completion context ([ENG-4542](https://linear.app/primeintellect/issue/ENG-4542/command-descriptions-are-cut-off-on-narrow-screens)).
 
+## [0.3.1] - 2026-07-15
+
 ## [0.3.0] - 2026-07-13
 
 - Fixed fullscreen TUI handoffs temporarily releasing raw input and leaking keyboard-protocol timers, which caused flicker and echoed arrow escape sequences while opening sessions.
