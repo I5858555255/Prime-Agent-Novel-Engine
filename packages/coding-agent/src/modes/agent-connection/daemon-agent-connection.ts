@@ -951,8 +951,13 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		if (message.type === "session_snapshot_failed") {
 			const assembly = this.getSnapshotAssembly(message.snapshotId);
-			this.rejectSnapshotAssembly(message.snapshotId, assembly, new Error(message.error));
+			const purpose = assembly.begin?.purpose ?? "attach";
+			const snapshotError = new Error(message.error);
+			this.rejectSnapshotAssembly(message.snapshotId, assembly, snapshotError);
 			this.ignoreSnapshotId(message.snapshotId);
+			if (purpose === "replacement" || purpose === "resync") {
+				await this.recoverFailedSnapshot(purpose, snapshotError);
+			}
 			return;
 		}
 		if (this.isStaleSequencedMessage(message)) {
@@ -1226,6 +1231,35 @@ export class DaemonAgentConnection implements AgentConnection {
 		clearTimeout(assembly.timeout);
 		if (assembly.begin?.purpose && assembly.begin.purpose !== "attach") {
 			this.snapshotAssemblies.delete(snapshotId);
+		}
+	}
+
+	private async recoverFailedSnapshot(purpose: "replacement" | "resync", snapshotError: Error): Promise<void> {
+		this.latestSnapshotIsFresh = false;
+		if (purpose === "replacement") {
+			this.latestSnapshot = undefined;
+		}
+		try {
+			const snapshot = await this.getInitialSnapshot();
+			if (this.disposed) {
+				return;
+			}
+			this.attachedSessionId = snapshot.state.sessionId;
+			this.attachedSessionFile = snapshot.state.sessionFile;
+			if (purpose === "replacement") {
+				await this.emit({ type: "session_replaced", state: snapshot.state, messages: snapshot.messages });
+			} else {
+				await this.emit({ type: "session_resynced", snapshot });
+			}
+		} catch (recoveryError) {
+			if (this.disposed) {
+				return;
+			}
+			this.terminalCloseEmitted = true;
+			await this.emit({
+				type: "closed",
+				error: `Failed to recover from a ${purpose} snapshot transfer. Snapshot error: ${formatErrorSentence(snapshotError)} Recovery error: ${formatErrorSentence(recoveryError)} ${this.formatDaemonDiagnosticContext()}`,
+			});
 		}
 	}
 
