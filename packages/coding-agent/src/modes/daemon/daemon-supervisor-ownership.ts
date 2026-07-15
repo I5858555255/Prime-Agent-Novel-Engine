@@ -44,6 +44,15 @@ interface DaemonSupervisorOwnerRecord extends ProcessIdentity {
 	updatedAt: string;
 }
 
+interface DaemonSupervisorOwnerScope {
+	version: 1;
+	role: "supervisor";
+	token: string;
+	generation: string;
+	socketPath: string;
+	descriptorDir: string;
+}
+
 interface DaemonStartupFenceRecord extends ProcessIdentity {
 	version: 1;
 	token: string;
@@ -212,10 +221,14 @@ export async function acquireDaemonSupervisorOwnership(
 	mkdirSync(candidateDirectory, { mode: 0o700 });
 	const staleDirectories: string[] = [];
 	try {
+		writeOwnerScope(candidateDirectory, record);
 		writeOwnerRecord(candidateDirectory, record);
 		await withDaemonSupervisorRegistryGuard(registryDir, () => {
 			for (const directory of listOwnerDirectories(registryDir)) {
-				const owner = requireOwnerRecord(directory);
+				const owner = readOwnerRecordForScope(directory, (scope) => ownerConflicts(scope, record));
+				if (!owner) {
+					continue;
+				}
 				if (!ownerConflicts(owner, record)) {
 					continue;
 				}
@@ -248,9 +261,12 @@ export async function persistDaemonStartupFenceFromOwner(
 	const fenceDirectory = resolve(registryDir, "startup-fences");
 	mkdirSync(fenceDirectory, { recursive: true, mode: 0o700 });
 	const path = startupFencePath(fenceDirectory, socketPath);
+	const normalizedSocketPath = normalizeSocketPath(socketPath);
 	return withDaemonSupervisorRegistryGuard(registryDir, () => {
-		const owners = listOwnerDirectories(registryDir).map((directory) => requireOwnerRecord(directory));
-		const normalizedSocketPath = normalizeSocketPath(socketPath);
+		const owners = listOwnerDirectories(registryDir).flatMap((directory) => {
+			const owner = readOwnerRecordForScope(directory, (scope) => scope.socketPath === normalizedSocketPath);
+			return owner ? [owner] : [];
+		});
 		const matchingOwners = owners.filter((owner) => owner.socketPath === normalizedSocketPath);
 		if (matchingOwners.length === 0) {
 			throw new Error(`Daemon supervisor owner does not match ${socketPath}`);
@@ -375,7 +391,7 @@ function canonicalizeFilesystemPath(path: string): string {
 	}
 }
 
-function ownerConflicts(left: DaemonSupervisorOwnerRecord, right: DaemonSupervisorOwnerRecord): boolean {
+function ownerConflicts(left: DaemonSupervisorOwnerScope, right: DaemonSupervisorOwnerScope): boolean {
 	return left.socketPath === right.socketPath || left.descriptorDir === right.descriptorDir;
 }
 
@@ -398,6 +414,21 @@ function requireOwnerRecord(directory: string): DaemonSupervisorOwnerRecord {
 		throw new Error(`Invalid daemon supervisor owner record: ${directory}`);
 	}
 	return owner;
+}
+
+function readOwnerRecordForScope(
+	directory: string,
+	isRelevant: (scope: DaemonSupervisorOwnerScope) => boolean,
+): DaemonSupervisorOwnerRecord | undefined {
+	const owner = readOwnerRecord(directory);
+	if (owner) {
+		return owner;
+	}
+	const scope = readOwnerScope(directory);
+	if (!scope || isRelevant(scope)) {
+		throw new Error(`Invalid daemon supervisor owner record: ${directory}`);
+	}
+	return undefined;
 }
 
 function readOwnerRecord(directory: string): DaemonSupervisorOwnerRecord | undefined {
@@ -430,6 +461,45 @@ function isDaemonSupervisorOwnerRecord(value: unknown): value is DaemonSuperviso
 		typeof record.createdAt === "string" &&
 		typeof record.updatedAt === "string"
 	);
+}
+
+function readOwnerScope(directory: string): DaemonSupervisorOwnerScope | undefined {
+	try {
+		const value = JSON.parse(readFileSync(resolve(directory, "scope.json"), "utf8")) as unknown;
+		if (!isDaemonSupervisorOwnerScope(value)) {
+			return undefined;
+		}
+		return ownerDirectoryPath(dirname(directory), value.generation) === directory ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function isDaemonSupervisorOwnerScope(value: unknown): value is DaemonSupervisorOwnerScope {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const scope = value as Partial<DaemonSupervisorOwnerScope>;
+	return (
+		scope.version === OWNER_VERSION &&
+		scope.role === "supervisor" &&
+		typeof scope.token === "string" &&
+		typeof scope.generation === "string" &&
+		typeof scope.socketPath === "string" &&
+		typeof scope.descriptorDir === "string"
+	);
+}
+
+function writeOwnerScope(directory: string, owner: DaemonSupervisorOwnerRecord): void {
+	const scope: DaemonSupervisorOwnerScope = {
+		version: owner.version,
+		role: owner.role,
+		token: owner.token,
+		generation: owner.generation,
+		socketPath: owner.socketPath,
+		descriptorDir: owner.descriptorDir,
+	};
+	writeJsonAtomically(resolve(directory, "scope.json"), scope);
 }
 
 function writeOwnerRecord(directory: string, record: DaemonSupervisorOwnerRecord): void {

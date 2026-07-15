@@ -332,6 +332,10 @@ function ownerRecordPath(registryDir: string, generation: string): string {
 	return join(registryDir, `${generation}.owner`, "owner.json");
 }
 
+function ownerScopePath(registryDir: string, generation: string): string {
+	return join(registryDir, `${generation}.owner`, "scope.json");
+}
+
 function readOwnerRecord(registryDir: string, generation: string): OwnerRecord | undefined {
 	try {
 		return JSON.parse(readFileSync(ownerRecordPath(registryDir, generation), "utf8")) as OwnerRecord;
@@ -856,6 +860,162 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 		await waitForDaemonStartupFence(paths.socketPath, 5000, paths.registryDir);
 		expect(readdirSync(join(paths.registryDir, "startup-fences"))).toEqual([]);
 	}, 30_000);
+
+	it("admits unrelated ownership when immutable scope proves a corrupt owner is unrelated", async () => {
+		const paths = await createPaths();
+		const corruptOwner = await acquireDaemonSupervisorOwnership({
+			agentDir: join(paths.agentDir, "corrupt-agent"),
+			appVersion: "test",
+			descriptorDir: join(paths.agentDir, "corrupt-workers"),
+			generation: "corrupt-unrelated-owner",
+			registryDir: paths.registryDir,
+			socketPath: `${paths.socketPath}.corrupt`,
+		});
+		const originalOwner = { ...corruptOwner.record };
+		let unrelatedOwner: Awaited<ReturnType<typeof acquireDaemonSupervisorOwnership>> | undefined;
+		writeFileSync(ownerRecordPath(paths.registryDir, originalOwner.generation), "{ malformed\n");
+		try {
+			unrelatedOwner = await acquireDaemonSupervisorOwnership({
+				agentDir: join(paths.agentDir, "healthy-agent"),
+				appVersion: "test",
+				descriptorDir: join(paths.agentDir, "healthy-workers"),
+				generation: "healthy-unrelated-owner",
+				registryDir: paths.registryDir,
+				socketPath: `${paths.socketPath}.healthy`,
+			});
+			expect(unrelatedOwner.record.generation).toBe("healthy-unrelated-owner");
+		} finally {
+			await unrelatedOwner?.release();
+			writeOwnerRecord(paths.registryDir, originalOwner);
+			await corruptOwner.release();
+		}
+	});
+
+	it("persists a fence when immutable scope proves a corrupt owner is unrelated", async () => {
+		const paths = await createPaths();
+		const targetOwner = await acquireDaemonSupervisorOwnership({
+			agentDir: paths.agentDir,
+			appVersion: "test",
+			descriptorDir: paths.descriptorDir,
+			generation: "fence-target-owner",
+			registryDir: paths.registryDir,
+			socketPath: paths.socketPath,
+		});
+		const corruptOwner = await acquireDaemonSupervisorOwnership({
+			agentDir: join(paths.agentDir, "fence-corrupt-agent"),
+			appVersion: "test",
+			descriptorDir: join(paths.agentDir, "fence-corrupt-workers"),
+			generation: "fence-corrupt-unrelated-owner",
+			registryDir: paths.registryDir,
+			socketPath: `${paths.socketPath}.corrupt`,
+		});
+		const originalCorruptOwner = { ...corruptOwner.record };
+		writeFileSync(ownerRecordPath(paths.registryDir, originalCorruptOwner.generation), "{ malformed\n");
+		try {
+			if (!targetOwner.record.processStartId) {
+				return;
+			}
+			await persistDaemonStartupFenceFromOwner(
+				paths.socketPath,
+				{
+					supervisorGeneration: targetOwner.record.generation,
+					supervisorOwnerToken: targetOwner.record.token,
+					supervisorPid: targetOwner.record.pid,
+					supervisorProcessStartId: targetOwner.record.processStartId,
+					supervisorSocketPath: targetOwner.record.socketPath,
+				},
+				paths.registryDir,
+			);
+			expect(readdirSync(join(paths.registryDir, "startup-fences"))).toHaveLength(1);
+		} finally {
+			rmSync(join(paths.registryDir, "startup-fences"), { recursive: true, force: true });
+			writeOwnerRecord(paths.registryDir, originalCorruptOwner);
+			await corruptOwner.release();
+			await targetOwner.release();
+		}
+	});
+
+	it("fails closed when a corrupt owner has matching immutable scope", async () => {
+		const paths = await createPaths();
+		const owner = await acquireDaemonSupervisorOwnership({
+			agentDir: paths.agentDir,
+			appVersion: "test",
+			descriptorDir: paths.descriptorDir,
+			generation: "matching-corrupt-owner",
+			registryDir: paths.registryDir,
+			socketPath: paths.socketPath,
+		});
+		const originalOwner = { ...owner.record };
+		writeFileSync(ownerRecordPath(paths.registryDir, originalOwner.generation), "{ malformed\n");
+		try {
+			await expect(
+				acquireDaemonSupervisorOwnership({
+					agentDir: join(paths.agentDir, "matching-contender-agent"),
+					appVersion: "test",
+					descriptorDir: join(paths.agentDir, "matching-contender-workers"),
+					generation: "matching-corrupt-contender",
+					registryDir: paths.registryDir,
+					socketPath: paths.socketPath,
+				}),
+			).rejects.toThrow(/Invalid daemon supervisor owner record/);
+			await expect(persistDaemonStartupFenceFromOwner(paths.socketPath, {}, paths.registryDir)).rejects.toThrow(
+				/Invalid daemon supervisor owner record/,
+			);
+		} finally {
+			writeOwnerRecord(paths.registryDir, originalOwner);
+			await owner.release();
+		}
+	});
+
+	it("fails closed when corrupt owners have missing or corrupt scope metadata", async () => {
+		const paths = await createPaths();
+		const targetOwner = await acquireDaemonSupervisorOwnership({
+			agentDir: paths.agentDir,
+			appVersion: "test",
+			descriptorDir: paths.descriptorDir,
+			generation: "scope-failure-target",
+			registryDir: paths.registryDir,
+			socketPath: paths.socketPath,
+		});
+		const corruptOwner = await acquireDaemonSupervisorOwnership({
+			agentDir: join(paths.agentDir, "scope-failure-agent"),
+			appVersion: "test",
+			descriptorDir: join(paths.agentDir, "scope-failure-workers"),
+			generation: "scope-failure-unrelated",
+			registryDir: paths.registryDir,
+			socketPath: `${paths.socketPath}.scope-failure`,
+		});
+		const originalCorruptOwner = { ...corruptOwner.record };
+		const scopePath = ownerScopePath(paths.registryDir, originalCorruptOwner.generation);
+		const originalScope = readFileSync(scopePath, "utf8");
+		const expectBlocked = async (generation: string) => {
+			await expect(
+				acquireDaemonSupervisorOwnership({
+					agentDir: join(paths.agentDir, `${generation}-agent`),
+					appVersion: "test",
+					descriptorDir: join(paths.agentDir, `${generation}-workers`),
+					generation,
+					registryDir: paths.registryDir,
+					socketPath: `${paths.socketPath}.${generation}`,
+				}),
+			).rejects.toThrow(/Invalid daemon supervisor owner record/);
+			await expect(persistDaemonStartupFenceFromOwner(paths.socketPath, {}, paths.registryDir)).rejects.toThrow(
+				/Invalid daemon supervisor owner record/,
+			);
+		};
+		writeFileSync(ownerRecordPath(paths.registryDir, originalCorruptOwner.generation), "{ malformed\n");
+		try {
+			rmSync(scopePath);
+			await expectBlocked("missing-scope-contender");
+			writeFileSync(scopePath, "{ malformed\n");
+			await expectBlocked("corrupt-scope-contender");
+		} finally {
+			writeFileSync(scopePath, originalScope);
+			writeOwnerRecord(paths.registryDir, originalCorruptOwner);
+			await corruptOwner.release();
+			await targetOwner.release();
+		}
+	});
 
 	it("treats physical descriptor aliases as one owner even with different sockets", async () => {
 		const paths = await createPaths();
