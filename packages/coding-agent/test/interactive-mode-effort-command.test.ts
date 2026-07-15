@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -27,6 +28,56 @@ type InteractiveModePrototype = {
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
+
+type FastCommandContext = {
+	connectionState?: { serviceTier: ServiceTier; thinkingLevel: ThinkingLevel };
+	agentConnection: { setServiceTier: (serviceTier: ServiceTier) => Promise<void> };
+	footer: { invalidate: () => void };
+	childAgentSummary: { invalidate: () => void };
+	showStatus: (message: string) => void;
+	showError: (message: string) => void;
+	patchConnectionState: (patch: Record<string, unknown>) => void;
+	getCurrentModel: () => Model<Api> | undefined;
+	currentModelSupportsFastMode: () => boolean;
+};
+
+type FastInteractiveModePrototype = {
+	currentModelSupportsFastMode(this: FastCommandContext): boolean;
+	handleFastCommand(this: FastCommandContext): void;
+	getModelTrayLabel(this: FastCommandContext): string;
+};
+
+const fastInteractiveModePrototype = InteractiveMode.prototype as unknown as FastInteractiveModePrototype;
+
+function testModel(provider: string, id: string, api: Api): Model<Api> {
+	return {
+		id,
+		name: id,
+		api,
+		provider,
+		baseUrl: "https://example.com",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1000,
+		maxTokens: 100,
+	};
+}
+
+function makeFastContext(model: Model<Api> = testModel("openai-codex", "gpt-5.5", "openai-codex-responses")) {
+	const context: FastCommandContext = {
+		connectionState: { serviceTier: "default", thinkingLevel: "high" },
+		agentConnection: { setServiceTier: vi.fn(async () => {}) },
+		footer: { invalidate: vi.fn() },
+		childAgentSummary: { invalidate: vi.fn() },
+		showStatus: vi.fn(),
+		showError: vi.fn(),
+		patchConnectionState: vi.fn(),
+		getCurrentModel: () => model,
+		currentModelSupportsFastMode: () => fastInteractiveModePrototype.currentModelSupportsFastMode.call(context),
+	};
+	return context;
+}
 
 function makeContext(overrides: Partial<EffortCommandContext> = {}): EffortCommandContext {
 	const context: EffortCommandContext = {
@@ -148,6 +199,7 @@ describe("InteractiveMode /effort", () => {
 				settingsManager: { setDefaultModelAndProvider: (provider: string, id: string) => void };
 				patchConnectionState: (patch: Record<string, unknown>) => void;
 				footer: { invalidate: () => void };
+				childAgentSummary: { invalidate: () => void };
 				updateEditorBorderColor: () => void;
 				setupAutocompleteProvider: () => void;
 			};
@@ -163,6 +215,7 @@ describe("InteractiveMode /effort", () => {
 				settingsManager: { setDefaultModelAndProvider: vi.fn() },
 				patchConnectionState,
 				footer: { invalidate: vi.fn() },
+				childAgentSummary: { invalidate: vi.fn() },
 				updateEditorBorderColor: vi.fn(),
 				setupAutocompleteProvider,
 			};
@@ -176,6 +229,49 @@ describe("InteractiveMode /effort", () => {
 			expect(patch.availableThinkingLevels.length).toBeGreaterThan(1);
 			// Provider rebuild keeps the /effort argument hint in sync with the model.
 			expect(setupAutocompleteProvider).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("Fast mode", () => {
+		it("enables Fast mode and refreshes the model tray", async () => {
+			const context = makeFastContext();
+
+			fastInteractiveModePrototype.handleFastCommand.call(context);
+			await vi.waitFor(() => expect(context.showStatus).toHaveBeenCalledWith("Fast mode: on"));
+
+			expect(context.agentConnection.setServiceTier).toHaveBeenCalledWith("priority");
+			expect(context.patchConnectionState).toHaveBeenCalledWith({ serviceTier: "priority" });
+			expect(context.footer.invalidate).toHaveBeenCalledWith();
+			expect(context.childAgentSummary.invalidate).toHaveBeenCalledWith();
+		});
+
+		it("disables Fast mode when it is already enabled", async () => {
+			const context = makeFastContext();
+			context.connectionState = { serviceTier: "priority", thinkingLevel: "high" };
+
+			fastInteractiveModePrototype.handleFastCommand.call(context);
+			await vi.waitFor(() => expect(context.showStatus).toHaveBeenCalledWith("Fast mode: off"));
+
+			expect(context.agentConnection.setServiceTier).toHaveBeenCalledWith("default");
+			expect(context.patchConnectionState).toHaveBeenCalledWith({ serviceTier: "default" });
+		});
+
+		it("reports unsupported models without changing the service tier", () => {
+			const context = makeFastContext(testModel("anthropic", "claude-opus", "anthropic-messages"));
+
+			fastInteractiveModePrototype.handleFastCommand.call(context);
+
+			expect(context.agentConnection.setServiceTier).not.toHaveBeenCalled();
+			expect(context.showStatus).toHaveBeenCalledWith(
+				"Fast mode requires GPT-5.4, GPT-5.5, or GPT-5.6 with ChatGPT authentication",
+			);
+		});
+
+		it("shows Fast mode beside the model and effort level", () => {
+			const context = makeFastContext();
+			context.connectionState = { serviceTier: "priority", thinkingLevel: "high" };
+
+			expect(fastInteractiveModePrototype.getModelTrayLabel.call(context)).toBe("gpt-5.5 • high • fast");
 		});
 	});
 });

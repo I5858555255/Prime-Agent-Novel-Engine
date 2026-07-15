@@ -29,7 +29,15 @@ import {
 	type ShouldStopAfterTurnContext,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Model, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	ImageContent,
+	Model,
+	ServiceTier,
+	TextContent,
+	Usage,
+	UserMessage,
+} from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -37,6 +45,7 @@ import {
 	isContextOverflow,
 	modelsAreEqual,
 	resetApiProviders,
+	supportsFastMode,
 } from "@earendil-works/pi-ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
@@ -262,6 +271,7 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: CompactionReason; customInstructions?: string }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "service_tier_changed"; serviceTier: ServiceTier }
 	| {
 			type: "compaction_end";
 			reason: CompactionReason;
@@ -2605,6 +2615,10 @@ export class AgentSession {
 		return this.agent.state.thinkingLevel;
 	}
 
+	get serviceTier(): ServiceTier {
+		return this.agent.state.serviceTier;
+	}
+
 	/** Whether agent is currently streaming a response */
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming;
@@ -4119,6 +4133,7 @@ export class AgentSession {
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
+		this._clampServiceTierForModel();
 
 		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4192,6 +4207,7 @@ export class AgentSession {
 		// - Undefined scoped model thinking level inherits the current session preference
 		// setThinkingLevel clamps to model capabilities.
 		this.setThinkingLevel(thinkingLevel);
+		this._clampServiceTierForModel();
 
 		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4225,6 +4241,7 @@ export class AgentSession {
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
+		this._clampServiceTierForModel();
 
 		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4267,6 +4284,24 @@ export class AgentSession {
 				previousLevel,
 			});
 		}
+	}
+
+	setServiceTier(serviceTier: ServiceTier): void {
+		const effectiveServiceTier = this._getEffectiveServiceTier(serviceTier);
+		if (effectiveServiceTier === this.agent.state.serviceTier) {
+			return;
+		}
+		this.agent.state.serviceTier = effectiveServiceTier;
+		this.sessionManager.appendServiceTierChange(effectiveServiceTier);
+		this._emit({ type: "service_tier_changed", serviceTier: effectiveServiceTier });
+	}
+
+	private _getEffectiveServiceTier(serviceTier: ServiceTier): ServiceTier {
+		return serviceTier === "priority" && (!this.model || !supportsFastMode(this.model)) ? "default" : serviceTier;
+	}
+
+	private _clampServiceTierForModel(): void {
+		this.setServiceTier(this.serviceTier);
 	}
 
 	/**
@@ -7221,6 +7256,11 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			const previousServiceTier = this.serviceTier;
+			this.agent.state.serviceTier = this._getEffectiveServiceTier(sessionContext.serviceTier);
+			if (this.serviceTier !== previousServiceTier) {
+				this._emit({ type: "service_tier_changed", serviceTier: this.serviceTier });
+			}
 			this._restoreLateIpythonSentAgentMessages();
 			this._reloadGoalStateFromBranch();
 

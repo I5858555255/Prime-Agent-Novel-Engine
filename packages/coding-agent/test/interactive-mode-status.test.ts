@@ -86,6 +86,7 @@ function createConnectionState(overrides: Partial<AgentConnectionState> = {}): A
 		activeSessionId: "active-1",
 		cwd: "/tmp/project",
 		thinkingLevel: "medium",
+		serviceTier: "default",
 		availableThinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
 		isStreaming: false,
 		isCompacting: false,
@@ -1237,6 +1238,7 @@ describe("InteractiveMode model selection persistence", () => {
 			settingsManager: { setDefaultModelAndProvider(provider: string, modelId: string): void };
 		};
 		footer: { invalidate(): void };
+		childAgentSummary: { invalidate(): void };
 		patchConnectionState(patch: Partial<AgentConnectionState>): void;
 		updateEditorBorderColor(): void;
 		showStatus(message: string): void;
@@ -1406,6 +1408,7 @@ describe("InteractiveMode model selection persistence", () => {
 			},
 		};
 		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.childAgentSummary = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
 		fakeThis.setupAutocompleteProvider = vi.fn();
@@ -1415,7 +1418,11 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(order).toEqual(["connection", "settings"]);
-		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({
+			model,
+			serviceTier: "default",
+			availableThinkingLevels: ["off"],
+		});
 		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
 		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
 	});
@@ -1434,6 +1441,7 @@ describe("InteractiveMode model selection persistence", () => {
 			},
 		};
 		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.childAgentSummary = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
 
@@ -1455,6 +1463,7 @@ describe("InteractiveMode model selection persistence", () => {
 			},
 		};
 		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.childAgentSummary = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
 		fakeThis.showStatus = vi.fn();
@@ -1468,7 +1477,11 @@ describe("InteractiveMode model selection persistence", () => {
 
 		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
-		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({
+			model,
+			serviceTier: "default",
+			availableThinkingLevels: ["off"],
+		});
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
 		expect(fakeThis.showError).not.toHaveBeenCalled();
 	});

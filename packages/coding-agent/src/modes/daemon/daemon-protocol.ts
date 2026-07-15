@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, TextContent, Transport } from "@earendil-works/pi-ai";
+import type { ImageContent, ServiceTier, TextContent, Transport } from "@earendil-works/pi-ai";
 import type {
 	AgentSessionMessageDeliveryMode,
 	AgentSessionMessageReceipt,
@@ -388,6 +388,7 @@ export type DaemonCommand =
 	| { id?: string; type: "cycle_model"; activeSessionId: string; direction?: "forward" | "backward" }
 	| { id?: string; type: "set_scoped_models"; activeSessionId: string; scopedModels: AgentConnectionScopedModel[] }
 	| { id?: string; type: "set_thinking_level"; activeSessionId: string; level: ThinkingLevel }
+	| { id?: string; type: "set_service_tier"; activeSessionId: string; serviceTier: ServiceTier }
 	| { id?: string; type: "cycle_thinking_level"; activeSessionId: string }
 	| { id?: string; type: "set_transport"; activeSessionId: string; transport: Transport }
 	| { id?: string; type: "set_steering_mode"; activeSessionId: string; mode: AgentConnectionQueueMode }

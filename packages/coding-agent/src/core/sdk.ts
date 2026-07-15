@@ -1,6 +1,13 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai";
+import {
+	clampThinkingLevel,
+	type Message,
+	type Model,
+	type ServiceTier,
+	streamSimple,
+	supportsFastMode,
+} from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import type { AgentSessionCreationOptions } from "./agent-session-services.js";
@@ -35,6 +42,8 @@ export interface CreateAgentSessionOptions extends AgentSessionCreationOptions {
 	model?: Model<any>;
 	/** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
 	thinkingLevel?: ThinkingLevel;
+	/** Provider service tier. Fast mode uses "priority". */
+	serviceTier?: ServiceTier;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
@@ -187,6 +196,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const existingSession = sessionManager.buildSessionContext();
 	const hasExistingSession = existingSession.messages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
+	const hasServiceTierEntry = sessionManager.getBranch().some((entry) => entry.type === "service_tier_change");
 
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
@@ -241,6 +251,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
+	let serviceTier = options.serviceTier ?? (hasExistingSession ? existingSession.serviceTier : "default");
+	if (serviceTier === "priority" && (!model || !supportsFastMode(model))) {
+		serviceTier = "default";
+	}
+
 	const allowedToolNames = options.allowedToolNames ?? options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const includeGoals = options.includeGoals ?? (options.tools !== undefined || options.noTools !== "all");
 	const initialActiveToolNames: string[] =
@@ -292,6 +307,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			systemPrompt: "",
 			model,
 			thinkingLevel,
+			serviceTier,
 			tools: [],
 		},
 		convertToLlm: convertToLlmWithBlockImages,
@@ -347,12 +363,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (!hasThinkingEntry) {
 			sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
+		if (!hasServiceTierEntry || serviceTier !== existingSession.serviceTier) {
+			sessionManager.appendServiceTierChange(serviceTier);
+		}
 	} else {
-		// Save initial model and thinking level for new sessions so they can be restored on resume
+		// Save initial configuration for new sessions so it can be restored on resume.
 		if (model) {
 			sessionManager.appendModelChange(model.provider, model.id);
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
+		sessionManager.appendServiceTierChange(serviceTier);
 	}
 
 	const session = new AgentSession({

@@ -15,6 +15,8 @@ import {
 	type ImageContent,
 	type Message,
 	type Model,
+	type ServiceTier,
+	supportsFastMode,
 	type ToolCall,
 } from "@earendil-works/pi-ai";
 import { BUILTIN_MCP_CATALOG } from "@earendil-works/pi-ai/mcp";
@@ -987,7 +989,9 @@ export class InteractiveMode {
 
 	private createBaseAutocompleteProvider(): AutocompleteProvider {
 		// Define commands for autocomplete
-		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
+		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.filter(
+			(command) => command.name !== "fast" || this.currentModelSupportsFastMode(),
+		).map((command) => ({
 			name: command.name,
 			aliases: command.aliases,
 			description: command.description,
@@ -2283,6 +2287,9 @@ export class InteractiveMode {
 				break;
 			case "thinking_level_changed":
 				this.patchConnectionState({ thinkingLevel: event.level });
+				break;
+			case "service_tier_changed":
+				this.patchConnectionState({ serviceTier: event.serviceTier });
 				break;
 			case "auto_retry_start":
 				this.patchConnectionState({ retryAttempt: event.attempt });
@@ -3886,6 +3893,15 @@ export class InteractiveMode {
 					this.handleEffortCommand(commandArgs);
 					return;
 				}
+				if (commandName === "fast") {
+					this.editor.setText("");
+					if (commandArgs) {
+						this.showError("Usage: /fast");
+					} else {
+						this.handleFastCommand();
+					}
+					return;
+				}
 				if (commandName === "export") {
 					await this.handleExportCommand(canonicalCommandText);
 					this.editor.setText("");
@@ -4422,7 +4438,13 @@ export class InteractiveMode {
 
 			case "thinking_level_changed":
 				this.footer.invalidate();
+				this.childAgentSummary.invalidate();
 				this.updateEditorBorderColor();
+				break;
+
+			case "service_tier_changed":
+				this.footer.invalidate();
+				this.childAgentSummary.invalidate();
 				break;
 
 			case "bash_start": {
@@ -5091,11 +5113,17 @@ export class InteractiveMode {
 		if (!model) {
 			return "—";
 		}
-		if (!model.reasoning) {
-			return model.name;
+		const parts = [model.name];
+		if (model.reasoning) {
+			const level = this.connectionState?.thinkingLevel ?? "off";
+			if (level !== "off") {
+				parts.push(level);
+			}
 		}
-		const level = this.connectionState?.thinkingLevel ?? "off";
-		return level === "off" ? model.name : `${model.name} • ${level}`;
+		if (this.connectionState?.serviceTier === "priority") {
+			parts.push("fast");
+		}
+		return parts.join(" • ");
 	}
 
 	private getAgentsViewTrayHint(): string | undefined {
@@ -5756,6 +5784,7 @@ export class InteractiveMode {
 		return {
 			messages: snapshot.messages,
 			thinkingLevel: snapshot.state.thinkingLevel,
+			serviceTier: snapshot.state.serviceTier,
 			model: snapshot.state.model
 				? { provider: snapshot.state.model.provider, modelId: snapshot.state.model.id }
 				: null,
@@ -6772,9 +6801,11 @@ export class InteractiveMode {
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		this.patchConnectionState({
 			model,
+			serviceTier: supportsFastMode(model) ? (this.connectionState?.serviceTier ?? "default") : "default",
 			availableThinkingLevels: getSupportedThinkingLevels(model) as ThinkingLevel[],
 		});
 		this.footer.invalidate();
+		this.childAgentSummary.invalidate();
 		this.updateEditorBorderColor();
 		// Rebuild so the /effort argument hint reflects the new model's levels.
 		this.setupAutocompleteProvider();
@@ -6935,6 +6966,31 @@ export class InteractiveMode {
 				)
 			: HEARTBEAT_ARGUMENT_COMPLETIONS;
 		return filtered.length === 0 ? null : filtered;
+	}
+
+	private currentModelSupportsFastMode(): boolean {
+		const model = this.getCurrentModel();
+		return model !== undefined && supportsFastMode(model);
+	}
+
+	private handleFastCommand(): void {
+		if (!this.currentModelSupportsFastMode()) {
+			this.showStatus("Fast mode requires GPT-5.4, GPT-5.5, or GPT-5.6 with ChatGPT authentication");
+			return;
+		}
+		const enabled = this.connectionState?.serviceTier === "priority";
+		const serviceTier: ServiceTier = enabled ? "default" : "priority";
+		void this.agentConnection
+			.setServiceTier(serviceTier)
+			.then(() => {
+				this.patchConnectionState({ serviceTier });
+				this.footer.invalidate();
+				this.childAgentSummary.invalidate();
+				this.showStatus(`Fast mode: ${serviceTier === "priority" ? "on" : "off"}`);
+			})
+			.catch((error) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
 	}
 
 	private handleEffortCommand(arg: string): void {
