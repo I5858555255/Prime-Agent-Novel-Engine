@@ -58,6 +58,8 @@ type FixtureMessage =
 
 interface ProcessHandle {
 	child: ChildProcess;
+	identity?: FixtureProcessIdentity;
+	role: FixtureProcessIdentity["role"];
 	stdout: string;
 	stderr: string;
 	messages: FixtureMessage[];
@@ -66,6 +68,17 @@ interface ProcessHandle {
 		resolve: (message: FixtureMessage) => void;
 		timeout: ReturnType<typeof setTimeout>;
 	}>;
+}
+
+interface FixtureProcessIdentity {
+	pid: number;
+	processStartId: string;
+	role: "client" | "supervisor" | "worker";
+}
+
+interface FixtureProcessSnapshot {
+	ppid: number;
+	state: string;
 }
 
 interface TestPaths {
@@ -86,15 +99,20 @@ const supervisorRegistryDirEnv = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTR
 const handles = new Set<ProcessHandle>();
 const harnesses: Harness[] = [];
 const socketTempDirs = new Set<string>();
+const fixtureDescriptorDirs = new Set<string>();
+const fixtureProcesses = new Map<string, FixtureProcessIdentity>();
+const fixtureRegistryDirs = new Set<string>();
+// Covers the worker's five second supervisor-availability retry.
+const fixtureProcessQuietMs = 5500;
 
 afterEach(async () => {
-	for (const handle of handles) {
-		if (handle.child.exitCode === null && handle.child.signalCode === null) {
-			handle.child.kill("SIGKILL");
-			await waitForExit(handle).catch(() => undefined);
-		}
-	}
+	registerFixtureOwnedProcesses();
+	await stopFixtureOwnedProcesses();
+	await Promise.all([...handles].map((handle) => waitForExit(handle)));
 	handles.clear();
+	fixtureDescriptorDirs.clear();
+	fixtureProcesses.clear();
+	fixtureRegistryDirs.clear();
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
 	}
@@ -102,7 +120,7 @@ afterEach(async () => {
 		rmSync(path, { recursive: true, force: true, maxRetries: 50, retryDelay: 50 });
 	}
 	socketTempDirs.clear();
-});
+}, 60_000);
 
 async function createPaths(): Promise<TestPaths> {
 	const harness = await createHarness();
@@ -112,6 +130,8 @@ async function createPaths(): Promise<TestPaths> {
 	const socketTmpDir = `/tmp/eng-4603-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 	mkdirSync(socketTmpDir, { recursive: true, mode: 0o700 });
 	socketTempDirs.add(socketTmpDir);
+	fixtureDescriptorDirs.add(join(harness.tempDir, "workers"));
+	fixtureRegistryDirs.add(join(harness.tempDir, "registry"));
 	return {
 		agentDir: harness.tempDir,
 		descriptorDir: join(harness.tempDir, "workers"),
@@ -144,6 +164,7 @@ function spawnSupervisor(paths: TestPaths): ProcessHandle {
 			},
 			stdio: ["ignore", "pipe", "pipe", "ipc"],
 		}),
+		"supervisor",
 	);
 }
 
@@ -174,11 +195,13 @@ function spawnStandaloneWorker(
 				stdio: ["ignore", "pipe", "pipe"],
 			},
 		),
+		"worker",
 	);
 }
 
-function trackProcess(child: ChildProcess): ProcessHandle {
-	const handle: ProcessHandle = { child, stdout: "", stderr: "", messages: [], waiters: [] };
+function trackProcess(child: ChildProcess, role: FixtureProcessIdentity["role"]): ProcessHandle {
+	const identity = registerFixtureProcess(child.pid, getProcessStartId(child.pid ?? -1), role);
+	const handle: ProcessHandle = { child, identity, role, stdout: "", stderr: "", messages: [], waiters: [] };
 	handles.add(handle);
 	child.stdout?.on("data", (chunk: Buffer) => {
 		handle.stdout += chunk.toString("utf8");
@@ -199,6 +222,299 @@ function trackProcess(child: ChildProcess): ProcessHandle {
 		}
 	});
 	return handle;
+}
+
+function fixtureProcessKey(identity: FixtureProcessIdentity): string {
+	return `${identity.role}:${identity.pid}:${identity.processStartId}`;
+}
+
+function registerFixtureProcess(
+	pid: number | undefined,
+	processStartId: string | undefined,
+	role: FixtureProcessIdentity["role"],
+): FixtureProcessIdentity | undefined {
+	if (pid === undefined) return undefined;
+	if (!Number.isSafeInteger(pid) || pid <= 0) {
+		throw new Error(`Invalid fixture process pid: ${String(pid)}`);
+	}
+	if (!processStartId) {
+		if (fixturePidIsAlive(pid)) {
+			throw new Error(`Live fixture process ${pid} has no exact start identity`);
+		}
+		return undefined;
+	}
+	const identity = { pid, processStartId, role };
+	fixtureProcesses.set(fixtureProcessKey(identity), identity);
+	return identity;
+}
+
+function registerFixtureOwnedProcesses(): void {
+	for (const handle of handles) {
+		if (!handle.identity && (handle.child.exitCode !== null || handle.child.signalCode !== null)) {
+			continue;
+		}
+		handle.identity ??= registerFixtureProcess(
+			handle.child.pid,
+			getProcessStartId(handle.child.pid ?? -1),
+			handle.role,
+		);
+	}
+	for (const registryDir of fixtureRegistryDirs) {
+		for (const name of readFixtureDirectory(registryDir).filter((entry) => entry.endsWith(".owner"))) {
+			const ownerPath = join(registryDir, name, "owner.json");
+			const owner = readFixtureJson<unknown>(ownerPath);
+			if (owner === undefined) continue;
+			registerFixtureRecord(owner, "supervisor", ownerPath);
+		}
+	}
+	for (const descriptorDir of fixtureDescriptorDirs) {
+		for (const name of readFixtureDirectory(descriptorDir).filter((entry) => entry.endsWith(".json"))) {
+			const descriptorPath = join(descriptorDir, name);
+			const descriptor = readFixtureJson<unknown>(descriptorPath);
+			if (descriptor === undefined) continue;
+			registerFixtureRecord(descriptor, "worker", descriptorPath);
+		}
+	}
+}
+
+function registerFixtureRecord(value: unknown, role: "supervisor" | "worker", path: string): FixtureProcessIdentity {
+	if (!value || typeof value !== "object") {
+		throw new Error(`Invalid fixture process record: ${path}`);
+	}
+	const record = value as { pid?: unknown; processStartId?: unknown };
+	if (
+		typeof record.pid !== "number" ||
+		!Number.isSafeInteger(record.pid) ||
+		record.pid <= 0 ||
+		typeof record.processStartId !== "string" ||
+		record.processStartId.length === 0
+	) {
+		throw new Error(`Invalid fixture process identity: ${path}`);
+	}
+	return registerFixtureProcess(record.pid, record.processStartId, role)!;
+}
+
+function readFixtureProcessSnapshot(): Map<number, FixtureProcessSnapshot> {
+	const listing = spawnSync("ps", ["-axo", "pid=,ppid=,state="], { encoding: "utf8" });
+	if (listing.error) throw listing.error;
+	if (listing.status !== 0) {
+		throw new Error(`Could not enumerate fixture descendants: ${listing.stderr.trim()}`);
+	}
+	const processes = new Map<number, FixtureProcessSnapshot>();
+	for (const line of listing.stdout.split("\n")) {
+		const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
+		if (!match) continue;
+		processes.set(Number(match[1]), { ppid: Number(match[2]), state: match[3]! });
+	}
+	return processes;
+}
+
+function fixtureDescendantPids(rootPid: number, processes: Map<number, FixtureProcessSnapshot>): number[] {
+	const childrenByParent = new Map<number, number[]>();
+	for (const [pid, process] of processes) {
+		const children = childrenByParent.get(process.ppid) ?? [];
+		children.push(pid);
+		childrenByParent.set(process.ppid, children);
+	}
+	const descendants: number[] = [];
+	const pending = [rootPid];
+	while (pending.length > 0) {
+		const parentPid = pending.shift()!;
+		for (const childPid of childrenByParent.get(parentPid) ?? []) {
+			descendants.push(childPid);
+			pending.push(childPid);
+		}
+	}
+	return descendants;
+}
+
+function isFixtureDescendant(pid: number, rootPid: number, processes: Map<number, FixtureProcessSnapshot>): boolean {
+	const visited = new Set<number>();
+	let current = pid;
+	while (!visited.has(current)) {
+		visited.add(current);
+		const process = processes.get(current);
+		if (!process) return false;
+		if (process.ppid === rootPid) return true;
+		current = process.ppid;
+	}
+	return false;
+}
+
+function signalFixtureProcess(identity: FixtureProcessIdentity, signal: NodeJS.Signals): boolean {
+	const state = fixtureProcessState(identity);
+	if (state === "exited") return false;
+	if (state === "unverified") {
+		throw new Error(`Could not verify fixture process ${identity.pid}/${identity.processStartId}`);
+	}
+	try {
+		process.kill(identity.pid, signal);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+		throw error;
+	}
+}
+
+async function terminateFixtureProcessTree(root: FixtureProcessIdentity): Promise<void> {
+	if (fixtureProcessState(root) === "exited") return;
+	if (process.platform === "win32") {
+		if (signalFixtureProcess(root, "SIGKILL")) await waitForFixtureProcessExit(root);
+		return;
+	}
+	if (!signalFixtureProcess(root, "SIGSTOP")) return;
+	if (!(await waitForFixtureProcessStopped(root))) {
+		throw new Error(`Fixture root ${root.pid}/${root.processStartId} exited before descendant discovery`);
+	}
+	const tree = new Map<string, FixtureProcessIdentity>([[`${root.pid}:${root.processStartId}`, root]]);
+	let unchangedScans = 0;
+	while (unchangedScans < 2) {
+		const processesBefore = readFixtureProcessSnapshot();
+		let discovered = 0;
+		for (const pid of fixtureDescendantPids(root.pid, processesBefore)) {
+			const processStartId = getProcessStartId(pid);
+			if (!processStartId) {
+				if (fixturePidIsAlive(pid)) throw new Error(`Live fixture descendant ${pid} has no exact start identity`);
+				continue;
+			}
+			if (
+				[...tree.values()].some((identity) => identity.pid === pid && identity.processStartId === processStartId)
+			) {
+				continue;
+			}
+			const processesAfter = readFixtureProcessSnapshot();
+			const currentStartId = getProcessStartId(pid);
+			if (currentStartId !== processStartId) {
+				if (currentStartId === undefined && fixturePidIsAlive(pid)) {
+					throw new Error(`Could not revalidate fixture descendant ${pid}`);
+				}
+				continue;
+			}
+			if (!isFixtureDescendant(pid, root.pid, processesAfter)) {
+				throw new Error(`Fixture descendant ${pid}/${processStartId} changed ancestry during cleanup`);
+			}
+			const identity = registerFixtureProcess(pid, processStartId, "worker")!;
+			tree.set(`${identity.pid}:${identity.processStartId}`, identity);
+			if (signalFixtureProcess(identity, "SIGSTOP")) {
+				await waitForFixtureProcessStopped(identity);
+			}
+			discovered++;
+		}
+		unchangedScans = discovered === 0 ? unchangedScans + 1 : 0;
+		await delay(25);
+	}
+	for (const identity of [...tree.values()].reverse()) {
+		signalFixtureProcess(identity, "SIGKILL");
+	}
+	for (const identity of tree.values()) {
+		await waitForFixtureProcessExit(identity);
+	}
+}
+
+async function waitForFixtureProcessStopped(identity: FixtureProcessIdentity, timeoutMs = 5000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const state = fixtureProcessState(identity);
+		if (state === "exited") return false;
+		if (state === "unverified") {
+			throw new Error(`Could not verify fixture process ${identity.pid}/${identity.processStartId}`);
+		}
+		const processStatus = readFixtureProcessSnapshot().get(identity.pid)?.state;
+		if (processStatus && ["T", "Z"].includes(processStatus[0]!) && fixtureProcessState(identity) === "matching") {
+			return true;
+		}
+		await delay(25);
+	}
+	throw new Error(`Timed out waiting for fixture process ${identity.pid}/${identity.processStartId} to stop`);
+}
+
+function readFixtureDirectory(path: string): string[] {
+	try {
+		return readdirSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+}
+
+function readFixtureJson<T>(path: string): T | undefined {
+	try {
+		return JSON.parse(readFileSync(path, "utf8")) as T;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+function fixtureProcessState(identity: FixtureProcessIdentity): "exited" | "matching" | "unverified" {
+	const processStartId = getProcessStartId(identity.pid);
+	if (processStartId === identity.processStartId) return "matching";
+	if (processStartId !== undefined) return "exited";
+	return fixturePidIsAlive(identity.pid) ? "unverified" : "exited";
+}
+
+function fixturePidIsAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ESRCH") return false;
+		if (code === "EPERM") return true;
+		throw error;
+	}
+}
+
+async function stopFixtureOwnedProcesses(): Promise<void> {
+	const deadline = Date.now() + 30_000;
+	let quietSince: number | undefined;
+	while (Date.now() < deadline) {
+		for (const role of ["supervisor", "worker", "client"] as const) {
+			for (const identity of [...fixtureProcesses.values()].filter((process) => process.role === role)) {
+				const state = fixtureProcessState(identity);
+				if (state === "unverified") {
+					throw new Error(`Could not verify fixture process ${identity.pid}/${identity.processStartId}`);
+				}
+				if (state === "matching") {
+					await terminateFixtureProcessTree(identity);
+				}
+				fixtureProcesses.delete(fixtureProcessKey(identity));
+			}
+		}
+		registerFixtureOwnedProcesses();
+		const remaining = [...fixtureProcesses.values()].filter((identity) => fixtureProcessState(identity) !== "exited");
+		if (remaining.length > 0) {
+			quietSince = undefined;
+			continue;
+		}
+		quietSince ??= Date.now();
+		if (Date.now() - quietSince >= fixtureProcessQuietMs) return;
+		await delay(25);
+	}
+	throw new Error("Timed out stopping ENG-4603 fixture processes");
+}
+
+async function terminateTrackedFixtureProcess(handle: ProcessHandle): Promise<void> {
+	if (!handle.identity && (handle.child.exitCode !== null || handle.child.signalCode !== null)) {
+		await waitForExit(handle);
+		return;
+	}
+	const identity =
+		handle.identity ??
+		registerFixtureProcess(handle.child.pid, getProcessStartId(handle.child.pid ?? -1), handle.role);
+	if (identity) await terminateFixtureProcessTree(identity);
+	await waitForExit(handle);
+}
+
+async function waitForFixtureProcessExit(identity: FixtureProcessIdentity): Promise<void> {
+	const deadline = Date.now() + 30_000;
+	while (fixtureProcessState(identity) !== "exited" && Date.now() < deadline) {
+		await delay(25);
+	}
+	const state = fixtureProcessState(identity);
+	if (state !== "exited") {
+		throw new Error(`Timed out waiting for fixture process ${identity.pid}/${identity.processStartId}`);
+	}
 }
 
 function waitForMessage(
@@ -282,15 +598,23 @@ function listOwnerRecords(registryDir: string): OwnerRecord[] {
 	if (!existsSync(registryDir)) {
 		return [];
 	}
-	return readdirSync(registryDir)
+	const records = readdirSync(registryDir)
 		.filter((name) => name.endsWith(".owner"))
-		.map((name) => JSON.parse(readFileSync(join(registryDir, name, "owner.json"), "utf8")) as OwnerRecord);
+		.map((name) => {
+			const path = join(registryDir, name, "owner.json");
+			const record = JSON.parse(readFileSync(path, "utf8")) as unknown;
+			registerFixtureRecord(record, "supervisor", path);
+			return record as OwnerRecord;
+		});
+	return records;
 }
 
 function readWorkerDescriptor(descriptorDir: string): DaemonWorkerDescriptor {
 	const descriptors = readdirSync(descriptorDir).filter((name) => name.endsWith(".json"));
 	expect(descriptors).toHaveLength(1);
-	return JSON.parse(readFileSync(join(descriptorDir, descriptors[0]!), "utf8")) as DaemonWorkerDescriptor;
+	const descriptor = JSON.parse(readFileSync(join(descriptorDir, descriptors[0]!), "utf8")) as DaemonWorkerDescriptor;
+	registerFixtureRecord(descriptor, "worker", join(descriptorDir, descriptors[0]!));
+	return descriptor;
 }
 
 function requireSummary(value: unknown): SessionSummary {
@@ -366,6 +690,7 @@ async function runCli(
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		}),
+		"client",
 	);
 	await waitForExit(handle, timeoutMs);
 	return { code: handle.child.exitCode ?? 0, stdout: handle.stdout, stderr: handle.stderr };
@@ -438,10 +763,11 @@ describe("ENG-4603 worker recovery convergence", () => {
 		const originalWorkerPid = summary.workerPid;
 		if (!originalWorkerPid) throw new Error("Resident worker did not expose its pid");
 		const originalWorkerStartId = getProcessStartId(originalWorkerPid);
+		const originalWorkerIdentity = registerFixtureProcess(originalWorkerPid, originalWorkerStartId, "worker")!;
 
 		predecessor.child.send({ type: "release_runtime" });
 		await waitForType(predecessor, "runtime_released");
-		process.kill(originalWorkerPid, "SIGKILL");
+		await terminateFixtureProcessTree(originalWorkerIdentity);
 		const successor = spawnSupervisor(paths);
 		await waitForType(successor, "booted");
 		successor.child.send({ type: "go" });
@@ -488,8 +814,7 @@ describe("ENG-4603 worker recovery convergence", () => {
 		predecessorClient.close();
 		await waitForExit(successor);
 		await waitForExactProcessExit(replacement.pid, replacement.processStartId);
-		predecessor.child.kill("SIGKILL");
-		await waitForExit(predecessor);
+		await terminateTrackedFixtureProcess(predecessor);
 	}, 120_000);
 
 	it("rejects stale commands at worker receipt and before public journal insertion", async () => {
@@ -587,8 +912,7 @@ describe("ENG-4603 worker recovery convergence", () => {
 		socket.destroy();
 		await oldOwner.release();
 		rmSync(ownerDirectory, { recursive: true, force: true });
-		worker.child.kill("SIGKILL");
-		await waitForExit(worker);
+		await terminateTrackedFixtureProcess(worker);
 
 		const publicPaths = await createPaths();
 		const staleSupervisor = spawnSupervisor(publicPaths);
@@ -616,8 +940,7 @@ describe("ENG-4603 worker recovery convergence", () => {
 		publicClient.close();
 		await replacementOwner.release();
 		rmSync(displacedOwnerDir, { recursive: true, force: true });
-		staleSupervisor.child.kill("SIGKILL");
-		await waitForExit(staleSupervisor);
+		await terminateTrackedFixtureProcess(staleSupervisor);
 	}, 90_000);
 
 	it("serializes shutdown admission and reclaims an unrenewed live lease", async () => {
@@ -676,6 +999,7 @@ describe("ENG-4603 worker recovery convergence", () => {
 		if (!workerPid) throw new Error("Resident worker did not expose its pid");
 		const predecessorStartId = getProcessStartId(predecessor.child.pid!);
 		const workerStartId = getProcessStartId(workerPid);
+		registerFixtureProcess(workerPid, workerStartId, "worker");
 		predecessor.child.send({ type: "release_runtime" });
 		await waitForType(predecessor, "runtime_released");
 		const successor = spawnSupervisor(paths);
