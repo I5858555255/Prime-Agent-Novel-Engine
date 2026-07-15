@@ -695,7 +695,7 @@ export class Editor implements Component, Focusable {
 		const backgroundColor =
 			this.autocompleteBackgroundColor ?? (useBackgroundSurface ? this.backgroundColor : undefined);
 
-		return ["", ...this.autocompleteList.render(inputWidth)].map((line) => {
+		return ["", ...this.autocompleteList.render(inputWidth), ""].map((line) => {
 			const linePadding = " ".repeat(Math.max(0, inputWidth - visibleWidth(line)));
 			const contentLine = `${leftPadding}${line}${linePadding}${rightPadding}`;
 			return backgroundColor ? backgroundColor(contentLine) : contentLine;

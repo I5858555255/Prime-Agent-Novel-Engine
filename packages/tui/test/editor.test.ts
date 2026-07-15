@@ -2047,6 +2047,7 @@ describe("Editor component", () => {
 			).renderAutocompleteOverlay(60);
 			assert.equal(stripVTControlCharacters(overlayLines[0] ?? "").trim(), "");
 			assert.match(stripVTControlCharacters(overlayLines[1] ?? ""), /model/);
+			assert.equal(stripVTControlCharacters(overlayLines.at(-1) ?? "").trim(), "");
 			assert.ok(overlayLines.every((line) => line.startsWith("\x1b[48;2;12;12;16m")));
 
 			editor.handleInput("\x15");
