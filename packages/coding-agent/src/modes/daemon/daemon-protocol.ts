@@ -534,6 +534,12 @@ export type DaemonOutbound =
 			supervisorGeneration?: string;
 			/** Diagnostic process identity for attributing supervisor replacement. */
 			supervisorPid?: number;
+			/** Durable owner marker for validating update handoff fences. */
+			supervisorOwnerToken?: string;
+			/** Process start identity captured when the durable owner was published. */
+			supervisorProcessStartId?: string;
+			/** Normalized socket identity stored in the durable owner record. */
+			supervisorSocketPath?: string;
 			clientId: DaemonClientId;
 			serverCapabilities: readonly DaemonClientCapability[];
 	  }
@@ -587,6 +593,12 @@ export type DaemonOutbound =
 			chunkCount: number;
 			lastEventSequence: DaemonEventSequence;
 			lastEventCursor?: DaemonEventCursor;
+	  }
+	| {
+			type: "session_snapshot_failed";
+			activeSessionId: string;
+			snapshotId: string;
+			error: string;
 	  }
 	| { type: "session_detached"; activeSessionId: string }
 	| { type: "session_closed"; activeSessionId: string; reason: DaemonSessionClosedReason; meta?: DaemonEventMeta }
