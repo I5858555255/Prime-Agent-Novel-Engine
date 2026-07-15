@@ -1,12 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { AgentConnectionSavedSessionInfo } from "../src/modes/agent-connection/index.js";
 import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.js";
-import { initTheme, preloadCodeHighlighter } from "../src/modes/interactive/theme/theme.js";
+import { initTheme, preloadCodeHighlighter, theme } from "../src/modes/interactive/theme/theme.js";
 
 type Deferred<T> = {
 	promise: Promise<T>;
@@ -86,6 +86,7 @@ function createSymlinkedSessionPaths(): {
 }
 
 const CTRL_X = "\x18";
+const CTRL_S = "\x13";
 const CTRL_BACKSPACE = "\x1b[127;5u";
 
 describe("session selector path/delete interactions", () => {
@@ -271,14 +272,15 @@ describe("session selector path/delete interactions", () => {
 		expect(output).not.toContain("Failed to delete");
 	});
 
-	it("renders streamed sessions before the initial load completes", async () => {
-		const streamedSession = makeSession({ id: "streamed", name: "Streamed session" });
+	it("waits for the complete session list while reporting load progress", async () => {
+		const session = makeSession({ id: "complete", name: "Complete session" });
 		const sessionsDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
+		let receivedItemCallback = false;
 
 		const selector = new SessionSelectorComponent(
 			async (callbacks) => {
 				callbacks?.onProgress?.(1, 2);
-				callbacks?.onSession?.(streamedSession);
+				receivedItemCallback = callbacks?.onSession !== undefined;
 				return sessionsDeferred.promise;
 			},
 			async () => [],
@@ -292,26 +294,33 @@ describe("session selector path/delete interactions", () => {
 
 		const loadingOutput = stripAnsi(selector.render(120).join("\n"));
 		expect(loadingOutput).toContain("loading 1/2");
-		expect(loadingOutput).toContain("Streamed session");
+		expect(loadingOutput).not.toContain("Complete session");
+		expect(receivedItemCallback).toBe(false);
 
-		sessionsDeferred.resolve([streamedSession]);
+		sessionsDeferred.resolve([session]);
 		await flushPromises();
 
-		expect(stripAnsi(selector.render(120).join("\n"))).toContain("current folder");
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("current folder");
+		expect(output).toContain("Complete session");
 	});
 
-	it("keeps streamed threaded sessions flat until loading completes", async () => {
-		const parent = makeSession({ id: "parent", name: "Parent" });
-		const child = makeSession({ id: "child", name: "Child", parentSessionPath: parent.path });
+	it("selects the newest session from an unsorted completed list", async () => {
+		const older = makeSession({
+			id: "older",
+			name: "Older session",
+			modified: new Date("2026-01-01T00:00:00.000Z"),
+		});
+		const newer = makeSession({
+			id: "newer",
+			name: "Newer session",
+			modified: new Date("2026-01-03T00:00:00.000Z"),
+		});
 		const sessionsDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
 		const onSelect = vi.fn();
 
 		const selector = new SessionSelectorComponent(
-			async (callbacks) => {
-				callbacks?.onSession?.(child);
-				callbacks?.onSession?.(parent);
-				return sessionsDeferred.promise;
-			},
+			async () => sessionsDeferred.promise,
 			async () => [],
 			onSelect,
 			() => {},
@@ -321,57 +330,41 @@ describe("session selector path/delete interactions", () => {
 		);
 		await flushPromises();
 
-		const list = selector.getSessionList();
-		expect(stripAnsi(selector.render(120).join("\n"))).not.toContain("└─");
-
-		sessionsDeferred.resolve([parent, child]);
+		sessionsDeferred.resolve([older, newer]);
 		await flushPromises();
 
-		expect(stripAnsi(selector.render(120).join("\n"))).toContain("└─ ✓ Child");
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("sort: recent");
+		expect(output.indexOf("Newer session")).toBeLessThan(output.indexOf("Older session"));
+
+		const list = selector.getSessionList();
 		list.handleInput("\r");
-		expect(onSelect).toHaveBeenCalledWith(child.path);
+		expect(onSelect).toHaveBeenCalledWith(newer.path);
 	});
 
-	it("keeps other streamed rows visible when deleting before loading completes", async () => {
-		const first = makeSession({ id: "first", name: "First streamed session" });
-		const second = makeSession({ id: "second", name: "Second streamed session" });
-		const initialLoad = createDeferred<AgentConnectionSavedSessionInfo[]>();
-		const refreshLoad = createDeferred<AgentConnectionSavedSessionInfo[]>();
-		const deleteSession = vi.fn(async () => ({ ok: true as const, method: "unlink" as const }));
-		let loadCalls = 0;
-
+	it("keeps the selected background across a truncated session row", async () => {
+		const session = makeSession({
+			id: "long",
+			name: "A session prompt that is much too long to fit within the available row width",
+		});
 		const selector = new SessionSelectorComponent(
-			async (callbacks) => {
-				loadCalls++;
-				if (loadCalls === 1) {
-					callbacks?.onSession?.(first);
-					callbacks?.onSession?.(second);
-					return initialLoad.promise;
-				}
-				return refreshLoad.promise;
-			},
+			async () => [session],
 			async () => [],
 			() => {},
 			() => {},
 			() => {},
 			() => {},
-			{ keybindings, deleteSession },
+			{ keybindings },
 		);
 		await flushPromises();
 
-		const list = selector.getSessionList();
-		list.handleInput(CTRL_X);
-		list.handleInput(CTRL_X);
-		await flushPromises();
-
-		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(deleteSession).toHaveBeenCalledWith(first.path);
-		expect(output).not.toContain("First streamed session");
-		expect(output).toContain("Second streamed session");
-
-		refreshLoad.resolve([second]);
-		initialLoad.resolve([first, second]);
-		await flushPromises();
+		const line = selector.render(60).find((candidate) => stripAnsi(candidate).includes("A session prompt"));
+		const backgroundStart = theme.bg("selectedBg", "").replace("\x1b[49m", "");
+		expect(stripAnsi(line ?? "")).toContain("…");
+		expect(line?.startsWith(backgroundStart)).toBe(true);
+		expect(line?.endsWith("\x1b[49m")).toBe(true);
+		expect(line).not.toContain("\x1b[0m");
+		expect(visibleWidth(line ?? "")).toBe(60);
 	});
 
 	it("does not switch scope back to All when All load resolves after toggling back to Current", async () => {
@@ -466,6 +459,10 @@ describe("session selector path/delete interactions", () => {
 			{ keybindings },
 		);
 		await flushPromises();
+
+		const list = selector.getSessionList();
+		list.handleInput(CTRL_S);
+		list.handleInput(CTRL_S);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("Parent");
