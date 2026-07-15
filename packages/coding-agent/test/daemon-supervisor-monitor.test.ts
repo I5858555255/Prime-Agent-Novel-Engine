@@ -413,6 +413,62 @@ describe("daemon worker supervisor monitoring", () => {
 		await closed;
 	});
 
+	it("rolls back a published worker when shutdown admission and rollback persistence fail", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-cancelled-launch-test-"));
+		const descriptorDir = join(root, "descriptors");
+		const markerPath = join(root, "startup-marker");
+		mkdirSync(descriptorDir, { recursive: true });
+		supervisorRegistryDirs.add(root);
+		workerLaunchTestState.capture = true;
+		workerLaunchTestState.forceMissingProcessStartId = true;
+		workerLaunchTestState.fixtureMode = "successful-gate";
+		workerLaunchTestState.gateMarkerPath = markerPath;
+		const cancellation = recoveryDeniedError("supervisor_recovery_cancelled");
+		const rollbackPersistenceError = new Error("rollback persistence failed");
+		const persistWorker = Reflect.get(DaemonSupervisor.prototype, "persistWorker");
+		if (typeof persistWorker !== "function") {
+			throw new Error("Could not access worker persistence");
+		}
+		let persistenceCalls = 0;
+		const workers = new Map<string, unknown>();
+		const connectWorker = vi.fn(async () => {
+			await waitForFile(markerPath);
+			throw cancellation;
+		});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			defaultSessionConfig: { cwd: root, agentDir: root },
+			descriptorDir,
+			socketPath: join(root, "supervisor.sock"),
+			workers,
+			shuttingDown: false,
+			assertRecoveryAllowed: vi.fn(async () => undefined),
+			connectWorker,
+			persistWorker: vi.fn(function (this: object, worker: object) {
+				persistenceCalls++;
+				if (persistenceCalls === 2) {
+					throw rollbackPersistenceError;
+				}
+				Reflect.apply(persistWorker, this, [worker]);
+			}),
+			syncAgentPeers: vi.fn(async () => undefined),
+			log: vi.fn(),
+		}) as {
+			launchWorker(command: { type: "create"; config: { cwd: string; agentDir: string } }): Promise<unknown>;
+		};
+
+		await expect(supervisor.launchWorker({ type: "create", config: { cwd: root, agentDir: root } })).rejects.toBe(
+			cancellation,
+		);
+
+		expect(readFileSync(markerPath, "utf8")).toBe("start\n");
+		expect(connectWorker).toHaveBeenCalledOnce();
+		expect(persistenceCalls).toBe(2);
+		expect(workers.size).toBe(0);
+		expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);
+		const child = workerLaunchTestState.spawned.at(-1)?.child;
+		expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+	});
+
 	it("attempts every shutdown cleanup step before exiting", async () => {
 		const cleanupSocket = vi.fn(() => {
 			throw new Error("daemon socket cleanup failed");

@@ -233,7 +233,17 @@ function isSupervisorGenerationStale(error: unknown): boolean {
 }
 
 function isSupervisorRecoveryCancelled(error: unknown): boolean {
-	return error instanceof SupervisorRecoveryCancelledError || isSupervisorGenerationStale(error);
+	return isSupervisorShutdownAdmissionCancelled(error) || isSupervisorGenerationStale(error);
+}
+
+function isSupervisorShutdownAdmissionCancelled(error: unknown): boolean {
+	return (
+		error instanceof SupervisorRecoveryCancelledError ||
+		(typeof error === "object" &&
+			error !== null &&
+			"code" in error &&
+			(error as { code?: unknown }).code === "supervisor_recovery_cancelled")
+	);
 }
 
 function delay(ms: number): Promise<void> {
@@ -1251,6 +1261,7 @@ export class DaemonSupervisor {
 		});
 		const startupGate = child.stdio[WORKER_STARTUP_GATE_FD];
 		const previousDescriptor = existing?.descriptor;
+		const previousIntentionalStop = existing?.intentionalStop;
 		let descriptorAssigned = false;
 		let childPid: number;
 		let childProcessStartId: string | undefined;
@@ -1359,7 +1370,31 @@ export class DaemonSupervisor {
 			await this.syncAgentPeers();
 			return worker;
 		} catch (error) {
-			if (isSupervisorRecoveryCancelled(error)) {
+			if (isSupervisorGenerationStale(error)) {
+				throw error;
+			}
+			if (isSupervisorShutdownAdmissionCancelled(error)) {
+				let rolledBack = false;
+				try {
+					await this.stopWorker(worker, existing === undefined, true, false, existing !== undefined, {
+						child,
+						closed: childClosed,
+					});
+					rolledBack = true;
+				} catch (cleanupError) {
+					this.reportCleanupFailure(`cancelled worker launch ${workerId}`, cleanupError);
+				}
+				if (rolledBack && existing && previousDescriptor) {
+					try {
+						existing.descriptor = previousDescriptor;
+						existing.intentionalStop = previousIntentionalStop ?? false;
+						this.workers.set(workerId, existing);
+						this.persistWorker(existing);
+						this.deferWorkerRecovery(existing, error instanceof Error ? error : new Error(String(error)));
+					} catch (cleanupError) {
+						this.reportCleanupFailure(`cancelled worker recovery ${workerId}`, cleanupError);
+					}
+				}
 				throw error;
 			}
 			await this.assertRecoveryAllowed();
@@ -2608,16 +2643,24 @@ export class DaemonSupervisor {
 		force = false,
 		archiveSession = false,
 		recoveryCleanup = false,
+		directChild?: { child: ChildProcess; closed: Promise<void> },
 	): Promise<void> {
 		if (!recoveryCleanup) {
 			worker.stopRevision++;
 		}
-		if (removeDescriptor) {
-			this.persistWorkerStopTombstone(worker, archiveSession);
-		} else {
-			worker.intentionalStop = true;
-			worker.descriptor.lifecycle = "recovering";
-			this.persistWorker(worker);
+		try {
+			if (removeDescriptor) {
+				this.persistWorkerStopTombstone(worker, archiveSession);
+			} else {
+				worker.intentionalStop = true;
+				worker.descriptor.lifecycle = "recovering";
+				this.persistWorker(worker);
+			}
+		} catch (error) {
+			if (!directChild) {
+				throw error;
+			}
+			this.reportCleanupFailure(`worker rollback state ${worker.descriptor.workerId}`, error);
 		}
 		for (const transcript of worker.transcriptCaches.values()) {
 			transcript.dispose();
@@ -2634,23 +2677,36 @@ export class DaemonSupervisor {
 			}
 			worker.client.close();
 			worker.client = undefined;
+		} else if (directChild) {
+			directChild.child.kill("SIGTERM");
 		} else if (isProcessAlive(worker.descriptor.pid)) {
 			signalProcessGroupOrProcess(worker.descriptor.pid, "SIGTERM");
 		}
+		const isWorkerProcessAlive = () =>
+			directChild
+				? directChild.child.exitCode === null && directChild.child.signalCode === null
+				: isProcessAlive(worker.descriptor.pid);
 		const gracefulDeadline = Date.now() + (force ? 500 : 2000);
-		while (isProcessAlive(worker.descriptor.pid) && Date.now() < gracefulDeadline) {
+		while (isWorkerProcessAlive() && Date.now() < gracefulDeadline) {
 			await delay(25);
 		}
-		if (force && isProcessAlive(worker.descriptor.pid)) {
-			signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
+		if (force && isWorkerProcessAlive()) {
+			if (directChild) {
+				directChild.child.kill("SIGKILL");
+			} else {
+				signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
+			}
 			const forceDeadline = Date.now() + 1000;
-			while (isProcessAlive(worker.descriptor.pid) && Date.now() < forceDeadline) {
+			while (isWorkerProcessAlive() && Date.now() < forceDeadline) {
 				await delay(25);
 			}
 		}
-		if (isProcessAlive(worker.descriptor.pid)) {
+		if (isWorkerProcessAlive()) {
 			worker.intentionalStop = worker.descriptor.stopRequestedAt !== undefined;
 			throw new Error(`Session worker ${worker.descriptor.workerId} did not stop${force ? " after SIGKILL" : ""}`);
+		}
+		if (directChild) {
+			await directChild.closed;
 		}
 		if (removeDescriptor && worker.descriptor.archiveOnStop) {
 			if (force) {
