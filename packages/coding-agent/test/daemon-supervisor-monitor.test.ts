@@ -1281,6 +1281,7 @@ describe("daemon worker supervisor monitoring", () => {
 			descriptor: { workerId: "worker-1", lifecycle: "ready", pid: 1234 },
 			summaries: new Map([[activeSessionId, summary]]),
 			snapshotCache: new Map([[activeSessionId, result]]),
+			snapshotTransferFrames: new Map(),
 			snapshotLoads: new Map(),
 		};
 		const client = {
@@ -1366,6 +1367,7 @@ describe("daemon worker supervisor monitoring", () => {
 			snapshotCache: new Map(),
 			transcriptCaches: new Map(),
 			incomingTranscriptActiveSessionIds: new Set(),
+			snapshotTransferFrames: new Map(),
 			snapshotLoads: new Map(),
 		};
 		const client: AttachClient = {
