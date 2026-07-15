@@ -5,6 +5,7 @@
  * scroll position is application state, not terminal scrollback.
  */
 
+import type { TableCellSelectionRegion } from "./selection-metadata.js";
 import { isImageLine } from "./terminal-image.js";
 import { sliceByColumn, stripAnsi, visibleWidth } from "./utils.js";
 
@@ -49,7 +50,13 @@ interface FrameSelectionSnapshot {
 	visibleHeight: number;
 }
 
-type SelectionMode = "transcript" | "frame";
+interface ActiveTableCell {
+	table: object;
+	row: number;
+	column: number;
+}
+
+type SelectionMode = "transcript" | "table-cell" | "frame";
 
 export class FullscreenViewport {
 	private scrollTop = 0;
@@ -64,7 +71,9 @@ export class FullscreenViewport {
 	private lastFrameVisibleStart = 0;
 	private lastFrameVisibleHeight = 0;
 	private frameSelectionRegions: ReadonlyArray<FrameSelectionRegion> = [];
+	private tableCellSelectionRegions: ReadonlyArray<TableCellSelectionRegion> = [];
 	private activeFrameSelection: FrameSelectionSnapshot | null = null;
+	private activeTableCell: ActiveTableCell | null = null;
 	private selectionAnchor: SelectionPoint | null = null;
 	private selectionHead: SelectionPoint | null = null;
 	private selectionMode: SelectionMode | null = null;
@@ -74,7 +83,12 @@ export class FullscreenViewport {
 	 * top, dock pinned to the bottom. Following pins the window to the
 	 * transcript end; otherwise it stays frozen while content appends.
 	 */
-	composeFrame(transcript: string[], dock: string[], height: number): string[] {
+	composeFrame(
+		transcript: string[],
+		dock: string[],
+		height: number,
+		tableCellSelectionRegions: ReadonlyArray<TableCellSelectionRegion> = [],
+	): string[] {
 		let dockLines = dock;
 		const dockHeight = clippedFullscreenDockHeight(dockLines.length, height);
 		if (dockLines.length > dockHeight) {
@@ -92,6 +106,7 @@ export class FullscreenViewport {
 		this.lastMaxScroll = maxScroll;
 		this.lastWindowHeight = windowHeight;
 		this.lastTranscript = transcript;
+		this.tableCellSelectionRegions = tableCellSelectionRegions;
 
 		const window = transcript.slice(this.scrollTop, this.scrollTop + windowHeight);
 		for (let i = 0; i < window.length; i++) {
@@ -122,13 +137,18 @@ export class FullscreenViewport {
 	}
 
 	private highlightSelection(window: string[]): void {
-		if (this.selectionMode !== "transcript") return;
+		if (this.selectionMode !== "transcript" && this.selectionMode !== "table-cell") return;
 		const sel = this.orderedSelection();
 		if (!sel) return;
 		for (let i = 0; i < window.length; i++) {
-			const span = this.selectionSpan(this.scrollTop + i, sel);
-			if (!span) continue;
-			window[i] = this.highlightLine(window[i], span);
+			const lineIndex = this.scrollTop + i;
+			const spans =
+				this.selectionMode === "table-cell"
+					? this.selectedTableCellSpans(lineIndex, sel)
+					: [this.selectionSpan(lineIndex, sel)].filter((span): span is ColumnSpan => span !== null);
+			for (let spanIndex = spans.length - 1; spanIndex >= 0; spanIndex--) {
+				window[i] = this.highlightLine(window[i], spans[spanIndex]);
+			}
 		}
 	}
 
@@ -142,12 +162,23 @@ export class FullscreenViewport {
 		const point = { line, col: Math.max(0, screenCol) };
 		this.selectionAnchor = point;
 		this.selectionHead = { ...point };
-		this.selectionMode = "transcript";
+		const tableRegion = this.tableCellRegionAt(point);
+		if (tableRegion) {
+			this.activeTableCell = {
+				table: tableRegion.table,
+				row: tableRegion.row,
+				column: tableRegion.column,
+			};
+			this.selectionMode = "table-cell";
+		} else {
+			this.activeTableCell = null;
+			this.selectionMode = "transcript";
+		}
 		return true;
 	}
 
 	extendSelection(screenRow: number, screenCol: number): void {
-		if (!this.selectionAnchor || this.selectionMode !== "transcript") return;
+		if (!this.selectionAnchor || (this.selectionMode !== "transcript" && this.selectionMode !== "table-cell")) return;
 		const line = this.transcriptLineForScreenRow(screenRow, true);
 		if (line === null) return;
 		this.selectionHead = { line, col: Math.max(0, screenCol) };
@@ -155,20 +186,24 @@ export class FullscreenViewport {
 
 	/** Finish the selection and return its plain text (null when empty). */
 	endSelection(): string | null {
-		if (this.selectionMode !== "transcript") {
+		if (this.selectionMode !== "transcript" && this.selectionMode !== "table-cell") {
 			this.clearSelection();
 			return null;
 		}
 		const sel = this.orderedSelection();
+		const text = sel
+			? this.selectionMode === "table-cell"
+				? this.extractTableCellSelectionText(this.lastTranscript, sel)
+				: this.extractSelectionText(this.lastTranscript, sel)
+			: null;
 		this.clearSelection();
-		if (!sel) return null;
-		return this.extractSelectionText(this.lastTranscript, sel);
+		return text;
 	}
 
 	extendActiveSelection(screenRow: number, screenCol: number): void {
 		if (this.selectionMode === "frame") {
 			this.extendFrameSelection(screenRow, screenCol);
-		} else if (this.selectionMode === "transcript") {
+		} else if (this.selectionMode === "transcript" || this.selectionMode === "table-cell") {
 			this.extendSelection(screenRow, screenCol);
 		}
 	}
@@ -177,7 +212,7 @@ export class FullscreenViewport {
 		if (this.selectionMode === "frame") {
 			return this.endFrameSelection();
 		}
-		if (this.selectionMode === "transcript") {
+		if (this.selectionMode === "transcript" || this.selectionMode === "table-cell") {
 			return this.endSelection();
 		}
 		this.clearSelection();
@@ -293,6 +328,38 @@ export class FullscreenViewport {
 		);
 	}
 
+	private tableCellRegionAt(point: SelectionPoint): TableCellSelectionRegion | null {
+		return (
+			this.tableCellSelectionRegions.find(
+				(region) => region.line === point.line && point.col >= region.col && point.col < region.col + region.width,
+			) ?? null
+		);
+	}
+
+	private selectedTableCellSpans(
+		lineIndex: number,
+		sel: { start: SelectionPoint; end: SelectionPoint },
+	): ColumnSpan[] {
+		const activeCell = this.activeTableCell;
+		const selectionSpan = this.selectionSpan(lineIndex, sel);
+		if (!activeCell || !selectionSpan) return [];
+
+		const spans: ColumnSpan[] = [];
+		for (const region of this.tableCellSelectionRegions) {
+			if (
+				region.line !== lineIndex ||
+				region.table !== activeCell.table ||
+				region.row !== activeCell.row ||
+				region.column !== activeCell.column
+			)
+				continue;
+			const from = Math.max(selectionSpan.from, region.col);
+			const to = Math.min(selectionSpan.to, region.col + region.width);
+			if (to > from) spans.push({ from, to });
+		}
+		return spans.sort((a, b) => a.from - b.from);
+	}
+
 	private frameRegionsForLine(
 		line: number,
 		regions = this.activeFrameSelection?.regions ?? this.frameSelectionRegions,
@@ -376,11 +443,28 @@ export class FullscreenViewport {
 		return text.trim().length > 0 ? text : null;
 	}
 
+	private extractTableCellSelectionText(
+		sourceLines: string[],
+		sel: { start: SelectionPoint; end: SelectionPoint },
+	): string | null {
+		const lines: string[] = [];
+		for (let lineIndex = sel.start.line; lineIndex <= sel.end.line; lineIndex++) {
+			const line = sourceLines[lineIndex] ?? "";
+			const spans = this.selectedTableCellSpans(lineIndex, sel);
+			if (spans.length === 0) continue;
+			const parts = spans.map((span) => stripAnsi(sliceByColumn(line, span.from, Math.max(0, span.to - span.from))));
+			lines.push(parts.join("").trimEnd());
+		}
+		const text = lines.join("\n");
+		return text.trim().length > 0 ? text : null;
+	}
+
 	clearSelection(): void {
 		this.selectionAnchor = null;
 		this.selectionHead = null;
 		this.selectionMode = null;
 		this.activeFrameSelection = null;
+		this.activeTableCell = null;
 	}
 
 	hasSelection(): boolean {

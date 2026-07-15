@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed fullscreen selections in wrapped Markdown tables extending into adjacent cells.
+
 - Fixed focused full-pane overlays becoming slow to navigate on wider terminals.
 
 ## [0.3.0] - 2026-07-13
