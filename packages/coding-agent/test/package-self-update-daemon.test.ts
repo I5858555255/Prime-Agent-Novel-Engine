@@ -6,6 +6,7 @@ import type * as DaemonUpdateRestartModule from "../src/cli/daemon-update-restar
 import {
 	acquireDaemonUpdateRestartCoordinator,
 	type DaemonUpdateRestartStatus,
+	DaemonUpdateRestartStatusWriter,
 } from "../src/cli/daemon-update-restart.js";
 import {
 	ENV_AGENT_DIR,
@@ -495,6 +496,48 @@ describe("self-update daemon restart", () => {
 		}
 	});
 
+	it("waits for the active coordinator before a concurrent loser completes", async () => {
+		const activeStatusPath = join(agentDir, "active-status.json");
+		const activeStatus = new DaemonUpdateRestartStatusWriter(
+			activeStatusPath,
+			"active-request",
+			mockState.socketPath,
+		);
+		activeStatus.update({ phase: "preparing" });
+		const activeLease = await acquireDaemonUpdateRestartCoordinator({
+			requestId: "active-request",
+			socketPath: mockState.socketPath,
+			statusPath: activeStatusPath,
+		});
+		let settled = false;
+		try {
+			const loser = runDaemonUpdateRestartCoordinator({
+				socketPath: mockState.socketPath,
+				agentDir,
+				statusPath: join(agentDir, "loser-status.json"),
+			}).finally(() => {
+				settled = true;
+			});
+
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+			expect(settled).toBe(false);
+			activeStatus.update({
+				phase: "complete",
+				counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
+				message: "active coordinator completed",
+			});
+
+			await expect(loser).resolves.toMatchObject({
+				phase: "complete",
+				counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
+				message: "active coordinator completed",
+			});
+			expect(mockState.calls).not.toContain("probe-daemon");
+		} finally {
+			await activeLease.release();
+		}
+	});
+
 	it("rejects a successor that answers for another socket", async () => {
 		mockState.successorSocketPath = join(tempDir, "wrong-daemon.sock");
 
@@ -863,6 +906,9 @@ describe("self-update daemon restart", () => {
 				resumed: 1,
 				failed: 1,
 			});
+			expect(mockState.lastCoordinatorStatus?.failures).toEqual([
+				{ sessionFile: failedSessionFile, message: "create failed" },
+			]);
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();

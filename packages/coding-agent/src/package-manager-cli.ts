@@ -18,11 +18,14 @@ import {
 	DAEMON_UPDATE_RESTART_COORDINATOR_FLAG,
 	DAEMON_UPDATE_RESTART_ORIGIN_FLAG,
 	DAEMON_UPDATE_RESTART_STATUS_FLAG,
+	DaemonUpdateRestartCoordinatorAlreadyRunningError,
 	type DaemonUpdateRestartCounts,
+	type DaemonUpdateRestartFailure,
 	type DaemonUpdateRestartProcessIdentity,
 	type DaemonUpdateRestartStatus,
 	DaemonUpdateRestartStatusWriter,
 	launchDaemonUpdateRestartCoordinator,
+	waitForActiveDaemonUpdateRestartCoordinator,
 } from "./cli/daemon-update-restart.js";
 import {
 	APP_NAME,
@@ -914,9 +917,12 @@ async function restoreNextTurnMessages(
 interface RestoreDaemonUpdateRestartSessionResult {
 	restored: boolean;
 	resumed: boolean;
+	failureMessage?: string;
 }
 
-type RestoreDaemonUpdateRestartResult = DaemonUpdateRestartCounts;
+interface RestoreDaemonUpdateRestartResult extends DaemonUpdateRestartCounts {
+	failures: DaemonUpdateRestartFailure[];
+}
 
 function remapDaemonUpdateRestartRuntimeMetadata(
 	session: DaemonUpdateRestartSession,
@@ -958,7 +964,7 @@ async function restoreDaemonUpdateRestartSession(
 	);
 	if (!createResponse.success) {
 		console.error(chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${createResponse.error}`));
-		return { restored: false, resumed: false };
+		return { restored: false, resumed: false, failureMessage: createResponse.error };
 	}
 	const activeSessionId = readCreatedActiveSessionId(createResponse.data);
 	restoredActiveSessionIds.set(session.activeSessionId, activeSessionId);
@@ -1120,11 +1126,12 @@ async function restoreDaemonUpdateRestart(
 ): Promise<RestoreDaemonUpdateRestartResult> {
 	const restoredActiveSessionIds = new Map<string, string>();
 	if (manifest.sessions.length === 0) {
-		return { total: 0, restored: 0, resumed: 0, failed: 0 };
+		return { total: 0, restored: 0, resumed: 0, failed: 0, failures: [] };
 	}
 	const client = new DaemonClient(socketPath);
 	let restored = 0;
 	let resumed = 0;
+	const failures: DaemonUpdateRestartFailure[] = [];
 	try {
 		await client.connect(10000);
 		for (const session of manifest.sessions) {
@@ -1141,10 +1148,16 @@ async function restoreDaemonUpdateRestart(
 				if (result.resumed) {
 					resumed++;
 				}
+				if (!result.restored) {
+					failures.push({
+						sessionFile: session.sessionFile,
+						message: result.failureMessage ?? "unknown restore error",
+					});
+				}
 			} catch (error: unknown) {
-				console.error(
-					chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${formatUnknownError(error)}`),
-				);
+				const message = formatUnknownError(error);
+				console.error(chalk.yellow(`Warning: could not restore ${session.sessionFile}: ${message}`));
+				failures.push({ sessionFile: session.sessionFile, message });
 			}
 		}
 	} finally {
@@ -1159,6 +1172,7 @@ async function restoreDaemonUpdateRestart(
 		restored,
 		resumed,
 		failed: manifest.sessions.length - restored,
+		failures,
 	};
 }
 
@@ -1235,11 +1249,27 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 	let connectedClient: DaemonClient | undefined;
 	let manifest: DaemonUpdateRestartManifest | undefined;
 	try {
-		lease = await acquireDaemonUpdateRestartCoordinator({
-			requestId: statusWriter.current().requestId,
-			socketPath: options.socketPath,
-			statusPath: options.statusPath,
-		});
+		try {
+			lease = await acquireDaemonUpdateRestartCoordinator({
+				requestId: statusWriter.current().requestId,
+				socketPath: options.socketPath,
+				statusPath: options.statusPath,
+			});
+		} catch (error: unknown) {
+			if (!(error instanceof DaemonUpdateRestartCoordinatorAlreadyRunningError)) {
+				throw error;
+			}
+			const activeStatus = await waitForActiveDaemonUpdateRestartCoordinator(error.record);
+			statusWriter.update({
+				phase: activeStatus.phase,
+				counts: activeStatus.counts,
+				...(activeStatus.predecessor ? { predecessor: activeStatus.predecessor } : {}),
+				...(activeStatus.successor ? { successor: activeStatus.successor } : {}),
+				...(activeStatus.failures ? { failures: activeStatus.failures } : {}),
+				...(activeStatus.message ? { message: activeStatus.message } : {}),
+			});
+			return statusWriter.current();
+		}
 		const daemonProbe = await probeRunningDaemonSessions(options.socketPath);
 		let predecessor: DaemonUpdateRestartProcessIdentity | undefined;
 		if (daemonProbe.reachable) {
@@ -1277,13 +1307,17 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 			if (!stopped) {
 				if (manifest) {
 					try {
-						const counts = await restoreDaemonUpdateRestart(
+						const restoreResult = await restoreDaemonUpdateRestart(
 							options.socketPath,
 							manifest,
 							options.originActiveSessionId,
 						);
+						const { failures: restoreFailures, ...counts } = restoreResult;
 						clearPreparedDaemonUpdateRestartManifest(options.agentDir);
-						statusWriter.update({ counts });
+						statusWriter.update({
+							counts,
+							...(restoreFailures.length > 0 ? { failures: restoreFailures } : {}),
+						});
 					} catch {
 						// Keep the manifest for a later recovery attempt when fallback restoration fails.
 					}
@@ -1312,6 +1346,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 		statusWriter.update({ phase: "restoring", successor });
 
 		let counts: DaemonUpdateRestartCounts = { total: 0, restored: 0, resumed: 0, failed: 0 };
+		let failures: DaemonUpdateRestartFailure[] = [];
 		if (manifest) {
 			const restoreResult = await restoreDaemonUpdateRestart(
 				options.socketPath,
@@ -1324,11 +1359,13 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 				resumed: restoreResult.resumed,
 				failed: restoreResult.failed,
 			};
+			failures = restoreResult.failures;
 			clearPreparedDaemonUpdateRestartManifest(options.agentDir);
 		}
 		statusWriter.update({
 			phase: "complete",
 			counts,
+			...(failures.length > 0 ? { failures } : {}),
 			message:
 				counts.failed > 0
 					? `Restarted the daemon with ${counts.failed} session restore failure${counts.failed === 1 ? "" : "s"}`

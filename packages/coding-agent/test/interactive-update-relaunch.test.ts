@@ -69,6 +69,7 @@ describe("buildDaemonUpdateRestartReport", () => {
 			phase: "failed",
 			coordinator: { pid: process.pid },
 			counts: { total: 3, restored: 2, resumed: 1, failed: 1 },
+			failures: [{ sessionFile: "/tmp/failed.jsonl", message: "create failed" }],
 			message: "could not stop predecessor",
 			startedAt: "2026-07-14T00:00:00.000Z",
 			updatedAt: "2026-07-14T00:00:01.000Z",
@@ -78,6 +79,7 @@ describe("buildDaemonUpdateRestartReport", () => {
 		expect(report.warnings).toEqual([
 			"Updated, but could not restart the daemon (could not stop predecessor).",
 			"1 daemon session could not be restored.",
+			"Could not restore /tmp/failed.jsonl: create failed",
 		]);
 	});
 });

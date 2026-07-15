@@ -37,6 +37,11 @@ export interface DaemonUpdateRestartCounts {
 	failed: number;
 }
 
+export interface DaemonUpdateRestartFailure {
+	sessionFile: string;
+	message: string;
+}
+
 export interface DaemonUpdateRestartProcessIdentity {
 	pid: number;
 	processStartId?: string;
@@ -53,6 +58,7 @@ export interface DaemonUpdateRestartStatus {
 	predecessor?: DaemonUpdateRestartProcessIdentity;
 	successor?: DaemonUpdateRestartProcessIdentity;
 	counts: DaemonUpdateRestartCounts;
+	failures?: DaemonUpdateRestartFailure[];
 	message?: string;
 	startedAt: string;
 	updatedAt: string;
@@ -124,6 +130,9 @@ export function buildDaemonUpdateRestartReport(status: DaemonUpdateRestartStatus
 			`${status.counts.failed} daemon session${status.counts.failed === 1 ? "" : "s"} could not be restored.`,
 		);
 	}
+	for (const failure of status.failures ?? []) {
+		report.warnings.push(`Could not restore ${failure.sessionFile}: ${failure.message}`);
+	}
 	return report;
 }
 
@@ -171,6 +180,19 @@ function isCounts(value: unknown): value is DaemonUpdateRestartCounts {
 	);
 }
 
+function isFailures(value: unknown): value is DaemonUpdateRestartFailure[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(failure) =>
+				failure !== null &&
+				typeof failure === "object" &&
+				typeof (failure as Partial<DaemonUpdateRestartFailure>).sessionFile === "string" &&
+				typeof (failure as Partial<DaemonUpdateRestartFailure>).message === "string",
+		)
+	);
+}
+
 function isDaemonUpdateRestartStatus(value: unknown): value is DaemonUpdateRestartStatus {
 	if (!value || typeof value !== "object") {
 		return false;
@@ -186,6 +208,7 @@ function isDaemonUpdateRestartStatus(value: unknown): value is DaemonUpdateResta
 		(status.predecessor === undefined || isProcessIdentity(status.predecessor)) &&
 		(status.successor === undefined || isProcessIdentity(status.successor)) &&
 		isCounts(status.counts) &&
+		(status.failures === undefined || isFailures(status.failures)) &&
 		(status.message === undefined || typeof status.message === "string") &&
 		typeof status.startedAt === "string" &&
 		typeof status.updatedAt === "string"
@@ -234,13 +257,20 @@ export class DaemonUpdateRestartStatusWriter {
 			...this.status,
 			...update,
 			counts: update.counts ? { ...update.counts } : this.status.counts,
+			failures: update.failures
+				? update.failures.map((failure) => ({ ...failure }))
+				: this.status.failures?.map((failure) => ({ ...failure })),
 			updatedAt: new Date().toISOString(),
 		};
 		this.persist();
 	}
 
 	current(): DaemonUpdateRestartStatus {
-		return { ...this.status, counts: { ...this.status.counts } };
+		return {
+			...this.status,
+			counts: { ...this.status.counts },
+			failures: this.status.failures?.map((failure) => ({ ...failure })),
+		};
 	}
 
 	touch(): void {
@@ -357,6 +387,13 @@ export class DaemonUpdateRestartCoordinatorLease {
 	}
 }
 
+export class DaemonUpdateRestartCoordinatorAlreadyRunningError extends Error {
+	constructor(readonly record: DaemonUpdateRestartCoordinatorRecord) {
+		super(`Another daemon update restart is already running for ${record.socketPath}`);
+		this.name = "DaemonUpdateRestartCoordinatorAlreadyRunningError";
+	}
+}
+
 export async function acquireDaemonUpdateRestartCoordinator(
 	options: AcquireDaemonUpdateRestartCoordinatorOptions,
 ): Promise<DaemonUpdateRestartCoordinatorLease> {
@@ -377,12 +414,37 @@ export async function acquireDaemonUpdateRestartCoordinator(
 	await withCoordinatorRegistryGuard(registryDir, () => {
 		const current = readCoordinatorRecord(path);
 		if (current && isProcessIdentityAlive(current)) {
-			throw new Error(`Another daemon update restart is already running for ${options.socketPath}`);
+			throw new DaemonUpdateRestartCoordinatorAlreadyRunningError(current);
 		}
 		rmSync(path, { force: true });
 		writeJsonAtomically(path, record);
 	});
 	return new DaemonUpdateRestartCoordinatorLease(record, registryDir, path);
+}
+
+export async function waitForActiveDaemonUpdateRestartCoordinator(
+	record: DaemonUpdateRestartCoordinatorRecord,
+	timeoutMs = DEFAULT_COORDINATOR_STALL_TIMEOUT_MS,
+): Promise<DaemonUpdateRestartStatus> {
+	let observedUpdatedAt: string | undefined;
+	let lastProgressAt = Date.now();
+	while (true) {
+		const status = readDaemonUpdateRestartStatus(record.statusPath);
+		if (status && status.updatedAt !== observedUpdatedAt) {
+			observedUpdatedAt = status.updatedAt;
+			lastProgressAt = Date.now();
+		}
+		if (status && TERMINAL_PHASES.has(status.phase)) {
+			return status;
+		}
+		if (!isProcessIdentityAlive(record)) {
+			throw new Error(`Active daemon update restart coordinator exited for ${record.socketPath}`);
+		}
+		if (Date.now() - lastProgressAt >= timeoutMs) {
+			throw new Error(`Timed out waiting for active daemon update restart progress on ${record.socketPath}`);
+		}
+		await delay(50);
+	}
 }
 
 function createStatusPath(agentDir: string, socketPath: string, requestId: string): string {
