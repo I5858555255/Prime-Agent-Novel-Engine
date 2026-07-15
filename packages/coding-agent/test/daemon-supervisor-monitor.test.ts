@@ -24,6 +24,74 @@ interface SupervisorMonitorHarness {
 	scheduleSupervisorAvailabilityCheck: (socketPath: string, delayMs: number) => void;
 }
 
+interface DeferredRecoveryWorker {
+	descriptor: {
+		workerId: string;
+		pid: number;
+		rootActiveSessionId: string;
+		lifecycle: "ready" | "recovering";
+		lastError?: string;
+		stopRequestedAt?: string;
+	};
+	client?: object;
+	incomingTranscriptActiveSessionIds: Set<string>;
+	transcriptCaches: Map<string, { markFailed(error: Error): void }>;
+	recovery?: Promise<void>;
+	deferredRecovery?: Promise<void>;
+	intentionalStop: boolean;
+	stopRevision: number;
+}
+
+interface DeferredRecoveryHarness {
+	workers: Map<string, DeferredRecoveryWorker>;
+	shuttingDown: boolean;
+	assertRecoveryAllowed: ReturnType<typeof vi.fn>;
+	persistWorker: ReturnType<typeof vi.fn>;
+	syncAgentPeers: ReturnType<typeof vi.fn>;
+	recoverWorker: ReturnType<typeof vi.fn>;
+	handleWorkerClose(worker: DeferredRecoveryWorker, client: object, error: Error): Promise<void>;
+	deferWorkerRecovery(worker: DeferredRecoveryWorker, error: Error): void;
+}
+
+function recoveryDeniedError(code: "supervisor_recovery_cancelled" | "supervisor_generation_stale"): Error {
+	return Object.assign(new Error(code), { code });
+}
+
+const recoveryEligibilityInvalidations: Array<{
+	name: string;
+	invalidate(supervisor: DeferredRecoveryHarness, worker: DeferredRecoveryWorker): void;
+}> = [
+	{
+		name: "the worker reconnects",
+		invalidate: (_supervisor, worker) => {
+			worker.client = {};
+		},
+	},
+	{
+		name: "the worker is stopped",
+		invalidate: (_supervisor, worker) => {
+			worker.intentionalStop = true;
+			worker.descriptor.stopRequestedAt = new Date().toISOString();
+		},
+	},
+	{
+		name: "the worker is replaced",
+		invalidate: (supervisor, worker) => supervisor.workers.set(worker.descriptor.workerId, { ...worker }),
+	},
+	{
+		name: "supervisor cleanup begins",
+		invalidate: (supervisor) => {
+			supervisor.shuttingDown = true;
+		},
+	},
+	{
+		name: "another recovery begins",
+		invalidate: (_supervisor, worker) => {
+			worker.recovery = Promise.resolve();
+		},
+	},
+];
+
 function createHarness(canConnect: () => Promise<boolean>): SupervisorMonitorHarness {
 	const registryDir = mkdtempSync(join(tmpdir(), "prime-supervisor-registry-test-"));
 	supervisorRegistryDirs.add(registryDir);
@@ -157,6 +225,223 @@ describe("daemon worker supervisor monitoring", () => {
 		await probeCompleted;
 		expect(daemon.canConnectToSupervisor).toHaveBeenCalledOnce();
 	});
+
+	it("recovers exactly once after shutdown admission clears", async () => {
+		vi.useFakeTimers();
+		const client = {};
+		const worker: DeferredRecoveryWorker = {
+			descriptor: {
+				workerId: "worker-deferred-recovery",
+				pid: process.pid,
+				rootActiveSessionId: "active-deferred-recovery",
+				lifecycle: "ready",
+			},
+			client,
+			incomingTranscriptActiveSessionIds: new Set(),
+			transcriptCaches: new Map(),
+			intentionalStop: false,
+			stopRevision: 0,
+		};
+		let admissionActive = true;
+		const assertRecoveryAllowed = vi.fn(async () => {
+			if (admissionActive) {
+				throw recoveryDeniedError("supervisor_recovery_cancelled");
+			}
+		});
+		const persistWorker = vi.fn();
+		const recoverWorker = vi.fn(async () => undefined);
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			shuttingDown: false,
+			assertRecoveryAllowed,
+			persistWorker,
+			syncAgentPeers: vi.fn(async () => undefined),
+			recoverWorker,
+		}) as DeferredRecoveryHarness;
+
+		await supervisor.handleWorkerClose(worker, client, new Error("worker disconnected"));
+		const deferredRecovery = worker.deferredRecovery;
+		expect(deferredRecovery).toBeDefined();
+		supervisor.deferWorkerRecovery(worker, new Error("duplicate close"));
+		expect(worker.deferredRecovery).toBe(deferredRecovery);
+		expect(worker.descriptor.lifecycle).toBe("ready");
+		expect(persistWorker).not.toHaveBeenCalled();
+		expect(recoverWorker).not.toHaveBeenCalled();
+
+		admissionActive = false;
+		await vi.advanceTimersByTimeAsync(5000);
+		await deferredRecovery;
+
+		expect(worker.descriptor.lifecycle).toBe("recovering");
+		expect(worker.descriptor.lastError).toBe("worker disconnected");
+		expect(persistWorker).toHaveBeenCalledOnce();
+		expect(recoverWorker).toHaveBeenCalledOnce();
+		expect(worker.deferredRecovery).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(recoverWorker).toHaveBeenCalledOnce();
+	});
+
+	it("resumes deferred recovery after a concurrent recovery is denied", async () => {
+		vi.useFakeTimers();
+		const client = {};
+		const worker: DeferredRecoveryWorker = {
+			descriptor: {
+				workerId: "worker-concurrent-recovery",
+				pid: process.pid,
+				rootActiveSessionId: "active-concurrent-recovery",
+				lifecycle: "ready",
+			},
+			client,
+			incomingTranscriptActiveSessionIds: new Set(),
+			transcriptCaches: new Map(),
+			intentionalStop: false,
+			stopRevision: 0,
+		};
+		let admissionActive = true;
+		const assertRecoveryAllowed = vi.fn(async () => {
+			if (admissionActive) {
+				throw recoveryDeniedError("supervisor_recovery_cancelled");
+			}
+		});
+		const persistWorker = vi.fn();
+		const recoverWorker = vi.fn(async () => undefined);
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			shuttingDown: false,
+			assertRecoveryAllowed,
+			persistWorker,
+			syncAgentPeers: vi.fn(async () => undefined),
+			recoverWorker,
+		}) as DeferredRecoveryHarness;
+
+		await supervisor.handleWorkerClose(worker, client, new Error("worker disconnected"));
+		const deferredRecovery = worker.deferredRecovery;
+		expect(deferredRecovery).toBeDefined();
+		let startConcurrentRecovery: () => void = () => undefined;
+		const concurrentRecoveryBarrier = new Promise<void>((resolve) => {
+			startConcurrentRecovery = resolve;
+		});
+		const concurrentRecovery = (async () => {
+			await concurrentRecoveryBarrier;
+			await expect(assertRecoveryAllowed()).rejects.toMatchObject({ code: "supervisor_recovery_cancelled" });
+		})().finally(() => {
+			worker.recovery = undefined;
+		});
+		worker.recovery = concurrentRecovery;
+
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(worker.deferredRecovery).toBe(deferredRecovery);
+		expect(worker.descriptor.lifecycle).toBe("ready");
+		expect(persistWorker).not.toHaveBeenCalled();
+		expect(recoverWorker).not.toHaveBeenCalled();
+
+		startConcurrentRecovery();
+		await concurrentRecovery;
+		expect(worker.recovery).toBeUndefined();
+		admissionActive = false;
+		await vi.advanceTimersByTimeAsync(5000);
+		await deferredRecovery;
+
+		expect(assertRecoveryAllowed).toHaveBeenCalledTimes(3);
+		expect(worker.descriptor.lifecycle).toBe("recovering");
+		expect(worker.descriptor.lastError).toBe("worker disconnected");
+		expect(persistWorker).toHaveBeenCalledOnce();
+		expect(recoverWorker).toHaveBeenCalledOnce();
+		expect(worker.deferredRecovery).toBeUndefined();
+	});
+
+	it("cancels deferred recovery permanently after ownership loss", async () => {
+		vi.useFakeTimers();
+		const client = {};
+		const worker: DeferredRecoveryWorker = {
+			descriptor: {
+				workerId: "worker-stale-recovery",
+				pid: process.pid,
+				rootActiveSessionId: "active-stale-recovery",
+				lifecycle: "ready",
+			},
+			client,
+			incomingTranscriptActiveSessionIds: new Set(),
+			transcriptCaches: new Map(),
+			intentionalStop: false,
+			stopRevision: 0,
+		};
+		let stale = false;
+		const assertRecoveryAllowed = vi.fn(async () => {
+			throw recoveryDeniedError(stale ? "supervisor_generation_stale" : "supervisor_recovery_cancelled");
+		});
+		const persistWorker = vi.fn();
+		const recoverWorker = vi.fn(async () => undefined);
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			shuttingDown: false,
+			assertRecoveryAllowed,
+			persistWorker,
+			syncAgentPeers: vi.fn(async () => undefined),
+			recoverWorker,
+		}) as DeferredRecoveryHarness;
+
+		await supervisor.handleWorkerClose(worker, client, new Error("worker disconnected"));
+		const deferredRecovery = worker.deferredRecovery;
+		expect(deferredRecovery).toBeDefined();
+		stale = true;
+		await vi.advanceTimersByTimeAsync(5000);
+		await deferredRecovery;
+
+		expect(worker.descriptor.lifecycle).toBe("ready");
+		expect(worker.descriptor.lastError).toBeUndefined();
+		expect(persistWorker).not.toHaveBeenCalled();
+		expect(recoverWorker).not.toHaveBeenCalled();
+		expect(worker.deferredRecovery).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(recoverWorker).not.toHaveBeenCalled();
+	});
+
+	it.each(recoveryEligibilityInvalidations)(
+		"does not recover when $name during the ownership assertion",
+		async ({ invalidate }) => {
+			const client = {};
+			const worker: DeferredRecoveryWorker = {
+				descriptor: {
+					workerId: "worker-eligibility-race",
+					pid: process.pid,
+					rootActiveSessionId: "active-eligibility-race",
+					lifecycle: "ready",
+				},
+				client,
+				incomingTranscriptActiveSessionIds: new Set(),
+				transcriptCaches: new Map(),
+				intentionalStop: false,
+				stopRevision: 0,
+			};
+			let resolveAssertion: () => void = () => undefined;
+			const assertion = new Promise<void>((resolve) => {
+				resolveAssertion = resolve;
+			});
+			const persistWorker = vi.fn();
+			const syncAgentPeers = vi.fn(async () => undefined);
+			const recoverWorker = vi.fn(async () => undefined);
+			const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+				workers: new Map([[worker.descriptor.workerId, worker]]),
+				shuttingDown: false,
+				assertRecoveryAllowed: vi.fn(() => assertion),
+				persistWorker,
+				syncAgentPeers,
+				recoverWorker,
+			}) as DeferredRecoveryHarness;
+
+			const handling = supervisor.handleWorkerClose(worker, client, new Error("worker disconnected"));
+			invalidate(supervisor, worker);
+			resolveAssertion();
+			await handling;
+
+			expect(worker.descriptor.lifecycle).toBe("ready");
+			expect(worker.descriptor.lastError).toBeUndefined();
+			expect(persistWorker).not.toHaveBeenCalled();
+			expect(syncAgentPeers).not.toHaveBeenCalled();
+			expect(recoverWorker).not.toHaveBeenCalled();
+		},
+	);
 
 	it("cancels an in-flight recovery after an intentional stop tombstone", async () => {
 		vi.useFakeTimers();

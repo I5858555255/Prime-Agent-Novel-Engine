@@ -93,6 +93,7 @@ const structuredLog = getLogger("coding-agent.daemon-supervisor");
 const WORKER_CONNECT_TIMEOUT_MS = 30_000;
 const WORKER_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const WORKER_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
+const DEFERRED_RECOVERY_RECHECK_MS = 5000;
 const SUPERVISOR_CONFIG_FILE_NAME = "supervisor-config";
 
 const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
@@ -187,6 +188,7 @@ interface ResidentWorker {
 	incomingTranscriptActiveSessionIds: Set<string>;
 	snapshotLoads: Map<string, Promise<DaemonAttachResult>>;
 	recovery?: Promise<void>;
+	deferredRecovery?: Promise<void>;
 	intentionalStop: boolean;
 	stopRevision: number;
 }
@@ -232,6 +234,10 @@ function isSupervisorRecoveryCancelled(error: unknown): boolean {
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function unrefDelay(ms: number): Promise<void> {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms).unref());
 }
 
 function withoutCommandId(command: DaemonCommand): DaemonCommandBody {
@@ -1431,7 +1437,13 @@ export class DaemonSupervisor {
 		}
 		try {
 			await this.assertRecoveryAllowed();
-		} catch {
+		} catch (recoveryError) {
+			if (!isSupervisorGenerationStale(recoveryError)) {
+				this.deferWorkerRecovery(worker, error);
+			}
+			return;
+		}
+		if (!this.isWorkerRecoveryEligible(worker)) {
 			return;
 		}
 		worker.descriptor.lifecycle = "recovering";
@@ -1439,6 +1451,61 @@ export class DaemonSupervisor {
 		this.persistWorker(worker);
 		void this.syncAgentPeers().catch(() => undefined);
 		void this.recoverWorker(worker);
+	}
+
+	private isWorkerRecoveryEligible(worker: ResidentWorker): boolean {
+		return this.isWorkerRecoveryCandidate(worker) && worker.recovery === undefined;
+	}
+
+	private isWorkerRecoveryCandidate(worker: ResidentWorker): boolean {
+		return (
+			!this.shuttingDown &&
+			!worker.intentionalStop &&
+			worker.descriptor.stopRequestedAt === undefined &&
+			this.workers.get(worker.descriptor.workerId) === worker &&
+			worker.client === undefined
+		);
+	}
+
+	private deferWorkerRecovery(worker: ResidentWorker, disconnectError: Error): void {
+		if (worker.deferredRecovery) {
+			return;
+		}
+		worker.deferredRecovery = this.resumeDeferredWorkerRecovery(worker, disconnectError).finally(() => {
+			worker.deferredRecovery = undefined;
+		});
+	}
+
+	private async resumeDeferredWorkerRecovery(worker: ResidentWorker, disconnectError: Error): Promise<void> {
+		while (true) {
+			await unrefDelay(DEFERRED_RECOVERY_RECHECK_MS);
+			if (!this.isWorkerRecoveryCandidate(worker)) {
+				return;
+			}
+			if (!this.isWorkerRecoveryEligible(worker)) {
+				continue;
+			}
+			try {
+				await this.assertRecoveryAllowed();
+			} catch (error) {
+				if (isSupervisorGenerationStale(error)) {
+					return;
+				}
+				continue;
+			}
+			if (!this.isWorkerRecoveryCandidate(worker)) {
+				return;
+			}
+			if (!this.isWorkerRecoveryEligible(worker)) {
+				continue;
+			}
+			worker.descriptor.lifecycle = "recovering";
+			worker.descriptor.lastError = disconnectError.message;
+			this.persistWorker(worker);
+			void this.syncAgentPeers().catch(() => undefined);
+			void this.recoverWorker(worker);
+			return;
+		}
 	}
 
 	private async recoverWorker(worker: ResidentWorker): Promise<void> {
