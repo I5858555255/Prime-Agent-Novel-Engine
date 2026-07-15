@@ -5067,10 +5067,19 @@ export class InteractiveMode {
 	}
 
 	private getShortcutsTrayHint(): string | undefined {
-		if (!this.isNewChat() || this.editor.getText().length > 0) {
+		if (this.editor.getText().length > 0) {
 			return undefined;
 		}
-		return keyText("app.shortcuts") ? keyHint("app.shortcuts", "for shortcuts") : "/hotkeys for shortcuts";
+		const toolsHint = keyHint("app.tools.expand", this.toolOutputExpanded ? "to compact tools" : "to expand tools", {
+			primaryOnly: true,
+		});
+		if (!this.isNewChat()) {
+			return toolsHint;
+		}
+		const shortcutsHint = keyText("app.shortcuts")
+			? keyHint("app.shortcuts", "for shortcuts")
+			: "/hotkeys for shortcuts";
+		return `${shortcutsHint}  ${toolsHint}`;
 	}
 
 	private isNewChat(): boolean {
@@ -6190,6 +6199,7 @@ export class InteractiveMode {
 
 	private setToolsExpanded(expanded: boolean): void {
 		this.toolOutputExpanded = expanded;
+		this.childAgentSummary.invalidate();
 		const activeHeader = this.customHeader ?? this.builtInHeader;
 		if (isExpandable(activeHeader)) {
 			activeHeader.setExpanded(expanded);

@@ -19,10 +19,16 @@ describe("InteractiveMode startup hints", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	function createMode(sessionHasMessages = false, returnToAgentsView = false, getEditorText = () => "") {
+	function createMode(
+		sessionHasMessages = false,
+		returnToAgentsView = false,
+		getEditorText = () => "",
+		toolOutputExpanded = false,
+	) {
 		const mode = {
 			childAgentPanelMode: undefined,
 			sessionHasMessages,
+			toolOutputExpanded,
 			options: { returnToAgentsView },
 			editor: { getText: getEditorText },
 			connectionState: {
@@ -80,7 +86,7 @@ describe("InteractiveMode startup hints", () => {
 		const mode = createMode();
 		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(label)).toBe("test-model • high  ? for shortcuts");
+		expect(stripAnsi(label)).toBe("test-model • high  ? for shortcuts  Ctrl+O to expand tools");
 	});
 
 	it("keeps the lowercase agents hint while typing", () => {
@@ -88,7 +94,7 @@ describe("InteractiveMode startup hints", () => {
 		const mode = createMode(false, true, () => editorText);
 		const getLabel = () => Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(getLabel())).toBe("← agents  test-model • high  ? for shortcuts");
+		expect(stripAnsi(getLabel())).toBe("← agents  test-model • high  ? for shortcuts  Ctrl+O to expand tools");
 
 		editorText = "draft prompt";
 		expect(stripAnsi(getLabel())).toBe("← agents  test-model • high");
@@ -99,7 +105,7 @@ describe("InteractiveMode startup hints", () => {
 		const mode = createMode(false, false, () => editorText);
 		const getLabel = () => Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(getLabel())).toBe("test-model • high  ? for shortcuts");
+		expect(stripAnsi(getLabel())).toBe("test-model • high  ? for shortcuts  Ctrl+O to expand tools");
 
 		editorText = "draft prompt";
 		expect(stripAnsi(getLabel())).toBe("test-model • high");
@@ -108,14 +114,17 @@ describe("InteractiveMode startup hints", () => {
 		expect(stripAnsi(getLabel())).toBe("test-model • high");
 
 		editorText = "";
-		expect(stripAnsi(getLabel())).toBe("test-model • high  ? for shortcuts");
+		expect(stripAnsi(getLabel())).toBe("test-model • high  ? for shortcuts  Ctrl+O to expand tools");
 	});
 
-	it("hides the tray shortcut guidance for chats with history", () => {
-		const mode = createMode(true);
-		const label = Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
+	it("replaces shortcut guidance with the tool mode after chat starts", () => {
+		const getLabel = (mode: ReturnType<typeof createMode>) =>
+			Reflect.get(InteractiveMode.prototype, "getTrayLocationLabel").call(mode);
 
-		expect(stripAnsi(label)).toBe("test-model • high");
+		expect(stripAnsi(getLabel(createMode(true)))).toBe("test-model • high  Ctrl+O to expand tools");
+		expect(stripAnsi(getLabel(createMode(true, false, () => "", true)))).toBe(
+			"test-model • high  Ctrl+O to compact tools",
+		);
 	});
 
 	it("keeps the question-mark shortcut guide compact", () => {
