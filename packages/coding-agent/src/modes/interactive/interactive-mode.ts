@@ -7497,9 +7497,22 @@ export class InteractiveMode {
 		}
 
 		const currentModel = this.getCurrentModel();
-		const action = resolvePrimeInferencePostLoginModelAction(authResult, currentModel, this.modelRegistry);
+		let action = resolvePrimeInferencePostLoginModelAction(authResult, currentModel, this.modelRegistry);
 		if (!action.openModelPicker) {
 			return false;
+		}
+
+		if (!currentModel) {
+			try {
+				const availableModels = await this.getConnectionAvailableModels();
+				action = resolvePrimeInferencePostLoginModelAction(authResult, currentModel, {
+					find: (provider, modelId) =>
+						availableModels.find((model) => model.provider === provider && model.id === modelId) ??
+						this.modelRegistry.find(provider, modelId),
+				});
+			} catch {
+				// Preserve the registry fallback so selection can still report a specific failure below.
+			}
 		}
 
 		if (action.fallbackModel) {
