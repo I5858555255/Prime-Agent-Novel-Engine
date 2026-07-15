@@ -487,6 +487,7 @@ describe("ENG-4603 worker recovery convergence", () => {
 		successorClient.close();
 		predecessorClient.close();
 		await waitForExit(successor);
+		await waitForExactProcessExit(replacement.pid, replacement.processStartId);
 		predecessor.child.kill("SIGKILL");
 		await waitForExit(predecessor);
 	}, 120_000);
@@ -683,12 +684,15 @@ describe("ENG-4603 worker recovery convergence", () => {
 		await waitForType(successor, "ready", 60_000);
 		const successorStartId = getProcessStartId(successor.child.pid!);
 		client.close();
+		const systemLsofPath = spawnSync("which", ["lsof"], { encoding: "utf8" }).stdout.trim();
+		if (!systemLsofPath) throw new Error("Could not locate lsof for the shutdown regression");
 		const lsofPath = join(paths.agentDir, "lsof");
-		writeFileSync(lsofPath, '#!/bin/sh\nexec /usr/sbin/lsof -nP -F pn -U -a -p "$ENG_4603_LSOF_PIDS"\n', {
+		writeFileSync(lsofPath, '#!/bin/sh\nexec "$ENG_4603_SYSTEM_LSOF" -nP -F pn -U -a -p "$ENG_4603_LSOF_PIDS"\n', {
 			mode: 0o700,
 		});
 		const lsofEnvironment = {
 			ENG_4603_LSOF_PIDS: `${predecessor.child.pid},${successor.child.pid},${workerPid}`,
+			ENG_4603_SYSTEM_LSOF: systemLsofPath,
 			PATH: `${paths.agentDir}:${process.env.PATH ?? ""}`,
 		};
 		const listenersBeforeShutdown = spawnSync(lsofPath, [], {
