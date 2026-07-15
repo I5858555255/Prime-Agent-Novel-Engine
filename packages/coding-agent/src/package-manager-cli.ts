@@ -695,6 +695,26 @@ function responseHasActiveDaemonSessions(data: unknown): boolean {
 	return data.sessions.length > 0;
 }
 
+function hasFixedDaemonSupervisorOwnerIdentity(value: unknown): value is {
+	supervisorGeneration: string;
+	supervisorOwnerToken: string;
+	supervisorPid: number;
+	supervisorProcessStartId: string;
+	supervisorSocketPath: string;
+} {
+	if (!isRecord(value)) {
+		return false;
+	}
+	return (
+		typeof value.supervisorGeneration === "string" &&
+		typeof value.supervisorOwnerToken === "string" &&
+		Number.isInteger(value.supervisorPid) &&
+		(value.supervisorPid as number) > 0 &&
+		typeof value.supervisorProcessStartId === "string" &&
+		typeof value.supervisorSocketPath === "string"
+	);
+}
+
 export async function prepareDaemonUpdateRestart(
 	socketPath: string,
 	agentDir: string,
@@ -707,7 +727,7 @@ export async function prepareDaemonUpdateRestart(
 		await client.connect(1000);
 		connected = true;
 		const hello = await client.waitForHello(2000).catch(() => undefined);
-		if (hello) {
+		if (hasFixedDaemonSupervisorOwnerIdentity(hello)) {
 			await persistDaemonStartupFenceFromOwner(socketPath, hello);
 		}
 		const useLegacyProtocol = hello !== undefined && hello.protocol.version < DAEMON_PROTOCOL_VERSION;

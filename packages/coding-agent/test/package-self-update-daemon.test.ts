@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ENV_AGENT_DIR,
 	PACKAGE_NAME,
@@ -10,10 +10,6 @@ import {
 } from "../src/config.js";
 import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
 import type * as DaemonSocketModule from "../src/modes/daemon/daemon-socket.js";
-import {
-	DAEMON_SUPERVISOR_REGISTRY_DIR_ENV,
-	defaultDaemonSupervisorRegistryDir,
-} from "../src/modes/daemon/daemon-supervisor-ownership.js";
 import { handlePackageCommand } from "../src/package-manager-cli.js";
 
 interface MockSessionSummary {
@@ -94,6 +90,14 @@ const mockState = vi.hoisted(() => ({
 	createThrowSessionPaths: [] as string[],
 	daemonProbe: { reachable: true, activeSessions: [] } as MockRunningDaemonProbe,
 	globalPackageRoot: "",
+	hello: { protocol: { version: 2 } } as {
+		protocol: { version: number };
+		supervisorGeneration?: string;
+		supervisorOwnerToken?: string;
+		supervisorPid?: number;
+		supervisorProcessStartId?: string;
+		supervisorSocketPath?: string;
+	},
 	prepareManifest: { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] } as MockUpdateRestartManifest,
 	promptFailures: 0,
 	requestPayloads: [] as MockDaemonRequest[],
@@ -102,7 +106,6 @@ const mockState = vi.hoisted(() => ({
 	spawnExitCodes: [] as number[],
 	shutdownResult: true,
 }));
-const inheritedSupervisorRegistryDir = process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV];
 
 vi.mock("child_process", () => ({
 	spawn: vi.fn((command: string, args: string[]) => {
@@ -130,6 +133,12 @@ vi.mock("child_process", () => ({
 vi.mock("../src/modes/daemon/daemon-socket.js", async (importOriginal) => ({
 	...(await importOriginal<typeof DaemonSocketModule>()),
 	defaultDaemonSocketPath: () => mockState.socketPath,
+}));
+
+vi.mock("../src/modes/daemon/daemon-supervisor-ownership.js", () => ({
+	persistDaemonStartupFenceFromOwner: vi.fn(async () => {
+		mockState.calls.push("persist-daemon-startup-fence");
+	}),
 }));
 
 vi.mock("../src/cli/daemon-launch.js", () => ({
@@ -167,8 +176,8 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 			mockState.calls.push(`daemon-connect:${this.socketPath}`);
 		}
 
-		async waitForHello(): Promise<{ protocol: { version: number } }> {
-			return { protocol: { version: 2 } };
+		async waitForHello(): Promise<typeof mockState.hello> {
+			return mockState.hello;
 		}
 
 		async request(request: MockDaemonRequest): Promise<MockDaemonResponse> {
@@ -206,7 +215,6 @@ describe("self-update daemon restart", () => {
 	let packageDir: string;
 	let originalAgentDir: string | undefined;
 	let originalPiPackageDir: string | undefined;
-	let originalSupervisorRegistryDir: string | undefined;
 	let originalCwd: string;
 	let originalExecPath: string;
 	let originalExitCode: typeof process.exitCode;
@@ -217,6 +225,7 @@ describe("self-update daemon restart", () => {
 		projectDir = join(tempDir, "project");
 		packageDir = join(tempDir, "global-prefix", "lib", "node_modules", PACKAGE_NAME);
 		mockState.globalPackageRoot = join(tempDir, "global-prefix", "lib", "node_modules");
+		mockState.hello = { protocol: { version: 2 } };
 		mockState.socketPath = join(tempDir, "daemon.sock");
 		mockState.calls = [];
 		mockState.createActiveSessionIds = [];
@@ -234,14 +243,12 @@ describe("self-update daemon restart", () => {
 
 		originalAgentDir = process.env[ENV_AGENT_DIR];
 		originalPiPackageDir = process.env.PI_PACKAGE_DIR;
-		originalSupervisorRegistryDir = process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV];
 		originalCwd = process.cwd();
 		originalExecPath = process.execPath;
 		originalExitCode = process.exitCode;
 		process.exitCode = undefined;
 		process.env[ENV_AGENT_DIR] = agentDir;
 		process.env.PI_PACKAGE_DIR = packageDir;
-		process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV] = join(tempDir, "supervisor-owners");
 		process.chdir(projectDir);
 		Object.defineProperty(process, "execPath", {
 			value: join(packageDir, "dist", "cli.js"),
@@ -268,18 +275,9 @@ describe("self-update daemon restart", () => {
 		} else {
 			process.env.PI_PACKAGE_DIR = originalPiPackageDir;
 		}
-		if (originalSupervisorRegistryDir === undefined) {
-			delete process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV];
-		} else {
-			process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV] = originalSupervisorRegistryDir;
-		}
 		delete process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
 		rmSync(tempDir, { recursive: true, force: true });
-	});
-
-	afterAll(() => {
-		expect(process.env[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV]).toBe(inheritedSupervisorRegistryDir);
 	});
 
 	it("uses the interactive no-change sentinel only when self-update is unchanged", async () => {
@@ -340,25 +338,46 @@ describe("self-update daemon restart", () => {
 	});
 
 	it("restarts the daemon only after the package update succeeds", async () => {
+		mockState.hello = {
+			protocol: { version: 2 },
+			supervisorGeneration: "fixed-owner",
+			supervisorOwnerToken: "owner-token",
+			supervisorPid: process.pid,
+			supervisorProcessStartId: "process-start",
+			supervisorSocketPath: mockState.socketPath,
+		};
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			const isolatedRegistryDir = join(tempDir, "supervisor-owners");
-			expect(defaultDaemonSupervisorRegistryDir()).toBe(isolatedRegistryDir);
-			expect(isolatedRegistryDir).not.toBe(defaultDaemonSupervisorRegistryDir({}));
 			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
-			expect(existsSync(join(isolatedRegistryDir, "startup-fences"))).toBe(true);
 
 			expect(process.exitCode).toBeUndefined();
 			const spawnIndex = mockState.calls.findIndex((call) => call.startsWith("spawn:npm "));
+			const fenceIndex = mockState.calls.indexOf("persist-daemon-startup-fence");
 			const prepareIndex = mockState.calls.indexOf("daemon-request:prepare_update_restart");
 			const shutdownIndex = mockState.calls.indexOf("shutdown-daemon");
 			const ensureIndex = mockState.calls.indexOf("ensure-daemon");
 			expect(spawnIndex).toBeGreaterThanOrEqual(0);
-			expect(prepareIndex).toBeGreaterThan(spawnIndex);
+			expect(fenceIndex).toBeGreaterThan(spawnIndex);
+			expect(prepareIndex).toBeGreaterThan(fenceIndex);
 			expect(shutdownIndex).toBeGreaterThan(prepareIndex);
 			expect(ensureIndex).toBeGreaterThan(shutdownIndex);
+		} finally {
+			errorSpy.mockRestore();
+			logSpy.mockRestore();
+		}
+	});
+
+	it("skips predecessor fencing when the daemon hello has no fixed-owner identity", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await expect(handlePackageCommand(["update", "--self"])).resolves.toBe(true);
+
+			expect(mockState.calls).not.toContain("persist-daemon-startup-fence");
+			expect(mockState.calls).toContain("daemon-request:prepare_update_restart");
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();

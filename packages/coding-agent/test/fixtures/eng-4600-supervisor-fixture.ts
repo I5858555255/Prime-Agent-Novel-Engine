@@ -1,13 +1,10 @@
 import { existsSync, unlinkSync } from "node:fs";
 import lockfile from "proper-lockfile";
 import { isDaemonCatalogProcess, runDaemonCatalogProcess } from "../../src/modes/daemon/daemon-catalog-process.js";
-import { DaemonSupervisor, type DaemonSupervisorStartupPhase } from "../../src/modes/daemon/daemon-supervisor.js";
-import {
-	acquireDaemonSupervisorOwnership,
-	type DaemonSupervisorOwnership,
-} from "../../src/modes/daemon/daemon-supervisor-ownership.js";
+import { DaemonSupervisor } from "../../src/modes/daemon/daemon-supervisor.js";
+import { acquireDaemonSupervisorOwnership } from "../../src/modes/daemon/daemon-supervisor-ownership.js";
 
-type ControlMessage = { type: "go" | "resume" | "release" | "shutdown" | "cleanup" };
+type ControlMessage = { type: "go" | "probe" | "release" | "shutdown" | "cleanup" };
 
 function requiredEnvironment(name: string): string {
 	const value = process.env[name];
@@ -35,7 +32,7 @@ function waitForControl(type: ControlMessage["type"]): Promise<void> {
 }
 
 async function runOwnershipHolder(): Promise<never> {
-	const ownership: DaemonSupervisorOwnership = await acquireDaemonSupervisorOwnership({
+	const ownership = await acquireDaemonSupervisorOwnership({
 		socketPath: requiredEnvironment("ENG_4600_SOCKET_PATH"),
 		descriptorDir: requiredEnvironment("ENG_4600_DESCRIPTOR_DIR"),
 		agentDir: requiredEnvironment("ENG_4600_AGENT_DIR"),
@@ -43,7 +40,7 @@ async function runOwnershipHolder(): Promise<never> {
 		appVersion: "test",
 		registryDir: requiredEnvironment("ENG_4600_REGISTRY_DIR"),
 	});
-	send({ type: "ready", generation: ownership.record.generation });
+	send({ type: "ready", owner: ownership.record });
 	await waitForControl("release");
 	await ownership.release();
 	send({ type: "owner_released" });
@@ -55,8 +52,6 @@ async function runSupervisor(): Promise<never> {
 	const socketPath = requiredEnvironment("ENG_4600_SOCKET_PATH");
 	const agentDir = requiredEnvironment("ENG_4600_AGENT_DIR");
 	const descriptorDir = requiredEnvironment("ENG_4600_DESCRIPTOR_DIR");
-	const failPhase = process.env.ENG_4600_FAIL_PHASE as DaemonSupervisorStartupPhase | undefined;
-	const pausePhase = process.env.ENG_4600_PAUSE_PHASE as DaemonSupervisorStartupPhase | undefined;
 	const supervisor = new DaemonSupervisor(socketPath, {
 		descriptorDir,
 		defaultSessionConfig: {
@@ -66,15 +61,6 @@ async function runSupervisor(): Promise<never> {
 			noExtensions: true,
 			noSkills: true,
 			noTools: true,
-		},
-		startupHook: async (phase) => {
-			send({ type: "phase", phase });
-			if (phase === pausePhase) {
-				await waitForControl("resume");
-			}
-			if (phase === failPhase) {
-				throw new Error(`Injected startup failure at ${phase}`);
-			}
 		},
 	});
 	try {
@@ -124,6 +110,11 @@ async function main(): Promise<never> {
 		return runDaemonCatalogProcess();
 	}
 	send({ type: "booted" });
+	process.on("message", (message: unknown) => {
+		if (message && typeof message === "object" && (message as Partial<ControlMessage>).type === "probe") {
+			send({ type: "probe_ack" });
+		}
+	});
 	const mode = requiredEnvironment("ENG_4600_FIXTURE_MODE");
 	if (mode === "legacy_cleanup") {
 		return runLegacyCleanup();

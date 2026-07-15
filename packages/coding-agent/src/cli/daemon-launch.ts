@@ -11,12 +11,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { appendRotatingLog, expandTildePath, getClientErrorLogPath, VERSION } from "../config.js";
-import { getProcessStartId } from "../core/session-lease.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
-import type { ProcessIdentity } from "../modes/daemon/daemon-supervisor-ownership.js";
 
 export function isDaemonSessionSummary(value: unknown): value is SessionSummary {
 	if (!value || typeof value !== "object") {
@@ -113,34 +111,12 @@ export class StaleDaemonError extends Error {
 	}
 }
 
-function hasProcessIdentityExited(identity: ProcessIdentity | undefined): boolean {
-	if (!identity) {
-		return true;
-	}
-	try {
-		process.kill(identity.pid, 0);
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ESRCH";
-	}
-	if (!identity.processStartId) {
-		return false;
-	}
-	const currentStartId = getProcessStartId(identity.pid);
-	return currentStartId !== undefined && currentStartId !== identity.processStartId;
-}
-
-async function waitForDaemonGone(
-	socketPath: string,
-	timeoutMs = 5000,
-	requireSocketCleanup = false,
-	expectedIdentity?: ProcessIdentity,
-): Promise<boolean> {
+async function waitForDaemonGone(socketPath: string, timeoutMs = 5000, requireSocketCleanup = false): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (
 			!(await canConnectToDaemon(socketPath, 250)) &&
-			(!requireSocketCleanup || process.platform === "win32" || !existsSync(socketPath)) &&
-			hasProcessIdentityExited(expectedIdentity)
+			(!requireSocketCleanup || process.platform === "win32" || !existsSync(socketPath))
 		) {
 			return true;
 		}
@@ -149,24 +125,15 @@ async function waitForDaemonGone(
 	// A daemon can exit without removing its Unix socket (for example, after a crash
 	// during shutdown). Once the cleanup grace has elapsed, a non-listening socket
 	// is safe for the replacement daemon's guarded startup path to reclaim.
-	return (
-		requireSocketCleanup && !(await canConnectToDaemon(socketPath, 250)) && hasProcessIdentityExited(expectedIdentity)
-	);
+	return requireSocketCleanup && !(await canConnectToDaemon(socketPath, 250));
 }
 
 export async function shutdownDaemonAndWait(socketPath: string, timeoutMs = 5000): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
 	let shutdownAccepted = false;
-	let expectedIdentity: ProcessIdentity | undefined;
 	try {
 		await client.connect(1000);
 		const hello = await client.waitForHello(2000).catch(() => undefined);
-		if (hello?.supervisorPid && Number.isInteger(hello.supervisorPid) && hello.supervisorPid > 0) {
-			expectedIdentity = {
-				pid: hello.supervisorPid,
-				processStartId: getProcessStartId(hello.supervisorPid),
-			};
-		}
 		const request =
 			hello && hello.protocol.version < DAEMON_PROTOCOL_VERSION
 				? client.requestLegacy.bind(client)
@@ -178,7 +145,7 @@ export async function shutdownDaemonAndWait(socketPath: string, timeoutMs = 5000
 	} finally {
 		client.close();
 	}
-	return waitForDaemonGone(socketPath, timeoutMs, shutdownAccepted, expectedIdentity);
+	return waitForDaemonGone(socketPath, timeoutMs, shutdownAccepted);
 }
 
 // activeSessions is undefined when the daemon is reachable but its sessions couldn't

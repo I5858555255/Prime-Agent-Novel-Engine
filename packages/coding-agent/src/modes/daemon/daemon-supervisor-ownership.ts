@@ -14,7 +14,7 @@ import lockfile from "proper-lockfile";
 import { getProcessStartId } from "../../core/session-lease.js";
 import { defaultDaemonSocketDir } from "./daemon-socket.js";
 
-export const DAEMON_SUPERVISOR_REGISTRY_DIR_ENV = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
+const DAEMON_SUPERVISOR_REGISTRY_DIR_ENV = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
 
 const OWNER_VERSION = 1;
 const REGISTRY_LOCK_STALE_MS = 5000;
@@ -23,14 +23,14 @@ const REGISTRY_LOCK_RETRIES = 500;
 const REGISTRY_LOCK_RETRY_MS = 10;
 const STARTUP_FENCE_POLL_MS = 250;
 
-export type DaemonSupervisorOwnerPhase = "starting" | "owner" | "stopping";
+type DaemonSupervisorOwnerPhase = "starting" | "owner" | "stopping";
 
-export interface ProcessIdentity {
+interface ProcessIdentity {
 	pid: number;
 	processStartId?: string;
 }
 
-export interface DaemonSupervisorOwnerRecord extends ProcessIdentity {
+interface DaemonSupervisorOwnerRecord extends ProcessIdentity {
 	version: 1;
 	role: "supervisor";
 	token: string;
@@ -53,7 +53,7 @@ interface DaemonStartupFenceRecord extends ProcessIdentity {
 	createdAt: string;
 }
 
-export interface DaemonSupervisorHelloIdentity {
+interface DaemonSupervisorHelloIdentity {
 	supervisorGeneration?: string;
 	supervisorOwnerToken?: string;
 	supervisorPid?: number;
@@ -61,7 +61,7 @@ export interface DaemonSupervisorHelloIdentity {
 	supervisorSocketPath?: string;
 }
 
-export interface AcquireDaemonSupervisorOwnershipOptions {
+interface AcquireDaemonSupervisorOwnershipOptions {
 	socketPath: string;
 	descriptorDir: string;
 	agentDir: string;
@@ -70,7 +70,7 @@ export interface AcquireDaemonSupervisorOwnershipOptions {
 	registryDir?: string;
 }
 
-export class DaemonSupervisorAlreadyRunningError extends Error {
+class DaemonSupervisorAlreadyRunningError extends Error {
 	readonly code = "daemon_supervisor_already_running" as const;
 
 	constructor(readonly owner: DaemonSupervisorOwnerRecord) {
@@ -79,7 +79,7 @@ export class DaemonSupervisorAlreadyRunningError extends Error {
 	}
 }
 
-export class DaemonSupervisorOwnership {
+class DaemonSupervisorOwnership {
 	private released = false;
 
 	constructor(
@@ -130,14 +130,11 @@ export class DaemonSupervisorOwnership {
 	}
 }
 
-export function defaultDaemonSupervisorRegistryDir(environment: NodeJS.ProcessEnv = process.env): string {
+function defaultDaemonSupervisorRegistryDir(environment: NodeJS.ProcessEnv = process.env): string {
 	return environment[DAEMON_SUPERVISOR_REGISTRY_DIR_ENV] ?? resolve(defaultDaemonSocketDir(), "supervisor-owners");
 }
 
-export async function withDaemonSupervisorRegistryGuard<T>(
-	registryDir: string,
-	action: () => T | Promise<T>,
-): Promise<T> {
+async function withDaemonSupervisorRegistryGuard<T>(registryDir: string, action: () => T | Promise<T>): Promise<T> {
 	mkdirSync(registryDir, { recursive: true, mode: 0o700 });
 	const release = await lockfile.lock(registryDir, {
 		realpath: false,
@@ -158,25 +155,7 @@ export async function withDaemonSupervisorRegistryGuard<T>(
 	}
 }
 
-export async function listDaemonSupervisorOwners(
-	registryDir: string = defaultDaemonSupervisorRegistryDir(),
-): Promise<DaemonSupervisorOwnerRecord[]> {
-	return withDaemonSupervisorRegistryGuard(registryDir, () =>
-		listOwnerDirectories(registryDir).map((directory) => requireOwnerRecord(directory)),
-	);
-}
-
-export async function readDaemonSupervisorOwner(
-	generation: string,
-	registryDir: string = defaultDaemonSupervisorRegistryDir(),
-): Promise<DaemonSupervisorOwnerRecord | undefined> {
-	return withDaemonSupervisorRegistryGuard(registryDir, () => {
-		const directory = ownerDirectoryPath(registryDir, generation);
-		return existsSync(directory) ? requireOwnerRecord(directory) : undefined;
-	});
-}
-
-export async function mutateDaemonSupervisorOwner(
+async function mutateDaemonSupervisorOwner(
 	generation: string,
 	expectedToken: string,
 	mutation: (owner: DaemonSupervisorOwnerRecord) => void,
@@ -264,7 +243,7 @@ export async function persistDaemonStartupFenceFromOwner(
 	socketPath: string,
 	hello: DaemonSupervisorHelloIdentity,
 	registryDir: string = defaultDaemonSupervisorRegistryDir(),
-): Promise<boolean> {
+): Promise<void> {
 	mkdirSync(registryDir, { recursive: true, mode: 0o700 });
 	const fenceDirectory = resolve(registryDir, "startup-fences");
 	mkdirSync(fenceDirectory, { recursive: true, mode: 0o700 });
@@ -273,23 +252,10 @@ export async function persistDaemonStartupFenceFromOwner(
 		const owners = listOwnerDirectories(registryDir).map((directory) => requireOwnerRecord(directory));
 		const normalizedSocketPath = normalizeSocketPath(socketPath);
 		const matchingOwners = owners.filter((owner) => owner.socketPath === normalizedSocketPath);
-		const hasFixedOwnerMarker =
-			hello.supervisorOwnerToken !== undefined ||
-			hello.supervisorProcessStartId !== undefined ||
-			hello.supervisorSocketPath !== undefined;
-		const markerMatchesAnotherOwner = owners.some(
-			(owner) =>
-				owner.token === hello.supervisorOwnerToken ||
-				owner.generation === hello.supervisorGeneration ||
-				owner.pid === hello.supervisorPid,
-		);
 		if (matchingOwners.length === 0) {
-			if (hasFixedOwnerMarker || markerMatchesAnotherOwner) {
-				throw new Error(`Daemon supervisor owner does not match ${socketPath}`);
-			}
-			return false;
+			throw new Error(`Daemon supervisor owner does not match ${socketPath}`);
 		}
-		if (matchingOwners.length !== 1) {
+		if (matchingOwners.length > 1) {
 			throw new Error(`Multiple daemon supervisor owners match ${socketPath}`);
 		}
 		const owner = matchingOwners[0];
@@ -324,7 +290,6 @@ export async function persistDaemonStartupFenceFromOwner(
 			createdAt: new Date().toISOString(),
 		};
 		writeJsonAtomically(path, record);
-		return true;
 	});
 }
 
@@ -332,11 +297,9 @@ export async function waitForDaemonStartupFence(
 	socketPath: string,
 	timeoutMs = 10_000,
 	registryDir: string = defaultDaemonSupervisorRegistryDir(),
-	onBlocked?: () => void | Promise<void>,
 ): Promise<void> {
 	const path = startupFencePath(resolve(registryDir, "startup-fences"), socketPath);
 	const deadline = Date.now() + timeoutMs;
-	let reportedBlocked = false;
 	while (true) {
 		const fence = readStartupFence(path);
 		if (!fence) {
@@ -365,15 +328,11 @@ export async function waitForDaemonStartupFence(
 		if (Date.now() >= deadline) {
 			throw new Error(`Timed out waiting for predecessor daemon process ${fence.pid} to exit`);
 		}
-		if (!reportedBlocked) {
-			reportedBlocked = true;
-			await onBlocked?.();
-		}
 		await delay(STARTUP_FENCE_POLL_MS);
 	}
 }
 
-export function isProcessIdentityAlive(identity: ProcessIdentity): boolean {
+function isProcessIdentityAlive(identity: ProcessIdentity): boolean {
 	try {
 		process.kill(identity.pid, 0);
 	} catch (error) {
@@ -393,7 +352,7 @@ function normalizeSocketPath(socketPath: string): string {
 	return resolve(socketPath);
 }
 
-export function canonicalizeFilesystemPath(path: string): string {
+function canonicalizeFilesystemPath(path: string): string {
 	let existingAncestor = resolve(path);
 	const missingSuffix: string[] = [];
 	while (true) {
