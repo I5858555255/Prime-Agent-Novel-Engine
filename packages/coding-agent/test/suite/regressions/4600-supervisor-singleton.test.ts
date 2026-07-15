@@ -716,6 +716,8 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 			await waitForExit(legacyCleanup);
 			await waitForCleanupProcessExit(workerCleanupIdentity);
 			await waitForCleanupProcessExit(successorCleanupIdentity);
+			registerOwnerRecordsForCleanup(paths.registryDir);
+			await cleanupRegisteredProcesses(client);
 			removeDeadFixtureOwnerRecords(paths.registryDir);
 			expect(listOwnerRecords(paths.registryDir)).toEqual([]);
 		} finally {
