@@ -1,12 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
-import { APP_NAME, VERSION } from "../config.js";
+import { APP_NAME, getAgentDir, VERSION } from "../config.js";
+import { isOrphanProcessIdentityCurrent, readActiveOrphanProcesses } from "../core/orphan-process-journal.js";
+import { getProcessStartId } from "../core/session-lease.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketDir, defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
+import type { DaemonWorkerDescriptor } from "../modes/daemon/daemon-worker-protocol.js";
 import { formatDaemonListTable } from "./daemon-ps-format.js";
+import { promptYesNo } from "./daemon-stop-confirm.js";
 
 /**
  * `daemon ps` discovers every prime-agent daemon on the machine, not just the
@@ -43,6 +47,7 @@ export interface DaemonInfo {
 	sessionCount?: number;
 	status: DaemonStatus;
 	isDefault: boolean;
+	hasTrackedWorkers?: boolean;
 }
 
 const STATUS_ORDER: Record<DaemonStatus, number> = {
@@ -237,14 +242,22 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 		processBySocket.set(daemon.socketPath, daemon);
 	}
 
-	const sockets = new Set<string>([...processBySocket.keys(), ...scanSocketDir()]);
+	const workerSockets = new Set(
+		findAllTrackedWorkers().map((worker) => normalizeSocketPath(worker.descriptor.supervisorSocketPath)),
+	);
+	const sockets = new Set<string>([...processBySocket.keys(), ...scanSocketDir(), ...workerSockets]);
 	const defaultSocket = normalizeSocketPath(defaultDaemonSocketPath());
 
 	const infos = await Promise.all(
 		[...sockets].map(async (socketPath): Promise<DaemonInfo> => {
 			const proc = processBySocket.get(socketPath);
 			const probe = await probeDaemon(socketPath);
-			const status: DaemonStatus = probe.reachable ? classifyReachable(probe) : proc ? "unreachable" : "orphan-file";
+			const hasTrackedWorkers = workerSockets.has(socketPath);
+			const status: DaemonStatus = probe.reachable
+				? classifyReachable(probe)
+				: proc || hasTrackedWorkers
+					? "unreachable"
+					: "orphan-file";
 			return {
 				socketPath,
 				pid: proc?.pid,
@@ -254,6 +267,7 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 				sessionCount: probe.sessionCount,
 				status,
 				isDefault: socketPath === defaultSocket,
+				...(hasTrackedWorkers ? { hasTrackedWorkers: true } : {}),
 			};
 		}),
 	);
@@ -278,7 +292,7 @@ export async function runPs(json: boolean): Promise<void> {
 		return;
 	}
 	if (daemons.length === 0) {
-		console.log("No daemons found.");
+		console.log("No background services found.");
 		return;
 	}
 	console.log(formatDaemonListTable(daemons));
@@ -321,7 +335,7 @@ export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAc
 			return { kind: "remove-file", daemon };
 		}
 		if (daemon.isDefault) {
-			return { kind: "skip", daemon, reason: "default daemon" };
+			return { kind: "skip", daemon, reason: "default background service" };
 		}
 		if (daemon.status === "unreachable") {
 			if (!force || daemon.pid === undefined) {
@@ -343,13 +357,18 @@ export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAc
 	});
 }
 
-export function planShutdownAll(daemons: readonly DaemonInfo[]): ReapAction[] {
+export function planShutdownAll(daemons: readonly DaemonInfo[], force: boolean): ReapAction[] {
 	return daemons.map((daemon): ReapAction => {
 		if (daemon.status === "orphan-file") {
 			return { kind: "remove-file", daemon };
 		}
 		if (daemon.status === "unreachable") {
-			return daemon.pid === undefined ? { kind: "remove-file", daemon } : { kind: "kill", daemon };
+			if (daemon.pid === undefined) {
+				return force || !daemon.hasTrackedWorkers
+					? { kind: "remove-file", daemon }
+					: { kind: "skip", daemon, reason: "has unreachable workers; use --force to kill" };
+			}
+			return force ? { kind: "kill", daemon } : { kind: "skip", daemon, reason: "unreachable; use --force to kill" };
 		}
 		return { kind: "shutdown", daemon };
 	});
@@ -362,13 +381,25 @@ const SHUTDOWN_ALL_ACTION_ORDER: Record<ReapAction["kind"], number> = {
 	skip: 3,
 };
 
-export async function runShutdownAll(json: boolean): Promise<void> {
+export async function runShutdownAll(json: boolean, force: boolean): Promise<void> {
 	const daemons = await discoverDaemons();
+	if (daemons.length > 0 && !force) {
+		if (!process.stdin.isTTY) {
+			throw new Error(
+				'Shutdown requires confirmation in an interactive terminal. Use "prime-agent shutdown --force".',
+			);
+		}
+		const confirmed = await promptYesNo("Stop every agent and background service? Active work will be interrupted.");
+		if (!confirmed) {
+			console.log(chalk.dim("Shutdown cancelled."));
+			return;
+		}
+	}
 	const stopped: Array<{ socketPath: string; action: string }> = [];
 	const failed: Array<{ socketPath: string; reason: string }> = [];
 	const handledPids = new Set<number>();
 
-	const actions = [...planShutdownAll(daemons)].sort(
+	const actions = [...planShutdownAll(daemons, force)].sort(
 		(left, right) => SHUTDOWN_ALL_ACTION_ORDER[left.kind] - SHUTDOWN_ALL_ACTION_ORDER[right.kind],
 	);
 
@@ -376,13 +407,16 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 		const { socketPath, pid } = action.daemon;
 		if (pid !== undefined && handledPids.has(pid)) {
 			removeSocketFile(socketPath);
-			stopped.push({ socketPath, action: `already stopped (pid ${pid})` });
+			stopped.push({ socketPath, action: `background service already stopped (pid ${pid})` });
+			if (force) {
+				failed.push(...(await forceStopTrackedWorkers(socketPath)).map((reason) => ({ socketPath, reason })));
+			}
 			continue;
 		}
 		switch (action.kind) {
 			case "remove-file": {
 				if ((await probeDaemon(socketPath)).reachable) {
-					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
+					apply(await stopBackgroundService(socketPath, pid, handledPids, force), socketPath, stopped, failed);
 				} else if (removeSocketFile(socketPath)) {
 					stopped.push({ socketPath, action: "removed stale socket file" });
 				} else {
@@ -392,32 +426,39 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 			}
 			case "kill": {
 				if ((await probeDaemon(socketPath)).reachable) {
-					apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
+					apply(await stopBackgroundService(socketPath, pid, handledPids, force), socketPath, stopped, failed);
 				} else if (isDaemonProcessListening(pid!, socketPath)) {
 					await forceKillDaemon(pid!);
 					handledPids.add(pid!);
 					removeSocketFile(socketPath);
-					stopped.push({ socketPath, action: `killed unreachable daemon (pid ${pid})` });
+					stopped.push({ socketPath, action: `killed unreachable background service (pid ${pid})` });
 				} else {
 					removeSocketFile(socketPath);
-					stopped.push({ socketPath, action: "daemon already stopped" });
+					stopped.push({ socketPath, action: "background service already stopped" });
 				}
 				break;
 			}
 			case "shutdown":
-				apply(await stopDaemonForcefully(socketPath, pid, handledPids), socketPath, stopped, failed);
+				apply(await stopBackgroundService(socketPath, pid, handledPids, force), socketPath, stopped, failed);
 				break;
 			case "skip":
+				failed.push({ socketPath, reason: action.reason });
 				break;
+		}
+		if (force && action.kind !== "skip") {
+			failed.push(...(await forceStopTrackedWorkers(socketPath)).map((reason) => ({ socketPath, reason })));
 		}
 	}
 
 	if (json) {
+		if (failed.length > 0) {
+			process.exitCode = 1;
+		}
 		console.log(JSON.stringify({ stopped, failed }, null, 2));
 		return;
 	}
 	if (stopped.length === 0 && failed.length === 0) {
-		console.log("No daemons found.");
+		console.log("No background services found.");
 		return;
 	}
 	for (const entry of stopped) {
@@ -426,30 +467,187 @@ export async function runShutdownAll(json: boolean): Promise<void> {
 	for (const entry of failed) {
 		console.log(chalk.red(`failed  ${entry.socketPath}: ${entry.reason}`));
 	}
+	if (failed.length > 0) {
+		process.exitCode = 1;
+	}
 }
 
-async function stopDaemonForcefully(
+async function stopBackgroundService(
 	socketPath: string,
 	pid: number | undefined,
 	handledPids: Set<number>,
+	force: boolean,
 ): Promise<ReapOutcome> {
-	if (await shutdownDaemon(socketPath)) {
+	if (await shutdownDaemon(socketPath, force)) {
 		if (pid !== undefined) {
 			handledPids.add(pid);
 		}
-		return { reaped: `stopped daemon${pid ? ` (pid ${pid})` : ""}` };
+		return { reaped: `stopped background service${pid ? ` (pid ${pid})` : ""}` };
 	}
 	if (!(await canConnectToSocket(socketPath, 250))) {
 		removeSocketFile(socketPath);
-		return { reaped: "daemon already stopped" };
+		return { reaped: "background service already stopped" };
 	}
 	if (pid === undefined) {
 		return { skipped: "still listening but no pid to kill" };
 	}
+	if (!force) {
+		return { skipped: "did not stop gracefully; retry with --force" };
+	}
 	await forceKillDaemon(pid);
 	handledPids.add(pid);
 	removeSocketFile(socketPath);
-	return { reaped: `force-killed unresponsive daemon (pid ${pid})` };
+	return { reaped: `force-killed unresponsive background service (pid ${pid})` };
+}
+
+interface TrackedWorker {
+	descriptor: DaemonWorkerDescriptor;
+	descriptorPath: string;
+}
+
+async function forceStopTrackedWorkers(supervisorSocketPath: string): Promise<string[]> {
+	const failures: string[] = [];
+	for (const worker of findTrackedWorkers(supervisorSocketPath)) {
+		const { descriptor } = worker;
+		let stopped = await stopTrackedProcess(descriptor.pid, descriptor.processStartId);
+		if (!stopped) {
+			failures.push(`could not safely stop worker ${descriptor.workerId} (pid ${descriptor.pid})`);
+		}
+		if (descriptor.orphanProcessJournalPath) {
+			let orphans: ReturnType<typeof readActiveOrphanProcesses> = [];
+			try {
+				orphans = readActiveOrphanProcesses(descriptor.orphanProcessJournalPath, descriptor.pid);
+			} catch (error) {
+				stopped = false;
+				failures.push(`could not read child process records for worker ${descriptor.workerId}: ${String(error)}`);
+			}
+			for (const orphan of orphans) {
+				if (!isOrphanProcessIdentityCurrent(orphan)) {
+					continue;
+				}
+				if (!(await stopTrackedProcess(orphan.pid, orphan.processStartId))) {
+					stopped = false;
+					failures.push(`could not stop child process ${orphan.pid} for worker ${descriptor.workerId}`);
+				}
+			}
+		}
+		if (stopped) {
+			try {
+				removeSocketFile(descriptor.socketPath);
+				rmSync(worker.descriptorPath, { force: true });
+				rmSync(descriptor.recoveryJournalPath, { force: true });
+				if (descriptor.orphanProcessJournalPath) {
+					rmSync(descriptor.orphanProcessJournalPath, { force: true });
+				}
+			} catch (error) {
+				failures.push(`could not clean up worker ${descriptor.workerId}: ${String(error)}`);
+			}
+		}
+	}
+	return failures;
+}
+
+function findTrackedWorkers(supervisorSocketPath: string): TrackedWorker[] {
+	return findAllTrackedWorkers().filter(
+		(worker) =>
+			normalizeSocketPath(worker.descriptor.supervisorSocketPath) === normalizeSocketPath(supervisorSocketPath),
+	);
+}
+
+function findAllTrackedWorkers(): TrackedWorker[] {
+	const root = join(getAgentDir(), "daemon-workers");
+	if (!existsSync(root)) {
+		return [];
+	}
+	const workers: TrackedWorker[] = [];
+	let directoryNames: string[];
+	try {
+		directoryNames = readdirSync(root);
+	} catch {
+		return [];
+	}
+	for (const directoryName of directoryNames) {
+		const directory = join(root, directoryName);
+		try {
+			if (!lstatSync(directory).isDirectory()) {
+				continue;
+			}
+		} catch {
+			continue;
+		}
+		let fileNames: string[];
+		try {
+			fileNames = readdirSync(directory);
+		} catch {
+			continue;
+		}
+		for (const fileName of fileNames) {
+			if (!fileName.endsWith(".json")) {
+				continue;
+			}
+			const descriptorPath = join(directory, fileName);
+			try {
+				const value: unknown = JSON.parse(readFileSync(descriptorPath, "utf8"));
+				if (isTrackedWorkerDescriptor(value)) {
+					workers.push({ descriptor: value, descriptorPath });
+				}
+			} catch {}
+		}
+	}
+	return workers;
+}
+
+function isTrackedWorkerDescriptor(value: unknown): value is DaemonWorkerDescriptor {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const descriptor = value as Partial<DaemonWorkerDescriptor>;
+	return (
+		descriptor.version === 1 &&
+		typeof descriptor.supervisorSocketPath === "string" &&
+		typeof descriptor.workerId === "string" &&
+		Number.isInteger(descriptor.pid) &&
+		(descriptor.pid ?? 0) > 0 &&
+		(descriptor.processStartId === undefined || typeof descriptor.processStartId === "string") &&
+		typeof descriptor.socketPath === "string" &&
+		typeof descriptor.recoveryJournalPath === "string"
+	);
+}
+
+async function stopTrackedProcess(pid: number, expectedStartId: string | undefined): Promise<boolean> {
+	if (!isProcessAlive(pid)) {
+		return true;
+	}
+	if (!expectedStartId || getProcessStartId(pid) !== expectedStartId) {
+		return false;
+	}
+	signalProcessGroupOrProcess(pid, "SIGTERM");
+	let deadline = Date.now() + 500;
+	while (isProcessAlive(pid) && Date.now() < deadline) {
+		await delay(25);
+	}
+	if (!isProcessAlive(pid)) {
+		return true;
+	}
+	signalProcessGroupOrProcess(pid, "SIGKILL");
+	deadline = Date.now() + 1000;
+	while (isProcessAlive(pid) && Date.now() < deadline) {
+		await delay(25);
+	}
+	return !isProcessAlive(pid);
+}
+
+function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
+	try {
+		process.kill(-pid, signal);
+		return;
+	} catch {
+		try {
+			process.kill(pid, signal);
+		} catch {
+			return;
+		}
+	}
 }
 
 export async function runReap(json: boolean, force: boolean): Promise<void> {
@@ -502,7 +700,7 @@ export async function runReap(json: boolean, force: boolean): Promise<void> {
 		return;
 	}
 	if (reaped.length === 0 && skipped.length === 0) {
-		console.log("No daemons found.");
+		console.log("No background services found.");
 		return;
 	}
 	for (const entry of reaped) {
@@ -541,8 +739,8 @@ async function reapReachableDaemon(socketPath: string, pid: number | undefined):
 	if (probe.sessionCount !== 0) {
 		return { skipped: `now has ${probe.sessionCount ?? "unknown"} session(s)` };
 	}
-	return (await shutdownDaemon(socketPath))
-		? { reaped: `stopped idle daemon${pid ? ` (pid ${pid})` : ""}` }
+	return (await shutdownDaemon(socketPath, false))
+		? { reaped: `stopped idle background service${pid ? ` (pid ${pid})` : ""}` }
 		: { skipped: "shutdown request failed" };
 }
 
@@ -585,8 +783,8 @@ function isProcessAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;
-	} catch {
-		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
 
@@ -611,7 +809,7 @@ async function canConnectToSocket(socketPath: string, timeoutMs: number): Promis
  * shutdown ack alone is not proof, so success is reported only once the socket
  * stops accepting connections.
  */
-async function shutdownDaemon(socketPath: string): Promise<boolean> {
+async function shutdownDaemon(socketPath: string, force: boolean): Promise<boolean> {
 	const client = new DaemonClient(socketPath);
 	try {
 		await client.connect(1000);
@@ -620,7 +818,7 @@ async function shutdownDaemon(socketPath: string): Promise<boolean> {
 		return false;
 	}
 	try {
-		await client.request({ type: "shutdown" }, 1500);
+		await client.request({ type: "shutdown", force }, 1500);
 	} catch {
 		// The daemon may still stop; the connectivity check below is the source of truth.
 	} finally {

@@ -7,7 +7,6 @@ import {
 	findActiveDaemonSessionSummaryForSessionFile,
 	type InteractiveDaemonStartupDecision,
 	parseAgentsViewCommand,
-	parseDaemonRichTuiAttachShortcut,
 	resolveRuntimeSessionOptions,
 	restoreResumeSelectorFallback,
 	shouldEnsureDaemonBeforeActiveSessionLookup,
@@ -76,7 +75,7 @@ describe("daemon-backed interactive session manager routing", () => {
 		).toBe(false);
 	});
 
-	test("opens the agents view when explicitly requested via the agents/manage command", () => {
+	test("opens the agents view when explicitly requested", () => {
 		expect(
 			shouldOpenAgentsViewForDaemonInteractive({
 				useDaemonInteractive: true,
@@ -216,10 +215,10 @@ describe("agents view command parsing", () => {
 		expect(parseAgentsViewCommand(["agents"])).toEqual({ explicitAgentsView: true, args: [] });
 	});
 
-	test("treats manage as an alias for agents", () => {
+	test("does not treat manage as an alias", () => {
 		expect(parseAgentsViewCommand(["manage", "--verbose"])).toEqual({
-			explicitAgentsView: true,
-			args: ["--verbose"],
+			explicitAgentsView: false,
+			args: ["manage", "--verbose"],
 		});
 	});
 
@@ -234,27 +233,6 @@ describe("agents view command parsing", () => {
 		expect(parseAgentsViewCommand(["--verbose", "agents"])).toEqual({
 			explicitAgentsView: false,
 			args: ["--verbose", "agents"],
-		});
-	});
-});
-
-describe("daemon rich TUI attach shortcut parsing", () => {
-	test("recognizes daemon active-session shorthand", () => {
-		expect(parseDaemonRichTuiAttachShortcut(["daemon", "d5c1e83e2182"])).toMatchObject({
-			selector: "d5c1e83e2182",
-		});
-	});
-
-	test("preserves explicit daemon client commands", () => {
-		expect(parseDaemonRichTuiAttachShortcut(["daemon", "attach", "d5c1e83e2182"])).toBeUndefined();
-		expect(parseDaemonRichTuiAttachShortcut(["daemon", "list"])).toBeUndefined();
-		expect(parseDaemonRichTuiAttachShortcut(["daemon", "create", "scratch"])).toBeUndefined();
-	});
-
-	test("carries daemon socket option into shorthand attach", () => {
-		expect(parseDaemonRichTuiAttachShortcut(["daemon", "--socket", "/tmp/prime.sock", "d5c1e83e2182"])).toEqual({
-			socketPath: "/tmp/prime.sock",
-			selector: "d5c1e83e2182",
 		});
 	});
 });

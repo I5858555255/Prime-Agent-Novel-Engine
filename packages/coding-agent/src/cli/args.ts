@@ -6,6 +6,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.js";
 import type { ExtensionFlag } from "../core/extensions/types.js";
+import { formatTopLevelHelp } from "./command-registry.js";
 
 export type Mode = "text" | "json" | "rpc" | "daemon";
 
@@ -291,21 +292,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 					})
 					.join("\n")}\n`
 			: "";
-	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with an ipython tool
-
-${chalk.bold("Usage:")}
-  ${APP_NAME} [options] [@files...] [messages...]   Open a new chat (press left to reach the agents view)
-
-${chalk.bold("Commands:")}
-  ${APP_NAME} agents                    Open the agents view (alias: manage)
-  ${APP_NAME} install <source> [-l]     Install extension source and add to settings
-  ${APP_NAME} remove <source> [-l]      Remove extension source from settings
-  ${APP_NAME} uninstall <source> [-l]   Alias for remove
-  ${APP_NAME} update [source|self|${APP_NAME}]   Update ${APP_NAME} and installed extensions
-  ${APP_NAME} list                      List installed extensions from settings
-  ${APP_NAME} config                    Open TUI to enable/disable package resources
-  ${APP_NAME} daemon [name]             Start daemon if needed, create a session, and attach
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/daemon
+	console.log(`${formatTopLevelHelp()}
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
@@ -314,8 +301,7 @@ ${chalk.bold("Options:")}
   --cwd <dir>                    Working directory for the session
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
-  --mode <mode>                  Output mode: text (default), json, rpc, or daemon
-  --daemon-socket <path>         Socket path for daemon mode
+  --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r [path|id]         Resume specific session, or browse when omitted
@@ -346,8 +332,6 @@ ${chalk.bold("Options:")}
   --autonomous-max-turns <n>     Max assistant turns while autonomous mode is active (default: 12)
   --autonomous-max-tokens <n>    Max tokens while autonomous mode is active (default: 80000)
   --autonomous-timeout-ms <n>    Max autonomous wall-clock time in milliseconds (default: 1800000)
-  --export <file>                Export session file to HTML and exit
-  --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
   --help, -h                     Show this help
@@ -400,13 +384,13 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --thinking high "Solve this complex problem"
 
   # Export a session file to HTML
-  ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/sessions/session.jsonl
-  ${APP_NAME} --export session.jsonl output.html
+  ${APP_NAME} session export ~/${CONFIG_DIR_NAME}/sessions/session.jsonl
+  ${APP_NAME} session export session.jsonl output.html
 
-  # Start and control active sessions
-  ${APP_NAME} daemon --socket /tmp/prime-agent.sock --model openai/gpt-4o-mini scratch
-  ${APP_NAME} daemon --socket /tmp/prime-agent.sock list
-  ${APP_NAME} daemon --socket /tmp/prime-agent.sock prompt <session> "Say hello"
+  # Work with agents
+  ${APP_NAME} list
+  ${APP_NAME} attach <agent>
+  ${APP_NAME} send <agent> "Use this context"
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_API_KEY                - Anthropic Claude API key

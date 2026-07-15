@@ -95,6 +95,7 @@ describe("daemon command", () => {
 	let consoleErrorMessages: unknown[];
 
 	beforeEach(() => {
+		process.exitCode = undefined;
 		daemonClientMock.instances.length = 0;
 		daemonClientMock.behavior.promptSucceeds = false;
 		daemonClientMock.behavior.emitStaleAgentEndOnAttach = false;
@@ -109,13 +110,14 @@ describe("daemon command", () => {
 	});
 
 	afterEach(() => {
+		process.exitCode = undefined;
 		vi.restoreAllMocks();
 	});
 
 	it("cleans prompt listeners when the prompt request fails", async () => {
 		await expect(
 			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "prompt", "active-1", "hello"]),
-		).rejects.toThrow("exit 1");
+		).resolves.toBe(true);
 
 		const client = daemonClientMock.instances[0];
 		expect(client?.messageListenerCountAtClose).toBe(0);
@@ -257,12 +259,12 @@ describe("daemon command", () => {
 	it("rejects unknown send options instead of folding them into the message", async () => {
 		await expect(
 			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "send", "worker", "--bogus", "hello"]),
-		).rejects.toThrow("exit 1");
+		).resolves.toBe(true);
 
 		expect(daemonClientMock.instances[0]?.requests).toEqual([]);
 		expect(
 			consoleErrorMessages.some(
-				(message) => typeof message === "string" && message.includes("Unknown option for daemon send: --bogus"),
+				(message) => typeof message === "string" && message.includes("Unknown option for send: --bogus"),
 			),
 		).toBe(true);
 	});
@@ -318,7 +320,7 @@ describe("daemon command", () => {
 	it("rejects extra agent-messages status arguments", async () => {
 		await expect(
 			handleDaemonCommand(["daemon", "--socket", "/tmp/prime-agent.sock", "agent-messages", "pause", "active-1"]),
-		).rejects.toThrow("exit 1");
+		).resolves.toBe(true);
 
 		expect(daemonClientMock.instances[0]?.requests).toEqual([]);
 		expect(

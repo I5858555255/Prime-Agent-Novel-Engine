@@ -12,7 +12,6 @@ import { registerBuiltinMcpOAuthProviders } from "@earendil-works/pi-ai/mcp";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.js";
-import { handleDaemonCommand, normalizeDaemonStartArgs } from "./cli/daemon-command.js";
 import {
 	ensureInteractiveDaemonRunning,
 	isDaemonSessionSummary,
@@ -26,6 +25,7 @@ import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
 import { installOwnedSessionRecoveryTracking } from "./cli/owned-session-worker.js";
+import { handlePublicCommand } from "./cli/public-command.js";
 import { selectSession } from "./cli/session-picker.js";
 import { expandTildePath, getAgentDir, getSessionDirEnvOverride, VERSION } from "./config.js";
 import {
@@ -92,7 +92,7 @@ import {
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.js";
 import { shouldRunOnboarding } from "./modes/interactive/onboarding.js";
 import { initTheme, preloadCodeHighlighter, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
-import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
+import { handleConfigCommand } from "./package-manager-cli.js";
 import { isLocalPath } from "./utils/paths.js";
 
 /**
@@ -163,10 +163,9 @@ function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "daemon"> {
 	return appMode === "json" ? "json" : "text";
 }
 
-// `prime-agent agents` / `prime-agent manage` open the agents view directly; the
-// leading verb is stripped so the remaining args parse as usual.
+// `prime-agent agents` opens the agents view directly.
 export function parseAgentsViewCommand(args: string[]): { explicitAgentsView: boolean; args: string[] } {
-	if (args[0] === "agents" || args[0] === "manage") {
+	if (args[0] === "agents") {
 		return { explicitAgentsView: true, args: args.slice(1) };
 	}
 	return { explicitAgentsView: false, args };
@@ -203,7 +202,7 @@ export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStar
 	return (
 		options.useDaemonInteractive &&
 		// `prime-agent` opens a new chat by default; the agents view is reached via
-		// left-arrow from a session or requested explicitly (`agents`/`manage`).
+		// left-arrow from a session or requested explicitly (`agents`).
 		!!options.explicitAgentsView &&
 		// Onboarding lives in InteractiveMode, so a first run must take the
 		// direct session path; the agents view would otherwise require creating
@@ -253,60 +252,6 @@ export async function findActiveDaemonSessionSummaryForInteractiveStartup(
 	} catch {
 		return undefined;
 	}
-}
-
-const DAEMON_RICH_TUI_SHORTCUT_COMMANDS = new Set([
-	"help",
-	"start",
-	"list",
-	"create",
-	"attach",
-	"detach",
-	"kill",
-	"rename",
-	"prompt",
-	"steer",
-	"follow-up",
-	"state",
-	"messages",
-	"stats",
-	"commands",
-	"shutdown",
-]);
-
-export interface DaemonRichTuiAttachShortcut {
-	socketPath: string;
-	selector: string;
-}
-
-export function parseDaemonRichTuiAttachShortcut(args: string[]): DaemonRichTuiAttachShortcut | undefined {
-	if (args[0] !== "daemon") {
-		return undefined;
-	}
-
-	let socketPath = defaultDaemonSocketPath();
-	let selector: string | undefined;
-	for (let index = 1; index < args.length; index++) {
-		const arg = args[index];
-		if (arg === "--socket" || arg === "--daemon-socket") {
-			const value = args[index + 1];
-			if (!value) {
-				return undefined;
-			}
-			socketPath = value;
-			index++;
-			continue;
-		}
-		if (arg === "--json" || arg.startsWith("-") || DAEMON_RICH_TUI_SHORTCUT_COMMANDS.has(arg)) {
-			return undefined;
-		}
-		if (selector) {
-			return undefined;
-		}
-		selector = arg;
-	}
-
-	return selector ? { socketPath, selector } : undefined;
 }
 
 function looksLikeSessionPath(sessionArg: string): boolean {
@@ -391,12 +336,12 @@ async function promptConfirm(message: string): Promise<boolean> {
 const STARTUP_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
 	busyDetail(count) {
 		const { noun, pronoun } = pluralizeSessions(count);
-		return `A background daemon from a different prime-agent version is running with ${count} busy ${noun}. Stopping it will terminate ${pronoun}.`;
+		return `A background service from a different Prime Agent version is running with ${count} busy ${noun}. Stopping it will terminate ${pronoun}.`;
 	},
 	unlistableDetail:
-		"A background daemon from a different prime-agent version is running and its sessions could not be listed. Stopping it may terminate active sessions.",
+		"A background service from a different Prime Agent version is running and its sessions could not be listed. Stopping it may terminate active sessions.",
 	question: "Stop it and continue?",
-	nonTtyHint: 'Run "prime-agent daemon shutdown" to stop it, then retry.',
+	nonTtyHint: 'Run "prime-agent shutdown" to stop it, then retry.',
 };
 
 // The promise to keep after awaiting readiness. Wrapped in an object so it
@@ -418,7 +363,7 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 	}
 	if (!(await shutdownDaemonAndWait(socketPath))) {
 		console.error(
-			chalk.red(`Could not stop the daemon on ${socketPath}. Run "prime-agent daemon shutdown" and retry.`),
+			chalk.red(`Could not stop the background service on ${socketPath}. Run "prime-agent shutdown" and retry.`),
 		);
 		process.exit(1);
 	}
@@ -427,7 +372,7 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 		await ready;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(chalk.red(`Could not start the daemon: ${message}`));
+		console.error(chalk.red(`Could not start the background service: ${message}`));
 		process.exit(1);
 	}
 	return { ready };
@@ -968,20 +913,6 @@ async function findActiveDaemonSessionSummary(
 	}
 }
 
-async function normalizeDaemonRichTuiAttachArgs(args: string[]): Promise<string[] | undefined> {
-	const shortcut = parseDaemonRichTuiAttachShortcut(args);
-	if (!shortcut) {
-		return undefined;
-	}
-
-	const summary = await findActiveDaemonSessionSummary(shortcut.socketPath, shortcut.selector);
-	if (!summary) {
-		return undefined;
-	}
-
-	return ["--daemon-socket", shortcut.socketPath, "--resume", getDaemonSummaryActiveSessionId(summary)];
-}
-
 function createSessionManagerForActiveDaemonSummary(summary: SessionSummary, fallbackCwd: string): SessionManager {
 	const cwd = summary.cwd || fallbackCwd;
 	if (summary.sessionFile) {
@@ -1098,37 +1029,23 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	// Client and daemon are separate processes; both need these in their registry.
 	registerBuiltinMcpOAuthProviders();
-	args = normalizeDaemonStartArgs(args) ?? args;
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
 		process.env.PI_OFFLINE = "1";
 		process.env.PI_SKIP_VERSION_CHECK = "1";
 	}
 
-	if (await handlePackageCommand(args)) {
+	const publicCommand = await handlePublicCommand(args);
+	if (publicCommand.handled) {
 		return;
 	}
+	args = publicCommand.args;
 
 	if (await handleConfigCommand(args)) {
 		return;
 	}
 
-	try {
-		args = (await normalizeDaemonRichTuiAttachArgs(args)) ?? args;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(chalk.red(`Error: ${message}`));
-		process.exit(1);
-	}
-
-	if (await handleDaemonCommand(args)) {
-		return;
-	}
-
-	// `prime-agent agents` / `prime-agent manage` open the agents view directly.
-	const agentsViewCommand = parseAgentsViewCommand(args);
-	const explicitAgentsView = agentsViewCommand.explicitAgentsView;
-	args = agentsViewCommand.args;
+	const explicitAgentsView = publicCommand.explicitAgentsView;
 
 	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
@@ -1233,6 +1150,10 @@ export async function main(args: string[], options?: MainOptions) {
 		shouldLookupDaemonActiveSession && resumeSelector
 			? await findActiveDaemonSessionSummaryForInteractiveStartup(daemonSocketPath, resumeSelector)
 			: undefined;
+	if (publicCommand.attachAgent && !activeDaemonSessionSummary) {
+		console.error(chalk.red(`Error: No active agent found matching '${publicCommand.attachAgent}'`));
+		process.exit(1);
+	}
 	let sessionManager: SessionManager;
 	if (activeDaemonSessionSummary) {
 		sessionManager = createSessionManagerForActiveDaemonSummary(activeDaemonSessionSummary, cwd);
