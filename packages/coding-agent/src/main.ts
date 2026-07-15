@@ -143,6 +143,10 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 
 export type AppMode = "interactive" | "print" | "json" | "rpc" | "daemon";
 
+export function shouldRejectNonInteractiveAttach(attachAgent: string | undefined, appMode: AppMode): boolean {
+	return attachAgent !== undefined && appMode !== "interactive";
+}
+
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 	if (parsed.mode === "daemon") {
 		return "daemon";
@@ -1059,6 +1063,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("parseArgs");
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY);
+	if (shouldRejectNonInteractiveAttach(publicCommand.attachAgent, appMode)) {
+		console.error(chalk.red("Error: attach requires an interactive terminal"));
+		process.exit(1);
+	}
 	setLogContext({ mode: appMode });
 	const shouldTakeOverStdout = appMode !== "interactive";
 	if (shouldTakeOverStdout) {

@@ -11,6 +11,7 @@ import {
 	restoreResumeSelectorFallback,
 	shouldEnsureDaemonBeforeActiveSessionLookup,
 	shouldOpenAgentsViewForDaemonInteractive,
+	shouldRejectNonInteractiveAttach,
 	shouldUseDaemonInteractive,
 	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
@@ -62,6 +63,12 @@ describe("interactive startup routing", () => {
 				...overrides,
 			}),
 		).toBe(false);
+	});
+
+	test("rejects attach before non-interactive startup", () => {
+		expect(shouldRejectNonInteractiveAttach("worker", "print")).toBe(true);
+		expect(shouldRejectNonInteractiveAttach("worker", "interactive")).toBe(false);
+		expect(shouldRejectNonInteractiveAttach(undefined, "print")).toBe(false);
 	});
 });
 

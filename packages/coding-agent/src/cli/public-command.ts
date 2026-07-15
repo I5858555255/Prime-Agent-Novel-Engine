@@ -54,7 +54,7 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 			index > 0 && (separatorIndex === -1 || index < separatorIndex) && (arg === "--help" || arg === "-h"),
 	);
 	if (helpIndex !== -1) {
-		return printRequestedHelp(args.slice(0, helpIndex));
+		return printRequestedHelp(getCommandPath(args.slice(0, helpIndex)));
 	}
 
 	switch (command) {
@@ -134,6 +134,17 @@ function isHelpRequest(path: string[]): boolean {
 	const parent = path.slice(0, -1);
 	const candidates = getChildCommandSpecs(parent).map((spec) => spec.path.at(-1)!);
 	return findCommandSuggestion(path.at(-1)!, candidates) !== undefined;
+}
+
+function getCommandPath(args: string[]): string[] {
+	const path: string[] = [];
+	for (const arg of args) {
+		if (!getCommandSpec([...path, arg])) {
+			break;
+		}
+		path.push(arg);
+	}
+	return path;
 }
 
 function rejectRemovedCommand(args: string[]): PublicCommandResult {

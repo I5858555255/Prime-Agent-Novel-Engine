@@ -141,6 +141,17 @@ describe("public command routing", () => {
 		});
 	});
 
+	it("shows command help when options precede the help flag", async () => {
+		await handlePublicCommand(["list", "--all", "--help"]);
+		await handlePublicCommand(["doctor", "--fix", "--help"]);
+		await handlePublicCommand(["package", "install", "--local", "--help"]);
+
+		expect(console.log).toHaveBeenNthCalledWith(1, expect.stringContaining("prime-agent list [--all] [--json]"));
+		expect(console.log).toHaveBeenNthCalledWith(2, expect.stringContaining("prime-agent doctor [--fix] [--json]"));
+		expect(console.log).toHaveBeenNthCalledWith(3, expect.stringContaining("prime-agent package install <source>"));
+		expect(console.error).not.toHaveBeenCalled();
+	});
+
 	it("leaves top-level help flags on the full CLI help path", async () => {
 		await expect(handlePublicCommand(["--help"])).resolves.toEqual({
 			handled: false,
