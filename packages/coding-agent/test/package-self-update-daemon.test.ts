@@ -122,6 +122,7 @@ const mockState = vi.hoisted(() => ({
 	probeSocketPaths: [] as string[],
 	requestThrowTypes: [] as string[],
 	requestPayloads: [] as MockDaemonRequest[],
+	helloWaitFailures: 0,
 	restoreNextTurnFailures: 0,
 	socketPath: "",
 	successorProcessStartId: "replacement-start" as string | undefined,
@@ -225,7 +226,13 @@ vi.mock("../src/cli/daemon-launch.js", () => ({
 
 vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 	DaemonClient: class {
+		private observedHello: typeof mockState.hello | undefined;
+
 		constructor(readonly socketPath: string) {}
+
+		get hello(): typeof mockState.hello | undefined {
+			return this.observedHello;
+		}
 
 		async connect(): Promise<void> {
 			mockState.calls.push(`daemon-connect:${this.socketPath}`);
@@ -244,23 +251,30 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 			supervisorProcessStartId?: string;
 			supervisorSocketPath?: string;
 		}> {
+			if (mockState.helloWaitFailures > 0) {
+				mockState.helloWaitFailures--;
+				throw new Error("hello timed out");
+			}
 			const helloCount = mockState.helloCount++;
-			return helloCount === 0
-				? {
-						appVersion: VERSION,
-						...mockState.hello,
-					}
-				: {
-						protocol: { version: 2 },
-						appVersion: VERSION,
-						supervisorPid: 1002,
-						supervisorGeneration: "replacement-generation",
-						supervisorOwnerToken: "replacement-owner-token",
-						...(mockState.successorProcessStartId
-							? { supervisorProcessStartId: mockState.successorProcessStartId }
-							: {}),
-						supervisorSocketPath: mockState.successorSocketPath ?? mockState.socketPath,
-					};
+			const hello =
+				helloCount === 0
+					? {
+							appVersion: VERSION,
+							...mockState.hello,
+						}
+					: {
+							protocol: { version: 2 },
+							appVersion: VERSION,
+							supervisorPid: 1002,
+							supervisorGeneration: "replacement-generation",
+							supervisorOwnerToken: "replacement-owner-token",
+							...(mockState.successorProcessStartId
+								? { supervisorProcessStartId: mockState.successorProcessStartId }
+								: {}),
+							supervisorSocketPath: mockState.successorSocketPath ?? mockState.socketPath,
+						};
+			this.observedHello = hello;
+			return hello;
 		}
 
 		async requestLegacy(request: MockDaemonRequest): Promise<MockDaemonResponse> {
@@ -268,6 +282,7 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 		}
 
 		async request(request: MockDaemonRequest): Promise<MockDaemonResponse> {
+			this.observedHello ??= mockState.hello;
 			mockState.calls.push(`daemon-request:${request.type}`);
 			mockState.requestPayloads.push(request);
 			if (mockState.requestThrowTypes.includes(request.type)) {
@@ -356,6 +371,7 @@ describe("self-update daemon restart", () => {
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
 		mockState.preparedManifestPath = getDaemonUpdateRestartManifestPath(agentDir);
 		mockState.prepareResponse = undefined;
+		mockState.helloWaitFailures = 0;
 		mockState.promptFailures = 0;
 		mockState.probeSocketPaths = [];
 		mockState.requestThrowTypes = [];
@@ -708,6 +724,20 @@ describe("self-update daemon restart", () => {
 			expect(mockState.calls).toContain("daemon-request:prepare_update_restart");
 			expect(mockState.calls).not.toContain("persist-daemon-startup-fence");
 		}
+	});
+
+	it("persists a fixed predecessor fence when the hello arrives after the initial probe", async () => {
+		useFixedOwnerHello();
+		mockState.helloWaitFailures = 1;
+
+		await expect(prepareDaemonUpdateRestart(mockState.socketPath, agentDir)).resolves.toEqual(
+			mockState.prepareManifest,
+		);
+
+		const prepareIndex = mockState.calls.indexOf("daemon-request:prepare_update_restart");
+		const fenceIndex = mockState.calls.indexOf("persist-daemon-startup-fence");
+		expect(prepareIndex).toBeGreaterThanOrEqual(0);
+		expect(fenceIndex).toBeGreaterThan(prepareIndex);
 	});
 
 	it("fences a pending prepared restart only after verifying the live daemon is empty", async () => {

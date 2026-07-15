@@ -821,6 +821,10 @@ async function prepareConnectedDaemonUpdateRestart(
 	let fixedOwnerIdentity: FixedDaemonSupervisorOwnerIdentity | undefined;
 	let fencePersistenceStarted = false;
 	const persistPreparedRestartFence = async () => {
+		const currentHello = client.hello;
+		if (hasFixedDaemonSupervisorOwnerIdentity(currentHello)) {
+			fixedOwnerIdentity = currentHello;
+		}
 		if (!fixedOwnerIdentity) {
 			return;
 		}
