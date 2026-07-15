@@ -10,6 +10,7 @@ import {
 	resolveRuntimeSessionOptions,
 	restoreResumeSelectorFallback,
 	shouldEnsureDaemonBeforeActiveSessionLookup,
+	shouldEnsureInteractiveDaemonForStartup,
 	shouldOpenAgentsViewForDaemonInteractive,
 	shouldRejectNonInteractiveAttach,
 	shouldUseDaemonInteractive,
@@ -69,6 +70,12 @@ describe("interactive startup routing", () => {
 		expect(shouldRejectNonInteractiveAttach("worker", "print")).toBe(true);
 		expect(shouldRejectNonInteractiveAttach("worker", "interactive")).toBe(false);
 		expect(shouldRejectNonInteractiveAttach(undefined, "print")).toBe(false);
+	});
+
+	test("does not start the daemon for attach", () => {
+		expect(shouldEnsureInteractiveDaemonForStartup(true, undefined)).toBe(true);
+		expect(shouldEnsureInteractiveDaemonForStartup(true, "worker")).toBe(false);
+		expect(shouldEnsureInteractiveDaemonForStartup(false, undefined)).toBe(false);
 	});
 });
 

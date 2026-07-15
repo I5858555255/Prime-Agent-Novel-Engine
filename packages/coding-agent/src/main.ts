@@ -193,6 +193,13 @@ export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDeci
 	);
 }
 
+export function shouldEnsureInteractiveDaemonForStartup(
+	useDaemonInteractive: boolean,
+	attachAgent: string | undefined,
+): boolean {
+	return useDaemonInteractive && attachAgent === undefined;
+}
+
 export interface AgentsViewStartupDecision {
 	useDaemonInteractive: boolean;
 	needsOnboarding: boolean;
@@ -1145,8 +1152,10 @@ export async function main(args: string[], options?: MainOptions) {
 		startupSettingsManager.getSessionDir();
 	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
 	// Kick off daemon spawn/readiness immediately so it overlaps session-manager
-	// and runtime-services preparation; awaited wherever the daemon is first used.
-	let daemonReady = useDaemonInteractive ? ensureInteractiveDaemonRunning(daemonSocketPath) : undefined;
+	// and runtime-services preparation; attach only connects to an existing daemon.
+	let daemonReady = shouldEnsureInteractiveDaemonForStartup(useDaemonInteractive, publicCommand.attachAgent)
+		? ensureInteractiveDaemonRunning(daemonSocketPath)
+		: undefined;
 	// Errors are rethrown at the await sites below; this only avoids an unhandled
 	// rejection if startup exits before reaching them.
 	daemonReady?.catch(() => {});
