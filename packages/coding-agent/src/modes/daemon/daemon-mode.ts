@@ -2841,7 +2841,36 @@ export class AgentDaemon {
 			return;
 		}
 		const { messages: _messages, ...snapshot } = result.snapshot;
+		let beginWritten = false;
+		const failAbortedTransfer = async (): Promise<void> => {
+			if (!beginWritten || client.socket.destroyed) {
+				return;
+			}
+			const streamError = new Error(`Snapshot ${stream.id} was aborted`);
+			transcript.markFailed?.(streamError);
+			try {
+				const delivered = await this.writeWorkerSnapshotRecord(
+					client,
+					{
+						type: "session_snapshot_failed",
+						activeSessionId: result.activeSessionId,
+						snapshotId: stream.id,
+						error: streamError.message,
+					},
+					purpose,
+				);
+				if (!delivered && !client.socket.destroyed) {
+					client.socket.destroy(streamError);
+				}
+			} catch (deliveryError) {
+				client.socket.destroy(deliveryError instanceof Error ? deliveryError : new Error(String(deliveryError)));
+			}
+		};
 		try {
+			if (transferSignal.aborted) {
+				return;
+			}
+			beginWritten = true;
 			if (
 				!(await this.writeWorkerSnapshotRecord(
 					client,
@@ -2858,10 +2887,17 @@ export class AgentDaemon {
 					transferSignal,
 				))
 			) {
+				if (transferSignal.aborted) {
+					await failAbortedTransfer();
+				}
 				return;
 			}
 			let chunkCount = 0;
 			for await (const chunk of transcript) {
+				if (transferSignal.aborted) {
+					await failAbortedTransfer();
+					return;
+				}
 				const headerMessage: DaemonOutbound = {
 					type: "session_snapshot_chunk",
 					activeSessionId: result.activeSessionId,
@@ -2870,9 +2906,16 @@ export class AgentDaemon {
 					messages: [],
 				};
 				if (!(await this.writeWorkerSnapshotBuffer(client, chunk, headerMessage, purpose, transferSignal))) {
+					if (transferSignal.aborted) {
+						await failAbortedTransfer();
+					}
 					return;
 				}
 				chunkCount++;
+			}
+			if (transferSignal.aborted) {
+				await failAbortedTransfer();
+				return;
 			}
 			await this.writeWorkerSnapshotRecord(
 				client,
@@ -2889,6 +2932,7 @@ export class AgentDaemon {
 			);
 		} catch (error) {
 			if (transferSignal.aborted) {
+				await failAbortedTransfer();
 				return;
 			}
 			const streamError = error instanceof Error ? error : new Error(String(error));
@@ -2929,7 +2973,7 @@ export class AgentDaemon {
 		client: DaemonSocketClient,
 		message: DaemonOutbound,
 		purpose: "attach" | "replacement" | "catchup",
-		signal: AbortSignal,
+		signal?: AbortSignal,
 	): Promise<boolean> {
 		return this.writeWorkerSnapshotBuffer(client, Buffer.from(serializeJsonLine(message)), message, purpose, signal);
 	}
@@ -2939,9 +2983,9 @@ export class AgentDaemon {
 		buffer: Buffer,
 		message: DaemonOutbound,
 		purpose: "attach" | "replacement" | "catchup",
-		signal: AbortSignal,
+		signal?: AbortSignal,
 	): Promise<boolean> {
-		if (signal.aborted || client.socket.destroyed) {
+		if (signal?.aborted || client.socket.destroyed) {
 			return false;
 		}
 		if (this.writeSerialized(client, buffer, message, "jsonl", purpose)) {
@@ -2957,7 +3001,7 @@ export class AgentDaemon {
 				client.socket.off("drain", onDrain);
 				client.socket.off("close", onClose);
 				client.socket.off("error", onClose);
-				signal.removeEventListener("abort", onAbort);
+				signal?.removeEventListener("abort", onAbort);
 				resolveDrain(value);
 			};
 			const onDrain = () => finish(true);
@@ -2966,8 +3010,8 @@ export class AgentDaemon {
 			client.socket.once("drain", onDrain);
 			client.socket.once("close", onClose);
 			client.socket.once("error", onClose);
-			signal.addEventListener("abort", onAbort, { once: true });
-			if (signal.aborted || client.socket.destroyed) {
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted || client.socket.destroyed) {
 				finish(false);
 			}
 		});

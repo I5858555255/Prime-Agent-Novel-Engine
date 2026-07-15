@@ -42,18 +42,23 @@ function messages(label: string): AgentMessage[] {
 	];
 }
 
-function streamedResult(messageCount: number, targetChunkBytes = 1): DaemonAttachResult {
+function streamedResult(
+	messageCount: number,
+	targetChunkBytes = 1,
+	resultActiveSessionId = activeSessionId,
+	resultSnapshotId = snapshotId,
+): DaemonAttachResult {
 	return {
 		protocol: DAEMON_PROTOCOL_INFO,
-		activeSessionId,
+		activeSessionId: resultActiveSessionId,
 		snapshot: {
-			activeSessionId,
+			activeSessionId: resultActiveSessionId,
 			summary: {
-				id: activeSessionId,
-				activeSessionId,
+				id: resultActiveSessionId,
+				activeSessionId: resultActiveSessionId,
 				lifecycle: "live",
 				activity: "idle",
-				sessionId: "session-4601",
+				sessionId: `session-${resultActiveSessionId}`,
 				cwd: "/tmp",
 				isStreaming: false,
 				isCompacting: false,
@@ -61,13 +66,16 @@ function streamedResult(messageCount: number, targetChunkBytes = 1): DaemonAttac
 				messageCount,
 				pendingMessageCount: 0,
 			},
-			state: { activeSessionId, sessionId: "session-4601" } as DaemonAttachResult["snapshot"]["state"],
+			state: {
+				activeSessionId: resultActiveSessionId,
+				sessionId: `session-${resultActiveSessionId}`,
+			} as DaemonAttachResult["snapshot"]["state"],
 			messages: [],
 			lastEventSequence: 1,
 		},
 		replay: { status: "complete", toSequence: 1 },
 		lastEventSequence: 1,
-		snapshotStream: { id: snapshotId, messageCount, targetChunkBytes },
+		snapshotStream: { id: resultSnapshotId, messageCount, targetChunkBytes },
 		client: { id: "supervisor", capabilities: ["chunked_snapshot"] },
 	};
 }
@@ -176,7 +184,7 @@ describe("ENG-4601 worker snapshot cache", () => {
 		},
 	);
 
-	it("cancels a backpressured worker snapshot completely on detach", async () => {
+	it("terminates an aborted worker snapshot without interrupting a sibling stream", async () => {
 		const root = tempDirectory();
 		const daemon = new AgentDaemon(join(root, "worker.sock"), {
 			defaultSessionConfig: { agentDir: root, cwd: root },
@@ -185,6 +193,9 @@ describe("ENG-4601 worker snapshot cache", () => {
 			},
 		});
 		const { client, socket } = socketClient("worker-detach");
+		const siblingActiveSessionId = "active-4601-sibling";
+		const siblingSnapshotId = "snapshot-4601-sibling";
+		client.attachedActiveSessionIds.add(siblingActiveSessionId);
 		const state = {
 			activeSessionId,
 			clients: new Set([client]),
@@ -194,6 +205,7 @@ describe("ENG-4601 worker snapshot cache", () => {
 		const written: DaemonOutbound[] = [];
 		const produced: number[] = [];
 		const signal = markClientSnapshotStreaming(client, activeSessionId);
+		const siblingSignal = markClientSnapshotStreaming(client, siblingActiveSessionId);
 		const encoded = createSnapshotTranscriptChunks({
 			activeSessionId,
 			snapshotId,
@@ -210,6 +222,13 @@ describe("ENG-4601 worker snapshot cache", () => {
 				}
 			},
 		};
+		const siblingTranscript = createSnapshotTranscriptChunks({
+			activeSessionId: siblingActiveSessionId,
+			snapshotId: siblingSnapshotId,
+			messages: messages("sibling"),
+			targetChunkBytes: 1,
+			signal: siblingSignal,
+		});
 		const internals = daemon as unknown as {
 			writeSerialized(client: DaemonSocketClient, buffer: string | Buffer, message?: DaemonOutbound): boolean;
 			streamWorkerSnapshot(
@@ -224,10 +243,18 @@ describe("ENG-4601 worker snapshot cache", () => {
 		};
 		internals.writeSerialized = (_client, _buffer, message) => {
 			if (message) written.push(message);
-			return message?.type !== "session_snapshot_chunk";
+			return message?.type !== "session_snapshot_chunk" || message.activeSessionId === siblingActiveSessionId;
 		};
 
 		const stream = internals.streamWorkerSnapshot(client, streamedResult(2), transcript, "attach", signal, true);
+		const siblingStream = internals.streamWorkerSnapshot(
+			client,
+			streamedResult(2, 1, siblingActiveSessionId, siblingSnapshotId),
+			siblingTranscript,
+			"attach",
+			siblingSignal,
+			true,
+		);
 		for (let attempt = 0; attempt < 10 && socket.listenerCount("drain") === 0; attempt++) {
 			await Promise.resolve();
 		}
@@ -235,12 +262,30 @@ describe("ENG-4601 worker snapshot cache", () => {
 		expect(socket.listenerCount("drain")).toBe(1);
 
 		internals.detachClientFromSession(client, state);
-		await stream;
+		await Promise.all([stream, siblingStream]);
 
 		expect(produced).toEqual([0]);
-		expect(written.some((message) => message.type === "session_snapshot_end")).toBe(false);
+		expect(
+			written.some(
+				(message) => message.type === "session_snapshot_end" && message.activeSessionId === activeSessionId,
+			),
+		).toBe(false);
+		expect(written).toContainEqual({
+			type: "session_snapshot_failed",
+			activeSessionId,
+			snapshotId,
+			error: `Snapshot ${snapshotId} was aborted`,
+		});
+		expect(written).toContainEqual(
+			expect.objectContaining({
+				type: "session_snapshot_end",
+				activeSessionId: siblingActiveSessionId,
+				snapshotId: siblingSnapshotId,
+			}),
+		);
 		expect(state.clients.has(client)).toBe(false);
 		expect(client.attachedActiveSessionIds.has(activeSessionId)).toBe(false);
+		expect(client.attachedActiveSessionIds.has(siblingActiveSessionId)).toBe(true);
 		expect(client.snapshotStreaming).toBe(false);
 		expect(client.snapshotActiveSessionIds?.size).toBe(0);
 		expect(client.snapshotActiveSessionCounts?.size).toBe(0);
