@@ -397,6 +397,94 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(internals.pendingReplacementSnapshots.get(client)?.size ?? 0).toBe(0);
 	});
 
+	it("retains a queued replacement until its worker transcript completes", async () => {
+		const supervisor = new DaemonSupervisor("/tmp/eng-4602-supervisor-pending-replacement.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			descriptorDir: "/tmp/eng-4602-supervisor-pending-replacement-state",
+		});
+		const { worker } = workerHarness();
+		const client = socketClient("public", new PassThrough());
+		const firstMessages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 }];
+		const firstResult = streamedResult(firstMessages);
+		const firstTranscript = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId,
+			messages: firstMessages,
+			cacheRoot: "/tmp",
+		});
+		worker.transcriptCaches.set(activeSessionId, firstTranscript);
+		const written: DaemonOutbound[] = [];
+		let releaseActiveEnd!: (accepted: boolean) => void;
+		const activeEnd = new Promise<boolean>((resolve) => {
+			releaseActiveEnd = resolve;
+		});
+		let markActiveEndStarted!: () => void;
+		const activeEndStarted = new Promise<void>((resolve) => {
+			markActiveEndStarted = resolve;
+		});
+		const writeSnapshotBuffer = vi.fn((_client: DaemonSocketClient, buffer: Uint8Array) => {
+			const message = JSON.parse(Buffer.from(buffer).toString("utf8")) as DaemonOutbound;
+			written.push(message);
+			if (message.type === "session_snapshot_end" && written.length === 3) {
+				markActiveEndStarted();
+				return activeEnd;
+			}
+			return Promise.resolve(true);
+		});
+		const internals = supervisor as unknown as {
+			clients: Set<DaemonSocketClient>;
+			pendingReplacementSnapshots: WeakMap<DaemonSocketClient, Map<string, unknown>>;
+			writeSnapshotBuffer: typeof writeSnapshotBuffer;
+			streamSnapshot(
+				client: DaemonSocketClient,
+				worker: WorkerHarness,
+				result: DaemonAttachResult,
+				transcript: SnapshotTranscriptCache,
+				purpose: "attach" | "replacement" | "resync",
+			): Promise<void>;
+			handleWorkerFrame(worker: WorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): void;
+		};
+		internals.clients.add(client);
+		internals.writeSnapshotBuffer = writeSnapshotBuffer;
+
+		const activeStream = internals.streamSnapshot(client, worker, firstResult, firstTranscript, "resync");
+		await activeEndStarted;
+		const frames = snapshotFrames([{ role: "user", content: "replacement", timestamp: 2 }]);
+		const replacementSnapshotId = "snapshot-4602-replacement";
+		const replacementBegin = { ...frames.begin, snapshotId: replacementSnapshotId };
+		const replacementChunk = { ...frames.chunk, snapshotId: replacementSnapshotId };
+		const replacementEnd = { ...frames.end, snapshotId: replacementSnapshotId };
+		internals.handleWorkerFrame(worker, frame(replacementBegin, "replacement"));
+
+		expect(worker.transcriptCaches.get(activeSessionId)?.complete).toBe(false);
+		expect(internals.pendingReplacementSnapshots.get(client)?.size).toBe(1);
+
+		releaseActiveEnd(true);
+		await activeStream;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(written.filter((message) => message.type === "session_snapshot_begin")).toHaveLength(1);
+		expect(internals.pendingReplacementSnapshots.get(client)?.size).toBe(1);
+
+		internals.handleWorkerFrame(worker, frame(replacementChunk, "replacement"));
+		internals.handleWorkerFrame(worker, frame(replacementEnd, "replacement"));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(written.map((message) => message.type)).toEqual([
+			"session_snapshot_begin",
+			"session_snapshot_chunk",
+			"session_snapshot_end",
+			"session_snapshot_begin",
+			"session_snapshot_chunk",
+			"session_snapshot_end",
+		]);
+		expect(written.filter((message) => message.type === "session_snapshot_begin")).toMatchObject([
+			{ purpose: "resync", snapshotId },
+			{ purpose: "replacement", snapshotId: replacementSnapshotId },
+		]);
+		expect(internals.pendingReplacementSnapshots.get(client)?.size ?? 0).toBe(0);
+	});
+
 	it("holds catch-up behind duplicate validation and rejects it on mismatch", async () => {
 		const supervisor = new DaemonSupervisor("/tmp/eng-4602-supervisor-gate.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
