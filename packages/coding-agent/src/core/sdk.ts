@@ -242,12 +242,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	let serviceTier =
+	const serviceTierPreference =
 		options.serviceTier ??
 		(hasServiceTierEntry ? existingSession.serviceTier : settingsManager.getDefaultServiceTier());
-	if (serviceTier === "priority" && (!model || !supportsFastMode(model))) {
-		serviceTier = "default";
-	}
+	const serviceTier =
+		serviceTierPreference === "priority" && (!model || !supportsFastMode(model)) ? "default" : serviceTierPreference;
 
 	const allowedToolNames = options.allowedToolNames ?? options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const includeGoals = options.includeGoals ?? (options.tools !== undefined || options.noTools !== "all");
@@ -364,13 +363,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 	if (!hasServiceTierEntry) {
-		sessionManager.appendServiceTierChange(serviceTier);
+		sessionManager.appendServiceTierChange(serviceTierPreference);
 	}
 
 	const session = new AgentSession({
 		agent,
 		sessionManager,
 		settingsManager,
+		serviceTierPreference,
 		cwd,
 		// Only the explicit dir — the default may not match injected custom storage.
 		agentDir: options.agentDir,

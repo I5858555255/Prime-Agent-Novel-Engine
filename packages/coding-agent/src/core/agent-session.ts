@@ -324,6 +324,7 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
+	serviceTierPreference?: ServiceTier;
 	cwd: string;
 	/** Config dir backing credentials (auth.json); exported to the kernel for skills. */
 	agentDir?: string;
@@ -764,6 +765,7 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
+	private _serviceTierPreference: ServiceTier;
 
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
@@ -909,6 +911,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
+		this._serviceTierPreference = config.serviceTierPreference ?? config.agent.state.serviceTier;
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -4298,15 +4301,22 @@ export class AgentSession {
 
 	setServiceTier(serviceTier: ServiceTier): void {
 		const effectiveServiceTier = this._getEffectiveServiceTier(serviceTier);
-		if (effectiveServiceTier === this.agent.state.serviceTier) {
+		const preferenceChanged = effectiveServiceTier !== this._serviceTierPreference;
+		const effectiveTierChanged = effectiveServiceTier !== this.agent.state.serviceTier;
+		if (!preferenceChanged && !effectiveTierChanged) {
 			return;
 		}
-		this.agent.state.serviceTier = effectiveServiceTier;
-		this.sessionManager.appendServiceTierChange(effectiveServiceTier);
-		if (this.model && supportsFastMode(this.model)) {
-			this.settingsManager.setDefaultServiceTier(effectiveServiceTier);
+		this._serviceTierPreference = effectiveServiceTier;
+		if (preferenceChanged) {
+			this.sessionManager.appendServiceTierChange(effectiveServiceTier);
+			if (this.model && supportsFastMode(this.model)) {
+				this.settingsManager.setDefaultServiceTier(effectiveServiceTier);
+			}
 		}
-		this._emit({ type: "service_tier_changed", serviceTier: effectiveServiceTier });
+		if (effectiveTierChanged) {
+			this.agent.state.serviceTier = effectiveServiceTier;
+			this._emit({ type: "service_tier_changed", serviceTier: effectiveServiceTier });
+		}
 	}
 
 	private _getEffectiveServiceTier(serviceTier: ServiceTier): ServiceTier {
@@ -4314,13 +4324,16 @@ export class AgentSession {
 	}
 
 	private _getServiceTierForModelSwitch(): ServiceTier {
-		return this.model && supportsFastMode(this.model)
-			? this.serviceTier
-			: this.settingsManager.getDefaultServiceTier();
+		return this._serviceTierPreference;
 	}
 
 	private _clampServiceTierForModel(serviceTier: ServiceTier = this.serviceTier): void {
-		this.setServiceTier(serviceTier);
+		const effectiveServiceTier = this._getEffectiveServiceTier(serviceTier);
+		if (effectiveServiceTier === this.agent.state.serviceTier) {
+			return;
+		}
+		this.agent.state.serviceTier = effectiveServiceTier;
+		this._emit({ type: "service_tier_changed", serviceTier: effectiveServiceTier });
 	}
 
 	/**

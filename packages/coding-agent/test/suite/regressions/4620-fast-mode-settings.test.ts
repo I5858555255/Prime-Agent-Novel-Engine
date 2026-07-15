@@ -124,6 +124,9 @@ describe("ENG-4620 fast mode settings", () => {
 
 		currentHarness.sessionManager.appendMessage(userMsg("hello"));
 		currentHarness.session.setServiceTier("priority");
+		await currentHarness.session.setModel(currentHarness.getModel("gpt-5.3")!);
+		expect(currentHarness.session.serviceTier).toBe("default");
+		expect(currentHarness.sessionManager.buildSessionContext().serviceTier).toBe("priority");
 		currentHarness.session.dispose();
 
 		const createSession = (modelId: string) =>
@@ -136,10 +139,35 @@ describe("ENG-4620 fast mode settings", () => {
 				settingsManager: currentHarness.settingsManager,
 			});
 
+		const { session: supportedSession } = await createSession("gpt-5.4");
+		sessions.push(supportedSession);
+		expect(supportedSession.serviceTier).toBe("priority");
+	});
+
+	it("stores the preference when a new session starts on an unsupported model", async () => {
+		harness = await createHarness({
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			models: [{ id: "gpt-5.4" }, { id: "gpt-5.3" }],
+		});
+		const currentHarness = harness;
+		const sessionManager = SessionManager.inMemory(currentHarness.tempDir);
+		currentHarness.settingsManager.setDefaultServiceTier("priority");
+
+		const createSession = (modelId: string) =>
+			createAgentSession({
+				cwd: currentHarness.tempDir,
+				authStorage: currentHarness.authStorage,
+				model: currentHarness.getModel(modelId),
+				resourceLoader: createTestResourceLoader(),
+				sessionManager,
+				settingsManager: currentHarness.settingsManager,
+			});
+
 		const { session: unsupportedSession } = await createSession("gpt-5.3");
 		sessions.push(unsupportedSession);
 		expect(unsupportedSession.serviceTier).toBe("default");
-		expect(unsupportedSession.sessionManager.buildSessionContext().serviceTier).toBe("priority");
+		expect(sessionManager.buildSessionContext().serviceTier).toBe("priority");
 		unsupportedSession.dispose();
 
 		const { session: supportedSession } = await createSession("gpt-5.4");
