@@ -983,7 +983,7 @@ class AgentsViewMode implements Component, Focusable {
 					// unique model id reference applies directly without the picker.
 					const match = findExactModelReferenceMatch(
 						searchTerm,
-						this.options.uiServices.modelRegistry.getAvailable(),
+						await this.options.uiServices.modelRegistry.refreshAvailableModels(),
 					);
 					if (match) {
 						this.applyDefaultModel(match);
@@ -1013,7 +1013,7 @@ class AgentsViewMode implements Component, Focusable {
 			modelRegistry,
 			showStatus: (message) => this.setStatusMessage(message),
 			showError: (message) => this.setStatusMessage(message, { tone: "error" }),
-			getAvailableModels: async () => modelRegistry.getAvailable(),
+			getAvailableModels: () => modelRegistry.refreshAvailableModels(),
 			onLoginCompleted: () => {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(this.getDefaultModelForNewAgents());
 			},
@@ -1056,9 +1056,10 @@ class AgentsViewMode implements Component, Focusable {
 		this.setStatusMessage(warning, { tone: "warning", sticky: true });
 	}
 
-	private showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
+	private async showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
 		const modelRegistry = this.options.uiServices.modelRegistry;
 		const authFlows = this.createAuthFlows();
+		const availableModels = await modelRegistry.refreshAvailableModels();
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
@@ -1095,7 +1096,7 @@ class AgentsViewMode implements Component, Focusable {
 						if (authResult.status !== "success" || tab === "mcp-connections") return;
 
 						await this.applyPrimeInferenceFallbackAfterLogin(authResult);
-						menu.updateModels(this.getDefaultModelForNewAgents(), modelRegistry.getAvailable());
+						menu.updateModels(this.getDefaultModelForNewAgents(), await modelRegistry.refreshAvailableModels());
 						menu.setActiveTab("models");
 					})
 					.catch((error) => {
@@ -1112,7 +1113,7 @@ class AgentsViewMode implements Component, Focusable {
 				modelRegistry,
 				currentModel: this.getDefaultModelForNewAgents(),
 				scopedModels: [],
-				availableModels: modelRegistry.getAvailable(),
+				availableModels,
 				recentModels: this.options.uiServices.settingsManager.getRecentModels(),
 				initialModelSearch,
 				getRows: () => this.ui.terminal.rows,

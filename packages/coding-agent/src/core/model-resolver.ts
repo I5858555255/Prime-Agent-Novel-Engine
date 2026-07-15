@@ -319,7 +319,7 @@ export function resolveModelScopeFromModels(patterns: string[], availableModels:
 }
 
 export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
-	const availableModels = await modelRegistry.getAvailable();
+	const availableModels = await modelRegistry.refreshAvailableModels();
 	return resolveModelScopeFromModels(patterns, availableModels);
 }
 
