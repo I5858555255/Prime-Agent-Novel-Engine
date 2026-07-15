@@ -112,7 +112,7 @@ import { parseGitUrl } from "../../utils/git.js";
 import { resizeImage } from "../../utils/image-resize.js";
 import { getCwdRelativePath } from "../../utils/paths.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
-import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../../utils/tools-manager.js";
+import { ensureTool, ensureToolWithStatus, formatMissingRipgrepMessage } from "../../utils/tools-manager.js";
 import { checkForNewPiVersion } from "../../utils/version-check.js";
 import type {
 	AgentConnection,
@@ -164,6 +164,7 @@ import { CustomMessageComponent } from "./components/custom-message.js";
 import { DaxnutsComponent } from "./components/daxnuts.js";
 import { DynamicBorder } from "./components/dynamic-border.js";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.js";
+import { type FileChangeSummary, formatTotalChangeSummary, mergeTurnFileChanges } from "./components/edit-summary.js";
 import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
@@ -178,7 +179,11 @@ import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SideQuestionComponent } from "./components/side-question.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
-import { ToolExecutionComponent, type ToolExecutionDefinition } from "./components/tool-execution.js";
+import {
+	selectLatestToolExpandHint,
+	ToolExecutionComponent,
+	type ToolExecutionDefinition,
+} from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
@@ -733,6 +738,7 @@ export class InteractiveMode {
 	private startedToolCalls = new Set<string>();
 	private pendingToolGeneration = 0;
 	private toolDefinitionCache = new Map<string, ToolExecutionDefinition | undefined>();
+	private agentRunFileChanges = new Map<string, FileChangeSummary>();
 
 	// RLM child-agent tray: inline list below the editor, full-screen detail on open.
 	private childAgentSummary: ChildAgentSummaryComponent;
@@ -1096,10 +1102,10 @@ export class InteractiveMode {
 
 		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
 		// fd powers autocomplete, and rg is available for shell commands.
-		const [fdPath, rgPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
+		const [fdPath, rgResult] = await Promise.all([ensureTool("fd"), ensureToolWithStatus("rg")]);
 		this.fdPath = fdPath;
-		if (!rgPath) {
-			this.showWarning(MISSING_RIPGREP_MESSAGE);
+		if (rgResult.status === "unavailable") {
+			this.showWarning(formatMissingRipgrepMessage(rgResult));
 		}
 
 		// Add header container as first child
@@ -2452,6 +2458,8 @@ export class InteractiveMode {
 		this.activityTracker.reset();
 		this.contextUsageTokenBaseline = 0;
 		this.resetPendingToolState();
+		this.agentRunFileChanges.clear();
+		this.renderRecap();
 		this.ipythonToolComponents.clear();
 		this.lateIpythonSentAgentMessages.clear();
 		this.resetChildAgentInspector();
@@ -2577,6 +2585,7 @@ export class InteractiveMode {
 			if (this.startedToolCalls.has(latestToolCall.id)) {
 				component.markExecutionStarted();
 			}
+			selectLatestToolExpandHint(this.chatContainer.children, component);
 			this.chatContainer.addChild(component);
 			this.pendingTools.set(latestToolCall.id, component);
 			this.registerIpythonToolComponent(latestToolCall.name, latestToolCall.id, component);
@@ -2971,13 +2980,20 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	/** Render the recap line above the editor when one exists. */
 	private renderRecap(): void {
 		if (!this.recapContainer) return;
 		this.recapContainer.clear();
 		const recap = this.childAgentPanelMode ? undefined : this.sessionRecap?.trim();
+		const showChanges = !this.childAgentPanelMode && !this.isAgentStreaming() && this.agentRunFileChanges.size > 0;
+		if (showChanges) {
+			this.recapContainer.addChild(
+				new TruncatedText(formatTotalChangeSummary([...this.agentRunFileChanges.values()]), 1, 0),
+			);
+		}
 		if (recap) {
 			this.recapContainer.addChild(new TruncatedText(theme.fg("dim", `Recap: ${recap}`), 1, 0));
+		}
+		if (recap || showChanges) {
 			this.recapContainer.addChild(new Spacer(1));
 		}
 		this.ui.requestRender();
@@ -4361,6 +4377,8 @@ export class InteractiveMode {
 			this.contextUsageTokenBaseline = 0;
 			this.setSessionHasMessages(true);
 			this.clearShortcutGuide();
+			this.agentRunFileChanges.clear();
+			this.renderRecap();
 		}
 		this.activityTracker.handleEvent(event);
 		this.updateWorkingLoaderMessage();
@@ -4368,6 +4386,7 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.resetPendingToolState();
+				this.renderRecap();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -4563,6 +4582,10 @@ export class InteractiveMode {
 				break;
 			}
 
+			case "turn_end":
+				mergeTurnFileChanges(this.agentRunFileChanges, event.message, event.toolResults, this.getCurrentCwd());
+				break;
+
 			case "agent_end":
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
@@ -4580,6 +4603,7 @@ export class InteractiveMode {
 				}
 				this.flushPendingBashComponents();
 				this.resetPendingToolState();
+				this.renderRecap();
 
 				this.applyOptimisticContextUsage();
 				await this.refreshConnectionContextUsage();
@@ -5647,6 +5671,7 @@ export class InteractiveMode {
 							this.getCurrentCwd(),
 						);
 						component.setExpanded(this.toolOutputExpanded);
+						selectLatestToolExpandHint(this.chatContainer.children, component);
 						this.chatContainer.addChild(component);
 						this.registerIpythonToolComponent(content.name, content.id, component);
 
