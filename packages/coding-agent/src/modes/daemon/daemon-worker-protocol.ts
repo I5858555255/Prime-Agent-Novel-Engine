@@ -34,7 +34,15 @@ export type DaemonWorkerFrameHeader =
 export type DaemonCreateCommand = Extract<DaemonCommand, { type: "create" }>;
 
 export type DaemonWorkerCommand =
-	| { id?: string; type: "worker_auth"; token: string }
+	| {
+			id?: string;
+			type: "worker_auth";
+			token: string;
+			supervisorGeneration: string;
+			supervisorPid: number;
+			supervisorProcessStartId?: string;
+			supervisorSocketPath: string;
+	  }
 	| {
 			id?: string;
 			type: "worker_subscribe";
