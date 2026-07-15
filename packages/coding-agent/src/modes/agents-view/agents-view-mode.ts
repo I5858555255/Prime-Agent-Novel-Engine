@@ -18,6 +18,7 @@ import {
 import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import type { ModelRegistry } from "../../core/model-registry.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
 import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { SessionManager } from "../../core/session-manager.js";
@@ -221,6 +222,26 @@ export function resolveAgentsViewActiveSummaryForPath(
 // the input, so flatten all whitespace runs to single spaces.
 export function formatAgentsViewStatusLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
+}
+
+export async function getAgentsViewModelArgumentCompletions(
+	prefix: string,
+	modelRegistry: Pick<ModelRegistry, "refreshAvailableModels">,
+): Promise<AutocompleteItem[] | null> {
+	const models = await modelRegistry.refreshAvailableModels();
+	if (models.length === 0) {
+		return null;
+	}
+	const items = models.map((model) => ({
+		id: model.id,
+		provider: model.provider,
+		label: `${model.provider}/${model.id}`,
+	}));
+	const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
+	if (filtered.length === 0) {
+		return null;
+	}
+	return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
 }
 
 export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
@@ -1261,22 +1282,8 @@ class AgentsViewMode implements Component, Focusable {
 		}));
 		const modelCommand = commands.find((command) => command.name === "model");
 		if (modelCommand) {
-			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const models = this.options.uiServices.modelRegistry.getAvailable();
-				if (models.length === 0) {
-					return null;
-				}
-				const items = models.map((model) => ({
-					id: model.id,
-					provider: model.provider,
-					label: `${model.provider}/${model.id}`,
-				}));
-				const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
-				if (filtered.length === 0) {
-					return null;
-				}
-				return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
-			};
+			modelCommand.getArgumentCompletions = (prefix: string) =>
+				getAgentsViewModelArgumentCompletions(prefix, this.options.uiServices.modelRegistry);
 		}
 		return new CombinedAutocompleteProvider(commands, this.options.uiServices.getInitialCwd(), null);
 	}
