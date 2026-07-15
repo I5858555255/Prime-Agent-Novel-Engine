@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Fixed fullscreen drag selection so holding at a transcript edge scrolls through offscreen text ([ENG-4644](https://linear.app/primeintellect/issue/ENG-4644/copy-issues)).
+- Fixed slash-command and skill autocomplete not appearing for references typed in the middle of prompts ([ENG-4628](https://linear.app/primeintellect/issue/ENG-4628/support-skill-and-command-autocomplete-mid-prompt)).
+- Fixed focused full-pane overlays becoming slow to navigate on wider terminals.
+
 ## [0.3.0] - 2026-07-13
 
 - Fixed fullscreen TUI handoffs temporarily releasing raw input and leaking keyboard-protocol timers, which caused flicker and echoed arrow escape sequences while opening sessions.

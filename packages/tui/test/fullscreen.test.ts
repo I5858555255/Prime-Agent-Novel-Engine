@@ -19,6 +19,21 @@ class InputComponent extends TestComponent {
 	}
 }
 
+class SelectionOverlay extends TestComponent {
+	private selected = 0;
+
+	override render(width: number): string[] {
+		return ["first", "second"].map((label, index) => {
+			const line = label.padEnd(width);
+			return index === this.selected ? `\x1b[48;5;238m${line}\x1b[49m` : line;
+		});
+	}
+
+	handleInput(_data: string): void {
+		this.selected = (this.selected + 1) % 2;
+	}
+}
+
 class LoggingVirtualTerminal extends VirtualTerminal {
 	private writes: string[] = [];
 	lastStopOptions: TerminalStopOptions | undefined;
@@ -72,6 +87,14 @@ function setup(transcriptLines: string[], cols = 40, rows = 10): Setup {
 
 function lines(count: number, prefix = "Line"): string[] {
 	return Array.from({ length: count }, (_, i) => `${prefix} ${i}`);
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() >= deadline) throw new Error("Timed out waiting for condition");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
 }
 
 describe("TUI fullscreen mode", () => {
@@ -263,6 +286,26 @@ describe("TUI fullscreen mode", () => {
 		tui.stop();
 	});
 
+	it("repaints only changed rows when navigating a focused overlay", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20));
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		tui.showOverlay(new SelectionOverlay(), { anchor: "center", width: 20 });
+		await terminal.waitForRender();
+		terminal.clearWrites();
+
+		terminal.sendInput("j");
+		await terminal.waitForRender();
+
+		const writes = terminal.getWrites();
+		const repaintedRows = writes.match(/\x1b\[\d+;1H\x1b\[2K/g) ?? [];
+		assert.ok(!writes.includes("\x1b[2J"), "overlay navigation should not clear the screen");
+		assert.strictEqual(repaintedRows.length, 2, "only the old and new selected rows should repaint");
+
+		tui.stop();
+	});
+
 	it("suspends fullscreen mouse tracking while a visible overlay requests native mouse", async () => {
 		const { terminal, tui, chat, dock } = setup(lines(20), 80, 10);
 		tui.enterFullscreen({ scroll: [chat], dock });
@@ -326,6 +369,27 @@ describe("TUI fullscreen mode", () => {
 		assert.deepStrictEqual(copies, [url]);
 		assert.deepStrictEqual(overlay.inputs, [], "mouse reports are consumed before overlay input handlers");
 
+		tui.stop();
+	});
+
+	it("drag-selects ANSI-styled wide text from a focused overlay", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(20), 40, 10);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const overlay = new InputComponent();
+		overlay.lines = ["\x1b[48;5;236m  界🙂  \x1b[49m"];
+		tui.showOverlay(overlay, { anchor: "top-left", width: 20 });
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;3;1M");
+		terminal.sendInput("\x1b[<32;7;1M");
+		terminal.sendInput("\x1b[<0;7;1m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, ["界🙂"]);
 		tui.stop();
 	});
 
@@ -574,6 +638,78 @@ describe("TUI fullscreen mode", () => {
 		terminal.sendInput("\x1b[<0;6;2m");
 		await terminal.waitForRender();
 		assert.deepStrictEqual(copies, ["Line 12\nLine"]);
+
+		tui.stop();
+	});
+
+	it("auto-scrolls upward while selecting at the transcript edge", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(30));
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<32;1;1M");
+		await waitFor(() => (tui.getScrollInfo()?.linesAbove ?? 22) < 22);
+		await terminal.waitForRender();
+
+		const scrollInfo = tui.getScrollInfo();
+		assert.ok(scrollInfo);
+		const { linesAbove } = scrollInfo;
+		terminal.sendInput("\x1b[<0;1;1m");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(copies, [lines(26).slice(linesAbove).join("\n")]);
+
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		assert.strictEqual(tui.getScrollInfo()?.linesAbove, linesAbove, "release stops auto-scrolling");
+
+		tui.stop();
+	});
+
+	it("auto-scrolls downward while selecting at the transcript edge", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(30));
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		terminal.sendInput(VIEWPORT_TOP);
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<0;1;4M");
+		terminal.sendInput("\x1b[<32;8;8M");
+		await waitFor(() => (tui.getScrollInfo()?.linesAbove ?? 0) > 0);
+		await terminal.waitForRender();
+
+		const scrollInfo = tui.getScrollInfo();
+		assert.ok(scrollInfo);
+		const { linesAbove } = scrollInfo;
+		terminal.sendInput("\x1b[<0;8;8m");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(copies, [
+			lines(30)
+				.slice(3, linesAbove + 8)
+				.join("\n"),
+		]);
+
+		tui.stop();
+	});
+
+	it("does not auto-scroll a horizontal selection on the top row", async () => {
+		const { terminal, tui, chat, dock } = setup(lines(30));
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;1;1M");
+		terminal.sendInput("\x1b[<32;8;1M");
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		assert.strictEqual(tui.getScrollInfo()?.linesAbove, 22);
+
+		terminal.sendInput("\x1b[<0;8;1m");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(copies, ["Line 22"]);
 
 		tui.stop();
 	});
