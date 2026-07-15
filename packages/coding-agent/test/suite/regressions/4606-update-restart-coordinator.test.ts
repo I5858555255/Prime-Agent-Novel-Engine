@@ -1,8 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	DaemonUpdateRestartStatusWriter,
 	launchDaemonUpdateRestartCoordinator,
 	readDaemonUpdateRestartStatus,
 } from "../../../src/cli/daemon-update-restart.js";
@@ -234,6 +235,29 @@ afterEach(async () => {
 });
 
 describe("ENG-4606 update restart coordinator", () => {
+	it("refreshes coordinator liveness without changing restart state", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const statusPath = join(harness.tempDir, "restart-status.json");
+
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-07-14T00:00:00.000Z"));
+			const writer = new DaemonUpdateRestartStatusWriter(statusPath, "test-request", "/tmp/daemon.sock");
+			const stopHeartbeat = writer.startHeartbeat();
+			vi.advanceTimersByTime(5000);
+			stopHeartbeat();
+
+			expect(readDaemonUpdateRestartStatus(statusPath)).toMatchObject({
+				phase: "starting",
+				startedAt: "2026-07-14T00:00:00.000Z",
+				updatedAt: "2026-07-14T00:00:05.000Z",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("rejects coordinator spawn errors without terminating the updater", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

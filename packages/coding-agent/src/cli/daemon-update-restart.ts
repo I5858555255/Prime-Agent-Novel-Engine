@@ -98,6 +98,8 @@ const ALL_PHASES: ReadonlySet<DaemonUpdateRestartPhase> = new Set([
 	"skipped",
 	"failed",
 ]);
+const DEFAULT_COORDINATOR_STALL_TIMEOUT_MS = 180_000;
+const COORDINATOR_STATUS_HEARTBEAT_MS = 5000;
 const COORDINATOR_REGISTRY_LOCK_STALE_MS = 5000;
 const COORDINATOR_REGISTRY_LOCK_UPDATE_MS = 1000;
 const COORDINATOR_REGISTRY_LOCK_RETRIES = 500;
@@ -239,6 +241,23 @@ export class DaemonUpdateRestartStatusWriter {
 
 	current(): DaemonUpdateRestartStatus {
 		return { ...this.status, counts: { ...this.status.counts } };
+	}
+
+	touch(): void {
+		this.status = { ...this.status, updatedAt: new Date().toISOString() };
+		this.persist();
+	}
+
+	startHeartbeat(): () => void {
+		const heartbeat = setInterval(() => {
+			try {
+				this.touch();
+			} catch {
+				// A later phase write will retry; otherwise the parent detects the stale heartbeat.
+			}
+		}, COORDINATOR_STATUS_HEARTBEAT_MS);
+		heartbeat.unref();
+		return () => clearInterval(heartbeat);
 	}
 
 	private persist(): void {
@@ -418,9 +437,15 @@ export async function launchDaemonUpdateRestartCoordinator(
 	});
 	child.unref();
 
-	const deadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
-	while (deadline === undefined || Date.now() < deadline) {
+	const stallTimeoutMs = options.timeoutMs ?? DEFAULT_COORDINATOR_STALL_TIMEOUT_MS;
+	let observedUpdatedAt: string | undefined;
+	let lastProgressAt = Date.now();
+	while (true) {
 		const status = readDaemonUpdateRestartStatus(statusPath);
+		if (status && status.updatedAt !== observedUpdatedAt) {
+			observedUpdatedAt = status.updatedAt;
+			lastProgressAt = Date.now();
+		}
 		if (status && TERMINAL_PHASES.has(status.phase)) {
 			return status;
 		}
@@ -430,7 +455,9 @@ export async function launchDaemonUpdateRestartCoordinator(
 		if (exitDescription) {
 			throw new Error(`Daemon update restart coordinator exited with ${exitDescription}`);
 		}
+		if (Date.now() - lastProgressAt >= stallTimeoutMs) {
+			throw new Error(`Timed out waiting for daemon update restart progress on ${options.socketPath}`);
+		}
 		await delay(50);
 	}
-	throw new Error(`Timed out waiting for daemon update restart on ${options.socketPath}`);
 }

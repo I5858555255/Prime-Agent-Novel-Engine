@@ -1212,6 +1212,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 		`${process.pid}-${Date.now()}`,
 		options.socketPath,
 	);
+	const stopStatusHeartbeat = statusWriter.startHeartbeat();
 	let lease: Awaited<ReturnType<typeof acquireDaemonUpdateRestartCoordinator>> | undefined;
 	let connectedClient: DaemonClient | undefined;
 	let manifest: DaemonUpdateRestartManifest | undefined;
@@ -1318,6 +1319,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 	} catch (error: unknown) {
 		statusWriter.update({ phase: "failed", message: formatUnknownError(error) });
 	} finally {
+		stopStatusHeartbeat();
 		connectedClient?.close();
 		await lease?.release();
 	}
