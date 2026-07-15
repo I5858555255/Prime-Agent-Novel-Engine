@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed fullscreen drag selection so holding at a transcript edge scrolls through offscreen text ([ENG-4644](https://linear.app/primeintellect/issue/ENG-4644/copy-issues)).
 - Fixed focused full-pane overlays becoming slow to navigate on wider terminals.
 
 ## [0.3.0] - 2026-07-13
