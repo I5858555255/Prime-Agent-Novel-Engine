@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Changed IPython kernels to set `NO_COLOR=1`, preventing ANSI color escapes from inflating `%%bash` output.
+- Fixed empty prompt placeholders hiding the input caret.
 
 ## [0.3.0] - 2026-07-13
 
