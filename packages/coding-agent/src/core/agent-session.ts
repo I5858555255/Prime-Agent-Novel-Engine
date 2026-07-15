@@ -4130,13 +4130,14 @@ export class AgentSession {
 
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		const serviceTier = this._getServiceTierForModelSwitch();
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
-		this._clampServiceTierForModel();
+		this._clampServiceTierForModel(serviceTier);
 
 		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4202,6 +4203,7 @@ export class AgentSession {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
+		const serviceTier = this._getServiceTierForModelSwitch();
 
 		// Apply model
 		this.agent.state.model = next.model;
@@ -4213,7 +4215,7 @@ export class AgentSession {
 		// - Undefined scoped model thinking level inherits the current session preference
 		// setThinkingLevel clamps to model capabilities.
 		this.setThinkingLevel(thinkingLevel);
-		this._clampServiceTierForModel();
+		this._clampServiceTierForModel(serviceTier);
 
 		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4241,13 +4243,14 @@ export class AgentSession {
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		const serviceTier = this._getServiceTierForModelSwitch();
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
-		this._clampServiceTierForModel();
+		this._clampServiceTierForModel(serviceTier);
 
 		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4299,6 +4302,9 @@ export class AgentSession {
 		}
 		this.agent.state.serviceTier = effectiveServiceTier;
 		this.sessionManager.appendServiceTierChange(effectiveServiceTier);
+		if (this.model && supportsFastMode(this.model)) {
+			this.settingsManager.setDefaultServiceTier(effectiveServiceTier);
+		}
 		this._emit({ type: "service_tier_changed", serviceTier: effectiveServiceTier });
 	}
 
@@ -4306,8 +4312,14 @@ export class AgentSession {
 		return serviceTier === "priority" && (!this.model || !supportsFastMode(this.model)) ? "default" : serviceTier;
 	}
 
-	private _clampServiceTierForModel(): void {
-		this.setServiceTier(this.serviceTier);
+	private _getServiceTierForModelSwitch(): ServiceTier {
+		return this.model && supportsFastMode(this.model)
+			? this.serviceTier
+			: this.settingsManager.getDefaultServiceTier();
+	}
+
+	private _clampServiceTierForModel(serviceTier: ServiceTier = this.serviceTier): void {
+		this.setServiceTier(serviceTier);
 	}
 
 	/**

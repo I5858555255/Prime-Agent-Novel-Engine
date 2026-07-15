@@ -242,7 +242,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	let serviceTier = options.serviceTier ?? (hasServiceTierEntry ? existingSession.serviceTier : "default");
+	let serviceTier =
+		options.serviceTier ??
+		(hasServiceTierEntry ? existingSession.serviceTier : settingsManager.getDefaultServiceTier());
 	if (serviceTier === "priority" && (!model || !supportsFastMode(model))) {
 		serviceTier = "default";
 	}
