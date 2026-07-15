@@ -58,6 +58,11 @@ export interface DaemonUpdateRestartStatus {
 	updatedAt: string;
 }
 
+export interface DaemonUpdateRestartReport {
+	info: string[];
+	warnings: string[];
+}
+
 export interface DaemonUpdateRestartCoordinatorRecord extends DaemonUpdateRestartProcessIdentity {
 	version: 1;
 	token: string;
@@ -98,6 +103,28 @@ const COORDINATOR_REGISTRY_LOCK_STALE_MS = 5000;
 const COORDINATOR_REGISTRY_LOCK_UPDATE_MS = 1000;
 const COORDINATOR_REGISTRY_LOCK_RETRIES = 500;
 const COORDINATOR_REGISTRY_LOCK_RETRY_MS = 10;
+
+export function buildDaemonUpdateRestartReport(status: DaemonUpdateRestartStatus): DaemonUpdateRestartReport {
+	const report: DaemonUpdateRestartReport = { info: [], warnings: [] };
+	if (status.phase === "failed") {
+		report.warnings.push(`Updated, but could not restart the daemon (${status.message ?? "unknown error"}).`);
+	}
+	if (status.phase !== "complete" && status.phase !== "failed") {
+		return report;
+	}
+	if (status.counts.total > 0) {
+		report.info.push(`Restored ${status.counts.restored} daemon session${status.counts.restored === 1 ? "" : "s"}`);
+	}
+	if (status.counts.resumed > 0) {
+		report.info.push(`Resumed ${status.counts.resumed} interrupted session${status.counts.resumed === 1 ? "" : "s"}`);
+	}
+	if (status.counts.failed > 0) {
+		report.warnings.push(
+			`${status.counts.failed} daemon session${status.counts.failed === 1 ? "" : "s"} could not be restored.`,
+		);
+	}
+	return report;
+}
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));

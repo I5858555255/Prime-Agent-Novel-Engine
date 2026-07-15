@@ -49,7 +49,10 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
-import { launchDaemonUpdateRestartCoordinator } from "../../cli/daemon-update-restart.js";
+import {
+	buildDaemonUpdateRestartReport,
+	launchDaemonUpdateRestartCoordinator,
+} from "../../cli/daemon-update-restart.js";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -7764,21 +7767,12 @@ export class InteractiveMode {
 						cwd: updateCwd,
 						originActiveSessionId: this.connectionState?.activeSessionId,
 					});
-					if (status.phase === "failed") {
-						console.error(
-							`Warning: updated, but could not restart the daemon (${status.message ?? "unknown error"}).`,
-						);
-					} else if (status.phase === "complete") {
-						if (status.counts.total > 0) {
-							console.log(
-								`Restored ${status.counts.restored} daemon session${status.counts.restored === 1 ? "" : "s"}`,
-							);
-						}
-						if (status.counts.resumed > 0) {
-							console.log(
-								`Resumed ${status.counts.resumed} interrupted session${status.counts.resumed === 1 ? "" : "s"}`,
-							);
-						}
+					const report = buildDaemonUpdateRestartReport(status);
+					for (const message of report.info) {
+						console.log(message);
+					}
+					for (const warning of report.warnings) {
+						console.error(`Warning: ${warning}`);
 					}
 				} catch (error: unknown) {
 					console.error(

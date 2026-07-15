@@ -14,6 +14,7 @@ import {
 import { confirmDaemonSessionLoss, type DaemonSessionLossCopy, pluralizeSessions } from "./cli/daemon-stop-confirm.js";
 import {
 	acquireDaemonUpdateRestartCoordinator,
+	buildDaemonUpdateRestartReport,
 	DAEMON_UPDATE_RESTART_COORDINATOR_FLAG,
 	DAEMON_UPDATE_RESTART_ORIGIN_FLAG,
 	DAEMON_UPDATE_RESTART_STATUS_FLAG,
@@ -380,31 +381,12 @@ export function resolveUpdateDaemonSocketPath(explicitSocketPath?: string): stri
 }
 
 function reportDaemonUpdateRestartStatus(status: DaemonUpdateRestartStatus): void {
-	if (status.phase === "failed") {
-		console.error(
-			chalk.yellow(`Warning: updated, but could not restart the daemon (${status.message ?? "unknown error"}).`),
-		);
-		return;
+	const report = buildDaemonUpdateRestartReport(status);
+	for (const message of report.info) {
+		console.log(chalk.green(message));
 	}
-	if (status.phase !== "complete") {
-		return;
-	}
-	if (status.counts.total > 0) {
-		console.log(
-			chalk.green(`Restored ${status.counts.restored} daemon session${status.counts.restored === 1 ? "" : "s"}`),
-		);
-	}
-	if (status.counts.resumed > 0) {
-		console.log(
-			chalk.green(`Resumed ${status.counts.resumed} interrupted session${status.counts.resumed === 1 ? "" : "s"}`),
-		);
-	}
-	if (status.counts.failed > 0) {
-		console.error(
-			chalk.yellow(
-				`Warning: ${status.counts.failed} daemon session${status.counts.failed === 1 ? "" : "s"} could not be restored.`,
-			),
-		);
+	for (const warning of report.warnings) {
+		console.error(chalk.yellow(`Warning: ${warning}`));
 	}
 }
 

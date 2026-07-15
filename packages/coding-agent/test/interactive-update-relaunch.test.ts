@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildDaemonUpdateRestartReport } from "../src/cli/daemon-update-restart.js";
 import {
 	buildUpdateChildArgs,
 	buildUpdateRelaunchArgs,
@@ -56,5 +57,27 @@ describe("buildUpdateChildArgs", () => {
 			),
 		).toBe("/tmp/explicit.sock");
 		expect(updateArgsIncludeSelf(["--daemon-socket", "/tmp/explicit.sock"])).toBe(true);
+	});
+});
+
+describe("buildDaemonUpdateRestartReport", () => {
+	it("reports recovery results when the daemon restart fails", () => {
+		const report = buildDaemonUpdateRestartReport({
+			version: 1,
+			requestId: "test-request",
+			socketPath: "/tmp/custom-daemon.sock",
+			phase: "failed",
+			coordinator: { pid: process.pid },
+			counts: { total: 3, restored: 2, resumed: 1, failed: 1 },
+			message: "could not stop predecessor",
+			startedAt: "2026-07-14T00:00:00.000Z",
+			updatedAt: "2026-07-14T00:00:01.000Z",
+		});
+
+		expect(report.info).toEqual(["Restored 2 daemon sessions", "Resumed 1 interrupted session"]);
+		expect(report.warnings).toEqual([
+			"Updated, but could not restart the daemon (could not stop predecessor).",
+			"1 daemon session could not be restored.",
+		]);
 	});
 });
