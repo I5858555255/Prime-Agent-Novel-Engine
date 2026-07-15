@@ -2445,12 +2445,14 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		const header = { setExpanded: vi.fn() };
 		const chatChild = { setExpanded: vi.fn() };
 		const childAgentDetail = { setToolsExpanded: vi.fn() };
+		const childAgentSummary = { invalidate: vi.fn() };
 		const fakeThis: any = {
 			toolOutputExpanded: false,
 			customHeader: undefined,
 			builtInHeader: header,
 			chatContainer: { children: [chatChild] },
 			childAgentDetail,
+			childAgentSummary,
 			ui: {
 				requestRender: vi.fn(),
 				requestRenderPreservingViewport: vi.fn(),
@@ -2464,6 +2466,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(childAgentDetail.setToolsExpanded).toHaveBeenCalledWith(true);
+		expect(childAgentSummary.invalidate).toHaveBeenCalledTimes(1);
 		// Expansion keeps the user anchored, so it uses the viewport-preserving path.
 		expect(fakeThis.ui.requestRenderPreservingViewport).toHaveBeenCalledTimes(1);
 	});
