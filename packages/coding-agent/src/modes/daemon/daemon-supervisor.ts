@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { Writable } from "node:stream";
 import { getLogger } from "@earendil-works/pi-ai";
 import { createCliSubprocessLaunchSpec } from "../../cli/subprocess-launch.js";
 import {
@@ -75,6 +76,8 @@ import {
 	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
 	DAEMON_WORKER_RECOVERY_JOURNAL_ENV,
 	DAEMON_WORKER_ROLE_ENV,
+	DAEMON_WORKER_STARTUP_GATE_COMMIT,
+	DAEMON_WORKER_STARTUP_GATE_FD_ENV,
 	DAEMON_WORKER_SUPERVISOR_SOCKET_ENV,
 	DAEMON_WORKER_TOKEN_ENV,
 	type DaemonCreateCommand,
@@ -95,6 +98,7 @@ const WORKER_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const WORKER_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
 const DEFERRED_RECOVERY_RECHECK_MS = 5000;
 const SUPERVISOR_CONFIG_FILE_NAME = "supervisor-config";
+const WORKER_STARTUP_GATE_FD = 3;
 
 const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"ack_result",
@@ -238,6 +242,27 @@ function delay(ms: number): Promise<void> {
 
 function unrefDelay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms).unref());
+}
+
+function commitWorkerStartupGate(gate: Writable): Promise<void> {
+	return new Promise((resolveCommit, rejectCommit) => {
+		let settled = false;
+		const finish = (error?: Error | null) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			if (error) {
+				rejectCommit(error);
+			} else {
+				resolveCommit();
+			}
+		};
+		const onError = (error: Error) => finish(error);
+		gate.on("error", onError);
+		gate.once("close", () => gate.off("error", onError));
+		gate.end(DAEMON_WORKER_STARTUP_GATE_COMMIT, (error?: Error | null) => finish(error));
+	});
 }
 
 function withoutCommandId(command: DaemonCommand): DaemonCommandBody {
@@ -1211,67 +1236,101 @@ export class DaemonSupervisor {
 				[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV]: rootActiveSessionId,
 				[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV]: this.socketPath,
 				[DAEMON_WORKER_RECOVERY_JOURNAL_ENV]: recoveryJournalPath,
+				[DAEMON_WORKER_STARTUP_GATE_FD_ENV]: String(WORKER_STARTUP_GATE_FD),
 				[ORPHAN_PROCESS_JOURNAL_ENV]: orphanProcessJournalPath,
 				[SESSION_LEASES_ENABLED_ENV]: "1",
 				[SESSION_LEASE_OWNER_ID_ENV]: rootActiveSessionId,
 			},
-			stdio: "ignore",
+			stdio: ["ignore", "ignore", "ignore", "pipe"],
 		});
+		const childClosed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
 		child.on("error", (error) => {
 			this.log(
 				`Session worker ${workerId} process error: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		});
-		if (!child.pid) {
-			throw new Error("Failed to obtain daemon session worker pid");
-		}
-		const childProcessStartId = getProcessStartId(child.pid);
+		const startupGate = child.stdio[WORKER_STARTUP_GATE_FD];
+		const previousDescriptor = existing?.descriptor;
+		let descriptorAssigned = false;
+		let childPid: number;
+		let childProcessStartId: string | undefined;
+		let worker: ResidentWorker;
 		try {
-			await this.assertRecoveryAllowed();
-		} catch (error) {
-			if (childProcessStartId && getProcessStartId(child.pid) === childProcessStartId) {
-				child.kill("SIGKILL");
+			if (!child.pid) {
+				throw new Error("Failed to obtain daemon session worker pid");
 			}
+			if (!(startupGate instanceof Writable)) {
+				throw new Error("Failed to create daemon session worker startup gate");
+			}
+			childPid = child.pid;
+			childProcessStartId = getProcessStartId(childPid);
+			await this.assertRecoveryAllowed();
+
+			const descriptor: DaemonWorkerDescriptor = {
+				version: 1,
+				workerId,
+				pid: childPid,
+				...(childProcessStartId ? { processStartId: childProcessStartId } : {}),
+				socketPath,
+				recoveryJournalPath,
+				orphanProcessJournalPath,
+				supervisorSocketPath: this.socketPath,
+				authenticationToken: token,
+				rootActiveSessionId,
+				createdAt: existing?.descriptor.createdAt ?? now,
+				updatedAt: now,
+				lifecycle: "starting",
+				createCommand: { ...createCommand, id: undefined },
+				consecutiveFailures: existing?.descriptor.consecutiveFailures ?? 0,
+			};
+			worker = existing ?? {
+				descriptor,
+				descriptorPath,
+				summaries: new Map(),
+				snapshotCache: new Map(),
+				transcriptCaches: new Map(),
+				incomingTranscriptActiveSessionIds: new Set(),
+				snapshotLoads: new Map(),
+				intentionalStop: false,
+				stopRevision: 0,
+			};
+			await this.assertRecoveryAllowed();
+			worker.descriptor = descriptor;
+			descriptorAssigned = true;
+			this.persistWorker(worker);
+			worker.intentionalStop = false;
+			this.workers.set(workerId, worker);
+		} catch (error) {
+			if (startupGate instanceof Writable) {
+				startupGate.destroy();
+			}
+			await childClosed;
 			child.unref();
+			try {
+				rmSync(`${descriptorPath}.${process.pid}.tmp`, { force: true });
+			} catch (cleanupError) {
+				this.reportCleanupFailure(`worker launch temp ${workerId}`, cleanupError);
+			}
+			if (existing && descriptorAssigned && previousDescriptor) {
+				try {
+					existing.descriptor = previousDescriptor;
+				} catch (cleanupError) {
+					this.reportCleanupFailure(`worker launch descriptor ${workerId}`, cleanupError);
+				}
+			}
 			throw error;
 		}
-		child.unref();
-
-		const descriptor: DaemonWorkerDescriptor = {
-			version: 1,
-			workerId,
-			pid: child.pid,
-			...(childProcessStartId ? { processStartId: childProcessStartId } : {}),
-			socketPath,
-			recoveryJournalPath,
-			orphanProcessJournalPath,
-			supervisorSocketPath: this.socketPath,
-			authenticationToken: token,
-			rootActiveSessionId,
-			createdAt: existing?.descriptor.createdAt ?? now,
-			updatedAt: now,
-			lifecycle: "starting",
-			createCommand: { ...createCommand, id: undefined },
-			consecutiveFailures: existing?.descriptor.consecutiveFailures ?? 0,
-		};
-		const worker = existing ?? {
-			descriptor,
-			descriptorPath,
-			summaries: new Map(),
-			snapshotCache: new Map(),
-			transcriptCaches: new Map(),
-			incomingTranscriptActiveSessionIds: new Set(),
-			snapshotLoads: new Map(),
-			intentionalStop: false,
-			stopRevision: 0,
-		};
-		await this.assertRecoveryAllowed();
-		worker.descriptor = descriptor;
-		worker.intentionalStop = false;
-		this.workers.set(workerId, worker);
-		this.persistWorker(worker);
 
 		try {
+			try {
+				await commitWorkerStartupGate(startupGate);
+			} catch (error) {
+				startupGate.destroy();
+				await childClosed;
+				throw error;
+			} finally {
+				child.unref();
+			}
 			const client = await this.connectWorker(worker, WORKER_CONNECT_TIMEOUT_MS);
 			const response = await client.request(withoutCommandId(createCommand), WORKER_REQUEST_TIMEOUT_MS);
 			if (!response.success) {

@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -8,6 +9,76 @@ import type { DaemonAttachResult } from "../src/modes/daemon/daemon-protocol.js"
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
 import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
+
+const workerLaunchTestState = vi.hoisted(() => ({
+	capture: false,
+	forceMissingProcessStartId: false,
+	fixtureMode: "worker" as "worker" | "close-gate" | "successful-gate",
+	gateMarkerPath: "",
+	tsxCliPath: "",
+	cliEntrypoint: "",
+	spawned: [] as Array<{ child: ChildProcess; args: readonly string[] }>,
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown> & {
+		spawn(command: string, args: readonly string[], options: SpawnOptions): ChildProcess;
+	};
+	return {
+		...actual,
+		spawn(command: string, args: readonly string[], options: SpawnOptions): ChildProcess {
+			const child = actual.spawn(command, args, options);
+			if (workerLaunchTestState.capture) {
+				workerLaunchTestState.spawned.push({ child, args });
+			}
+			return child;
+		},
+	};
+});
+
+vi.mock("../src/cli/subprocess-launch.js", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	return {
+		...actual,
+		createCliSubprocessLaunchSpec(args: readonly string[]) {
+			if (!workerLaunchTestState.capture) {
+				return (actual.createCliSubprocessLaunchSpec as (args: readonly string[]) => unknown)(args);
+			}
+			if (workerLaunchTestState.fixtureMode === "close-gate") {
+				return {
+					command: process.execPath,
+					args: ["--eval", 'require("node:fs").closeSync(3)'],
+				};
+			}
+			if (workerLaunchTestState.fixtureMode === "successful-gate") {
+				const markerPath = JSON.stringify(workerLaunchTestState.gateMarkerPath);
+				return {
+					command: process.execPath,
+					args: [
+						"--eval",
+						`const fs = require("node:fs"); const marker = fs.readFileSync(3, "utf8"); fs.writeFileSync(${markerPath}, marker); setInterval(() => {}, 1000);`,
+					],
+				};
+			}
+			return {
+				command: process.execPath,
+				args: [workerLaunchTestState.tsxCliPath, workerLaunchTestState.cliEntrypoint, ...args],
+			};
+		},
+	};
+});
+
+vi.mock("../src/core/session-lease.js", async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown> & {
+		getProcessStartId(pid: number): string | undefined;
+	};
+	return {
+		...actual,
+		getProcessStartId(pid: number): string | undefined {
+			return workerLaunchTestState.forceMissingProcessStartId ? undefined : actual.getProcessStartId(pid);
+		},
+	};
+});
 
 const supervisorRegistryDirEnv = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
 const previousSupervisorRegistryDir = process.env[supervisorRegistryDirEnv];
@@ -55,6 +126,23 @@ interface DeferredRecoveryHarness {
 
 function recoveryDeniedError(code: "supervisor_recovery_cancelled" | "supervisor_generation_stale"): Error {
 	return Object.assign(new Error(code), { code });
+}
+
+async function waitForCapturedChildClose(child: ChildProcess): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) {
+		return;
+	}
+	await new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
+}
+
+async function waitForFile(path: string): Promise<void> {
+	const deadline = Date.now() + 1000;
+	while (!existsSync(path) && Date.now() < deadline) {
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+	}
+	if (!existsSync(path)) {
+		throw new Error(`Timed out waiting for ${path}`);
+	}
 }
 
 const recoveryEligibilityInvalidations: Array<{
@@ -107,7 +195,21 @@ function createHarness(canConnect: () => Promise<boolean>): SupervisorMonitorHar
 }
 
 describe("daemon worker supervisor monitoring", () => {
-	afterEach(() => {
+	afterEach(async () => {
+		for (const { child } of workerLaunchTestState.spawned) {
+			if (child.exitCode === null && child.signalCode === null) {
+				const closed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
+				child.kill("SIGKILL");
+				await closed;
+			}
+		}
+		workerLaunchTestState.capture = false;
+		workerLaunchTestState.forceMissingProcessStartId = false;
+		workerLaunchTestState.fixtureMode = "worker";
+		workerLaunchTestState.gateMarkerPath = "";
+		workerLaunchTestState.tsxCliPath = "";
+		workerLaunchTestState.cliEntrypoint = "";
+		workerLaunchTestState.spawned.length = 0;
 		vi.useRealTimers();
 		for (const registryDir of supervisorRegistryDirs) {
 			rmSync(registryDir, { recursive: true, force: true });
@@ -118,6 +220,197 @@ describe("daemon worker supervisor monitoring", () => {
 		} else {
 			process.env[supervisorRegistryDirEnv] = previousSupervisorRegistryDir;
 		}
+	});
+
+	it("keeps unidentifiable workers gated through descriptor publication", async () => {
+		workerLaunchTestState.capture = true;
+		workerLaunchTestState.forceMissingProcessStartId = true;
+		workerLaunchTestState.tsxCliPath = join(process.cwd(), "../../node_modules/tsx/dist/cli.mjs");
+		workerLaunchTestState.cliEntrypoint = join(process.cwd(), "src/cli.ts");
+		const evidence: Array<{
+			child: ChildProcess;
+			descriptorDir: string;
+			registryDir: string;
+			workerSocketPath: string;
+			workers: Map<string, unknown>;
+		}> = [];
+		const scenarios = [
+			{ assertionCall: 3, error: recoveryDeniedError("supervisor_generation_stale") },
+			{ assertionCall: 4, error: recoveryDeniedError("supervisor_generation_stale") },
+			{ persistFailure: true, error: new Error("descriptor persistence failed") },
+		] as const;
+
+		for (const scenario of scenarios) {
+			const root = mkdtempSync(join(tmpdir(), "prime-supervisor-launch-gate-test-"));
+			const descriptorDir = join(root, "descriptors");
+			const registryDir = join(root, "registry");
+			mkdirSync(descriptorDir, { recursive: true });
+			mkdirSync(registryDir, { recursive: true });
+			supervisorRegistryDirs.add(root);
+			process.env[supervisorRegistryDirEnv] = registryDir;
+			let assertionCount = 0;
+			const workers = new Map<string, unknown>();
+			const spawnedBefore = workerLaunchTestState.spawned.length;
+			const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+				defaultSessionConfig: { cwd: root, agentDir: root },
+				descriptorDir,
+				socketPath: join(root, "supervisor.sock"),
+				workers,
+				assertRecoveryAllowed: vi.fn(async () => {
+					assertionCount++;
+					if ("assertionCall" in scenario && assertionCount === scenario.assertionCall) {
+						throw scenario.error;
+					}
+				}),
+				...("persistFailure" in scenario
+					? {
+							persistWorker: vi.fn(() => {
+								throw scenario.error;
+							}),
+						}
+					: {}),
+				log: vi.fn(),
+			}) as {
+				launchWorker(command: { type: "create"; config: { cwd: string; agentDir: string } }): Promise<unknown>;
+			};
+
+			await expect(supervisor.launchWorker({ type: "create", config: { cwd: root, agentDir: root } })).rejects.toBe(
+				scenario.error,
+			);
+
+			expect(assertionCount).toBe("assertionCall" in scenario ? scenario.assertionCall : 4);
+			expect(workerLaunchTestState.spawned).toHaveLength(spawnedBefore + 1);
+			const { child, args } = workerLaunchTestState.spawned[spawnedBefore]!;
+			const socketFlagIndex = args.indexOf("--daemon-socket");
+			expect(socketFlagIndex).toBeGreaterThanOrEqual(0);
+			const workerSocketPath = args[socketFlagIndex + 1];
+			expect(workerSocketPath).toBeDefined();
+			evidence.push({ child, descriptorDir, registryDir, workerSocketPath: workerSocketPath!, workers });
+		}
+
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 5500));
+		for (const { child, descriptorDir, registryDir, workerSocketPath, workers } of evidence) {
+			expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+			expect(existsSync(workerSocketPath)).toBe(false);
+			expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);
+			expect(readdirSync(registryDir)).toEqual([]);
+			expect(workers.size).toBe(0);
+		}
+	});
+
+	it("rolls back promptly when the child closes its startup gate before commit", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-closed-gate-test-"));
+		const descriptorDir = join(root, "descriptors");
+		mkdirSync(descriptorDir, { recursive: true });
+		supervisorRegistryDirs.add(root);
+		workerLaunchTestState.capture = true;
+		workerLaunchTestState.forceMissingProcessStartId = true;
+		workerLaunchTestState.fixtureMode = "close-gate";
+		let assertionCount = 0;
+		const workers = new Map<string, unknown>();
+		const connectWorker = vi.fn();
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			defaultSessionConfig: { cwd: root, agentDir: root },
+			descriptorDir,
+			socketPath: join(root, "supervisor.sock"),
+			workers,
+			shuttingDown: false,
+			assertRecoveryAllowed: vi.fn(async () => {
+				assertionCount++;
+				if (assertionCount === 3) {
+					const child = workerLaunchTestState.spawned.at(-1)?.child;
+					if (!child) {
+						throw new Error("Worker child was not captured");
+					}
+					await waitForCapturedChildClose(child);
+				}
+			}),
+			connectWorker,
+			syncAgentPeers: vi.fn(async () => undefined),
+			log: vi.fn(),
+		}) as {
+			launchWorker(command: { type: "create"; config: { cwd: string; agentDir: string } }): Promise<unknown>;
+		};
+
+		const timeoutError = new Error("startup gate rejection timed out");
+		const result = await Promise.race([
+			supervisor
+				.launchWorker({ type: "create", config: { cwd: root, agentDir: root } })
+				.then(() => ({ value: "resolved" as const, error: undefined }))
+				.catch((error: unknown) => ({ value: "rejected" as const, error })),
+			new Promise<{ value: "timed-out"; error: Error }>((resolveTimeout) =>
+				setTimeout(() => resolveTimeout({ value: "timed-out", error: timeoutError }), 1000),
+			),
+		]);
+
+		expect(result.value).toBe("rejected");
+		expect(result.error).not.toBe(timeoutError);
+		expect(result.error).toBeInstanceOf(Error);
+		expect(connectWorker).not.toHaveBeenCalled();
+		expect(workers.size).toBe(0);
+		expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);
+		const child = workerLaunchTestState.spawned.at(-1)?.child;
+		expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+	});
+
+	it("commits the startup marker after durable worker publication", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-committed-gate-test-"));
+		const descriptorDir = join(root, "descriptors");
+		const markerPath = join(root, "startup-marker");
+		mkdirSync(descriptorDir, { recursive: true });
+		supervisorRegistryDirs.add(root);
+		workerLaunchTestState.capture = true;
+		workerLaunchTestState.forceMissingProcessStartId = true;
+		workerLaunchTestState.fixtureMode = "successful-gate";
+		workerLaunchTestState.gateMarkerPath = markerPath;
+		const workers = new Map<string, unknown>();
+		const connectWorker = vi.fn(async (worker: { descriptor: { rootActiveSessionId: string } }) => {
+			await waitForFile(markerPath);
+			return {
+				request: vi.fn(async () => ({
+					success: true,
+					data: {
+						id: worker.descriptor.rootActiveSessionId,
+						activeSessionId: worker.descriptor.rootActiveSessionId,
+						sessionId: "session-committed-gate",
+						cwd: root,
+					},
+				})),
+			};
+		});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			defaultSessionConfig: { cwd: root, agentDir: root },
+			descriptorDir,
+			socketPath: join(root, "supervisor.sock"),
+			workers,
+			shuttingDown: false,
+			assertRecoveryAllowed: vi.fn(async () => undefined),
+			connectWorker,
+			subscribeWorker: vi.fn(async () => undefined),
+			refreshWorkerSummaries: vi.fn(async () => undefined),
+			syncAgentPeers: vi.fn(async () => undefined),
+			log: vi.fn(),
+		}) as {
+			launchWorker(command: {
+				type: "create";
+				config: { cwd: string; agentDir: string };
+			}): Promise<{ descriptor: { lifecycle: string } }>;
+		};
+
+		const worker = await supervisor.launchWorker({ type: "create", config: { cwd: root, agentDir: root } });
+
+		expect(readFileSync(markerPath, "utf8")).toBe("start\n");
+		expect(connectWorker).toHaveBeenCalledOnce();
+		expect(worker.descriptor.lifecycle).toBe("ready");
+		expect(workers.size).toBe(1);
+		expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+		const child = workerLaunchTestState.spawned.at(-1)?.child;
+		if (!child) {
+			throw new Error("Worker child was not captured");
+		}
+		const closed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
+		child.kill("SIGKILL");
+		await closed;
 	});
 
 	it("attempts every shutdown cleanup step before exiting", async () => {
