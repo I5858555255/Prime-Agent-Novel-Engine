@@ -2,11 +2,31 @@
 
 ## [Unreleased]
 
+- Added compact file change stats to collapsed tool calls and an agent-run edit total above the recap.
+- Changed tool expansion hints to appear only on the latest tool row instead of every tool call ([ENG-4583](https://linear.app/primeintellect/issue/ENG-4583/too-many-ctrlo-alerts)).
+- Changed IPython kernels to set `NO_COLOR=1`, preventing ANSI color escapes from inflating `%%bash` output.
+- Changed provider, model, and MCP setup to use one tabbed configuration menu ([ENG-4539](https://linear.app/primeintellect/issue/ENG-4539/unify-providers-models-and-mcp-connections-menu)).
+- Changed the shared configuration menu to show prominent, responsive tabs with configurable navigation shortcuts ([ENG-4534](https://linear.app/primeintellect/issue/ENG-4534/make-login-tabs-more-obvious)).
+- Fixed Prime Inference login leaving new sessions without a persisted model selection ([ENG-4573](https://linear.app/primeintellect/issue/ENG-4573/prompt-for-model-selection-after-prime-inference-login)).
+- Fixed empty prompt placeholders hiding the input caret.
+- Fixed missing ripgrep blocking subagents and added actionable installation guidance for the optional search helper ([ENG-4572](https://linear.app/primeintellect/issue/ENG-4572/ripgrep-not-installed)).
+- Fixed tool-only responses rendering directly against the preceding user prompt.
+
+## [0.3.0] - 2026-07-13
+
+- Changed daemon and headless execution to isolate each root session tree in a recoverable worker process, with protocol-v2 chunked snapshots, compact streaming, attachment-local backpressure, session leases, and unchanged print, JSON, and RPC interfaces.
 - Added autonomous mode with host-side continuations, configurable limits, and quality gates for evaluator-controlled runs ([#278](https://github.com/PrimeIntellect-ai/prime-agent/pull/278) by [@sethkarten](https://github.com/sethkarten)).
 - Added `/traces preview` and `/traces upload-all` for inspecting the current payload and backfilling saved parent and subagent traces.
 - Changed `/traces upload` and `/traces upload-all` to be explicit one-shot uploads that do not enable automatic sharing.
 - Changed trace uploads to retry transient network and HTTP failures with bounded exponential backoff and jitter.
 - Fixed Prime Inference credential and team-header precedence to prefer `PRIME_API_KEY`, then the Prime CLI config, then `auth.json`.
+- Fixed aborted autonomous gates leaving detached process trees and supervisor recovery retaining intentionally stopped workers after stale scheduler locks.
+- Fixed supervisor replacement surfacing fatal socket errors or recovering roots that were intentionally stopped ([ENG-4526](https://linear.app/primeintellect/issue/ENG-4526/reconnect-daemon-clients-transparently-after-supervisor-replacement)).
+- Fixed daemon catch-up snapshots being disposed mid-transfer or triggering resets that cleared drafts, local queues, dialogs, active UI state, or in-flight reasoning traces.
+- Fixed compact daemon streams occasionally duplicating the first token of an assistant response.
+- Fixed subagent prompts and usage counters flickering or disappearing during daemon resyncs and large parallel runs, and added compact fixed-width recap rows.
+- Fixed stale heartbeat jobs reopening sessions after they were archived, deleted, explicitly shut down, concurrently terminated, or lost resident worker ownership ([ENG-4519](https://linear.app/primeintellect/issue/ENG-4519/heartbeats-rebirth-sessions-that-were-previously-killed)).
+- Fixed heartbeat starvation by moving durable schedules into per-session artifacts and running them concurrently in their owning resident workers, independent of supervisor replacement ([ENG-4527](https://linear.app/primeintellect/issue/ENG-4527/dispatch-heartbeats-concurrently-across-isolated-session-workers)).
 
 ## [0.2.9] - 2026-07-13
 
