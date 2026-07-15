@@ -11,7 +11,6 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import {
 	type Api,
 	type AssistantMessage,
-	getSupportedThinkingLevels,
 	type ImageContent,
 	type Message,
 	type Model,
@@ -6807,12 +6806,22 @@ export class InteractiveMode {
 	}
 
 	private async applySelectedModel(model: AgentConnectionModel): Promise<void> {
-		await this.agentConnection.setModel(model.provider, model.id);
+		const connection = this.agentConnection;
+		const sessionId = this.connectionState?.sessionId;
+		await connection.setModel(model.provider, model.id);
+		const state = await connection.getState();
+		if (
+			this.agentConnection !== connection ||
+			this.connectionState?.sessionId !== sessionId ||
+			(sessionId !== undefined && state.sessionId !== sessionId)
+		) {
+			return;
+		}
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		this.patchConnectionState({
-			model,
-			serviceTier: supportsFastMode(model) ? (this.connectionState?.serviceTier ?? "default") : "default",
-			availableThinkingLevels: getSupportedThinkingLevels(model) as ThinkingLevel[],
+			model: state.model ?? model,
+			serviceTier: state.serviceTier,
+			availableThinkingLevels: state.availableThinkingLevels,
 		});
 		this.footer.invalidate();
 		this.childAgentSummary.invalidate();

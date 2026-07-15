@@ -197,9 +197,19 @@ describe("InteractiveMode /effort", () => {
 	});
 
 	describe("model switch refresh", () => {
-		it("refreshes availableThinkingLevels from the newly selected model", async () => {
+		it("refreshes model-dependent state from the connection", async () => {
+			type ModelState = {
+				sessionId: string;
+				model: unknown;
+				serviceTier: ServiceTier;
+				availableThinkingLevels: ThinkingLevel[];
+			};
 			type ModelContext = {
-				agentConnection: { setModel: (provider: string, id: string) => Promise<void> };
+				connectionState: { sessionId: string };
+				agentConnection: {
+					setModel: (provider: string, id: string) => Promise<void>;
+					getState: () => Promise<ModelState>;
+				};
 				settingsManager: { setDefaultModelAndProvider: (provider: string, id: string) => void };
 				patchConnectionState: (patch: Record<string, unknown>) => void;
 				footer: { invalidate: () => void };
@@ -214,8 +224,20 @@ describe("InteractiveMode /effort", () => {
 			).applySelectedModel;
 			const patchConnectionState = vi.fn();
 			const setupAutocompleteProvider = vi.fn();
+			const model = { provider: "openai-codex", id: "gpt-5.5", reasoning: true };
 			const context: ModelContext = {
-				agentConnection: { setModel: vi.fn(async () => {}) },
+				connectionState: { sessionId: "session-1" },
+				agentConnection: {
+					setModel: vi.fn(async () => {}),
+					getState: vi.fn(
+						async (): Promise<ModelState> => ({
+							sessionId: "session-1",
+							model,
+							serviceTier: "priority",
+							availableThinkingLevels: ["off", "low", "medium", "high"],
+						}),
+					),
+				},
 				settingsManager: { setDefaultModelAndProvider: vi.fn() },
 				patchConnectionState,
 				footer: { invalidate: vi.fn() },
@@ -223,12 +245,12 @@ describe("InteractiveMode /effort", () => {
 				updateEditorBorderColor: vi.fn(),
 				setupAutocompleteProvider,
 			};
-			const model = { provider: "anthropic", id: "claude-opus", reasoning: true };
 
 			await applySelectedModel.call(context, model);
 
 			const patch = patchConnectionState.mock.calls[0][0];
 			expect(patch.model).toBe(model);
+			expect(patch.serviceTier).toBe("priority");
 			expect(patch.availableThinkingLevels).toContain("high");
 			expect(patch.availableThinkingLevels.length).toBeGreaterThan(1);
 			// Provider rebuild keeps the /effort argument hint in sync with the model.
