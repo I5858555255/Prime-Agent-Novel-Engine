@@ -119,8 +119,11 @@ interface DeferredRecoveryWorker {
 		stopRequestedAt?: string;
 	};
 	client?: object;
+	snapshotCache: Map<string, DaemonAttachResult>;
 	incomingTranscriptActiveSessionIds: Set<string>;
 	transcriptCaches: Map<string, { markFailed(error: Error): void }>;
+	duplicateIncomingTranscriptChunkIndexes: Map<string, number>;
+	snapshotTransferFrames: Map<string, never>;
 	recovery?: Promise<void>;
 	deferredRecovery?: Promise<void>;
 	intentionalStop: boolean;
@@ -185,9 +188,18 @@ function createExistingLaunchWorker(root: string, descriptorDir: string) {
 		snapshotCache: new Map<string, DaemonAttachResult>(),
 		transcriptCaches: new Map<string, never>(),
 		incomingTranscriptActiveSessionIds: new Set<string>(),
+		duplicateIncomingTranscriptChunkIndexes: new Map<string, number>(),
+		snapshotTransferFrames: new Map<string, never>(),
 		snapshotLoads: new Map<string, Promise<DaemonAttachResult>>(),
 		intentionalStop: false,
 		stopRevision: 0,
+	};
+}
+
+function createSupervisorSnapshotState() {
+	return {
+		clients: new Set<object>(),
+		pendingReplacementSnapshots: new WeakMap<object, Map<string, unknown>>(),
 	};
 }
 
@@ -296,6 +308,7 @@ describe("daemon worker supervisor monitoring", () => {
 		let assertionCount = 0;
 		const workers = new Map<string, unknown>();
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			defaultSessionConfig: { cwd: root, agentDir: root },
 			descriptorDir,
 			socketPath: join(root, "supervisor.sock"),
@@ -350,6 +363,7 @@ describe("daemon worker supervisor monitoring", () => {
 		const workers = new Map<string, unknown>();
 		const connectWorker = vi.fn();
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			defaultSessionConfig: { cwd: root, agentDir: root },
 			descriptorDir,
 			socketPath: join(root, "supervisor.sock"),
@@ -419,6 +433,7 @@ describe("daemon worker supervisor monitoring", () => {
 			};
 		});
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			defaultSessionConfig: { cwd: root, agentDir: root },
 			descriptorDir,
 			socketPath: join(root, "supervisor.sock"),
@@ -476,6 +491,7 @@ describe("daemon worker supervisor monitoring", () => {
 			throw cancellation;
 		});
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			defaultSessionConfig: { cwd: root, agentDir: root },
 			descriptorDir,
 			socketPath: join(root, "supervisor.sock"),
@@ -535,6 +551,7 @@ describe("daemon worker supervisor monitoring", () => {
 			throw cancellation;
 		});
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			defaultSessionConfig: { cwd: root, agentDir: root },
 			descriptorDir,
 			socketPath: join(root, "supervisor.sock"),
@@ -626,6 +643,7 @@ describe("daemon worker supervisor monitoring", () => {
 			throw cancellation;
 		});
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			defaultSessionConfig: { cwd: root, agentDir: root },
 			descriptorDir,
 			socketPath: join(root, "supervisor.sock"),
@@ -782,8 +800,11 @@ describe("daemon worker supervisor monitoring", () => {
 				lifecycle: "ready",
 			},
 			client,
+			snapshotCache: new Map(),
 			incomingTranscriptActiveSessionIds: new Set(),
 			transcriptCaches: new Map(),
+			duplicateIncomingTranscriptChunkIndexes: new Map(),
+			snapshotTransferFrames: new Map<string, never>(),
 			intentionalStop: false,
 			stopRevision: 0,
 		};
@@ -796,6 +817,7 @@ describe("daemon worker supervisor monitoring", () => {
 		const persistWorker = vi.fn();
 		const recoverWorker = vi.fn(async () => undefined);
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			workers: new Map([[worker.descriptor.workerId, worker]]),
 			shuttingDown: false,
 			assertRecoveryAllowed,
@@ -837,8 +859,11 @@ describe("daemon worker supervisor monitoring", () => {
 				lifecycle: "ready",
 			},
 			client,
+			snapshotCache: new Map(),
 			incomingTranscriptActiveSessionIds: new Set(),
 			transcriptCaches: new Map(),
+			duplicateIncomingTranscriptChunkIndexes: new Map(),
+			snapshotTransferFrames: new Map<string, never>(),
 			intentionalStop: false,
 			stopRevision: 0,
 		};
@@ -851,6 +876,7 @@ describe("daemon worker supervisor monitoring", () => {
 		const persistWorker = vi.fn();
 		const recoverWorker = vi.fn(async () => undefined);
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			workers: new Map([[worker.descriptor.workerId, worker]]),
 			shuttingDown: false,
 			assertRecoveryAllowed,
@@ -906,8 +932,11 @@ describe("daemon worker supervisor monitoring", () => {
 				lifecycle: "ready",
 			},
 			client,
+			snapshotCache: new Map(),
 			incomingTranscriptActiveSessionIds: new Set(),
 			transcriptCaches: new Map(),
+			duplicateIncomingTranscriptChunkIndexes: new Map(),
+			snapshotTransferFrames: new Map<string, never>(),
 			intentionalStop: false,
 			stopRevision: 0,
 		};
@@ -918,6 +947,7 @@ describe("daemon worker supervisor monitoring", () => {
 		const persistWorker = vi.fn();
 		const recoverWorker = vi.fn(async () => undefined);
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			...createSupervisorSnapshotState(),
 			workers: new Map([[worker.descriptor.workerId, worker]]),
 			shuttingDown: false,
 			assertRecoveryAllowed,
@@ -954,8 +984,11 @@ describe("daemon worker supervisor monitoring", () => {
 					lifecycle: "ready",
 				},
 				client,
+				snapshotCache: new Map(),
 				incomingTranscriptActiveSessionIds: new Set(),
 				transcriptCaches: new Map(),
+				duplicateIncomingTranscriptChunkIndexes: new Map(),
+				snapshotTransferFrames: new Map<string, never>(),
 				intentionalStop: false,
 				stopRevision: 0,
 			};
@@ -967,6 +1000,7 @@ describe("daemon worker supervisor monitoring", () => {
 			const syncAgentPeers = vi.fn(async () => undefined);
 			const recoverWorker = vi.fn(async () => undefined);
 			const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+				...createSupervisorSnapshotState(),
 				workers: new Map([[worker.descriptor.workerId, worker]]),
 				shuttingDown: false,
 				assertRecoveryAllowed: vi.fn(() => assertion),
