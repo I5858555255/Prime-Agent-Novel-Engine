@@ -625,6 +625,7 @@ interface AgentMessageDeliveryWaiter {
 export interface ModelCycleResult {
 	model: Model<any>;
 	thinkingLevel: ThinkingLevel;
+	serviceTier: ServiceTier;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
 }
@@ -4224,7 +4225,7 @@ export class AgentSession {
 			this._trackModelSelectEmitError(emitPromise);
 		}
 
-		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
+		return { model: next.model, thinkingLevel: this.thinkingLevel, serviceTier: this.serviceTier, isScoped: true };
 	}
 
 	private async _cycleAvailableModel(
@@ -4259,7 +4260,7 @@ export class AgentSession {
 			this._trackModelSelectEmitError(emitPromise);
 		}
 
-		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
+		return { model: nextModel, thinkingLevel: this.thinkingLevel, serviceTier: this.serviceTier, isScoped: false };
 	}
 
 	// =========================================================================

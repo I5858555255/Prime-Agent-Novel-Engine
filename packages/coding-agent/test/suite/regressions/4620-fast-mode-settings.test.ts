@@ -79,6 +79,23 @@ describe("ENG-4620 fast mode settings", () => {
 		expect(harness.session.serviceTier).toBe("priority");
 	});
 
+	it("returns the effective service tier when cycling models", async () => {
+		harness = await createHarness({
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			models: [{ id: "gpt-5.4" }, { id: "gpt-5.3" }],
+		});
+
+		harness.session.setServiceTier("priority");
+		const unsupportedResult = await harness.session.cycleModel();
+		expect(unsupportedResult?.model.id).toBe("gpt-5.3");
+		expect(unsupportedResult?.serviceTier).toBe("default");
+
+		const supportedResult = await harness.session.cycleModel();
+		expect(supportedResult?.model.id).toBe("gpt-5.4");
+		expect(supportedResult?.serviceTier).toBe("priority");
+	});
+
 	it("preserves fast mode while navigating session history", async () => {
 		harness = await createHarness({
 			api: "openai-codex-responses",

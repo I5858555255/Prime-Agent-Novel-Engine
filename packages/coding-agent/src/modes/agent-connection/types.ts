@@ -277,6 +277,7 @@ export interface AgentConnectionScopedModel {
 export interface AgentConnectionModelCycleResult {
 	model: AgentConnectionModel;
 	thinkingLevel: ThinkingLevel;
+	serviceTier: ServiceTier;
 	isScoped: boolean;
 }
 

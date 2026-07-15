@@ -7015,10 +7015,18 @@ export class InteractiveMode {
 				if (this.agentConnection !== connection || this.connectionState?.sessionId !== sessionId) {
 					return;
 				}
-				this.patchConnectionState({ serviceTier });
+				const state = await connection.getState();
+				if (
+					this.agentConnection !== connection ||
+					this.connectionState?.sessionId !== sessionId ||
+					state.sessionId !== sessionId
+				) {
+					return;
+				}
+				this.patchConnectionState({ serviceTier: state.serviceTier });
 				this.footer.invalidate();
 				this.childAgentSummary.invalidate();
-				this.showStatus(`Fast mode: ${serviceTier === "priority" ? "on" : "off"}`);
+				this.showStatus(`Fast mode: ${state.serviceTier === "priority" ? "on" : "off"}`);
 			})
 			.catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
