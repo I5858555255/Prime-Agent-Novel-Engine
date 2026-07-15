@@ -340,7 +340,7 @@ export function planReap(daemons: readonly DaemonInfo[], force: boolean): ReapAc
 		}
 		if (daemon.status === "unreachable") {
 			if (!force || daemon.pid === undefined) {
-				return { kind: "skip", daemon, reason: "unreachable; pass --force to kill" };
+				return { kind: "skip", daemon, reason: 'unreachable; use "prime-agent shutdown --force" to stop it' };
 			}
 			if ((pidCounts.get(daemon.pid) ?? 0) > 1) {
 				return {

@@ -113,7 +113,9 @@ describe("planReap", () => {
 
 	it("only kills unreachable daemons with --force", () => {
 		const daemon = makeDaemon({ socketPath: "/tmp/hung.sock", status: "unreachable", pid: 7 });
-		expect(planReap([daemon], false)[0]!.kind).toBe("skip");
+		const skipped = planReap([daemon], false)[0]!;
+		expect(skipped.kind).toBe("skip");
+		expect(skipped.kind === "skip" ? skipped.reason : "").toContain("prime-agent shutdown --force");
 		expect(planReap([daemon], true)[0]!.kind).toBe("kill");
 	});
 
