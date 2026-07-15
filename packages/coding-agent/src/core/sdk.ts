@@ -251,7 +251,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	let serviceTier = options.serviceTier ?? (hasExistingSession ? existingSession.serviceTier : "default");
+	let serviceTier = options.serviceTier ?? (hasServiceTierEntry ? existingSession.serviceTier : "default");
 	if (serviceTier === "priority" && (!model || !supportsFastMode(model))) {
 		serviceTier = "default";
 	}
