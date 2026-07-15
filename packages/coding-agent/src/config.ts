@@ -561,7 +561,7 @@ export function getDaemonLogPath(socketPath: string): string {
 }
 
 export function getDaemonUpdateRestartManifestPath(socketPath: string, agentDir: string = getAgentDir()): string {
-	const normalizedSocketPath = process.platform === "win32" ? resolve(socketPath).toLowerCase() : resolve(socketPath);
+	const normalizedSocketPath = process.platform === "win32" ? socketPath.toLowerCase() : resolve(socketPath);
 	const socketHash = createHash("sha256").update(normalizedSocketPath).digest("hex");
 	return join(agentDir, "daemon-update-restarts", `${socketHash}.json`);
 }

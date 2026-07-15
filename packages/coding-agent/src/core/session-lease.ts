@@ -163,7 +163,16 @@ export function getProcessStartId(pid: number): string | undefined {
 	}
 }
 
-const CURRENT_PROCESS_START_ID = getProcessStartId(process.pid);
+let currentProcessStartId: string | undefined;
+let currentProcessStartIdRead = false;
+
+function getCurrentProcessStartId(): string | undefined {
+	if (!currentProcessStartIdRead) {
+		currentProcessStartId = getProcessStartId(process.pid);
+		currentProcessStartIdRead = true;
+	}
+	return currentProcessStartId;
+}
 
 function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
 	if (!isProcessAlive(owner.pid)) {
@@ -241,7 +250,7 @@ export function acquireSessionLease(
 				version: 1,
 				token,
 				pid: process.pid,
-				processStartId: CURRENT_PROCESS_START_ID,
+				processStartId: getCurrentProcessStartId(),
 				activeSessionId: environment[SESSION_LEASE_OWNER_ID_ENV],
 				sessionPath: canonicalPath,
 				createdAt: new Date().toISOString(),
