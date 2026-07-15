@@ -15,6 +15,7 @@ import {
 	formatAgentsViewRelativeTime,
 	formatAgentsViewStatusLine,
 	resolveAgentsViewActiveSummaryForPath,
+	resolveAgentsViewAutocompleteCwd,
 	resolveAgentsViewOpenCwd,
 	resolveAgentsViewResumeSummary,
 	resolveAgentsViewSessionUiServices,
@@ -539,6 +540,11 @@ printf 'src/referenced.ts\n'
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	test("uses the reply target cwd for file autocomplete", () => {
+		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: "/agent" }))).toBe("/agent");
+		expect(resolveAgentsViewAutocompleteCwd("/launch")).toBe("/launch");
 	});
 
 	test("reads current models for each autocomplete request", async () => {

@@ -1257,7 +1257,11 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private createAutocompleteProvider(): CombinedAutocompleteProvider {
-		return createAgentsViewAutocompleteProvider(this.options.uiServices.getInitialCwd(), this.fdPath, () =>
+		const cwd = resolveAgentsViewAutocompleteCwd(
+			this.options.uiServices.getInitialCwd(),
+			this.replyActiveSessionId ? this.findSummaryByActiveSessionId(this.replyActiveSessionId) : undefined,
+		);
+		return createAgentsViewAutocompleteProvider(cwd, this.fdPath, () =>
 			this.options.uiServices.modelRegistry.getAvailable(),
 		);
 	}
@@ -1445,6 +1449,7 @@ class AgentsViewMode implements Component, Focusable {
 		// Captured once on entry so the header does not count up while reply mode stays open.
 		this.replyHeaderTime = activeSessionId ? this.getReplyHeaderTime(activeSessionId) : "";
 		this.editor.setPlaceholder(activeSessionId ? REPLY_PROMPT_FALLBACK_PLACEHOLDER : DEFAULT_PROMPT_PLACEHOLDER);
+		this.editor.setAutocompleteProvider(this.createAutocompleteProvider());
 		this.ui.requestRender();
 	}
 
@@ -2305,6 +2310,10 @@ function rowHasSpawnCode(row: AgentsViewRow): boolean {
 
 function isRunningSessionSummary(summary: SessionSummary): boolean {
 	return summary.activity === "working";
+}
+
+export function resolveAgentsViewAutocompleteCwd(initialCwd: string, replyTarget?: SessionSummary): string {
+	return replyTarget?.cwd ?? initialCwd;
 }
 
 export function createAgentsViewAutocompleteProvider(
