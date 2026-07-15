@@ -81,6 +81,15 @@ describe("public command routing", () => {
 		]);
 	});
 
+	it("gives legacy update targets explicit migration guidance", async () => {
+		for (const target of ["self", "--self", "prime-agent"]) {
+			await handlePublicCommand(["update", target]);
+		}
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Use "prime-agent update [--force]"'));
+	});
+
 	it("rejects self-update aliases on the package update path", async () => {
 		for (const source of ["self", "pi", "prime-agent"]) {
 			await handlePublicCommand(["package", "update", source]);

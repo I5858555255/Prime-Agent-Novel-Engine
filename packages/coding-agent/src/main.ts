@@ -246,14 +246,22 @@ export function shouldEnsureDaemonBeforeActiveSessionLookup(options: DaemonActiv
 
 type ActiveDaemonSessionSummaryLookup = (socketPath: string, selector: string) => Promise<SessionSummary | undefined>;
 
+interface ActiveDaemonSessionSummaryLookupOptions {
+	fallbackOnError?: boolean;
+	lookup?: ActiveDaemonSessionSummaryLookup;
+}
+
 export async function findActiveDaemonSessionSummaryForInteractiveStartup(
 	socketPath: string,
 	selector: string,
-	lookup: ActiveDaemonSessionSummaryLookup = findActiveDaemonSessionSummary,
+	options: ActiveDaemonSessionSummaryLookupOptions = {},
 ): Promise<SessionSummary | undefined> {
 	try {
-		return await lookup(socketPath, selector);
-	} catch {
+		return await (options.lookup ?? findActiveDaemonSessionSummary)(socketPath, selector);
+	} catch (error) {
+		if (options.fallbackOnError === false) {
+			throw error;
+		}
 		return undefined;
 	}
 }
@@ -894,11 +902,7 @@ async function findActiveDaemonSessionSummary(
 	selector: string,
 ): Promise<SessionSummary | undefined> {
 	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(250);
-	} catch {
-		return undefined;
-	}
+	await client.connect(250);
 
 	try {
 		const response = await client.request({ type: "get_state", activeSessionId: selector }, 3000);
@@ -1154,10 +1158,20 @@ export async function main(args: string[], options?: MainOptions) {
 	if (shouldLookupDaemonActiveSession && daemonReady) {
 		daemonReady = (await awaitDaemonReady(daemonReady)).ready;
 	}
-	const activeDaemonSessionSummary =
-		shouldLookupDaemonActiveSession && resumeSelector
-			? await findActiveDaemonSessionSummaryForInteractiveStartup(daemonSocketPath, resumeSelector)
-			: undefined;
+	let activeDaemonSessionSummary: SessionSummary | undefined;
+	if (shouldLookupDaemonActiveSession && resumeSelector) {
+		try {
+			activeDaemonSessionSummary = await findActiveDaemonSessionSummaryForInteractiveStartup(
+				daemonSocketPath,
+				resumeSelector,
+				{ fallbackOnError: !publicCommand.attachAgent },
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(chalk.red(`Error: Could not look up active agent '${resumeSelector}': ${message}`));
+			process.exit(1);
+		}
+	}
 	if (publicCommand.attachAgent && !activeDaemonSessionSummary) {
 		console.error(chalk.red(`Error: No active agent found matching '${publicCommand.attachAgent}'`));
 		process.exit(1);

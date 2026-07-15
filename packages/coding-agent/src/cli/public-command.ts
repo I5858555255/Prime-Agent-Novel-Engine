@@ -87,7 +87,12 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 		case "package":
 			return runPackage(args.slice(1));
 		case "update": {
-			const options = parseBooleanOptions(args.slice(1), new Set(["--force"]), "update");
+			const rest = args.slice(1);
+			const legacyTarget = rest.find((arg) => arg === "--self" || isSelfUpdateSource(arg));
+			if (legacyTarget) {
+				return fail(`Update target ${legacyTarget} is no longer needed.`, `Use "${APP_NAME} update [--force]".`);
+			}
+			const options = parseBooleanOptions(rest, new Set(["--force"]), "update");
 			if (!options) return HANDLED;
 			await handlePackageCommand(["update", "--self", ...options]);
 			return HANDLED;
