@@ -877,12 +877,14 @@ export async function prepareDaemonUpdateRestart(
 ): Promise<DaemonUpdateRestartManifest> {
 	const pendingManifest = tryReadPreparedDaemonUpdateRestartManifest(agentDir);
 	const client = new DaemonClient(socketPath);
+	let connected = false;
 	try {
 		await client.connect(1000);
+		connected = true;
 		const hello = await client.waitForHello(2000).catch(() => undefined);
 		return await prepareConnectedDaemonUpdateRestart(client, socketPath, agentDir, hello);
 	} catch (error) {
-		if (!client.isConnected && pendingManifest && pendingManifest.sessions.length > 0) {
+		if (!connected && pendingManifest && pendingManifest.sessions.length > 0) {
 			return pendingManifest;
 		}
 		throw error;

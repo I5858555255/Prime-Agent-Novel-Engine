@@ -121,6 +121,7 @@ const mockState = vi.hoisted(() => ({
 	promptFailures: 0,
 	probeSocketPaths: [] as string[],
 	requestThrowTypes: [] as string[],
+	disconnectRequestTypes: [] as string[],
 	requestPayloads: [] as MockDaemonRequest[],
 	helloWaitFailures: 0,
 	restoreNextTurnFailures: 0,
@@ -226,6 +227,7 @@ vi.mock("../src/cli/daemon-launch.js", () => ({
 
 vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 	DaemonClient: class {
+		private connected = false;
 		private observedHello: typeof mockState.hello | undefined;
 
 		constructor(readonly socketPath: string) {}
@@ -236,10 +238,11 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 
 		async connect(): Promise<void> {
 			mockState.calls.push(`daemon-connect:${this.socketPath}`);
+			this.connected = true;
 		}
 
 		get isConnected(): boolean {
-			return true;
+			return this.connected;
 		}
 
 		async waitForHello(): Promise<{
@@ -285,6 +288,10 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 			this.observedHello ??= mockState.hello;
 			mockState.calls.push(`daemon-request:${request.type}`);
 			mockState.requestPayloads.push(request);
+			if (mockState.disconnectRequestTypes.includes(request.type)) {
+				this.connected = false;
+				throw new Error(`${request.type} disconnected`);
+			}
 			if (mockState.requestThrowTypes.includes(request.type)) {
 				throw new Error(`${request.type} failed`);
 			}
@@ -322,7 +329,9 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 			return { success: true };
 		}
 
-		close(): void {}
+		close(): void {
+			this.connected = false;
+		}
 	},
 }));
 
@@ -368,6 +377,7 @@ describe("self-update daemon restart", () => {
 		mockState.createActiveSessionIds = [];
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
+		mockState.disconnectRequestTypes = [];
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
 		mockState.preparedManifestPath = getDaemonUpdateRestartManifestPath(agentDir);
 		mockState.prepareResponse = undefined;
@@ -777,6 +787,28 @@ describe("self-update daemon restart", () => {
 		expect(listIndex).toBeGreaterThanOrEqual(0);
 		expect(fenceIndex).toBeGreaterThan(listIndex);
 		expect(mockState.calls).not.toContain("daemon-request:prepare_update_restart");
+
+		mockState.calls = [];
+		mockState.listResponse = {
+			success: true,
+			data: {
+				sessions: [
+					{
+						id: "live-active",
+						isStreaming: false,
+						isCompacting: false,
+						pendingMessageCount: 0,
+					},
+				],
+			},
+		};
+		mockState.disconnectRequestTypes = ["prepare_update_restart"];
+		writeFileSync(getDaemonUpdateRestartManifestPath(agentDir), JSON.stringify(pendingManifest));
+
+		await expect(prepareDaemonUpdateRestart(mockState.socketPath, agentDir)).rejects.toThrow(
+			"prepare_update_restart disconnected",
+		);
+		expect(existsSync(getDaemonUpdateRestartManifestPath(agentDir))).toBe(false);
 	});
 
 	it("skips predecessor fencing when the daemon hello has no fixed-owner identity", async () => {

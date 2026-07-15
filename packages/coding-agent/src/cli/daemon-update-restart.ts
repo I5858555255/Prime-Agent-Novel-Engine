@@ -62,6 +62,7 @@ export interface DaemonUpdateRestartStatus {
 	message?: string;
 	startedAt: string;
 	updatedAt: string;
+	heartbeatAt?: string;
 }
 
 export interface DaemonUpdateRestartReport {
@@ -211,7 +212,8 @@ function isDaemonUpdateRestartStatus(value: unknown): value is DaemonUpdateResta
 		(status.failures === undefined || isFailures(status.failures)) &&
 		(status.message === undefined || typeof status.message === "string") &&
 		typeof status.startedAt === "string" &&
-		typeof status.updatedAt === "string"
+		typeof status.updatedAt === "string" &&
+		(status.heartbeatAt === undefined || typeof status.heartbeatAt === "string")
 	);
 }
 
@@ -246,6 +248,7 @@ export class DaemonUpdateRestartStatusWriter {
 			counts: { total: 0, restored: 0, resumed: 0, failed: 0 },
 			startedAt: now,
 			updatedAt: now,
+			heartbeatAt: now,
 		};
 		this.persist();
 	}
@@ -253,6 +256,7 @@ export class DaemonUpdateRestartStatusWriter {
 	update(
 		update: Partial<Omit<DaemonUpdateRestartStatus, "version" | "requestId" | "socketPath" | "coordinator">>,
 	): void {
+		const now = new Date().toISOString();
 		this.status = {
 			...this.status,
 			...update,
@@ -260,7 +264,8 @@ export class DaemonUpdateRestartStatusWriter {
 			failures: update.failures
 				? update.failures.map((failure) => ({ ...failure }))
 				: this.status.failures?.map((failure) => ({ ...failure })),
-			updatedAt: new Date().toISOString(),
+			updatedAt: now,
+			heartbeatAt: now,
 		};
 		this.persist();
 	}
@@ -274,7 +279,7 @@ export class DaemonUpdateRestartStatusWriter {
 	}
 
 	touch(): void {
-		this.status = { ...this.status, updatedAt: new Date().toISOString() };
+		this.status = { ...this.status, heartbeatAt: new Date().toISOString() };
 		this.persist();
 	}
 

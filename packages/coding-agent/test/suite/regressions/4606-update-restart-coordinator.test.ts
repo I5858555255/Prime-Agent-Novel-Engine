@@ -251,7 +251,8 @@ describe("ENG-4606 update restart coordinator", () => {
 			expect(readDaemonUpdateRestartStatus(statusPath)).toMatchObject({
 				phase: "starting",
 				startedAt: "2026-07-14T00:00:00.000Z",
-				updatedAt: "2026-07-14T00:00:05.000Z",
+				updatedAt: "2026-07-14T00:00:00.000Z",
+				heartbeatAt: "2026-07-14T00:00:05.000Z",
 			});
 		} finally {
 			vi.useRealTimers();
