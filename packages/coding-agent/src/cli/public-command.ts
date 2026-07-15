@@ -88,9 +88,22 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 			return runPackage(args.slice(1));
 		case "update": {
 			const rest = args.slice(1);
-			const legacyTarget = rest.find((arg) => arg === "--self" || isSelfUpdateSource(arg));
-			if (legacyTarget) {
-				return fail(`Update target ${legacyTarget} is no longer needed.`, `Use "${APP_NAME} update [--force]".`);
+			const hasLegacySelfTarget = rest.some((arg) => arg === "--self" || isSelfUpdateSource(arg));
+			const hasLegacyPackageTarget = rest.some(
+				(arg) =>
+					arg === "--extensions" || arg === "--extension" || (!arg.startsWith("-") && !isSelfUpdateSource(arg)),
+			);
+			if (hasLegacySelfTarget && hasLegacyPackageTarget) {
+				return fail(
+					"Prime Agent and package updates are now separate.",
+					`Run "${APP_NAME} update [--force]" and "${APP_NAME} package update [source]" separately.`,
+				);
+			}
+			if (hasLegacySelfTarget) {
+				return fail("An update target is no longer needed.", `Use "${APP_NAME} update [--force]".`);
+			}
+			if (hasLegacyPackageTarget) {
+				return fail("Package updates moved to the package command.", `Use "${APP_NAME} package update [source]".`);
 			}
 			const options = parseBooleanOptions(rest, new Set(["--force"]), "update");
 			if (!options) return HANDLED;
@@ -224,6 +237,9 @@ async function runShutdown(args: string[]): Promise<PublicCommandResult> {
 
 async function runPackage(args: string[]): Promise<PublicCommandResult> {
 	const subcommand = args[0];
+	if (subcommand === "uninstall") {
+		return fail("Unknown package command: uninstall", `Use "${APP_NAME} package remove".`);
+	}
 	const children = getChildCommandSpecs(["package"]).map((spec) => spec.path.at(-1)!);
 	if (!subcommand || !children.includes(subcommand)) {
 		const suggestion = subcommand ? findCommandSuggestion(subcommand, children) : undefined;

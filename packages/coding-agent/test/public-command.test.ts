@@ -90,6 +90,22 @@ describe("public command routing", () => {
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Use "prime-agent update [--force]"'));
 	});
 
+	it("directs legacy package-update forms to the package command", async () => {
+		await handlePublicCommand(["update", "npm:@example/tools"]);
+		await handlePublicCommand(["update", "--extensions"]);
+		await handlePublicCommand(["update", "--extension", "npm:@example/tools"]);
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Use "prime-agent package update [source]"'));
+	});
+
+	it("explains that combined legacy updates are now separate", async () => {
+		await handlePublicCommand(["update", "--self", "--extensions"]);
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("separately"));
+	});
+
 	it("rejects self-update aliases on the package update path", async () => {
 		for (const source of ["self", "pi", "prime-agent"]) {
 			await handlePublicCommand(["package", "update", source]);
@@ -97,6 +113,14 @@ describe("public command routing", () => {
 
 		expect(mocks.packageCommands).toEqual([]);
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Use "prime-agent update"'));
+	});
+
+	it("directs package uninstall to package remove", async () => {
+		await handlePublicCommand(["package", "uninstall", "npm:@example/tools"]);
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Use "prime-agent package remove"'));
+		expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("package install"));
 	});
 
 	it("maps model listing and session export to the existing runtime flags", async () => {
