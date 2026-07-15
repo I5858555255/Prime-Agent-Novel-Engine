@@ -365,6 +365,7 @@ export class ModelRegistry {
 	private modelRequestHeaders: Map<string, Record<string, string>> = new Map();
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
 	private authorizedPrivatePrimeInferenceModelIds = new Set<string>();
+	private authorizedPrivatePrimeInferenceTeamId: string | undefined;
 	private explicitPrivatePrimeInferenceModelIds = new Set<string>();
 	private loadError: string | undefined = undefined;
 
@@ -398,6 +399,7 @@ export class ModelRegistry {
 		this.modelRequestHeaders.clear();
 		this.lastProviderAuthSourceTokens.clear();
 		this.authorizedPrivatePrimeInferenceModelIds.clear();
+		this.authorizedPrivatePrimeInferenceTeamId = undefined;
 		this.explicitPrivatePrimeInferenceModelIds.clear();
 		this.loadError = undefined;
 
@@ -708,10 +710,13 @@ export class ModelRegistry {
 	}
 
 	async refreshAvailableModels(): Promise<Model<Api>[]> {
+		const previousPrivateModelIds = new Set(this.authorizedPrivatePrimeInferenceModelIds);
+		const previousTeamId = this.authorizedPrivatePrimeInferenceTeamId;
 		this.refresh();
 		const apiKey = await this.authStorage.getApiKey(PRIME_INFERENCE_PROVIDER_ID);
 		const teamHeaders = this.authStorage.getProviderHeaders(PRIME_INFERENCE_PROVIDER_ID);
-		if (!apiKey || !teamHeaders) {
+		const teamId = teamHeaders?.["X-Prime-Team-ID"];
+		if (!apiKey || !teamHeaders || !teamId) {
 			return this.getAvailable();
 		}
 
@@ -720,8 +725,12 @@ export class ModelRegistry {
 				apiKey,
 				teamHeaders,
 			);
+			this.authorizedPrivatePrimeInferenceTeamId = teamId;
 		} catch {
-			this.authorizedPrivatePrimeInferenceModelIds.clear();
+			if (teamId === previousTeamId) {
+				this.authorizedPrivatePrimeInferenceModelIds = previousPrivateModelIds;
+				this.authorizedPrivatePrimeInferenceTeamId = teamId;
+			}
 		}
 		return this.getAvailable();
 	}

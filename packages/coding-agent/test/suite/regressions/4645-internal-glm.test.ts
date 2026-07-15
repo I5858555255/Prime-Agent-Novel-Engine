@@ -81,6 +81,42 @@ describe("ENG-4645 internal GLM configuration", () => {
 		);
 	});
 
+	test("preserves authorization on transient failures only for the same team", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ data: [{ id: "internal/glm-5.2-fast" }] }), { status: 200 }),
+			)
+			.mockResolvedValue(new Response(null, { status: 503 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const authStorage = AuthStorage.inMemory({
+			"prime-inference": {
+				type: "api_key",
+				key: "prime-key",
+				primeTeam: { teamId: "engineering-team", name: "Prime Engineering" },
+			},
+		});
+		const registry = ModelRegistry.inMemory(authStorage);
+
+		expect((await registry.refreshAvailableModels()).some((model) => model.id === "internal/glm-5.2-fast")).toBe(
+			true,
+		);
+		expect((await registry.refreshAvailableModels()).some((model) => model.id === "internal/glm-5.2-fast")).toBe(
+			true,
+		);
+
+		authStorage.set("prime-inference", {
+			type: "api_key",
+			key: "prime-key",
+			primeTeam: { teamId: "other-team", name: "Other Team" },
+		});
+		expect((await registry.refreshAvailableModels()).some((model) => model.id === "internal/glm-5.2-fast")).toBe(
+			false,
+		);
+	});
+
 	test("does not restore a private route that the selected team cannot access", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);

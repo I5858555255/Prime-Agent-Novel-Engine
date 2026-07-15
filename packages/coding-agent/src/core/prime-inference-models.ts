@@ -52,13 +52,16 @@ export async function fetchAuthorizedPrivatePrimeInferenceModelIds(
 		},
 		signal: AbortSignal.timeout(PRIVATE_MODEL_REFRESH_TIMEOUT_MS),
 	});
-	if (!response.ok) {
+	if (response.status === 401 || response.status === 403) {
 		return new Set();
+	}
+	if (!response.ok) {
+		throw new Error(`Prime Inference model catalog request failed with status ${response.status}`);
 	}
 
 	const payload = (await response.json()) as unknown;
 	if (!payload || typeof payload !== "object" || !("data" in payload) || !Array.isArray(payload.data)) {
-		return new Set();
+		throw new Error("Prime Inference model catalog response is invalid");
 	}
 
 	const knownPrivateIds = new Set(PRIVATE_PRIME_INFERENCE_MODELS.map((model) => model.id));
