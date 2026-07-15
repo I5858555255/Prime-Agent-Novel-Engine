@@ -2018,7 +2018,11 @@ describe("Editor component", () => {
 	describe("Autocomplete", () => {
 		it("shows suggestions in an overlay without changing editor height", async () => {
 			const tui = createTestTUI(60, 24);
-			const editor = new Editor(tui, defaultEditorTheme);
+			const popupBackground = (text: string) => `\x1b[48;2;12;12;16m${text}\x1b[49m`;
+			const editor = new Editor(tui, {
+				...defaultEditorTheme,
+				autocompleteBackgroundColor: popupBackground,
+			});
 			tui.setFocus(editor);
 			editor.setAutocompleteProvider({
 				getSuggestions: async () => ({
@@ -2038,8 +2042,15 @@ describe("Editor component", () => {
 			assert.equal(editor.render(60).length, editorHeight);
 			assert.equal(tui.hasOverlay(), true);
 			assert.ok(!editor.render(60).some((line) => line.includes("Change model")));
+			const overlayLines = (
+				editor as unknown as { renderAutocompleteOverlay: (width: number) => string[] }
+			).renderAutocompleteOverlay(60);
+			assert.equal(stripVTControlCharacters(overlayLines[0] ?? "").trim(), "");
+			assert.match(stripVTControlCharacters(overlayLines[1] ?? ""), /model/);
+			assert.ok(overlayLines.every((line) => line.startsWith("\x1b[48;2;12;12;16m")));
 
-			editor.handleInput("\x1b");
+			editor.handleInput("\x15");
+			assert.equal(editor.getText(), "");
 			assert.equal(tui.hasOverlay(), false);
 		});
 

@@ -231,6 +231,7 @@ interface LayoutLine {
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	backgroundColor?: (str: string) => string;
+	autocompleteBackgroundColor?: (str: string) => string;
 	selectList: SelectListTheme;
 	commandColor?: (str: string) => string;
 }
@@ -274,6 +275,7 @@ export class Editor implements Component, Focusable {
 	// Border color (can be changed dynamically)
 	public borderColor: (str: string) => string;
 	public backgroundColor: ((str: string) => string) | undefined;
+	public autocompleteBackgroundColor: ((str: string) => string) | undefined;
 	public commandColor: ((str: string) => string) | undefined;
 
 	// Autocomplete support
@@ -342,6 +344,7 @@ export class Editor implements Component, Focusable {
 		this.theme = theme;
 		this.borderColor = theme.borderColor;
 		this.backgroundColor = theme.backgroundColor;
+		this.autocompleteBackgroundColor = theme.autocompleteBackgroundColor;
 		this.commandColor = theme.commandColor;
 		const paddingX = options.paddingX ?? 0;
 		this.paddingX = Number.isFinite(paddingX) ? Math.max(0, Math.floor(paddingX)) : 0;
@@ -689,11 +692,13 @@ export class Editor implements Component, Focusable {
 		const { useBackgroundSurface, paddingX, promptPrefixWidth, inputWidth } = this.getRenderMetrics(width);
 		const leftPadding = " ".repeat(paddingX + promptPrefixWidth);
 		const rightPadding = " ".repeat(paddingX);
+		const backgroundColor =
+			this.autocompleteBackgroundColor ?? (useBackgroundSurface ? this.backgroundColor : undefined);
 
-		return this.autocompleteList.render(inputWidth).map((line) => {
+		return ["", ...this.autocompleteList.render(inputWidth)].map((line) => {
 			const linePadding = " ".repeat(Math.max(0, inputWidth - visibleWidth(line)));
 			const contentLine = `${leftPadding}${line}${linePadding}${rightPadding}`;
-			return useBackgroundSurface && this.backgroundColor ? this.backgroundColor(contentLine) : contentLine;
+			return backgroundColor ? backgroundColor(contentLine) : contentLine;
 		});
 	}
 
@@ -1447,21 +1452,7 @@ export class Editor implements Component, Focusable {
 			this.onChange(this.getText());
 		}
 
-		// Update or re-trigger autocomplete after backspace
-		if (this.autocompleteState) {
-			this.updateAutocomplete();
-		} else {
-			// If autocomplete was cancelled (no matches), re-trigger if we're in a completable context
-			const currentLine = this.state.lines[this.state.cursorLine] || "";
-			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-			if (this.getCurrentSlashCommandContext()) {
-				this.tryTriggerAutocomplete();
-			}
-			// Symbol-based completion context like @ or #
-			else if (textBeforeCursor.match(/(?:^|[\s])[@#][^\s]*$/)) {
-				this.tryTriggerAutocomplete();
-			}
-		}
+		this.refreshAutocompleteAfterEdit(true);
 	}
 
 	/**
@@ -1660,6 +1651,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private deleteToEndOfLine(): void {
@@ -1692,6 +1684,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private deleteWordBackwards(): void {
@@ -1737,6 +1730,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private deleteWordForward(): void {
@@ -1779,6 +1773,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private handleForwardDelete(): void {
@@ -1814,20 +1809,7 @@ export class Editor implements Component, Focusable {
 			this.onChange(this.getText());
 		}
 
-		// Update or re-trigger autocomplete after forward delete
-		if (this.autocompleteState) {
-			this.updateAutocomplete();
-		} else {
-			const currentLine = this.state.lines[this.state.cursorLine] || "";
-			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-			if (this.getCurrentSlashCommandContext()) {
-				this.tryTriggerAutocomplete();
-			}
-			// Symbol-based completion context like @ or #
-			else if (textBeforeCursor.match(/(?:^|[\s])[@#][^\s]*$/)) {
-				this.tryTriggerAutocomplete();
-			}
-		}
+		this.refreshAutocompleteAfterEdit(true);
 	}
 
 	/**
@@ -2040,6 +2022,7 @@ export class Editor implements Component, Focusable {
 		this.insertYankedText(text);
 
 		this.lastAction = "yank";
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	/**
@@ -2063,6 +2046,7 @@ export class Editor implements Component, Focusable {
 		this.insertYankedText(text);
 
 		this.lastAction = "yank";
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	/**
@@ -2175,6 +2159,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	/**
@@ -2509,6 +2494,26 @@ export class Editor implements Component, Focusable {
 
 	public isShowingAutocomplete(): boolean {
 		return this.autocompleteState !== null;
+	}
+
+	private refreshAutocompleteAfterEdit(retrigger = false): void {
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
+		const hasCompletionContext =
+			this.getCurrentSlashCommandContext() !== null || /(?:^|[\s])[@#][^\s]*$/.test(textBeforeCursor);
+
+		if (this.autocompleteState) {
+			if (this.getText().trim().length === 0 || (this.autocompleteState === "regular" && !hasCompletionContext)) {
+				this.cancelAutocomplete();
+				return;
+			}
+			this.updateAutocomplete();
+			return;
+		}
+
+		if (retrigger && hasCompletionContext) {
+			this.tryTriggerAutocomplete();
+		}
 	}
 
 	private updateAutocomplete(): void {
