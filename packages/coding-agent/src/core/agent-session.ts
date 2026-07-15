@@ -4207,7 +4207,7 @@ export class AgentSession {
 		direction: "forward" | "backward",
 		options: ModelSelectOptions,
 	): Promise<ModelCycleResult | undefined> {
-		const availableModels = await this._modelRegistry.getAvailable();
+		const availableModels = await this._modelRegistry.refreshAvailableModels();
 		if (availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;

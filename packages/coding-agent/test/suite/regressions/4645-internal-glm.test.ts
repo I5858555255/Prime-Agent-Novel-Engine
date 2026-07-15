@@ -171,6 +171,26 @@ describe("ENG-4645 internal GLM configuration", () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
+	test("refreshes private routes before cycling models", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const currentModel = harness.session.model;
+		const privateModel = harness.session.modelRegistry.find("prime-inference", "internal/glm-5.2-fast");
+		expect(currentModel).toBeDefined();
+		expect(privateModel).toBeDefined();
+		if (!currentModel || !privateModel) {
+			throw new Error("Expected current and private models");
+		}
+		const refreshSpy = vi
+			.spyOn(harness.session.modelRegistry, "refreshAvailableModels")
+			.mockResolvedValue([currentModel, privateModel]);
+
+		const result = await harness.session.cycleModel();
+
+		expect(refreshSpy).toHaveBeenCalledOnce();
+		expect(result?.model.id).toBe("internal/glm-5.2-fast");
+	});
+
 	test("loads the private route explicitly without inheriting Z.ai compatibility", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
