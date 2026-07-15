@@ -145,6 +145,38 @@ async function waitForFile(path: string): Promise<void> {
 	}
 }
 
+function createExistingLaunchWorker(root: string, descriptorDir: string) {
+	const workerId = "existing-worker";
+	const now = new Date().toISOString();
+	return {
+		descriptor: {
+			version: 1 as const,
+			workerId,
+			pid: 999_999,
+			socketPath: join(root, `${workerId}.sock`),
+			recoveryJournalPath: join(descriptorDir, `${workerId}.recovery.jsonl`),
+			orphanProcessJournalPath: join(descriptorDir, `${workerId}.orphans.jsonl`),
+			supervisorSocketPath: join(root, "supervisor.sock"),
+			authenticationToken: "existing-worker-token",
+			rootActiveSessionId: "existing-root-session",
+			createdAt: now,
+			updatedAt: now,
+			lifecycle: "recovering" as const,
+			stopRequestedAt: undefined as string | undefined,
+			createCommand: { type: "create" as const, config: { cwd: root, agentDir: root } },
+			consecutiveFailures: 0,
+		},
+		descriptorPath: join(descriptorDir, `${workerId}.json`),
+		summaries: new Map<string, SessionSummary>(),
+		snapshotCache: new Map<string, DaemonAttachResult>(),
+		transcriptCaches: new Map<string, never>(),
+		incomingTranscriptActiveSessionIds: new Set<string>(),
+		snapshotLoads: new Map<string, Promise<DaemonAttachResult>>(),
+		intentionalStop: false,
+		stopRevision: 0,
+	};
+}
+
 const recoveryEligibilityInvalidations: Array<{
 	name: string;
 	invalidate(supervisor: DeferredRecoveryHarness, worker: DeferredRecoveryWorker): void;
@@ -467,6 +499,162 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);
 		const child = workerLaunchTestState.spawned.at(-1)?.child;
 		expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+	});
+
+	it("defers an eligible existing recovery when descriptor restoration fails", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-existing-restore-test-"));
+		const descriptorDir = join(root, "descriptors");
+		const markerPath = join(root, "startup-marker");
+		mkdirSync(descriptorDir, { recursive: true });
+		supervisorRegistryDirs.add(root);
+		workerLaunchTestState.capture = true;
+		workerLaunchTestState.forceMissingProcessStartId = true;
+		workerLaunchTestState.fixtureMode = "successful-gate";
+		workerLaunchTestState.gateMarkerPath = markerPath;
+		const cancellation = recoveryDeniedError("supervisor_recovery_cancelled");
+		const restorationError = new Error("descriptor restoration failed");
+		const persistWorker = Reflect.get(DaemonSupervisor.prototype, "persistWorker");
+		if (typeof persistWorker !== "function") {
+			throw new Error("Could not access worker persistence");
+		}
+		let persistenceCalls = 0;
+		const existing = createExistingLaunchWorker(root, descriptorDir);
+		const previousDescriptor = existing.descriptor;
+		const workers = new Map<string, object>([[existing.descriptor.workerId, existing]]);
+		const deferWorkerRecovery = vi.fn();
+		const connectWorker = vi.fn(async () => {
+			await waitForFile(markerPath);
+			throw cancellation;
+		});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			defaultSessionConfig: { cwd: root, agentDir: root },
+			descriptorDir,
+			socketPath: join(root, "supervisor.sock"),
+			workers,
+			shuttingDown: false,
+			assertRecoveryAllowed: vi.fn(async () => undefined),
+			connectWorker,
+			persistWorker: vi.fn(function (this: object, worker: object) {
+				persistenceCalls++;
+				if (persistenceCalls === 3) {
+					throw restorationError;
+				}
+				Reflect.apply(persistWorker, this, [worker]);
+			}),
+			deferWorkerRecovery,
+			syncAgentPeers: vi.fn(async () => undefined),
+			log: vi.fn(),
+		}) as {
+			launchWorker(
+				command: { type: "create"; config: { cwd: string; agentDir: string } },
+				existing: object,
+			): Promise<unknown>;
+		};
+
+		await expect(
+			supervisor.launchWorker({ type: "create", config: { cwd: root, agentDir: root } }, existing),
+		).rejects.toBe(cancellation);
+
+		expect(persistenceCalls).toBe(3);
+		expect(existing.descriptor).toBe(previousDescriptor);
+		expect(workers.get(existing.descriptor.workerId)).toBe(existing);
+		expect(deferWorkerRecovery).toHaveBeenCalledOnce();
+		expect(deferWorkerRecovery).toHaveBeenCalledWith(existing, cancellation);
+		const child = workerLaunchTestState.spawned.at(-1)?.child;
+		expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+	});
+
+	it("does not restore an existing recovery invalidated during rollback", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-existing-stop-race-test-"));
+		const descriptorDir = join(root, "descriptors");
+		const markerPath = join(root, "startup-marker");
+		mkdirSync(descriptorDir, { recursive: true });
+		supervisorRegistryDirs.add(root);
+		workerLaunchTestState.capture = true;
+		workerLaunchTestState.forceMissingProcessStartId = true;
+		workerLaunchTestState.fixtureMode = "successful-gate";
+		workerLaunchTestState.gateMarkerPath = markerPath;
+		const cancellation = recoveryDeniedError("supervisor_recovery_cancelled");
+		const existing = createExistingLaunchWorker(root, descriptorDir);
+		const workers = new Map<string, object>([[existing.descriptor.workerId, existing]]);
+		const deferWorkerRecovery = vi.fn();
+		const stopWorker = Reflect.get(DaemonSupervisor.prototype, "stopWorker");
+		if (typeof stopWorker !== "function") {
+			throw new Error("Could not access worker shutdown");
+		}
+		let markRollbackStarted = () => {};
+		const rollbackStarted = new Promise<void>((resolveStarted) => {
+			markRollbackStarted = resolveStarted;
+		});
+		let releaseRollback = () => {};
+		const rollbackRelease = new Promise<void>((resolveRelease) => {
+			releaseRollback = resolveRelease;
+		});
+		const controlledStopWorker = vi.fn(async function (
+			this: object,
+			worker: object,
+			removeDescriptor: boolean,
+			force = false,
+			archiveSession = false,
+			recoveryCleanup = false,
+			directChild?: object,
+		) {
+			if (recoveryCleanup) {
+				markRollbackStarted();
+				await rollbackRelease;
+				return;
+			}
+			await Reflect.apply(stopWorker, this, [
+				worker,
+				removeDescriptor,
+				force,
+				archiveSession,
+				recoveryCleanup,
+				directChild,
+			]);
+		});
+		const connectWorker = vi.fn(async () => {
+			await waitForFile(markerPath);
+			throw cancellation;
+		});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			defaultSessionConfig: { cwd: root, agentDir: root },
+			descriptorDir,
+			socketPath: join(root, "supervisor.sock"),
+			workers,
+			shuttingDown: false,
+			assertRecoveryAllowed: vi.fn(async () => undefined),
+			connectWorker,
+			stopWorker: controlledStopWorker,
+			deferWorkerRecovery,
+			syncAgentPeers: vi.fn(async () => undefined),
+			log: vi.fn(),
+		}) as {
+			shuttingDown: boolean;
+			launchWorker(
+				command: { type: "create"; config: { cwd: string; agentDir: string } },
+				existing: object,
+			): Promise<unknown>;
+			stopWorker(worker: object, removeDescriptor: boolean, force: boolean): Promise<void>;
+		};
+
+		const launchResult = supervisor
+			.launchWorker({ type: "create", config: { cwd: root, agentDir: root } }, existing)
+			.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+		await rollbackStarted;
+		supervisor.shuttingDown = true;
+		await supervisor.stopWorker(existing, true, true);
+		releaseRollback();
+
+		expect(await launchResult).toBe(cancellation);
+		expect(existing.stopRevision).toBe(1);
+		expect(existing.descriptor.stopRequestedAt).toBeDefined();
+		expect(workers.size).toBe(0);
+		expect(existsSync(existing.descriptorPath)).toBe(false);
+		expect(deferWorkerRecovery).not.toHaveBeenCalled();
 	});
 
 	it("attempts every shutdown cleanup step before exiting", async () => {

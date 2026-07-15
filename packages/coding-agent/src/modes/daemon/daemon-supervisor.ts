@@ -1384,16 +1384,25 @@ export class DaemonSupervisor {
 				} catch (cleanupError) {
 					this.reportCleanupFailure(`cancelled worker launch ${workerId}`, cleanupError);
 				}
-				if (rolledBack && existing && previousDescriptor) {
+				const mappedWorker = this.workers.get(workerId);
+				if (
+					rolledBack &&
+					existing &&
+					previousDescriptor &&
+					!this.shuttingDown &&
+					existing.stopRevision === recoveryStopRevision &&
+					existing.descriptor.stopRequestedAt === undefined &&
+					(mappedWorker === undefined || mappedWorker === existing)
+				) {
+					existing.descriptor = previousDescriptor;
+					existing.intentionalStop = previousIntentionalStop ?? false;
+					this.workers.set(workerId, existing);
 					try {
-						existing.descriptor = previousDescriptor;
-						existing.intentionalStop = previousIntentionalStop ?? false;
-						this.workers.set(workerId, existing);
 						this.persistWorker(existing);
-						this.deferWorkerRecovery(existing, error instanceof Error ? error : new Error(String(error)));
 					} catch (cleanupError) {
 						this.reportCleanupFailure(`cancelled worker recovery ${workerId}`, cleanupError);
 					}
+					this.deferWorkerRecovery(existing, error instanceof Error ? error : new Error(String(error)));
 				}
 				throw error;
 			}
