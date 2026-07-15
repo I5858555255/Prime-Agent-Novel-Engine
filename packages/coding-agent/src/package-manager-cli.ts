@@ -695,13 +695,15 @@ function responseHasActiveDaemonSessions(data: unknown): boolean {
 	return data.sessions.length > 0;
 }
 
-function hasFixedDaemonSupervisorOwnerIdentity(value: unknown): value is {
+interface FixedDaemonSupervisorOwnerIdentity {
 	supervisorGeneration: string;
 	supervisorOwnerToken: string;
 	supervisorPid: number;
 	supervisorProcessStartId: string;
 	supervisorSocketPath: string;
-} {
+}
+
+function hasFixedDaemonSupervisorOwnerIdentity(value: unknown): value is FixedDaemonSupervisorOwnerIdentity {
 	if (!isRecord(value)) {
 		return false;
 	}
@@ -723,12 +725,21 @@ export async function prepareDaemonUpdateRestart(
 	const client = new DaemonClient(socketPath);
 	let connected = false;
 	let startedAt: number | undefined;
+	let fixedOwnerIdentity: FixedDaemonSupervisorOwnerIdentity | undefined;
+	let fencePersistenceStarted = false;
+	const persistPreparedRestartFence = async () => {
+		if (!fixedOwnerIdentity) {
+			return;
+		}
+		fencePersistenceStarted = true;
+		await persistDaemonStartupFenceFromOwner(socketPath, fixedOwnerIdentity);
+	};
 	try {
 		await client.connect(1000);
 		connected = true;
 		const hello = await client.waitForHello(2000).catch(() => undefined);
 		if (hasFixedDaemonSupervisorOwnerIdentity(hello)) {
-			await persistDaemonStartupFenceFromOwner(socketPath, hello);
+			fixedOwnerIdentity = hello;
 		}
 		const useLegacyProtocol = hello !== undefined && hello.protocol.version < DAEMON_PROTOCOL_VERSION;
 		if (pendingManifest && pendingManifest.sessions.length > 0) {
@@ -736,6 +747,7 @@ export async function prepareDaemonUpdateRestart(
 				? await client.requestLegacy({ type: "list" }, 30000)
 				: await client.request({ type: "list" }, 30000);
 			if (listResponse.success && !responseHasActiveDaemonSessions(listResponse.data)) {
+				await persistPreparedRestartFence();
 				return pendingManifest;
 			}
 		}
@@ -747,11 +759,17 @@ export async function prepareDaemonUpdateRestart(
 		if (!response.success) {
 			throw new Error(response.error);
 		}
-		return parseDaemonUpdateRestartManifest(response.data);
+		const manifest = parseDaemonUpdateRestartManifest(response.data);
+		await persistPreparedRestartFence();
+		return manifest;
 	} catch (error) {
+		if (fencePersistenceStarted) {
+			throw error;
+		}
 		if (startedAt !== undefined) {
 			const fallback = readPreparedDaemonUpdateRestartManifest(agentDir, startedAt);
 			if (fallback) {
+				await persistPreparedRestartFence();
 				return fallback;
 			}
 		}
