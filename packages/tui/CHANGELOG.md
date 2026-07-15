@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - Fixed focused full-pane overlays becoming slow to navigate on wider terminals.
-- Fixed plain-text truncation emitting ANSI resets and command descriptions hard-cutting without an ellipsis, preserving surface backgrounds on narrow screens ([ENG-4542](https://linear.app/primeintellect/issue/ENG-4542/command-descriptions-are-cut-off-on-narrow-screens)).
+- Fixed plain-text truncation emitting ANSI resets, marked shortened descriptions with an ellipsis, and added an opt-in wrapped detail area for selected list descriptions ([ENG-4542](https://linear.app/primeintellect/issue/ENG-4542/command-descriptions-are-cut-off-on-narrow-screens)).
 
 ## [0.3.0] - 2026-07-13
 

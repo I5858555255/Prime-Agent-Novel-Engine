@@ -1,6 +1,6 @@
 import { getKeybindings } from "../keybindings.js";
 import type { Component } from "../tui.js";
-import { truncateToWidth, visibleWidth } from "../utils.js";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 
 const DEFAULT_PRIMARY_COLUMN_WIDTH = 32;
 const PRIMARY_COLUMN_GAP = 2;
@@ -36,6 +36,7 @@ export interface SelectListLayoutOptions {
 	minPrimaryColumnWidth?: number;
 	maxPrimaryColumnWidth?: number;
 	truncatePrimary?: (context: SelectListTruncatePrimaryContext) => string;
+	showSelectedDescription?: boolean;
 }
 
 export class SelectList implements Component {
@@ -105,6 +106,10 @@ export class SelectList implements Component {
 			const scrollText = `  (${this.selectedIndex + 1}/${this.filteredItems.length})`;
 			// Truncate if too long for terminal
 			lines.push(this.theme.scrollInfo(truncateToWidth(scrollText, width - 2, "")));
+		}
+
+		if (this.layout.showSelectedDescription) {
+			this.renderSelectedDescription(lines, width);
 		}
 
 		return lines;
@@ -214,6 +219,24 @@ export class SelectList implements Component {
 
 	private getDisplayValue(item: SelectItem): string {
 		return item.label || item.value;
+	}
+
+	private renderSelectedDescription(lines: string[], width: number): void {
+		const indent = width >= 4 ? "  " : "";
+		const contentWidth = Math.max(1, width - visibleWidth(indent) - 2);
+		const wrappedDescriptions = this.filteredItems.map((item) => {
+			const description = item.description?.trim();
+			return description ? wrapTextWithAnsi(description, contentWidth) : [];
+		});
+		const reservedLines = wrappedDescriptions.reduce((max, description) => Math.max(max, description.length), 0);
+		if (reservedLines === 0) return;
+
+		lines.push("");
+		const selectedDescription = wrappedDescriptions[this.selectedIndex] ?? [];
+		for (let index = 0; index < reservedLines; index++) {
+			const line = selectedDescription[index];
+			lines.push(line === undefined ? "" : this.theme.description(indent + line));
+		}
 	}
 
 	private notifySelectionChange(): void {
