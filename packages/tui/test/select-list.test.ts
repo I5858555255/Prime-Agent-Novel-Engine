@@ -35,6 +35,27 @@ describe("SelectList", () => {
 		assert.ok(rendered[0].includes("Line one Line two Line three"));
 	});
 
+	it("marks truncated descriptions without resetting outer styles", () => {
+		const items = [
+			{
+				value: "test",
+				label: "test",
+				description: "This description is much too long for the available terminal width",
+			},
+		];
+		const styledTheme = {
+			...testTheme,
+			selectedText: (text: string) => `\x1b[35m${text}\x1b[39m`,
+		};
+
+		const list = new SelectList(items, 5, styledTheme);
+		const [line] = list.render(50);
+
+		assert.ok(line?.includes("…"));
+		assert.ok(visibleWidth(line ?? "") <= 50);
+		assert.doesNotMatch(line ?? "", /\x1b\[0m/);
+	});
+
 	it("keeps descriptions aligned when the primary text is truncated", () => {
 		const items = [
 			{ value: "short", label: "short", description: "short description" },

@@ -10,6 +10,7 @@
 - Fixed Prime Inference login leaving new sessions without a persisted model selection ([ENG-4573](https://linear.app/primeintellect/issue/ENG-4573/prompt-for-model-selection-after-prime-inference-login)).
 - Fixed empty prompt placeholders hiding the input caret.
 - Fixed missing ripgrep blocking subagents and added actionable installation guidance for the optional search helper ([ENG-4572](https://linear.app/primeintellect/issue/ENG-4572/ripgrep-not-installed)).
+- Fixed narrow slash-command descriptions ending abruptly and clearing the prompt background after truncation ([ENG-4542](https://linear.app/primeintellect/issue/ENG-4542/command-descriptions-are-cut-off-on-narrow-screens)).
 - Fixed tool-only responses rendering directly against the preceding user prompt.
 
 ## [0.3.0] - 2026-07-13
