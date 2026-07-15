@@ -342,6 +342,42 @@ describe("session selector path/delete interactions", () => {
 		expect(onSelect).toHaveBeenCalledWith(newer.path);
 	});
 
+	it("keeps the selected session when a completed reload reorders the list", async () => {
+		const selected = makeSession({
+			id: "selected",
+			name: "Selected session",
+			modified: new Date("2026-01-02T00:00:00.000Z"),
+		});
+		const previousNewest = makeSession({
+			id: "previous-newest",
+			name: "Previous newest session",
+			modified: new Date("2026-01-03T00:00:00.000Z"),
+		});
+		const newNewest = makeSession({
+			id: "new-newest",
+			name: "New newest session",
+			modified: new Date("2026-01-04T00:00:00.000Z"),
+		});
+		const onSelect = vi.fn();
+		const selector = new SessionSelectorComponent(
+			async () => [selected, previousNewest],
+			async () => [],
+			onSelect,
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings },
+		);
+		await flushPromises();
+
+		const list = selector.getSessionList();
+		list.handleInput("\x1b[B");
+		list.setSessions([selected, previousNewest, newNewest], false);
+		list.handleInput("\r");
+
+		expect(onSelect).toHaveBeenCalledWith(selected.path);
+	});
+
 	it("keeps the selected background across a truncated session row", async () => {
 		const session = makeSession({
 			id: "long",

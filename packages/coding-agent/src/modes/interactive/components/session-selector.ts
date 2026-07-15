@@ -283,6 +283,10 @@ function flattenSessionTree(roots: SessionTreeNode[]): FlatSessionNode[] {
  * Custom session list component with multi-line items and search
  */
 class SessionList implements Component, Focusable {
+	private getSelectedSessionPath(): string | undefined {
+		return this.filteredSessions[this.selectedIndex]?.session.path;
+	}
+
 	private allSessions: AgentConnectionSavedSessionInfo[] = [];
 	private filteredSessions: FlatSessionNode[] = [];
 	private selectedIndex: number = 0;
@@ -362,9 +366,16 @@ class SessionList implements Component, Focusable {
 	}
 
 	setSessions(sessions: AgentConnectionSavedSessionInfo[], showCwd: boolean): void {
+		const selectedPath = this.getSelectedSessionPath();
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
 		this.filterSessions(this.searchInput.getValue());
+		if (selectedPath) {
+			const selectedIndex = this.filteredSessions.findIndex((session) => session.session.path === selectedPath);
+			if (selectedIndex >= 0) {
+				this.selectedIndex = selectedIndex;
+			}
+		}
 	}
 
 	private filterSessions(query: string): void {
