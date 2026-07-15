@@ -527,7 +527,7 @@ printf 'src/referenced.ts\n'
 		chmodSync(fdPath, 0o755);
 
 		try {
-			const provider = createAgentsViewAutocompleteProvider(dir, fdPath, []);
+			const provider = createAgentsViewAutocompleteProvider(dir, fdPath, () => []);
 			const suggestions = await provider.getSuggestions(["review @refer"], 0, 13, {
 				signal: new AbortController().signal,
 			});
@@ -539,6 +539,21 @@ printf 'src/referenced.ts\n'
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	test("reads current models for each autocomplete request", async () => {
+		let models: Array<{ id: string; provider: string }> = [];
+		const provider = createAgentsViewAutocompleteProvider("/tmp", undefined, () => models);
+
+		expect(
+			await provider.getSuggestions(["/model fresh"], 0, 12, { signal: new AbortController().signal }),
+		).toBeNull();
+
+		models = [{ id: "fresh-model", provider: "test-provider" }];
+		expect(await provider.getSuggestions(["/model fresh"], 0, 12, { signal: new AbortController().signal })).toEqual({
+			prefix: "fresh",
+			items: [{ value: "test-provider/fresh-model", label: "fresh-model", description: "test-provider" }],
+		});
 	});
 
 	test("creates an inactive summary for a saved session selected from resume", () => {

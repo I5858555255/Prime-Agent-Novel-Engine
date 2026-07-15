@@ -1257,9 +1257,7 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private createAutocompleteProvider(): CombinedAutocompleteProvider {
-		return createAgentsViewAutocompleteProvider(
-			this.options.uiServices.getInitialCwd(),
-			this.fdPath,
+		return createAgentsViewAutocompleteProvider(this.options.uiServices.getInitialCwd(), this.fdPath, () =>
 			this.options.uiServices.modelRegistry.getAvailable(),
 		);
 	}
@@ -2312,7 +2310,7 @@ function isRunningSessionSummary(summary: SessionSummary): boolean {
 export function createAgentsViewAutocompleteProvider(
 	cwd: string,
 	fdPath: string | undefined,
-	models: readonly Model<Api>[],
+	getModels: () => ReadonlyArray<Pick<Model<Api>, "id" | "provider">>,
 ): CombinedAutocompleteProvider {
 	const commands: SlashCommand[] = AGENTS_VIEW_SLASH_COMMANDS.map((command) => ({
 		name: command.name,
@@ -2322,6 +2320,7 @@ export function createAgentsViewAutocompleteProvider(
 	const modelCommand = commands.find((command) => command.name === "model");
 	if (modelCommand) {
 		modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+			const models = getModels();
 			if (models.length === 0) {
 				return null;
 			}
