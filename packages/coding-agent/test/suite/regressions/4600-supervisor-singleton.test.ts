@@ -410,6 +410,41 @@ function cleanupProcessState(identity: CleanupProcessIdentity): "exited" | "matc
 	return observedStartId === identity.processStartId ? "matching" : "exited";
 }
 
+function removeDeadFixtureOwnerRecords(registryDir: string): void {
+	for (const owner of listOwnerRecords(registryDir)) {
+		if (!owner.processStartId) {
+			throw new Error(`Cannot clean owner ${owner.generation} without an exact process-start identity`);
+		}
+		const identity = {
+			pid: owner.pid,
+			processStartId: owner.processStartId,
+			label: `supervisor ${owner.generation}`,
+		};
+		const state = cleanupProcessState(identity);
+		if (state !== "exited") {
+			throw new Error(
+				`Refusing to clean ${identity.label} owner for ${identity.pid} (${identity.processStartId}): ${state}`,
+			);
+		}
+
+		const current = readOwnerRecord(registryDir, owner.generation);
+		if (!current) {
+			continue;
+		}
+		if (
+			current.token !== owner.token ||
+			current.pid !== owner.pid ||
+			current.processStartId !== owner.processStartId
+		) {
+			throw new Error(`Refusing to clean changed owner ${owner.generation}`);
+		}
+		const ownerDir = join(registryDir, `${owner.generation}.owner`);
+		const quarantineDir = join(registryDir, `.${owner.generation}.owner.test-cleanup-${owner.token}`);
+		renameSync(ownerDir, quarantineDir);
+		rmSync(quarantineDir, { recursive: true });
+	}
+}
+
 async function waitForCleanupProcessExit(identity: CleanupProcessIdentity, timeoutMs = 20_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (cleanupProcessState(identity) !== "exited" && Date.now() < deadline) {
@@ -681,6 +716,7 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 			await waitForExit(legacyCleanup);
 			await waitForCleanupProcessExit(workerCleanupIdentity);
 			await waitForCleanupProcessExit(successorCleanupIdentity);
+			removeDeadFixtureOwnerRecords(paths.registryDir);
 			expect(listOwnerRecords(paths.registryDir)).toEqual([]);
 		} finally {
 			await connection?.dispose().catch(() => undefined);
