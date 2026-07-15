@@ -35,6 +35,8 @@ export interface CreateAgentSessionOptions extends AgentSessionCreationOptions {
 	model?: Model<any>;
 	/** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
 	thinkingLevel?: ThinkingLevel;
+	/** Start in plan mode (edits hard-blocked). Default: restored from the session, else off */
+	planMode?: boolean;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
@@ -241,6 +243,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
+	// Unlike thinking level there is no settings default; the branch's last
+	// plan_mode_change entry wins even on a message-less session.
+	const planMode = options.planMode ?? existingSession.planMode;
+
 	const allowedToolNames = options.allowedToolNames ?? options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const includeGoals = options.includeGoals ?? (options.tools !== undefined || options.noTools !== "all");
 	const initialActiveToolNames: string[] =
@@ -354,6 +360,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
+	// Plan mode defaults to off; only an explicit start-in-plan-mode needs an entry.
+	if (planMode !== existingSession.planMode) {
+		sessionManager.appendPlanModeChange(planMode);
+	}
 
 	const session = new AgentSession({
 		agent,
@@ -370,6 +380,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		initialActiveToolNames,
 		allowedToolNames,
 		includeGoals,
+		planMode,
 		includeCompactSkill: options.includeCompactSkill,
 		rlmHeartbeatController: options.rlmHeartbeatController,
 		agentMessageController: options.agentMessageController,

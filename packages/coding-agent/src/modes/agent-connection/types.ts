@@ -196,9 +196,15 @@ export interface AgentConnectionGitStateEntry extends AgentConnectionSessionEntr
 	};
 }
 
+export interface AgentConnectionPlanModeChangeEntry extends AgentConnectionSessionEntryBase {
+	type: "plan_mode_change";
+	enabled: boolean;
+}
+
 export type AgentConnectionSessionEntry =
 	| AgentConnectionSessionMessageEntry
 	| AgentConnectionThinkingLevelChangeEntry
+	| AgentConnectionPlanModeChangeEntry
 	| AgentConnectionModelChangeEntry
 	| AgentConnectionCompactionEntry
 	| AgentConnectionBranchSummaryEntry
@@ -285,6 +291,7 @@ export interface AgentConnectionState {
 	retryAttempt: number;
 	steeringMode: AgentConnectionQueueMode;
 	followUpMode: AgentConnectionQueueMode;
+	planMode: boolean;
 	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
@@ -488,6 +495,7 @@ export type AgentConnectionSessionEvent =
 	  }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "plan_mode_changed"; enabled: boolean }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow" | "requested";
@@ -592,6 +600,7 @@ export interface AgentConnection {
 	setScopedModels(scopedModels: AgentConnectionScopedModel[]): Promise<void>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
 	cycleThinkingLevel(): Promise<ThinkingLevel | undefined>;
+	setPlanMode(enabled: boolean): Promise<void>;
 	setTransport(transport: Transport): Promise<void>;
 	setSteeringMode(mode: AgentConnectionQueueMode): Promise<void>;
 	setFollowUpMode(mode: AgentConnectionQueueMode): Promise<void>;

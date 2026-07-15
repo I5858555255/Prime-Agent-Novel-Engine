@@ -168,6 +168,12 @@ import {
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
+	createPlanModeContextMessage,
+	createPlanModeExitedMessage,
+	PLAN_MODE_BLOCKED_TOOLS,
+	PLAN_MODE_EXITED_CUSTOM_TYPE,
+} from "./prompts/plan-mode.js";
+import {
 	type AutoRefineReason,
 	type AutoRefineReview,
 	appendGlobalRefinement,
@@ -212,7 +218,7 @@ import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
 import { createAllToolDefinitions } from "./tools/index.js";
-import { IpythonKernelProvisioner } from "./tools/ipython.js";
+import { IpythonKernelProvisioner, type PlanModeController } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, emptyUsage } from "./usage.js";
 import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR, WEBSEARCH_SKILL_NAME } from "./websearch-credential.js";
@@ -262,6 +268,7 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: CompactionReason; customInstructions?: string }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "plan_mode_changed"; enabled: boolean }
 	| {
 			type: "compaction_end";
 			reason: CompactionReason;
@@ -329,6 +336,8 @@ export interface AgentSessionConfig {
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
+	/** Start with plan mode (no-edit) active. Default: false. */
+	planMode?: boolean;
 	/**
 	 * Whether the built-in long-running goals feature is available: the bundled
 	 * goal skill in the IPython kernel, its goal.* host handlers, and /goal.
@@ -894,6 +903,9 @@ export class AgentSession {
 	/** Settles (never rejects) when the in-flight refine finishes; see _waitForRefineIdle. */
 	private _refineInFlight?: Promise<void>;
 
+	/** Shared with the kernel provisioner so a kernel started later picks up the current state. */
+	private readonly _planModeController: PlanModeController = { enabled: false };
+
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -922,6 +934,7 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
+		this._planModeController.enabled = config.planMode ?? false;
 		this._autonomousState = createAutonomousRuntimeState(config.autonomous, { cwd: this._cwd });
 		this._goalState = this._loadPersistedGoalState();
 		this._restoreLateIpythonSentAgentMessages();
@@ -983,6 +996,15 @@ export class AgentSession {
 	 */
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			// The ipython tool is enforced inside the kernel; mutating side tools
+			// (non-default configs) are blocked here.
+			if (this._planModeController.enabled && PLAN_MODE_BLOCKED_TOOLS.has(toolCall.name)) {
+				return {
+					block: true,
+					reason: `Plan mode is active: the ${toolCall.name} tool is disabled. Present your plan or answer, and ask the user to exit plan mode if changes are needed.`,
+				};
+			}
+
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
 				return undefined;
@@ -1978,7 +2000,11 @@ export class AgentSession {
 				lastError: undefined,
 			};
 			this._setGoalState(nextGoal);
-			return [createGoalContextMessage(this._goalState, "continuation")];
+			const continuation: AgentMessage[] = [createGoalContextMessage(this._goalState, "continuation")];
+			if (this._planModeController.enabled) {
+				continuation.push(createPlanModeContextMessage());
+			}
+			return continuation;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			try {
@@ -2008,7 +2034,12 @@ export class AgentSession {
 			cwd: this._cwd,
 			signal,
 		});
-		return autonomousMessage ? [autonomousMessage] : [];
+		if (!autonomousMessage) {
+			return [];
+		}
+		return this._planModeController.enabled
+			? [createPlanModeContextMessage(), autonomousMessage]
+			: [autonomousMessage];
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -2956,8 +2987,11 @@ export class AgentSession {
 
 			drainedNextTurnMessages = this._pendingNextTurnMessages;
 			this._pendingNextTurnMessages = [];
-			messages = [...drainedNextTurnMessages, message];
-
+			messages = [...drainedNextTurnMessages];
+			if (this._planModeController.enabled) {
+				messages.push(createPlanModeContextMessage());
+			}
+			messages.push(message);
 			const result = await this._extensionRunner.emitBeforeAgentStart(
 				text,
 				undefined,
@@ -3197,6 +3231,9 @@ export class AgentSession {
 					messages.push(msg);
 				}
 				this._pendingNextTurnMessages = [];
+				if (this._planModeController.enabled) {
+					messages.push(createPlanModeContextMessage());
+				}
 				const userContent: (TextContent | ImageContent)[] = options?.content
 					? options.content.map((block) => ({ ...block }))
 					: [{ type: "text", text: expandedText }];
@@ -3222,7 +3259,7 @@ export class AgentSession {
 						text: expandedText,
 						agentMessageId: options.agentMessageId,
 						message: promptMessage,
-						messages: new Set<AgentMessage>([...drainedNextTurnMessages, promptMessage]),
+						messages: new Set<AgentMessage>(messages),
 						pendingNextTurnMessages: drainedNextTurnMessages,
 						deliveredPendingNextTurnMessages: new Set(),
 						accepted,
@@ -3248,6 +3285,9 @@ export class AgentSession {
 					messages.push(msg);
 				}
 				this._pendingNextTurnMessages = [];
+				if (this._planModeController.enabled) {
+					messages.push(createPlanModeContextMessage());
+				}
 
 				if (options?.customMessage) {
 					messages.push(cloneCustomMessage(options.customMessage));
@@ -4234,6 +4274,43 @@ export class AgentSession {
 		}
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
+	}
+
+	// =========================================================================
+	// Plan Mode (no-edit) Management
+	// =========================================================================
+
+	get planMode(): boolean {
+		return this._planModeController.enabled;
+	}
+
+	/**
+	 * Toggle plan mode. Enabling arms the kernel-side write guard (edits raise
+	 * PlanModeError); a kernel that isn't running yet picks the state up at
+	 * bootstrap. Throws — without changing state — when the live kernel cannot
+	 * enforce the guard, so the UI never claims a protection that isn't active.
+	 */
+	async setPlanMode(enabled: boolean): Promise<void> {
+		if (this._planModeController.enabled === enabled) return;
+		const previous = this._planModeController.enabled;
+		this._planModeController.enabled = enabled;
+		try {
+			await this._ipythonKernelProvisioner?.setPlanMode(enabled);
+		} catch (error) {
+			this._planModeController.enabled = previous;
+			throw error;
+		}
+		this.sessionManager.appendPlanModeChange(enabled);
+		if (enabled) {
+			// Re-enabling before the exited notice fires would tell the model plan
+			// mode is off on a turn where it's on; drop the stale queued notice.
+			this._pendingNextTurnMessages = this._pendingNextTurnMessages.filter(
+				(m) => m.customType !== PLAN_MODE_EXITED_CUSTOM_TYPE,
+			);
+		} else {
+			this._pendingNextTurnMessages.push(createPlanModeExitedMessage());
+		}
+		this._emit({ type: "plan_mode_changed", enabled });
 	}
 
 	// =========================================================================
@@ -5689,6 +5766,7 @@ export class AgentSession {
 				snapshotDir: this._ipythonKernelSnapshotDir,
 				readyGate: previousDispose,
 				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
+				planMode: this._planModeController,
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: {
@@ -6041,6 +6119,7 @@ export class AgentSession {
 			sessionDir: options.sessionDir,
 			model: options.model,
 			thinkingLevel: this.thinkingLevel,
+			planMode: this._planModeController.enabled,
 			scopedModels: [...this._scopedModels],
 			activeToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
@@ -6133,6 +6212,8 @@ export class AgentSession {
 			rlmSessionDir: options.sessionDir,
 			rlmParentNodeId: options.rlmParentNodeId,
 			sessionStartEvent: { type: "session_start", reason: "startup" },
+			// A child spawned during plan mode must not be an edit escape hatch.
+			planMode: this._planModeController.enabled,
 		});
 
 		return { session: child };

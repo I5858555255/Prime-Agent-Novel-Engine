@@ -635,6 +635,10 @@ function buildSessionOptions(
 		options.thinkingLevel = config.thinking;
 	}
 
+	if (config.plan) {
+		options.planMode = true;
+	}
+
 	// Scoped models for Ctrl+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.
 	// Undefined means "inherit current session thinking level" during cycling.
@@ -717,6 +721,7 @@ function runtimeConfigFromArgs(
 		systemPrompt: parsed.systemPrompt,
 		appendSystemPrompt: parsed.appendSystemPrompt,
 		thinking: parsed.thinking,
+		plan: parsed.plan,
 		models: parsed.models,
 		tools: parsed.tools,
 		noTools: parsed.noTools,
@@ -750,6 +755,7 @@ export function resolveRuntimeSessionOptions(
 	return {
 		model: runtimeSessionOptions?.model ?? sessionOptions.model,
 		thinkingLevel: runtimeSessionOptions?.thinkingLevel ?? sessionOptions.thinkingLevel,
+		planMode: runtimeSessionOptions?.planMode ?? sessionOptions.planMode,
 		scopedModels: runtimeSessionOptions?.scopedModels ?? sessionOptions.scopedModels,
 		tools: runtimeSessionOptions?.tools ?? sessionOptions.tools,
 		noTools: runtimeSessionOptions?.noTools ?? sessionOptions.noTools,
