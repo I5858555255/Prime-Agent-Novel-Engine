@@ -2414,9 +2414,8 @@ export class AgentDaemon {
 
 			case "get_available_models": {
 				const state = this.getSessionState(command.activeSessionId);
-				state.runtime.session.modelRegistry.refresh();
 				return success(command.id, "get_available_models", {
-					models: state.runtime.session.modelRegistry.getAvailable(),
+					models: await state.runtime.session.modelRegistry.refreshAvailableModels(),
 				});
 			}
 
@@ -2494,8 +2493,8 @@ export class AgentDaemon {
 			case "set_model": {
 				const state = this.getSessionState(command.activeSessionId);
 				const session = state.runtime.session;
-				session.modelRegistry.refresh();
-				const model = session.modelRegistry.getAvailable().find((candidate) => {
+				const availableModels = await session.modelRegistry.refreshAvailableModels();
+				const model = availableModels.find((candidate) => {
 					return candidate.provider === command.provider && candidate.id === command.modelId;
 				});
 				if (!model) {

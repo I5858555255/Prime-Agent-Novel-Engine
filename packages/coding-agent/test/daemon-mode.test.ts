@@ -3903,8 +3903,7 @@ describe("daemon mode helpers", () => {
 			runtime: ActiveSessionState["runtime"] & {
 				session: {
 					modelRegistry: {
-						refresh(): void;
-						getAvailable(): unknown[];
+						refreshAvailableModels(): Promise<unknown[]>;
 					};
 					isStreaming: boolean;
 					isCompacting: boolean;
@@ -3914,8 +3913,7 @@ describe("daemon mode helpers", () => {
 		};
 		state.runtime.session = {
 			modelRegistry: {
-				refresh: vi.fn(),
-				getAvailable: vi.fn(() => [model]),
+				refreshAvailableModels: vi.fn(async () => [model]),
 			},
 			isStreaming: true,
 			isCompacting: false,
@@ -3962,8 +3960,7 @@ describe("daemon mode helpers", () => {
 			runtime: ActiveSessionState["runtime"] & {
 				session: {
 					modelRegistry: {
-						refresh(): void;
-						getAvailable(): unknown[];
+						refreshAvailableModels(): Promise<unknown[]>;
 					};
 					isStreaming: boolean;
 					isCompacting: boolean;
@@ -3973,8 +3970,7 @@ describe("daemon mode helpers", () => {
 		};
 		state.runtime.session = {
 			modelRegistry: {
-				refresh: vi.fn(),
-				getAvailable: vi.fn(() => [model]),
+				refreshAvailableModels: vi.fn(async () => [model]),
 			},
 			isStreaming: false,
 			isCompacting: false,
