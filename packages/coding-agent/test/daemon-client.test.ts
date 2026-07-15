@@ -311,6 +311,38 @@ describe("DaemonClient", () => {
 		client.close();
 	});
 
+	it("keeps durable command envelopes when connected to a v2 daemon", async () => {
+		const client = new DaemonClient("/tmp/prime-agent.sock");
+		const connect = client.connect();
+		const socket = netMock.sockets[0]!;
+		socket.emit("connect");
+		await connect;
+		emitHello(socket, 2);
+
+		const response = client.request({ type: "create" });
+		const request = JSON.parse(socket.writes[0]!.trim()) as {
+			id: string;
+			protocol: { version: number };
+		};
+		expect(request.protocol.version).toBe(2);
+
+		socket.emit(
+			"data",
+			`${JSON.stringify({ id: request.id, type: "response", command: "create", success: true })}\n`,
+		);
+		await response;
+
+		const acknowledgement = JSON.parse(socket.writes[1]!.trim()) as {
+			protocol: { version: number };
+			command: { type: string; commandId: string };
+		};
+		expect(acknowledgement).toMatchObject({
+			protocol: { version: 2 },
+			command: { type: "ack_result", commandId: request.id },
+		});
+		client.close();
+	});
+
 	it("routes request progress by response id without notifying general listeners", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
 

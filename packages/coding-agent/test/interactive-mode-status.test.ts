@@ -1233,7 +1233,10 @@ describe("InteractiveMode model candidates", () => {
 
 describe("InteractiveMode model selection persistence", () => {
 	type ModelSelectionHarness = {
-		agentConnection: { setModel(provider: string, modelId: string): Promise<void> };
+		agentConnection: {
+			setModel(provider: string, modelId: string): Promise<void>;
+			getState(): Promise<AgentConnectionState>;
+		};
 		uiServices: {
 			settingsManager: { setDefaultModelAndProvider(provider: string, modelId: string): void };
 		};
@@ -1399,6 +1402,9 @@ describe("InteractiveMode model selection persistence", () => {
 			setModel: vi.fn(async () => {
 				order.push("connection");
 			}),
+			getState: vi.fn(async () =>
+				createConnectionState({ model, serviceTier: "default", availableThinkingLevels: ["off"] }),
+			),
 		};
 		fakeThis.uiServices = {
 			settingsManager: {
@@ -1434,6 +1440,7 @@ describe("InteractiveMode model selection persistence", () => {
 			setModel: vi.fn(async () => {
 				throw new Error("model unavailable");
 			}),
+			getState: vi.fn(async () => createConnectionState()),
 		};
 		fakeThis.uiServices = {
 			settingsManager: {
@@ -1456,7 +1463,12 @@ describe("InteractiveMode model selection persistence", () => {
 	test("persists exact /model command selections after the connection accepts them", async () => {
 		const model = createModel("openai", "gpt-5.5");
 		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
-		fakeThis.agentConnection = { setModel: vi.fn(async () => {}) };
+		fakeThis.agentConnection = {
+			setModel: vi.fn(async () => {}),
+			getState: vi.fn(async () =>
+				createConnectionState({ model, serviceTier: "default", availableThinkingLevels: ["off"] }),
+			),
+		};
 		fakeThis.uiServices = {
 			settingsManager: {
 				setDefaultModelAndProvider: vi.fn(),

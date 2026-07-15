@@ -38,6 +38,7 @@ import type { SessionSummary } from "./daemon-session-list.js";
 
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
 export const DAEMON_PROTOCOL_VERSION = 3;
+export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 2;
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -618,11 +619,12 @@ export function createDaemonCommandEnvelope<TCommand extends DaemonCommand>(
 	command: TCommand,
 	id: DaemonCommandId,
 	clientId?: DaemonClientId,
+	protocolVersion: DaemonProtocolVersion = DAEMON_PROTOCOL_VERSION,
 ): DaemonCommandEnvelope<TCommand> {
 	return {
 		type: "command",
 		id,
-		protocol: DAEMON_PROTOCOL_INFO,
+		protocol: { name: DAEMON_PROTOCOL_NAME, version: protocolVersion },
 		...(clientId ? { clientId } : {}),
 		command,
 	};
@@ -643,7 +645,9 @@ export function isDaemonCommandEnvelope(value: unknown): value is DaemonCommandE
 		candidate.type === "command" &&
 		typeof candidate.id === "string" &&
 		candidate.protocol?.name === DAEMON_PROTOCOL_NAME &&
-		candidate.protocol.version === DAEMON_PROTOCOL_VERSION &&
+		typeof candidate.protocol.version === "number" &&
+		candidate.protocol.version >= DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION &&
+		candidate.protocol.version <= DAEMON_PROTOCOL_VERSION &&
 		(candidate.clientId === undefined || typeof candidate.clientId === "string") &&
 		typeof candidate.command === "object" &&
 		candidate.command !== null
