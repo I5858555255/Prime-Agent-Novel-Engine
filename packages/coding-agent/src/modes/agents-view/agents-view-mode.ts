@@ -18,6 +18,7 @@ import {
 import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import type { ModelRegistry } from "../../core/model-registry.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
 import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { SessionManager } from "../../core/session-manager.js";
@@ -222,6 +223,26 @@ export function resolveAgentsViewActiveSummaryForPath(
 // the input, so flatten all whitespace runs to single spaces.
 export function formatAgentsViewStatusLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
+}
+
+export async function getAgentsViewModelArgumentCompletions(
+	prefix: string,
+	modelRegistry: Pick<ModelRegistry, "refreshAvailableModels">,
+): Promise<AutocompleteItem[] | null> {
+	const models = await modelRegistry.refreshAvailableModels();
+	if (models.length === 0) {
+		return null;
+	}
+	const items = models.map((model) => ({
+		id: model.id,
+		provider: model.provider,
+		label: `${model.provider}/${model.id}`,
+	}));
+	const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
+	if (filtered.length === 0) {
+		return null;
+	}
+	return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
 }
 
 export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
@@ -987,7 +1008,7 @@ class AgentsViewMode implements Component, Focusable {
 					// unique model id reference applies directly without the picker.
 					const match = findExactModelReferenceMatch(
 						searchTerm,
-						this.options.uiServices.modelRegistry.getAvailable(),
+						await this.options.uiServices.modelRegistry.refreshAvailableModels(),
 					);
 					if (match) {
 						this.applyDefaultModel(match);
@@ -1017,7 +1038,7 @@ class AgentsViewMode implements Component, Focusable {
 			modelRegistry,
 			showStatus: (message) => this.setStatusMessage(message),
 			showError: (message) => this.setStatusMessage(message, { tone: "error" }),
-			getAvailableModels: async () => modelRegistry.getAvailable(),
+			getAvailableModels: () => modelRegistry.refreshAvailableModels(),
 			onLoginCompleted: () => {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(this.getDefaultModelForNewAgents());
 			},
@@ -1060,9 +1081,10 @@ class AgentsViewMode implements Component, Focusable {
 		this.setStatusMessage(warning, { tone: "warning", sticky: true });
 	}
 
-	private showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
+	private async showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
 		const modelRegistry = this.options.uiServices.modelRegistry;
 		const authFlows = this.createAuthFlows();
+		const availableModels = await modelRegistry.refreshAvailableModels();
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
@@ -1099,7 +1121,7 @@ class AgentsViewMode implements Component, Focusable {
 						if (authResult.status !== "success" || tab === "mcp-connections") return;
 
 						await this.applyPrimeInferenceFallbackAfterLogin(authResult);
-						menu.updateModels(this.getDefaultModelForNewAgents(), modelRegistry.getAvailable());
+						menu.updateModels(this.getDefaultModelForNewAgents(), await modelRegistry.refreshAvailableModels());
 						menu.setActiveTab("models");
 					})
 					.catch((error) => {
@@ -1116,7 +1138,7 @@ class AgentsViewMode implements Component, Focusable {
 				modelRegistry,
 				currentModel: this.getDefaultModelForNewAgents(),
 				scopedModels: [],
-				availableModels: modelRegistry.getAvailable(),
+				availableModels,
 				recentModels: this.options.uiServices.settingsManager.getRecentModels(),
 				initialModelSearch,
 				getRows: () => this.ui.terminal.rows,
@@ -1261,8 +1283,8 @@ class AgentsViewMode implements Component, Focusable {
 			this.options.uiServices.getInitialCwd(),
 			this.replyActiveSessionId ? this.findSummaryByActiveSessionId(this.replyActiveSessionId) : undefined,
 		);
-		return createAgentsViewAutocompleteProvider(cwd, this.fdPath, () =>
-			this.options.uiServices.modelRegistry.getAvailable(),
+		return createAgentsViewAutocompleteProvider(cwd, this.fdPath, (prefix) =>
+			getAgentsViewModelArgumentCompletions(prefix, this.options.uiServices.modelRegistry),
 		);
 	}
 
@@ -2313,13 +2335,14 @@ function isRunningSessionSummary(summary: SessionSummary): boolean {
 }
 
 export function resolveAgentsViewAutocompleteCwd(initialCwd: string, replyTarget?: SessionSummary): string {
-	return replyTarget?.cwd ?? initialCwd;
+	const replyCwd = replyTarget?.cwd;
+	return replyCwd && existsSync(replyCwd) ? replyCwd : initialCwd;
 }
 
 export function createAgentsViewAutocompleteProvider(
 	cwd: string,
 	fdPath: string | undefined,
-	getModels: () => ReadonlyArray<Pick<Model<Api>, "id" | "provider">>,
+	getModelArgumentCompletions: NonNullable<SlashCommand["getArgumentCompletions"]>,
 ): CombinedAutocompleteProvider {
 	const commands: SlashCommand[] = AGENTS_VIEW_SLASH_COMMANDS.map((command) => ({
 		name: command.name,
@@ -2328,24 +2351,9 @@ export function createAgentsViewAutocompleteProvider(
 	}));
 	const modelCommand = commands.find((command) => command.name === "model");
 	if (modelCommand) {
-		modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-			const models = getModels();
-			if (models.length === 0) {
-				return null;
-			}
-			const items = models.map((model) => ({
-				id: model.id,
-				provider: model.provider,
-				label: `${model.provider}/${model.id}`,
-			}));
-			const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
-			if (filtered.length === 0) {
-				return null;
-			}
-			return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
-		};
+		modelCommand.getArgumentCompletions = getModelArgumentCompletions;
 	}
-	return new CombinedAutocompleteProvider(commands, cwd, fdPath);
+	return new CombinedAutocompleteProvider(commands, cwd, fdPath ?? null);
 }
 
 export function createAgentsViewSessionName(text: string): string {

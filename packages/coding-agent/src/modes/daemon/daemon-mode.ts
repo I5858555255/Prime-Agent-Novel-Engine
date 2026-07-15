@@ -1722,7 +1722,9 @@ export class AgentDaemon {
 		socket.on("error", cleanup);
 		socket.on("drain", () => {
 			if (!client.snapshotStreaming) {
-				void this.catchUpBackpressuredClient(client);
+				void this.catchUpBackpressuredClient(client).catch((error) =>
+					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
+				);
 			}
 		});
 	}
@@ -2035,7 +2037,11 @@ export class AgentDaemon {
 							targetChunkBytes: transcript.targetChunkBytes,
 						},
 					};
-					setImmediate(() => void this.streamWorkerSnapshot(client, streamedResult, transcript, "attach", true));
+					setImmediate(() => {
+						void this.streamWorkerSnapshot(client, streamedResult, transcript, "attach", true).catch((error) =>
+							this.log(`could not stream attach snapshot: ${String(error)}`),
+						);
+					});
 					return success(command.id, "attach", streamedResult);
 				}
 				// Slim clients consume only the command response; legacy clients (e.g.
@@ -2398,9 +2404,8 @@ export class AgentDaemon {
 
 			case "get_available_models": {
 				const state = this.getSessionState(command.activeSessionId);
-				state.runtime.session.modelRegistry.refresh();
 				return success(command.id, "get_available_models", {
-					models: state.runtime.session.modelRegistry.getAvailable(),
+					models: await state.runtime.session.modelRegistry.refreshAvailableModels(),
 				});
 			}
 
@@ -2478,8 +2483,8 @@ export class AgentDaemon {
 			case "set_model": {
 				const state = this.getSessionState(command.activeSessionId);
 				const session = state.runtime.session;
-				session.modelRegistry.refresh();
-				const model = session.modelRegistry.getAvailable().find((candidate) => {
+				const availableModels = await session.modelRegistry.refreshAvailableModels();
+				const model = availableModels.find((candidate) => {
 					return candidate.provider === command.provider && candidate.id === command.modelId;
 				});
 				if (!model) {
@@ -2866,11 +2871,19 @@ export class AgentDaemon {
 				},
 				purpose,
 			);
+		} catch (error) {
+			const streamError = error instanceof Error ? error : new Error(String(error));
+			transcript.markFailed(streamError);
+			transcript.dispose();
+			client.socket.destroy(streamError);
+			throw streamError;
 		} finally {
 			finishClientSnapshotStreaming(client, result.activeSessionId);
 			transcript.dispose();
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
-				void this.catchUpBackpressuredClient(client);
+				void this.catchUpBackpressuredClient(client).catch((error) =>
+					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
+				);
 			}
 		}
 	}

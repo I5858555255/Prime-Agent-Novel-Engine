@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
 import type { AgentSessionRuntimeConfig } from "../src/core/agent-session-config.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
@@ -536,6 +537,7 @@ printf 'src/referenced.ts\n'
 			expect(suggestions).toEqual({
 				prefix: "@refer",
 				items: [{ value: "@src/referenced.ts", label: "referenced.ts", description: "src/referenced.ts" }],
+				kind: "file",
 			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -543,19 +545,24 @@ printf 'src/referenced.ts\n'
 	});
 
 	test("uses the reply target cwd for file autocomplete", () => {
-		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: "/agent" }))).toBe("/agent");
+		const missing = mkdtempSync(join(tmpdir(), "agents-view-autocomplete-missing-"));
+		rmSync(missing, { recursive: true, force: true });
+
+		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: tmpdir() }))).toBe(tmpdir());
 		expect(resolveAgentsViewAutocompleteCwd("/launch")).toBe("/launch");
+		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: missing }))).toBe("/launch");
+		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: "" }))).toBe("/launch");
 	});
 
 	test("reads current models for each autocomplete request", async () => {
-		let models: Array<{ id: string; provider: string }> = [];
-		const provider = createAgentsViewAutocompleteProvider("/tmp", undefined, () => models);
+		let completions: AutocompleteItem[] | null = null;
+		const provider = createAgentsViewAutocompleteProvider("/tmp", undefined, () => completions);
 
 		expect(
 			await provider.getSuggestions(["/model fresh"], 0, 12, { signal: new AbortController().signal }),
 		).toBeNull();
 
-		models = [{ id: "fresh-model", provider: "test-provider" }];
+		completions = [{ value: "test-provider/fresh-model", label: "fresh-model", description: "test-provider" }];
 		expect(await provider.getSuggestions(["/model fresh"], 0, 12, { signal: new AbortController().signal })).toEqual({
 			prefix: "fresh",
 			items: [{ value: "test-provider/fresh-model", label: "fresh-model", description: "test-provider" }],
