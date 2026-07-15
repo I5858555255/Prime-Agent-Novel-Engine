@@ -1167,6 +1167,8 @@ function processIdentityFromDaemonHello(
 	return {
 		pid: hello.supervisorPid,
 		...(hello.supervisorProcessStartId ? { processStartId: hello.supervisorProcessStartId } : {}),
+		...(hello.supervisorGeneration ? { supervisorGeneration: hello.supervisorGeneration } : {}),
+		...(hello.supervisorOwnerToken ? { supervisorOwnerToken: hello.supervisorOwnerToken } : {}),
 	};
 }
 
@@ -1185,19 +1187,24 @@ function validateReplacementDaemon(
 		);
 	}
 	if (
-		hello.supervisorSocketPath !== undefined &&
+		!hello.supervisorSocketPath ||
 		normalizedSocketPath(hello.supervisorSocketPath) !== normalizedSocketPath(socketPath)
 	) {
 		throw new Error(`Replacement daemon identity does not match ${socketPath}`);
 	}
 	const successor = processIdentityFromDaemonHello(hello);
-	if (!successor?.processStartId) {
+	if (!successor?.supervisorGeneration || !successor.supervisorOwnerToken) {
 		throw new Error(`Replacement daemon on ${socketPath} did not provide an identity fence`);
 	}
 	if (
 		predecessor &&
-		successor.pid === predecessor.pid &&
-		(!predecessor.processStartId || successor.processStartId === predecessor.processStartId)
+		((predecessor.supervisorGeneration !== undefined &&
+			successor.supervisorGeneration === predecessor.supervisorGeneration) ||
+			(predecessor.supervisorOwnerToken !== undefined &&
+				successor.supervisorOwnerToken === predecessor.supervisorOwnerToken) ||
+			(successor.pid === predecessor.pid &&
+				predecessor.processStartId !== undefined &&
+				successor.processStartId === predecessor.processStartId))
 	) {
 		throw new Error(`Replacement daemon on ${socketPath} still has the predecessor identity`);
 	}
@@ -1260,9 +1267,17 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 			connectedClient = undefined;
 			if (!stopped) {
 				if (manifest) {
-					await restoreDaemonUpdateRestart(options.socketPath, manifest, options.originActiveSessionId).catch(
-						() => undefined,
-					);
+					try {
+						const counts = await restoreDaemonUpdateRestart(
+							options.socketPath,
+							manifest,
+							options.originActiveSessionId,
+						);
+						clearPreparedDaemonUpdateRestartManifest(options.agentDir);
+						statusWriter.update({ counts });
+					} catch {
+						// Keep the manifest for a later recovery attempt when fallback restoration fails.
+					}
 				}
 				throw new Error(`Could not stop the predecessor daemon on ${options.socketPath}`);
 			}
@@ -1280,7 +1295,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 		let successor: DaemonUpdateRestartProcessIdentity;
 		try {
 			await successorClient.connect(1000);
-			const successorHello = await successorClient.waitForHello(10000);
+			const successorHello = await successorClient.waitForHello(60000);
 			successor = validateReplacementDaemon(options.socketPath, successorHello, predecessor);
 		} finally {
 			successorClient.close();

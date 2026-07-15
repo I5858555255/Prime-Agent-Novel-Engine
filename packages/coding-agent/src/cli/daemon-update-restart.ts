@@ -40,6 +40,8 @@ export interface DaemonUpdateRestartCounts {
 export interface DaemonUpdateRestartProcessIdentity {
 	pid: number;
 	processStartId?: string;
+	supervisorGeneration?: string;
+	supervisorOwnerToken?: string;
 }
 
 export interface DaemonUpdateRestartStatus {
@@ -125,7 +127,9 @@ function isProcessIdentity(value: unknown): value is DaemonUpdateRestartProcessI
 	return (
 		Number.isInteger(identity.pid) &&
 		(identity.pid ?? 0) > 0 &&
-		(identity.processStartId === undefined || typeof identity.processStartId === "string")
+		(identity.processStartId === undefined || typeof identity.processStartId === "string") &&
+		(identity.supervisorGeneration === undefined || typeof identity.supervisorGeneration === "string") &&
+		(identity.supervisorOwnerToken === undefined || typeof identity.supervisorOwnerToken === "string")
 	);
 }
 

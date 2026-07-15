@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import {
 } from "../src/cli/daemon-update-restart.js";
 import {
 	ENV_AGENT_DIR,
+	getDaemonUpdateRestartManifestPath,
 	PACKAGE_NAME,
 	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
@@ -108,11 +109,13 @@ const mockState = vi.hoisted(() => ({
 	lastCoordinatorStatus: undefined as DaemonUpdateRestartStatus | undefined,
 	prepareError: undefined as string | undefined,
 	prepareManifest: { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] } as MockUpdateRestartManifest,
+	preparedManifestPath: "",
 	promptFailures: 0,
 	probeSocketPaths: [] as string[],
 	requestPayloads: [] as MockDaemonRequest[],
 	restoreNextTurnFailures: 0,
 	socketPath: "",
+	successorProcessStartId: "replacement-start" as string | undefined,
 	successorSocketPath: undefined as string | undefined,
 	spawnExitCodes: [] as number[],
 	shutdownResult: true,
@@ -231,7 +234,11 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 						protocol: { version: 2 },
 						appVersion: VERSION,
 						supervisorPid: 1002,
-						supervisorProcessStartId: "replacement-start",
+						supervisorGeneration: "replacement-generation",
+						supervisorOwnerToken: "replacement-owner-token",
+						...(mockState.successorProcessStartId
+							? { supervisorProcessStartId: mockState.successorProcessStartId }
+							: {}),
 						supervisorSocketPath: mockState.successorSocketPath ?? mockState.socketPath,
 					};
 		}
@@ -247,6 +254,7 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 				if (mockState.prepareError) {
 					return { success: false, error: mockState.prepareError };
 				}
+				writeFileSync(mockState.preparedManifestPath, `${JSON.stringify(mockState.prepareManifest)}\n`);
 				return { success: true, data: mockState.prepareManifest };
 			}
 			if (request.type === "create") {
@@ -305,12 +313,14 @@ describe("self-update daemon restart", () => {
 		mockState.lastCoordinatorStatus = undefined;
 		mockState.prepareError = undefined;
 		mockState.socketPath = join(tempDir, "daemon.sock");
+		mockState.successorProcessStartId = "replacement-start";
 		mockState.successorSocketPath = undefined;
 		mockState.calls = [];
 		mockState.createActiveSessionIds = [];
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
+		mockState.preparedManifestPath = getDaemonUpdateRestartManifestPath(agentDir);
 		mockState.promptFailures = 0;
 		mockState.probeSocketPaths = [];
 		mockState.requestPayloads = [];
@@ -460,6 +470,60 @@ describe("self-update daemon restart", () => {
 			message: expect.stringContaining("does not match"),
 		});
 		expect(mockState.requestPayloads.some((request) => request.type === "create")).toBe(false);
+	});
+
+	it("accepts a fixed replacement owner when process start ids are unavailable", async () => {
+		mockState.hello = {
+			protocol: { version: 2 },
+			supervisorGeneration: "predecessor-generation",
+			supervisorOwnerToken: "predecessor-owner-token",
+			supervisorPid: 1001,
+			supervisorSocketPath: mockState.socketPath,
+		};
+		mockState.successorProcessStartId = undefined;
+
+		await performUpdateAndRunCoordinator();
+
+		expect(mockState.lastCoordinatorStatus).toMatchObject({
+			phase: "complete",
+			successor: {
+				pid: 1002,
+				supervisorGeneration: "replacement-generation",
+				supervisorOwnerToken: "replacement-owner-token",
+			},
+		});
+	});
+
+	it("clears the prepared manifest after fallback restoration when shutdown fails", async () => {
+		mockState.shutdownResult = false;
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "old-active",
+					sessionId: "session-id",
+					sessionFile: join(tempDir, "session.jsonl"),
+					cwd: tempDir,
+					config: {},
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: false,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+
+		await performUpdateAndRunCoordinator();
+
+		expect(mockState.lastCoordinatorStatus).toMatchObject({
+			phase: "failed",
+			counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
+		});
+		expect(existsSync(mockState.preparedManifestPath)).toBe(false);
 	});
 
 	it("restarts an idle legacy daemon without a restorable manifest", async () => {
