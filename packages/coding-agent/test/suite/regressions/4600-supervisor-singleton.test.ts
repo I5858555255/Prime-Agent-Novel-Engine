@@ -77,21 +77,23 @@ const handles = new Set<FixtureHandle>();
 const harnesses: Harness[] = [];
 const cleanupProcesses = new Map<string, CleanupProcessIdentity>();
 const cleanupRegistryDirs = new Set<string>();
+const cleanupSupervisorSockets = new Set<string>();
 
 afterEach(async () => {
 	for (const registryDir of cleanupRegistryDirs) {
 		registerOwnerRecordsForCleanup(registryDir);
 	}
+	await cleanupRegisteredProcesses();
 	for (const handle of handles) {
 		if (handle.child.exitCode === null && handle.child.signalCode === null) {
 			handle.child.kill("SIGKILL");
 			await waitForExit(handle).catch(() => undefined);
 		}
 	}
-	await cleanupRegisteredProcesses();
 	handles.clear();
 	cleanupProcesses.clear();
 	cleanupRegistryDirs.clear();
+	cleanupSupervisorSockets.clear();
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
 	}
@@ -382,6 +384,7 @@ async function captureCleanupProcess(pid: number, label: string, timeoutMs = 500
 
 function registerOwnerRecordsForCleanup(registryDir: string): void {
 	for (const owner of listOwnerRecords(registryDir)) {
+		cleanupSupervisorSockets.add(owner.socketPath);
 		if (owner.processStartId) {
 			registerCleanupProcess({
 				pid: owner.pid,
@@ -418,7 +421,26 @@ async function waitForCleanupProcessExit(identity: CleanupProcessIdentity, timeo
 	cleanupProcesses.delete(cleanupIdentityKey(identity));
 }
 
-async function cleanupRegisteredProcesses(): Promise<void> {
+async function waitForCleanupGracePeriod(timeoutMs = 5000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		for (const identity of [...cleanupProcesses.values()]) {
+			if (cleanupProcessState(identity) === "exited") {
+				cleanupProcesses.delete(cleanupIdentityKey(identity));
+			}
+		}
+		if (cleanupProcesses.size === 0) {
+			return;
+		}
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+	}
+}
+
+async function cleanupRegisteredProcesses(existingClient?: DaemonClient): Promise<void> {
+	for (const socketPath of cleanupSupervisorSockets) {
+		await forceShutdownReachableSupervisor(socketPath, existingClient);
+	}
+	await waitForCleanupGracePeriod();
 	const errors: unknown[] = [];
 	for (const identity of [...cleanupProcesses.values()]) {
 		try {
@@ -536,6 +558,7 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 		await waitForType(legacyCleanup, "ready");
 		const predecessor = spawnRealSupervisor(paths, {});
 		cleanupRegistryDirs.add(paths.registryDir);
+		cleanupSupervisorSockets.add(paths.socketPath);
 		let client: DaemonClient | undefined;
 		let connection: DaemonAgentConnection | undefined;
 		try {
@@ -602,7 +625,14 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 			await waitForExit(predecessor);
 			await reconnected;
 			const [successorOwner] = await waitForOwnerCount(paths.registryDir, 1);
-			if (!successorOwner?.processStartId) {
+			if (!successorOwner) {
+				throw new Error("Replacement supervisor did not publish its owner record");
+			}
+			if (!successorOwner.processStartId) {
+				await captureCleanupProcess(
+					successorOwner.pid,
+					`replacement supervisor ${successorOwner.generation}`,
+				).catch(() => undefined);
 				throw new Error("Replacement supervisor did not publish a process-start identity");
 			}
 			const successorCleanupIdentity = registerCleanupProcess({
@@ -655,9 +685,8 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 		} finally {
 			await connection?.dispose().catch(() => undefined);
 			registerOwnerRecordsForCleanup(paths.registryDir);
-			await forceShutdownReachableSupervisor(paths.socketPath, client);
+			await cleanupRegisteredProcesses(client);
 			client?.close();
-			await cleanupRegisteredProcesses();
 		}
 	}, 90_000);
 
