@@ -8,6 +8,7 @@ export interface AgentSessionRuntimeConfig {
 	provider?: string;
 	model?: string;
 	apiKey?: string;
+	noEnv?: boolean;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
@@ -42,6 +43,7 @@ export function mergeAgentSessionRuntimeConfig(
 		provider: override.provider ?? base.provider,
 		model: override.model ?? base.model,
 		apiKey: override.apiKey ?? base.apiKey,
+		noEnv: override.noEnv ?? base.noEnv,
 		systemPrompt: override.systemPrompt ?? base.systemPrompt,
 		appendSystemPrompt: cloneArray(override.appendSystemPrompt ?? base.appendSystemPrompt),
 		thinking: override.thinking ?? base.thinking,

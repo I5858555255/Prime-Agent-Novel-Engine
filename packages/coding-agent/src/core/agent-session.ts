@@ -2301,8 +2301,7 @@ export class AgentSession {
 
 			// Check for retryable errors first (overloaded, rate limit, server errors)
 			const concreteAuthFailure = this._isConcreteProviderAuthFailure(msg);
-			const retryConcreteAuthFailure =
-				concreteAuthFailure && !this._isStructuredPermanentProviderRetryExhausted(msg);
+			const retryConcreteAuthFailure = concreteAuthFailure && !this._isPermanentProviderRetryExhausted(msg);
 			if (this._isRetryableError(msg) || retryConcreteAuthFailure) {
 				if (retryConcreteAuthFailure) {
 					this._captureRetryAuthFailureSource(msg);
@@ -6464,7 +6463,7 @@ export class AgentSession {
 			return false;
 		}
 
-		if (this._isStructuredPermanentProviderRetryExhausted(message)) {
+		if (this._isPermanentProviderRetryExhausted(message)) {
 			return false;
 		}
 
@@ -6498,8 +6497,11 @@ export class AgentSession {
 		return kind === "auth" || kind === "invalid_request" || kind === "refusal";
 	}
 
-	private _isStructuredPermanentProviderRetryExhausted(message: AssistantMessage): boolean {
-		return this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message);
+	private _isPermanentProviderRetryExhausted(message: AssistantMessage): boolean {
+		return (
+			this._retryAttempt > 0 &&
+			(this._isStructuredPermanentProviderFailure(message) || this._isConcreteProviderAuthFailure(message))
+		);
 	}
 
 	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {

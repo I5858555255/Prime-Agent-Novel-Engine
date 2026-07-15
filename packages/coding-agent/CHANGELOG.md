@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed `--no-env` leaking daemon and Prime CLI credentials, skipping manual Prime login, and repeatedly retrying bare authentication failures ([ENG-4528](https://linear.app/primeintellect/issue/ENG-4528/fix-no-env-prime-agent-ux-retry-loop)).
 - Added confirmation when fullscreen text selection copies to the clipboard ([ENG-4644](https://linear.app/primeintellect/issue/ENG-4644/copy-issues)).
 - Added compact file change stats to collapsed tool calls and an agent-run edit total above the recap.
 - Changed tool expansion hints to appear only on the latest tool row instead of every tool call ([ENG-4583](https://linear.app/primeintellect/issue/ENG-4583/too-many-ctrlo-alerts)).

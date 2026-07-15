@@ -714,6 +714,7 @@ function runtimeConfigFromArgs(
 		provider: parsed.provider,
 		model: parsed.model,
 		apiKey: parsed.apiKey,
+		noEnv: parsed.noEnv,
 		systemPrompt: parsed.systemPrompt,
 		appendSystemPrompt: parsed.appendSystemPrompt,
 		thinking: parsed.thinking,
@@ -784,7 +785,8 @@ async function prepareRuntimeServices(options: {
 	const { config, sessionManager } = options;
 	const effectiveAgentDir = config.agentDir ?? options.agentDir;
 	const authStorage = AuthStorage.create(join(effectiveAgentDir, "auth.json"), {
-		usePrimeCliConfig: effectiveAgentDir === options.agentDir,
+		usePrimeCliConfig: !config.noEnv && effectiveAgentDir === options.agentDir,
+		allowAmbientCredentials: !config.noEnv,
 	});
 	const services = await createAgentSessionServices({
 		cwd: options.cwd,
