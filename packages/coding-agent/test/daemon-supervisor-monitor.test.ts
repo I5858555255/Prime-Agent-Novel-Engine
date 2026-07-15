@@ -429,10 +429,8 @@ describe("daemon worker supervisor monitoring", () => {
 			summaries: new Map([[activeSessionId, summary]]),
 			snapshotCache: new Map(),
 			transcriptCaches: new Map(),
-			incomingTranscripts: new Map(),
+			incomingTranscriptActiveSessionIds: new Set(),
 			snapshotLoads: new Map(),
-			snapshotRetries: new Map(),
-			snapshotGenerations: new Map(),
 		};
 		const client: AttachClient = {
 			id: "client-1",

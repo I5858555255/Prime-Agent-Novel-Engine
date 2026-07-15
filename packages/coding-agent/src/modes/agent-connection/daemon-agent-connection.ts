@@ -66,10 +66,8 @@ type DaemonCommandBody = DistributiveOmit<DaemonCommand, "id">;
 type DaemonSnapshotBegin = Extract<DaemonOutbound, { type: "session_snapshot_begin" }>;
 
 interface DaemonSnapshotAssembly {
-	state: "open" | "complete" | "failed";
 	begin?: DaemonSnapshotBegin;
 	chunks: Map<number, AgentMessage[]>;
-	nextChunkIndex: number;
 	promise: Promise<DaemonSessionSnapshot>;
 	resolve: (snapshot: DaemonSessionSnapshot) => void;
 	reject: (error: Error) => void;
@@ -169,7 +167,6 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly activeSideQuestionIds = new Set<string>();
 	private readonly snapshotAssemblies = new Map<string, DaemonSnapshotAssembly>();
 	private readonly ignoredSnapshotIds = new Set<string>();
-	private readonly completedSnapshotBegins = new Map<string, DaemonSnapshotBegin>();
 	private reconnectPromise?: Promise<void>;
 	private disposed = false;
 
@@ -934,80 +931,22 @@ export class DaemonAgentConnection implements AgentConnection {
 			return;
 		}
 		if ("snapshotId" in message && this.ignoredSnapshotIds.has(message.snapshotId)) {
-			if (message.type === "session_snapshot_end" || message.type === "session_snapshot_failed") {
+			if (message.type === "session_snapshot_end") {
 				this.ignoredSnapshotIds.delete(message.snapshotId);
 			}
 			return;
 		}
 		if (message.type === "session_snapshot_begin") {
-			const completed = this.completedSnapshotBegins.get(message.snapshotId);
-			if (completed) {
-				if (snapshotBeginsEqual(completed, message)) {
-					this.ignoreSnapshotId(message.snapshotId);
-					return;
-				}
-				this.completedSnapshotBegins.delete(message.snapshotId);
-			}
 			const assembly = this.getSnapshotAssembly(message.snapshotId);
-			if (assembly.state === "complete") {
-				if (assembly.begin && snapshotBeginsEqual(assembly.begin, message)) {
-					this.ignoreSnapshotId(message.snapshotId);
-					return;
-				}
-				this.rejectSnapshotAssembly(
-					message.snapshotId,
-					assembly,
-					new Error(`Snapshot ${message.snapshotId} restarted after completion with different metadata`),
-				);
-				this.ignoreSnapshotId(message.snapshotId);
-				return;
-			}
-			if (assembly.begin) {
-				if (!snapshotBeginsEqual(assembly.begin, message)) {
-					this.rejectSnapshotAssembly(
-						message.snapshotId,
-						assembly,
-						new Error(`Snapshot ${message.snapshotId} restarted with different metadata`),
-					);
-					this.ignoreSnapshotId(message.snapshotId);
-					return;
-				}
-				assembly.chunks.clear();
-				assembly.nextChunkIndex = 0;
-			}
-			assembly.state = "open";
 			assembly.begin = message;
 			return;
 		}
 		if (message.type === "session_snapshot_chunk") {
-			const assembly = this.getSnapshotAssembly(message.snapshotId);
-			if (
-				assembly.state !== "open" ||
-				!assembly.begin ||
-				!Number.isInteger(message.index) ||
-				message.index !== assembly.nextChunkIndex ||
-				!Array.isArray(message.messages)
-			) {
-				this.rejectSnapshotAssembly(
-					message.snapshotId,
-					assembly,
-					new Error(`Snapshot ${message.snapshotId} received invalid chunk ${message.index}`),
-				);
-				this.ignoreSnapshotId(message.snapshotId);
-				return;
-			}
-			assembly.chunks.set(message.index, message.messages);
-			assembly.nextChunkIndex++;
+			this.getSnapshotAssembly(message.snapshotId).chunks.set(message.index, message.messages);
 			return;
 		}
 		if (message.type === "session_snapshot_end") {
 			await this.completeSnapshotAssembly(message);
-			return;
-		}
-		if (message.type === "session_snapshot_failed") {
-			const assembly = this.getSnapshotAssembly(message.snapshotId);
-			this.rejectSnapshotAssembly(message.snapshotId, assembly, new Error(message.error));
-			this.ignoreSnapshotId(message.snapshotId);
 			return;
 		}
 		if (this.isStaleSequencedMessage(message)) {
@@ -1246,9 +1185,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		}, this.options.snapshotTimeoutMs ?? DAEMON_SNAPSHOT_TIMEOUT_MS);
 		timeout.unref();
 		const assembly: DaemonSnapshotAssembly = {
-			state: "open",
 			chunks: new Map(),
-			nextChunkIndex: 0,
 			promise,
 			resolve: resolveSnapshot,
 			reject: rejectSnapshot,
@@ -1265,7 +1202,6 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		this.snapshotAssemblies.clear();
 		this.ignoredSnapshotIds.clear();
-		this.completedSnapshotBegins.clear();
 	}
 
 	private ignoreSnapshotId(snapshotId: string): void {
@@ -1280,7 +1216,6 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	private rejectSnapshotAssembly(snapshotId: string, assembly: DaemonSnapshotAssembly, error: Error): void {
-		assembly.state = "failed";
 		assembly.reject(error);
 		clearTimeout(assembly.timeout);
 		if (assembly.begin?.purpose && assembly.begin.purpose !== "attach") {
@@ -1317,18 +1252,6 @@ export class DaemonAgentConnection implements AgentConnection {
 				new Error(
 					`Snapshot ${message.snapshotId} ended with ${assembly.chunks.size} of ${message.chunkCount} chunks`,
 				),
-			);
-			return;
-		}
-		if (
-			message.transcriptRevision !== assembly.begin.transcriptRevision ||
-			message.lastEventSequence !== assembly.begin.snapshot.lastEventSequence ||
-			!eventCursorsEqual(message.lastEventCursor, assembly.begin.snapshot.lastEventCursor)
-		) {
-			this.rejectSnapshotAssembly(
-				message.snapshotId,
-				assembly,
-				new Error(`Snapshot ${message.snapshotId} ended with different metadata`),
 			);
 			return;
 		}
@@ -1369,9 +1292,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.attachedSessionFile = snapshot.state.sessionFile;
 		this.latestSnapshot = mapDaemonSessionSnapshot(snapshot);
 		this.latestSnapshotIsFresh = true;
-		assembly.state = "complete";
 		assembly.resolve(snapshot);
-		this.rememberCompletedSnapshot(message.snapshotId, assembly.begin);
 		const purpose = assembly.begin.purpose ?? "attach";
 		clearTimeout(assembly.timeout);
 		if (purpose !== "attach") {
@@ -1381,18 +1302,6 @@ export class DaemonAgentConnection implements AgentConnection {
 			await this.emit({ type: "session_replaced", state: snapshot.state, messages });
 		} else if (purpose === "resync") {
 			await this.emit({ type: "session_resynced", snapshot: this.latestSnapshot });
-		}
-	}
-
-	private rememberCompletedSnapshot(snapshotId: string, begin: DaemonSnapshotBegin): void {
-		this.completedSnapshotBegins.delete(snapshotId);
-		this.completedSnapshotBegins.set(snapshotId, begin);
-		while (this.completedSnapshotBegins.size > MAX_IGNORED_SNAPSHOT_IDS) {
-			const oldest = this.completedSnapshotBegins.keys().next().value;
-			if (oldest === undefined) {
-				break;
-			}
-			this.completedSnapshotBegins.delete(oldest);
 		}
 	}
 
@@ -1477,29 +1386,6 @@ export class DaemonAgentConnection implements AgentConnection {
 			this.activeSideQuestionIds.delete(event.id);
 		}
 	}
-}
-
-function snapshotBeginsEqual(left: DaemonSnapshotBegin, right: DaemonSnapshotBegin): boolean {
-	return (
-		left.activeSessionId === right.activeSessionId &&
-		left.snapshotId === right.snapshotId &&
-		left.snapshot.summary.sessionId === right.snapshot.summary.sessionId &&
-		left.messageCount === right.messageCount &&
-		left.targetChunkBytes === right.targetChunkBytes &&
-		left.transcriptRevision === right.transcriptRevision &&
-		left.snapshot.lastEventSequence === right.snapshot.lastEventSequence &&
-		eventCursorsEqual(left.snapshot.lastEventCursor, right.snapshot.lastEventCursor)
-	);
-}
-
-function eventCursorsEqual(left: DaemonEventCursor | undefined, right: DaemonEventCursor | undefined): boolean {
-	return (
-		(left === undefined && right === undefined) ||
-		(left !== undefined &&
-			right !== undefined &&
-			left.generation === right.generation &&
-			left.sequence === right.sequence)
-	);
 }
 
 function readSessionSummaries(value: unknown): SessionSummary[] {
