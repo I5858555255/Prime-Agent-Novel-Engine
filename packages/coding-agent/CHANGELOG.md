@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-15
+
 - Changed wrapped diff rows to use a blank hanging gutter.
 - Fixed team-gated Prime Inference routes being missing from model selectors by merging the authenticated team catalog during model refresh ([ENG-4645](https://linear.app/primeintellect/issue/ENG-4645/internalglm-52-fast-isnt-working)).
 - Added confirmation when fullscreen text selection copies to the clipboard ([ENG-4644](https://linear.app/primeintellect/issue/ENG-4644/copy-issues)).
@@ -22,8 +24,6 @@
 - Fixed snapshot transfers terminating resident workers, stranding partial readers, or rejecting identical retries ([ENG-4602](https://linear.app/primeintellect/issue/ENG-4602/make-snapshot-transfers-idempotent-and-non-fatal)).
 - Fixed the resume picker opening on an older session instead of the newest session ([ENG-4630](https://linear.app/primeintellect/issue/ENG-4630/show-latest-sessions-first-in-resume-list)).
 - Fixed tool-only responses rendering directly against the preceding user prompt.
-
-## [0.3.1] - 2026-07-15
 
 ## [0.3.0] - 2026-07-13
 
