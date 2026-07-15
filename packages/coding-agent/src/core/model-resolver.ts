@@ -139,23 +139,6 @@ function tryMatchModel(modelPattern: string, availableModels: Model<Api>[]): Mod
 		return undefined;
 	}
 
-	const normalizedPattern = modelPattern.toLowerCase();
-	const primeInferenceDefault = matches.find((model) => {
-		if (model.provider !== "prime-inference" || model.id !== PRIME_INFERENCE_DEFAULT_MODEL_ID) {
-			return false;
-		}
-
-		const unqualifiedId = model.id.slice(model.id.lastIndexOf("/") + 1).toLowerCase();
-		return (
-			normalizedPattern === model.id.toLowerCase() ||
-			normalizedPattern === unqualifiedId ||
-			normalizedPattern === model.name?.toLowerCase()
-		);
-	});
-	if (primeInferenceDefault) {
-		return primeInferenceDefault;
-	}
-
 	// Separate into aliases and dated versions
 	const aliases = matches.filter((m) => isAlias(m.id));
 	const datedVersions = matches.filter((m) => !isAlias(m.id));
@@ -192,6 +175,25 @@ function buildFallbackModel(provider: string, modelId: string, availableModels: 
 		id: modelId,
 		name: modelId,
 	};
+}
+
+function findPreferredDefaultModel(availableModels: Model<Api>[]): Model<Api> | undefined {
+	const primeInferenceDefault = availableModels.find(
+		(model) => model.provider === "prime-inference" && model.id === PRIME_INFERENCE_DEFAULT_MODEL_ID,
+	);
+	if (primeInferenceDefault) {
+		return primeInferenceDefault;
+	}
+
+	for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
+		const defaultId = defaultModelPerProvider[provider];
+		const match = availableModels.find((model) => model.provider === provider && model.id === defaultId);
+		if (match) {
+			return match;
+		}
+	}
+
+	return undefined;
 }
 
 /**
@@ -578,13 +580,9 @@ export async function findInitialModel(options: {
 	const availableModels = await modelRegistry.getAvailable();
 
 	if (availableModels.length > 0) {
-		// Try to find a default model from known providers
-		for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
-			const defaultId = defaultModelPerProvider[provider];
-			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
-			if (match) {
-				return { model: match, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
-			}
+		const defaultModel = findPreferredDefaultModel(availableModels);
+		if (defaultModel) {
+			return { model: defaultModel, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
 		}
 
 		// If no default found, use first available
@@ -640,21 +638,7 @@ export async function restoreModelFromSession(
 	const availableModels = await modelRegistry.getAvailable();
 
 	if (availableModels.length > 0) {
-		// Try to find a default model from known providers
-		let fallbackModel: Model<Api> | undefined;
-		for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
-			const defaultId = defaultModelPerProvider[provider];
-			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
-			if (match) {
-				fallbackModel = match;
-				break;
-			}
-		}
-
-		// If no default found, use first available
-		if (!fallbackModel) {
-			fallbackModel = availableModels[0];
-		}
+		const fallbackModel = findPreferredDefaultModel(availableModels) ?? availableModels[0];
 
 		if (shouldPrintMessages) {
 			console.log(chalk.dim(`Falling back to: ${fallbackModel.provider}/${fallbackModel.id}`));
