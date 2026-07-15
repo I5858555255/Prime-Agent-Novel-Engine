@@ -117,7 +117,9 @@ interface DaemonProcessIdentity {
 	processStartId?: string;
 }
 
-function hasProcessIdentityExited(identity: DaemonProcessIdentity | undefined): boolean {
+const PROCESS_START_ID_POLL_INTERVAL_MS = 1000;
+
+function hasProcessIdentityExited(identity: DaemonProcessIdentity | undefined, verifyProcessStartId = true): boolean {
 	if (!identity) {
 		return true;
 	}
@@ -126,7 +128,7 @@ function hasProcessIdentityExited(identity: DaemonProcessIdentity | undefined): 
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ESRCH";
 	}
-	if (!identity.processStartId) {
+	if (!identity.processStartId || !verifyProcessStartId) {
 		return false;
 	}
 	const currentStartId = getProcessStartId(identity.pid);
@@ -140,11 +142,20 @@ async function waitForDaemonGone(
 	expectedIdentity?: DaemonProcessIdentity,
 ): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
+	let nextProcessStartIdPollAt = 0;
+	const hasExpectedProcessExited = (forceStartIdPoll = false) => {
+		const now = Date.now();
+		const verifyProcessStartId = forceStartIdPoll || now >= nextProcessStartIdPollAt;
+		if (verifyProcessStartId) {
+			nextProcessStartIdPollAt = now + PROCESS_START_ID_POLL_INTERVAL_MS;
+		}
+		return hasProcessIdentityExited(expectedIdentity, verifyProcessStartId);
+	};
 	while (Date.now() < deadline) {
 		if (
 			!(await canConnectToDaemon(socketPath, 250)) &&
 			(!requireSocketCleanup || process.platform === "win32" || !existsSync(socketPath)) &&
-			hasProcessIdentityExited(expectedIdentity)
+			hasExpectedProcessExited()
 		) {
 			return true;
 		}
@@ -153,9 +164,7 @@ async function waitForDaemonGone(
 	// A daemon can exit without removing its Unix socket (for example, after a crash
 	// during shutdown). Once the cleanup grace has elapsed, a non-listening socket
 	// is safe for the replacement daemon's guarded startup path to reclaim.
-	return (
-		requireSocketCleanup && !(await canConnectToDaemon(socketPath, 250)) && hasProcessIdentityExited(expectedIdentity)
-	);
+	return requireSocketCleanup && !(await canConnectToDaemon(socketPath, 250)) && hasExpectedProcessExited(true);
 }
 
 function processIdentityFromDaemonHello(hello: DaemonHello | undefined): DaemonProcessIdentity | undefined {

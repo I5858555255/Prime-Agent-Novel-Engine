@@ -101,6 +101,7 @@ const mockState = vi.hoisted(() => ({
 	createActiveSessionIds: [] as string[],
 	createThrowSessionPaths: [] as string[],
 	daemonProbe: { reachable: true, activeSessions: [] } as MockRunningDaemonProbe,
+	daemonProbeAfterShutdown: undefined as MockRunningDaemonProbe | undefined,
 	globalPackageRoot: "",
 	hello: { protocol: { version: 2 } } as {
 		protocol: { version: number };
@@ -221,6 +222,9 @@ vi.mock("../src/cli/daemon-launch.js", () => ({
 	}),
 	shutdownConnectedDaemonAndWait: vi.fn(async () => {
 		mockState.calls.push("shutdown-daemon");
+		if (mockState.daemonProbeAfterShutdown) {
+			mockState.daemonProbe = mockState.daemonProbeAfterShutdown;
+		}
 		return mockState.shutdownResult;
 	}),
 }));
@@ -377,6 +381,7 @@ describe("self-update daemon restart", () => {
 		mockState.createActiveSessionIds = [];
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
+		mockState.daemonProbeAfterShutdown = undefined;
 		mockState.disconnectRequestTypes = [];
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
 		mockState.preparedManifestPath = getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir);
@@ -636,6 +641,40 @@ describe("self-update daemon restart", () => {
 			phase: "failed",
 			counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
 		});
+		expect(existsSync(mockState.preparedManifestPath)).toBe(false);
+	});
+
+	it("starts a successor when shutdown identity confirmation times out after the socket is gone", async () => {
+		mockState.shutdownResult = false;
+		mockState.daemonProbeAfterShutdown = { reachable: false };
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "old-active",
+					sessionId: "session-id",
+					sessionFile: join(tempDir, "session.jsonl"),
+					cwd: tempDir,
+					config: {},
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: false,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+
+		await performUpdateAndRunCoordinator();
+
+		expect(mockState.lastCoordinatorStatus).toMatchObject({
+			phase: "complete",
+			counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
+		});
+		expect(mockState.calls).toContain("ensure-daemon");
 		expect(existsSync(mockState.preparedManifestPath)).toBe(false);
 	});
 

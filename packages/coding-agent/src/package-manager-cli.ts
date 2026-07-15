@@ -1327,25 +1327,28 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 			const stopped = await shutdownConnectedDaemonAndWait(connectedClient, options.socketPath, 10000, hello);
 			connectedClient = undefined;
 			if (!stopped) {
-				if (manifest) {
-					try {
-						const restoreResult = await restoreDaemonUpdateRestart(
-							options.socketPath,
-							manifest,
-							options.originActiveSessionId,
-							reportRestoreProgress,
-						);
-						const { failures: restoreFailures, ...counts } = restoreResult;
-						clearPreparedDaemonUpdateRestartManifest(options.socketPath, options.agentDir);
-						statusWriter.update({
-							counts,
-							...(restoreFailures.length > 0 ? { failures: restoreFailures } : {}),
-						});
-					} catch {
-						// Keep the manifest for a later recovery attempt when fallback restoration fails.
+				const remainingDaemon = await probeRunningDaemonSessions(options.socketPath);
+				if (remainingDaemon.reachable) {
+					if (manifest) {
+						try {
+							const restoreResult = await restoreDaemonUpdateRestart(
+								options.socketPath,
+								manifest,
+								options.originActiveSessionId,
+								reportRestoreProgress,
+							);
+							const { failures: restoreFailures, ...counts } = restoreResult;
+							clearPreparedDaemonUpdateRestartManifest(options.socketPath, options.agentDir);
+							statusWriter.update({
+								counts,
+								...(restoreFailures.length > 0 ? { failures: restoreFailures } : {}),
+							});
+						} catch {
+							// Keep the manifest for a later recovery attempt when fallback restoration fails.
+						}
 					}
+					throw new Error(`Could not stop the predecessor daemon on ${options.socketPath}`);
 				}
-				throw new Error(`Could not stop the predecessor daemon on ${options.socketPath}`);
 			}
 		} else {
 			manifest = tryReadPreparedDaemonUpdateRestartManifest(options.socketPath, options.agentDir);
