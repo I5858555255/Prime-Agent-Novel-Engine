@@ -95,4 +95,38 @@ describe("ENG-4620 fast mode settings", () => {
 
 		expect(harness.session.serviceTier).toBe("priority");
 	});
+
+	it("does not persist a temporary clamp from an unsupported model", async () => {
+		harness = await createHarness({
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			models: [{ id: "gpt-5.4" }, { id: "gpt-5.3" }],
+			persistSession: true,
+		});
+		const currentHarness = harness;
+
+		currentHarness.sessionManager.appendMessage(userMsg("hello"));
+		currentHarness.session.setServiceTier("priority");
+		currentHarness.session.dispose();
+
+		const createSession = (modelId: string) =>
+			createAgentSession({
+				cwd: currentHarness.tempDir,
+				authStorage: currentHarness.authStorage,
+				model: currentHarness.getModel(modelId),
+				resourceLoader: createTestResourceLoader(),
+				sessionManager: currentHarness.sessionManager,
+				settingsManager: currentHarness.settingsManager,
+			});
+
+		const { session: unsupportedSession } = await createSession("gpt-5.3");
+		sessions.push(unsupportedSession);
+		expect(unsupportedSession.serviceTier).toBe("default");
+		expect(unsupportedSession.sessionManager.buildSessionContext().serviceTier).toBe("priority");
+		unsupportedSession.dispose();
+
+		const { session: supportedSession } = await createSession("gpt-5.4");
+		sessions.push(supportedSession);
+		expect(supportedSession.serviceTier).toBe("priority");
+	});
 });

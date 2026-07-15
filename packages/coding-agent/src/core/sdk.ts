@@ -356,15 +356,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (!hasThinkingEntry) {
 			sessionManager.appendThinkingLevelChange(thinkingLevel);
 		}
-		if (!hasServiceTierEntry || serviceTier !== existingSession.serviceTier) {
-			sessionManager.appendServiceTierChange(serviceTier);
-		}
 	} else {
 		// Save initial configuration for new sessions so it can be restored on resume.
 		if (model) {
 			sessionManager.appendModelChange(model.provider, model.id);
 		}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
+	}
+	if (!hasServiceTierEntry) {
 		sessionManager.appendServiceTierChange(serviceTier);
 	}
 
