@@ -14,6 +14,7 @@ import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR, getCronJobsPath } from "../../../src/config.js";
+import { getProcessStartId } from "../../../src/core/session-lease.js";
 import { DaemonAgentConnection } from "../../../src/modes/agent-connection/daemon-agent-connection.js";
 import { DaemonClient } from "../../../src/modes/daemon/daemon-client.js";
 import type { SessionSummary } from "../../../src/modes/daemon/daemon-session-list.js";
@@ -344,6 +345,31 @@ async function waitForOwnerCount(registryDir: string, count: number, timeoutMs =
 	throw new Error(`Timed out waiting for ${count} supervisor owner records`);
 }
 
+function ownerProcessStillMatches(owner: OwnerRecord): boolean {
+	try {
+		process.kill(owner.pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+	if (!owner.processStartId) {
+		return true;
+	}
+	const observedStartId = getProcessStartId(owner.pid);
+	return observedStartId === undefined || observedStartId === owner.processStartId;
+}
+
+async function waitForOwnerProcessExit(owner: OwnerRecord, timeoutMs = 20_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (ownerProcessStillMatches(owner) && Date.now() < deadline) {
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+	}
+	if (ownerProcessStillMatches(owner)) {
+		throw new Error(
+			`Timed out waiting for supervisor ${owner.pid} (${owner.processStartId ?? "unknown start"}) to exit`,
+		);
+	}
+}
+
 async function waitForPath(path: string, timeoutMs = 20_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (!existsSync(path) && Date.now() < deadline) {
@@ -521,13 +547,10 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 			}),
 		);
 		await connection.dispose();
-		await client.request({ type: "shutdown" }, 10_000);
+		await client.request({ type: "shutdown", force: true }, 10_000);
 		client.close();
 		await waitForExit(legacyCleanup);
-		const shutdownDeadline = Date.now() + 15_000;
-		while (listOwnerRecords(paths.registryDir).length > 0 && Date.now() < shutdownDeadline) {
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-		}
+		await waitForOwnerProcessExit(successorOwner);
 		expect(listOwnerRecords(paths.registryDir)).toEqual([]);
 	}, 90_000);
 
