@@ -8,12 +8,13 @@ import { AgentDaemon } from "../src/modes/daemon/daemon-mode.js";
 import type { DaemonAttachResult } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
+import { DAEMON_WORKER_STARTUP_GATE_COMMIT } from "../src/modes/daemon/daemon-worker-protocol.js";
 import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
 
 const workerLaunchTestState = vi.hoisted(() => ({
 	capture: false,
 	forceMissingProcessStartId: false,
-	fixtureMode: "worker" as "worker" | "close-gate" | "successful-gate",
+	fixtureMode: "worker" as "worker" | "close-gate" | "rollback-gate" | "successful-gate",
 	gateMarkerPath: "",
 	tsxCliPath: "",
 	cliEntrypoint: "",
@@ -43,6 +44,19 @@ vi.mock("../src/cli/subprocess-launch.js", async (importOriginal) => {
 		createCliSubprocessLaunchSpec(args: readonly string[]) {
 			if (!workerLaunchTestState.capture) {
 				return (actual.createCliSubprocessLaunchSpec as (args: readonly string[]) => unknown)(args);
+			}
+			if (workerLaunchTestState.fixtureMode === "rollback-gate") {
+				const markerPath = JSON.stringify(workerLaunchTestState.gateMarkerPath);
+				const commitMarker = JSON.stringify(DAEMON_WORKER_STARTUP_GATE_COMMIT);
+				return {
+					command: process.execPath,
+					args: [
+						"--eval",
+						`const fs = require("node:fs"); const marker = fs.readFileSync(3, "utf8"); if (marker === ${commitMarker}) { fs.writeFileSync(${markerPath}, marker); setInterval(() => {}, 1000); }`,
+						"--",
+						...args,
+					],
+				};
 			}
 			if (workerLaunchTestState.fixtureMode === "close-gate") {
 				return {
@@ -269,9 +283,10 @@ describe("daemon worker supervisor monitoring", () => {
 	] as const)("keeps unidentifiable workers gated after $name fails", async (scenario) => {
 		workerLaunchTestState.capture = true;
 		workerLaunchTestState.forceMissingProcessStartId = true;
-		workerLaunchTestState.tsxCliPath = join(process.cwd(), "../../node_modules/tsx/dist/cli.mjs");
-		workerLaunchTestState.cliEntrypoint = join(process.cwd(), "src/cli.ts");
+		workerLaunchTestState.fixtureMode = "rollback-gate";
 		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-launch-gate-test-"));
+		const gateMarkerPath = join(root, "committed-gate");
+		workerLaunchTestState.gateMarkerPath = gateMarkerPath;
 		const descriptorDir = join(root, "descriptors");
 		const registryDir = join(root, "registry");
 		mkdirSync(descriptorDir, { recursive: true });
@@ -316,6 +331,7 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(workerSocketPath).toBeDefined();
 
 		expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+		expect(existsSync(gateMarkerPath)).toBe(false);
 		expect(existsSync(workerSocketPath!)).toBe(false);
 		expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);
 		expect(readdirSync(registryDir)).toEqual([]);
