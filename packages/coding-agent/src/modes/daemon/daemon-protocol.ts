@@ -37,10 +37,10 @@ import type { SessionSummary } from "./daemon-session-list.js";
  */
 
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
-export const DAEMON_PROTOCOL_VERSION = 2;
+export const DAEMON_PROTOCOL_VERSION = 3;
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
-export type DaemonProtocolVersion = typeof DAEMON_PROTOCOL_VERSION;
+export type DaemonProtocolVersion = number;
 export type DaemonCommandId = string;
 export type DaemonEventId = string;
 export type DaemonEventSequence = number;
