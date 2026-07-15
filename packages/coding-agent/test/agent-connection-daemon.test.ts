@@ -1271,6 +1271,54 @@ describe("DaemonAgentConnection", () => {
 		expect((connection as unknown as { snapshotAssemblies: Map<string, unknown> }).snapshotAssemblies.size).toBe(0);
 	});
 
+	it("rejects one failed snapshot without interrupting another session on the shared client", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const sibling = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-2");
+		await sibling.attach();
+		const siblingEvents: AgentConnectionEvent[] = [];
+		sibling.subscribe((event) => {
+			siblingEvents.push(event);
+		});
+		fakeClient.attachResultFactory = (command) => {
+			const result = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			if (command.activeSessionId !== "active-1") {
+				return result;
+			}
+			const { messages: _messages, ...snapshot } = result.snapshot;
+			queueMicrotask(() => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-failed",
+					snapshot,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_failed",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-failed",
+					error: "snapshot encoder failed",
+				});
+			});
+			return {
+				...result,
+				snapshot: { ...result.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-failed", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const failed = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+
+		await expect(failed.attach()).rejects.toThrow("snapshot encoder failed");
+		emitSequencedQueueUpdate(fakeClient, "active-2", 13);
+		await vi.waitFor(() => expect(siblingEvents).toHaveLength(1));
+
+		expect(siblingEvents[0]).toMatchObject({ type: "session_event", event: { type: "queue_update" } });
+		expect(fakeClient.closeCount).toBe(0);
+		await failed.dispose();
+		await sibling.dispose();
+	});
+
 	it("assembles chunked attach snapshots even when chunks arrive before the attach response continuation", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const messages: AgentMessage[] = [

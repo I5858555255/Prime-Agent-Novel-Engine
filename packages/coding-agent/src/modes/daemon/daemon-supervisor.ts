@@ -1954,7 +1954,21 @@ export class DaemonSupervisor {
 		} catch (error) {
 			const streamError = error instanceof Error ? error : new Error(String(error));
 			this.failWorkerSnapshotCache(worker, result.activeSessionId, streamError);
-			client.socket.destroy(streamError);
+			if (!client.socket.destroyed) {
+				try {
+					const delivered = await this.writeSnapshotRecord(client, {
+						type: "session_snapshot_failed",
+						activeSessionId: result.activeSessionId,
+						snapshotId: stream.id,
+						error: streamError.message,
+					});
+					if (!delivered && !client.socket.destroyed) {
+						client.socket.destroy(streamError);
+					}
+				} catch (deliveryError) {
+					client.socket.destroy(deliveryError instanceof Error ? deliveryError : new Error(String(deliveryError)));
+				}
+			}
 			throw streamError;
 		} finally {
 			const streamCount = client.snapshotActiveSessionCounts?.get(result.activeSessionId) ?? 1;
@@ -2374,6 +2388,49 @@ export class DaemonSupervisor {
 						this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
 					);
 				}
+			}
+			return;
+		}
+		if (outboundType === "session_snapshot_failed" && activeSessionId) {
+			try {
+				const failed = JSON.parse(frame.payload.toString("utf8")) as Extract<
+					DaemonOutbound,
+					{ type: "session_snapshot_failed" }
+				>;
+				const transcript = worker.transcriptCaches.get(activeSessionId);
+				const cachedResult = worker.snapshotCache.get(activeSessionId);
+				const expectedSnapshotId = transcript?.snapshotId ?? cachedResult?.snapshotStream?.id;
+				if (
+					failed.type !== "session_snapshot_failed" ||
+					failed.activeSessionId !== activeSessionId ||
+					typeof failed.snapshotId !== "string" ||
+					typeof failed.error !== "string" ||
+					expectedSnapshotId !== failed.snapshotId
+				) {
+					throw new Error("Worker returned an invalid snapshot failure frame");
+				}
+				this.failWorkerSnapshotCache(worker, activeSessionId, new Error(failed.error));
+				if (snapshotPurpose === "replacement" || snapshotPurpose === "catchup") {
+					for (const client of this.clients) {
+						if (!client.attachedActiveSessionIds.has(activeSessionId)) continue;
+						if (snapshotPurpose === "replacement" && client.capabilities.has("chunked_snapshot")) continue;
+						this.queueCatchup(
+							client,
+							activeSessionId,
+							snapshotPurpose === "replacement" ? "replacement" : "resync",
+						);
+						void this.catchUpClient(client).catch((error) =>
+							this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
+						);
+					}
+				}
+			} catch (error) {
+				this.failWorkerSnapshotCache(
+					worker,
+					activeSessionId,
+					error instanceof Error ? error : new Error(String(error)),
+					true,
+				);
 			}
 			return;
 		}

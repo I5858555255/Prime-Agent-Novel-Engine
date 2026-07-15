@@ -2893,8 +2893,26 @@ export class AgentDaemon {
 			}
 			const streamError = error instanceof Error ? error : new Error(String(error));
 			transcript.markFailed?.(streamError);
-			transcript.dispose?.();
-			client.socket.destroy(streamError);
+			if (!client.socket.destroyed) {
+				try {
+					const delivered = await this.writeWorkerSnapshotRecord(
+						client,
+						{
+							type: "session_snapshot_failed",
+							activeSessionId: result.activeSessionId,
+							snapshotId: stream.id,
+							error: streamError.message,
+						},
+						purpose,
+						transferSignal,
+					);
+					if (!delivered && !transferSignal.aborted && !client.socket.destroyed) {
+						client.socket.destroy(streamError);
+					}
+				} catch (deliveryError) {
+					client.socket.destroy(deliveryError instanceof Error ? deliveryError : new Error(String(deliveryError)));
+				}
+			}
 			throw streamError;
 		} finally {
 			finishClientSnapshotStreaming(client, result.activeSessionId);

@@ -931,7 +931,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			return;
 		}
 		if ("snapshotId" in message && this.ignoredSnapshotIds.has(message.snapshotId)) {
-			if (message.type === "session_snapshot_end") {
+			if (message.type === "session_snapshot_end" || message.type === "session_snapshot_failed") {
 				this.ignoredSnapshotIds.delete(message.snapshotId);
 			}
 			return;
@@ -947,6 +947,12 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		if (message.type === "session_snapshot_end") {
 			await this.completeSnapshotAssembly(message);
+			return;
+		}
+		if (message.type === "session_snapshot_failed") {
+			const assembly = this.getSnapshotAssembly(message.snapshotId);
+			this.rejectSnapshotAssembly(message.snapshotId, assembly, new Error(message.error));
+			this.ignoreSnapshotId(message.snapshotId);
 			return;
 		}
 		if (this.isStaleSequencedMessage(message)) {
