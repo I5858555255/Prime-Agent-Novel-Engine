@@ -93,6 +93,10 @@ export class Box implements Component {
 					...region,
 					line: region.line + lineOffset + this.paddingY,
 					col: region.col + this.paddingX,
+					tableTop: region.tableTop + lineOffset + this.paddingY,
+					tableBottom: region.tableBottom + lineOffset + this.paddingY,
+					tableLeft: region.tableLeft + this.paddingX,
+					tableRight: region.tableRight + this.paddingX,
 				});
 			}
 			for (const line of lines) {

@@ -364,10 +364,11 @@ describe("Markdown component", () => {
 
 		it("should expose wrapped table cell boundaries without changing rendered text", () => {
 			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+			const url = "https://example.com/this/is/a/long/path";
 			const markdown = new Markdown(
 				`| URL | Status |
 | --- | --- |
-| https://example.com/this/is/a/long/path | ready |`,
+| ${url} | ready |`,
 				0,
 				0,
 				defaultMarkdownTheme,
@@ -386,6 +387,7 @@ describe("Markdown component", () => {
 				"metadata markers must be stripped",
 			);
 			assert.ok(urlRegions.every((region) => region.table === urlRegions[0].table));
+			assert.ok(urlRegions.every((region) => region.content === url));
 			for (let i = 0; i < urlRegions.length; i++) {
 				assert.strictEqual(urlRegions[i].line, statusRegions[i].line);
 				assert.ok(urlRegions[i].col + urlRegions[i].width < statusRegions[i].col);

@@ -52,13 +52,24 @@ interface FrameSelectionSnapshot {
 	visibleHeight: number;
 }
 
-interface ActiveTableCell {
-	table: object;
+interface TableCellPosition {
 	row: number;
 	column: number;
 }
 
-type SelectionMode = "transcript" | "table-cell" | "frame";
+interface ActiveTableSelection {
+	table: object;
+	anchor: TableCellPosition;
+}
+
+interface TableSelectionRange {
+	fromRow: number;
+	toRow: number;
+	fromColumn: number;
+	toColumn: number;
+}
+
+type SelectionMode = "transcript" | "table" | "frame";
 
 export class FullscreenViewport {
 	private scrollTop = 0;
@@ -75,7 +86,7 @@ export class FullscreenViewport {
 	private frameSelectionRegions: ReadonlyArray<FrameSelectionRegion> = [];
 	private tableCellSelectionRegions: ReadonlyArray<TableCellSelectionRegion> = [];
 	private activeFrameSelection: FrameSelectionSnapshot | null = null;
-	private activeTableCell: ActiveTableCell | null = null;
+	private activeTableSelection: ActiveTableSelection | null = null;
 	private selectionAnchor: SelectionPoint | null = null;
 	private selectionHead: SelectionPoint | null = null;
 	private selectionMode: SelectionMode | null = null;
@@ -139,14 +150,14 @@ export class FullscreenViewport {
 	}
 
 	private highlightSelection(window: string[]): void {
-		if (this.selectionMode !== "transcript" && this.selectionMode !== "table-cell") return;
+		if (this.selectionMode !== "transcript" && this.selectionMode !== "table") return;
 		const sel = this.orderedSelection();
 		if (!sel) return;
 		for (let i = 0; i < window.length; i++) {
 			const lineIndex = this.scrollTop + i;
 			const spans =
-				this.selectionMode === "table-cell"
-					? this.selectedTableCellSpans(lineIndex, sel)
+				this.selectionMode === "table"
+					? this.selectedTableSpans(lineIndex, sel)
 					: [this.selectionSpan(lineIndex, sel)].filter((span): span is ColumnSpan => span !== null);
 			for (let spanIndex = spans.length - 1; spanIndex >= 0; spanIndex--) {
 				window[i] = this.highlightLine(window[i], spans[spanIndex]);
@@ -164,30 +175,32 @@ export class FullscreenViewport {
 		const point = { line, col: Math.max(0, screenCol) };
 		this.selectionAnchor = point;
 		this.selectionHead = { ...point };
-		const tableRegion = this.tableCellRegionAt(point);
-		if (tableRegion) {
-			this.activeTableCell = {
-				table: tableRegion.table,
-				row: tableRegion.row,
-				column: tableRegion.column,
-			};
-			this.selectionMode = "table-cell";
+		const table = this.tableAtPoint(point);
+		const tableCell = table ? this.closestTableCell(table, point) : null;
+		if (table && tableCell) {
+			this.activeTableSelection = { table, anchor: tableCell };
+			this.selectionMode = "table";
 		} else {
-			this.activeTableCell = null;
+			this.activeTableSelection = null;
 			this.selectionMode = "transcript";
 		}
 		return true;
 	}
 
 	extendSelection(screenRow: number, screenCol: number): void {
-		if (!this.selectionAnchor || (this.selectionMode !== "transcript" && this.selectionMode !== "table-cell")) return;
+		if (!this.selectionAnchor || (this.selectionMode !== "transcript" && this.selectionMode !== "table")) return;
 		const line = this.transcriptLineForScreenRow(screenRow, true);
 		if (line === null) return;
 		this.selectionHead = { line, col: Math.max(0, screenCol) };
 	}
 
 	selectionAutoScrollDirection(screenRow: number): SelectionScrollDirection | null {
-		if (!this.selectionAnchor || !this.selectionHead || this.selectionMode !== "transcript") return null;
+		if (
+			!this.selectionAnchor ||
+			!this.selectionHead ||
+			(this.selectionMode !== "transcript" && this.selectionMode !== "table")
+		)
+			return null;
 		const bounds = this.transcriptScreenBounds();
 		if (!bounds) return null;
 		if (this.selectionHead.line < this.selectionAnchor.line && screenRow <= bounds.firstRow && this.scrollTop > 0) {
@@ -204,7 +217,8 @@ export class FullscreenViewport {
 	}
 
 	scrollSelection(direction: SelectionScrollDirection, screenCol: number): boolean {
-		if (!this.selectionAnchor || this.selectionMode !== "transcript") return false;
+		if (!this.selectionAnchor || (this.selectionMode !== "transcript" && this.selectionMode !== "table"))
+			return false;
 		const previousScrollTop = this.scrollTop;
 		this.scrollBy(direction);
 		if (this.scrollTop === previousScrollTop) return false;
@@ -216,14 +230,14 @@ export class FullscreenViewport {
 
 	/** Finish the selection and return its plain text (null when empty). */
 	endSelection(): string | null {
-		if (this.selectionMode !== "transcript" && this.selectionMode !== "table-cell") {
+		if (this.selectionMode !== "transcript" && this.selectionMode !== "table") {
 			this.clearSelection();
 			return null;
 		}
 		const sel = this.orderedSelection();
 		const text = sel
-			? this.selectionMode === "table-cell"
-				? this.extractTableCellSelectionText(this.lastTranscript, sel)
+			? this.selectionMode === "table"
+				? this.extractTableSelectionText(this.lastTranscript, sel)
 				: this.extractSelectionText(this.lastTranscript, sel)
 			: null;
 		this.clearSelection();
@@ -233,7 +247,7 @@ export class FullscreenViewport {
 	extendActiveSelection(screenRow: number, screenCol: number): void {
 		if (this.selectionMode === "frame") {
 			this.extendFrameSelection(screenRow, screenCol);
-		} else if (this.selectionMode === "transcript" || this.selectionMode === "table-cell") {
+		} else if (this.selectionMode === "transcript" || this.selectionMode === "table") {
 			this.extendSelection(screenRow, screenCol);
 		}
 	}
@@ -242,7 +256,7 @@ export class FullscreenViewport {
 		if (this.selectionMode === "frame") {
 			return this.endFrameSelection();
 		}
-		if (this.selectionMode === "transcript" || this.selectionMode === "table-cell") {
+		if (this.selectionMode === "transcript" || this.selectionMode === "table") {
 			return this.endSelection();
 		}
 		this.clearSelection();
@@ -378,33 +392,82 @@ export class FullscreenViewport {
 		);
 	}
 
-	private tableCellRegionAt(point: SelectionPoint): TableCellSelectionRegion | null {
-		return (
-			this.tableCellSelectionRegions.find(
-				(region) => region.line === point.line && point.col >= region.col && point.col < region.col + region.width,
-			) ?? null
-		);
+	private tableRegions(table: object): TableCellSelectionRegion[] {
+		return this.tableCellSelectionRegions.filter((region) => region.table === table);
 	}
 
-	private selectedTableCellSpans(
-		lineIndex: number,
-		sel: { start: SelectionPoint; end: SelectionPoint },
-	): ColumnSpan[] {
-		const activeCell = this.activeTableCell;
-		const selectionSpan = this.selectionSpan(lineIndex, sel);
-		if (!activeCell || !selectionSpan) return [];
+	private tableAtPoint(point: SelectionPoint): object | null {
+		const tables = new Set(this.tableCellSelectionRegions.map((region) => region.table));
+		for (const table of tables) {
+			const region = this.tableRegions(table)[0];
+			if (
+				region &&
+				point.line >= region.tableTop &&
+				point.line <= region.tableBottom &&
+				point.col >= region.tableLeft &&
+				point.col < region.tableRight
+			) {
+				return table;
+			}
+		}
+		return null;
+	}
+
+	private closestTableCell(table: object, point: SelectionPoint): TableCellPosition | null {
+		let closest: TableCellPosition | null = null;
+		let closestLineDistance = Number.POSITIVE_INFINITY;
+		let closestColumnDistance = Number.POSITIVE_INFINITY;
+		for (const region of this.tableRegions(table)) {
+			const lineDistance = Math.abs(point.line - region.line);
+			const end = region.col + region.width;
+			const columnDistance = point.col < region.col ? region.col - point.col : point.col > end ? point.col - end : 0;
+			if (
+				lineDistance < closestLineDistance ||
+				(lineDistance === closestLineDistance && columnDistance < closestColumnDistance)
+			) {
+				closest = { row: region.row, column: region.column };
+				closestLineDistance = lineDistance;
+				closestColumnDistance = columnDistance;
+			}
+		}
+		return closest;
+	}
+
+	private activeTableRange(): TableSelectionRange | null {
+		const active = this.activeTableSelection;
+		const head = this.selectionHead;
+		if (!active || !head) return null;
+		const headCell = this.closestTableCell(active.table, head);
+		if (!headCell) return null;
+		return {
+			fromRow: Math.min(active.anchor.row, headCell.row),
+			toRow: Math.max(active.anchor.row, headCell.row),
+			fromColumn: Math.min(active.anchor.column, headCell.column),
+			toColumn: Math.max(active.anchor.column, headCell.column),
+		};
+	}
+
+	private selectedTableSpans(lineIndex: number, sel: { start: SelectionPoint; end: SelectionPoint }): ColumnSpan[] {
+		const active = this.activeTableSelection;
+		const range = this.activeTableRange();
+		if (!active || !range) return [];
+		const singleCell = range.fromRow === range.toRow && range.fromColumn === range.toColumn;
+		const selectionSpan = singleCell ? this.selectionSpan(lineIndex, sel) : null;
+		if (singleCell && !selectionSpan) return [];
 
 		const spans: ColumnSpan[] = [];
 		for (const region of this.tableCellSelectionRegions) {
 			if (
 				region.line !== lineIndex ||
-				region.table !== activeCell.table ||
-				region.row !== activeCell.row ||
-				region.column !== activeCell.column
+				region.table !== active.table ||
+				region.row < range.fromRow ||
+				region.row > range.toRow ||
+				region.column < range.fromColumn ||
+				region.column > range.toColumn
 			)
 				continue;
-			const from = Math.max(selectionSpan.from, region.col);
-			const to = Math.min(selectionSpan.to, region.col + region.width);
+			const from = selectionSpan ? Math.max(selectionSpan.from, region.col) : region.col;
+			const to = selectionSpan ? Math.min(selectionSpan.to, region.col + region.width) : region.col + region.width;
 			if (to > from) spans.push({ from, to });
 		}
 		return spans.sort((a, b) => a.from - b.from);
@@ -493,14 +556,55 @@ export class FullscreenViewport {
 		return text.trim().length > 0 ? text : null;
 	}
 
-	private extractTableCellSelectionText(
+	private compareSelectionPoints(a: SelectionPoint, b: SelectionPoint): number {
+		return a.line === b.line ? a.col - b.col : a.line - b.line;
+	}
+
+	private extractTableSelectionText(
 		sourceLines: string[],
 		sel: { start: SelectionPoint; end: SelectionPoint },
 	): string | null {
+		const active = this.activeTableSelection;
+		const range = this.activeTableRange();
+		if (!active || !range) return null;
+
+		if (range.fromRow !== range.toRow || range.fromColumn !== range.toColumn) {
+			const contents = new Map<string, string>();
+			for (const region of this.tableRegions(active.table)) {
+				contents.set(`${region.row}:${region.column}`, region.content);
+			}
+			const rows: string[] = [];
+			for (let row = range.fromRow; row <= range.toRow; row++) {
+				const cells: string[] = [];
+				for (let column = range.fromColumn; column <= range.toColumn; column++) {
+					cells.push(contents.get(`${row}:${column}`) ?? "");
+				}
+				rows.push(cells.join("\t"));
+			}
+			const text = rows.join("\n");
+			return text.trim().length > 0 ? text : null;
+		}
+
+		const cellRegions = this.tableRegions(active.table)
+			.filter((region) => region.row === range.fromRow && region.column === range.fromColumn)
+			.sort((a, b) => a.line - b.line || a.segment - b.segment);
+		const first = cellRegions[0];
+		const last = cellRegions.at(-1);
+		if (first && last) {
+			const cellStart = { line: first.line, col: first.col };
+			const cellEnd = { line: last.line, col: last.col + last.width };
+			if (
+				this.compareSelectionPoints(sel.start, cellStart) <= 0 &&
+				this.compareSelectionPoints(sel.end, cellEnd) >= 0
+			) {
+				return first.content.trim().length > 0 ? first.content : null;
+			}
+		}
+
 		const lines: string[] = [];
 		for (let lineIndex = sel.start.line; lineIndex <= sel.end.line; lineIndex++) {
 			const line = sourceLines[lineIndex] ?? "";
-			const spans = this.selectedTableCellSpans(lineIndex, sel);
+			const spans = this.selectedTableSpans(lineIndex, sel);
 			if (spans.length === 0) continue;
 			const parts = spans.map((span) => stripAnsi(sliceByColumn(line, span.from, Math.max(0, span.to - span.from))));
 			lines.push(parts.join("").trimEnd());
@@ -514,7 +618,7 @@ export class FullscreenViewport {
 		this.selectionHead = null;
 		this.selectionMode = null;
 		this.activeFrameSelection = null;
-		this.activeTableCell = null;
+		this.activeTableSelection = null;
 	}
 
 	hasSelection(): boolean {

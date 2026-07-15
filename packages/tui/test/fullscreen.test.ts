@@ -4,7 +4,6 @@ import { Box } from "../src/components/box.js";
 import { Markdown } from "../src/components/markdown.js";
 import type { TerminalStopOptions } from "../src/terminal.js";
 import { type Component, Container, TUI } from "../src/tui.js";
-import { sliceByColumn, stripAnsi } from "../src/utils.js";
 import { defaultMarkdownTheme } from "./test-themes.js";
 import { VirtualTerminal } from "./virtual-terminal.js";
 
@@ -681,9 +680,7 @@ describe("TUI fullscreen mode", () => {
 
 		const first = regions[0];
 		const last = regions.at(-1)!;
-		const expected = regions
-			.map((region) => stripAnsi(sliceByColumn(lines[region.line], region.col, region.width)).trimEnd())
-			.join("\n");
+		const expected = first.content;
 		terminal.sendInput(`\x1b[<0;${first.col + 1};${first.line + 1}M`);
 		terminal.sendInput(`\x1b[<32;${last.col + last.width + 1};${last.line + 1}M`);
 		await terminal.waitForRender();
@@ -693,6 +690,48 @@ describe("TUI fullscreen mode", () => {
 		await terminal.waitForRender();
 		assert.deepStrictEqual(copies, [expected]);
 		assert.ok(!copies[0].includes("should-not-copy"));
+
+		tui.stop();
+	});
+
+	it("copies table selections as tab-separated content without borders", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 12);
+		const tui = new TUI(terminal);
+		const markdown = new Markdown(
+			`| Name | Score | City |
+| --- | --- | --- |
+| Avery | 87 | Seattle |
+| Jordan | 92 | Austin |
+| Morgan | 74 | Boston |`,
+			0,
+			0,
+			defaultMarkdownTheme,
+		);
+		const box = new Box(1, 0);
+		box.addChild(markdown);
+		const chat = new Container();
+		chat.addChild(box);
+		const dock = new TestComponent();
+		dock.lines = ["> prompt", "footer"];
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.addChild(chat);
+		tui.addChild(dock);
+		tui.start();
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		const tableRegions = chat.getSelectionRegions();
+		const { tableTop: top, tableBottom: bottom, tableLeft: left, tableRight: right } = tableRegions[0];
+		terminal.sendInput(`\x1b[<0;${left + 1};${top + 1}M`);
+		terminal.sendInput(`\x1b[<32;${right};${bottom + 1}M`);
+		await terminal.waitForRender();
+		assert.ok(terminal.getWrites().includes("\x1b[7m"), "table cell contents should be highlighted");
+
+		terminal.sendInput(`\x1b[<0;${right};${bottom + 1}m`);
+		await terminal.waitForRender();
+		assert.deepStrictEqual(copies, ["Name\tScore\tCity\nAvery\t87\tSeattle\nJordan\t92\tAustin\nMorgan\t74\tBoston"]);
+		assert.ok(!/[┌┬┐├┼┤└┴┘│─]/.test(copies[0]));
 
 		tui.stop();
 	});

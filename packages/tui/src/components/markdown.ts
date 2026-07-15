@@ -9,7 +9,7 @@ import {
 } from "../selection-metadata.js";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
 import type { Component } from "../tui.js";
-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
+import { applyBackgroundToLine, stripAnsi, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
@@ -957,17 +957,17 @@ export class Markdown implements Component {
 		lines.push(markTableStart(`┌─${topBorderCells.join("─┬─")}─┐`));
 
 		// Render header with wrapping
-		const headerCellLines: string[][] = token.header.map((cell, i) => {
+		const headerCells = token.header.map((cell, i) => {
 			const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-			return this.wrapCellText(text, columnWidths[i]);
+			return { lines: this.wrapCellText(text, columnWidths[i]), content: stripAnsi(text) };
 		});
-		const headerLineCount = Math.max(...headerCellLines.map((c) => c.length));
+		const headerLineCount = Math.max(...headerCells.map((cell) => cell.lines.length));
 
 		for (let lineIdx = 0; lineIdx < headerLineCount; lineIdx++) {
-			const rowParts = headerCellLines.map((cellLines, colIdx) => {
-				const text = cellLines[lineIdx] || "";
+			const rowParts = headerCells.map((cell, colIdx) => {
+				const text = cell.lines[lineIdx] || "";
 				const padded = text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				return markTableCell(this.theme.bold(padded), 0, colIdx, lineIdx);
+				return markTableCell(this.theme.bold(padded), 0, colIdx, lineIdx, cell.content);
 			});
 			lines.push(`│ ${rowParts.join(" │ ")} │`);
 		}
@@ -980,17 +980,17 @@ export class Markdown implements Component {
 		// Render rows with wrapping
 		for (let rowIndex = 0; rowIndex < token.rows.length; rowIndex++) {
 			const row = token.rows[rowIndex];
-			const rowCellLines: string[][] = row.map((cell, i) => {
+			const rowCells = row.map((cell, i) => {
 				const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-				return this.wrapCellText(text, columnWidths[i]);
+				return { lines: this.wrapCellText(text, columnWidths[i]), content: stripAnsi(text) };
 			});
-			const rowLineCount = Math.max(...rowCellLines.map((c) => c.length));
+			const rowLineCount = Math.max(...rowCells.map((cell) => cell.lines.length));
 
 			for (let lineIdx = 0; lineIdx < rowLineCount; lineIdx++) {
-				const rowParts = rowCellLines.map((cellLines, colIdx) => {
-					const text = cellLines[lineIdx] || "";
+				const rowParts = rowCells.map((cell, colIdx) => {
+					const text = cell.lines[lineIdx] || "";
 					const padded = text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-					return markTableCell(padded, rowIndex + 1, colIdx, lineIdx);
+					return markTableCell(padded, rowIndex + 1, colIdx, lineIdx, cell.content);
 				});
 				lines.push(`│ ${rowParts.join(" │ ")} │`);
 			}

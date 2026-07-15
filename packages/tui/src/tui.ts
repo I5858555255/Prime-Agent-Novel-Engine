@@ -273,7 +273,12 @@ export class Container implements Component {
 			const lineOffset = lines.length;
 			const childLines = child.render(width);
 			for (const region of child.getSelectionRegions?.() ?? []) {
-				selectionRegions.push({ ...region, line: region.line + lineOffset });
+				selectionRegions.push({
+					...region,
+					line: region.line + lineOffset,
+					tableTop: region.tableTop + lineOffset,
+					tableBottom: region.tableBottom + lineOffset,
+				});
 			}
 			for (const line of childLines) {
 				lines.push(line);
@@ -1382,7 +1387,12 @@ export class TUI extends Container {
 			const lineOffset = transcript.length;
 			const componentLines = component.render(width);
 			for (const region of component.getSelectionRegions?.() ?? []) {
-				selectionRegions.push({ ...region, line: region.line + lineOffset });
+				selectionRegions.push({
+					...region,
+					line: region.line + lineOffset,
+					tableTop: region.tableTop + lineOffset,
+					tableBottom: region.tableBottom + lineOffset,
+				});
 			}
 			for (const line of componentLines) {
 				transcript.push(line);
