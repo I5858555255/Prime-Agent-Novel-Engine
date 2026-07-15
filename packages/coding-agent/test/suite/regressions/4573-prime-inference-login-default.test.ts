@@ -78,10 +78,16 @@ describe("ENG-4573 Prime Inference login default", () => {
 			contextWindow: 1048576,
 			maxTokens: 101376,
 		};
+		const placeholderModel: AgentConnectionModel = {
+			...fallbackModel,
+			id: "unknown",
+			name: "unknown",
+			provider: "unknown",
+		};
 		const order: string[] = [];
 		const fakeThis = Object.create(InteractiveMode.prototype) as LoginHarness;
 		fakeThis.invalidateConnectionModels = vi.fn(() => order.push("invalidate"));
-		fakeThis.getCurrentModel = vi.fn(() => undefined);
+		fakeThis.getCurrentModel = vi.fn(() => placeholderModel);
 		fakeThis.getConnectionAvailableModels = vi.fn(async () => {
 			order.push("refresh");
 			return [fallbackModel];
