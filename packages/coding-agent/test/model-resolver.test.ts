@@ -110,6 +110,29 @@ describe("parseModelPattern", () => {
 			expect(result.warning).toBeUndefined();
 		});
 
+		test("prefers the Prime Inference default when a fuzzy pattern matches multiple routes", () => {
+			const primeInferenceModel: Model<"anthropic-messages"> = {
+				...mockModels[0],
+				id: "z-ai/glm-5.2",
+				name: "GLM 5.2",
+				provider: "prime-inference",
+				baseUrl: "https://api.pinference.ai/api/v1",
+			};
+			const huggingFaceModel: Model<"anthropic-messages"> = {
+				...primeInferenceModel,
+				id: "zai-org/GLM-5.2",
+				provider: "huggingface",
+				baseUrl: "https://router.huggingface.co/v1",
+			};
+
+			const result = parseModelPattern("glm-5.2", [huggingFaceModel, primeInferenceModel]);
+
+			expect(result.model).toBe(primeInferenceModel);
+			expect(parseModelPattern("huggingface/zai-org/GLM-5.2", [primeInferenceModel, huggingFaceModel]).model).toBe(
+				huggingFaceModel,
+			);
+		});
+
 		test("no match returns undefined model and thinking level", () => {
 			const result = parseModelPattern("nonexistent", allModels);
 			expect(result.model).toBeUndefined();

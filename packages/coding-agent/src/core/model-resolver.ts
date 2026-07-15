@@ -139,6 +139,23 @@ function tryMatchModel(modelPattern: string, availableModels: Model<Api>[]): Mod
 		return undefined;
 	}
 
+	const normalizedPattern = modelPattern.toLowerCase();
+	const primeInferenceDefault = matches.find((model) => {
+		if (model.provider !== "prime-inference" || model.id !== PRIME_INFERENCE_DEFAULT_MODEL_ID) {
+			return false;
+		}
+
+		const unqualifiedId = model.id.slice(model.id.lastIndexOf("/") + 1).toLowerCase();
+		return (
+			normalizedPattern === model.id.toLowerCase() ||
+			normalizedPattern === unqualifiedId ||
+			normalizedPattern === model.name?.toLowerCase()
+		);
+	});
+	if (primeInferenceDefault) {
+		return primeInferenceDefault;
+	}
+
 	// Separate into aliases and dated versions
 	const aliases = matches.filter((m) => isAlias(m.id));
 	const datedVersions = matches.filter((m) => !isAlias(m.id));
