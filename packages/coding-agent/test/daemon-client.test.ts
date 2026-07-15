@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DaemonClient, getDaemonSocketCloseReason } from "../src/modes/daemon/daemon-client.js";
+import { DAEMON_PROTOCOL_VERSION } from "../src/modes/daemon/daemon-protocol.js";
 
 const netMock = vi.hoisted(() => {
 	type Listener = (...args: unknown[]) => void;
@@ -85,7 +86,7 @@ vi.mock("node:net", () => ({
 	createConnection: netMock.createConnection,
 }));
 
-function emitHello(socket: (typeof netMock.sockets)[number], version = 2): void {
+function emitHello(socket: (typeof netMock.sockets)[number], version = DAEMON_PROTOCOL_VERSION): void {
 	socket.emit(
 		"data",
 		`${JSON.stringify({
@@ -213,7 +214,7 @@ describe("DaemonClient", () => {
 		expect(envelope).toMatchObject({
 			type: "command",
 			clientId: expect.any(String),
-			protocol: { name: "prime-agent.daemon", version: 2 },
+			protocol: { name: "prime-agent.daemon", version: DAEMON_PROTOCOL_VERSION },
 			command: { type: "attach", activeSessionId: "active-1" },
 		});
 		expect(envelope.command).not.toHaveProperty("daemonSessionId");
@@ -468,7 +469,7 @@ describe("DaemonClient", () => {
 		client.close();
 	});
 
-	it("acknowledges durable mutating-command results on protocol v2", async () => {
+	it("acknowledges durable mutating-command results on the current protocol", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
 		const connect = client.connect();
 		const socket = netMock.sockets[0]!;
@@ -639,7 +640,7 @@ describe("DaemonClient", () => {
 			`${JSON.stringify({
 				type: "daemon_hello",
 				socketPath: "/tmp/prime-agent.sock",
-				protocol: { name: "prime-agent.daemon", version: 2 },
+				protocol: { name: "prime-agent.daemon", version: DAEMON_PROTOCOL_VERSION },
 				clientId: "server-client-2",
 				serverCapabilities: [],
 			})}\n`,
@@ -721,7 +722,7 @@ describe("DaemonClient", () => {
 			`${JSON.stringify({
 				type: "daemon_hello",
 				socketPath: "/tmp/prime-agent.sock",
-				protocol: { name: "prime-agent.daemon", version: 2 },
+				protocol: { name: "prime-agent.daemon", version: DAEMON_PROTOCOL_VERSION },
 				clientId: "server-client-2",
 				serverCapabilities: [],
 			})}\n`,

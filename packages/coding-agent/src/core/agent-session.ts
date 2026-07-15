@@ -6076,6 +6076,7 @@ export class AgentSession {
 			sessionDir: options.sessionDir,
 			model: options.model,
 			thinkingLevel: this.thinkingLevel,
+			serviceTier: this.serviceTier,
 			scopedModels: [...this._scopedModels],
 			activeToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
@@ -6126,12 +6127,16 @@ export class AgentSession {
 		}
 		childSessionManager.appendModelChange(options.model.provider, options.model.id);
 		childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
+		const serviceTier =
+			options.serviceTier === "priority" && !supportsFastMode(options.model) ? "default" : options.serviceTier;
+		childSessionManager.appendServiceTierChange(serviceTier);
 
 		const childAgent = new Agent({
 			initialState: {
 				systemPrompt: "",
 				model: options.model,
 				thinkingLevel: options.thinkingLevel,
+				serviceTier,
 				tools: [],
 			},
 			convertToLlm: this.agent.convertToLlm,

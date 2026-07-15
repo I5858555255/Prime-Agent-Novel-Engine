@@ -9,6 +9,7 @@ import {
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 } from "../src/config.js";
 import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
+import { DAEMON_PROTOCOL_VERSION } from "../src/modes/daemon/daemon-protocol.js";
 import { handlePackageCommand } from "../src/package-manager-cli.js";
 
 interface MockSessionSummary {
@@ -161,7 +162,7 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 		}
 
 		async waitForHello(): Promise<{ protocol: { version: number } }> {
-			return { protocol: { version: 2 } };
+			return { protocol: { version: DAEMON_PROTOCOL_VERSION } };
 		}
 
 		async request(request: MockDaemonRequest): Promise<MockDaemonResponse> {
