@@ -69,7 +69,7 @@ describe("SelectList", () => {
 		assert.ok(rendered.every((line) => visibleWidth(line) <= 50));
 	});
 
-	it("keeps the detail area height stable while selection changes", () => {
+	it("sizes the detail area to the selected description", () => {
 		const items = [
 			{
 				value: "long",
@@ -84,8 +84,8 @@ describe("SelectList", () => {
 		list.setSelectedIndex(1);
 		const shortSelection = list.render(32);
 
-		assert.equal(shortSelection.length, longSelection.length);
-		assert.ok(shortSelection.some((line) => line.includes("Short description")));
+		assert.ok(shortSelection.length < longSelection.length);
+		assert.equal(shortSelection.at(-1)?.trim(), "Short description");
 	});
 
 	it("keeps descriptions aligned when the primary text is truncated", () => {

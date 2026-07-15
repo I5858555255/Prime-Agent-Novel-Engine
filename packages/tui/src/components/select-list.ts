@@ -222,20 +222,14 @@ export class SelectList implements Component {
 	}
 
 	private renderSelectedDescription(lines: string[], width: number): void {
+		const description = this.filteredItems[this.selectedIndex]?.description?.trim();
+		if (!description) return;
+
 		const indent = width >= 4 ? "  " : "";
 		const contentWidth = Math.max(1, width - visibleWidth(indent) - 2);
-		const wrappedDescriptions = this.filteredItems.map((item) => {
-			const description = item.description?.trim();
-			return description ? wrapTextWithAnsi(description, contentWidth) : [];
-		});
-		const reservedLines = wrappedDescriptions.reduce((max, description) => Math.max(max, description.length), 0);
-		if (reservedLines === 0) return;
-
 		lines.push("");
-		const selectedDescription = wrappedDescriptions[this.selectedIndex] ?? [];
-		for (let index = 0; index < reservedLines; index++) {
-			const line = selectedDescription[index];
-			lines.push(line === undefined ? "" : this.theme.description(indent + line));
+		for (const line of wrapTextWithAnsi(description, contentWidth)) {
+			lines.push(this.theme.description(indent + line));
 		}
 	}
 

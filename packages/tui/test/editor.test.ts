@@ -2016,6 +2016,33 @@ describe("Editor component", () => {
 	});
 
 	describe("Autocomplete", () => {
+		it("shows suggestions in an overlay without changing editor height", async () => {
+			const tui = createTestTUI(60, 24);
+			const editor = new Editor(tui, defaultEditorTheme);
+			tui.setFocus(editor);
+			editor.setAutocompleteProvider({
+				getSuggestions: async () => ({
+					items: [
+						{ value: "/model", label: "model", description: "Change model" },
+						{ value: "/help", label: "help", description: "Show help" },
+					],
+					prefix: "/",
+				}),
+				applyCompletion,
+			});
+			const editorHeight = editor.render(60).length;
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+
+			assert.equal(editor.render(60).length, editorHeight);
+			assert.equal(tui.hasOverlay(), true);
+			assert.ok(!editor.render(60).some((line) => line.includes("Change model")));
+
+			editor.handleInput("\x1b");
+			assert.equal(tui.hasOverlay(), false);
+		});
+
 		it("auto-applies single force-file suggestion without showing menu", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 

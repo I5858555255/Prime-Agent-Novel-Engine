@@ -4,7 +4,7 @@ import { getKeybindings } from "../keybindings.js";
 import { decodePrintableKey, matchesKey } from "../keys.js";
 import { KillRing } from "../kill-ring.js";
 import { getSlashCommandContext, type SlashCommandContext } from "../slash-command-context.js";
-import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.js";
+import { type Component, CURSOR_MARKER, type Focusable, type OverlayHandle, type TUI } from "../tui.js";
 import { UndoStack } from "../undo-stack.js";
 import { getSegmenter, isPunctuationChar, isWhitespaceChar, truncateToWidth, visibleWidth } from "../utils.js";
 import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.js";
@@ -248,6 +248,7 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 };
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
+let autocompleteAnchorId = 0;
 
 export class Editor implements Component, Focusable {
 	private state: EditorState = {
@@ -287,6 +288,12 @@ export class Editor implements Component, Focusable {
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
+	private autocompleteOverlay?: OverlayHandle;
+	private readonly autocompleteAnchorMarker = `\x1b_pi:autocomplete:${++autocompleteAnchorId}\x07`;
+	private readonly autocompleteOverlayComponent: Component = {
+		render: (width) => this.renderAutocompleteOverlay(width),
+		invalidate: () => this.autocompleteList?.invalidate(),
+	};
 
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
@@ -502,7 +509,13 @@ export class Editor implements Component, Focusable {
 		// No cached state to invalidate currently
 	}
 
-	render(width: number): string[] {
+	private getRenderMetrics(width: number): {
+		useBackgroundSurface: boolean;
+		paddingX: number;
+		promptPrefixText: string;
+		promptPrefixWidth: number;
+		inputWidth: number;
+	} {
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const useBackgroundSurface = this.backgroundColor !== undefined;
 		const configuredPaddingX = Math.min(this.paddingX, maxPadding);
@@ -512,7 +525,19 @@ export class Editor implements Component, Focusable {
 		const contentWidth = Math.max(1, width - paddingX * 2);
 		const promptPrefixText = this.getPromptPrefix();
 		const promptPrefixWidth = Math.min(visibleWidth(promptPrefixText), Math.max(0, contentWidth - 1));
-		const inputWidth = Math.max(1, contentWidth - promptPrefixWidth);
+
+		return {
+			useBackgroundSurface,
+			paddingX,
+			promptPrefixText,
+			promptPrefixWidth,
+			inputWidth: Math.max(1, contentWidth - promptPrefixWidth),
+		};
+	}
+
+	render(width: number): string[] {
+		const { useBackgroundSurface, paddingX, promptPrefixText, promptPrefixWidth, inputWidth } =
+			this.getRenderMetrics(width);
 		const promptPrefix =
 			promptPrefixWidth > 0 ? this.formatPromptPrefix(truncateToWidth(promptPrefixText, promptPrefixWidth, "")) : "";
 
@@ -578,6 +603,9 @@ export class Editor implements Component, Focusable {
 		} else {
 			const line = this.scrollOffset > 0 ? this.borderColor(` ↑ ${this.scrollOffset} more`) : "";
 			result.push(renderSurfaceLine(truncateToWidth(line, width)));
+		}
+		if (this.autocompleteOverlay && this.focused) {
+			result[0] = this.autocompleteAnchorMarker + result[0];
 		}
 
 		// Render each visible layout line
@@ -652,19 +680,21 @@ export class Editor implements Component, Focusable {
 			result.push(renderSurfaceLine(truncateToWidth(line, width)));
 		}
 
-		// Add autocomplete list if active
-		if (this.autocompleteState && this.autocompleteList) {
-			const autocompleteResult = this.autocompleteList.render(inputWidth);
-			const promptPrefixPadding = " ".repeat(promptPrefixWidth);
-			for (const line of autocompleteResult) {
-				const lineWidth = visibleWidth(line);
-				const linePadding = " ".repeat(Math.max(0, inputWidth - lineWidth));
-				const contentLine = `${promptLeadingPadding}${promptPrefixPadding}${promptTrailingPadding}${line}${linePadding}${rightPadding}`;
-				result.push(useBackgroundSurface ? renderSurfaceLine(contentLine) : contentLine);
-			}
-		}
-
 		return result;
+	}
+
+	private renderAutocompleteOverlay(width: number): string[] {
+		if (!(this.autocompleteState && this.autocompleteList)) return [];
+
+		const { useBackgroundSurface, paddingX, promptPrefixWidth, inputWidth } = this.getRenderMetrics(width);
+		const leftPadding = " ".repeat(paddingX + promptPrefixWidth);
+		const rightPadding = " ".repeat(paddingX);
+
+		return this.autocompleteList.render(inputWidth).map((line) => {
+			const linePadding = " ".repeat(Math.max(0, inputWidth - visibleWidth(line)));
+			const contentLine = `${leftPadding}${line}${linePadding}${rightPadding}`;
+			return useBackgroundSurface && this.backgroundColor ? this.backgroundColor(contentLine) : contentLine;
+		});
 	}
 
 	handleInput(data: string): void {
@@ -2443,6 +2473,14 @@ export class Editor implements Component, Focusable {
 		}
 
 		this.autocompleteState = state;
+		if (!this.autocompleteOverlay) {
+			this.autocompleteOverlay = this.tui.showOverlay(this.autocompleteOverlayComponent, {
+				width: "100%",
+				aboveMarker: this.autocompleteAnchorMarker,
+				nonCapturing: true,
+				visible: () => this.focused && this.autocompleteState !== null,
+			});
+		}
 	}
 
 	private cancelAutocompleteRequest(): void {
@@ -2456,6 +2494,8 @@ export class Editor implements Component, Focusable {
 	}
 
 	private clearAutocompleteUi(): void {
+		this.autocompleteOverlay?.hide();
+		this.autocompleteOverlay = undefined;
 		this.autocompleteState = null;
 		this.autocompleteList = undefined;
 		this.autocompletePrefix = "";
