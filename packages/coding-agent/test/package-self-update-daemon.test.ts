@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ENV_AGENT_DIR,
+	getDaemonUpdateRestartManifestPath,
 	PACKAGE_NAME,
 	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
 } from "../src/config.js";
 import type { AgentSessionRuntimeMetadata } from "../src/core/agent-session-runtime.js";
 import type * as DaemonSocketModule from "../src/modes/daemon/daemon-socket.js";
-import { handlePackageCommand } from "../src/package-manager-cli.js";
+import { handlePackageCommand, prepareDaemonUpdateRestart } from "../src/package-manager-cli.js";
 
 interface MockSessionSummary {
 	id: string;
@@ -98,14 +99,28 @@ const mockState = vi.hoisted(() => ({
 		supervisorProcessStartId?: string;
 		supervisorSocketPath?: string;
 	},
+	listResponse: undefined as MockDaemonResponse | undefined,
 	prepareManifest: { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] } as MockUpdateRestartManifest,
+	prepareResponse: undefined as MockDaemonResponse | undefined,
 	promptFailures: 0,
+	requestThrowTypes: [] as string[],
 	requestPayloads: [] as MockDaemonRequest[],
 	restoreNextTurnFailures: 0,
 	socketPath: "",
 	spawnExitCodes: [] as number[],
 	shutdownResult: true,
 }));
+
+function useFixedOwnerHello(): void {
+	mockState.hello = {
+		protocol: { version: 2 },
+		supervisorGeneration: "fixed-owner",
+		supervisorOwnerToken: "owner-token",
+		supervisorPid: process.pid,
+		supervisorProcessStartId: "process-start",
+		supervisorSocketPath: mockState.socketPath,
+	};
+}
 
 vi.mock("child_process", () => ({
 	spawn: vi.fn((command: string, args: string[]) => {
@@ -183,8 +198,14 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 		async request(request: MockDaemonRequest): Promise<MockDaemonResponse> {
 			mockState.calls.push(`daemon-request:${request.type}`);
 			mockState.requestPayloads.push(request);
+			if (mockState.requestThrowTypes.includes(request.type)) {
+				throw new Error(`${request.type} failed`);
+			}
+			if (request.type === "list" && mockState.listResponse) {
+				return mockState.listResponse;
+			}
 			if (request.type === "prepare_update_restart") {
-				return { success: true, data: mockState.prepareManifest };
+				return mockState.prepareResponse ?? { success: true, data: mockState.prepareManifest };
 			}
 			if (request.type === "create") {
 				if (request.sessionPath && mockState.createThrowSessionPaths.includes(request.sessionPath)) {
@@ -226,13 +247,16 @@ describe("self-update daemon restart", () => {
 		packageDir = join(tempDir, "global-prefix", "lib", "node_modules", PACKAGE_NAME);
 		mockState.globalPackageRoot = join(tempDir, "global-prefix", "lib", "node_modules");
 		mockState.hello = { protocol: { version: 2 } };
+		mockState.listResponse = undefined;
 		mockState.socketPath = join(tempDir, "daemon.sock");
 		mockState.calls = [];
 		mockState.createActiveSessionIds = [];
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
+		mockState.prepareResponse = undefined;
 		mockState.promptFailures = 0;
+		mockState.requestThrowTypes = [];
 		mockState.requestPayloads = [];
 		mockState.restoreNextTurnFailures = 0;
 		mockState.spawnExitCodes = [];
@@ -338,14 +362,7 @@ describe("self-update daemon restart", () => {
 	});
 
 	it("restarts the daemon only after the package update succeeds", async () => {
-		mockState.hello = {
-			protocol: { version: 2 },
-			supervisorGeneration: "fixed-owner",
-			supervisorOwnerToken: "owner-token",
-			supervisorPid: process.pid,
-			supervisorProcessStartId: "process-start",
-			supervisorSocketPath: mockState.socketPath,
-		};
+		useFixedOwnerHello();
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -359,14 +376,68 @@ describe("self-update daemon restart", () => {
 			const shutdownIndex = mockState.calls.indexOf("shutdown-daemon");
 			const ensureIndex = mockState.calls.indexOf("ensure-daemon");
 			expect(spawnIndex).toBeGreaterThanOrEqual(0);
-			expect(fenceIndex).toBeGreaterThan(spawnIndex);
-			expect(prepareIndex).toBeGreaterThan(fenceIndex);
-			expect(shutdownIndex).toBeGreaterThan(prepareIndex);
+			expect(prepareIndex).toBeGreaterThan(spawnIndex);
+			expect(fenceIndex).toBeGreaterThan(prepareIndex);
+			expect(shutdownIndex).toBeGreaterThan(fenceIndex);
 			expect(ensureIndex).toBeGreaterThan(shutdownIndex);
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();
 		}
+	});
+
+	it("does not persist a predecessor fence when restart preparation fails", async () => {
+		useFixedOwnerHello();
+
+		for (const prepareResponse of [
+			{ success: false, error: "prepare failed" } as const,
+			{ success: true, data: { createdAt: "2026-07-07T00:00:00.000Z", sessions: "invalid" } } as const,
+		]) {
+			mockState.calls = [];
+			mockState.prepareResponse = prepareResponse;
+			await expect(prepareDaemonUpdateRestart(mockState.socketPath, agentDir)).rejects.toThrow();
+			expect(mockState.calls).toContain("daemon-request:prepare_update_restart");
+			expect(mockState.calls).not.toContain("persist-daemon-startup-fence");
+		}
+	});
+
+	it("fences a pending prepared restart only after verifying the live daemon is empty", async () => {
+		useFixedOwnerHello();
+		const pendingManifest: MockUpdateRestartManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "pending-active",
+					sessionId: "pending-session",
+					sessionFile: join(projectDir, "pending.jsonl"),
+					cwd: projectDir,
+					config: { cwd: projectDir, agentDir },
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: false,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+		writeFileSync(getDaemonUpdateRestartManifestPath(agentDir), JSON.stringify(pendingManifest));
+		mockState.requestThrowTypes = ["list"];
+
+		await expect(prepareDaemonUpdateRestart(mockState.socketPath, agentDir)).rejects.toThrow("list failed");
+		expect(mockState.calls).not.toContain("persist-daemon-startup-fence");
+
+		mockState.calls = [];
+		mockState.requestThrowTypes = [];
+		mockState.listResponse = { success: true, data: { sessions: [] } };
+		await expect(prepareDaemonUpdateRestart(mockState.socketPath, agentDir)).resolves.toEqual(pendingManifest);
+		const listIndex = mockState.calls.indexOf("daemon-request:list");
+		const fenceIndex = mockState.calls.indexOf("persist-daemon-startup-fence");
+		expect(listIndex).toBeGreaterThanOrEqual(0);
+		expect(fenceIndex).toBeGreaterThan(listIndex);
+		expect(mockState.calls).not.toContain("daemon-request:prepare_update_restart");
 	});
 
 	it("skips predecessor fencing when the daemon hello has no fixed-owner identity", async () => {
