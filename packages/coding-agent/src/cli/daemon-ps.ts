@@ -9,6 +9,7 @@ import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketDir, defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import type { DaemonWorkerDescriptor } from "../modes/daemon/daemon-worker-protocol.js";
+import { signalProcessGroupOrProcess } from "../utils/child-process.js";
 import { formatDaemonListTable } from "./daemon-ps-format.js";
 import { promptYesNo } from "./daemon-stop-confirm.js";
 
@@ -591,7 +592,9 @@ function findAllTrackedWorkers(): TrackedWorker[] {
 				if (isTrackedWorkerDescriptor(value)) {
 					workers.push({ descriptor: value, descriptorPath });
 				}
-			} catch {}
+			} catch {
+				// Invalid or concurrently removed descriptors are not safe shutdown targets.
+			}
 		}
 	}
 	return workers;
@@ -635,19 +638,6 @@ async function stopTrackedProcess(pid: number, expectedStartId: string | undefin
 		await delay(25);
 	}
 	return !isProcessAlive(pid);
-}
-
-function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
-	try {
-		process.kill(-pid, signal);
-		return;
-	} catch {
-		try {
-			process.kill(pid, signal);
-		} catch {
-			return;
-		}
-	}
 }
 
 export async function runReap(json: boolean, force: boolean): Promise<void> {

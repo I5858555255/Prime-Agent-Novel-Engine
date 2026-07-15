@@ -31,11 +31,6 @@ export async function handlePublicCommand(args: string[]): Promise<PublicCommand
 }
 
 async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
-	if (args[0] === "--help" || args[0] === "-h") {
-		console.log(formatTopLevelHelp());
-		return HANDLED;
-	}
-
 	if (args[0] === "help") {
 		return printRequestedHelp(args.slice(1));
 	}

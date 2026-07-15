@@ -122,6 +122,19 @@ describe("public command routing", () => {
 		expect(mocks.daemonCommands).toEqual([["daemon", "send", "worker", "--", "--help"]]);
 	});
 
+	it("leaves top-level help flags on the full CLI help path", async () => {
+		await expect(handlePublicCommand(["--help"])).resolves.toEqual({
+			handled: false,
+			args: ["--help"],
+			explicitAgentsView: false,
+		});
+		await expect(handlePublicCommand(["-h"])).resolves.toEqual({
+			handled: false,
+			args: ["-h"],
+			explicitAgentsView: false,
+		});
+	});
+
 	it("keeps daemon terminology out of public help", () => {
 		const help = formatTopLevelHelp();
 		expect(help).toContain("shutdown");
