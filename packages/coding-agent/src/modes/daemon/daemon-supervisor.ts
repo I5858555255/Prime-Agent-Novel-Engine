@@ -1331,7 +1331,11 @@ export class DaemonSupervisor {
 		worker.snapshotTransferFrames.delete(activeSessionId);
 		this.dropPendingReplacementSnapshotsForWorker(worker, activeSessionId);
 		if (closeWorkerChannel) {
-			worker.client?.close();
+			const client = worker.client;
+			if (client) {
+				this.handleWorkerClose(worker, client, error);
+				client.close();
+			}
 		}
 	}
 

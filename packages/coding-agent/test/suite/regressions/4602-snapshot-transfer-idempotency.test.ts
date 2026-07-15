@@ -20,8 +20,8 @@ const activeSessionId = "active-4602";
 const snapshotId = "snapshot-4602";
 
 interface WorkerHarness {
-	descriptor: { workerId: string; lifecycle: "ready"; pid: number };
-	client: { close: ReturnType<typeof vi.fn>; request: ReturnType<typeof vi.fn> };
+	descriptor: { workerId: string; lifecycle: "ready" | "recovering"; pid: number };
+	client?: { close: ReturnType<typeof vi.fn>; request: ReturnType<typeof vi.fn> };
 	summaries: Map<string, SessionSummary>;
 	snapshotCache: Map<string, DaemonAttachResult>;
 	transcriptCaches: Map<string, SnapshotTranscriptCache>;
@@ -271,6 +271,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 			descriptorDir: "/tmp/eng-4602-supervisor-state",
 		});
 		const { close, worker } = workerHarness();
+		worker.intentionalStop = true;
 		const client = socketClient("public", new PassThrough());
 		const streamSnapshot = vi.fn(async () => {});
 		const internals = supervisor as unknown as {
@@ -402,6 +403,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 			descriptorDir: "/tmp/eng-4602-supervisor-gate-state",
 		});
 		const { close, request, worker } = workerHarness();
+		worker.intentionalStop = true;
 		const client = socketClient("catchup", new PassThrough());
 		const streamSnapshot = vi.fn(async () => {});
 		const internals = supervisor as unknown as {
@@ -560,9 +562,18 @@ describe("ENG-4602 snapshot transfer containment", () => {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
 			descriptorDir: "/tmp/eng-4602-supervisor-invalid-state",
 		});
+		const recoverWorker = vi.fn(async () => {});
+		const persistWorker = vi.fn();
+		const syncAgentPeers = vi.fn(async () => {});
 		const internals = supervisor as unknown as {
+			recoverWorker: typeof recoverWorker;
+			persistWorker: typeof persistWorker;
+			syncAgentPeers: typeof syncAgentPeers;
 			handleWorkerFrame(worker: WorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): void;
 		};
+		internals.recoverWorker = recoverWorker;
+		internals.persistWorker = persistWorker;
+		internals.syncAgentPeers = syncAgentPeers;
 		const frames = snapshotFrames([{ role: "user", content: "stable", timestamp: 1 }]);
 
 		const reentrant = workerHarness();
@@ -570,6 +581,9 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		internals.handleWorkerFrame(reentrant.worker, frame(frames.begin));
 		expect(reentrant.close).toHaveBeenCalledOnce();
 		expect(reentrant.worker.transcriptCaches.has(activeSessionId)).toBe(false);
+		expect(reentrant.worker.client).toBeUndefined();
+		expect(reentrant.worker.descriptor.lifecycle).toBe("recovering");
+		expect(recoverWorker).toHaveBeenCalledWith(reentrant.worker);
 
 		const completed = workerHarness();
 		for (const message of [frames.begin, frames.chunk, frames.end]) {
