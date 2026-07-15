@@ -151,6 +151,13 @@ describe("CombinedAutocompleteProvider", () => {
 			});
 		});
 
+		it("does not fall back to file suggestions for unmatched command tokens", async () => {
+			const provider = new CombinedAutocompleteProvider([], "/tmp");
+			const result = await getSuggestions(provider, ["/tm"], 0, 3);
+
+			assert.strictEqual(result, null);
+		});
+
 		it("replaces only the inline command token without duplicating whitespace", async () => {
 			const provider = new CombinedAutocompleteProvider([{ name: "help", description: "Show help" }], "/tmp");
 			const line = "Please use /he later";

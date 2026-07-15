@@ -341,6 +341,8 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 					kind: "slash-command",
 				};
 			}
+
+			return null;
 		} else if (slashContext?.kind === "argument") {
 			const command = this.commands.find((cmd) => {
 				const name = "name" in cmd ? cmd.name : cmd.value;
