@@ -2060,19 +2060,19 @@ export class DaemonSupervisor {
 		if (!pending || !replacement) {
 			return;
 		}
-		pending.delete(activeSessionId);
-		if (pending.size === 0) {
-			this.pendingReplacementSnapshots.delete(client);
-		}
 		if (
 			client.socket.destroyed ||
 			!client.attachedActiveSessionIds.has(activeSessionId) ||
 			!client.capabilities.has("chunked_snapshot") ||
-			replacement.worker.transcriptCaches.get(activeSessionId) !== replacement.transcript ||
-			!replacement.transcript.complete
+			replacement.worker.transcriptCaches.get(activeSessionId) !== replacement.transcript
 		) {
+			this.dropPendingReplacementSnapshot(client, activeSessionId);
 			return;
 		}
+		if (!replacement.transcript.complete || client.snapshotActiveSessionIds?.has(activeSessionId)) {
+			return;
+		}
+		this.dropPendingReplacementSnapshot(client, activeSessionId);
 		this.startReplacementSnapshot(
 			client,
 			replacement.worker,
@@ -2347,6 +2347,11 @@ export class DaemonSupervisor {
 				const result = worker.snapshotCache.get(activeSessionId);
 				if (result) {
 					this.streamReplacementSnapshot(worker, activeSessionId, result, transcript);
+				}
+			}
+			if (snapshotPurpose === "replacement") {
+				for (const client of this.clients) {
+					this.flushPendingReplacementSnapshot(client, activeSessionId);
 				}
 			}
 			if (snapshotPurpose === "replacement" || snapshotPurpose === "catchup") {
