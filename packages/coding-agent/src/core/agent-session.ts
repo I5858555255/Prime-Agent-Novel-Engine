@@ -41,7 +41,6 @@ import {
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
-import { ensureTool, MISSING_RIPGREP_MESSAGE } from "../utils/tools-manager.js";
 import {
 	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	AGENT_MESSAGE_SKILL_NAME,
@@ -76,6 +75,18 @@ import {
 	isLikelyAuthenticationError,
 } from "./auth-guidance.js";
 import type { AuthSourceToken } from "./auth-storage.js";
+import {
+	type AgentAutonomousConfig,
+	type AgentAutonomousStatus,
+	type AutonomousRuntimeState,
+	addAutonomousContinuation,
+	addAutonomousUsage,
+	autonomousStatus,
+	createAutonomousRuntimeState,
+	nextAutonomousContinuation,
+	refreshAutonomousQualityGates,
+	setAutonomousEnabled,
+} from "./autonomous.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
 	COMPACT_SKILL_NAME,
@@ -364,6 +375,8 @@ export interface AgentSessionConfig {
 	rlmParentNodeId?: string;
 	/** Host responsible for creating RLM subagent runtimes. */
 	subagentRuntimeHost?: SubagentRuntimeHost;
+	/** Host-side autonomous continuation policy. */
+	autonomous?: AgentAutonomousConfig;
 	/**
 	 * Boot the IPython kernel in the background as soon as the session is created,
 	 * so the first ipython tool call doesn't pay the kernel cold start.
@@ -405,6 +418,10 @@ export interface PromptOptions {
 	preflightResult?: (success: boolean, queued?: boolean) => void;
 	/** Queue instead of starting immediately when the session is idle but already has queued work. */
 	queueIfBusy?: boolean;
+	/** Host-generated prompt that must bypass extension/slash/template input interception. */
+	internalPrompt?: boolean;
+	/** Prevent host-driven prompts from causing autonomous continuation injection. */
+	suppressAutonomousContinuation?: boolean;
 	/** Skip extension input handlers for replaying already-accepted input. */
 	skipInputHandlers?: boolean;
 	agentMessageId?: string;
@@ -618,6 +635,13 @@ type GoalSlashCommand =
 	| { kind: "resume" }
 	| { kind: "start"; objective: string; tokenBudget?: number };
 
+type AutonomousSlashCommand = { kind: "status" } | { kind: "on" } | { kind: "off" };
+
+type AutonomousRuntimeSnapshot = Pick<
+	AutonomousRuntimeState,
+	"continuationsUsed" | "gateAttempts" | "lastGateFailure" | "lastGateFailureSnapshot"
+>;
+
 interface RlmChildRun {
 	id: string;
 	prompt: string;
@@ -748,6 +772,9 @@ export class AgentSession {
 	private _goalAccountingStartedAt: number | undefined = undefined;
 	private _goalAccountedAssistantMessages = new WeakSet<AssistantMessage>();
 	private _goalAbortInProgress = false;
+	private _autonomousState: AutonomousRuntimeState;
+	private _autonomousContinuationSuppressionDepth = 0;
+	private _autonomousContinuationSuppressedMessages = new WeakSet<AgentMessage>();
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -810,6 +837,7 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _disposed = false;
+	private readonly _disposeCallbacks = new Set<() => void>();
 	// Set at the start of async teardown so a child finishing mid-disposeAsync doesn't
 	// re-populate the retained map after it's been cleared.
 	private _disposing = false;
@@ -854,6 +882,10 @@ export class AgentSession {
 	private _turnIntervalAutoRefinePending = false;
 	private _postCompactionContinuationScheduled = false;
 	private _postCompactionContinuationTimer: ReturnType<typeof setTimeout> | undefined;
+	private _postCompactionContinuationMessages: AgentMessage[] = [];
+	private _queuedAutonomousThresholdContinuations = new WeakMap<AssistantMessage, AgentMessage>();
+	private _queuedAutonomousContinuationSnapshots = new WeakMap<AgentMessage, AutonomousRuntimeSnapshot>();
+	private _pendingThresholdCompactionAutonomousMessages: AgentMessage[] = [];
 	private _pendingAutoRefineReview: { reason: AutoRefineReason; review: AutoRefineReview } | undefined;
 	private _autoRefineBranchVersion = 0;
 	private _autoRefineReviewAbort?: AbortController;
@@ -890,6 +922,7 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
+		this._autonomousState = createAutonomousRuntimeState(config.autonomous, { cwd: this._cwd });
 		this._goalState = this._loadPersistedGoalState();
 		this._restoreLateIpythonSentAgentMessages();
 		if (this._goalState.status === "active") {
@@ -1001,7 +1034,7 @@ export class AgentSession {
 	}
 
 	private _installAgentContinuationHook(): void {
-		this.agent.getContinuationMessages = (context, signal) => this._getGoalContinuationMessages(context, signal);
+		this.agent.getContinuationMessages = (context, signal) => this._getContinuationMessages(context, signal);
 	}
 
 	private _installAgentTurnHook(): void {
@@ -1311,6 +1344,64 @@ export class AgentSession {
 		return { kind: "start", objective: validateGoalObjective(objective), tokenBudget };
 	}
 
+	private _parseAutonomousSlashCommand(text: string): AutonomousSlashCommand | undefined {
+		if (text !== "/autonomous" && !text.startsWith("/autonomous ")) {
+			return undefined;
+		}
+		const rest = text.slice("/autonomous".length).trim().toLowerCase();
+		if (!rest || rest === "status") {
+			return { kind: "status" };
+		}
+		if (rest === "on" || rest === "enable" || rest === "enabled") {
+			return { kind: "on" };
+		}
+		if (rest === "off" || rest === "disable" || rest === "disabled") {
+			return { kind: "off" };
+		}
+		throw new Error("Usage: /autonomous [on|off|status]");
+	}
+
+	private _formatAutonomousStatus(): string {
+		const status = this.getAutonomousStatus();
+		const state = status.enabled ? "on" : "off";
+		return `Autonomous mode: ${state}. Continuations: ${status.continuationsUsed}/${status.limits.maxContinuations}. Turns: ${status.turnsUsed}/${status.limits.maxTurns}. Tokens: ${status.tokensUsed}/${status.limits.maxTokens}.`;
+	}
+
+	private _emitAutonomousStatus(): void {
+		const message = {
+			role: "custom" as const,
+			customType: "autonomous_status",
+			content: this._formatAutonomousStatus(),
+			display: true,
+			details: this.getAutonomousStatus(),
+			timestamp: Date.now(),
+		} satisfies CustomMessage<AgentAutonomousStatus>;
+		this.agent.state.messages.push(message);
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+		);
+		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
+	}
+
+	private async _handleAutonomousSlashCommand(text: string): Promise<boolean> {
+		const command = this._parseAutonomousSlashCommand(text);
+		if (!command) {
+			return false;
+		}
+		if (command.kind === "on") {
+			setAutonomousEnabled(this._autonomousState, true, { cwd: this._cwd });
+		} else if (command.kind === "off") {
+			setAutonomousEnabled(this._autonomousState, false);
+			this._clearQueuedAutonomousContinuations();
+		}
+		this._emitAutonomousStatus();
+		return true;
+	}
+
 	private async _validateCanStartAgentRun(): Promise<void> {
 		if (!this.model) {
 			throw new Error(formatNoModelSelectedMessage());
@@ -1454,7 +1545,7 @@ export class AgentSession {
 		return true;
 	}
 
-	private _shouldStopAfterTurn(context: ShouldStopAfterTurnContext): boolean {
+	private async _shouldStopAfterTurn(context: ShouldStopAfterTurnContext): Promise<boolean> {
 		if (this._stopGoalContinuationForTerminalMessage(context.message)) {
 			return true;
 		}
@@ -1465,15 +1556,15 @@ export class AgentSession {
 		} catch {
 			// Goal accounting must not interrupt the core agent loop.
 		}
-		if (this._shouldStopForThresholdCompaction(context)) {
+		if (await this._shouldStopForThresholdCompaction(context)) {
 			return true;
 		}
 		return false;
 	}
 
-	private _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): boolean {
+	private async _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): Promise<boolean> {
 		this._continueAfterThresholdCompaction = false;
-		if (this._pendingRequestedCompaction === undefined && !this._thresholdCompactionNeeded(context)) {
+		if (this._pendingRequestedCompaction === undefined && !(await this._thresholdCompactionNeeded(context))) {
 			return false;
 		}
 
@@ -1482,7 +1573,7 @@ export class AgentSession {
 		return true;
 	}
 
-	private _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): boolean {
+	private async _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 
@@ -1494,7 +1585,107 @@ export class AgentSession {
 		}
 
 		const contextTokens = this._getThresholdContextTokens(context.message, compactionTimestamp);
-		return contextTokens !== undefined && shouldCompact(contextTokens, contextWindow, settings);
+		if (contextTokens === undefined || !shouldCompact(contextTokens, contextWindow, settings)) {
+			return false;
+		}
+
+		if (await this._queueAutonomousContinuationForThresholdCompaction(context.message)) {
+			this._continueAfterThresholdCompaction = true;
+		}
+		return true;
+	}
+
+	private _snapshotAutonomousRuntimeState(): AutonomousRuntimeSnapshot {
+		return {
+			continuationsUsed: this._autonomousState.continuationsUsed,
+			gateAttempts: { ...this._autonomousState.gateAttempts },
+			lastGateFailure: this._autonomousState.lastGateFailure
+				? { ...this._autonomousState.lastGateFailure }
+				: undefined,
+			lastGateFailureSnapshot: this._autonomousState.lastGateFailureSnapshot
+				? { ...this._autonomousState.lastGateFailureSnapshot }
+				: undefined,
+		};
+	}
+
+	private _restoreAutonomousRuntimeSnapshot(snapshot: AutonomousRuntimeSnapshot): void {
+		this._autonomousState.continuationsUsed = snapshot.continuationsUsed;
+		this._autonomousState.gateAttempts = { ...snapshot.gateAttempts };
+		this._autonomousState.lastGateFailure = snapshot.lastGateFailure ? { ...snapshot.lastGateFailure } : undefined;
+		this._autonomousState.lastGateFailureSnapshot = snapshot.lastGateFailureSnapshot
+			? { ...snapshot.lastGateFailureSnapshot }
+			: undefined;
+	}
+
+	private async _queueAutonomousContinuationForThresholdCompaction(
+		message: AssistantMessage,
+	): Promise<AgentMessage | undefined> {
+		const queuedMessage = this._queuedAutonomousThresholdContinuations.get(message);
+		if (queuedMessage && this._postCompactionContinuationMessages.includes(queuedMessage)) {
+			return queuedMessage;
+		}
+		const snapshot = this._snapshotAutonomousRuntimeState();
+		const autonomousMessage = await nextAutonomousContinuation(this._autonomousState, message, {
+			cwd: this._cwd,
+			signal: this.agent.signal,
+		});
+		if (!autonomousMessage) {
+			return undefined;
+		}
+		this._queuedAutonomousThresholdContinuations.set(message, autonomousMessage);
+		this._queuedAutonomousContinuationSnapshots.set(autonomousMessage, snapshot);
+		this._postCompactionContinuationMessages.push(autonomousMessage);
+		this._pendingThresholdCompactionAutonomousMessages.push(autonomousMessage);
+		this.agent.followUp(autonomousMessage);
+		return autonomousMessage;
+	}
+
+	private _clearQueuedAutonomousContinuations(
+		options: { restoreAutonomousState?: boolean; messages?: AgentMessage[] } = {},
+	): void {
+		const requestedMessages = options.messages ?? [...this._postCompactionContinuationMessages];
+		const requestedMessageSet = new Set(requestedMessages);
+		const queuedMessages = this._postCompactionContinuationMessages.filter((message) =>
+			requestedMessageSet.has(message),
+		);
+		if (queuedMessages.length === 0) {
+			return;
+		}
+		const queuedMessageSet = new Set(queuedMessages);
+		this._postCompactionContinuationMessages = this._postCompactionContinuationMessages.filter(
+			(message) => !queuedMessageSet.has(message),
+		);
+		this.agent.removeQueuedMessages((message) => queuedMessageSet.has(message));
+		if (options.restoreAutonomousState) {
+			for (const queuedMessage of queuedMessages) {
+				const snapshot = this._queuedAutonomousContinuationSnapshots.get(queuedMessage);
+				if (snapshot) {
+					this._restoreAutonomousRuntimeSnapshot(snapshot);
+					break;
+				}
+			}
+		}
+		for (const queuedMessage of queuedMessages) {
+			this._queuedAutonomousContinuationSnapshots.delete(queuedMessage);
+		}
+		this._pendingThresholdCompactionAutonomousMessages = this._pendingThresholdCompactionAutonomousMessages.filter(
+			(message) => !queuedMessageSet.has(message),
+		);
+		if (options.messages === undefined) {
+			this._continueAfterThresholdCompaction = false;
+		}
+		if (!this.agent.hasQueuedMessages()) {
+			this._cancelPostCompactionContinue();
+		}
+	}
+
+	private _clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
+		shouldContinueAfterThreshold: boolean,
+		queuedMessages: AgentMessage[],
+	): void {
+		if (shouldContinueAfterThreshold) {
+			this._clearQueuedAutonomousContinuations({ restoreAutonomousState: true, messages: queuedMessages });
+		}
 	}
 
 	/**
@@ -1799,6 +1990,27 @@ export class AgentSession {
 		}
 	}
 
+	private async _getContinuationMessages(
+		context: GetContinuationMessagesContext,
+		signal?: AbortSignal,
+	): Promise<AgentMessage[]> {
+		const goalMessages = await this._getGoalContinuationMessages(context, signal);
+		if (goalMessages.length > 0 || signal?.aborted) {
+			return goalMessages;
+		}
+		if (
+			this._autonomousContinuationSuppressionDepth > 0 ||
+			context.newMessages.some((message) => this._autonomousContinuationSuppressedMessages.has(message))
+		) {
+			return [];
+		}
+		const autonomousMessage = await nextAutonomousContinuation(this._autonomousState, context.message, {
+			cwd: this._cwd,
+			signal,
+		});
+		return autonomousMessage ? [autonomousMessage] : [];
+	}
+
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
@@ -2040,9 +2252,14 @@ export class AgentSession {
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
 				this._lastAssistantMessage = event.message;
-				this._assistantTurnsSinceAutoRefine++;
 
 				const assistantMsg = event.message as AssistantMessage;
+				if (assistantMsg.stopReason !== "error") {
+					addAutonomousUsage(this._autonomousState, assistantMsg.usage);
+				}
+				if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "aborted") {
+					this._assistantTurnsSinceAutoRefine++;
+				}
 				if (assistantMsg.stopReason !== "error") {
 					this._overflowRecoveryAttempted = false;
 				}
@@ -2322,32 +2539,51 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
-		// Invalidate scheduled timers and abort any in-flight review so a late
-		// resolution cannot write harness state or re-subscribe handlers.
-		this._autoRefineReviewAbort?.abort();
-		this._refineAbortController?.abort();
-		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
-		this._autoRefineBranchVersion++;
-		this._cancelActiveRlmChildRuns("Parent session disposed");
-		for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
-			unsubscribe();
+		try {
+			// Invalidate scheduled timers and abort any in-flight review so a late
+			// resolution cannot write harness state or re-subscribe handlers.
+			this._autoRefineReviewAbort?.abort();
+			this._refineAbortController?.abort();
+			this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
+			this._autoRefineBranchVersion++;
+			this._cancelActiveRlmChildRuns("Parent session disposed");
+			for (const unsubscribe of this._retainedRlmChildUnsubscribes.values()) {
+				unsubscribe();
+			}
+			this._retainedRlmChildUnsubscribes.clear();
+			for (const session of this._retainedRlmChildSessions.values()) {
+				session.dispose();
+			}
+			this._retainedRlmChildSessions.clear();
+			this._pendingNextTurnMessages = [];
+			this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
+			this._steeringMessages = [];
+			this._followUpMessages = [];
+			this.agent.clearAllQueues();
+			this._extensionRunner.invalidate(
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+			);
+			this._disconnectFromAgent();
+			this._eventListeners = [];
+			cleanupSessionResources(this.sessionId);
+		} finally {
+			for (const callback of this._disposeCallbacks) {
+				try {
+					callback();
+				} catch {
+					// Disposal remains best-effort; one owner must not block the rest.
+				}
+			}
+			this._disposeCallbacks.clear();
 		}
-		this._retainedRlmChildUnsubscribes.clear();
-		for (const session of this._retainedRlmChildSessions.values()) {
-			session.dispose();
+	}
+
+	registerDisposeCallback(callback: () => void): void {
+		if (this._disposed) {
+			callback();
+			return;
 		}
-		this._retainedRlmChildSessions.clear();
-		this._pendingNextTurnMessages = [];
-		this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
-		this._steeringMessages = [];
-		this._followUpMessages = [];
-		this.agent.clearAllQueues();
-		this._extensionRunner.invalidate(
-			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
-		);
-		this._disconnectFromAgent();
-		this._eventListeners = [];
-		cleanupSessionResources(this.sessionId);
+		this._disposeCallbacks.add(callback);
 	}
 
 	// =========================================================================
@@ -2485,6 +2721,31 @@ export class AgentSession {
 
 	get goalState(): GoalState {
 		return { ...this._goalWithCurrentWallClock() };
+	}
+
+	getAutonomousStatus(): AgentAutonomousStatus {
+		return autonomousStatus(this._autonomousState);
+	}
+
+	recordHostAutonomousContinuation(): void {
+		addAutonomousContinuation(this._autonomousState);
+	}
+
+	async refreshAutonomousGates(): Promise<void> {
+		await refreshAutonomousQualityGates(this._autonomousState, { cwd: this._cwd });
+	}
+
+	private async _runWithAutonomousContinuationSuppressed<T>(fn: () => Promise<T>): Promise<T> {
+		this._autonomousContinuationSuppressionDepth++;
+		try {
+			return await fn();
+		} finally {
+			this._autonomousContinuationSuppressionDepth--;
+		}
+	}
+
+	private _markAutonomousContinuationSuppressed(message: AgentMessage): void {
+		this._autonomousContinuationSuppressedMessages.add(message);
 	}
 
 	/** Scoped models for cycling (from --models flag) */
@@ -2656,7 +2917,11 @@ export class AgentSession {
 					text,
 					message,
 					options.streamingBehavior,
-					{ queueKey: options.followUpQueueKey, previewLabel },
+					{
+						queueKey: options.followUpQueueKey,
+						previewLabel,
+						suppressAutonomousContinuation: options.suppressAutonomousContinuation,
+					},
 				);
 				if (!queued) {
 					reportPreflight(false);
@@ -2681,7 +2946,7 @@ export class AgentSession {
 
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) {
-				await this._checkCompaction(lastAssistant, false);
+				await this._checkCompaction(lastAssistant, false, false);
 			}
 
 			const pendingModelSelectEmit = this._pendingModelSelectEmit();
@@ -2746,7 +3011,11 @@ export class AgentSession {
 				text,
 				message,
 				options.streamingBehavior,
-				{ queueKey: options.followUpQueueKey, previewLabel },
+				{
+					queueKey: options.followUpQueueKey,
+					previewLabel,
+					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
+				},
 			);
 			if (!queued) {
 				reportPreflight(false);
@@ -2757,7 +3026,12 @@ export class AgentSession {
 		}
 
 		try {
-			await this.agent.prompt(messages);
+			if (options?.suppressAutonomousContinuation) {
+				this._markAutonomousContinuationSuppressed(message);
+				await this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(messages));
+			} else {
+				await this.agent.prompt(messages);
+			}
 		} catch (error) {
 			this._pendingNextTurnMessages.unshift(...drainedNextTurnMessages.map((pending) => ({ ...pending })));
 			throw error;
@@ -2767,7 +3041,8 @@ export class AgentSession {
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
-		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		const isInternalPrompt = options?.internalPrompt === true;
+		const expandPromptTemplates = isInternalPrompt ? false : (options?.expandPromptTemplates ?? true);
 		const preflightResult = options?.preflightResult;
 		let preflightSettled = false;
 		const reportPreflight = (success: boolean, queued = false) => {
@@ -2784,8 +3059,36 @@ export class AgentSession {
 
 		try {
 			let currentText = text;
+			const hasQueueIfBusyBackpressure = () =>
+				options?.queueIfBusy === true &&
+				(this.pendingMessageCount > 0 ||
+					this.isCompacting ||
+					this.isRetrying ||
+					this.isBashRunning ||
+					this.hasAcceptedPromptInFlight);
 
-			if (expandPromptTemplates) {
+			const shouldHandleBuiltInSlashCommands = !isInternalPrompt && !options?.skipPrePromptWork;
+			const isBuiltInSlashCommand =
+				shouldHandleBuiltInSlashCommands &&
+				(currentText === "/autonomous" ||
+					currentText.startsWith("/autonomous ") ||
+					currentText === "/goal" ||
+					currentText.startsWith("/goal "));
+			if (!this.isStreaming && isBuiltInSlashCommand && hasQueueIfBusyBackpressure()) {
+				reportPreflight(false);
+				throw new Error("Agent has queued work. Retry the slash command after pending work finishes.");
+			}
+			if (
+				shouldHandleBuiltInSlashCommands &&
+				(currentText === "/autonomous" || currentText.startsWith("/autonomous "))
+			) {
+				const handledAutonomousCommand = await this._handleAutonomousSlashCommand(currentText);
+				if (handledAutonomousCommand) {
+					reportPreflight(true);
+					return;
+				}
+			}
+			if (shouldHandleBuiltInSlashCommands && (currentText === "/goal" || currentText.startsWith("/goal "))) {
 				const handledGoalCommand = await this._handleGoalSlashCommand(currentText, currentImages);
 				if (handledGoalCommand) {
 					reportPreflight(true);
@@ -2805,9 +3108,9 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion).
-			// Agent-to-agent messages use acceptAgentMessagePrompt(), which bypasses
-			// input handlers so extensions cannot rewrite or swallow direct delivery.
-			if (!options?.skipInputHandlers && this._extensionRunner.hasHandlers("input")) {
+			// Agent-to-agent and internal host prompts bypass input handlers so
+			// extensions cannot rewrite or swallow direct delivery.
+			if (!isInternalPrompt && !options?.skipInputHandlers && this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
 					currentImages,
@@ -2833,13 +3136,7 @@ export class AgentSession {
 			// If streaming, or a caller explicitly asked to respect existing queued work,
 			// enqueue according to the requested behavior.
 			const shouldQueueForStreaming = this.isStreaming;
-			const shouldQueueForPendingWork =
-				options?.queueIfBusy === true &&
-				(this.pendingMessageCount > 0 ||
-					this.isCompacting ||
-					this.isRetrying ||
-					this.isBashRunning ||
-					this.hasAcceptedPromptInFlight);
+			const shouldQueueForPendingWork = hasQueueIfBusyBackpressure();
 			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
 				if (!options?.streamingBehavior) {
 					const stateDescription = shouldQueueForStreaming
@@ -2856,6 +3153,7 @@ export class AgentSession {
 					{
 						queueKey: options.followUpQueueKey,
 						agentMessageId: options.agentMessageId,
+						suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 						customMessage: options.customMessage,
 					},
 				);
@@ -2938,7 +3236,7 @@ export class AgentSession {
 				// Check if we need to compact before sending (catches aborted responses)
 				const lastAssistant = this._findLastAssistantMessage();
 				if (lastAssistant) {
-					await this._checkCompaction(lastAssistant, false);
+					await this._checkCompaction(lastAssistant, false, false);
 				}
 
 				// Build messages array (custom message if any, then user message)
@@ -3048,6 +3346,7 @@ export class AgentSession {
 				{
 					queueKey: options.followUpQueueKey,
 					agentMessageId: options.agentMessageId,
+					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 					customMessage: options.customMessage,
 				},
 			);
@@ -3058,7 +3357,14 @@ export class AgentSession {
 			reportPreflight(true, true);
 			return;
 		}
-		const promptPromise = this.agent.prompt(messages);
+		if (options?.suppressAutonomousContinuation) {
+			for (const message of messages) {
+				this._markAutonomousContinuationSuppressed(message);
+			}
+		}
+		const promptPromise = options?.suppressAutonomousContinuation
+			? this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(messages))
+			: this.agent.prompt(messages);
 		const promptAccepted = Symbol("promptAccepted");
 		const acceptance = acceptedAgentMessagePrompt
 			? acceptedAgentMessagePrompt.accepted.then(
@@ -3294,7 +3600,12 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		streamingBehavior: "steer" | "followUp",
-		options: { queueKey?: string; agentMessageId?: string; customMessage?: CustomMessage } = {},
+		options: {
+			queueKey?: string;
+			agentMessageId?: string;
+			customMessage?: CustomMessage;
+			suppressAutonomousContinuation?: boolean;
+		} = {},
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
@@ -3316,6 +3627,7 @@ export class AgentSession {
 				queueKey: options.queueKey,
 				message: options.customMessage,
 				prefixMessages: pendingNextTurnMessages,
+				suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 			});
 			return true;
 		} catch (error) {
@@ -3328,7 +3640,7 @@ export class AgentSession {
 		text: string,
 		message: CustomMessage,
 		streamingBehavior: "steer" | "followUp",
-		options: { queueKey?: string; previewLabel?: string } = {},
+		options: { queueKey?: string; previewLabel?: string; suppressAutonomousContinuation?: boolean } = {},
 	): Promise<boolean> {
 		const pendingNextTurnMessages = this._pendingNextTurnMessages;
 		this._pendingNextTurnMessages = [];
@@ -3339,6 +3651,7 @@ export class AgentSession {
 					message,
 					prefixMessages: pendingNextTurnMessages,
 					previewLabel: options.previewLabel,
+					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 				});
 				if (!queued) {
 					this._pendingNextTurnMessages.unshift(...pendingNextTurnMessages);
@@ -3350,6 +3663,7 @@ export class AgentSession {
 				prefixMessages: pendingNextTurnMessages,
 				previewLabel: options.previewLabel,
 				queueKey: options.queueKey,
+				suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 			});
 			return true;
 		} catch (error) {
@@ -3371,6 +3685,7 @@ export class AgentSession {
 			message?: QueuedAgentMessage;
 			prefixMessages?: CustomMessage[];
 			previewLabel?: string;
+			suppressAutonomousContinuation?: boolean;
 		} = {},
 	): Promise<void> {
 		const content = options.content ?? this._buildPromptContent(text, images);
@@ -3381,6 +3696,9 @@ export class AgentSession {
 				content,
 				timestamp: Date.now(),
 			} satisfies UserMessage);
+		if (options.suppressAutonomousContinuation) {
+			this._markAutonomousContinuationSuppressed(message);
+		}
 		this._steeringMessages.push({
 			text,
 			previewLabel: options.previewLabel,
@@ -3406,6 +3724,7 @@ export class AgentSession {
 			message?: QueuedAgentMessage;
 			prefixMessages?: CustomMessage[];
 			previewLabel?: string;
+			suppressAutonomousContinuation?: boolean;
 		} = {},
 	): Promise<boolean> {
 		if (options.queueKey && this._followUpMessages.some((message) => message.queueKey === options.queueKey)) {
@@ -3419,6 +3738,9 @@ export class AgentSession {
 				content,
 				timestamp: Date.now(),
 			} satisfies UserMessage);
+		if (options.suppressAutonomousContinuation) {
+			this._markAutonomousContinuationSuppressed(message);
+		}
 		this._followUpMessages.push({
 			text,
 			previewLabel: options.previewLabel,
@@ -4362,14 +4684,35 @@ export class AgentSession {
 		}
 
 		this._postCompactionContinuationScheduled = false;
+		const continuationMessages = [...this._postCompactionContinuationMessages];
 		try {
 			await this.agent.continue();
+			this._forgetConsumedPostCompactionContinuations(continuationMessages);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (message.includes("already processing")) {
 				this._schedulePostCompactionContinue();
 			}
 		}
+	}
+
+	private _forgetConsumedPostCompactionContinuations(continuationMessages: AgentMessage[]): void {
+		if (continuationMessages.length === 0) {
+			return;
+		}
+		const continuationMessageSet = new Set(continuationMessages);
+		const stillQueued = new Set(this.agent.removeQueuedMessages((message) => continuationMessageSet.has(message)));
+		for (const message of stillQueued) {
+			this.agent.followUp(message);
+		}
+		for (const message of continuationMessages) {
+			if (!stillQueued.has(message)) {
+				this._queuedAutonomousContinuationSnapshots.delete(message);
+			}
+		}
+		this._postCompactionContinuationMessages = this._postCompactionContinuationMessages.filter(
+			(message) => !continuationMessageSet.has(message) || stillQueued.has(message),
+		);
 	}
 
 	private _shouldSkipAutoRefineForActiveAgent(): boolean {
@@ -4756,7 +5099,11 @@ export class AgentSession {
 		return calculateContextTokens(assistantMessage.usage);
 	}
 
-	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+	private async _checkCompaction(
+		assistantMessage: AssistantMessage,
+		skipAbortedCheck = true,
+		queueAutonomousContinuation = true,
+	): Promise<boolean> {
 		// An abort drops any compaction the model requested this turn, even on the
 		// pre-prompt path (skipAbortedCheck=false) which continues to threshold checks.
 		if (assistantMessage.stopReason === "aborted") {
@@ -4826,6 +5173,12 @@ export class AgentSession {
 		const contextTokens = this._getThresholdContextTokens(assistantMessage, compactionTimestamp);
 		if (contextTokens === undefined) return false;
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
+			if (
+				queueAutonomousContinuation &&
+				(await this._queueAutonomousContinuationForThresholdCompaction(assistantMessage))
+			) {
+				this._continueAfterThresholdCompaction = true;
+			}
 			return await this._runAutoCompaction("threshold", false);
 		}
 		return false;
@@ -4846,6 +5199,10 @@ export class AgentSession {
 		const customInstructions = pending?.customInstructions;
 		const shouldContinueAfterCompaction =
 			(reason === "threshold" || reason === "requested") && this._continueAfterThresholdCompaction;
+		const queuedAutonomousContinuationsForThisCompaction =
+			reason === "threshold" && shouldContinueAfterCompaction
+				? this._pendingThresholdCompactionAutonomousMessages.splice(0)
+				: [];
 		this._continueAfterThresholdCompaction = false;
 
 		// A requested compaction stopped the loop on purpose; don't stall if it fails.
@@ -4867,6 +5224,10 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
+				this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
+					reason === "threshold" && shouldContinueAfterCompaction,
+					queuedAutonomousContinuationsForThisCompaction,
+				);
 				resumeAfterFailure();
 				return false;
 			}
@@ -4880,6 +5241,10 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 				});
+				this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
+					reason === "threshold" && shouldContinueAfterCompaction,
+					queuedAutonomousContinuationsForThisCompaction,
+				);
 				resumeAfterFailure();
 				return false;
 			}
@@ -4916,6 +5281,10 @@ export class AgentSession {
 			}
 			return false;
 		} catch (error) {
+			this._clearQueuedAutonomousContinuationsAfterSkippedThresholdCompaction(
+				reason === "threshold" && shouldContinueAfterCompaction,
+				queuedAutonomousContinuationsForThisCompaction,
+			);
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			const aborted =
 				errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
@@ -5946,9 +6315,6 @@ export class AgentSession {
 
 		const task = (async (): Promise<RlmInternalRunResult> => {
 			try {
-				if (!(await ensureTool("rg", true))) {
-					throw new Error(MISSING_RIPGREP_MESSAGE);
-				}
 				if (isRlmChildRunCancelled(run)) {
 					throw new Error(run.error ?? "RLM child cancelled");
 				}
