@@ -435,8 +435,38 @@ describe("session selector path/delete interactions", () => {
 		expect(output).not.toContain("all projects");
 	});
 
+	it("hides current-folder rows while all projects are loading", async () => {
+		const currentSession = makeSession({ id: "current", name: "Current folder session" });
+		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
+		const onSelect = vi.fn();
+		const selector = new SessionSelectorComponent(
+			async () => [currentSession],
+			async () => allDeferred.promise,
+			onSelect,
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings },
+		);
+		await flushPromises();
+
+		const list = selector.getSessionList();
+		list.handleInput("\t");
+
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("loading");
+		expect(output).not.toContain("Current folder session");
+		expect(output).not.toContain("No sessions found");
+
+		list.handleInput("\r");
+		expect(onSelect).not.toHaveBeenCalled();
+
+		allDeferred.resolve([makeSession({ id: "all", name: "All projects session" })]);
+		await flushPromises();
+	});
+
 	it("does not start redundant All loads when toggling scopes while All is already loading", async () => {
-		const currentSessions = [makeSession({ id: "current" })];
+		const currentSessions = [makeSession({ id: "current", name: "Current folder session" })];
 		const allDeferred = createDeferred<AgentConnectionSavedSessionInfo[]>();
 		let allLoadCalls = 0;
 
@@ -460,6 +490,9 @@ describe("session selector path/delete interactions", () => {
 		list.handleInput("\t"); // current -> all again while load pending
 
 		expect(allLoadCalls).toBe(1);
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("loading");
+		expect(output).not.toContain("Current folder session");
 
 		allDeferred.resolve([makeSession({ id: "all" })]);
 		await flushPromises();

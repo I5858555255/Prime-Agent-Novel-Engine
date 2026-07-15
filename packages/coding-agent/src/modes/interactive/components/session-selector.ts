@@ -296,6 +296,7 @@ class SessionList implements Component, Focusable {
 	private nameFilter: NameFilter = "all";
 	private keybindings: KeybindingsManager;
 	private showPath = false;
+	private loading = false;
 	private confirmingDeletePath: string | null = null;
 	private deleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 	private currentSessionCanonicalPath?: string;
@@ -353,6 +354,10 @@ class SessionList implements Component, Focusable {
 
 	setMaxVisible(maxVisible: number): void {
 		this.maxVisible = Math.max(3, maxVisible);
+	}
+
+	setLoading(loading: boolean): void {
+		this.loading = loading;
 	}
 
 	setSortMode(sortMode: SortMode): void {
@@ -455,6 +460,7 @@ class SessionList implements Component, Focusable {
 		// Render search input
 		lines.push(...this.searchInput.render(width));
 		lines.push(""); // Blank line after search
+		if (this.loading && this.filteredSessions.length === 0) return lines;
 
 		if (this.filteredSessions.length === 0) {
 			let emptyMessage: string;
@@ -975,6 +981,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		const seq = scope === "current" ? ++this.currentLoadSeq : ++this.allLoadSeq;
 		this.header.setScope(scope);
 		this.header.setLoading(true);
+		this.sessionList.setLoading(true);
+		if (reason !== "refresh") {
+			this.sessionList.setSessions([], showCwd);
+		}
 		this.requestRender();
 		const isLatestLoad = () => seq === (scope === "current" ? this.currentLoadSeq : this.allLoadSeq);
 		const isCurrentView = () => scope === this.scope;
@@ -1002,6 +1012,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			if (!isCurrentView()) return;
 
 			this.header.setLoading(false);
+			this.sessionList.setLoading(false);
 			this.sessionList.setSessions(sessions, showCwd);
 			this.requestRender();
 
@@ -1021,6 +1032,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 			const message = err instanceof Error ? err.message : String(err);
 			this.header.setLoading(false);
+			this.sessionList.setLoading(false);
 			this.header.setStatusMessage({ type: "error", message: `Failed to load sessions: ${message}` }, 4000);
 
 			if (reason === "initial") {
@@ -1053,9 +1065,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		if (this.scope === "current") {
 			this.scope = "all";
 			this.header.setScope(this.scope);
+			this.header.setLoading(this.allLoading);
+			this.sessionList.setLoading(this.allLoading);
 
 			if (this.allSessions !== null) {
-				this.header.setLoading(this.allLoading);
 				this.sessionList.setSessions(this.allSessions, true);
 				this.requestRender();
 				return;
@@ -1063,6 +1076,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 			if (!this.allLoading) {
 				void this.loadScope("all", "toggle");
+			} else {
+				this.sessionList.setSessions([], true);
+				this.requestRender();
 			}
 			return;
 		}
@@ -1070,6 +1086,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.scope = "current";
 		this.header.setScope(this.scope);
 		this.header.setLoading(this.currentLoading);
+		this.sessionList.setLoading(this.currentLoading);
 		this.sessionList.setSessions(this.currentSessions ?? [], false);
 		this.requestRender();
 	}
