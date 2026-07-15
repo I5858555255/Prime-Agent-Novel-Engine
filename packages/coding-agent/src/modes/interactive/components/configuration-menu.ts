@@ -69,10 +69,14 @@ class ConfigurationMenuTabBar implements Component {
 		const safeWidth = Math.max(1, width);
 		const activeTab = this.getActiveTab();
 		const labels = CONFIGURATION_MENU_TABS.map((tab) => {
-			const label = tab === activeTab ? `[${TAB_LABELS[tab]}]` : TAB_LABELS[tab];
+			const label = `[${tab === activeTab ? "▶" : " "} ${TAB_LABELS[tab]}]`;
 			return tab === activeTab ? theme.bold(theme.fg("accent", label)) : theme.fg("text", label);
 		});
-		const lines = this.wrapItems(labels, theme.fg("muted", "  "), safeWidth);
+		const lines = this.wrapItems(
+			[theme.bold(theme.fg("muted", "Tabs:")), ...labels],
+			theme.fg("muted", "  "),
+			safeWidth,
+		);
 		const previousKey = keyText("app.configuration.previousTab", { primaryOnly: true });
 		const nextKey = keyText("app.configuration.nextTab", { primaryOnly: true });
 		const hint = `${theme.fg("dim", `${previousKey}/${nextKey}`)}${theme.fg("muted", " switch tabs")}`;

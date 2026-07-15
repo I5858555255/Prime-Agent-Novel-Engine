@@ -72,22 +72,24 @@ describe("ConfigurationMenuComponent", () => {
 		}
 	});
 
-	it("uses one three-tab menu and keeps each tab body mounted", async () => {
+	it("uses one clearly delineated three-tab menu and keeps each tab body mounted", async () => {
 		const requestRender = vi.fn();
 		const selectProvider = vi.fn();
 		const menu = await createMenu({ requestRender, onSelectProvider: selectProvider });
 
 		let output = stripAnsi(menu.render(120).join("\n"));
-		expect(output).toContain("[Providers]");
-		expect(output).toContain("Models");
-		expect(output).toContain("MCP Connections");
+		expect(output).toContain("Tabs:");
+		expect(output).toContain("[▶ Providers]");
+		expect(output).toContain("[  Models]");
+		expect(output).toContain("[  MCP Connections]");
 		expect(output).toContain("Anthropic");
 		expect(output).not.toContain("Serper (web search)");
 
 		menu.handleInput("a");
 		menu.setActiveTab("models");
 		output = stripAnsi(menu.render(120).join("\n"));
-		expect(output).toContain("[Models]");
+		expect(output).toContain("[  Providers]");
+		expect(output).toContain("[▶ Models]");
 		expect(output).toContain("Faux One");
 
 		menu.setActiveTab("providers");
@@ -101,7 +103,7 @@ describe("ConfigurationMenuComponent", () => {
 
 		menu.setActiveTab("mcp-connections");
 		output = stripAnsi(menu.render(120).join("\n"));
-		expect(output).toContain("[MCP Connections]");
+		expect(output).toContain("[▶ MCP Connections]");
 		expect(output).toContain("Serper (web search)");
 		expect(output).not.toContain("Anthropic");
 	});
@@ -202,7 +204,7 @@ describe("ConfigurationMenuComponent", () => {
 		for (const themeName of ["dark", "light", "prime"] as const) {
 			initTheme(themeName);
 			const rendered = menu.render(120).join("\n");
-			expect(stripAnsi(rendered)).toContain("[Providers]");
+			expect(stripAnsi(rendered)).toContain("[▶ Providers]");
 			expect(rendered).not.toBe(stripAnsi(rendered));
 		}
 	});
