@@ -439,7 +439,7 @@ describe("default model selection", () => {
 	test("findInitialModel uses medium as the built-in default thinking level", async () => {
 		const reasoningModel = mockModels[0];
 		const registry = {
-			getAvailable: async () => [reasoningModel],
+			refreshAvailableModels: async () => [reasoningModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
 
 		const result = await findInitialModel({
@@ -466,7 +466,7 @@ describe("default model selection", () => {
 			maxTokens: 101376,
 		};
 		const registry = {
-			getAvailable: async () => [primeModel],
+			refreshAvailableModels: async () => [primeModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
 
 		const result = await findInitialModel({
@@ -493,7 +493,7 @@ describe("default model selection", () => {
 		};
 
 		const registry = {
-			getAvailable: async () => [aiGatewayModel],
+			refreshAvailableModels: async () => [aiGatewayModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
 
 		const result = await findInitialModel({
@@ -524,7 +524,7 @@ describe("default model selection", () => {
 			find: (provider: string, modelId: string) =>
 				[savedDefault, primeModel].find((model) => model.provider === provider && model.id === modelId),
 			hasConfiguredAuth: (model: Model<"anthropic-messages">) => model.provider === "prime-inference",
-			getAvailable: async () => [primeModel],
+			refreshAvailableModels: async () => [primeModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
 
 		const result = await findInitialModel({
@@ -556,7 +556,7 @@ describe("default model selection", () => {
 			find: () => undefined,
 			getAll: () => [primeSnapshotModel],
 			hasConfiguredAuth: (model: Model<"anthropic-messages">) => model.provider === "prime-inference",
-			getAvailable: async () => [primeSnapshotModel],
+			refreshAvailableModels: async () => [primeSnapshotModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
 
 		const result = await findInitialModel({
@@ -588,7 +588,7 @@ describe("default model selection", () => {
 			find: () => undefined,
 			getAll: () => [...mockModels, primeSnapshotModel],
 			hasConfiguredAuth: (model: Model<"anthropic-messages">) => model.provider === "prime-inference",
-			getAvailable: async () => [primeSnapshotModel],
+			refreshAvailableModels: async () => [primeSnapshotModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
 
 		const result = await findInitialModel({

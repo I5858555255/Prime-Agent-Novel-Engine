@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../../../src/core/auth-storage.js";
 import { ModelRegistry } from "../../../src/core/model-registry.js";
+import { findInitialModel, restoreModelFromSession } from "../../../src/core/model-resolver.js";
 import { createHarness, type Harness } from "../harness.js";
 
 describe("ENG-4645 internal GLM configuration", () => {
@@ -77,6 +78,70 @@ describe("ENG-4645 internal GLM configuration", () => {
 		expect((await registry.refreshAvailableModels()).some((model) => model.id === "internal/glm-5.2-fast")).toBe(
 			false,
 		);
+	});
+
+	test("does not restore a private route that the selected team cannot access", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })),
+		);
+		const authStorage = AuthStorage.inMemory({
+			"prime-inference": {
+				type: "api_key",
+				key: "prime-key",
+				primeTeam: { teamId: "other-team", name: "Other Team" },
+			},
+		});
+		const registry = ModelRegistry.inMemory(authStorage);
+
+		const initial = await findInitialModel({
+			scopedModels: [],
+			isContinuing: false,
+			defaultProvider: "prime-inference",
+			defaultModelId: "internal/glm-5.2-fast",
+			modelRegistry: registry,
+		});
+		expect(initial.model?.id).not.toBe("internal/glm-5.2-fast");
+
+		const restored = await restoreModelFromSession(
+			"prime-inference",
+			"internal/glm-5.2-fast",
+			undefined,
+			false,
+			registry,
+		);
+		expect(restored.model?.id).not.toBe("internal/glm-5.2-fast");
+		expect(restored.fallbackMessage).toContain("model is not available");
+	});
+
+	test("selects an authorized private route from a saved default on cold start", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		const fetchMock = vi.fn(
+			async () => new Response(JSON.stringify({ data: [{ id: "internal/glm-5.2-fast" }] }), { status: 200 }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const authStorage = AuthStorage.inMemory({
+			"prime-inference": {
+				type: "api_key",
+				key: "prime-key",
+				primeTeam: { teamId: "engineering-team", name: "Prime Engineering" },
+			},
+		});
+		const registry = ModelRegistry.inMemory(authStorage);
+
+		const initial = await findInitialModel({
+			scopedModels: [],
+			isContinuing: false,
+			defaultProvider: "prime-inference",
+			defaultModelId: "internal/glm-5.2-fast",
+			modelRegistry: registry,
+		});
+
+		expect(initial.model?.id).toBe("internal/glm-5.2-fast");
+		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
 	test("loads the private route explicitly without inheriting Z.ai compatibility", async () => {
