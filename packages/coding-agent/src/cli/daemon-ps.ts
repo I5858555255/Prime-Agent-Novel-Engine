@@ -382,19 +382,54 @@ const SHUTDOWN_ALL_ACTION_ORDER: Record<ReapAction["kind"], number> = {
 	skip: 3,
 };
 
+export type ShutdownConfirmationPlan = "none" | "prompt" | "json-error" | "tty-error";
+
+export function planShutdownConfirmation(
+	daemonCount: number,
+	json: boolean,
+	force: boolean,
+	stdinIsTTY: boolean | undefined,
+): ShutdownConfirmationPlan {
+	if (daemonCount === 0 || force) return "none";
+	if (json) return "json-error";
+	return stdinIsTTY ? "prompt" : "tty-error";
+}
+
 export async function runShutdownAll(json: boolean, force: boolean): Promise<void> {
 	const daemons = await discoverDaemons();
-	if (daemons.length > 0 && !force) {
-		if (!process.stdin.isTTY) {
+	switch (planShutdownConfirmation(daemons.length, json, force, process.stdin.isTTY)) {
+		case "json-error":
+			process.exitCode = 1;
+			console.log(
+				JSON.stringify(
+					{
+						stopped: [],
+						failed: daemons.map(({ socketPath }) => ({
+							socketPath,
+							reason: 'confirmation required; use "prime-agent shutdown --force --json"',
+						})),
+					},
+					null,
+					2,
+				),
+			);
+			return;
+		case "tty-error":
 			throw new Error(
 				'Shutdown requires confirmation in an interactive terminal. Use "prime-agent shutdown --force".',
 			);
+		case "prompt": {
+			const confirmed = await promptYesNo(
+				"Stop every agent and background service? Active work will be interrupted.",
+			);
+			if (!confirmed) {
+				console.log(chalk.dim("Shutdown cancelled."));
+				return;
+			}
+			break;
 		}
-		const confirmed = await promptYesNo("Stop every agent and background service? Active work will be interrupted.");
-		if (!confirmed) {
-			console.log(chalk.dim("Shutdown cancelled."));
-			return;
-		}
+		case "none":
+			break;
 	}
 	const stopped: Array<{ socketPath: string; action: string }> = [];
 	const failed: Array<{ socketPath: string; reason: string }> = [];
@@ -510,8 +545,8 @@ async function forceStopTrackedWorkers(supervisorSocketPath: string): Promise<st
 	const failures: string[] = [];
 	for (const worker of findTrackedWorkers(supervisorSocketPath)) {
 		const { descriptor } = worker;
-		let stopped = await stopTrackedProcess(descriptor.pid, descriptor.processStartId);
-		if (!stopped) {
+		let cleanupWorkerRecords = await stopTrackedProcess(descriptor.pid, descriptor.processStartId);
+		if (!cleanupWorkerRecords) {
 			failures.push(`could not safely stop worker ${descriptor.workerId} (pid ${descriptor.pid})`);
 		}
 		if (descriptor.orphanProcessJournalPath) {
@@ -519,7 +554,6 @@ async function forceStopTrackedWorkers(supervisorSocketPath: string): Promise<st
 			try {
 				orphans = readActiveOrphanProcesses(descriptor.orphanProcessJournalPath, descriptor.pid);
 			} catch (error) {
-				stopped = false;
 				failures.push(`could not read child process records for worker ${descriptor.workerId}: ${String(error)}`);
 			}
 			for (const orphan of orphans) {
@@ -527,12 +561,12 @@ async function forceStopTrackedWorkers(supervisorSocketPath: string): Promise<st
 					continue;
 				}
 				if (!(await stopTrackedProcess(orphan.pid, orphan.processStartId))) {
-					stopped = false;
+					cleanupWorkerRecords = false;
 					failures.push(`could not stop child process ${orphan.pid} for worker ${descriptor.workerId}`);
 				}
 			}
 		}
-		if (stopped) {
+		if (cleanupWorkerRecords) {
 			try {
 				removeSocketFile(descriptor.socketPath);
 				rmSync(worker.descriptorPath, { force: true });

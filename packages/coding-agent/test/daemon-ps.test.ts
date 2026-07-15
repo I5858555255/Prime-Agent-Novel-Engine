@@ -6,6 +6,7 @@ import {
 	parseSsListeners,
 	planReap,
 	planShutdownAll,
+	planShutdownConfirmation,
 	sortDaemons,
 } from "../src/cli/daemon-ps.js";
 
@@ -177,6 +178,19 @@ describe("planShutdownAll", () => {
 		});
 		expect(planShutdownAll([daemon], false)[0]!.kind).toBe("skip");
 		expect(planShutdownAll([daemon], true)[0]!.kind).toBe("remove-file");
+	});
+});
+
+describe("planShutdownConfirmation", () => {
+	it("never prompts when JSON output was requested", () => {
+		expect(planShutdownConfirmation(1, true, false, true)).toBe("json-error");
+	});
+
+	it("prompts only for non-JSON shutdown at a TTY", () => {
+		expect(planShutdownConfirmation(1, false, false, true)).toBe("prompt");
+		expect(planShutdownConfirmation(1, false, false, false)).toBe("tty-error");
+		expect(planShutdownConfirmation(1, true, true, true)).toBe("none");
+		expect(planShutdownConfirmation(0, false, false, true)).toBe("none");
 	});
 });
 
