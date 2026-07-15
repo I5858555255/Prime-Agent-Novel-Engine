@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import chalk from "chalk";
 import { APP_NAME, getAgentDir, VERSION } from "../config.js";
 import { isOrphanProcessIdentityCurrent, readActiveOrphanProcesses } from "../core/orphan-process-journal.js";
@@ -8,6 +8,7 @@ import { getProcessStartId } from "../core/session-lease.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketDir, defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
+import { acquireDaemonShutdownAdmission } from "../modes/daemon/daemon-supervisor-ownership.js";
 import type { DaemonWorkerDescriptor } from "../modes/daemon/daemon-worker-protocol.js";
 import { signalProcessGroupOrProcess } from "../utils/child-process.js";
 import { formatDaemonListTable } from "./daemon-ps-format.js";
@@ -188,6 +189,7 @@ interface ProbeResult {
 	version?: string;
 	protocolVersion?: number;
 	sessionCount?: number;
+	supervisorPid?: number;
 	reachable: boolean;
 }
 
@@ -202,11 +204,13 @@ async function probeDaemon(socketPath: string): Promise<ProbeResult> {
 	try {
 		let version: string | undefined;
 		let protocolVersion: number | undefined;
+		let supervisorPid: number | undefined;
 		let greeted = false;
 		try {
 			const hello = await client.waitForHello(1500);
 			version = hello.appVersion;
 			protocolVersion = hello.protocol.version;
+			supervisorPid = hello.supervisorPid;
 			greeted = true;
 		} catch {
 			// Connected but no recognizable greeting: an old/foreign daemon.
@@ -223,7 +227,7 @@ async function probeDaemon(socketPath: string): Promise<ProbeResult> {
 		} catch {
 			// Leave sessionCount undefined when the daemon will not answer list.
 		}
-		return { version, protocolVersion, sessionCount, reachable: true };
+		return { version, protocolVersion, sessionCount, supervisorPid, reachable: true };
 	} finally {
 		client.close();
 	}
@@ -431,9 +435,28 @@ export async function runShutdownAll(json: boolean, force: boolean): Promise<voi
 		case "none":
 			break;
 	}
+	const admission = await acquireDaemonShutdownAdmission();
+	try {
+		await runShutdownAllConverging(json, force, () => admission.assertOrRenew());
+	} finally {
+		await admission.release();
+	}
+}
+
+async function runShutdownAllConverging(
+	json: boolean,
+	force: boolean,
+	assertAdmission: () => Promise<void>,
+): Promise<void> {
 	const stopped: Array<{ socketPath: string; action: string }> = [];
 	const failed: Array<{ socketPath: string; reason: string }> = [];
 	const handledPids = new Set<number>();
+	const reportedFailures = new Set<string>();
+
+	if (force) {
+		await stopHiddenSupervisors(stopped, failed, handledPids, reportedFailures, assertAdmission);
+	}
+	const daemons = (await discoverDaemons()).filter((daemon) => !isWorkerSocketPath(daemon.socketPath));
 
 	const actions = [...planShutdownAll(daemons, force)].sort(
 		(left, right) => SHUTDOWN_ALL_ACTION_ORDER[left.kind] - SHUTDOWN_ALL_ACTION_ORDER[right.kind],
@@ -442,48 +465,81 @@ export async function runShutdownAll(json: boolean, force: boolean): Promise<voi
 	for (const action of actions) {
 		const { socketPath, pid } = action.daemon;
 		if (pid !== undefined && handledPids.has(pid)) {
+			await assertAdmission();
 			removeSocketFile(socketPath);
 			stopped.push({ socketPath, action: `background service already stopped (pid ${pid})` });
 			if (force) {
-				failed.push(...(await forceStopTrackedWorkers(socketPath)).map((reason) => ({ socketPath, reason })));
+				failed.push(
+					...(await forceStopTrackedWorkers(socketPath, assertAdmission)).map((reason) => ({
+						socketPath,
+						reason,
+					})),
+				);
 			}
 			continue;
 		}
 		switch (action.kind) {
 			case "remove-file": {
 				if ((await probeDaemon(socketPath)).reachable) {
-					apply(await stopBackgroundService(socketPath, pid, handledPids, force), socketPath, stopped, failed);
-				} else if (removeSocketFile(socketPath)) {
-					stopped.push({ socketPath, action: "removed stale socket file" });
+					apply(
+						await stopBackgroundService(socketPath, pid, handledPids, force, assertAdmission),
+						socketPath,
+						stopped,
+						failed,
+					);
 				} else {
-					failed.push({ socketPath, reason: "could not remove socket file" });
+					await assertAdmission();
+					if (removeSocketFile(socketPath)) {
+						stopped.push({ socketPath, action: "removed stale socket file" });
+					} else {
+						failed.push({ socketPath, reason: "could not remove socket file" });
+					}
 				}
 				break;
 			}
 			case "kill": {
 				if ((await probeDaemon(socketPath)).reachable) {
-					apply(await stopBackgroundService(socketPath, pid, handledPids, force), socketPath, stopped, failed);
+					apply(
+						await stopBackgroundService(socketPath, pid, handledPids, force, assertAdmission),
+						socketPath,
+						stopped,
+						failed,
+					);
 				} else if (isDaemonProcessListening(pid!, socketPath)) {
+					await assertAdmission();
 					await forceKillDaemon(pid!);
 					handledPids.add(pid!);
+					await assertAdmission();
 					removeSocketFile(socketPath);
 					stopped.push({ socketPath, action: `killed unreachable background service (pid ${pid})` });
 				} else {
+					await assertAdmission();
 					removeSocketFile(socketPath);
 					stopped.push({ socketPath, action: "background service already stopped" });
 				}
 				break;
 			}
 			case "shutdown":
-				apply(await stopBackgroundService(socketPath, pid, handledPids, force), socketPath, stopped, failed);
+				apply(
+					await stopBackgroundService(socketPath, pid, handledPids, force, assertAdmission),
+					socketPath,
+					stopped,
+					failed,
+				);
 				break;
 			case "skip":
 				failed.push({ socketPath, reason: action.reason });
 				break;
 		}
 		if (force && action.kind !== "skip") {
-			failed.push(...(await forceStopTrackedWorkers(socketPath)).map((reason) => ({ socketPath, reason })));
+			failed.push(
+				...(await forceStopTrackedWorkers(socketPath, assertAdmission)).map((reason) => ({ socketPath, reason })),
+			);
 		}
+	}
+
+	if (force) {
+		await terminateVerifiedResiduals(stopped, failed, handledPids, reportedFailures, assertAdmission);
 	}
 
 	if (json) {
@@ -508,12 +564,188 @@ export async function runShutdownAll(json: boolean, force: boolean): Promise<voi
 	}
 }
 
+async function stopHiddenSupervisors(
+	stopped: Array<{ socketPath: string; action: string }>,
+	failed: Array<{ socketPath: string; reason: string }>,
+	handledPids: Set<number>,
+	reportedFailures: Set<string>,
+	assertAdmission: () => Promise<void>,
+): Promise<void> {
+	while (true) {
+		const listeners = scanListeningDaemons().filter((listener) => !isWorkerSocketPath(listener.socketPath));
+		const bySocket = new Map<string, DiscoveredDaemonProcess[]>();
+		for (const listener of listeners) {
+			const group = bySocket.get(listener.socketPath) ?? [];
+			group.push(listener);
+			bySocket.set(listener.socketPath, group);
+		}
+		const hidden: DiscoveredDaemonProcess[] = [];
+		for (const [socketPath, group] of bySocket) {
+			if (new Set(group.map((listener) => listener.pid)).size < 2) {
+				continue;
+			}
+			const currentPid = (await probeDaemon(socketPath)).supervisorPid;
+			if (currentPid === undefined || !group.some((listener) => listener.pid === currentPid)) {
+				recordShutdownFailure(
+					failed,
+					reportedFailures,
+					socketPath,
+					"could not identify the current same-path daemon",
+				);
+				continue;
+			}
+			hidden.push(...group.filter((listener) => listener.pid !== currentPid));
+		}
+		if (hidden.length === 0) {
+			return;
+		}
+		const before = daemonListenerSignature(hidden);
+		for (const listener of hidden) {
+			if (await terminateVerifiedListener(listener, failed, reportedFailures, assertAdmission)) {
+				handledPids.add(listener.pid);
+				stopped.push({ socketPath: listener.socketPath, action: `stopped hidden daemon (pid ${listener.pid})` });
+			}
+		}
+		const afterHidden = scanListeningDaemons().filter(
+			(listener) =>
+				!isWorkerSocketPath(listener.socketPath) &&
+				hidden.some((candidate) => candidate.pid === listener.pid && candidate.socketPath === listener.socketPath),
+		);
+		if (afterHidden.length === 0 || daemonListenerSignature(afterHidden) === before) {
+			return;
+		}
+	}
+}
+
+async function terminateVerifiedResiduals(
+	stopped: Array<{ socketPath: string; action: string }>,
+	failed: Array<{ socketPath: string; reason: string }>,
+	handledPids: Set<number>,
+	reportedFailures: Set<string>,
+	assertAdmission: () => Promise<void>,
+): Promise<void> {
+	let previousSignature: string | undefined;
+	while (true) {
+		const listeners = scanListeningDaemons();
+		if (listeners.length === 0) {
+			return;
+		}
+		const signature = daemonListenerSignature(listeners);
+		if (signature === previousSignature) {
+			for (const listener of listeners) {
+				const processStartId = getProcessStartId(listener.pid);
+				if (processStartId && getProcessStartId(listener.pid) === processStartId) {
+					recordShutdownFailure(
+						failed,
+						reportedFailures,
+						listener.socketPath,
+						`daemon process remained after shutdown (pid ${listener.pid}, start ${processStartId})`,
+					);
+				}
+			}
+			return;
+		}
+		previousSignature = signature;
+		const seenPids = new Set<number>();
+		for (const listener of listeners) {
+			if (seenPids.has(listener.pid)) {
+				continue;
+			}
+			seenPids.add(listener.pid);
+			const alreadyReported = handledPids.has(listener.pid);
+			if (await terminateVerifiedListener(listener, failed, reportedFailures, assertAdmission)) {
+				handledPids.add(listener.pid);
+				if (!alreadyReported) {
+					stopped.push({
+						socketPath: listener.socketPath,
+						action: `stopped residual daemon process (pid ${listener.pid})`,
+					});
+				}
+			}
+		}
+	}
+}
+
+async function terminateVerifiedListener(
+	listener: DiscoveredDaemonProcess,
+	failed: Array<{ socketPath: string; reason: string }>,
+	reportedFailures: Set<string>,
+	assertAdmission: () => Promise<void>,
+): Promise<boolean> {
+	const processStartId = getProcessStartId(listener.pid);
+	if (!processStartId) {
+		recordShutdownFailure(
+			failed,
+			reportedFailures,
+			listener.socketPath,
+			`could not verify daemon process identity (pid ${listener.pid})`,
+		);
+		return false;
+	}
+	if (getProcessStartId(listener.pid) !== processStartId) {
+		return false;
+	}
+	await assertAdmission();
+	if (getProcessStartId(listener.pid) !== processStartId) {
+		return false;
+	}
+	killDaemon(listener.pid);
+	const deadline = Date.now() + 1000;
+	while (getProcessStartId(listener.pid) === processStartId && Date.now() < deadline) {
+		await delay(50);
+	}
+	if (getProcessStartId(listener.pid) === processStartId) {
+		await assertAdmission();
+		if (getProcessStartId(listener.pid) !== processStartId) {
+			return false;
+		}
+		try {
+			process.kill(listener.pid, "SIGKILL");
+		} catch {
+			// The verified process exited between the identity check and signal.
+		}
+	}
+	return getProcessStartId(listener.pid) !== processStartId;
+}
+
+function daemonListenerSignature(listeners: readonly DiscoveredDaemonProcess[]): string {
+	return listeners
+		.map((listener) => `${listener.pid}:${getProcessStartId(listener.pid) ?? "unknown"}:${listener.socketPath}`)
+		.sort()
+		.join("\n");
+}
+
+function recordShutdownFailure(
+	failed: Array<{ socketPath: string; reason: string }>,
+	reportedFailures: Set<string>,
+	socketPath: string,
+	reason: string,
+): void {
+	const key = `${socketPath}\0${reason}`;
+	if (reportedFailures.has(key)) {
+		return;
+	}
+	reportedFailures.add(key);
+	failed.push({ socketPath, reason });
+}
+
+function isWorkerSocketPath(socketPath: string): boolean {
+	return (
+		process.platform !== "win32" &&
+		resolve(dirname(socketPath)) === resolve(defaultDaemonSocketDir()) &&
+		basename(socketPath).startsWith("worker-") &&
+		basename(socketPath).endsWith(".sock")
+	);
+}
+
 async function stopBackgroundService(
 	socketPath: string,
 	pid: number | undefined,
 	handledPids: Set<number>,
 	force: boolean,
+	assertAdmission: () => Promise<void>,
 ): Promise<ReapOutcome> {
+	await assertAdmission();
 	if (await shutdownDaemon(socketPath, force)) {
 		if (pid !== undefined) {
 			handledPids.add(pid);
@@ -521,6 +753,7 @@ async function stopBackgroundService(
 		return { reaped: `stopped background service${pid ? ` (pid ${pid})` : ""}` };
 	}
 	if (!(await canConnectToSocket(socketPath, 250))) {
+		await assertAdmission();
 		removeSocketFile(socketPath);
 		return { reaped: "background service already stopped" };
 	}
@@ -530,8 +763,10 @@ async function stopBackgroundService(
 	if (!force) {
 		return { skipped: "did not stop gracefully; retry with --force" };
 	}
+	await assertAdmission();
 	await forceKillDaemon(pid);
 	handledPids.add(pid);
+	await assertAdmission();
 	removeSocketFile(socketPath);
 	return { reaped: `force-killed unresponsive background service (pid ${pid})` };
 }
@@ -541,11 +776,14 @@ interface TrackedWorker {
 	descriptorPath: string;
 }
 
-async function forceStopTrackedWorkers(supervisorSocketPath: string): Promise<string[]> {
+async function forceStopTrackedWorkers(
+	supervisorSocketPath: string,
+	assertAdmission: () => Promise<void>,
+): Promise<string[]> {
 	const failures: string[] = [];
 	for (const worker of findTrackedWorkers(supervisorSocketPath)) {
 		const { descriptor } = worker;
-		let cleanupWorkerRecords = await stopTrackedProcess(descriptor.pid, descriptor.processStartId);
+		let cleanupWorkerRecords = await stopTrackedProcess(descriptor.pid, descriptor.processStartId, assertAdmission);
 		if (!cleanupWorkerRecords) {
 			failures.push(`could not safely stop worker ${descriptor.workerId} (pid ${descriptor.pid})`);
 		}
@@ -560,7 +798,7 @@ async function forceStopTrackedWorkers(supervisorSocketPath: string): Promise<st
 				if (!isOrphanProcessIdentityCurrent(orphan)) {
 					continue;
 				}
-				if (!(await stopTrackedProcess(orphan.pid, orphan.processStartId))) {
+				if (!(await stopTrackedProcess(orphan.pid, orphan.processStartId, assertAdmission))) {
 					cleanupWorkerRecords = false;
 					failures.push(`could not stop child process ${orphan.pid} for worker ${descriptor.workerId}`);
 				}
@@ -651,11 +889,19 @@ function isTrackedWorkerDescriptor(value: unknown): value is DaemonWorkerDescrip
 	);
 }
 
-async function stopTrackedProcess(pid: number, expectedStartId: string | undefined): Promise<boolean> {
+async function stopTrackedProcess(
+	pid: number,
+	expectedStartId: string | undefined,
+	assertAdmission: () => Promise<void>,
+): Promise<boolean> {
 	if (!isProcessAlive(pid)) {
 		return true;
 	}
 	if (!expectedStartId || getProcessStartId(pid) !== expectedStartId) {
+		return false;
+	}
+	await assertAdmission();
+	if (getProcessStartId(pid) !== expectedStartId) {
 		return false;
 	}
 	signalProcessGroupOrProcess(pid, "SIGTERM");
@@ -665,6 +911,10 @@ async function stopTrackedProcess(pid: number, expectedStartId: string | undefin
 	}
 	if (!isProcessAlive(pid)) {
 		return true;
+	}
+	await assertAdmission();
+	if (getProcessStartId(pid) !== expectedStartId) {
+		return false;
 	}
 	signalProcessGroupOrProcess(pid, "SIGKILL");
 	deadline = Date.now() + 1000;

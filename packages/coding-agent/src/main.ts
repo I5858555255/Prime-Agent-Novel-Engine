@@ -71,6 +71,7 @@ import {
 	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
 	isDaemonWorkerProcess,
 	requireDaemonWorkerAuthenticationToken,
+	waitForDaemonWorkerStartupGate,
 } from "./modes/daemon/daemon-worker-protocol.js";
 import {
 	type AgentConnection,
@@ -1037,6 +1038,9 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	if (isDaemonWorkerProcess()) {
+		waitForDaemonWorkerStartupGate();
+	}
 	installFileLogSink();
 	if (isDaemonCatalogProcess()) {
 		await runDaemonCatalogProcess();
