@@ -7497,15 +7497,18 @@ export class InteractiveMode {
 		}
 
 		const currentModel = this.getCurrentModel();
-		let action = resolvePrimeInferencePostLoginModelAction(authResult, currentModel, this.modelRegistry);
+		// The agent core uses unknown/unknown as its no-model sentinel.
+		const selectedModel =
+			currentModel?.provider === "unknown" && currentModel.id === "unknown" ? undefined : currentModel;
+		let action = resolvePrimeInferencePostLoginModelAction(authResult, selectedModel, this.modelRegistry);
 		if (!action.openModelPicker) {
 			return false;
 		}
 
-		if (!currentModel) {
+		if (!selectedModel) {
 			try {
 				const availableModels = await this.getConnectionAvailableModels();
-				action = resolvePrimeInferencePostLoginModelAction(authResult, currentModel, {
+				action = resolvePrimeInferencePostLoginModelAction(authResult, selectedModel, {
 					find: (provider, modelId) =>
 						availableModels.find((model) => model.provider === provider && model.id === modelId) ??
 						this.modelRegistry.find(provider, modelId),
@@ -7524,7 +7527,7 @@ export class InteractiveMode {
 					`Prime Inference login succeeded, but the default model could not be selected: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
-		} else if (!currentModel) {
+		} else if (!selectedModel) {
 			this.showError("Prime Inference login succeeded, but the default GLM 5.2 model is unavailable.");
 		}
 
