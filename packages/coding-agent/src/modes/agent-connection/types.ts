@@ -1,9 +1,14 @@
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model, TextContent, Transport, Usage } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model, ServiceTier, TextContent, Transport, Usage } from "@earendil-works/pi-ai";
 import type { AuthSourceToken } from "../../core/auth-storage.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
-import type { AgentCronJob, AgentHeartbeatDeliveryMode, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type {
+	AgentCronJob,
+	AgentHeartbeatDeliveryMode,
+	AgentHeartbeatManagementAction,
+	AgentHeartbeatUpdateAction,
+} from "../../core/cron-jobs.js";
 import type { ReplayBuiltInToolName } from "../../core/extensions/index.js";
 import type { GoalState } from "../../core/goals.js";
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
@@ -122,6 +127,11 @@ export interface AgentConnectionThinkingLevelChangeEntry extends AgentConnection
 	thinkingLevel: string;
 }
 
+export interface AgentConnectionServiceTierChangeEntry extends AgentConnectionSessionEntryBase {
+	type: "service_tier_change";
+	serviceTier: ServiceTier;
+}
+
 export interface AgentConnectionModelChangeEntry extends AgentConnectionSessionEntryBase {
 	type: "model_change";
 	provider: string;
@@ -199,6 +209,7 @@ export interface AgentConnectionGitStateEntry extends AgentConnectionSessionEntr
 export type AgentConnectionSessionEntry =
 	| AgentConnectionSessionMessageEntry
 	| AgentConnectionThinkingLevelChangeEntry
+	| AgentConnectionServiceTierChangeEntry
 	| AgentConnectionModelChangeEntry
 	| AgentConnectionCompactionEntry
 	| AgentConnectionBranchSummaryEntry
@@ -221,6 +232,7 @@ export interface AgentConnectionSessionTreeNode {
 export interface AgentConnectionSessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
+	serviceTier: ServiceTier;
 	model: { provider: string; modelId: string } | null;
 }
 
@@ -270,6 +282,7 @@ export interface AgentConnectionScopedModel {
 export interface AgentConnectionModelCycleResult {
 	model: AgentConnectionModel;
 	thinkingLevel: ThinkingLevel;
+	serviceTier: ServiceTier;
 	isScoped: boolean;
 }
 
@@ -278,6 +291,7 @@ export interface AgentConnectionState {
 	cwd: string;
 	model?: AgentConnectionModel;
 	thinkingLevel: ThinkingLevel;
+	serviceTier: ServiceTier;
 	availableThinkingLevels: ThinkingLevel[];
 	isStreaming: boolean;
 	isCompacting: boolean;
@@ -437,6 +451,12 @@ export interface AgentConnectionQueueState {
 	followUp: string[];
 }
 
+export interface AgentConnectionHeartbeat {
+	job: AgentCronJob;
+	sessionName?: string;
+	firstMessage?: string;
+}
+
 export type AgentConnectionExtensionUiResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
 
 export interface AgentConnectionExtensionUiRequest {
@@ -457,6 +477,8 @@ export interface AgentConnectionRlmChildAgentSnapshot {
 	parentId?: string;
 	/** The child's own daemon active-session id, for attaching to it directly. */
 	activeSessionId?: string;
+	/** Stable daemon-visible session name for addressing/displaying the child. */
+	sessionName?: string;
 	label: string;
 	status: AgentConnectionRlmChildAgentStatus;
 	durationMs?: number;
@@ -488,6 +510,7 @@ export type AgentConnectionSessionEvent =
 	  }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "service_tier_changed"; serviceTier: ServiceTier }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow" | "requested";
@@ -525,6 +548,7 @@ export type AgentConnectionEvent =
 	| { type: "session_status"; recap?: string }
 	| { type: "extension_ui_request"; request: AgentConnectionExtensionUiRequest }
 	| { type: "connection_status"; status: "reconnecting" | "connected"; error?: string }
+	| { type: "heartbeats_changed" }
 	| { type: "closed"; error?: string };
 
 export type AgentConnectionEventListener = (event: AgentConnectionEvent) => void | Promise<void>;
@@ -552,6 +576,12 @@ export interface AgentConnection {
 	clearQueue(): Promise<AgentConnectionQueueState>;
 	abortAndClearQueue(): Promise<AgentConnectionQueueState>;
 	listCronJobs(options?: { includeInactive?: boolean }): Promise<AgentCronJob[]>;
+	listHeartbeats(): Promise<AgentConnectionHeartbeat[]>;
+	manageHeartbeat(
+		activeSessionId: string,
+		jobId: string,
+		action: AgentHeartbeatManagementAction,
+	): Promise<AgentCronJob>;
 	addCronJob(schedule: string, prompt: string): Promise<AgentCronJob>;
 	cancelCronJob(jobId: string): Promise<AgentCronJob>;
 	getHeartbeat(): Promise<AgentCronJob | undefined>;
@@ -591,6 +621,7 @@ export interface AgentConnection {
 	cycleModel(direction?: "forward" | "backward"): Promise<AgentConnectionModelCycleResult | undefined>;
 	setScopedModels(scopedModels: AgentConnectionScopedModel[]): Promise<void>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+	setServiceTier(serviceTier: ServiceTier): Promise<void>;
 	cycleThinkingLevel(): Promise<ThinkingLevel | undefined>;
 	setTransport(transport: Transport): Promise<void>;
 	setSteeringMode(mode: AgentConnectionQueueMode): Promise<void>;

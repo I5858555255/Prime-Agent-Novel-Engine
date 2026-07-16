@@ -6,6 +6,8 @@ import {
 	createDaemonReplayInfo,
 	DAEMON_PROTOCOL_INFO,
 	type DaemonOutbound,
+	isDaemonCommandEnvelope,
+	isDaemonMutatingCommand,
 } from "../src/modes/daemon/daemon-protocol.js";
 
 describe("daemon protocol helpers", () => {
@@ -38,6 +40,19 @@ describe("daemon protocol helpers", () => {
 			event,
 		});
 		expect(eventMeta.cursor).toEqual({ generation: "active-1", sequence: 3 });
+	});
+
+	it("accepts command envelopes from the compatible v2 protocol", () => {
+		const command = { id: "cmd-1", type: "attach", activeSessionId: "active-1" } as const;
+
+		expect(isDaemonCommandEnvelope(createDaemonCommandEnvelope(command, "cmd-1", "client-1", 2))).toBe(true);
+		expect(isDaemonCommandEnvelope(createDaemonCommandEnvelope(command, "cmd-1", "client-1", 1))).toBe(false);
+	});
+
+	it("keeps attachment routing out of the durable mutation journal", () => {
+		expect(isDaemonMutatingCommand({ type: "attach" })).toBe(false);
+		expect(isDaemonMutatingCommand({ type: "reattach" })).toBe(false);
+		expect(isDaemonMutatingCommand({ type: "switch_session" })).toBe(true);
 	});
 
 	it("reports replay availability from resume cursors", () => {

@@ -18,9 +18,11 @@ import {
 import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import type { ModelRegistry } from "../../core/model-registry.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
 import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { SessionManager } from "../../core/session-manager.js";
+import { ensureTool } from "../../utils/tools-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
 import type { AgentConnectionSavedSessionInfo } from "../agent-connection/types.js";
 import { DaemonClient, getDaemonSocketCloseReason } from "../daemon/daemon-client.js";
@@ -55,6 +57,7 @@ import { SessionPickerScreen } from "../interactive/components/session-picker-sc
 import { type SessionListCallbacks, SessionSelectorComponent } from "../interactive/components/session-selector.js";
 import { BrandSplashHeader, InteractiveMode } from "../interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../interactive/interactive-mode-services.js";
+import { ClientPromptStashStore } from "../interactive/prompt-stash-state.js";
 import {
 	getEditorTheme,
 	initTheme,
@@ -102,6 +105,7 @@ const DEFAULT_PROMPT_PLACEHOLDER = "Describe a task for a new session";
 const REPLY_PROMPT_FALLBACK_PLACEHOLDER = "Write a reply to this agent";
 const COMPLETED_ROW_ICON = "✓";
 const NEEDS_INPUT_ROW_ICON = "●";
+const HEARTBEAT_ROW_ICON = "♥";
 const SELECTED_ROW_MARKER = "\0agents-view-selected-row\0";
 // Tags a spawn-code line so finalize can wrap the whole row in a panel
 // background, visually segmenting the program from the agent rows.
@@ -121,6 +125,7 @@ export interface AgentsViewModeOptions {
 	verbose?: boolean;
 	recoverDaemon?: () => Promise<void>;
 	reconnectTimeoutMs?: number;
+	promptStashStore?: ClientPromptStashStore;
 }
 
 type AgentsViewRunResult =
@@ -221,6 +226,26 @@ export function resolveAgentsViewActiveSummaryForPath(
 // the input, so flatten all whitespace runs to single spaces.
 export function formatAgentsViewStatusLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
+}
+
+export async function getAgentsViewModelArgumentCompletions(
+	prefix: string,
+	modelRegistry: Pick<ModelRegistry, "refreshAvailableModels">,
+): Promise<AutocompleteItem[] | null> {
+	const models = await modelRegistry.refreshAvailableModels();
+	if (models.length === 0) {
+		return null;
+	}
+	const items = models.map((model) => ({
+		id: model.id,
+		provider: model.provider,
+		label: `${model.provider}/${model.id}`,
+	}));
+	const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
+	if (filtered.length === 0) {
+		return null;
+	}
+	return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
 }
 
 export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
@@ -325,6 +350,7 @@ function isUnknownActiveSessionError(error: unknown): boolean {
 
 export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise<void> {
 	const persistentState: AgentsViewPersistentState = {};
+	const promptStashStore = options.promptStashStore ?? new ClientPromptStashStore();
 
 	while (true) {
 		const view = new AgentsViewMode(options, persistentState);
@@ -353,7 +379,10 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			const uiServices = await resolveAgentsViewSessionUiServices(options, opened.summary);
 			const interactiveMode = new InteractiveMode({
 				agentConnection: opened.connection,
+				daemonSocketPath: options.socketPath,
 				uiServices,
+				promptStashStore,
+				promptStashSessionId: opened.summary.sessionId,
 				bindLocalSessionExtensions: false,
 				migratedProviders: options.migratedProviders,
 				modelFallbackMessage: resolveAttachModelFallbackMessage(opened.summary, options.modelFallbackMessage),
@@ -430,6 +459,7 @@ class AgentsViewMode implements Component, Focusable {
 	private pendingKillSubagent: PendingKillSubagent | undefined;
 	private renameTarget: { activeSessionId: string; identity: string } | undefined;
 	private readonly inactiveAgentIdentities = new Set<string>();
+	private fdPath: string | undefined;
 	private statusMessage: string | undefined;
 	private statusMessageTone: "muted" | "error" | "warning" = "muted";
 	private statusMessageSticky = false;
@@ -499,6 +529,8 @@ class AgentsViewMode implements Component, Focusable {
 		this.client = new DaemonClient(this.options.socketPath);
 		await this.client.connect();
 		this.subscribeToClientClose(this.client);
+		this.fdPath = await ensureTool("fd");
+		this.editor.setAutocompleteProvider(this.createAutocompleteProvider());
 
 		this.ui.addChild(this);
 		this.ui.setFocus(this);
@@ -983,7 +1015,7 @@ class AgentsViewMode implements Component, Focusable {
 					// unique model id reference applies directly without the picker.
 					const match = findExactModelReferenceMatch(
 						searchTerm,
-						this.options.uiServices.modelRegistry.getAvailable(),
+						await this.options.uiServices.modelRegistry.refreshAvailableModels(),
 					);
 					if (match) {
 						this.applyDefaultModel(match);
@@ -1013,7 +1045,7 @@ class AgentsViewMode implements Component, Focusable {
 			modelRegistry,
 			showStatus: (message) => this.setStatusMessage(message),
 			showError: (message) => this.setStatusMessage(message, { tone: "error" }),
-			getAvailableModels: async () => modelRegistry.getAvailable(),
+			getAvailableModels: () => modelRegistry.refreshAvailableModels(),
 			onLoginCompleted: () => {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(this.getDefaultModelForNewAgents());
 			},
@@ -1056,9 +1088,10 @@ class AgentsViewMode implements Component, Focusable {
 		this.setStatusMessage(warning, { tone: "warning", sticky: true });
 	}
 
-	private showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
+	private async showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
 		const modelRegistry = this.options.uiServices.modelRegistry;
 		const authFlows = this.createAuthFlows();
+		const availableModels = await modelRegistry.refreshAvailableModels();
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
@@ -1076,30 +1109,22 @@ class AgentsViewMode implements Component, Focusable {
 				hide();
 				resolve();
 			};
-			const restore = () => {
-				if (settled) return;
-				hidden = false;
-				handle?.setHidden(false);
-				handle?.focus();
-				this.ui.requestRender();
-			};
 			const authenticate = (provider: AuthSelectorProvider, tab: "providers" | "mcp-connections") => {
 				if (settled) return;
-				handle?.setHidden(true);
 				void authFlows
 					.loginProvider(provider)
 					.then(async (authResult) => {
 						if (settled) return;
-						restore();
+						handle?.focus();
 						menu.refreshAuthentication();
 						if (authResult.status !== "success" || tab === "mcp-connections") return;
 
 						await this.applyPrimeInferenceFallbackAfterLogin(authResult);
-						menu.updateModels(this.getDefaultModelForNewAgents(), modelRegistry.getAvailable());
+						menu.updateModels(this.getDefaultModelForNewAgents(), await modelRegistry.refreshAvailableModels());
 						menu.setActiveTab("models");
 					})
 					.catch((error) => {
-						restore();
+						handle?.focus();
 						this.setStatusMessage(error instanceof Error ? error.message : String(error), { tone: "error" });
 					});
 			};
@@ -1112,7 +1137,7 @@ class AgentsViewMode implements Component, Focusable {
 				modelRegistry,
 				currentModel: this.getDefaultModelForNewAgents(),
 				scopedModels: [],
-				availableModels: modelRegistry.getAvailable(),
+				availableModels,
 				recentModels: this.options.uiServices.settingsManager.getRecentModels(),
 				initialModelSearch,
 				getRows: () => this.ui.terminal.rows,
@@ -1253,31 +1278,13 @@ class AgentsViewMode implements Component, Focusable {
 	}
 
 	private createAutocompleteProvider(): CombinedAutocompleteProvider {
-		const commands: SlashCommand[] = AGENTS_VIEW_SLASH_COMMANDS.map((command) => ({
-			name: command.name,
-			description: command.description,
-			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-		}));
-		const modelCommand = commands.find((command) => command.name === "model");
-		if (modelCommand) {
-			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const models = this.options.uiServices.modelRegistry.getAvailable();
-				if (models.length === 0) {
-					return null;
-				}
-				const items = models.map((model) => ({
-					id: model.id,
-					provider: model.provider,
-					label: `${model.provider}/${model.id}`,
-				}));
-				const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
-				if (filtered.length === 0) {
-					return null;
-				}
-				return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
-			};
-		}
-		return new CombinedAutocompleteProvider(commands, this.options.uiServices.getInitialCwd(), null);
+		const cwd = resolveAgentsViewAutocompleteCwd(
+			this.options.uiServices.getInitialCwd(),
+			this.replyActiveSessionId ? this.findSummaryByActiveSessionId(this.replyActiveSessionId) : undefined,
+		);
+		return createAgentsViewAutocompleteProvider(cwd, this.fdPath, (prefix) =>
+			getAgentsViewModelArgumentCompletions(prefix, this.options.uiServices.modelRegistry),
+		);
 	}
 
 	private openSelected(): void {
@@ -1463,6 +1470,7 @@ class AgentsViewMode implements Component, Focusable {
 		// Captured once on entry so the header does not count up while reply mode stays open.
 		this.replyHeaderTime = activeSessionId ? this.getReplyHeaderTime(activeSessionId) : "";
 		this.editor.setPlaceholder(activeSessionId ? REPLY_PROMPT_FALLBACK_PLACEHOLDER : DEFAULT_PROMPT_PLACEHOLDER);
+		this.editor.setAutocompleteProvider(this.createAutocompleteProvider());
 		this.ui.requestRender();
 	}
 
@@ -2023,7 +2031,11 @@ class AgentsViewMode implements Component, Focusable {
 		if (counts["needs-input"] > 0) {
 			parts.push(`${counts["needs-input"]} needs input`);
 		}
-		parts.push(`${counts.working} working`, `${counts.completed} completed`);
+		parts.push(`${counts.working} working`);
+		if (counts.heartbeats > 0) {
+			parts.push(`${counts.heartbeats} heartbeats`);
+		}
+		parts.push(`${counts.completed} completed`);
 		return parts.join(", ");
 	}
 
@@ -2236,6 +2248,8 @@ class AgentsViewMode implements Component, Focusable {
 				return workingIconFrame(this.workingIconFrame);
 			case "needs-input":
 				return NEEDS_INPUT_ROW_ICON;
+			case "heartbeats":
+				return HEARTBEAT_ROW_ICON;
 			case "completed":
 				return COMPLETED_ROW_ICON;
 			default: {
@@ -2251,6 +2265,8 @@ class AgentsViewMode implements Component, Focusable {
 				return theme.bold(icon);
 			case "needs-input":
 				return theme.fg("warning", icon);
+			case "heartbeats":
+				return theme.fg("error", icon);
 			case "completed":
 				return theme.fg("success", icon);
 			default: {
@@ -2269,7 +2285,7 @@ type DisplayItem =
 
 function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
-	const sections: AgentsViewSection[] = ["needs-input", "working", "completed"];
+	const sections: AgentsViewSection[] = ["needs-input", "working", "heartbeats", "completed"];
 	for (const [index, section] of sections.entries()) {
 		if (index > 0) {
 			items.push({ type: "spacer" });
@@ -2308,6 +2324,7 @@ function countRowsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSe
 	return {
 		working: agents.filter((row) => row.section === "working").length,
 		"needs-input": agents.filter((row) => row.section === "needs-input").length,
+		heartbeats: agents.filter((row) => row.section === "heartbeats").length,
 		completed: agents.filter((row) => row.section === "completed").length,
 	};
 }
@@ -2323,6 +2340,28 @@ function rowHasSpawnCode(row: AgentsViewRow): boolean {
 
 function isRunningSessionSummary(summary: SessionSummary): boolean {
 	return summary.activity === "working";
+}
+
+export function resolveAgentsViewAutocompleteCwd(initialCwd: string, replyTarget?: SessionSummary): string {
+	const replyCwd = replyTarget?.cwd;
+	return replyCwd && existsSync(replyCwd) ? replyCwd : initialCwd;
+}
+
+export function createAgentsViewAutocompleteProvider(
+	cwd: string,
+	fdPath: string | undefined,
+	getModelArgumentCompletions: NonNullable<SlashCommand["getArgumentCompletions"]>,
+): CombinedAutocompleteProvider {
+	const commands: SlashCommand[] = AGENTS_VIEW_SLASH_COMMANDS.map((command) => ({
+		name: command.name,
+		description: command.description,
+		...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+	}));
+	const modelCommand = commands.find((command) => command.name === "model");
+	if (modelCommand) {
+		modelCommand.getArgumentCompletions = getModelArgumentCompletions;
+	}
+	return new CombinedAutocompleteProvider(commands, cwd, fdPath ?? null);
 }
 
 export function createAgentsViewSessionName(text: string): string {

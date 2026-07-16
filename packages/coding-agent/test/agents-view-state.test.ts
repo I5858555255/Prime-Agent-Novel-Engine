@@ -1,12 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
 import type { AgentSessionRuntimeConfig } from "../src/core/agent-session-config.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import type { SessionInfo } from "../src/core/session-manager.js";
 import type { SettingsManager } from "../src/core/settings-manager.js";
 import {
+	createAgentsViewAutocompleteProvider,
 	createAgentsViewListCommand,
 	createAgentsViewReplyHeadline,
 	createAgentsViewResumeConfig,
@@ -14,6 +16,7 @@ import {
 	formatAgentsViewRelativeTime,
 	formatAgentsViewStatusLine,
 	resolveAgentsViewActiveSummaryForPath,
+	resolveAgentsViewAutocompleteCwd,
 	resolveAgentsViewOpenCwd,
 	resolveAgentsViewResumeSummary,
 	resolveAgentsViewSessionUiServices,
@@ -25,6 +28,7 @@ import {
 	getAgentsViewSelectionKey,
 	resolveAgentsViewSelectionIndex,
 	type SessionSummary,
+	sectionTitle,
 	shouldShowAgentsViewSession,
 } from "../src/modes/index.js";
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
@@ -53,37 +57,104 @@ describe("agents view state", () => {
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: undefined }))).toBe("needs-input");
 	});
 
+	test("active heartbeats use their own section regardless of current activity", () => {
+		expect(classifyAgentsViewSession(makeSummary({ activity: "working", hasActiveHeartbeat: true }))).toBe(
+			"heartbeats",
+		);
+		expect(
+			classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: "completed", hasActiveHeartbeat: true })),
+		).toBe("heartbeats");
+
+		const [row] = buildAgentsViewRows([makeSummary({ activity: "idle", hasActiveHeartbeat: true })]);
+		expect(row).toMatchObject({ section: "heartbeats", statusLabel: "heartbeat active" });
+		const [busyRow] = buildAgentsViewRows([
+			makeSummary({ activity: "working", hasActiveHeartbeat: true, isStreaming: true, isRunningTools: true }),
+		]);
+		expect(busyRow).toMatchObject({ section: "heartbeats", statusLabel: "running tools" });
+		expect(sectionTitle("heartbeats")).toBe("Heartbeats");
+	});
+
 	test("defaults an idle session with no verdict to needs-input", () => {
 		// A slow, failed, or absent classification never lingers in Working; only
 		// an explicit completed verdict moves an idle session out of needs-input.
 		expect(classifyAgentsViewSession(makeSummary({ activity: "idle", taskState: undefined }))).toBe("needs-input");
 	});
 
-	test("sorts rows by section and most recent modified time", () => {
+	test("sorts rows by section and creation time", () => {
 		const rows = buildAgentsViewRows([
 			makeSummary({
+				id: "completed",
+				sessionId: "completed",
 				sessionName: "completed",
 				activity: "idle",
 				taskState: "completed",
 				messageCount: 2,
-				modified: "2026-01-01T00:00:00Z",
+				created: "2026-01-03T00:00:00Z",
 			}),
 			makeSummary({
+				id: "older-working",
+				sessionId: "older-working",
 				sessionName: "older working",
 				activity: "working",
 				isStreaming: true,
-				modified: "2026-01-01T00:00:00Z",
+				created: "2026-01-01T00:00:00Z",
 			}),
 			makeSummary({
+				id: "newer-working",
+				sessionId: "newer-working",
 				sessionName: "newer working",
 				activity: "working",
 				isStreaming: true,
-				modified: "2026-01-02T00:00:00Z",
+				created: "2026-01-02T00:00:00Z",
+			}),
+			makeSummary({
+				sessionName: "heartbeat",
+				activity: "idle",
+				hasActiveHeartbeat: true,
+				modified: "2026-01-03T00:00:00Z",
 			}),
 		]);
 
-		expect(rows.map((row) => row.title)).toEqual(["newer working", "older working", "completed"]);
-		expect(rows.map((row) => row.section)).toEqual(["working", "working", "completed"]);
+		expect(rows.map((row) => row.title)).toEqual(["newer working", "older working", "heartbeat", "completed"]);
+		expect(rows.map((row) => row.section)).toEqual(["working", "working", "heartbeats", "completed"]);
+	});
+
+	test("keeps row order stable when modification times and daemon input order change", () => {
+		const older = makeSummary({
+			id: "older",
+			sessionId: "older",
+			sessionName: "older",
+			activity: "working",
+			created: "2026-01-01T00:00:00Z",
+			modified: "2026-01-04T00:00:00Z",
+		});
+		const newer = makeSummary({
+			id: "newer",
+			sessionId: "newer",
+			sessionName: "newer",
+			activity: "working",
+			created: "2026-01-02T00:00:00Z",
+			modified: "2026-01-03T00:00:00Z",
+		});
+
+		const initialOrder = buildAgentsViewRows([older, newer]).map((row) => row.summary.sessionId);
+		const refreshedOrder = buildAgentsViewRows([
+			{ ...newer, modified: "2026-01-05T00:00:00Z" },
+			{ ...older, modified: "2026-01-06T00:00:00Z" },
+		]).map((row) => row.summary.sessionId);
+
+		expect(initialOrder).toEqual(["newer", "older"]);
+		expect(refreshedOrder).toEqual(initialOrder);
+	});
+
+	test("uses deterministic fallbacks when creation times are unavailable", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({ id: "beta-2", sessionId: "beta-2", sessionName: "beta", modified: "2026-01-03T00:00:00Z" }),
+			makeSummary({ id: "alpha", sessionId: "alpha", sessionName: "alpha", modified: "2026-01-02T00:00:00Z" }),
+			makeSummary({ id: "beta-1", sessionId: "beta-1", sessionName: "beta", modified: "2026-01-01T00:00:00Z" }),
+		]);
+
+		expect(rows.map((row) => row.summary.sessionId)).toEqual(["alpha", "beta-1", "beta-2"]);
 	});
 
 	test("summarizes subagents on their parent and omits subagent rows", () => {
@@ -107,6 +178,7 @@ describe("agents view state", () => {
 				runtimeKind: "subagent",
 				parentActiveSessionId: "parent-active",
 				parentSessionId: "parent-session",
+				hasActiveHeartbeat: true,
 				activity: "working",
 			}),
 			makeSummary({
@@ -514,6 +586,58 @@ describe("agents view state", () => {
 		expect(createAgentsViewListCommand()).toEqual({ type: "list" });
 	});
 
+	test("uses the active-chat file autocomplete for new-agent prompts", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "agents-view-autocomplete-"));
+		const fdPath = join(dir, "fd");
+		writeFileSync(
+			fdPath,
+			`#!/bin/sh
+printf 'src/referenced.ts\n'
+`,
+		);
+		chmodSync(fdPath, 0o755);
+
+		try {
+			const provider = createAgentsViewAutocompleteProvider(dir, fdPath, () => []);
+			const suggestions = await provider.getSuggestions(["review @refer"], 0, 13, {
+				signal: new AbortController().signal,
+			});
+
+			expect(suggestions).toEqual({
+				prefix: "@refer",
+				items: [{ value: "@src/referenced.ts", label: "referenced.ts", description: "src/referenced.ts" }],
+				kind: "file",
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("uses the reply target cwd for file autocomplete", () => {
+		const missing = mkdtempSync(join(tmpdir(), "agents-view-autocomplete-missing-"));
+		rmSync(missing, { recursive: true, force: true });
+
+		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: tmpdir() }))).toBe(tmpdir());
+		expect(resolveAgentsViewAutocompleteCwd("/launch")).toBe("/launch");
+		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: missing }))).toBe("/launch");
+		expect(resolveAgentsViewAutocompleteCwd("/launch", makeSummary({ cwd: "" }))).toBe("/launch");
+	});
+
+	test("reads current models for each autocomplete request", async () => {
+		let completions: AutocompleteItem[] | null = null;
+		const provider = createAgentsViewAutocompleteProvider("/tmp", undefined, () => completions);
+
+		expect(
+			await provider.getSuggestions(["/model fresh"], 0, 12, { signal: new AbortController().signal }),
+		).toBeNull();
+
+		completions = [{ value: "test-provider/fresh-model", label: "fresh-model", description: "test-provider" }];
+		expect(await provider.getSuggestions(["/model fresh"], 0, 12, { signal: new AbortController().signal })).toEqual({
+			prefix: "fresh",
+			items: [{ value: "test-provider/fresh-model", label: "fresh-model", description: "test-provider" }],
+		});
+	});
+
 	test("creates an inactive summary for a saved session selected from resume", () => {
 		const savedSession = makeSessionInfo({
 			path: "/tmp/sessions/saved.jsonl",
@@ -657,14 +781,10 @@ describe("agents view state", () => {
 		const identity = `file:${opened.sessionFile}`;
 		const key = getAgentsViewSelectionKey(opened);
 
-		test("re-finds the session after the list reorders", () => {
-			// Returning bumps the opened session's modified time so it sorts first.
-			const rows = buildAgentsViewRows([
-				{ ...opened, modified: "2026-01-02T00:00:00Z" },
-				{ ...other, modified: "2026-01-01T00:00:00Z" },
-			]);
-			expect(rows[0]?.summary.sessionId).toBe("session-open");
-			expect(resolveAgentsViewSelectionIndex(rows, identity, key)).toBe(0);
+		test("re-finds the session after a section change reorders the list", () => {
+			const rows = buildAgentsViewRows([{ ...opened, activity: "working" }, other]);
+			expect(rows[1]?.summary.sessionId).toBe("session-open");
+			expect(resolveAgentsViewSelectionIndex(rows, identity, key)).toBe(1);
 		});
 
 		test("falls back to activeSessionId when the row identity changed", () => {

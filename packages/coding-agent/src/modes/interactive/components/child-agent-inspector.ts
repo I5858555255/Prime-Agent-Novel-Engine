@@ -24,6 +24,8 @@ export interface ChildAgentInspectorNode {
 	id: string;
 	/** The child's own daemon active-session id, for attaching directly to its stream. */
 	activeSessionId?: string;
+	/** Stable daemon-visible session name for addressing/displaying the child. */
+	sessionName?: string;
 	label: string;
 	status: ChildAgentStatus;
 	durationMs?: number;
@@ -185,9 +187,7 @@ function childAgentRecap(node: ChildAgentInspectorNode): string {
 }
 
 function padTableCell(value: string, width: number, ellipsis = ""): string {
-	// truncateToWidth emits full ANSI resets around its marker even for plain text.
-	// Strip those generated resets before applying foreground/background styling.
-	const truncated = truncateToWidth(value, width, ellipsis).replaceAll("\x1b[0m", "");
+	const truncated = truncateToWidth(value, width, ellipsis);
 	return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
 }
 
@@ -389,7 +389,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		if (flat.length < 2) {
 			return "";
 		}
-		const labels = flat.map((entry) => entry.node.label);
+		const labels = flat.map((entry) => this.entryLabel(entry));
 		let prefix = labels[0] ?? "";
 		for (const label of labels) {
 			let i = 0;
@@ -411,7 +411,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		if (flat.length < 2 || !prefix) {
 			return "";
 		}
-		const labels = flat.map((entry) => entry.node.label);
+		const labels = flat.map((entry) => this.entryLabel(entry));
 		let suffix = labels[0] ?? "";
 		for (const label of labels) {
 			let i = 0;
@@ -447,7 +447,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		const icon = formatChildAgentStatusIcon(entry.node.status, rawIcon);
 		const agentLabel = `S${number}`;
 		const agentCell = theme.fg("muted", padTableCell(agentLabel, agentWidth));
-		const promptCell = this.elidePrompt(entry.node.label, sharedPrefix, sharedSuffix, promptWidth);
+		const promptCell = this.elidePrompt(this.entryLabel(entry), sharedPrefix, sharedSuffix, promptWidth);
 		const recapCell = theme.fg("muted", padTableCell(childAgentRecap(entry.node), recapWidth, "…"));
 		const tools =
 			entry.node.toolUseCount === undefined
@@ -463,15 +463,15 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		return `${indent}${icon} ${agentCell}${gap}${promptCell}${gap}${recapCell}${gap}${theme.fg("muted", metrics)}`;
 	}
 
+	private entryLabel(entry: FlatChildAgentNode): string {
+		return entry.node.sessionName?.trim() || entry.node.label;
+	}
+
 	private elidePrompt(label: string, sharedPrefix: string, sharedSuffix: string, width: number): string {
 		const text = this.elideAroundDiff(label, sharedPrefix, sharedSuffix);
 		const safeWidth = Math.max(0, width);
 		const truncated =
-			visibleWidth(text) > safeWidth
-				? `${truncateToWidth(text, Math.max(0, safeWidth - 1), "")
-						.replaceAll("\x1b[0m", "")
-						.trimEnd()}…`
-				: text;
+			visibleWidth(text) > safeWidth ? `${truncateToWidth(text, Math.max(0, safeWidth - 1), "").trimEnd()}…` : text;
 		return theme.fg("dim", padTableCell(truncated, safeWidth));
 	}
 

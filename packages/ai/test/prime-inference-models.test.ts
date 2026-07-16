@@ -27,7 +27,6 @@ describe("Prime Inference models", () => {
 				"anthropic/claude-sonnet-5",
 				"deepseek/deepseek-v4-pro",
 				"google/gemini-2.5-pro",
-				"internal/glm-5.2-fast",
 				"meta-llama/llama-4-maverick",
 				"minimax/minimax-m3",
 				"moonshotai/kimi-k2.7-code",
@@ -47,9 +46,10 @@ describe("Prime Inference models", () => {
 		);
 	});
 
-	it("skips raw and duplicate catalog variants", () => {
+	it("skips private, raw, and duplicate catalog variants", () => {
 		const modelIds = getModels("prime-inference").map((model) => model.id);
 
+		expect(modelIds.filter((id) => id.startsWith("internal/"))).toEqual([]);
 		expect(modelIds).not.toContain("zai-org/GLM-4.7");
 		expect(modelIds).not.toContain("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16");
 		expect(modelIds).not.toContain("Qwen/Qwen3.5-4B");
@@ -59,7 +59,6 @@ describe("Prime Inference models", () => {
 	it("marks flagship models as featured so pickers can pin them above the long tail", () => {
 		expect(getModel("prime-inference", "openai/gpt-5.5").featured).toBe(true);
 		expect(getModel("prime-inference", "z-ai/glm-5.2").featured).toBe(true);
-		expect(getModel("prime-inference", "internal/glm-5.2-fast").featured).toBe(true);
 		expect(getModel("prime-inference", "google/gemini-2.5-pro").featured).toBeUndefined();
 		expect(getModel("prime-inference", "openai/gpt-4o").featured).toBeUndefined();
 	});
@@ -72,11 +71,13 @@ describe("Prime Inference models", () => {
 		expect(gemini.reasoning).toBe(true);
 
 		// The HF-style ultra id maps onto OpenRouter's short id via alias for
-		// pricing/modality, but the gateway enforces a 131k window (measured
-		// 2026-07-08), so the curated override wins for contextWindow.
+		// modality/reasoning, but the gateway enforces a 131k window (measured
+		// 2026-07-08), so the curated override wins for contextWindow. OpenRouter
+		// may omit its live output cap, in which case the conservative fallback wins.
 		const ultra = getModel("prime-inference", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B");
 		expect(ultra.contextWindow).toBe(131072);
-		expect(ultra.maxTokens).toBe(16384);
+		expect(ultra.maxTokens).toBeGreaterThan(0);
+		expect(ultra.maxTokens).toBeLessThanOrEqual(ultra.contextWindow);
 
 		const maverick = getModel("prime-inference", "meta-llama/llama-4-maverick");
 		expect(maverick.contextWindow).toBe(1048576);
@@ -109,38 +110,6 @@ describe("Prime Inference models", () => {
 			supportsReasoningEffort: true,
 			maxTokensField: "max_tokens",
 			supportsStrictMode: false,
-		});
-	});
-
-	it("registers the internal GLM 5.2 Fast route", () => {
-		const model = getModel("prime-inference", "internal/glm-5.2-fast");
-
-		expect(model).toBeDefined();
-		expect(model.name).toBe("GLM 5.2 Fast");
-		expect(model.api).toBe("openai-completions");
-		expect(model.provider).toBe("prime-inference");
-		expect(model.baseUrl).toBe("https://api.pinference.ai/api/v1");
-		expect(model.reasoning).toBe(true);
-		expect(model.input).toEqual(["text"]);
-		// CI preserves this team-only route from the generated snapshot while the
-		// public route is refreshed from live metadata, so validate coherent limits
-		// without coupling the two independently sourced entries.
-		expect(model.contextWindow).toBeGreaterThan(0);
-		expect(model.maxTokens).toBeGreaterThan(0);
-		expect(model.maxTokens).toBeLessThanOrEqual(model.contextWindow);
-		expect(model.cost).toEqual({
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-		});
-		expect(model.compat).toEqual({
-			supportsStore: false,
-			supportsDeveloperRole: false,
-			supportsReasoningEffort: false,
-			maxTokensField: "max_tokens",
-			supportsStrictMode: false,
-			thinkingFormat: "zai",
 		});
 	});
 

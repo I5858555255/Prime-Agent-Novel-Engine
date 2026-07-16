@@ -21,6 +21,7 @@ import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js
 import type {
 	AgentConnectionExtensionUiRequest,
 	AgentConnectionExtensionUiResponse,
+	AgentConnectionHeartbeat,
 	AgentConnectionModel,
 	AgentConnectionResourceDiagnostic,
 	AgentConnectionResourceSnapshot,
@@ -86,6 +87,7 @@ function createConnectionState(overrides: Partial<AgentConnectionState> = {}): A
 		activeSessionId: "active-1",
 		cwd: "/tmp/project",
 		thinkingLevel: "medium",
+		serviceTier: "default",
 		availableThinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
 		isStreaming: false,
 		isCompacting: false,
@@ -749,7 +751,7 @@ describe("InteractiveMode connection events", () => {
 		expect(resetRenderOrder).toBeLessThan(rebindOrder);
 		expect(rebindOrder).toBeLessThan(renderMessagesOrder);
 		expect(fakeThis.applyConnectionStateSnapshot).toHaveBeenCalledWith(state);
-		expect(fakeThis.resetCurrentSessionRenderState).toHaveBeenCalledWith({ clearPromptStash: true });
+		expect(fakeThis.resetCurrentSessionRenderState).toHaveBeenCalledWith();
 		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();
@@ -1232,11 +1234,15 @@ describe("InteractiveMode model candidates", () => {
 
 describe("InteractiveMode model selection persistence", () => {
 	type ModelSelectionHarness = {
-		agentConnection: { setModel(provider: string, modelId: string): Promise<void> };
+		agentConnection: {
+			setModel(provider: string, modelId: string): Promise<void>;
+			getState(): Promise<AgentConnectionState>;
+		};
 		uiServices: {
 			settingsManager: { setDefaultModelAndProvider(provider: string, modelId: string): void };
 		};
 		footer: { invalidate(): void };
+		childAgentSummary: { invalidate(): void };
 		patchConnectionState(patch: Partial<AgentConnectionState>): void;
 		updateEditorBorderColor(): void;
 		showStatus(message: string): void;
@@ -1397,6 +1403,9 @@ describe("InteractiveMode model selection persistence", () => {
 			setModel: vi.fn(async () => {
 				order.push("connection");
 			}),
+			getState: vi.fn(async () =>
+				createConnectionState({ model, serviceTier: "default", availableThinkingLevels: ["off"] }),
+			),
 		};
 		fakeThis.uiServices = {
 			settingsManager: {
@@ -1406,6 +1415,7 @@ describe("InteractiveMode model selection persistence", () => {
 			},
 		};
 		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.childAgentSummary = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
 		fakeThis.setupAutocompleteProvider = vi.fn();
@@ -1415,7 +1425,11 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(order).toEqual(["connection", "settings"]);
-		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({
+			model,
+			serviceTier: "default",
+			availableThinkingLevels: ["off"],
+		});
 		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
 		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
 	});
@@ -1427,6 +1441,7 @@ describe("InteractiveMode model selection persistence", () => {
 			setModel: vi.fn(async () => {
 				throw new Error("model unavailable");
 			}),
+			getState: vi.fn(async () => createConnectionState()),
 		};
 		fakeThis.uiServices = {
 			settingsManager: {
@@ -1434,6 +1449,7 @@ describe("InteractiveMode model selection persistence", () => {
 			},
 		};
 		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.childAgentSummary = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
 
@@ -1448,13 +1464,19 @@ describe("InteractiveMode model selection persistence", () => {
 	test("persists exact /model command selections after the connection accepts them", async () => {
 		const model = createModel("openai", "gpt-5.5");
 		const fakeThis = Object.create(InteractiveMode.prototype) as ModelSelectionHarness;
-		fakeThis.agentConnection = { setModel: vi.fn(async () => {}) };
+		fakeThis.agentConnection = {
+			setModel: vi.fn(async () => {}),
+			getState: vi.fn(async () =>
+				createConnectionState({ model, serviceTier: "default", availableThinkingLevels: ["off"] }),
+			),
+		};
 		fakeThis.uiServices = {
 			settingsManager: {
 				setDefaultModelAndProvider: vi.fn(),
 			},
 		};
 		fakeThis.footer = { invalidate: vi.fn() };
+		fakeThis.childAgentSummary = { invalidate: vi.fn() };
 		fakeThis.patchConnectionState = vi.fn();
 		fakeThis.updateEditorBorderColor = vi.fn();
 		fakeThis.showStatus = vi.fn();
@@ -1468,7 +1490,11 @@ describe("InteractiveMode model selection persistence", () => {
 
 		expect(fakeThis.agentConnection.setModel).toHaveBeenCalledWith("openai", "gpt-5.5");
 		expect(fakeThis.uiServices.settingsManager.setDefaultModelAndProvider).toHaveBeenCalledWith("openai", "gpt-5.5");
-		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({ model, availableThinkingLevels: ["off"] });
+		expect(fakeThis.patchConnectionState).toHaveBeenCalledWith({
+			model,
+			serviceTier: "default",
+			availableThinkingLevels: ["off"],
+		});
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
 		expect(fakeThis.showError).not.toHaveBeenCalled();
 	});
@@ -1807,6 +1833,10 @@ describe("InteractiveMode model selection persistence", () => {
 });
 
 describe("InteractiveMode Prime CLI onboarding", () => {
+	type OnboardingSplashHandle = {
+		showProgress(message: string): void;
+		dismiss(): void;
+	};
 	type OnboardingHarness = {
 		shouldRunOnboarding(): boolean;
 		markOnboardingShown(): void;
@@ -1844,7 +1874,8 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		maybeWarnAboutAnthropicSubscriptionAuth?: (model?: AgentConnectionModel) => void;
 		checkDaxnutsEasterEgg?: (model: { provider: string; id: string }) => void;
 		findExactModelMatch?: (searchTerm: string) => Promise<AgentConnectionModel | undefined>;
-		showOnboardingModelSelectionSplash?: () => Promise<boolean>;
+		showOnboardingSplash?: (continueActionLabel?: string) => Promise<OnboardingSplashHandle | undefined>;
+		createAuthFlows?: () => { runPrimeInferenceLogin(): Promise<AuthenticationResult> };
 		showConfigurationMenu?: (tab: "providers" | "models" | "mcp-connections") => Promise<void>;
 		getModelCandidates?: () => Promise<AgentConnectionModel[]>;
 	};
@@ -1984,7 +2015,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 
 	test("cancelled Prime CLI splash exits onboarding before opening configuration", async () => {
 		const fakeThis = createPrimeCliHarness(false);
-		fakeThis.showOnboardingModelSelectionSplash = vi.fn(async () => false);
+		fakeThis.showOnboardingSplash = vi.fn(async () => undefined);
 		fakeThis.showConfigurationMenu = vi.fn(async () => {});
 
 		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBeUndefined();
@@ -1994,12 +2025,21 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 
 	test("opens the Models tab after the Prime CLI splash", async () => {
 		const fakeThis = createPrimeCliHarness(false);
-		fakeThis.showOnboardingModelSelectionSplash = vi.fn(async () => true);
-		fakeThis.showConfigurationMenu = vi.fn(async () => {});
+		const configuration = createDeferred<void>();
+		const dismiss = vi.fn();
+		fakeThis.showOnboardingSplash = vi.fn(async () => ({ showProgress: vi.fn(), dismiss }));
+		fakeThis.showConfigurationMenu = vi.fn(() => configuration.promise);
 
-		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBeUndefined();
+		const onboarding = runOnboardingFlow.call(fakeThis);
+		await flushAsyncWork();
 
 		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
+		expect(dismiss).not.toHaveBeenCalled();
+
+		configuration.resolve();
+		await expect(onboarding).resolves.toBeUndefined();
+
+		expect(dismiss).toHaveBeenCalledTimes(1);
 	});
 
 	test("opens the Models tab when models are already available", async () => {
@@ -2014,15 +2054,40 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
 	});
 
-	test("opens the Providers tab when no models are available", async () => {
+	test("opens Prime login before the Models tab when no models are available", async () => {
 		const fakeThis = createPrimeCliHarness(false);
 		fakeThis.connectionState = createConnectionState({ model: undefined });
 		fakeThis.getModelCandidates = vi.fn(async () => []);
-		fakeThis.showConfigurationMenu = vi.fn(async () => {});
+		const showProgress = vi.fn();
+		const dismiss = vi.fn();
+		fakeThis.showOnboardingSplash = vi.fn(async () => ({ showProgress, dismiss }));
+		fakeThis.createAuthFlows = vi.fn(() => ({
+			runPrimeInferenceLogin: vi.fn(async () => ({
+				status: "success" as const,
+				providerId: PRIME_INFERENCE_PROVIDER_ID,
+				providerName: "Prime Inference",
+				authType: "api_key" as const,
+				kind: "provider" as const,
+			})),
+		}));
+		fakeThis.prepareForModelSelectionAfterLogin = vi.fn(async () => true);
+		const configuration = createDeferred<void>();
+		fakeThis.showConfigurationMenu = vi.fn(() => configuration.promise);
 
-		await expect(runOnboardingFlow.call(fakeThis, false)).resolves.toBeUndefined();
+		const onboarding = runOnboardingFlow.call(fakeThis, false);
+		await flushAsyncWork();
 
-		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("providers");
+		expect(fakeThis.showOnboardingSplash).toHaveBeenCalledWith();
+		expect(showProgress).toHaveBeenNthCalledWith(1, "Signing in to Prime Intellect...");
+		expect(showProgress).toHaveBeenNthCalledWith(2, "Preparing models...");
+		expect(fakeThis.prepareForModelSelectionAfterLogin).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
+		expect(dismiss).not.toHaveBeenCalled();
+
+		configuration.resolve();
+		await expect(onboarding).resolves.toBeUndefined();
+
+		expect(dismiss).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -2191,6 +2256,7 @@ describe("InteractiveMode goal status announcements", () => {
 describe("InteractiveMode tray goal label", () => {
 	type TrayUsage = { contextWindow: number; tokens: number | null; percent: number | null };
 	type TrayLabelHarness = {
+		heartbeats: AgentConnectionHeartbeat[];
 		connectionState: {
 			goal: GoalState;
 			heartbeat?: AgentCronJob | null;
@@ -2221,6 +2287,7 @@ describe("InteractiveMode tray goal label", () => {
 
 	test("shows active goals in the lower tray without an objective", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,
@@ -2239,6 +2306,7 @@ describe("InteractiveMode tray goal label", () => {
 
 	test("combines active goals with token/context usage in one lower-tray label", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,
@@ -2257,6 +2325,7 @@ describe("InteractiveMode tray goal label", () => {
 
 	test("combines active goals, active heartbeats, and context usage in one lower-tray label", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [{ job: createHeartbeat("active") }];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,
@@ -2271,11 +2340,12 @@ describe("InteractiveMode tray goal label", () => {
 		};
 		fakeThis.uiServices = { getContextUsage: () => undefined };
 
-		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · Heartbeat active (5m) · 75k (75%)");
+		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · 1 heartbeat · 75k (75%)");
 	});
 
 	test("omits the usage segment when token count is unknown", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,

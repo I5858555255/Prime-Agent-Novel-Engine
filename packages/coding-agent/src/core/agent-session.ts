@@ -29,7 +29,15 @@ import {
 	type ShouldStopAfterTurnContext,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Model, TextContent, Usage, UserMessage } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	ImageContent,
+	Model,
+	ServiceTier,
+	TextContent,
+	Usage,
+	UserMessage,
+} from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -37,6 +45,7 @@ import {
 	isContextOverflow,
 	modelsAreEqual,
 	resetApiProviders,
+	supportsFastMode,
 } from "@earendil-works/pi-ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
@@ -45,6 +54,7 @@ import {
 	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	AGENT_MESSAGE_SKILL_NAME,
 	type AgentSessionMessage,
+	type AgentSessionMessageAgentSummary,
 	type AgentSessionMessageController,
 	type AgentSessionMessageListResult,
 	type AgentSessionMessageReceipt,
@@ -189,9 +199,16 @@ import { resolveConfigValue } from "./resolve-config-value.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import {
 	type CreateRlmSubagentRuntimeOptions,
+	createDefaultRlmSubagentSessionName,
+	createRlmDeleteSubagentHostHandler,
+	createRlmListSubagentsHostHandler,
 	createRlmRunHostHandler,
+	normalizeRequestedRlmSubagentSessionName,
+	type RlmDeleteSubagentResult,
 	type RlmInternalRunResult,
+	type RlmListSubagentsResult,
 	type RlmRunResult,
+	type RlmSubagentRegistryEntry,
 	type RlmSubagentReleaseStatus,
 	type RlmSubagentRuntime,
 	type RlmUsage,
@@ -232,6 +249,8 @@ export interface RlmChildAgentSnapshot {
 	id: string;
 	parentId?: string;
 	activeSessionId?: string;
+	/** Stable daemon-visible session name for addressing/displaying the child. */
+	sessionName?: string;
 	label: string;
 	status: RlmChildAgentStatus;
 	durationMs?: number;
@@ -262,6 +281,7 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: CompactionReason; customInstructions?: string }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "service_tier_changed"; serviceTier: ServiceTier }
 	| {
 			type: "compaction_end";
 			reason: CompactionReason;
@@ -314,6 +334,7 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
+	serviceTierPreference?: ServiceTier;
 	cwd: string;
 	/** Config dir backing credentials (auth.json); exported to the kernel for skills. */
 	agentDir?: string;
@@ -615,6 +636,7 @@ interface AgentMessageDeliveryWaiter {
 export interface ModelCycleResult {
 	model: Model<any>;
 	thinkingLevel: ThinkingLevel;
+	serviceTier: ServiceTier;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
 }
@@ -645,16 +667,24 @@ type AutonomousRuntimeSnapshot = Pick<
 interface RlmChildRun {
 	id: string;
 	prompt: string;
+	sessionName: string;
 	sessionDir: string;
 	status: RlmChildAgentStatus;
 	result?: RlmRunResult;
 	error?: string;
+	releaseError?: unknown;
 	task?: Promise<RlmInternalRunResult>;
 	abort: () => void;
 	/** Child session, once its runtime exists. Used to cancel nested child runs. */
 	session?: AgentSession;
 	/** Re-emits the run's rlm_child_update snapshot with its current status. */
 	emitUpdate?: () => void;
+	/** Idempotent child-event forwarder cleanup, once the child runtime exists. */
+	unsubscribe?: () => void;
+	/** Rejects the public rlm.run promise when deletion detaches stuck underlying work. */
+	rejectTask?: (error: Error) => void;
+	/** Snapshot retained until an in-flight runtime creation is released after early deletion. */
+	detachedDeletion?: RlmSubagentRegistryEntry;
 }
 
 // ============================================================================
@@ -753,6 +783,7 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
+	private _serviceTierPreference: ServiceTier;
 
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
@@ -857,6 +888,12 @@ export class AgentSession {
 	// Inline mode keeps finished child sessions so the inspector can still read them;
 	// the daemon does the same by leaving the child session resident in its registry.
 	private _retainedRlmChildSessions = new Map<string, AgentSession>();
+	private _deletedRlmChildIds = new Set<string>();
+	private _retryableRlmSubagentDeletions = new Map<string, RlmSubagentRegistryEntry>();
+	private _deletingRlmChildren = new Map<
+		string,
+		{ subagent: RlmSubagentRegistryEntry; promise: Promise<RlmDeleteSubagentResult> }
+	>();
 	// Kept alive for retained children so nested updates (e.g. a grandchild cancel)
 	// still forward to root; torn down when the retained child is disposed.
 	private _retainedRlmChildUnsubscribes = new Map<string, () => void>();
@@ -898,6 +935,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
+		this._serviceTierPreference = config.serviceTierPreference ?? config.agent.state.serviceTier;
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -2526,6 +2564,8 @@ export class AgentSession {
 			await session.disposeAsync().catch(() => undefined);
 		}
 		this._retainedRlmChildSessions.clear();
+		this._deletedRlmChildIds.clear();
+		this._retryableRlmSubagentDeletions.clear();
 		try {
 			await this._ipythonKernelProvisioner?.dispose();
 		} catch {
@@ -2555,6 +2595,8 @@ export class AgentSession {
 				session.dispose();
 			}
 			this._retainedRlmChildSessions.clear();
+			this._deletedRlmChildIds.clear();
+			this._retryableRlmSubagentDeletions.clear();
 			this._pendingNextTurnMessages = [];
 			this._rejectQueuedAgentMessageDeliveries(new Error("Queued agent message was cleared before delivery."));
 			this._steeringMessages = [];
@@ -2603,6 +2645,10 @@ export class AgentSession {
 	/** Current thinking level */
 	get thinkingLevel(): ThinkingLevel {
 		return this.agent.state.thinkingLevel;
+	}
+
+	get serviceTier(): ServiceTier {
+		return this.agent.state.serviceTier;
 	}
 
 	/** Whether agent is currently streaming a response */
@@ -4103,22 +4149,27 @@ export class AgentSession {
 
 	/**
 	 * Set model directly.
-	 * Validates that auth is configured, saves to session and settings.
-	 * @throws Error if no auth is configured for the model
+	 * Validates that the model is available, saves to session and settings.
+	 * @throws Error if the model is not available
 	 */
 	async setModel(model: Model<any>, options: ModelSelectOptions = {}): Promise<void> {
 		if (!this._modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
+		if (!(await this._modelRegistry.canUseModel(model))) {
+			throw new Error(`Model "${model.provider}/${model.id}" is not available for the current Prime team.`);
+		}
 
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		const serviceTier = this._getServiceTierForModelSwitch();
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
+		this._clampServiceTierForModel(serviceTier);
 
 		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4170,7 +4221,10 @@ export class AgentSession {
 		direction: "forward" | "backward",
 		options: ModelSelectOptions,
 	): Promise<ModelCycleResult | undefined> {
-		const scopedModels = this._scopedModels.filter((scoped) => this._modelRegistry.hasConfiguredAuth(scoped.model));
+		const availableModels = await this._modelRegistry.refreshAvailableModels();
+		const scopedModels = this._scopedModels.filter((scoped) =>
+			availableModels.some((model) => modelsAreEqual(model, scoped.model)),
+		);
 		if (scopedModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -4181,6 +4235,7 @@ export class AgentSession {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
+		const serviceTier = this._getServiceTierForModelSwitch();
 
 		// Apply model
 		this.agent.state.model = next.model;
@@ -4192,6 +4247,7 @@ export class AgentSession {
 		// - Undefined scoped model thinking level inherits the current session preference
 		// setThinkingLevel clamps to model capabilities.
 		this.setThinkingLevel(thinkingLevel);
+		this._clampServiceTierForModel(serviceTier);
 
 		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4200,14 +4256,14 @@ export class AgentSession {
 			this._trackModelSelectEmitError(emitPromise);
 		}
 
-		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
+		return { model: next.model, thinkingLevel: this.thinkingLevel, serviceTier: this.serviceTier, isScoped: true };
 	}
 
 	private async _cycleAvailableModel(
 		direction: "forward" | "backward",
 		options: ModelSelectOptions,
 	): Promise<ModelCycleResult | undefined> {
-		const availableModels = await this._modelRegistry.getAvailable();
+		const availableModels = await this._modelRegistry.refreshAvailableModels();
 		if (availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -4219,12 +4275,14 @@ export class AgentSession {
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		const serviceTier = this._getServiceTierForModelSwitch();
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
+		this._clampServiceTierForModel(serviceTier);
 
 		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -4233,7 +4291,7 @@ export class AgentSession {
 			this._trackModelSelectEmitError(emitPromise);
 		}
 
-		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
+		return { model: nextModel, thinkingLevel: this.thinkingLevel, serviceTier: this.serviceTier, isScoped: false };
 	}
 
 	// =========================================================================
@@ -4267,6 +4325,43 @@ export class AgentSession {
 				previousLevel,
 			});
 		}
+	}
+
+	setServiceTier(serviceTier: ServiceTier): void {
+		const effectiveServiceTier = this._getEffectiveServiceTier(serviceTier);
+		const preferenceChanged = effectiveServiceTier !== this._serviceTierPreference;
+		const effectiveTierChanged = effectiveServiceTier !== this.agent.state.serviceTier;
+		if (!preferenceChanged && !effectiveTierChanged) {
+			return;
+		}
+		this._serviceTierPreference = effectiveServiceTier;
+		if (preferenceChanged) {
+			this.sessionManager.appendServiceTierChange(effectiveServiceTier);
+			if (this.model && supportsFastMode(this.model)) {
+				this.settingsManager.setDefaultServiceTier(effectiveServiceTier);
+			}
+		}
+		if (effectiveTierChanged) {
+			this.agent.state.serviceTier = effectiveServiceTier;
+			this._emit({ type: "service_tier_changed", serviceTier: effectiveServiceTier });
+		}
+	}
+
+	private _getEffectiveServiceTier(serviceTier: ServiceTier): ServiceTier {
+		return serviceTier === "priority" && (!this.model || !supportsFastMode(this.model)) ? "default" : serviceTier;
+	}
+
+	private _getServiceTierForModelSwitch(): ServiceTier {
+		return this._serviceTierPreference;
+	}
+
+	private _clampServiceTierForModel(serviceTier: ServiceTier = this.serviceTier): void {
+		const effectiveServiceTier = this._getEffectiveServiceTier(serviceTier);
+		if (effectiveServiceTier === this.agent.state.serviceTier) {
+			return;
+		}
+		this.agent.state.serviceTier = effectiveServiceTier;
+		this._emit({ type: "service_tier_changed", serviceTier: effectiveServiceTier });
 	}
 
 	/**
@@ -5786,6 +5881,8 @@ export class AgentSession {
 			"rlm.run": createRlmRunHostHandler(({ prompt, kwargs, cellSourceCode }) =>
 				this.runRlmChild(prompt, kwargs, cellSourceCode),
 			),
+			"rlm.list_subagents": createRlmListSubagentsHostHandler(() => this.listRlmSubagents()),
+			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => this.deleteRlmSubagent(target)),
 			"model.info": async () => ({
 				id: this.model?.id ?? null,
 				provider: this.model?.provider ?? null,
@@ -6029,6 +6126,7 @@ export class AgentSession {
 	private _createRlmSubagentRuntimeOptions(options: {
 		id: string;
 		prompt: string;
+		sessionName: string;
 		spawnCode?: string;
 		sessionDir: string;
 		model: Model<any>;
@@ -6037,10 +6135,12 @@ export class AgentSession {
 			parentSession: this,
 			id: options.id,
 			prompt: options.prompt,
+			sessionName: options.sessionName,
 			spawnCode: options.spawnCode,
 			sessionDir: options.sessionDir,
 			model: options.model,
 			thinkingLevel: this.thinkingLevel,
+			serviceTier: this.serviceTier,
 			scopedModels: [...this._scopedModels],
 			activeToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
@@ -6091,12 +6191,16 @@ export class AgentSession {
 		}
 		childSessionManager.appendModelChange(options.model.provider, options.model.id);
 		childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
+		const serviceTier =
+			options.serviceTier === "priority" && !supportsFastMode(options.model) ? "default" : options.serviceTier;
+		childSessionManager.appendServiceTierChange(serviceTier);
 
 		const childAgent = new Agent({
 			initialState: {
 				systemPrompt: "",
 				model: options.model,
 				thinkingLevel: options.thinkingLevel,
+				serviceTier,
 				tools: [],
 			},
 			convertToLlm: this.agent.convertToLlm,
@@ -6134,6 +6238,15 @@ export class AgentSession {
 			rlmParentNodeId: options.rlmParentNodeId,
 			sessionStartEvent: { type: "session_start", reason: "startup" },
 		});
+		if (child.sessionName !== options.sessionName) {
+			try {
+				child.setSessionName(options.sessionName);
+			} catch (error) {
+				child.dispose();
+				throw error;
+			}
+		}
+		options.onSessionPublished?.(child);
 
 		return { session: child };
 	}
@@ -6163,16 +6276,230 @@ export class AgentSession {
 		return this._activeRlmChildRuns.get(childId)?.status;
 	}
 
+	/** Current direct-child registry for the model-facing rlm.list_subagents API. */
+	listRlmSubagents(): RlmListSubagentsResult {
+		const daemonChildren = new Map<string, AgentSessionMessageAgentSummary>();
+		const listedAgents = this._agentMessageController?.listAgents();
+		const parentActiveSessionId = listedAgents?.current?.activeSessionId;
+		if (parentActiveSessionId) {
+			for (const agent of listedAgents.agents) {
+				if (
+					agent.runtimeKind === "subagent" &&
+					agent.parentActiveSessionId === parentActiveSessionId &&
+					agent.rlmChildId
+				) {
+					daemonChildren.set(agent.rlmChildId, agent);
+				}
+			}
+		}
+
+		const subagents: RlmListSubagentsResult["subagents"] = [];
+		const recorded = new Set<string>();
+		for (const run of this._activeRlmChildRuns.values()) {
+			if (this._deletingRlmChildren.has(run.id) || run.status === "error" || run.status === "cancelled") {
+				continue;
+			}
+			const daemonChild = daemonChildren.get(run.id);
+			subagents.push({
+				rlm_child_id: run.id,
+				active_session_id: daemonChild?.activeSessionId ?? null,
+				session_id: daemonChild?.sessionId ?? run.session?.sessionId ?? null,
+				session_name: daemonChild?.sessionName ?? run.session?.sessionName ?? run.sessionName,
+				session_dir: run.sessionDir,
+				status: run.status === "done" ? "completed" : "running",
+			});
+			recorded.add(run.id);
+		}
+		for (const [childId, childSession] of this._retainedRlmChildSessions) {
+			if (
+				this._deletingRlmChildren.has(childId) ||
+				recorded.has(childId) ||
+				this._retryableRlmSubagentDeletions.has(childId)
+			) {
+				continue;
+			}
+			const daemonChild = daemonChildren.get(childId);
+			const sessionDir = childSession._rlmSessionDir;
+			if (!sessionDir) {
+				continue;
+			}
+			subagents.push({
+				rlm_child_id: childId,
+				active_session_id: daemonChild?.activeSessionId ?? null,
+				session_id: daemonChild?.sessionId ?? childSession.sessionId,
+				session_name:
+					daemonChild?.sessionName ?? childSession.sessionName ?? createDefaultRlmSubagentSessionName("", childId),
+				session_dir: sessionDir,
+				status: "completed",
+			});
+		}
+		return { subagents };
+	}
+
+	private _rlmSubagentMatchesTarget(entry: RlmSubagentRegistryEntry, target: string): boolean {
+		return (
+			entry.rlm_child_id === target ||
+			entry.active_session_id === target ||
+			entry.session_id === target ||
+			entry.session_name === target
+		);
+	}
+
+	private _resolveDirectRlmSubagent(target: string): RlmSubagentRegistryEntry {
+		const candidates = [...this.listRlmSubagents().subagents, ...this._retryableRlmSubagentDeletions.values()];
+		const matches = candidates.filter((entry) => this._rlmSubagentMatchesTarget(entry, target));
+		if (matches.length === 0) {
+			throw new Error(`No direct RLM subagent matches "${target}" in the current parent session`);
+		}
+		if (matches.length > 1) {
+			throw new Error(`RLM subagent selector "${target}" is ambiguous in the current parent session`);
+		}
+		return matches[0]!;
+	}
+
+	/** Delete a running or retained direct child selected from this parent session's registry. */
+	async deleteRlmSubagent(target: string): Promise<RlmDeleteSubagentResult> {
+		const inFlight = [...this._deletingRlmChildren.values()].filter(({ subagent }) =>
+			this._rlmSubagentMatchesTarget(subagent, target),
+		);
+		const directMatches = [
+			...this.listRlmSubagents().subagents,
+			...this._retryableRlmSubagentDeletions.values(),
+		].filter((entry) => this._rlmSubagentMatchesTarget(entry, target));
+		const matchingChildIds = new Set([
+			...inFlight.map(({ subagent }) => subagent.rlm_child_id),
+			...directMatches.map((subagent) => subagent.rlm_child_id),
+		]);
+		if (matchingChildIds.size > 1) {
+			throw new Error(`RLM subagent selector "${target}" is ambiguous in the current parent session`);
+		}
+		if (inFlight[0]) {
+			return inFlight[0].promise;
+		}
+
+		const subagent = directMatches[0] ?? this._resolveDirectRlmSubagent(target);
+		const deletion = this._deleteResolvedRlmSubagent(subagent);
+		this._deletingRlmChildren.set(subagent.rlm_child_id, { subagent, promise: deletion });
+		try {
+			return await deletion;
+		} finally {
+			if (this._deletingRlmChildren.get(subagent.rlm_child_id)?.promise === deletion) {
+				this._deletingRlmChildren.delete(subagent.rlm_child_id);
+			}
+		}
+	}
+
+	private _deleteRlmSubagentSession(childId: string, session: AgentSession): Promise<void> {
+		if (this._subagentRuntimeHost) {
+			return this._subagentRuntimeHost.deleteRlmSubagentRuntime(childId, session);
+		}
+		return session.disposeAsync();
+	}
+
+	private _removeRlmSubagentTracking(childId: string, run?: RlmChildRun): void {
+		run?.unsubscribe?.();
+		this._retainedRlmChildUnsubscribes.get(childId)?.();
+		this._retainedRlmChildUnsubscribes.delete(childId);
+		this._retainedRlmChildSessions.delete(childId);
+		this._retryableRlmSubagentDeletions.delete(childId);
+		if (!run || this._activeRlmChildRuns.get(childId) === run) {
+			this._activeRlmChildRuns.delete(childId);
+		}
+		if (run) {
+			run.abort = noopRlmChildAbort;
+			run.unsubscribe = undefined;
+			run.rejectTask = undefined;
+			run.session = undefined;
+		}
+	}
+
+	private async _deleteResolvedRlmSubagent(subagent: RlmSubagentRegistryEntry): Promise<RlmDeleteSubagentResult> {
+		const childId = subagent.rlm_child_id;
+		const run = this._activeRlmChildRuns.get(childId);
+		if (run) {
+			this._cancelRlmChildRun(run, "Deleted by parent orchestrator");
+			const liveSession = run.session;
+			if (liveSession) {
+				try {
+					await this._deleteRlmSubagentSession(childId, liveSession);
+				} catch (error) {
+					// The initial run was cancelled even though host closure failed. Reject its
+					// public promise now. Parent teardown owns cleanup once it starts, so do not
+					// repopulate maps that dispose() has already cleared.
+					run.rejectTask?.(new Error("Deleted by parent orchestrator"));
+					if (this._disposed || this._disposing) {
+						this._removeRlmSubagentTracking(childId, run);
+						void liveSession.disposeAsync().catch(() => undefined);
+						throw error;
+					}
+					this._retainedRlmChildSessions.set(childId, liveSession);
+					this._retryableRlmSubagentDeletions.set(childId, subagent);
+					if (run.unsubscribe) {
+						this._retainedRlmChildUnsubscribes.set(childId, run.unsubscribe);
+					}
+					this._activeRlmChildRuns.delete(childId);
+					run.abort = noopRlmChildAbort;
+					run.unsubscribe = undefined;
+					run.rejectTask = undefined;
+					run.session = undefined;
+					throw error;
+				}
+				// Runtime closure is the deletion boundary. Reject the public call and do
+				// not wait for provider/tool work that ignored abort; the tombstone blocks
+				// any late retention by the detached work task.
+				run.rejectTask?.(new Error("Deleted by parent orchestrator"));
+				this._deletedRlmChildIds.add(childId);
+				this._removeRlmSubagentTracking(childId, run);
+				return { subagent };
+			}
+
+			// Runtime creation has not published a session. Detach immediately rather
+			// than blocking on tool/runtime startup; keep the selector snapshot until
+			// the eventual release succeeds or becomes hidden/retryable on failure.
+			run.detachedDeletion = subagent;
+			run.rejectTask?.(new Error("Deleted by parent orchestrator"));
+			this._deletedRlmChildIds.add(childId);
+			// Keep the cancelled run tracked until startup settles. It stays hidden from
+			// list/delete, reserves its selectors against reuse, and lets daemon startup's
+			// open guard tear the half-bound runtime down before it becomes addressable.
+			return { subagent };
+		}
+
+		const retained = this._retainedRlmChildSessions.get(childId);
+		if (retained) {
+			try {
+				await this._deleteRlmSubagentSession(childId, retained);
+			} catch (error) {
+				if (this._disposed || this._disposing) {
+					this._removeRlmSubagentTracking(childId);
+					void retained.disposeAsync().catch(() => undefined);
+				} else {
+					// Hide failed cleanup from the public registry while preserving the
+					// original selector and session for an explicit retry.
+					this._retryableRlmSubagentDeletions.set(childId, subagent);
+				}
+				throw error;
+			}
+		}
+		this._deletedRlmChildIds.add(childId);
+		this._removeRlmSubagentTracking(childId);
+		return { subagent };
+	}
+
 	/**
-	 * Retain a finished child session so the inspector can still read it; disposed with
-	 * the parent. Returns false (and disposes the child) when the parent is already
-	 * tearing down, so the caller can drop the matching event forwarder too.
+	 * Retain a finished child session for the parent lifetime so inspectors and
+	 * daemon-hosted agent messaging can keep addressing it. Returns false (and disposes
+	 * the child) when the parent is already tearing down, so the caller can drop the
+	 * matching event forwarder too.
 	 */
 	retainFinishedRlmChildSession(childId: string, session: AgentSession): boolean {
 		// A child can finish concurrently while the parent is (or has) torn down; don't
 		// resurrect the map (it would never be disposed), just drop the child now.
 		if (this._disposed || this._disposing) {
 			void session.disposeAsync().catch(() => undefined);
+			return false;
+		}
+		if (this._deletingRlmChildren.has(childId) || this._deletedRlmChildIds.has(childId)) {
 			return false;
 		}
 		this._retainedRlmChildSessions.set(childId, session);
@@ -6244,10 +6571,57 @@ export class AgentSession {
 		return false;
 	}
 
+	private _assertRlmSubagentSessionNameAvailable(name: string): void {
+		const conflictsWithSelector = (endpoint: {
+			activeSessionId: string;
+			sessionId: string;
+			sessionName?: string;
+			rlmChildId?: string;
+		}) =>
+			endpoint.activeSessionId === name ||
+			endpoint.sessionId === name ||
+			endpoint.sessionName === name ||
+			endpoint.rlmChildId === name;
+		for (const [childId, run] of this._activeRlmChildRuns) {
+			if (
+				childId === name ||
+				run.sessionName === name ||
+				run.session?.sessionId === name ||
+				run.session?.sessionName === name
+			) {
+				throw new Error(`RLM subagent session name "${name}" is already in use`);
+			}
+		}
+		for (const [childId, session] of this._retainedRlmChildSessions) {
+			if (childId === name || session.sessionId === name || session.sessionName === name) {
+				throw new Error(`RLM subagent session name "${name}" is already in use`);
+			}
+		}
+		for (const subagent of this._retryableRlmSubagentDeletions.values()) {
+			if (this._rlmSubagentMatchesTarget(subagent, name)) {
+				throw new Error(`RLM subagent session name "${name}" is already in use`);
+			}
+		}
+		const listedAgents = this._agentMessageController?.listAgents();
+		if (
+			listedAgents &&
+			((listedAgents.current ? conflictsWithSelector(listedAgents.current) : false) ||
+				listedAgents.agents.some(conflictsWithSelector))
+		) {
+			throw new Error(`RLM subagent session name "${name}" is already in use`);
+		}
+	}
+
 	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): RlmChildRun {
-		const unsupportedKwargs = Object.keys(kwargs);
+		const { name: rawName, ...unsupported } = kwargs;
+		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
+		}
+		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName);
+		if (requestedSessionName) {
+			assertDirectAgentMessageTarget(requestedSessionName);
+			this._assertRlmSubagentSessionNameAvailable(requestedSessionName);
 		}
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
@@ -6261,6 +6635,10 @@ export class AgentSession {
 
 		const childSessionDir = this._createChildRlmSessionDir();
 		const childNodeId = basename(childSessionDir);
+		const sessionName = requestedSessionName ?? createDefaultRlmSubagentSessionName(prompt, childNodeId);
+		if (!requestedSessionName) {
+			this._assertRlmSubagentSessionNameAvailable(sessionName);
+		}
 		const startedAt = Date.now();
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const label = rlmChildLabel(prompt);
@@ -6275,6 +6653,7 @@ export class AgentSession {
 		const run: RlmChildRun = {
 			id: childNodeId,
 			prompt,
+			sessionName,
 			sessionDir: childSessionDir,
 			status: "running",
 			abort: noopRlmChildAbort,
@@ -6287,6 +6666,7 @@ export class AgentSession {
 				child: {
 					id: childNodeId,
 					parentId: this._rlmParentNodeId,
+					sessionName: childSession?.sessionName ?? sessionName,
 					label,
 					status: run.status,
 					durationMs,
@@ -6303,34 +6683,53 @@ export class AgentSession {
 		run.emitUpdate = emitChildUpdate;
 		emitChildUpdate();
 
-		const subagentOptions = this._createRlmSubagentRuntimeOptions({
-			id: childNodeId,
-			prompt,
-			spawnCode,
-			sessionDir: childSessionDir,
-			model,
-		});
+		const publishChildSession = (child: AgentSession) => {
+			childSession = child;
+			// A host can publish before its create promise resolves. Do not restore the
+			// live-session pointer if deletion already removed this run in the meantime.
+			if (this._activeRlmChildRuns.get(run.id) !== run) {
+				return;
+			}
+			run.session = child;
+			run.abort = () => {
+				void child.abort();
+			};
+		};
+		const subagentOptions: CreateRlmSubagentRuntimeOptions = {
+			...this._createRlmSubagentRuntimeOptions({
+				id: childNodeId,
+				prompt,
+				sessionName,
+				spawnCode,
+				sessionDir: childSessionDir,
+				model,
+			}),
+			onSessionPublished: publishChildSession,
+		};
 		let childRuntime: RlmSubagentRuntime | undefined;
 		let unsubscribeChild: (() => void) | undefined;
+		const deletedTask = new Promise<never>((_resolve, reject) => {
+			run.rejectTask = reject;
+		});
 
-		const task = (async (): Promise<RlmInternalRunResult> => {
+		const workTask = (async (): Promise<RlmInternalRunResult> => {
 			try {
 				if (isRlmChildRunCancelled(run)) {
 					throw new Error(run.error ?? "RLM child cancelled");
 				}
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;
-				childSession = child;
-				run.session = child;
-				run.abort = () => {
-					void child.abort();
-				};
-				unsubscribeChild = child.subscribe((event) => {
+				if (child.sessionName !== subagentOptions.sessionName) {
+					child.setSessionName(subagentOptions.sessionName);
+				}
+				publishChildSession(child);
+				const unsubscribeChildEvents = child.subscribe((event) => {
 					if (event.type === "rlm_child_update") {
 						this._emit(event);
 						return;
 					}
 					switch (event.type) {
+						case "session_info_changed":
 						case "recap_update":
 							emitChildUpdate();
 							break;
@@ -6365,6 +6764,15 @@ export class AgentSession {
 						}
 					}
 				});
+				let childEventsSubscribed = true;
+				unsubscribeChild = () => {
+					if (!childEventsSubscribed) {
+						return;
+					}
+					childEventsSubscribed = false;
+					unsubscribeChildEvents();
+				};
+				run.unsubscribe = unsubscribeChild;
 				if (isRlmChildRunCancelled(run)) {
 					await child.abort();
 					throw new Error(run.error ?? "RLM child cancelled");
@@ -6406,24 +6814,74 @@ export class AgentSession {
 			} finally {
 				const releaseStatus: RlmSubagentReleaseStatus =
 					run.status === "cancelled" || run.status === "error" ? run.status : "done";
-				if (childRuntime) {
-					await this._releaseRlmSubagentRuntime(childRuntime, subagentOptions, releaseStatus);
-				}
-				// Keep the forwarder only if the child was actually retained (retention can
-				// decline when the parent is disposing); otherwise drop it.
-				if (unsubscribeChild) {
-					if (this._retainedRlmChildSessions.has(run.id)) {
-						this._retainedRlmChildUnsubscribes.set(run.id, unsubscribeChild);
-					} else {
-						unsubscribeChild();
+				try {
+					if (childRuntime) {
+						await this._releaseRlmSubagentRuntime(childRuntime, subagentOptions, releaseStatus).catch((error) => {
+							run.releaseError = error;
+							return Promise.reject(error);
+						});
 					}
+				} finally {
+					// A later successful cancelled/error release supersedes an earlier failed
+					// delete attempt; drop its hidden retry entry and selector reservation.
+					if (!run.releaseError && releaseStatus !== "done" && this._retryableRlmSubagentDeletions.has(run.id)) {
+						this._removeRlmSubagentTracking(run.id, run);
+					}
+					if (run.releaseError && releaseStatus !== "done" && childSession && run.detachedDeletion) {
+						try {
+							// Early deletion returned before runtime creation completed. If normal
+							// release fails, use the host's delete path as a second cleanup attempt.
+							await this._deleteRlmSubagentSession(run.id, childSession);
+						} catch {
+							// Keep a hidden selector-addressable cleanup entry rather than orphaning
+							// a host runtime after delete already returned successfully.
+							if (!this._disposed && !this._disposing) {
+								this._retainedRlmChildSessions.set(run.id, childSession);
+								this._retryableRlmSubagentDeletions.set(run.id, run.detachedDeletion);
+							}
+						} finally {
+							run.detachedDeletion = undefined;
+						}
+					}
+					// A host release failure after successful work leaves a retryable parent
+					// entry. Failed/cancelled runs remain omitted from the public registry.
+					if (
+						run.releaseError &&
+						releaseStatus === "done" &&
+						childSession &&
+						!this._disposed &&
+						!this._disposing &&
+						!this._deletedRlmChildIds.has(run.id)
+					) {
+						this._retainedRlmChildSessions.set(run.id, childSession);
+					} else if (
+						run.releaseError &&
+						releaseStatus !== "done" &&
+						childSession &&
+						!this._retryableRlmSubagentDeletions.has(run.id)
+					) {
+						// Failed/cancelled runs are not registry entries, so make a best-effort
+						// local cleanup unless the session is deliberately retained for retry.
+						await childSession.disposeAsync().catch(() => undefined);
+					}
+					// Keep the forwarder only if the child was actually retained (retention can
+					// decline when the parent is disposing or deleting it); otherwise drop it.
+					if (unsubscribeChild) {
+						if (this._retainedRlmChildSessions.has(run.id)) {
+							this._retainedRlmChildUnsubscribes.set(run.id, unsubscribeChild);
+						} else {
+							unsubscribeChild();
+						}
+					}
+					run.abort = noopRlmChildAbort;
+					run.unsubscribe = undefined;
+					run.rejectTask = undefined;
+					run.session = undefined;
+					this._activeRlmChildRuns.delete(run.id);
 				}
-				run.abort = noopRlmChildAbort;
-				run.session = undefined;
-				this._activeRlmChildRuns.delete(run.id);
 			}
 		})();
-		run.task = task;
+		run.task = Promise.race([workTask, deletedTask]);
 		return run;
 	}
 
