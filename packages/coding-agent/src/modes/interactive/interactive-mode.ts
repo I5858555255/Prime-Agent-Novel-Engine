@@ -307,6 +307,7 @@ export function mergeChildAgentSnapshots(
 		...incoming,
 		parentId: incoming.parentId ?? previous.parentId,
 		activeSessionId: incoming.activeSessionId ?? previous.activeSessionId,
+		sessionName: incoming.sessionName ?? previous.sessionName,
 		durationMs: incoming.durationMs ?? previous.durationMs,
 		answerPreview: incoming.answerPreview ?? previous.answerPreview,
 		toolUseCount:
@@ -328,6 +329,7 @@ function childAgentSummaryChanged(
 	const nextTokens = next.tokenCount === undefined ? undefined : formatTokenCount(next.tokenCount);
 	return (
 		previous.parentId !== next.parentId ||
+		previous.sessionName !== next.sessionName ||
 		previous.label !== next.label ||
 		previous.status !== next.status ||
 		previous.durationMs !== next.durationMs ||
@@ -5500,6 +5502,7 @@ export class InteractiveMode {
 		const build = (child: AgentConnectionRlmChildAgentSnapshot): ChildAgentInspectorNode => ({
 			id: child.id,
 			activeSessionId: child.activeSessionId,
+			sessionName: child.sessionName,
 			label: child.label,
 			status: child.status,
 			durationMs: child.durationMs,
