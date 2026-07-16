@@ -70,10 +70,11 @@ describe("ENG-4658 onboarding transitions", () => {
 		}
 	});
 
-	test("waits for first-launch confirmation and hands off to models before dismissing the splash", async () => {
+	test("keeps the splash mounted until first-launch model selection closes", async () => {
 		const harness = await createHarness({ provider: "prime-inference", withConfiguredAuth: false });
 		harnesses.push(harness);
 		const order: string[] = [];
+		const configuration = deferred<void>();
 		const splash: OnboardingSplashHandle = {
 			showProgress: (message) => order.push(`progress:${message}`),
 			dismiss: () => order.push("dismiss"),
@@ -98,11 +99,17 @@ describe("ENG-4658 onboarding transitions", () => {
 			order.push("prepare");
 			return true;
 		});
-		fakeThis.showConfigurationMenu = vi.fn(async (tab) => {
+		fakeThis.showConfigurationMenu = vi.fn((tab) => {
 			order.push(`configuration:${tab}`);
+			return configuration.promise;
 		});
 
-		await fakeThis.runOnboardingFlow(false);
+		const onboarding = fakeThis.runOnboardingFlow(false);
+		await vi.waitFor(() => expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models"));
+
+		expect(order).not.toContain("dismiss");
+		configuration.resolve();
+		await onboarding;
 
 		expect(fakeThis.showOnboardingSplash).toHaveBeenCalledWith();
 		expect(order).toEqual([

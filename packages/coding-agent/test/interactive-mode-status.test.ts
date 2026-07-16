@@ -2024,13 +2024,20 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 
 	test("opens the Models tab after the Prime CLI splash", async () => {
 		const fakeThis = createPrimeCliHarness(false);
+		const configuration = createDeferred<void>();
 		const dismiss = vi.fn();
 		fakeThis.showOnboardingSplash = vi.fn(async () => ({ showProgress: vi.fn(), dismiss }));
-		fakeThis.showConfigurationMenu = vi.fn(async () => {});
+		fakeThis.showConfigurationMenu = vi.fn(() => configuration.promise);
 
-		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBeUndefined();
+		const onboarding = runOnboardingFlow.call(fakeThis);
+		await flushAsyncWork();
 
 		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
+		expect(dismiss).not.toHaveBeenCalled();
+
+		configuration.resolve();
+		await expect(onboarding).resolves.toBeUndefined();
+
 		expect(dismiss).toHaveBeenCalledTimes(1);
 	});
 
@@ -2063,15 +2070,22 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 			})),
 		}));
 		fakeThis.prepareForModelSelectionAfterLogin = vi.fn(async () => true);
-		fakeThis.showConfigurationMenu = vi.fn(async () => {});
+		const configuration = createDeferred<void>();
+		fakeThis.showConfigurationMenu = vi.fn(() => configuration.promise);
 
-		await expect(runOnboardingFlow.call(fakeThis, false)).resolves.toBeUndefined();
+		const onboarding = runOnboardingFlow.call(fakeThis, false);
+		await flushAsyncWork();
 
 		expect(fakeThis.showOnboardingSplash).toHaveBeenCalledWith();
 		expect(showProgress).toHaveBeenNthCalledWith(1, "Signing in to Prime Intellect...");
 		expect(showProgress).toHaveBeenNthCalledWith(2, "Preparing models...");
 		expect(fakeThis.prepareForModelSelectionAfterLogin).toHaveBeenCalledTimes(1);
 		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
+		expect(dismiss).not.toHaveBeenCalled();
+
+		configuration.resolve();
+		await expect(onboarding).resolves.toBeUndefined();
+
 		expect(dismiss).toHaveBeenCalledTimes(1);
 	});
 });

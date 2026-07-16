@@ -1451,6 +1451,14 @@ export class InteractiveMode {
 		return true;
 	}
 
+	private async showOnboardingModelSelection(splash: OnboardingSplashHandle): Promise<void> {
+		try {
+			await this.showConfigurationMenu("models");
+		} finally {
+			splash.dismiss();
+		}
+	}
+
 	private async runOnboardingFlow(showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash()): Promise<void> {
 		this.modelRegistry.refresh();
 		if (showPrimeCliSplash) {
@@ -1459,9 +1467,7 @@ export class InteractiveMode {
 				return;
 			}
 
-			const configuration = this.showConfigurationMenu("models");
-			splash.dismiss();
-			await configuration;
+			await this.showOnboardingModelSelection(splash);
 			return;
 		}
 
@@ -1485,9 +1491,7 @@ export class InteractiveMode {
 
 		splash.showProgress("Preparing models...");
 		await this.prepareForModelSelectionAfterLogin(authResult);
-		const configuration = this.showConfigurationMenu("models");
-		splash.dismiss();
-		await configuration;
+		await this.showOnboardingModelSelection(splash);
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
