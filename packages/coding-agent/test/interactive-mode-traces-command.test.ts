@@ -5,6 +5,7 @@ import { PRIME_AGENT_TRACES_PROVIDER_ID } from "../src/core/prime-inference-auth
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
 interface TracesCommandContext {
+	traceUploadAllAbortController?: AbortController;
 	agentConnection: { getState: () => Promise<{ sessionDir?: string }> };
 	settingsManager: {
 		getAgentTracesEnabled: () => boolean;
@@ -14,7 +15,7 @@ interface TracesCommandContext {
 	modelRegistry: { authStorage: AuthStorage };
 	previewCurrentTrace: () => Promise<void>;
 	uploadCurrentTraceOnce: () => Promise<AgentTraceUploadResult>;
-	uploadAllTraces: (sessionDir?: string) => Promise<AgentTraceUploadAllResult>;
+	uploadAllTraces: (sessionDir?: string, signal?: AbortSignal) => Promise<AgentTraceUploadAllResult>;
 	formatTraceUploadResult: (result: AgentTraceUploadResult) => string;
 	showStatus: (message: string) => void;
 	showWarning: (message: string) => void;
@@ -107,8 +108,38 @@ describe("InteractiveMode /traces", () => {
 
 		await prototype.handleTracesCommand.call(context, "/traces upload-all");
 
-		expect(context.uploadAllTraces).toHaveBeenCalledWith("/custom/sessions");
+		expect(context.uploadAllTraces).toHaveBeenCalledWith("/custom/sessions", expect.any(AbortSignal));
 		expect(context.uploadCurrentTraceOnce).not.toHaveBeenCalled();
 		expect(context.showStatus).toHaveBeenCalledWith("Uploaded 2 of 2 traces; 24 bytes stored.");
+	});
+
+	it("reports a cancelled upload-all without a success summary", async () => {
+		const context = makeContext(false);
+		vi.mocked(context.uploadAllTraces).mockImplementation(async (_sessionDir, signal) => {
+			return await new Promise<AgentTraceUploadAllResult>((resolve) => {
+				signal?.addEventListener(
+					"abort",
+					() =>
+						resolve({
+							total: 2,
+							uploaded: 0,
+							failed: 0,
+							skipped: 2,
+							bytesStored: 0,
+							results: [],
+						}),
+					{ once: true },
+				);
+			});
+		});
+
+		const command = prototype.handleTracesCommand.call(context, "/traces upload-all");
+		await vi.waitFor(() => expect(context.traceUploadAllAbortController).toBeDefined());
+		context.traceUploadAllAbortController?.abort();
+		await command;
+
+		expect(context.showStatus).toHaveBeenCalledWith("Trace upload cancelled.");
+		expect(context.showStatus).not.toHaveBeenCalledWith(expect.stringContaining("Uploaded 0 of 2"));
+		expect(context.traceUploadAllAbortController).toBeUndefined();
 	});
 });

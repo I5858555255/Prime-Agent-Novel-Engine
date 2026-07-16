@@ -650,6 +650,44 @@ describe("agent trace upload", () => {
 		expect(timeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(17_000);
 	});
 
+	it("caps Retry-After at the platform rate-limit window", async () => {
+		vi.useFakeTimers();
+		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "bounded-retry-after-session");
+		let markFirstAttemptStarted: () => void = () => {};
+		const firstAttemptStarted = new Promise<void>((resolve) => {
+			markFirstAttemptStarted = resolve;
+		});
+		let attempts = 0;
+		const fetchFn: typeof fetch = async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				markFirstAttemptStarted();
+				return new Response(null, { status: 429, headers: { "retry-after": "3600" } });
+			}
+			return new Response(JSON.stringify({ bytes_stored: 42 }), { status: 200 });
+		};
+
+		const upload = uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn,
+			reloadConfig: false,
+		});
+
+		await firstAttemptStarted;
+		await vi.runAllTimersAsync();
+		const result = await upload;
+		expect(attempts).toBe(2);
+		expect(result.status).toBe("uploaded");
+		expect(timeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(60_000);
+		expect(timeoutSpy.mock.calls.map((call) => Number(call[1]))).not.toContain(3_600_000);
+	});
+
 	it("surfaces the cancellation reason when aborted during the retry backoff", async () => {
 		const session = writeSession(tempDir, join(tempDir, "sessions"), "aborted-retry-session");
 		const controller = new AbortController();

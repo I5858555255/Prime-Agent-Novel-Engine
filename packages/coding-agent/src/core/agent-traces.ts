@@ -394,10 +394,12 @@ function retryAfterDelay(response: Response): number | undefined {
 	}
 	const seconds = Number(value);
 	if (Number.isFinite(seconds) && seconds >= 0) {
-		return Math.ceil(seconds * 1_000);
+		return Math.min(Math.ceil(seconds * 1_000), TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS);
 	}
 	const retryAt = Date.parse(value);
-	return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : undefined;
+	return Number.isFinite(retryAt)
+		? Math.min(Math.max(0, retryAt - Date.now()), TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS)
+		: undefined;
 }
 
 type BeforeTraceUploadRequest = () => Promise<void>;

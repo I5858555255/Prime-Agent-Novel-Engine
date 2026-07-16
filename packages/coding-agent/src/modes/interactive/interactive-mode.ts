@@ -811,6 +811,7 @@ export class InteractiveMode {
 	// Auto-retry state
 	private retryLoader: Loader | undefined = undefined;
 	private retryCountdown: CountdownTimer | undefined = undefined;
+	private traceUploadAllAbortController: AbortController | undefined = undefined;
 
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
@@ -2447,6 +2448,7 @@ export class InteractiveMode {
 			this.isAgentCompacting() ||
 			this.isBashRunning() ||
 			this.getRetryAttempt() > 0 ||
+			this.traceUploadAllAbortController !== undefined ||
 			this.sideQuestionEvent?.status === "running"
 		);
 	}
@@ -5990,6 +5992,7 @@ export class InteractiveMode {
 	}
 
 	private interruptOrClearInput(): void {
+		this.traceUploadAllAbortController?.abort(new Error("Trace upload cancelled"));
 		if (this.sideQuestionEvent?.status === "running") {
 			this.abortSideQuestion(this.sideQuestionEvent.id, true);
 		}
@@ -8382,16 +8385,19 @@ export class InteractiveMode {
 		return lines.join("\n");
 	}
 
-	private async uploadAllTraces(sessionDir?: string): Promise<AgentTraceUploadAllResult> {
+	private async uploadAllTraces(sessionDir?: string, signal?: AbortSignal): Promise<AgentTraceUploadAllResult> {
 		return uploadAllAgentTraces({
 			authStorage: this.modelRegistry.authStorage,
 			settingsManager: this.settingsManager,
 			sessionDir,
 			requireEnabled: false,
 			reloadConfig: false,
+			signal,
 			onProgress: ({ completed, total }) => {
 				if (total > 0 && (completed === 0 || completed === total || completed % 10 === 0)) {
-					this.showStatus(`Uploading traces: ${completed.toLocaleString()}/${total.toLocaleString()}`);
+					this.showStatus(
+						`Uploading traces: ${completed.toLocaleString()}/${total.toLocaleString()} (${keyText("app.clear")} to cancel)`,
+					);
 				}
 			},
 		});
@@ -8491,8 +8497,25 @@ export class InteractiveMode {
 				this.showError("Trace sharing needs a Prime API key. Run /traces login.");
 				return;
 			}
+			if (this.traceUploadAllAbortController) {
+				this.showWarning("A trace upload is already running. Cancel it before starting another.");
+				return;
+			}
 			const state = await this.agentConnection.getState();
-			const result = await this.uploadAllTraces(state.sessionDir);
+			const abortController = new AbortController();
+			this.traceUploadAllAbortController = abortController;
+			let result: AgentTraceUploadAllResult;
+			try {
+				result = await this.uploadAllTraces(state.sessionDir, abortController.signal);
+			} finally {
+				if (this.traceUploadAllAbortController === abortController) {
+					this.traceUploadAllAbortController = undefined;
+				}
+			}
+			if (abortController.signal.aborted) {
+				this.showStatus("Trace upload cancelled.");
+				return;
+			}
 			if (result.total === 0) {
 				this.showStatus("No persisted traces were found.");
 				return;
