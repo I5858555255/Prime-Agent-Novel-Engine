@@ -2046,9 +2046,10 @@ export class AgentDaemon {
 				return undefined;
 			case "list": {
 				const activeSessions = Array.from(this.sessions.values());
+				const scheduledJobs = this.cronStore.list();
 				if (!command.all) {
 					return success(command.id, "list", {
-						sessions: buildSessionList(activeSessions, []),
+						sessions: buildSessionList(activeSessions, [], scheduledJobs),
 					});
 				}
 				const defaultConfig = this.options.defaultSessionConfig;
@@ -2056,7 +2057,7 @@ export class AgentDaemon {
 				if (command.cwd) {
 					const savedSessions = await SessionManager.list(resolve(command.cwd), listSessionDir);
 					return success(command.id, "list", {
-						sessions: buildSessionList(activeSessions, savedSessions),
+						sessions: buildSessionList(activeSessions, savedSessions, scheduledJobs),
 					});
 				}
 				const savedSessions =
@@ -2064,7 +2065,7 @@ export class AgentDaemon {
 						? await SessionManager.listAll(undefined, listSessionDir)
 						: await SessionManager.listAll();
 				return success(command.id, "list", {
-					sessions: buildSessionList(activeSessions, savedSessions),
+					sessions: buildSessionList(activeSessions, savedSessions, scheduledJobs),
 				});
 			}
 

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Fixed active heartbeat sessions appearing under Needs Input or Completed instead of a dedicated Heartbeats section ([ENG-4654](https://linear.app/primeintellect/issue/ENG-4654/categorize-heartbeat-sessions-as-working)).
 
 ## [0.3.1] - 2026-07-15
 
