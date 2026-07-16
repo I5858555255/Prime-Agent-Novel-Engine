@@ -97,7 +97,7 @@ export const KEYBINDINGS = {
 		description: "Open child agents",
 	},
 	"app.heartbeats.open": {
-		defaultKeys: "f6",
+		defaultKeys: "ctrl+r",
 		description: "Manage heartbeats",
 	},
 	"app.session.toggleNamedFilter": {

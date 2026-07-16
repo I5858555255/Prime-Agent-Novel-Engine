@@ -40,7 +40,7 @@ describe("HeartbeatManagerComponent", () => {
 	beforeAll(() => initTheme("dark"));
 
 	it("uses a terminal-stable default shortcut", () => {
-		expect(KEYBINDINGS["app.heartbeats.open"].defaultKeys).toBe("f6");
+		expect(KEYBINDINGS["app.heartbeats.open"].defaultKeys).toBe("ctrl+r");
 	});
 
 	it("groups user and agent heartbeats and stays within terminal width", () => {
@@ -59,7 +59,7 @@ describe("HeartbeatManagerComponent", () => {
 		);
 		for (const width of [32, 48, 80]) {
 			const lines = component.render(width);
-			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+			expect(lines.every((line) => visibleWidth(line) === width)).toBe(true);
 		}
 		const output = stripAnsi(component.render(100).join("\n"));
 		expect(output).toContain("2 heartbeats · 1 paused");
@@ -68,6 +68,8 @@ describe("HeartbeatManagerComponent", () => {
 		expect(output).toContain("Agent");
 		expect(output).toContain("follow-up");
 		expect(output).toContain("previous delivery failed");
+		expect(output).not.toContain("›");
+		expect(output).not.toContain("─");
 	});
 
 	it("pauses and stops individual heartbeats with stop confirmation", async () => {

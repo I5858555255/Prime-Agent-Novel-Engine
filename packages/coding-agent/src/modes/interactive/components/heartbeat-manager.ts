@@ -1,8 +1,12 @@
-import { type Component, type Focusable, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, type Focusable, getKeybindings, Spacer, TruncatedText } from "@earendil-works/pi-tui";
 import type { AgentHeartbeatManagementAction } from "../../../core/cron-jobs.js";
 import type { AgentConnectionHeartbeat } from "../../agent-connection/types.js";
 import { theme } from "../theme/theme.js";
-import { keyHint } from "./keybinding-hints.js";
+import { getMenuListLayout, MenuList, MenuPanel, MenuRow } from "./menu-panel.js";
+
+const PREFERRED_VISIBLE_HEARTBEATS = 8;
+const HEARTBEAT_LIST_RESERVED_ROWS = 5;
+const HEARTBEAT_SCROLL_INDICATOR_ROWS = 1;
 
 type HeartbeatManagerMode =
 	| { type: "list" }
@@ -86,86 +90,117 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
+		const panel = this.mode.type === "list" ? this.createHeartbeatListPanel() : this.createActionPanel(this.mode);
+		return panel.render(width);
+	}
+
+	private createHeartbeatListPanel(): MenuPanel {
 		const active = this.heartbeats.filter((heartbeat) => heartbeat.job.status === "active").length;
 		const paused = this.heartbeats.length - active;
 		const countLabel = `${this.heartbeats.length} heartbeat${this.heartbeats.length === 1 ? "" : "s"}${paused ? ` · ${paused} paused` : ""}`;
-		const header = this.formatLine(
-			`${theme.bold("Heartbeats")}  ${theme.fg("muted", countLabel)}  ${theme.fg("dim", keyHint("tui.select.cancel", "close"))}`,
-			safeWidth,
-		);
-		const lines = [header, theme.fg("border", "─".repeat(safeWidth))];
-		if (this.mode.type === "list") {
-			lines.push(...this.renderList(safeWidth));
-		} else {
-			lines.push(...this.renderActionMenu(safeWidth, this.mode));
-		}
+		const panel = new MenuPanel({
+			title: "Heartbeats",
+			subtitle: `${countLabel}. Select a heartbeat to manage.`,
+		});
+		const list = new MenuList({ compact: this.getListLayout().compact });
+		this.populateHeartbeatList(list);
+		panel.addChild(list);
 		if (this.error) {
-			lines.push(this.formatLine(theme.fg("error", `Error: ${this.error}`), safeWidth));
+			panel.addChild(new Spacer(1));
+			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`), 1, 0));
 		}
-		return lines;
+		return panel;
 	}
 
-	private renderList(width: number): string[] {
+	private populateHeartbeatList(list: MenuList): void {
 		if (this.heartbeats.length === 0) {
-			return ["", this.formatLine(theme.fg("muted", "No running or paused heartbeats"), width)];
+			list.addChild(new TruncatedText(theme.fg("muted", "No running or paused heartbeats"), 1, 0));
+			return;
 		}
-		const body: string[] = [];
-		let selectedLine = 0;
-		let previousSession: string | undefined;
-		for (const [index, heartbeat] of this.heartbeats.entries()) {
-			const session = this.sessionLabel(heartbeat);
-			if (session !== previousSession) {
-				if (body.length > 0) body.push("");
-				body.push(this.formatLine(theme.bold(session), width));
-				previousSession = session;
-			}
-			if (index === this.selectedIndex) selectedLine = body.length;
+		const visibleItems = this.getListLayout().visibleItems;
+		const startIndex = Math.max(
+			0,
+			Math.min(this.selectedIndex - Math.floor(visibleItems / 2), this.heartbeats.length - visibleItems),
+		);
+		const endIndex = Math.min(startIndex + visibleItems, this.heartbeats.length);
+
+		for (let index = startIndex; index < endIndex; index++) {
+			const heartbeat = this.heartbeats[index];
+			if (!heartbeat) continue;
 			const source = heartbeat.job.source === "heartbeat" ? "User" : "Agent";
 			const label = heartbeat.job.label?.trim();
-			const title = `${index === this.selectedIndex ? "›" : " "} ${source}${label ? ` · ${label}` : ""} · ${heartbeat.job.status} · ${heartbeat.job.schedule.expression}`;
-			body.push(this.formatLine(index === this.selectedIndex ? theme.fg("accent", title) : title, width));
-			body.push(this.formatLine(theme.fg("muted", `  ${this.singleLine(heartbeat.job.prompt)}`), width));
 			const delivery = heartbeat.job.deliveryMode === "follow_up" ? "follow-up" : "steer";
-			const next = heartbeat.job.nextRunAt ? this.formatTimestamp(heartbeat.job.nextRunAt) : "—";
-			body.push(
-				this.formatLine(theme.fg("dim", `  next ${next} · ${delivery} · ${heartbeat.job.runCount} runs`), width),
+			const details = [
+				source,
+				this.sessionLabel(heartbeat),
+				heartbeat.job.schedule.expression,
+				delivery,
+				heartbeat.job.lastError ? `error: ${this.singleLine(heartbeat.job.lastError)}` : undefined,
+			]
+				.filter((value) => value !== undefined)
+				.join(" · ");
+			list.addChild(
+				new MenuRow({
+					primary: label || this.singleLine(heartbeat.job.prompt) || `${source} heartbeat`,
+					secondary: details,
+					meta: this.formatStatus(heartbeat),
+					selected: index === this.selectedIndex,
+				}),
 			);
-			if (heartbeat.job.lastError) {
-				body.push(this.formatLine(theme.fg("error", `  ${this.singleLine(heartbeat.job.lastError)}`), width));
-			}
 		}
-		const maxBodyRows = Math.max(3, this.options.getRows() - 4);
-		const start = Math.max(0, Math.min(selectedLine - 2, body.length - maxBodyRows));
-		const visible = body.slice(start, start + maxBodyRows);
-		visible.push(this.formatLine(theme.fg("dim", keyHint("tui.select.confirm", "manage")), width));
-		return visible;
+
+		if (startIndex > 0 || endIndex < this.heartbeats.length) {
+			list.addChild(
+				new TruncatedText(theme.fg("muted", `  (${this.selectedIndex + 1}/${this.heartbeats.length})`), 1, 0),
+			);
+		}
 	}
 
-	private renderActionMenu(width: number, mode: Exclude<HeartbeatManagerMode, { type: "list" }>): string[] {
+	private createActionPanel(mode: Exclude<HeartbeatManagerMode, { type: "list" }>): MenuPanel {
 		const heartbeat = this.findHeartbeat(mode.heartbeatId);
-		if (!heartbeat) return [this.formatLine(theme.fg("muted", "Heartbeat is no longer available"), width)];
+		if (!heartbeat) {
+			return new MenuPanel({ title: "Heartbeats", subtitle: "This heartbeat is no longer available." });
+		}
 		const source = heartbeat.job.source === "heartbeat" ? "User heartbeat" : "Agent heartbeat";
-		const lines = [
-			"",
-			this.formatLine(theme.bold(heartbeat.job.label?.trim() || source), width),
-			this.formatLine(theme.fg("muted", this.singleLine(heartbeat.job.prompt)), width),
-			this.formatLine(theme.fg("dim", `${heartbeat.job.status} · ${heartbeat.job.schedule.expression}`), width),
-			"",
-		];
+		const name = heartbeat.job.label?.trim() || source;
+		const panel = new MenuPanel({
+			title: mode.type === "confirm-stop" ? "Stop heartbeat?" : name,
+			subtitle:
+				mode.type === "confirm-stop"
+					? `This removes ${name} and clears its queued deliveries.`
+					: this.singleLine(heartbeat.job.prompt),
+		});
+		if (mode.type !== "confirm-stop") {
+			panel.addChild(new TruncatedText(theme.fg("muted", this.formatHeartbeatDetails(heartbeat)), 1, 0));
+			panel.addChild(new Spacer(1));
+		}
+		if (this.error) {
+			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`), 1, 0));
+			panel.addChild(new Spacer(1));
+		}
+		const list = new MenuList();
 		if (mode.type === "confirm-stop") {
-			lines.push(
-				this.formatLine(theme.fg("warning", "Stop this heartbeat? This removes queued deliveries."), width),
-			);
-			for (const [index, label] of ["Stop heartbeat", "Keep heartbeat"].entries()) {
-				lines.push(this.menuLine(label, index === mode.selectedIndex, width));
+			const choices = [
+				{ primary: "Stop heartbeat", secondary: "Remove it and clear queued deliveries" },
+				{ primary: "Keep heartbeat", secondary: "Return without making changes" },
+			];
+			for (const [index, choice] of choices.entries()) {
+				list.addChild(new MenuRow({ ...choice, selected: index === mode.selectedIndex }));
 			}
-			return lines;
+			panel.addChild(list);
+			return panel;
 		}
 		for (const [index, action] of this.availableActions(heartbeat).entries()) {
-			lines.push(this.menuLine(action.label, index === mode.selectedIndex, width));
+			list.addChild(
+				new MenuRow({
+					primary: action.label,
+					secondary: this.actionDescription(action.action),
+					selected: index === mode.selectedIndex,
+				}),
+			);
 		}
-		return lines;
+		panel.addChild(list);
+		return panel;
 	}
 
 	private moveSelection(delta: number): void {
@@ -254,9 +289,40 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		return heartbeat.sessionName?.trim() || this.singleLine(heartbeat.firstMessage ?? "") || heartbeat.job.sessionId;
 	}
 
-	private menuLine(label: string, selected: boolean, width: number): string {
-		const text = `${selected ? "›" : " "} ${label}`;
-		return this.formatLine(selected ? theme.fg("accent", text) : text, width);
+	private getListLayout() {
+		return getMenuListLayout({
+			getRows: this.options.getRows,
+			preferredVisibleItems: PREFERRED_VISIBLE_HEARTBEATS,
+			totalItems: this.heartbeats.length,
+			reservedRows: HEARTBEAT_LIST_RESERVED_ROWS + (this.error ? 2 : 0),
+			comfortableItemRows: 3,
+			compactItemRows: 2,
+			scrollIndicatorRows: HEARTBEAT_SCROLL_INDICATOR_ROWS,
+		});
+	}
+
+	private formatStatus(heartbeat: AgentConnectionHeartbeat): string {
+		return heartbeat.job.status === "active" ? theme.fg("success", "active") : theme.fg("warning", "paused");
+	}
+
+	private formatHeartbeatDetails(heartbeat: AgentConnectionHeartbeat): string {
+		const source = heartbeat.job.source === "heartbeat" ? "User" : "Agent";
+		const delivery = heartbeat.job.deliveryMode === "follow_up" ? "follow-up" : "steer";
+		const next = heartbeat.job.nextRunAt ? this.formatTimestamp(heartbeat.job.nextRunAt) : "—";
+		return `${source} · ${this.sessionLabel(heartbeat)} · ${heartbeat.job.status} · ${heartbeat.job.schedule.expression} · ${delivery} · next ${next} · ${heartbeat.job.runCount} runs`;
+	}
+
+	private actionDescription(action: AgentHeartbeatManagementAction | "back"): string {
+		switch (action) {
+			case "pause":
+				return "Stop deliveries until resumed";
+			case "resume":
+				return "Continue scheduled deliveries";
+			case "stop":
+				return "Permanently remove this heartbeat";
+			case "back":
+				return "Return to all heartbeats";
+		}
 	}
 
 	private singleLine(value: string): string {
@@ -267,10 +333,5 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		const parsed = new Date(value);
 		if (!Number.isFinite(parsed.getTime())) return value;
 		return parsed.toISOString().slice(0, 16).replace("T", " ");
-	}
-
-	private formatLine(value: string, width: number): string {
-		const truncated = truncateToWidth(value, width, "");
-		return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
 	}
 }
