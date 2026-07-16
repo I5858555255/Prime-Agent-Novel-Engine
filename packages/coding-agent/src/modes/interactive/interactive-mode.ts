@@ -53,6 +53,7 @@ import { spawn, spawnSync } from "child_process";
 import {
 	buildDaemonUpdateRestartReport,
 	launchDaemonUpdateRestartCoordinator,
+	resolveDaemonUpdateRestartSocketPath,
 } from "../../cli/daemon-update-restart.js";
 import {
 	APP_NAME,
@@ -139,7 +140,6 @@ import type {
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
-import { defaultDaemonSocketPath } from "../daemon/daemon-socket.js";
 import {
 	checkForPackageUpdates,
 	checkTmuxKeyboardSetup,
@@ -7767,7 +7767,7 @@ export class InteractiveMode {
 		const updateCwd = this.getCurrentCwd();
 		const daemonSocketPath = resolveInteractiveUpdateDaemonSocketPath(
 			updateArgs,
-			this.options.daemonSocketPath ?? defaultDaemonSocketPath(),
+			resolveDaemonUpdateRestartSocketPath(this.options.daemonSocketPath),
 		);
 		const updateChildArgs = includesSelf ? buildUpdateChildArgs(updateArgs, daemonSocketPath) : updateArgs;
 		this.stopWorkingLoader();
