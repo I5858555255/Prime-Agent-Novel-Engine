@@ -8,6 +8,7 @@ import {
 	formatTopLevelHelp,
 	getChildCommandSpecs,
 	getCommandSpec,
+	isHelpCommandRequest,
 	PUBLIC_COMMAND_NAMES,
 	REMOVED_COMMAND_NAMES,
 } from "./command-registry.js";
@@ -32,7 +33,7 @@ export async function handlePublicCommand(args: string[]): Promise<PublicCommand
 }
 
 async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
-	if (args[0] === "help" && isHelpRequest(args.slice(1))) {
+	if (args[0] === "help" && isHelpCommandRequest(args.slice(1))) {
 		return printRequestedHelp(args.slice(1));
 	}
 
@@ -69,6 +70,9 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 			const options = rest.slice(1);
 			if (!agent || agent.startsWith("-") || hasPositionalArguments(options)) {
 				return fail(`Usage: ${APP_NAME} ${getCommandSpec(["attach"])!.usage}`);
+			}
+			if (hasConflictingAttachOption(options)) {
+				return fail("attach cannot be combined with --resume, --continue, or --fork.");
 			}
 			return {
 				handled: false,
@@ -155,21 +159,6 @@ function printRequestedHelp(path: string[]): PublicCommandResult {
 		`Unknown command: ${path.join(" ")}`,
 		suggestion ? `Did you mean "${APP_NAME} help ${[...parent, suggestion].join(" ")}"?` : undefined,
 	);
-}
-
-function isHelpRequest(path: string[]): boolean {
-	if (path.length === 0 || getCommandSpec(path)) {
-		return true;
-	}
-	if (REMOVED_COMMAND_NAMES.has(path[0]!)) {
-		return true;
-	}
-	if (getCommandSpec(path.slice(0, 1))) {
-		return true;
-	}
-	const parent = path.slice(0, -1);
-	const candidates = getChildCommandSpecs(parent).map((spec) => spec.path.at(-1)!);
-	return findCommandSuggestion(path.at(-1)!, candidates) !== undefined;
 }
 
 function getCommandPath(args: string[]): string[] {
@@ -337,6 +326,18 @@ function requireArgumentCount(args: string[], count: number, command: string): b
 function hasPositionalArguments(args: string[]): boolean {
 	const parsed = parseArgs(args);
 	return parsed.messages.length > 0 || parsed.fileArgs.length > 0;
+}
+
+function hasConflictingAttachOption(args: string[]): boolean {
+	return args.some(
+		(arg) =>
+			arg === "--resume" ||
+			arg === "-r" ||
+			arg.startsWith("--resume=") ||
+			arg === "--continue" ||
+			arg === "-c" ||
+			arg === "--fork",
+	);
 }
 
 function splitOperandsAndOptions(args: string[]): { operands: string[]; options: string[] } | undefined {

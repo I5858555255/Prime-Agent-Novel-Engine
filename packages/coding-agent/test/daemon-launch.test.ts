@@ -167,6 +167,7 @@ describe("shouldStartInteractiveDaemonEarly", () => {
 		expect(shouldStartInteractiveDaemonEarly([], true, false)).toBe(true);
 		expect(shouldStartInteractiveDaemonEarly(["agents"], true, false)).toBe(true);
 		expect(shouldStartInteractiveDaemonEarly(["review this change"], true, false)).toBe(true);
+		expect(shouldStartInteractiveDaemonEarly(["help", "me", "fix", "this"], true, false)).toBe(true);
 	});
 
 	it("does not start a service for standalone management commands", () => {

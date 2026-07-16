@@ -23,6 +23,7 @@ describe("owned session worker CLI routing", () => {
 		expect(classifyOwnedSessionWorkerInvocation(["--list-models"], false, {})).toBeUndefined();
 		expect(classifyOwnedSessionWorkerInvocation(["--export", "session.jsonl"], false, {})).toBeUndefined();
 		expect(classifyOwnedSessionWorkerInvocation(["help"], false, {})).toBeUndefined();
+		expect(classifyOwnedSessionWorkerInvocation(["help", "me", "fix", "this"], false, {})).toBe("print");
 		expect(classifyOwnedSessionWorkerInvocation(["daemon", "list"], false, {})).toBeUndefined();
 		for (const command of PUBLIC_COMMAND_NAMES) {
 			expect(classifyOwnedSessionWorkerInvocation([command], false, {})).toBeUndefined();

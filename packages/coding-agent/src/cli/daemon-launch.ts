@@ -15,7 +15,7 @@ import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
-import { PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } from "./command-registry.js";
+import { isHelpCommandRequest, PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } from "./command-registry.js";
 
 export function isDaemonSessionSummary(value: unknown): value is SessionSummary {
 	if (!value || typeof value !== "object") {
@@ -307,11 +307,15 @@ export function shouldStartInteractiveDaemonEarly(
 	if (startupBenchmark || !stdinIsTTY) {
 		return false;
 	}
-	const firstPositional = args.find((arg) => arg.length > 0 && !arg.startsWith("-"));
+	const firstPositionalIndex = args.findIndex((arg) => arg.length > 0 && !arg.startsWith("-"));
+	const firstPositional = args[firstPositionalIndex];
+	const isHelpCommand = firstPositional === "help" && isHelpCommandRequest(args.slice(firstPositionalIndex + 1));
 	if (
 		firstPositional &&
 		(REMOVED_COMMAND_NAMES.has(firstPositional) ||
-			(PUBLIC_COMMAND_NAMES.has(firstPositional) && firstPositional !== "agents"))
+			(PUBLIC_COMMAND_NAMES.has(firstPositional) &&
+				firstPositional !== "agents" &&
+				(firstPositional !== "help" || isHelpCommand)))
 	) {
 		return false;
 	}

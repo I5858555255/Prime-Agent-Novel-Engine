@@ -80,6 +80,14 @@ describe("public command routing", () => {
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("prime-agent attach <agent>"));
 	});
 
+	it("rejects conflicting session selectors when attaching", async () => {
+		for (const selector of [["--resume", "other"], ["-r", "other"], ["--continue"], ["--fork", "session.jsonl"]]) {
+			await expect(handlePublicCommand(["attach", "worker", ...selector])).resolves.toMatchObject({ handled: true });
+		}
+		expect(process.exitCode).toBe(1);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("cannot be combined"));
+	});
+
 	it("forwards global options when opening the agents view", async () => {
 		await expect(handlePublicCommand(["agents", "--verbose", "--provider", "anthropic"])).resolves.toEqual({
 			handled: false,

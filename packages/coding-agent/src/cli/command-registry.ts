@@ -170,6 +170,21 @@ export function getChildCommandSpecs(path: readonly string[]): CommandSpec[] {
 	);
 }
 
+export function isHelpCommandRequest(path: readonly string[]): boolean {
+	if (path.length === 0 || getCommandSpec(path)) {
+		return true;
+	}
+	if (REMOVED_COMMAND_NAMES.has(path[0]!)) {
+		return true;
+	}
+	if (getCommandSpec(path.slice(0, 1))) {
+		return true;
+	}
+	const parent = path.slice(0, -1);
+	const candidates = getChildCommandSpecs(parent).map((spec) => spec.path.at(-1)!);
+	return findCommandSuggestion(path.at(-1)!, candidates) !== undefined;
+}
+
 export function findCommandSuggestion(input: string, candidates: readonly string[]): string | undefined {
 	let closest: { candidate: string; distance: number } | undefined;
 	for (const candidate of candidates) {
