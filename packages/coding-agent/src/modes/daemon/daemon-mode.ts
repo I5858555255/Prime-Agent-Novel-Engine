@@ -1198,7 +1198,7 @@ export class AgentDaemon {
 			if (!this.isCronJobRunnableForState(runnableJob, state, requirePersistedJob)) {
 				return "skipped";
 			}
-			await session.followUp(runnableJob.prompt);
+			await session.followUp(runnableJob.prompt, undefined, { resumeIfIdle: true });
 			return;
 		}
 		const getRunnableJob = (): AgentCronJob | undefined => {
@@ -2810,6 +2810,7 @@ export class AgentDaemon {
 					await state.runtime.session.steer(command.message, command.images, {
 						queueKey: command.queueKey,
 						agentMessageId: command.agentMessageId,
+						resumeIfIdle: true,
 					});
 				}
 				this.recordWorkerRecoveryState(state, "steer_queued", true);
@@ -2831,6 +2832,7 @@ export class AgentDaemon {
 					queued = await state.runtime.session.followUp(command.message, command.images, {
 						queueKey: command.queueKey,
 						agentMessageId: command.agentMessageId,
+						resumeIfIdle: true,
 					});
 				}
 				if (queued) {
