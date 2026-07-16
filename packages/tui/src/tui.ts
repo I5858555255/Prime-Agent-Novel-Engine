@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
+import { withFullscreenImageFallback } from "./components/image.js";
 import { FullscreenViewport, type ScrollInfo } from "./fullscreen.js";
 import { getKeybindings } from "./keybindings.js";
 import { isKeyRelease, matchesKey } from "./keys.js";
@@ -1292,13 +1293,10 @@ export class TUI extends Container {
 		this.syncFullscreenMouseTracking();
 		this.overlaySelectionRegions = [];
 
-		const transcript: string[] = [];
-		for (const component of fullscreen.scroll) {
-			for (const line of component.render(width)) {
-				transcript.push(line);
-			}
-		}
-		const dock = fullscreen.dock.render(width);
+		const { transcript, dock } = withFullscreenImageFallback(() => ({
+			transcript: fullscreen.scroll.flatMap((component) => component.render(width)),
+			dock: fullscreen.dock.render(width),
+		}));
 
 		let frame = fullscreen.viewport.composeFrame(transcript, dock, height);
 		this.overlaySelectionRegions.push(

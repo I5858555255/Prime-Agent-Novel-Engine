@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed fullscreen terminal images reserving blank rows by showing a compact metadata fallback with viewing instructions.
 - Fixed focused full-pane overlays becoming slow to navigate on wider terminals.
 
 ## [0.3.0] - 2026-07-13

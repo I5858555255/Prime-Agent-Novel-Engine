@@ -8,6 +8,18 @@ import {
 } from "../terminal-image.js";
 import type { Component } from "../tui.js";
 
+let fullscreenFallback = false;
+
+export function withFullscreenImageFallback<T>(render: () => T): T {
+	const previous = fullscreenFallback;
+	fullscreenFallback = true;
+	try {
+		return render();
+	} finally {
+		fullscreenFallback = previous;
+	}
+}
+
 export interface ImageTheme {
 	fallbackColor: (str: string) => string;
 }
@@ -30,6 +42,7 @@ export class Image implements Component {
 
 	private cachedLines?: string[];
 	private cachedWidth?: number;
+	private cachedFullscreenFallback?: boolean;
 
 	constructor(
 		base64Data: string,
@@ -54,10 +67,11 @@ export class Image implements Component {
 	invalidate(): void {
 		this.cachedLines = undefined;
 		this.cachedWidth = undefined;
+		this.cachedFullscreenFallback = undefined;
 	}
 
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) {
+		if (this.cachedLines && this.cachedWidth === width && this.cachedFullscreenFallback === fullscreenFallback) {
 			return this.cachedLines;
 		}
 
@@ -66,7 +80,11 @@ export class Image implements Component {
 		const caps = getCapabilities();
 		let lines: string[];
 
-		if (caps.images) {
+		if (fullscreenFallback && caps.images) {
+			const label = this.options.filename ? `${this.options.filename} · ` : "";
+			const fallback = `[${label}${this.mimeType} · ${this.dimensions.widthPx}×${this.dimensions.heightPx} · /fullscreen off to view]`;
+			lines = [this.theme.fallbackColor(fallback)];
+		} else if (caps.images) {
 			if (caps.images === "kitty" && this.imageId === undefined) {
 				this.imageId = allocateImageId();
 			}
@@ -106,6 +124,7 @@ export class Image implements Component {
 
 		this.cachedLines = lines;
 		this.cachedWidth = width;
+		this.cachedFullscreenFallback = fullscreenFallback;
 
 		return lines;
 	}
