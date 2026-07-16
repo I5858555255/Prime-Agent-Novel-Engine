@@ -310,8 +310,7 @@ export function shouldStartInteractiveDaemonEarly(
 	const firstPositional = args.find((arg) => arg.length > 0 && !arg.startsWith("-"));
 	if (
 		firstPositional &&
-		(firstPositional === "help" ||
-			REMOVED_COMMAND_NAMES.has(firstPositional) ||
+		(REMOVED_COMMAND_NAMES.has(firstPositional) ||
 			(PUBLIC_COMMAND_NAMES.has(firstPositional) && firstPositional !== "agents"))
 	) {
 		return false;

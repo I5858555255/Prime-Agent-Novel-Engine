@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { APP_NAME } from "../config.js";
 import { handlePackageCommand, isSelfUpdateSource } from "../package-manager-cli.js";
-import { INTERNAL_RUNTIME_COMMAND_MARKER } from "./args.js";
+import { INTERNAL_RUNTIME_COMMAND_MARKER, parseArgs } from "./args.js";
 import {
 	findCommandSuggestion,
 	formatCommandHelp,
@@ -65,8 +65,17 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 			return runInternalAgentCommand("list", args.slice(1));
 		case "attach": {
 			const rest = args.slice(1);
-			if (!requireArgumentCount(rest, 1, "attach")) return HANDLED;
-			return { handled: false, args: ["--resume", rest[0]!], explicitAgentsView: false, attachAgent: rest[0] };
+			const agent = rest[0];
+			const options = rest.slice(1);
+			if (!agent || agent.startsWith("-") || hasPositionalArguments(options)) {
+				return fail(`Usage: ${APP_NAME} ${getCommandSpec(["attach"])!.usage}`);
+			}
+			return {
+				handled: false,
+				args: ["--resume", agent, ...options],
+				explicitAgentsView: false,
+				attachAgent: agent,
+			};
 		}
 		case "stop":
 			if (!requireOperandCount(args.slice(1), 1, 1, "stop")) return HANDLED;
@@ -319,6 +328,11 @@ function requireArgumentCount(args: string[], count: number, command: string): b
 	}
 	fail(`Usage: ${APP_NAME} ${getCommandSpec([command])?.usage ?? command}`);
 	return false;
+}
+
+function hasPositionalArguments(args: string[]): boolean {
+	const parsed = parseArgs(args);
+	return parsed.messages.length > 0 || parsed.fileArgs.length > 0;
 }
 
 function requireOperandCount(args: string[], minimum: number, maximum: number | undefined, command: string): boolean {

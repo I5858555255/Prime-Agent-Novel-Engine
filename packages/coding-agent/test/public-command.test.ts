@@ -65,6 +65,21 @@ describe("public command routing", () => {
 		});
 	});
 
+	it("forwards global options when attaching", async () => {
+		await expect(handlePublicCommand(["attach", "worker", "--verbose", "--provider", "anthropic"])).resolves.toEqual({
+			handled: false,
+			args: ["--resume", "worker", "--verbose", "--provider", "anthropic"],
+			explicitAgentsView: false,
+			attachAgent: "worker",
+		});
+	});
+
+	it("rejects extra attach operands", async () => {
+		await expect(handlePublicCommand(["attach", "worker", "extra"])).resolves.toMatchObject({ handled: true });
+		expect(process.exitCode).toBe(1);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("prime-agent attach <agent>"));
+	});
+
 	it("forwards global options when opening the agents view", async () => {
 		await expect(handlePublicCommand(["agents", "--verbose", "--provider", "anthropic"])).resolves.toEqual({
 			handled: false,

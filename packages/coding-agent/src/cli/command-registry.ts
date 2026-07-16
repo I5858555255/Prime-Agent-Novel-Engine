@@ -11,6 +11,11 @@ export interface CommandSpec {
 
 export const COMMAND_SPECS: readonly CommandSpec[] = [
 	{
+		path: ["help"],
+		usage: "help [command]",
+		summary: "Show command help",
+	},
+	{
 		path: ["agents"],
 		usage: "agents",
 		summary: "Open the agents view",
