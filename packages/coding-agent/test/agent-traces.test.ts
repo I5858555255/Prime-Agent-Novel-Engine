@@ -595,6 +595,45 @@ describe("agent trace upload", () => {
 		}
 	});
 
+	it("does not back off when an HTTP response cleanup aborts the upload", async () => {
+		vi.useFakeTimers();
+		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "aborted-http-retry-session");
+		const controller = new AbortController();
+		const abortReason = new Error("upload cancelled during cleanup");
+		let attempts = 0;
+		const fetchFn: typeof fetch = async () => {
+			attempts += 1;
+			return {
+				status: 503,
+				body: {
+					cancel: async () => {
+						controller.abort(abortReason);
+					},
+				},
+			} as unknown as Response;
+		};
+
+		const upload = uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn,
+			signal: controller.signal,
+			reloadConfig: false,
+		});
+
+		await vi.runAllTimersAsync();
+		const result = await upload;
+		expect(attempts).toBe(1);
+		expect(result).toEqual({ status: "failed", message: "upload cancelled during cleanup" });
+		const retryDelays = timeoutSpy.mock.calls.map((call) => Number(call[1])).filter((delay) => delay < 15_000);
+		expect(retryDelays).toEqual([]);
+	});
+
 	it("does not retry a permanent DNS failure", async () => {
 		const session = writeSession(tempDir, join(tempDir, "sessions"), "dns-failure-session");
 		let attempts = 0;
@@ -757,6 +796,43 @@ describe("agent trace upload", () => {
 		expect(calls).toHaveLength(1);
 		expect(result).toMatchObject({ total: 3, uploaded: 1, failed: 0, skipped: 2 });
 		expect(result.results).toHaveLength(1);
+	});
+
+	it("counts in-flight batch cancellations as skipped", async () => {
+		const sessionDir = join(tempDir, "sessions");
+		writeSession(tempDir, sessionDir, "abort-in-flight-a");
+		writeSession(tempDir, sessionDir, "abort-in-flight-b");
+		writeSession(tempDir, sessionDir, "abort-in-flight-c");
+		const controller = new AbortController();
+		const abortReason = new Error("cancel in-flight batch");
+		let attempts = 0;
+		const fetchFn: typeof fetch = async (_input, init) => {
+			attempts += 1;
+			return await new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+				if (attempts === 2) {
+					queueMicrotask(() => controller.abort(abortReason));
+				}
+			});
+		};
+
+		const result = await uploadAllAgentTraces({
+			sessionDir,
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: false } }),
+			requireEnabled: false,
+			baseUrl: "https://api.example.test",
+			fetchFn,
+			reloadConfig: false,
+			concurrency: 2,
+			signal: controller.signal,
+		});
+
+		expect(attempts).toBe(2);
+		expect(result).toMatchObject({ total: 3, uploaded: 0, failed: 0, skipped: 3 });
+		expect(result.results).toHaveLength(0);
 	});
 
 	it("prefers the prime-inference credential over the prime-cli config key", async () => {

@@ -358,6 +358,10 @@ async function fetchWithTimeout(
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve();
+			return;
+		}
 		const timeout = setTimeout(finish, ms);
 		const onAbort = () => finish();
 		function finish() {
@@ -534,6 +538,9 @@ export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions):
 				sessionFile,
 				reloadConfig: false,
 			});
+			if (uploadOptions.signal?.aborted && result.status === "failed") {
+				return;
+			}
 			results[index] = { sessionFile, result };
 			completed += 1;
 			onProgress?.({ completed, total: sessionFiles.length, sessionFile, result });
