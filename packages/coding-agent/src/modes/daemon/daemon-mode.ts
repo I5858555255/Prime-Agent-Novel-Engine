@@ -1793,6 +1793,7 @@ export class AgentDaemon {
 		socket.on("close", cleanup);
 		socket.on("error", cleanup);
 		socket.on("drain", () => {
+			client.backpressured = false;
 			if (!client.snapshotStreaming) {
 				void this.catchUpBackpressuredClient(client).catch((error) =>
 					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
@@ -4049,7 +4050,7 @@ export class AgentDaemon {
 		if (client.catchupPromise) {
 			return client.catchupPromise;
 		}
-		if (client.snapshotStreaming) {
+		if (client.snapshotStreaming || client.backpressured) {
 			return Promise.resolve();
 		}
 		const catchup = this.drainBackpressuredClientCatchupQueue(client).finally(() => {
@@ -4062,7 +4063,12 @@ export class AgentDaemon {
 	}
 
 	private async drainBackpressuredClientCatchupQueue(client: DaemonSocketClient): Promise<void> {
-		while (!client.socket.destroyed && !client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
+		while (
+			!client.socket.destroyed &&
+			!client.snapshotStreaming &&
+			!client.backpressured &&
+			client.catchupActiveSessionIds?.size
+		) {
 			await this.drainBackpressuredClientCatchups(client);
 		}
 	}
@@ -4071,7 +4077,6 @@ export class AgentDaemon {
 		if (client.socket.destroyed) {
 			return;
 		}
-		client.backpressured = false;
 		const pending = [...(client.catchupActiveSessionIds ?? [])].map((activeSessionId) => ({
 			activeSessionId,
 			purpose: client.catchupPurposes?.get(activeSessionId) ?? ("resync" as const),

@@ -830,6 +830,7 @@ export class DaemonSupervisor {
 		socket.on("close", cleanup);
 		socket.on("error", cleanup);
 		socket.on("drain", () => {
+			client.backpressured = false;
 			if (!client.snapshotStreaming) {
 				void this.catchUpClient(client).catch((error) =>
 					this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
@@ -1737,6 +1738,7 @@ export class DaemonSupervisor {
 			return;
 		}
 		generation.retired = true;
+		this.settleSnapshotDuplicateValidation(generation);
 		if (generation.incoming) {
 			return;
 		}
@@ -3040,7 +3042,7 @@ export class DaemonSupervisor {
 		if (client.catchupPromise) {
 			return client.catchupPromise;
 		}
-		if (client.snapshotStreaming) {
+		if (client.snapshotStreaming || client.backpressured) {
 			return Promise.resolve();
 		}
 		const catchup = this.drainClientCatchupQueue(client).finally(() => {
@@ -3053,7 +3055,12 @@ export class DaemonSupervisor {
 	}
 
 	private async drainClientCatchupQueue(client: DaemonSocketClient): Promise<void> {
-		while (!client.socket.destroyed && !client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
+		while (
+			!client.socket.destroyed &&
+			!client.snapshotStreaming &&
+			!client.backpressured &&
+			client.catchupActiveSessionIds?.size
+		) {
 			await this.drainClientCatchups(client);
 		}
 	}
@@ -3062,7 +3069,6 @@ export class DaemonSupervisor {
 		if (client.socket.destroyed) {
 			return;
 		}
-		client.backpressured = false;
 		const pending = [...(client.catchupActiveSessionIds ?? [])].map((activeSessionId) => ({
 			activeSessionId,
 			purpose: client.catchupPurposes?.get(activeSessionId) ?? ("resync" as const),

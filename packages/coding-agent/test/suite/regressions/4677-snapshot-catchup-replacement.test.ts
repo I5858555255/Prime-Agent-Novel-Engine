@@ -36,6 +36,7 @@ interface WorkerHarness {
 				result: DaemonAttachResult;
 				incoming: boolean;
 				retired: boolean;
+				validation?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void };
 			}
 		>
 	>;
@@ -397,6 +398,178 @@ describe("ENG-4677 snapshot catch-up replacement", () => {
 		expect(firstTranscript.fileBacked).toBe(false);
 		expect(existsSync(cacheDirectory)).toBe(false);
 		expect(worker.transcriptCaches.get(activeSessionId)?.snapshotId).toBe(replacementSnapshotId);
+	});
+
+	it("releases duplicate validation waiters when a newer generation retires it", async () => {
+		const root = tempDirectory();
+		const supervisor = new DaemonSupervisor(join(root, "supervisor.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			descriptorDir: join(root, "state"),
+		});
+		const firstSnapshotId = "snapshot-4677-validation-a";
+		const replacementSnapshotId = "snapshot-4677-validation-b";
+		const firstResult = streamedResult(firstSnapshotId, 1, 1);
+		const placeholder = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId: firstSnapshotId,
+			cacheRoot: root,
+			targetChunkBytes: 1,
+		});
+		const worker = workerHarness(firstResult, placeholder);
+		worker.snapshotCache.clear();
+		worker.transcriptCaches.clear();
+		const client = socketClient("validation-waiter");
+		const internals = supervisor as unknown as {
+			workers: Map<string, WorkerHarness>;
+			attachClient(
+				client: DaemonSocketClient,
+				command: { type: "attach"; activeSessionId: string; capabilities: ["chunked_snapshot"] },
+			): Promise<{ result: DaemonAttachResult; releaseTranscript?: () => void }>;
+			handleWorkerFrame(worker: WorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): void;
+		};
+		internals.workers.set(worker.descriptor.workerId, worker);
+		const { messages: _firstMessages, ...firstSnapshot } = firstResult.snapshot;
+		const firstBegin = {
+			type: "session_snapshot_begin",
+			activeSessionId,
+			snapshotId: firstSnapshotId,
+			snapshot: firstSnapshot,
+			messageCount: 1,
+			targetChunkBytes: 1,
+		} satisfies DaemonOutbound;
+		const firstChunk = {
+			type: "session_snapshot_chunk",
+			activeSessionId,
+			snapshotId: firstSnapshotId,
+			index: 0,
+			messages: [{ role: "user", content: "first", timestamp: 1 }],
+		} satisfies DaemonOutbound;
+		const firstEnd = {
+			type: "session_snapshot_end",
+			activeSessionId,
+			snapshotId: firstSnapshotId,
+			chunkCount: 1,
+			lastEventSequence: 1,
+		} satisfies DaemonOutbound;
+		for (const message of [firstBegin, firstChunk, firstEnd, firstBegin]) {
+			internals.handleWorkerFrame(worker, snapshotFrame(message));
+		}
+		expect(worker.snapshotGenerations.get(activeSessionId)?.get(firstSnapshotId)?.validation).toBeDefined();
+
+		let attached = false;
+		const attaching = internals
+			.attachClient(client, {
+				type: "attach",
+				activeSessionId,
+				capabilities: ["chunked_snapshot"],
+			})
+			.then((result) => {
+				attached = true;
+				return result;
+			});
+		await Promise.resolve();
+		const replacementResult = streamedResult(replacementSnapshotId, 1, 2);
+		const { messages: _replacementMessages, ...replacementSnapshot } = replacementResult.snapshot;
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_begin",
+				activeSessionId,
+				snapshotId: replacementSnapshotId,
+				snapshot: replacementSnapshot,
+				messageCount: 1,
+				targetChunkBytes: 1,
+			}),
+		);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		const attachedBeforeRetiredTransferFinished = attached;
+
+		internals.handleWorkerFrame(worker, snapshotFrame(firstChunk));
+		internals.handleWorkerFrame(worker, snapshotFrame(firstEnd));
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_chunk",
+				activeSessionId,
+				snapshotId: replacementSnapshotId,
+				index: 0,
+				messages: [{ role: "user", content: "replacement", timestamp: 2 }],
+			}),
+		);
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_end",
+				activeSessionId,
+				snapshotId: replacementSnapshotId,
+				chunkCount: 1,
+				lastEventSequence: 2,
+			}),
+		);
+		const result = await attaching;
+		result.releaseTranscript?.();
+
+		expect(attachedBeforeRetiredTransferFinished).toBe(true);
+		expect(result.result.snapshotStream?.id).toBe(replacementSnapshotId);
+		client.socket.destroy();
+	});
+
+	it("waits for supervisor socket drain before continuing catch-up", async () => {
+		const root = tempDirectory();
+		const supervisor = new DaemonSupervisor(join(root, "supervisor.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			descriptorDir: join(root, "state"),
+		});
+		const client = socketClient("supervisor-backpressure");
+		client.backpressured = true;
+		client.catchupActiveSessionIds?.add(activeSessionId);
+		const drainClientCatchups = vi.fn(async (target: DaemonSocketClient) => {
+			target.catchupActiveSessionIds?.clear();
+		});
+		const internals = supervisor as unknown as {
+			drainClientCatchups: typeof drainClientCatchups;
+			catchUpClient(client: DaemonSocketClient): Promise<void>;
+		};
+		internals.drainClientCatchups = drainClientCatchups;
+
+		await internals.catchUpClient(client);
+		expect(drainClientCatchups).not.toHaveBeenCalled();
+		expect(client.catchupActiveSessionIds).toContain(activeSessionId);
+
+		client.backpressured = false;
+		await internals.catchUpClient(client);
+		expect(drainClientCatchups).toHaveBeenCalledOnce();
+		client.socket.destroy();
+	});
+
+	it("waits for worker socket drain before continuing catch-up", async () => {
+		const root = tempDirectory();
+		const daemon = new AgentDaemon(join(root, "worker.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const client = socketClient("worker-backpressure");
+		client.backpressured = true;
+		client.catchupActiveSessionIds?.add(activeSessionId);
+		const drainBackpressuredClientCatchups = vi.fn(async (target: DaemonSocketClient) => {
+			target.catchupActiveSessionIds?.clear();
+		});
+		const internals = daemon as unknown as {
+			drainBackpressuredClientCatchups: typeof drainBackpressuredClientCatchups;
+			catchUpBackpressuredClient(client: DaemonSocketClient): Promise<void>;
+		};
+		internals.drainBackpressuredClientCatchups = drainBackpressuredClientCatchups;
+
+		await internals.catchUpBackpressuredClient(client);
+		expect(drainBackpressuredClientCatchups).not.toHaveBeenCalled();
+		expect(client.catchupActiveSessionIds).toContain(activeSessionId);
+
+		client.backpressured = false;
+		await internals.catchUpBackpressuredClient(client);
+		expect(drainBackpressuredClientCatchups).toHaveBeenCalledOnce();
+		client.socket.destroy();
 	});
 
 	it("lets a retained snapshot finish while a newer generation becomes current", async () => {
