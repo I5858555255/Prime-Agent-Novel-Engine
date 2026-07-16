@@ -613,10 +613,10 @@ describe("agent trace upload", () => {
 		expect(timeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(60_000);
 	});
 
-	it("honors Retry-After when retrying a rate limit", async () => {
+	it.each([429, 503])("honors Retry-After when retrying HTTP %i", async (status) => {
 		vi.useFakeTimers();
 		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
-		const session = writeSession(tempDir, join(tempDir, "sessions"), "retry-after-session");
+		const session = writeSession(tempDir, join(tempDir, "sessions"), `retry-after-session-${status}`);
 		let markFirstAttemptStarted: () => void = () => {};
 		const firstAttemptStarted = new Promise<void>((resolve) => {
 			markFirstAttemptStarted = resolve;
@@ -626,7 +626,7 @@ describe("agent trace upload", () => {
 			attempts += 1;
 			if (attempts === 1) {
 				markFirstAttemptStarted();
-				return new Response(null, { status: 429, headers: { "retry-after": "17" } });
+				return new Response(null, { status, headers: { "retry-after": "17" } });
 			}
 			return new Response(JSON.stringify({ bytes_stored: 42 }), { status: 200 });
 		};
@@ -731,6 +731,7 @@ describe("agent trace upload", () => {
 			attempts += 1;
 			return {
 				status: 503,
+				headers: new Headers(),
 				body: {
 					cancel: async () => {
 						controller.abort(abortReason);

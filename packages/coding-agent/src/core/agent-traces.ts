@@ -425,6 +425,8 @@ async function fetchWithRetry(
 			}
 			if (response.status === 429) {
 				retryDelayMs = retryAfterDelay(response) ?? TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS;
+			} else if (response.status === 503) {
+				retryDelayMs = retryAfterDelay(response);
 			}
 			await response.body?.cancel().catch(() => undefined);
 		} catch (error) {

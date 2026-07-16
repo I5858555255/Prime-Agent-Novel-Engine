@@ -152,12 +152,15 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
 
-	it("cancels an upload-all operation on Ctrl+C", () => {
+	it.each([
+		["Ctrl+C", "handleCtrlC"],
+		["Escape", "handleEscape"],
+	] as const)("cancels an upload-all operation on %s", (_label, handlerName) => {
 		const mode = createInteractiveFake({});
 		const controller = new AbortController();
 		mode.traceUploadAllAbortController = controller;
 
-		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
+		Reflect.get(InteractiveMode.prototype, handlerName).call(mode);
 
 		expect(controller.signal.aborted).toBe(true);
 		expect(controller.signal.reason).toEqual(new Error("Trace upload cancelled"));
