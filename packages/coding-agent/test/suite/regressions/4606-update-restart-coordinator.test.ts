@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	DaemonUpdateRestartStatusWriter,
@@ -271,6 +271,44 @@ describe("ENG-4606 update restart coordinator", () => {
 				timeoutMs: 5000,
 			}),
 		).rejects.toThrow();
+	});
+
+	it("keeps a relative agent directory stable across coordinator cwd changes", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const agentDir = join(harness.tempDir, "relative-agent");
+		const coordinatorCwd = join(harness.tempDir, "coordinator-cwd");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(coordinatorCwd, { recursive: true });
+		const socketPath = join(harness.tempDir, "missing-daemon.sock");
+		const previousEntrypoint = process.argv[1];
+		if (!previousEntrypoint) {
+			throw new Error("Test process has no CLI entrypoint");
+		}
+		const previousExecArgv = [...process.execArgv];
+		const previousTsconfigPath = process.env.TSX_TSCONFIG_PATH;
+		process.argv[1] = cliPath;
+		process.execArgv.splice(0, process.execArgv.length, tsxPath);
+		process.env.TSX_TSCONFIG_PATH = tsconfigPath;
+
+		try {
+			const status = await launchDaemonUpdateRestartCoordinator({
+				socketPath,
+				agentDir: relative(process.cwd(), agentDir),
+				cwd: coordinatorCwd,
+				timeoutMs: 30_000,
+			});
+
+			expect(status).toMatchObject({ phase: "skipped", socketPath });
+		} finally {
+			process.argv[1] = previousEntrypoint;
+			process.execArgv.splice(0, process.execArgv.length, ...previousExecArgv);
+			if (previousTsconfigPath === undefined) {
+				delete process.env.TSX_TSCONFIG_PATH;
+			} else {
+				process.env.TSX_TSCONFIG_PATH = previousTsconfigPath;
+			}
+		}
 	});
 
 	it("outlives a daemon-owned updater and restores the exact custom socket", async () => {

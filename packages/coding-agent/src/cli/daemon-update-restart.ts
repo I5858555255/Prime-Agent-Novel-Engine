@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import lockfile from "proper-lockfile";
-import { SELF_UPDATE_INTERACTIVE_CHILD_ENV } from "../config.js";
+import { ENV_AGENT_DIR, SELF_UPDATE_INTERACTIVE_CHILD_ENV } from "../config.js";
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../core/orphan-process-journal.js";
 import { getProcessStartId, SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
 import { defaultDaemonSocketDir, defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
@@ -513,8 +513,9 @@ function createStatusPath(agentDir: string, socketPath: string, requestId: strin
 	return resolve(directory, `${socketKey(socketPath).slice(0, 16)}-${requestId}.json`);
 }
 
-function coordinatorEnvironment(): NodeJS.ProcessEnv {
+function coordinatorEnvironment(agentDir: string): NodeJS.ProcessEnv {
 	const environment = { ...process.env };
+	environment[ENV_AGENT_DIR] = agentDir;
 	delete environment[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
 	delete environment[DAEMON_WORKER_ROLE_ENV];
 	delete environment[DAEMON_WORKER_TOKEN_ENV];
@@ -531,7 +532,8 @@ export async function launchDaemonUpdateRestartCoordinator(
 	options: LaunchDaemonUpdateRestartCoordinatorOptions,
 ): Promise<DaemonUpdateRestartStatus> {
 	const requestId = randomUUID();
-	const statusPath = createStatusPath(options.agentDir, options.socketPath, requestId);
+	const agentDir = resolve(options.agentDir);
+	const statusPath = createStatusPath(agentDir, options.socketPath, requestId);
 	const inheritedOrigin = process.env[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV];
 	const originActiveSessionId = options.originActiveSessionId ?? inheritedOrigin;
 	const launch = createCliSubprocessLaunchSpec([
@@ -546,7 +548,7 @@ export async function launchDaemonUpdateRestartCoordinator(
 	const child = spawn(launch.command, launch.args, {
 		cwd: options.cwd ?? process.cwd(),
 		detached: true,
-		env: coordinatorEnvironment(),
+		env: coordinatorEnvironment(agentDir),
 		stdio: "ignore",
 	});
 	let launchError: Error | undefined;
