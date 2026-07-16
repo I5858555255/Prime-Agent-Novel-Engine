@@ -30,6 +30,7 @@ import {
 import { getProcessStartId } from "../../core/session-lease.js";
 import type { SessionInfo } from "../../core/session-manager.js";
 import { signalProcessGroupOrProcess } from "../../utils/child-process.js";
+import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { PrivateFrame } from "../session-worker/private-framing.js";
 import { createActiveSessionId, type DaemonSocketClient } from "./active-session-state.js";
@@ -139,6 +140,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"clear_queue",
 	"abort_and_clear_queue",
 	"cron_list",
+	"heartbeats_list",
+	"heartbeat_manage",
 	"cron_add",
 	"cron_cancel",
 	"heartbeat_get",
@@ -188,6 +191,8 @@ interface ResidentWorker {
 	descriptor: DaemonWorkerDescriptor;
 	descriptorPath: string;
 	client?: DaemonWorkerClient;
+	heartbeatSnapshot?: AgentConnectionHeartbeat[];
+	heartbeatSnapshotStale?: boolean;
 	summaries: Map<string, SessionSummary>;
 	snapshotCache: Map<string, DaemonAttachResult>;
 	transcriptCaches: Map<string, SnapshotTranscriptCache>;
@@ -364,6 +369,14 @@ function cronJobsFromResponse(response: DaemonResponse): AgentCronJob[] {
 	}
 	const jobs = (response.data as { jobs?: unknown }).jobs;
 	return Array.isArray(jobs) ? (jobs as AgentCronJob[]) : [];
+}
+
+function heartbeatsFromResponse(response: DaemonResponse): AgentConnectionHeartbeat[] {
+	if (!response.success || !response.data || typeof response.data !== "object") {
+		return [];
+	}
+	const heartbeats = (response.data as { heartbeats?: unknown }).heartbeats;
+	return Array.isArray(heartbeats) ? (heartbeats as AgentConnectionHeartbeat[]) : [];
 }
 
 function sortCronJobs(jobs: AgentCronJob[]): AgentCronJob[] {
@@ -1023,6 +1036,74 @@ export class DaemonSupervisor {
 				}
 				return success(command.id, "cron_list", { jobs: sortCronJobs([...jobs.values()]) });
 			}
+			case "heartbeats_list": {
+				const workers = [...this.workers.values()];
+				const heartbeats = new Map<string, AgentConnectionHeartbeat>();
+				const snapshots: Array<{ heartbeats?: AgentConnectionHeartbeat[]; response?: DaemonResponse }> =
+					await Promise.all(
+						workers.map(async (worker) => {
+							if (worker.client && worker.descriptor.lifecycle === "ready") {
+								const response = await this.forwardToWorker(worker, command, 5000).catch((error: unknown) =>
+									failure(command.id, command.type, error, serializeDaemonError(error)),
+								);
+								if (response.success) {
+									const snapshot = heartbeatsFromResponse(response);
+									worker.heartbeatSnapshot = snapshot;
+									worker.heartbeatSnapshotStale = false;
+									return { heartbeats: snapshot };
+								}
+								this.log(`Could not list heartbeats from a worker: ${response.error}`);
+								if (worker.heartbeatSnapshot === undefined || worker.heartbeatSnapshotStale === true) {
+									return { response };
+								}
+							}
+							if (worker.heartbeatSnapshot !== undefined && worker.heartbeatSnapshotStale !== true) {
+								return { heartbeats: worker.heartbeatSnapshot };
+							}
+							const state =
+								worker.descriptor.lifecycle === "ready" ? "disconnected" : worker.descriptor.lifecycle;
+							const error = new Error(`Cannot list heartbeats while session worker is ${state}`);
+							return { response: failure(command.id, command.type, error, serializeDaemonError(error)) };
+						}),
+					);
+				const failed = snapshots.find((snapshot) => snapshot.response)?.response;
+				if (failed) {
+					return failed;
+				}
+				for (const snapshot of snapshots) {
+					for (const heartbeat of snapshot.heartbeats ?? []) {
+						heartbeats.set(heartbeat.job.id, heartbeat);
+					}
+				}
+				return success(command.id, "heartbeats_list", { heartbeats: [...heartbeats.values()] });
+			}
+			case "heartbeat_manage": {
+				const cachedWorker = [...this.workers.values()].find((worker) =>
+					worker.heartbeatSnapshot?.some(
+						(heartbeat) =>
+							heartbeat.job.id === command.jobId && heartbeat.job.activeSessionId === command.activeSessionId,
+					),
+				);
+				const worker = cachedWorker ?? (await this.findWorker(command.activeSessionId)).worker;
+				const response = await this.forwardToWorker(worker, command);
+				if (
+					response.success &&
+					response.data &&
+					typeof response.data === "object" &&
+					"heartbeat" in response.data
+				) {
+					const job = (response.data as { heartbeat?: AgentCronJob }).heartbeat;
+					if (job && worker.heartbeatSnapshot) {
+						const existing = worker.heartbeatSnapshot.find((heartbeat) => heartbeat.job.id === job.id);
+						const remaining = worker.heartbeatSnapshot.filter((heartbeat) => heartbeat.job.id !== job.id);
+						worker.heartbeatSnapshot =
+							job.status === "active" || job.status === "paused"
+								? [...remaining, existing ? { ...existing, job } : { job }]
+								: remaining;
+					}
+				}
+				return response;
+			}
 			case "cron_add": {
 				const match = await this.findWorker(command.activeSessionId);
 				return this.forwardToWorker(match.worker, command);
@@ -1383,6 +1464,7 @@ export class DaemonSupervisor {
 			worker.descriptor.lastError = undefined;
 			this.persistWorker(worker);
 			await this.syncAgentPeers();
+			this.broadcastHeartbeatsChanged();
 			return worker;
 		} catch (error) {
 			if (isSupervisorGenerationStale(error)) {
@@ -1530,6 +1612,7 @@ export class DaemonSupervisor {
 			worker.descriptor.lifecycle = "ready";
 			worker.descriptor.consecutiveFailures = 0;
 			this.persistWorker(worker);
+			this.broadcastHeartbeatsChanged();
 		} catch (error) {
 			if (isSupervisorRecoveryCancelled(error)) {
 				return;
@@ -1724,6 +1807,7 @@ export class DaemonSupervisor {
 							await this.syncAgentPeers().catch((error) =>
 								this.log(`Could not synchronize agent peers after worker recovery: ${String(error)}`),
 							);
+							this.broadcastHeartbeatsChanged();
 							return;
 						} catch (error) {
 							if (isSupervisorRecoveryCancelled(error)) {
@@ -2430,6 +2514,11 @@ export class DaemonSupervisor {
 			return;
 		}
 		const { outboundType, activeSessionId, sessionEventType, payloadEncoding, snapshotPurpose } = frame.header;
+		if (outboundType === "heartbeats_changed") {
+			worker.heartbeatSnapshotStale = true;
+			this.broadcastHeartbeatsChanged();
+			return;
+		}
 		if (outboundType === "session_snapshot_begin" && activeSessionId) {
 			try {
 				const begin = JSON.parse(frame.payload.toString("utf8")) as Extract<
@@ -3155,6 +3244,7 @@ export class DaemonSupervisor {
 		}
 		if (!this.shuttingDown) {
 			void this.syncAgentPeers().catch(() => undefined);
+			this.broadcastHeartbeatsChanged();
 		}
 	}
 
@@ -3204,6 +3294,12 @@ export class DaemonSupervisor {
 
 	private write(client: DaemonSocketClient, message: DaemonOutbound): boolean {
 		return this.writeSerialized(client, serializeJsonLine(message));
+	}
+
+	private broadcastHeartbeatsChanged(): void {
+		for (const client of this.clients) {
+			this.write(client, { type: "heartbeats_changed" });
+		}
 	}
 
 	private writeSerialized(client: DaemonSocketClient, line: string | Uint8Array): boolean {
