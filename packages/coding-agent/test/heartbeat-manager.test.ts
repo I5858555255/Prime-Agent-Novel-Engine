@@ -44,6 +44,7 @@ describe("HeartbeatManagerComponent", () => {
 
 	it("uses a terminal-stable default shortcut", () => {
 		expect(KEYBINDINGS["app.heartbeats.open"].defaultKeys).toBe("ctrl+r");
+		expect(KEYBINDINGS["app.heartbeats.openSelected"].defaultKeys).toBe("right");
 	});
 
 	it("groups user and agent heartbeats and stays within terminal width", () => {
@@ -72,12 +73,15 @@ describe("HeartbeatManagerComponent", () => {
 		expect(output).toContain("Created by agent");
 		expect(output).toContain("previous delivery failed");
 		expect(output).toContain("Esc close");
+		expect(output).not.toContain("← close");
 		expect(output).not.toContain("›");
 		expect(output).not.toContain("─");
-		expect(rendered.find((line) => line.includes("Heartbeats"))?.indexOf("Heartbeats")).toBeGreaterThan(2);
+		const titleColumn = rendered.find((line) => line.includes("Heartbeats"))?.indexOf("Heartbeats");
+		expect(titleColumn).toBeGreaterThan(2);
+		expect(rendered.find((line) => line.includes("Esc close"))?.indexOf("Esc close")).toBe(titleColumn);
 	});
 
-	it("closes with escape or the toggle shortcut and uses left arrow as back", () => {
+	it("uses arrows to open and go back, and closes with escape or the toggle shortcut", () => {
 		let closeCount = 0;
 		const component = new HeartbeatManagerComponent([heartbeat("user", { source: "heartbeat" })], {
 			getRows: () => 20,
@@ -89,7 +93,13 @@ describe("HeartbeatManagerComponent", () => {
 		component.handleInput("\x1b[D");
 		expect(closeCount).toBe(1);
 
-		component.handleInput("\r");
+		component.handleInput("\x1b[C");
+		const detailLines = component.render(80).map(stripAnsi);
+		const titleColumn = detailLines.find((line) => line.includes("Your heartbeat"))?.indexOf("Your heartbeat");
+		expect(detailLines.join("\n")).not.toContain("Return to all heartbeats");
+		expect(detailLines.find((line) => line.includes("Created by you"))?.indexOf("Created by you")).toBe(titleColumn);
+		expect(detailLines.find((line) => line.includes("← back"))?.indexOf("← back")).toBe(titleColumn);
+
 		component.handleInput("\x1b[D");
 		expect(closeCount).toBe(1);
 		expect(stripAnsi(component.render(80).join("\n"))).toContain("Select a heartbeat to manage");

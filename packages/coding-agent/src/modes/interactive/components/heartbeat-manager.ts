@@ -88,6 +88,10 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 			this.moveSelection(1);
 			return;
 		}
+		if (this.mode.type === "list" && keybindings.matches(data, "app.heartbeats.openSelected")) {
+			void this.confirmSelection();
+			return;
+		}
 		if (keybindings.matches(data, "tui.select.confirm")) {
 			void this.confirmSelection();
 		}
@@ -115,10 +119,10 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		panel.addChild(list);
 		if (this.error) {
 			panel.addChild(new Spacer(1));
-			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`), 1, 0));
+			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`)));
 		}
 		panel.addChild(new Spacer(1));
-		panel.addChild(new TruncatedText(this.closeHint(), 1, 0));
+		panel.addChild(new TruncatedText(this.closeHint()));
 		return panel;
 	}
 
@@ -170,10 +174,10 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 			title: name,
 			subtitle: this.singleLine(heartbeat.job.prompt),
 		});
-		panel.addChild(new TruncatedText(theme.fg("muted", this.formatHeartbeatDetails(heartbeat)), 1, 0));
+		panel.addChild(new TruncatedText(theme.fg("muted", this.formatHeartbeatDetails(heartbeat))));
 		panel.addChild(new Spacer(1));
 		if (this.error) {
-			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`), 1, 0));
+			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`)));
 			panel.addChild(new Spacer(1));
 		}
 		const list = new MenuList();
@@ -188,7 +192,7 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		}
 		panel.addChild(list);
 		panel.addChild(new Spacer(1));
-		panel.addChild(new TruncatedText(this.detailHint(), 1, 0));
+		panel.addChild(new TruncatedText(this.detailHint()));
 		return panel;
 	}
 
@@ -219,11 +223,7 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 			return;
 		}
 		const selected = this.availableActions(heartbeat)[this.mode.selectedIndex];
-		if (!selected || selected.action === "back") {
-			this.mode = { type: "list" };
-			this.options.requestRender();
-			return;
-		}
+		if (!selected) return;
 		await this.runAction(heartbeat, selected.action);
 	}
 
@@ -242,17 +242,15 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		}
 	}
 
-	private availableActions(heartbeat: AgentConnectionHeartbeat | undefined): Array<{
-		label: string;
-		action: AgentHeartbeatManagementAction | "back";
-	}> {
+	private availableActions(
+		heartbeat: AgentConnectionHeartbeat | undefined,
+	): Array<{ label: string; action: AgentHeartbeatManagementAction }> {
 		if (!heartbeat) return [];
 		return [
 			heartbeat.job.status === "paused"
 				? { label: "Resume heartbeat", action: "resume" }
 				: { label: "Pause heartbeat", action: "pause" },
 			{ label: "Stop heartbeat", action: "stop" },
-			{ label: "Back", action: "back" },
 		];
 	}
 
@@ -295,14 +293,14 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 	}
 
 	private closeHint(): string {
-		return `${keyHint("app.modal.back", "close")}  ${keyHint("tui.select.cancel", "close", { primaryOnly: true })}`;
+		return keyHint("tui.select.cancel", "close", { primaryOnly: true });
 	}
 
 	private detailHint(): string {
 		return `${keyHint("app.modal.back", "back")}  ${keyHint("tui.select.cancel", "close", { primaryOnly: true })}`;
 	}
 
-	private actionDescription(action: AgentHeartbeatManagementAction | "back"): string {
+	private actionDescription(action: AgentHeartbeatManagementAction): string {
 		switch (action) {
 			case "pause":
 				return "Stop deliveries until resumed";
@@ -310,8 +308,6 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 				return "Continue scheduled deliveries";
 			case "stop":
 				return "Permanently remove this heartbeat";
-			case "back":
-				return "Return to all heartbeats";
 		}
 	}
 

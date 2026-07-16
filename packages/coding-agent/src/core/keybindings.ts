@@ -25,6 +25,7 @@ export interface AppKeybindings {
 	"app.thinking.toggle": true;
 	"app.subagents.focus": true;
 	"app.heartbeats.open": true;
+	"app.heartbeats.openSelected": true;
 	"app.session.toggleNamedFilter": true;
 	"app.editor.external": true;
 	"app.prompt.stash": true;
@@ -99,6 +100,10 @@ export const KEYBINDINGS = {
 	"app.heartbeats.open": {
 		defaultKeys: "ctrl+r",
 		description: "Manage heartbeats",
+	},
+	"app.heartbeats.openSelected": {
+		defaultKeys: "right",
+		description: "Open selected heartbeat",
 	},
 	"app.session.toggleNamedFilter": {
 		defaultKeys: "ctrl+n",
