@@ -294,6 +294,42 @@ describe("AgentSession rlm recursion", () => {
 		);
 	});
 
+	it("reserves a running child's current name after it is renamed", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: (_model, context) => {
+				const stream = createAssistantMessageEventStream();
+				childStarted = true;
+				void release.then(() => {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: assistantMessage(`child answer: ${userText(context)}`),
+					});
+				});
+				return stream;
+			},
+		});
+		const runPromise = root.runRlmChild("rename while running", { name: "spawn-worker" });
+		await waitFor(() => childStarted);
+		const running = root.listRlmSubagents().subagents[0];
+		if (!running) {
+			throw new Error("Missing running child");
+		}
+		root.getRlmChildSession(running.rlm_child_id)?.setSessionName("renamed-running-worker");
+		expect(root.listRlmSubagents().subagents[0]?.session_name).toBe("renamed-running-worker");
+
+		await expect(root.runRlmChild("reuse renamed selector", { name: "renamed-running-worker" })).rejects.toThrow(
+			'RLM subagent session name "renamed-running-worker" is already in use',
+		);
+		releaseChild();
+		await runPromise;
+	});
+
 	it("makes an externally restored retained child listable and deletable", async () => {
 		const childId = "restored-child";
 		const childDir = join(tempDir, childId);
