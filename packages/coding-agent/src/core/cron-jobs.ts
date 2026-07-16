@@ -145,7 +145,22 @@ function heartbeatCatalogSignature(jobs: readonly AgentCronJob[]): string {
 	return JSON.stringify(
 		jobs
 			.filter((job) => isHeartbeatCronJob(job) && (job.status === "active" || job.status === "paused"))
-			.sort((left, right) => left.id.localeCompare(right.id)),
+			.sort((left, right) => left.id.localeCompare(right.id))
+			.map((job) => ({
+				id: job.id,
+				status: job.status,
+				source: job.source,
+				runtimeKind: job.runtimeKind,
+				deliveryMode: job.deliveryMode,
+				activeSessionId: job.activeSessionId,
+				sessionId: job.sessionId,
+				sessionFile: job.sessionFile,
+				cwd: job.cwd,
+				label: job.label,
+				prompt: job.prompt,
+				schedule: job.schedule,
+				createdAt: job.createdAt,
+			})),
 	);
 }
 

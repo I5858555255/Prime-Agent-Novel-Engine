@@ -88,5 +88,19 @@ describe("ENG-4536 heartbeat observability", () => {
 		expect(dispatch).toBeDefined();
 		store.recordDispatchResult(dispatch!.id, { now: dueAt, outcome: "ran" });
 		expect(changes).toBe(6);
+
+		const tickingHeartbeat = store.createRlmHeartbeat({
+			...input,
+			prompt: "ticking heartbeat",
+			now: new Date("2026-02-01T00:00:00.000Z"),
+		});
+		expect(changes).toBe(7);
+		const heartbeatDueAt = new Date(tickingHeartbeat.nextRunAt!);
+		const heartbeatDispatch = store
+			.claimDue(heartbeatDueAt, heartbeatDueAt)
+			.find((candidate) => candidate.job.id === tickingHeartbeat.id);
+		expect(heartbeatDispatch).toBeDefined();
+		store.recordDispatchResult(heartbeatDispatch!.id, { now: heartbeatDueAt, outcome: "ran" });
+		expect(changes).toBe(7);
 	});
 });
