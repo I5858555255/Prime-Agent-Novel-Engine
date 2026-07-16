@@ -190,6 +190,7 @@ interface ResidentWorker {
 	descriptor: DaemonWorkerDescriptor;
 	descriptorPath: string;
 	client?: DaemonWorkerClient;
+	heartbeatSnapshot?: AgentConnectionHeartbeat[];
 	summaries: Map<string, SessionSummary>;
 	snapshotCache: Map<string, DaemonAttachResult>;
 	transcriptCaches: Map<string, SnapshotTranscriptCache>;
@@ -1049,27 +1050,39 @@ export class DaemonSupervisor {
 			}
 			case "heartbeats_list": {
 				const workers = [...this.workers.values()];
-				const unavailable = workers.find((worker) => !worker.client || worker.descriptor.lifecycle !== "ready");
-				if (unavailable) {
-					const state =
-						unavailable.descriptor.lifecycle === "ready" ? "disconnected" : unavailable.descriptor.lifecycle;
-					const error = new Error(`Cannot list heartbeats while session worker is ${state}`);
-					return failure(command.id, command.type, error, serializeDaemonError(error));
-				}
 				const heartbeats = new Map<string, AgentConnectionHeartbeat>();
-				const responses = await Promise.all(
-					workers.map((worker) =>
-						this.forwardToWorker(worker, command, 5000).catch((error: unknown) =>
-							failure(command.id, command.type, error, serializeDaemonError(error)),
-						),
-					),
-				);
-				for (const response of responses) {
-					if (!response.success) {
-						this.log(`Could not list heartbeats from a worker: ${response.error}`);
-						return response;
-					}
-					for (const heartbeat of heartbeatsFromResponse(response)) {
+				const snapshots: Array<{ heartbeats?: AgentConnectionHeartbeat[]; response?: DaemonResponse }> =
+					await Promise.all(
+						workers.map(async (worker) => {
+							if (worker.client && worker.descriptor.lifecycle === "ready") {
+								const response = await this.forwardToWorker(worker, command, 5000).catch((error: unknown) =>
+									failure(command.id, command.type, error, serializeDaemonError(error)),
+								);
+								if (response.success) {
+									const snapshot = heartbeatsFromResponse(response);
+									worker.heartbeatSnapshot = snapshot;
+									return { heartbeats: snapshot };
+								}
+								this.log(`Could not list heartbeats from a worker: ${response.error}`);
+								if (worker.heartbeatSnapshot === undefined) {
+									return { response };
+								}
+							}
+							if (worker.heartbeatSnapshot !== undefined) {
+								return { heartbeats: worker.heartbeatSnapshot };
+							}
+							const state =
+								worker.descriptor.lifecycle === "ready" ? "disconnected" : worker.descriptor.lifecycle;
+							const error = new Error(`Cannot list heartbeats while session worker is ${state}`);
+							return { response: failure(command.id, command.type, error, serializeDaemonError(error)) };
+						}),
+					);
+				const failed = snapshots.find((snapshot) => snapshot.response)?.response;
+				if (failed) {
+					return failed;
+				}
+				for (const snapshot of snapshots) {
+					for (const heartbeat of snapshot.heartbeats ?? []) {
 						heartbeats.set(heartbeat.job.id, heartbeat);
 					}
 				}
