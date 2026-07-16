@@ -319,6 +319,39 @@ describe("AgentSession rlm recursion", () => {
 		expect(root.listRlmSubagents()).toEqual({ subagents: [] });
 	});
 
+	it("hides a retained child after failed deletion and keeps it selector-retryable", async () => {
+		const childId = "retained-retry-child";
+		const childDir = join(tempDir, childId);
+		mkdirSync(childDir, { recursive: true });
+		const child = createSession({ rlmSessionDir: childDir });
+		child.setSessionName("retained-retry-worker");
+		let deleteAttempts = 0;
+		const deleteRuntime = vi.fn(async (_childId: string, session: AgentSession) => {
+			deleteAttempts++;
+			if (deleteAttempts === 1) {
+				throw new Error("retained close failed");
+			}
+			await session.disposeAsync();
+		});
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child }),
+				deleteRlmSubagentRuntime: deleteRuntime,
+			},
+		});
+		expect(root.retainFinishedRlmChildSession(childId, child)).toBe(true);
+
+		await expect(root.deleteRlmSubagent("retained-retry-worker")).rejects.toThrow("retained close failed");
+		expect(root.listRlmSubagents()).toEqual({ subagents: [] });
+		expect((root as unknown as InspectableRlmSession)._retryableRlmSubagentDeletions.size).toBe(1);
+
+		await expect(root.deleteRlmSubagent("retained-retry-worker")).resolves.toMatchObject({
+			subagent: { rlm_child_id: childId, session_name: "retained-retry-worker" },
+		});
+		expect(deleteRuntime).toHaveBeenCalledTimes(2);
+		expect((root as unknown as InspectableRlmSession)._retryableRlmSubagentDeletions.size).toBe(0);
+	});
+
 	it("makes an orchestrator-chosen name override a custom runtime's preexisting name", async () => {
 		const hostedChild = createSession();
 		hostedChild.setSessionName("factory-assigned-name");
@@ -1047,11 +1080,13 @@ describe("AgentSession rlm recursion", () => {
 
 		await expect(root.deleteRlmSubagent("queued-worker")).resolves.toEqual({ subagent: queued });
 		await runFailure;
-		expect((root as unknown as InspectableRlmSession)._activeRlmChildRuns.size).toBe(0);
+		expect((root as unknown as InspectableRlmSession)._activeRlmChildRuns.size).toBe(1);
 		expect(root.listRlmSubagents()).toEqual({ subagents: [] });
+		await expect(root.runRlmChild("replacement", { name: "queued-worker" })).rejects.toThrow("already in use");
 
 		releaseRuntimeCreation();
 		await waitFor(() => releaseRuntime.mock.calls.length === 1);
+		await waitFor(() => (root as unknown as InspectableRlmSession)._activeRlmChildRuns.size === 0);
 		expect(root.listRlmSubagents()).toEqual({ subagents: [] });
 	});
 

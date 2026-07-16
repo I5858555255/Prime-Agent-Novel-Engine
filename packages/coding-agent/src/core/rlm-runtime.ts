@@ -150,6 +150,8 @@ export interface CreateRlmSubagentRuntimeOptions {
 	rlmParentNodeId: string;
 	/** Source of the IPython cell that spawned this subagent, for display. */
 	spawnCode?: string;
+	/** Publish the session to the parent before a host makes the runtime addressable. */
+	onSessionPublished?: (session: AgentSession) => void;
 }
 
 /** Terminal status of an RLM child run, passed to the host when releasing its runtime. */

@@ -874,6 +874,7 @@ export class AgentDaemon {
 		clientEnv?: Record<string, string>,
 		onStateCreated?: (state: ActiveSessionState) => void,
 		runtimeOpenGuard?: RuntimeOpenGuard,
+		onStateBound?: (state: ActiveSessionState) => void,
 	): Promise<ActiveSessionState> {
 		const restoredActiveSessionId = runtime.metadata.kind === "top-level" ? this.restoreActiveSessionId : undefined;
 		if (restoredActiveSessionId) {
@@ -907,9 +908,13 @@ export class AgentDaemon {
 				},
 				subagentRuntimeHost: this.createSubagentRuntimeHost(state),
 			});
-			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
-				throw new RuntimeOpenCancelledError();
+			if (runtimeOpenGuard) {
+				const guardResult = runtimeOpenGuard();
+				if (!(typeof guardResult === "boolean" ? guardResult : await guardResult)) {
+					throw new RuntimeOpenCancelledError();
+				}
 			}
+			onStateBound?.(state);
 		} catch (error) {
 			state.unsubscribe?.();
 			this.sessions.delete(state.activeSessionId);
@@ -1807,49 +1812,34 @@ export class AgentDaemon {
 				},
 			}),
 		);
-		await this.addRuntime(runtime, undefined, parentState.clientEnv, (state) => {
-			stateRef = state;
-		});
-		if (runtime.session.sessionName !== options.sessionName) {
-			try {
-				runtime.session.setSessionName(options.sessionName);
-			} catch (error) {
-				const state = this.findRuntimeState(runtime);
-				if (state) {
-					try {
-						await this.closeSession(state, "completed");
-					} catch {
-						// Creation cannot return this runtime to the caller, so force the
-						// registration down even if normal close side effects failed early.
-						if (this.sessions.get(state.activeSessionId) === state) {
-							this.sessions.delete(state.activeSessionId);
-							try {
-								state.unsubscribe?.();
-							} catch {
-								// Best-effort cleanup after the original naming failure.
-							}
-							await runtime.dispose().catch(() => undefined);
-						}
-					}
-				} else {
-					await runtime.dispose().catch(() => undefined);
+		await this.addRuntime(
+			runtime,
+			undefined,
+			parentState.clientEnv,
+			(state) => {
+				stateRef = state;
+			},
+			() => options.parentSession.getRlmChildRunStatus(options.id) !== "cancelled",
+			() => {
+				if (runtime.session.sessionName !== options.sessionName) {
+					runtime.session.setSessionName(options.sessionName);
 				}
-				throw error;
-			}
-		}
-		if (runtime.session.sessionFile) {
-			this.recordRlmSubagentRegistryEntry(parentState, {
-				childId: options.id,
-				sessionName: options.sessionName,
-				sessionDir: options.sessionDir,
-				sessionFile: runtime.session.sessionFile,
-				rlmParentNodeId: options.rlmParentNodeId,
-				prompt: options.prompt.length <= 4096 ? options.prompt : undefined,
-				spawnCode: options.spawnCode,
-				status: "running",
-				createdAt: runtime.metadata.createdAt,
-			});
-		}
+				if (runtime.session.sessionFile) {
+					this.recordRlmSubagentRegistryEntry(parentState, {
+						childId: options.id,
+						sessionName: options.sessionName,
+						sessionDir: options.sessionDir,
+						sessionFile: runtime.session.sessionFile,
+						rlmParentNodeId: options.rlmParentNodeId,
+						prompt: options.prompt.length <= 4096 ? options.prompt : undefined,
+						spawnCode: options.spawnCode,
+						status: "running",
+						createdAt: runtime.metadata.createdAt,
+					});
+				}
+				options.onSessionPublished?.(runtime.session);
+			},
+		);
 		return runtime;
 	}
 

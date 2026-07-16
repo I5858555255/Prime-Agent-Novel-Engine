@@ -3018,6 +3018,7 @@ describe("daemon mode helpers", () => {
 			});
 			const internals = daemon as unknown as {
 				sessions: Map<string, ActiveSessionState>;
+				bindingSessions: Set<string>;
 				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
 				createRlmSubagentRuntime(
 					parentState: ActiveSessionState,
@@ -3029,6 +3030,7 @@ describe("daemon mode helpers", () => {
 				sessionPath: join(tempDir, "parent.jsonl"),
 			});
 			const childSessionName = createDefaultRlmSubagentSessionName("spawn a nested worker", "child-1");
+			let publishedWhileBinding = false;
 			await internals.createRlmSubagentRuntime(parentState, {
 				parentSession: parentState.runtime.session,
 				id: "child-1",
@@ -3046,7 +3048,15 @@ describe("daemon mode helpers", () => {
 				rlmDepth: 1,
 				rlmMaxDepth: 2,
 				rlmParentNodeId: "child-1",
+				onSessionPublished: (session) => {
+					expect(session.sessionName).toBe(childSessionName);
+					const state = [...internals.sessions.values()].find(
+						(candidate) => candidate.runtime.session === session,
+					);
+					publishedWhileBinding = !!state && internals.bindingSessions.has(state.activeSessionId);
+				},
 			});
+			expect(publishedWhileBinding).toBe(true);
 
 			const childOptions = createRuntime.mock.calls[1]?.[0];
 			const childController = childOptions?.sessionOptions?.agentMessageController;
@@ -3077,6 +3087,31 @@ describe("daemon mode helpers", () => {
 					rlmChildId: "grandchild-1",
 				}),
 			);
+
+			const sessionsBeforeCancelledStartup = internals.sessions.size;
+			vi.mocked(parentState.runtime.session.getRlmChildRunStatus).mockReturnValue("cancelled");
+			await expect(
+				internals.createRlmSubagentRuntime(parentState, {
+					parentSession: parentState.runtime.session,
+					id: "cancelled-child",
+					prompt: "delete during daemon startup",
+					sessionName: "cancelled-worker",
+					sessionDir: join(tempDir, "cancelled-child"),
+					model: {} as Model<Api>,
+					thinkingLevel: "off",
+					serviceTier: null,
+					scopedModels: [],
+					activeToolNames: [],
+					customTools: [],
+					includeGoals: false,
+					includeCompactSkill: false,
+					rlmDepth: 1,
+					rlmMaxDepth: 2,
+					rlmParentNodeId: "cancelled-child",
+				}),
+			).rejects.toThrow();
+			expect(parentState.runtime.session.getRlmChildRunStatus).toHaveBeenCalledWith("cancelled-child");
+			expect(internals.sessions.size).toBe(sessionsBeforeCancelledStartup);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -3116,20 +3151,11 @@ describe("daemon mode helpers", () => {
 					parentState: ActiveSessionState,
 					options: CreateRlmSubagentRuntimeOptions,
 				): Promise<unknown>;
-				closeSession: ReturnType<typeof vi.fn>;
 			};
 			const parentState = await internals.createRuntime({
 				type: "create",
 				sessionPath: join(tempDir, "parent.jsonl"),
 			});
-			let disposeRegisteredRuntime = vi.fn(async () => {});
-			const closeSession = vi.fn(async (state: ActiveSessionState) => {
-				disposeRegisteredRuntime = vi.fn(state.runtime.dispose.bind(state.runtime));
-				state.runtime.dispose = disposeRegisteredRuntime;
-				throw new Error("normal close failed early");
-			});
-			internals.closeSession = closeSession;
-
 			await expect(
 				internals.createRlmSubagentRuntime(parentState, {
 					parentSession: parentState.runtime.session,
@@ -3152,8 +3178,7 @@ describe("daemon mode helpers", () => {
 			).rejects.toThrow("name persistence failed");
 
 			expect(failingChildSession).toBeDefined();
-			expect(closeSession).toHaveBeenCalledOnce();
-			expect(disposeRegisteredRuntime).toHaveBeenCalledOnce();
+			expect(failingChildSession?.disposeAsync).toHaveBeenCalledOnce();
 			expect(internals.sessions.size).toBe(1);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -4730,12 +4755,14 @@ function makeRuntimeSession(
 			return sessionManager.getSessionName();
 		},
 		setSubagentRuntimeHost: vi.fn(),
+		getRlmChildRunStatus: vi.fn(() => "running"),
 		retainFinishedRlmChildSession: vi.fn(() => true),
 		subscribe: vi.fn(() => vi.fn()),
 		bindExtensions: vi.fn(async () => {}),
 		setExecEnvProvider: vi.fn(),
 		setSessionName: vi.fn((name: string) => sessionManager.appendSessionInfo(name)),
 		dispose: vi.fn(),
+		disposeAsync: vi.fn(async () => {}),
 		abort: vi.fn(async () => {}),
 	} as unknown as Awaited<ReturnType<CreateAgentSessionRuntimeFactory>>["session"];
 }

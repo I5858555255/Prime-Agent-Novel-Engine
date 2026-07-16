@@ -384,6 +384,13 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		this.subagentRuntimes.set(options.id, runtime);
 		try {
 			await runtime.session.bindExtensions({});
+			if (options.parentSession.getRlmChildRunStatus(options.id) === "cancelled") {
+				throw new Error("RLM subagent startup was cancelled");
+			}
+			if (runtime.session.sessionName !== options.sessionName) {
+				runtime.session.setSessionName(options.sessionName);
+			}
+			options.onSessionPublished?.(runtime.session);
 		} catch (error) {
 			this.subagentRuntimes.delete(options.id);
 			await runtime.dispose();

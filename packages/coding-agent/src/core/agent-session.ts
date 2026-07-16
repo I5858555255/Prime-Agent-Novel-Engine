@@ -6246,6 +6246,7 @@ export class AgentSession {
 				throw error;
 			}
 		}
+		options.onSessionPublished?.(child);
 
 		return { session: child };
 	}
@@ -6458,13 +6459,27 @@ export class AgentSession {
 			run.detachedDeletion = subagent;
 			run.rejectTask?.(new Error("Deleted by parent orchestrator"));
 			this._deletedRlmChildIds.add(childId);
-			this._removeRlmSubagentTracking(childId, run);
+			// Keep the cancelled run tracked until startup settles. It stays hidden from
+			// list/delete, reserves its selectors against reuse, and lets daemon startup's
+			// open guard tear the half-bound runtime down before it becomes addressable.
 			return { subagent };
 		}
 
 		const retained = this._retainedRlmChildSessions.get(childId);
 		if (retained) {
-			await this._deleteRlmSubagentSession(childId, retained);
+			try {
+				await this._deleteRlmSubagentSession(childId, retained);
+			} catch (error) {
+				if (this._disposed || this._disposing) {
+					this._removeRlmSubagentTracking(childId);
+					void retained.disposeAsync().catch(() => undefined);
+				} else {
+					// Hide failed cleanup from the public registry while preserving the
+					// original selector and session for an explicit retry.
+					this._retryableRlmSubagentDeletions.set(childId, subagent);
+				}
+				throw error;
+			}
 		}
 		this._deletedRlmChildIds.add(childId);
 		this._removeRlmSubagentTracking(childId);
@@ -6658,14 +6673,29 @@ export class AgentSession {
 		run.emitUpdate = emitChildUpdate;
 		emitChildUpdate();
 
-		const subagentOptions = this._createRlmSubagentRuntimeOptions({
-			id: childNodeId,
-			prompt,
-			sessionName,
-			spawnCode,
-			sessionDir: childSessionDir,
-			model,
-		});
+		const publishChildSession = (child: AgentSession) => {
+			childSession = child;
+			// A host can publish before its create promise resolves. Do not restore the
+			// live-session pointer if deletion already removed this run in the meantime.
+			if (this._activeRlmChildRuns.get(run.id) !== run) {
+				return;
+			}
+			run.session = child;
+			run.abort = () => {
+				void child.abort();
+			};
+		};
+		const subagentOptions: CreateRlmSubagentRuntimeOptions = {
+			...this._createRlmSubagentRuntimeOptions({
+				id: childNodeId,
+				prompt,
+				sessionName,
+				spawnCode,
+				sessionDir: childSessionDir,
+				model,
+			}),
+			onSessionPublished: publishChildSession,
+		};
 		let childRuntime: RlmSubagentRuntime | undefined;
 		let unsubscribeChild: (() => void) | undefined;
 		const deletedTask = new Promise<never>((_resolve, reject) => {
@@ -6682,11 +6712,7 @@ export class AgentSession {
 				if (child.sessionName !== subagentOptions.sessionName) {
 					child.setSessionName(subagentOptions.sessionName);
 				}
-				childSession = child;
-				run.session = child;
-				run.abort = () => {
-					void child.abort();
-				};
+				publishChildSession(child);
 				const unsubscribeChildEvents = child.subscribe((event) => {
 					if (event.type === "rlm_child_update") {
 						this._emit(event);
