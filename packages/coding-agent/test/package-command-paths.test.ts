@@ -217,7 +217,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		try {
-			await expect(runSelfUpdateInstallChild(["update", "--force"])).resolves.toBeUndefined();
+			await expect(runSelfUpdateInstallChild(["update", "--self", "--force"])).resolves.toBeUndefined();
 
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
@@ -261,7 +261,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		try {
-			await expect(runSelfUpdateInstallChild(["update"])).resolves.toBeUndefined();
+			await expect(runSelfUpdateInstallChild(["update", "--self"])).resolves.toBeUndefined();
 
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
@@ -310,7 +310,7 @@ else {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		try {
-			await expect(runSelfUpdateInstallChild(["update"])).resolves.toBeUndefined();
+			await expect(runSelfUpdateInstallChild(["update", "--self"])).resolves.toBeUndefined();
 
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();
@@ -363,7 +363,7 @@ else {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		try {
-			await expect(runSelfUpdateInstallChild(["update"])).resolves.toBeUndefined();
+			await expect(runSelfUpdateInstallChild(["update", "--self"])).resolves.toBeUndefined();
 
 			expect(process.exitCode).toBeUndefined();
 			expect(errorSpy).not.toHaveBeenCalled();

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SELF_UPDATE_INTERACTIVE_CHILD_ENV } from "../src/config.js";
 
 const mocks = vi.hoisted(() => ({
 	daemonCommands: [] as string[][],
@@ -118,6 +119,24 @@ describe("public command routing", () => {
 		const args = ["update", DAEMON_UPDATE_RESTART_COORDINATOR_FLAG, "--daemon-socket", "custom-daemon.sock"];
 
 		await handlePublicCommand(args);
+
+		expect(mocks.packageCommands).toEqual([args]);
+	});
+
+	it("preserves the internal interactive self-update command", async () => {
+		const previousValue = process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
+		const args = ["update", "--self", "--force", "--daemon-socket", "custom-daemon.sock"];
+		process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] = "1";
+
+		try {
+			await handlePublicCommand(args);
+		} finally {
+			if (previousValue === undefined) {
+				delete process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
+			} else {
+				process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV] = previousValue;
+			}
+		}
 
 		expect(mocks.packageCommands).toEqual([args]);
 	});
