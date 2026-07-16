@@ -242,6 +242,134 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt.mock.calls[0]?.[0]).toContain("report current progress");
 	});
 
+	it("keeps RLM heartbeats active when a successful subagent is retained", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-retained-heartbeat-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const parentManager = SessionManager.create(tempDir, sessionDir);
+			parentManager.newSession();
+			const parentSessionFile = parentManager.getSessionFile();
+			const parentArtifactDir = parentManager.getSessionArtifactDir();
+			if (!parentSessionFile || !parentArtifactDir) {
+				throw new Error("Missing parent session paths");
+			}
+			const childSessionDir = join(parentArtifactDir, "child-1");
+			const childManager = SessionManager.create(tempDir, childSessionDir);
+			childManager.newSession({ parentSession: parentSessionFile });
+			const childSessionFile = childManager.getSessionFile();
+			if (!childSessionFile) {
+				throw new Error("Missing child session file");
+			}
+
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const parentState = makeState("parent");
+			const parentSession = makeRuntimeSession(parentManager);
+			parentState.runtime = {
+				...parentState.runtime,
+				metadata: { kind: "top-level", createdAt: 1 },
+				session: parentSession,
+			} as unknown as ActiveSessionState["runtime"];
+			const childState = makeState("child", parentState.activeSessionId);
+			childState.extensionUiRequests = new Map();
+			const childSession = makeRuntimeSession(childManager);
+			const promptHeartbeat = vi.fn(
+				async (_job: AgentCronJob, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+					options?.preflightResult?.(true);
+				},
+			);
+			Object.assign(childSession, {
+				isStreaming: false,
+				isCompacting: false,
+				isRetrying: false,
+				isBashRunning: false,
+				hasAcceptedPromptInFlight: false,
+				pendingMessageCount: 0,
+				promptHeartbeat,
+			});
+			childState.runtime = {
+				...childState.runtime,
+				metadata: {
+					kind: "subagent",
+					createdAt: 2,
+					parentActiveSessionId: parentState.activeSessionId,
+					parentSessionId: parentSession.sessionId,
+					parentSessionFile,
+					rlmChildId: "child-1",
+					rlmParentNodeId: "child-1",
+					sessionDir: childSessionDir,
+				},
+				cwd: tempDir,
+				session: childSession,
+				dispose: vi.fn(async () => {}),
+			} as unknown as ActiveSessionState["runtime"];
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				cronScheduler: { runDue(now: Date): Promise<number> };
+				sessions: Map<string, ActiveSessionState>;
+				findRuntimeState: ReturnType<typeof vi.fn>;
+				closeSession(state: ActiveSessionState, reason: "shutdown"): Promise<void>;
+				createSubagentRuntimeHost(parent: ActiveSessionState): {
+					releaseRlmSubagentRuntime(
+						runtime: ActiveSessionState["runtime"],
+						options: CreateRlmSubagentRuntimeOptions,
+						status: "done" | "error" | "cancelled",
+					): Promise<void>;
+				};
+			};
+			internals.findRuntimeState = vi.fn(() => childState);
+			const heartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: childState.activeSessionId,
+				sessionId: childSession.sessionId,
+				sessionFile: childSessionFile,
+				cwd: tempDir,
+				runtimeKind: "subagent",
+				scheduleText: "every 30s",
+				prompt: "report exactly: hi",
+				now: new Date("2026-01-01T00:00:00.000Z"),
+			});
+			const releaseOptions = {
+				parentSession,
+				id: "child-1",
+				prompt: "initialize a heartbeat",
+				sessionName: "heartbeat-child",
+				sessionDir: childSessionDir,
+				rlmDepth: 1,
+				rlmMaxDepth: 4,
+				rlmParentNodeId: "child-1",
+			} as unknown as CreateRlmSubagentRuntimeOptions;
+
+			internals.sessions.set(childState.activeSessionId, childState);
+			await internals
+				.createSubagentRuntimeHost(parentState)
+				.releaseRlmSubagentRuntime(childState.runtime, releaseOptions, "done");
+
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "active",
+				runCount: 0,
+			});
+			expect(parentSession.retainFinishedRlmChildSession).toHaveBeenCalledWith("child-1", childSession);
+			const dueRuns = await internals.cronScheduler.runDue(new Date("2026-07-16T00:00:00.000Z"));
+			expect(dueRuns).toBe(1);
+			expect(promptHeartbeat).toHaveBeenCalledOnce();
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "active",
+				runCount: 1,
+			});
+
+			await internals.closeSession(childState, "shutdown");
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "active",
+			});
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("closes the exact parent-scoped daemon runtime when a retained subagent is deleted", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
@@ -2872,6 +3000,147 @@ describe("daemon mode helpers", () => {
 			await create({ type: "create", sessionPath: join(tempDir, "session.jsonl") });
 
 			expect(listedAgentsDuringBind).toBe(1);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("restores a completed subagent through its parent when an RLM heartbeat becomes due", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-restore-subagent-heartbeat-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const parentManager = SessionManager.create(tempDir, sessionDir);
+			parentManager.newSession();
+			parentManager.appendSessionState({ status: "active" });
+			const parentSessionFile = parentManager.getSessionFile();
+			const parentArtifactDir = parentManager.getSessionArtifactDir();
+			if (!parentSessionFile || !parentArtifactDir) {
+				throw new Error("Missing parent session paths");
+			}
+
+			const childId = "heartbeat-child";
+			const childSessionDir = join(parentArtifactDir, childId);
+			const childManager = SessionManager.create(tempDir, childSessionDir);
+			childManager.newSession({ parentSession: parentSessionFile });
+			childManager.appendSessionInfo("heartbeat-child");
+			const childSessionFile = childManager.getSessionFile();
+			if (!childSessionFile) {
+				throw new Error("Missing child session file");
+			}
+			writeFileSync(
+				join(parentArtifactDir, "rlm-subagents.jsonl"),
+				`${JSON.stringify({
+					type: "rlm_subagent",
+					childId,
+					sessionName: "heartbeat-child",
+					sessionDir: childSessionDir,
+					sessionFile: childSessionFile,
+					parentSessionId: parentManager.getSessionId(),
+					parentSessionFile,
+					rlmDepth: 1,
+					rlmMaxDepth: 4,
+					rlmParentNodeId: childId,
+					status: "completed",
+					createdAt: 1,
+					updatedAt: "2026-01-01T00:00:00.000Z",
+				})}\n`,
+			);
+
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => ({
+				session: makeRuntimeSession(options.sessionManager),
+				extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["extensionsResult"],
+				services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["services"],
+				diagnostics: [],
+			}));
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime,
+			});
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				getOrCreateCronJobSession(job: AgentCronJob, requirePersistedJob: boolean): Promise<ActiveSessionState>;
+			};
+			const heartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: "stale-child-active-id",
+				sessionId: childManager.getSessionId(),
+				sessionFile: childSessionFile,
+				cwd: tempDir,
+				runtimeKind: "subagent",
+				scheduleText: "every 30s",
+				prompt: "report exactly: hi",
+				now: new Date("2026-01-01T00:00:00.000Z"),
+			});
+
+			const childState = await internals.getOrCreateCronJobSession(heartbeat, true);
+
+			expect(childState.runtime.metadata).toMatchObject({
+				kind: "subagent",
+				rlmChildId: childId,
+			});
+			expect(createRuntime).toHaveBeenCalledTimes(2);
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "active",
+				activeSessionId: childState.activeSessionId,
+				sessionId: childManager.getSessionId(),
+			});
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("cancels a detached subagent heartbeat when its parent is archived", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-archived-subagent-heartbeat-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const parentManager = SessionManager.create(tempDir, sessionDir);
+			parentManager.newSession();
+			parentManager.appendSessionState({ status: "archived" });
+			const parentSessionFile = parentManager.getSessionFile();
+			const parentArtifactDir = parentManager.getSessionArtifactDir();
+			if (!parentSessionFile || !parentArtifactDir) {
+				throw new Error("Missing parent session paths");
+			}
+			const childManager = SessionManager.create(tempDir, join(parentArtifactDir, "child-1"));
+			childManager.newSession({ parentSession: parentSessionFile });
+			const childSessionFile = childManager.getSessionFile();
+			if (!childSessionFile) {
+				throw new Error("Missing child session file");
+			}
+
+			const createRuntime = vi.fn(async () => {
+				throw new Error("archived parent must not be restored");
+			});
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime,
+			});
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				getOrCreateCronJobSession(
+					job: AgentCronJob,
+					requirePersistedJob: boolean,
+				): Promise<ActiveSessionState | undefined>;
+			};
+			const heartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: "stale-child-active-id",
+				sessionId: childManager.getSessionId(),
+				sessionFile: childSessionFile,
+				cwd: tempDir,
+				runtimeKind: "subagent",
+				scheduleText: "every 30s",
+				prompt: "report exactly: hi",
+				now: new Date("2026-01-01T00:00:00.000Z"),
+			});
+
+			await expect(internals.getOrCreateCronJobSession(heartbeat, true)).resolves.toBeUndefined();
+			expect(createRuntime).not.toHaveBeenCalled();
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "cancelled",
+			});
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
