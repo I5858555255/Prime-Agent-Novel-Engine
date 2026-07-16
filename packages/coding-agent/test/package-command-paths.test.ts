@@ -140,6 +140,21 @@ describe("package commands", () => {
 		}
 	});
 
+	it("treats -l as an unknown option for package update", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["package", "update", "-l"])).resolves.toBeUndefined();
+
+			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stderr).toContain('Unknown option -l for "update".');
+			expect(stderr).not.toContain('Use "--local".');
+			expect(process.exitCode).toBe(1);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("shows a friendly error for missing install source", async () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 

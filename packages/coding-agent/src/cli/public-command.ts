@@ -302,12 +302,16 @@ function rewriteNestedCommand(parent: string, subcommand: string, flag: string, 
 				: `Run "${APP_NAME} help ${parent}" for usage.`,
 		);
 	}
-	const values = args.slice(1);
-	const validCount = parent === "model" ? values.length <= 1 : values.length >= 1 && values.length <= 2;
+	const splitArgs = splitOperandsAndOptions(args.slice(1));
+	if (!splitArgs) {
+		return fail(`Usage: ${APP_NAME} ${getCommandSpec([parent, subcommand])?.usage ?? `${parent} ${subcommand}`}`);
+	}
+	const { operands, options } = splitArgs;
+	const validCount = parent === "model" ? operands.length <= 1 : operands.length >= 1 && operands.length <= 2;
 	if (!validCount) {
 		return fail(`Usage: ${APP_NAME} ${getCommandSpec([parent, subcommand])?.usage ?? `${parent} ${subcommand}`}`);
 	}
-	return continueWith([INTERNAL_RUNTIME_COMMAND_MARKER, flag, ...values]);
+	return continueWith([INTERNAL_RUNTIME_COMMAND_MARKER, flag, ...operands, ...options]);
 }
 
 function parseBooleanOptions(args: string[], allowed: ReadonlySet<string>, command: string): Set<string> | undefined {
@@ -333,6 +337,18 @@ function requireArgumentCount(args: string[], count: number, command: string): b
 function hasPositionalArguments(args: string[]): boolean {
 	const parsed = parseArgs(args);
 	return parsed.messages.length > 0 || parsed.fileArgs.length > 0;
+}
+
+function splitOperandsAndOptions(args: string[]): { operands: string[]; options: string[] } | undefined {
+	const optionsStart = args.findIndex((arg) => arg.startsWith("-"));
+	if (optionsStart === -1) {
+		return { operands: args, options: [] };
+	}
+	const options = args.slice(optionsStart);
+	if (hasPositionalArguments(options)) {
+		return undefined;
+	}
+	return { operands: args.slice(0, optionsStart), options };
 }
 
 function requireOperandCount(args: string[], minimum: number, maximum: number | undefined, command: string): boolean {

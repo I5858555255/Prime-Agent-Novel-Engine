@@ -1135,7 +1135,7 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 	}
 
 	if (options.invalidOption) {
-		if (options.invalidOption === "-l") {
+		if (options.invalidOption === "-l" && (options.command === "install" || options.command === "remove")) {
 			console.error(chalk.red('Option -l was removed. Use "--local".'));
 			process.exitCode = 1;
 			return true;

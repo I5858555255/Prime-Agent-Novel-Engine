@@ -158,6 +158,19 @@ describe("public command routing", () => {
 		});
 	});
 
+	it("preserves trailing global options for model listing and session export", async () => {
+		await expect(handlePublicCommand(["model", "list", "sonnet", "--offline"])).resolves.toMatchObject({
+			handled: false,
+			args: [INTERNAL_RUNTIME_COMMAND_MARKER, "--list-models", "sonnet", "--offline"],
+		});
+		await expect(
+			handlePublicCommand(["session", "export", "session.jsonl", "session.html", "--verbose"]),
+		).resolves.toMatchObject({
+			handled: false,
+			args: [INTERNAL_RUNTIME_COMMAND_MARKER, "--export", "session.jsonl", "session.html", "--verbose"],
+		});
+	});
+
 	it("rejects operands for package list", async () => {
 		await handlePublicCommand(["package", "list", "ignored-source"]);
 
