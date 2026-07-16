@@ -307,7 +307,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 
 			const rendered = renderAll(chatContainer);
 			expect(rendered).not.toContain("\x1b_G");
-			expect(normalizeRenderedOutput(chatContainer)).toContain("[Image: [image/png]]");
+			expect(normalizeRenderedOutput(chatContainer)).toContain("╰─ [image/png · 800×600]");
 			expect(ipythonToolComponents.size).toBe(0);
 			expect(lateIpythonSentAgentMessages.size).toBe(0);
 		} finally {
