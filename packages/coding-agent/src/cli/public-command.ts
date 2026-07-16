@@ -131,6 +131,9 @@ function printRequestedHelp(path: string[]): PublicCommandResult {
 		console.log(formatTopLevelHelp());
 		return HANDLED;
 	}
+	if (REMOVED_COMMAND_NAMES.has(path[0]!)) {
+		return rejectRemovedCommand(path);
+	}
 	const help = formatCommandHelp(path);
 	if (help) {
 		console.log(help);
@@ -147,6 +150,9 @@ function printRequestedHelp(path: string[]): PublicCommandResult {
 
 function isHelpRequest(path: string[]): boolean {
 	if (path.length === 0 || getCommandSpec(path)) {
+		return true;
+	}
+	if (REMOVED_COMMAND_NAMES.has(path[0]!)) {
 		return true;
 	}
 	if (getCommandSpec(path.slice(0, 1))) {

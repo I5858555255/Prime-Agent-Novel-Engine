@@ -170,6 +170,24 @@ describe("public command routing", () => {
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Run "prime-agent help"'));
 	});
 
+	it("shows migration guidance when help targets removed commands", async () => {
+		const cases: Array<[path: string[], hint: string]> = [
+			[["daemon"], 'Run "prime-agent help"'],
+			[["install"], 'Use "prime-agent package install"'],
+			[["remove"], 'Use "prime-agent package remove"'],
+			[["uninstall"], 'Use "prime-agent package remove"'],
+			[["manage"], 'Use "prime-agent agents"'],
+			[["app", "update"], 'Use "prime-agent update"'],
+		];
+
+		for (const [path, hint] of cases) {
+			await expect(handlePublicCommand(["help", ...path])).resolves.toMatchObject({ handled: true });
+			expect(console.error).toHaveBeenCalledWith(expect.stringContaining(hint));
+		}
+		expect(process.exitCode).toBe(1);
+		expect(console.log).not.toHaveBeenCalled();
+	});
+
 	it("suggests close nested commands without executing them", async () => {
 		await handlePublicCommand(["schedule", "cancell", "job-1"]);
 		expect(mocks.daemonCommands).toEqual([]);
