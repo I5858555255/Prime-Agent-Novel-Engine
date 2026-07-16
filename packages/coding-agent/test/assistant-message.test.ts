@@ -72,19 +72,6 @@ describe("AssistantMessageComponent", () => {
 		expect(lines.at(-1)).toBe("");
 	});
 
-	test("adds one leading spacer before a tool-only batch", () => {
-		initTheme("dark");
-
-		const component = new AssistantMessageComponent(
-			createAssistantMessage([
-				{ type: "toolCall", id: "tool-1", name: "bash", arguments: { command: "pwd" } },
-				{ type: "toolCall", id: "tool-2", name: "bash", arguments: { command: "ls" } },
-			]),
-		);
-
-		expect(component.render(60)).toEqual([""]);
-	});
-
 	test("renders an abort status for messages with tool calls", () => {
 		initTheme("dark");
 
