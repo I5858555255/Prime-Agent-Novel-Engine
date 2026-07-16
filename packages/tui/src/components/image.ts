@@ -29,6 +29,7 @@ export interface ImageOptions {
 	maxHeightCells?: number;
 	filename?: string;
 	fallbackOnly?: boolean;
+	fallbackPrefix?: string;
 	/** Kitty image ID. If provided, reuses this ID (for animations/updates). */
 	imageId?: number;
 }
@@ -86,7 +87,7 @@ export class Image implements Component {
 			parts.push(`${this.dimensions.widthPx}×${this.dimensions.heightPx}`);
 			if (this.options.filename) parts.unshift(this.options.filename);
 			if (fullscreenFallback && this.options.fallbackOnly !== true) parts.push("/fullscreen off to view");
-			lines = [this.theme.fallbackColor(`[${parts.join(" · ")}]`)];
+			lines = [this.theme.fallbackColor(`${this.options.fallbackPrefix ?? ""}[${parts.join(" · ")}]`)];
 		} else if (caps.images) {
 			if (caps.images === "kitty" && this.imageId === undefined) {
 				this.imageId = allocateImageId();

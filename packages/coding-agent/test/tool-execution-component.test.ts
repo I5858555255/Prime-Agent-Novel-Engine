@@ -119,7 +119,7 @@ describe("ToolExecutionComponent parity", () => {
 
 			let rendered = component.render(120).join("\n");
 			expect(rendered).not.toContain("\x1b_G");
-			expect(stripAnsi(rendered)).toContain("[image/png · 800×600]");
+			expect(stripAnsi(rendered)).toContain("    ╰─ [image/png · 800×600]");
 
 			component.setShowImages(false);
 			component.setShowImages(true);
@@ -157,7 +157,7 @@ describe("ToolExecutionComponent parity", () => {
 				expect(rendered).not.toContain("\x1b_G");
 				expect(rendered).not.toContain("\x1b]1337;File=");
 				const lines = stripAnsi(rendered).split("\n");
-				expect(lines.filter((line) => line.includes("image/png")).length).toBe(1);
+				expect(lines.filter((line) => line.includes("╰─ [image/png")).length).toBe(1);
 			} finally {
 				resetCapabilitiesCache();
 			}
@@ -194,7 +194,7 @@ describe("ToolExecutionComponent parity", () => {
 
 			const viewport = terminal.getViewport();
 			expect(
-				viewport.filter((line) => line.includes("[image/png · 800×600 · /fullscreen off to view]")).length,
+				viewport.filter((line) => line.includes("    ╰─ [image/png · 800×600 · /fullscreen off to view]")).length,
 			).toBe(1);
 			expect(viewport.join("\n")).not.toContain("\x1b_G");
 		} finally {
@@ -223,7 +223,7 @@ describe("ToolExecutionComponent parity", () => {
 			});
 
 			const rendered = stripAnsi(component.render(120).join("\n"));
-			expect(rendered).toContain("[image/png · 1×1]");
+			expect(rendered).toContain("    ╰─ [image/png · 1×1]");
 		} finally {
 			resetCapabilitiesCache();
 		}
