@@ -133,6 +133,27 @@ describe("ToolExecutionComponent parity", () => {
 		}
 	});
 
+	test("does not duplicate replayed image fallbacks through built-in renderers", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"bash",
+				"tool-bash-image-history",
+				{ command: "generate-image" },
+				{ showImages: true, allowInlineImages: false },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			expect(rendered.match(/image\/png/g)).toHaveLength(1);
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
 	test.each(["kitty", "iterm2"] as const)(
 		"keeps one visible IPython image row without emitting %s protocol during replay",
 		(protocol) => {

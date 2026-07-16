@@ -187,7 +187,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
-		const renderInlineImages = this.shouldRenderInlineImages();
 		return {
 			args: this.args,
 			toolCallId: this.toolCallId,
@@ -203,7 +202,7 @@ export class ToolExecutionComponent extends Container {
 			isPartial: this.isPartial,
 			expanded: this.expanded,
 			showExpandHint: this.showExpandHint,
-			showImages: renderInlineImages,
+			showImages: this.showImages,
 			includeImageDimensions: this.allowInlineImages,
 			isError: this.result?.isError ?? false,
 		};
