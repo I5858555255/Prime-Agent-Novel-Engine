@@ -59,7 +59,7 @@ describe("ENG-4536 heartbeat observability", () => {
 		const store = AgentCronJobStore.forSessionArtifacts();
 		store.registerSessionArtifact("session-a", join(harness.tempDir, "artifacts", "session-a"));
 		let changes = 0;
-		store.onChange(() => changes++);
+		store.onHeartbeatChange(() => changes++);
 		const input = {
 			activeSessionId: "active-a",
 			sessionId: "session-a",
@@ -76,6 +76,17 @@ describe("ENG-4536 heartbeat observability", () => {
 		store.manageHeartbeat("active-a", user.id, "pause");
 		store.manageHeartbeat("active-a", user.id, "resume");
 		store.manageHeartbeat("active-a", user.id, "stop");
+		expect(changes).toBe(6);
+
+		const cron = store.create({
+			...input,
+			prompt: "ordinary cron",
+			now: new Date("2026-01-01T00:00:00.000Z"),
+		});
+		const dueAt = new Date(cron.nextRunAt!);
+		const dispatch = store.claimDue(dueAt, dueAt)[0];
+		expect(dispatch).toBeDefined();
+		store.recordDispatchResult(dispatch!.id, { now: dueAt, outcome: "ran" });
 		expect(changes).toBe(6);
 	});
 });

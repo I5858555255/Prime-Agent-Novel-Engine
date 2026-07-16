@@ -8354,7 +8354,7 @@ export class InteractiveMode {
 						this.showStatus("No active heartbeat");
 						return;
 					}
-					this.patchConnectionState({ heartbeat });
+					this.patchConnectionState({ heartbeat: null });
 					await this.refreshHeartbeatCatalog();
 					this.showStatus("Heartbeat cleared");
 					return;
@@ -8406,7 +8406,7 @@ export class InteractiveMode {
 			action,
 		);
 		if (updated.source === "heartbeat" && updated.activeSessionId === this.connectionState?.activeSessionId) {
-			this.patchConnectionState({ heartbeat: updated });
+			this.patchConnectionState({ heartbeat: action === "stop" ? null : updated });
 		}
 		await this.refreshHeartbeatCatalog();
 	}

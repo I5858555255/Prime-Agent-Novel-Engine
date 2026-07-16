@@ -386,7 +386,7 @@ export class AgentDaemon {
 				this.log(`Cron job ${job.id} failed: ${error instanceof Error ? error.message : String(error)}`);
 			},
 		});
-		this.cronStore.onChange(() => this.broadcastGlobal({ type: "heartbeats_changed" }));
+		this.cronStore.onHeartbeatChange(() => this.broadcastGlobal({ type: "heartbeats_changed" }));
 	}
 
 	// The daemon runs detached with no terminal, so route its diagnostics to its
@@ -1242,13 +1242,14 @@ export class AgentDaemon {
 			});
 	}
 
-	private manageHeartbeatForState(
-		state: ActiveSessionState,
+	private manageHeartbeat(
+		activeSessionId: string,
 		jobId: string,
 		action: AgentHeartbeatManagementAction,
 	): AgentCronJob | undefined {
-		const job = this.cronStore.manageHeartbeat(state.activeSessionId, jobId, action);
-		if (job && action !== "resume") {
+		const job = this.cronStore.manageHeartbeat(activeSessionId, jobId, action);
+		const state = this.sessions.get(activeSessionId);
+		if (job && action !== "resume" && state) {
 			this.removeQueuedHeartbeatFollowUp(state, job);
 		}
 		if (job) {
@@ -2481,8 +2482,7 @@ export class AgentDaemon {
 				return success(command.id, "heartbeats_list", { heartbeats: this.listHeartbeats() });
 
 			case "heartbeat_manage": {
-				const state = this.getSessionState(command.activeSessionId);
-				const heartbeat = this.manageHeartbeatForState(state, command.jobId, command.action);
+				const heartbeat = this.manageHeartbeat(command.activeSessionId, command.jobId, command.action);
 				if (!heartbeat) {
 					throw new Error(`No active heartbeat found: ${command.jobId}`);
 				}

@@ -937,20 +937,26 @@ export class DaemonSupervisor {
 				return success(command.id, "cron_list", { jobs: sortCronJobs([...jobs.values()]) });
 			}
 			case "heartbeats_list": {
+				const workers = [...this.workers.values()];
+				const unavailable = workers.find((worker) => !worker.client || worker.descriptor.lifecycle !== "ready");
+				if (unavailable) {
+					const state =
+						unavailable.descriptor.lifecycle === "ready" ? "disconnected" : unavailable.descriptor.lifecycle;
+					const error = new Error(`Cannot list heartbeats while session worker is ${state}`);
+					return failure(command.id, command.type, error, serializeDaemonError(error));
+				}
 				const heartbeats = new Map<string, AgentConnectionHeartbeat>();
 				const responses = await Promise.all(
-					[...this.workers.values()]
-						.filter((worker) => worker.client && worker.descriptor.lifecycle === "ready")
-						.map((worker) =>
-							this.forwardToWorker(worker, command, 5000).catch((error: unknown) =>
-								failure(command.id, command.type, error, serializeDaemonError(error)),
-							),
+					workers.map((worker) =>
+						this.forwardToWorker(worker, command, 5000).catch((error: unknown) =>
+							failure(command.id, command.type, error, serializeDaemonError(error)),
 						),
+					),
 				);
 				for (const response of responses) {
 					if (!response.success) {
 						this.log(`Could not list heartbeats from a worker: ${response.error}`);
-						continue;
+						return response;
 					}
 					for (const heartbeat of heartbeatsFromResponse(response)) {
 						heartbeats.set(heartbeat.job.id, heartbeat);
@@ -1405,7 +1411,6 @@ export class DaemonSupervisor {
 		worker.descriptor.lifecycle = "recovering";
 		worker.descriptor.lastError = error.message;
 		this.persistWorker(worker);
-		this.broadcastHeartbeatsChanged();
 		void this.syncAgentPeers().catch(() => undefined);
 		void this.recoverWorker(worker);
 	}

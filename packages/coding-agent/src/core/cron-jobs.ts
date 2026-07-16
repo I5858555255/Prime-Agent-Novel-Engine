@@ -141,9 +141,17 @@ export interface AgentRlmHeartbeatController {
 	deleteRlmHeartbeat(id: string): AgentCronJob | undefined;
 }
 
+function heartbeatCatalogSignature(jobs: readonly AgentCronJob[]): string {
+	return JSON.stringify(
+		jobs
+			.filter((job) => isHeartbeatCronJob(job) && (job.status === "active" || job.status === "paused"))
+			.sort((left, right) => left.id.localeCompare(right.id)),
+	);
+}
+
 export class AgentCronJobStore {
 	private readonly sessionArtifactFiles = new Map<string, string>();
-	private readonly changeListeners = new Set<() => void>();
+	private readonly heartbeatChangeListeners = new Set<() => void>();
 
 	constructor(
 		private readonly filePath?: string,
@@ -158,9 +166,9 @@ export class AgentCronJobStore {
 		return new AgentCronJobStore(undefined, true);
 	}
 
-	onChange(listener: () => void): () => void {
-		this.changeListeners.add(listener);
-		return () => this.changeListeners.delete(listener);
+	onHeartbeatChange(listener: () => void): () => void {
+		this.heartbeatChangeListeners.add(listener);
+		return () => this.heartbeatChangeListeners.delete(listener);
 	}
 
 	registerSessionArtifact(sessionId: string, artifactDir: string): boolean {
@@ -765,6 +773,7 @@ export class AgentCronJobStore {
 
 	private mutateStates(mutator: (state: CronJobsState) => AgentCronDispatch[]): AgentCronDispatch[] {
 		const paths = this.sessionArtifactMode ? [...this.sessionArtifactFiles.values()] : [this.requireFilePath()];
+		const previousHeartbeats = heartbeatCatalogSignature(this.readJobs());
 		let changed = false;
 		const dispatches = withCronJobsStateLocks(paths, () => {
 			const dispatches: AgentCronDispatch[] = [];
@@ -779,13 +788,14 @@ export class AgentCronJobStore {
 			}
 			return dispatches;
 		});
-		if (changed) {
-			this.notifyChange();
+		if (changed && heartbeatCatalogSignature(this.readJobs()) !== previousHeartbeats) {
+			this.notifyHeartbeatChange();
 		}
 		return dispatches;
 	}
 
 	private writeJobs(jobs: readonly AgentCronJob[]): void {
+		const previousHeartbeats = heartbeatCatalogSignature(this.readJobs());
 		if (this.sessionArtifactMode) {
 			const registeredSessionIds = new Set(this.sessionArtifactFiles.keys());
 			const unregistered = jobs.find((job) => !registeredSessionIds.has(job.sessionId));
@@ -829,16 +839,20 @@ export class AgentCronJobStore {
 					}
 				}
 			});
-			this.notifyChange();
+			if (heartbeatCatalogSignature(this.readJobs()) !== previousHeartbeats) {
+				this.notifyHeartbeatChange();
+			}
 			return;
 		}
 		const path = this.requireFilePath();
 		withCronJobsStateLocks([path], () => writeJobsFile(path, jobs, true));
-		this.notifyChange();
+		if (heartbeatCatalogSignature(this.readJobs()) !== previousHeartbeats) {
+			this.notifyHeartbeatChange();
+		}
 	}
 
-	private notifyChange(): void {
-		for (const listener of this.changeListeners) {
+	private notifyHeartbeatChange(): void {
+		for (const listener of this.heartbeatChangeListeners) {
 			listener();
 		}
 	}
