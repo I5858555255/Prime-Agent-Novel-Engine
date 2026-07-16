@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Fixed slow daemon clients becoming stuck when newer session snapshots arrived during catch-up.
 
 ## [0.3.1] - 2026-07-15
 

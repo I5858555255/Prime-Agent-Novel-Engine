@@ -4045,7 +4045,29 @@ export class AgentDaemon {
 		}
 	}
 
-	private async catchUpBackpressuredClient(client: DaemonSocketClient): Promise<void> {
+	private catchUpBackpressuredClient(client: DaemonSocketClient): Promise<void> {
+		if (client.catchupPromise) {
+			return client.catchupPromise;
+		}
+		if (client.snapshotStreaming) {
+			return Promise.resolve();
+		}
+		const catchup = this.drainBackpressuredClientCatchupQueue(client).finally(() => {
+			if (client.catchupPromise === catchup) {
+				client.catchupPromise = undefined;
+			}
+		});
+		client.catchupPromise = catchup;
+		return catchup;
+	}
+
+	private async drainBackpressuredClientCatchupQueue(client: DaemonSocketClient): Promise<void> {
+		while (!client.socket.destroyed && !client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
+			await this.drainBackpressuredClientCatchups(client);
+		}
+	}
+
+	private async drainBackpressuredClientCatchups(client: DaemonSocketClient): Promise<void> {
 		if (client.socket.destroyed) {
 			return;
 		}
@@ -4214,6 +4236,9 @@ export class AgentDaemon {
 							outboundType: message.type,
 							...("id" in message && typeof message.id === "string" ? { requestId: message.id } : {}),
 							...(hasDaemonOutboundActiveSessionId(message) ? { activeSessionId: message.activeSessionId } : {}),
+							...("snapshotId" in message && typeof message.snapshotId === "string"
+								? { snapshotId: message.snapshotId }
+								: {}),
 							...(message.type === "session_event" ? { sessionEventType: message.event.type } : {}),
 							payloadEncoding,
 							...(snapshotPurpose ? { snapshotPurpose } : {}),
