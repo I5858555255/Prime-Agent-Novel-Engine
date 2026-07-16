@@ -1,6 +1,8 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	type DaemonInfo,
+	isWorkerSocketPath,
 	parseLsofListeners,
 	parsePsEtimes,
 	parseSsListeners,
@@ -9,6 +11,15 @@ import {
 	planShutdownConfirmation,
 	sortDaemons,
 } from "../src/cli/daemon-ps.js";
+import { defaultDaemonSocketDir } from "../src/modes/daemon/daemon-socket.js";
+
+describe("worker socket classification", () => {
+	it.runIf(process.platform !== "win32")("recognizes only worker sockets in the default service directory", () => {
+		expect(isWorkerSocketPath(join(defaultDaemonSocketDir(), "worker-abc.sock"))).toBe(true);
+		expect(isWorkerSocketPath(join(defaultDaemonSocketDir(), "daemon.sock"))).toBe(false);
+		expect(isWorkerSocketPath("/tmp/worker-abc.sock")).toBe(false);
+	});
+});
 
 describe("parseSsListeners", () => {
 	const stdout = [

@@ -125,6 +125,21 @@ describe("package commands", () => {
 		}
 	});
 
+	it("directs the removed -l package option to --local", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["package", "install", packageDir, "-l"])).resolves.toBeUndefined();
+
+			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stderr).toContain('Option -l was removed. Use "--local".');
+			expect(process.exitCode).toBe(1);
+			expect(existsSync(join(agentDir, "settings.json"))).toBe(false);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("shows a friendly error for missing install source", async () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 

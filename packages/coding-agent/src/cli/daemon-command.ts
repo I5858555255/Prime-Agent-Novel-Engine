@@ -10,6 +10,7 @@ import type { AgentSessionRuntimeConfig } from "../core/agent-session-config.js"
 import { type AgentCronJob, formatAgentCronJob } from "../core/cron-jobs.js";
 import { DaemonClient, type DaemonClientMessageListener } from "../modes/daemon/daemon-client.js";
 import type { DaemonOutbound, DaemonResponse } from "../modes/daemon/daemon-protocol.js";
+import { matchesSessionIdSuffix } from "../modes/daemon/daemon-session-id.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isLocalPath } from "../utils/paths.js";
@@ -900,14 +901,23 @@ function parseSendArgs(args: string[]): ParsedSendArgs {
 			continue;
 		}
 		if (parseOptions && arg === "--steer") {
+			if (deliveryMode !== undefined) {
+				throw new Error("Only one send delivery mode may be specified: --steer or --follow-up");
+			}
 			deliveryMode = "steer";
 			continue;
 		}
 		if (parseOptions && arg === "--follow-up") {
+			if (deliveryMode !== undefined) {
+				throw new Error("Only one send delivery mode may be specified: --steer or --follow-up");
+			}
 			deliveryMode = "follow_up";
 			continue;
 		}
 		if (parseOptions && arg === "--auto") {
+			if (deliveryMode !== undefined) {
+				throw new Error("Only one send delivery mode may be specified: --steer or --follow-up");
+			}
 			deliveryMode = "auto";
 			continue;
 		}
@@ -972,7 +982,8 @@ async function runCron(client: DaemonClient, args: string[], json: boolean): Pro
 	const subcommand = args[0] ?? "list";
 	if (subcommand === "list") {
 		const includeInactive = args.includes("--all") || args.includes("-a");
-		const activeSessionId = args.find((arg) => !arg.startsWith("-") && arg !== "list");
+		const selector = args.find((arg) => !arg.startsWith("-") && arg !== "list");
+		const activeSessionId = selector ? await resolveLiveSessionSelector(client, selector) : undefined;
 		const response = await client.request({ type: "cron_list", activeSessionId, includeInactive });
 		const data = requireSuccess(response);
 		if (json) {
@@ -1039,6 +1050,29 @@ async function runCron(client: DaemonClient, args: string[], json: boolean): Pro
 	}
 
 	throw new Error(`Unknown schedule command: ${subcommand}`);
+}
+
+async function resolveLiveSessionSelector(client: DaemonClient, selector: string): Promise<string> {
+	const sessions = (await getLiveSessions(client)).filter(
+		(session): session is SessionSummary & { activeSessionId: string } => typeof session.activeSessionId === "string",
+	);
+	const exact = sessions.filter(
+		(session) =>
+			session.activeSessionId === selector || session.sessionId === selector || session.sessionName === selector,
+	);
+	const suffix = sessions.filter(
+		(session) =>
+			matchesSessionIdSuffix(session.activeSessionId, selector) ||
+			matchesSessionIdSuffix(session.sessionId, selector),
+	);
+	const matches = exact.length > 0 ? exact : suffix;
+	if (matches.length === 1) {
+		return matches[0]!.activeSessionId;
+	}
+	if (matches.length > 1) {
+		throw new Error(`Ambiguous active session "${selector}"`);
+	}
+	throw new Error(`Unknown active session: ${selector}`);
 }
 
 async function printResponseData(

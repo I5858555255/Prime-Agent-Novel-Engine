@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PUBLIC_COMMAND_NAMES } from "../src/cli/command-registry.js";
 import {
 	classifyOwnedSessionWorkerInvocation,
 	createOwnedWorkerLaunchSpec,
@@ -22,6 +23,9 @@ describe("owned session worker CLI routing", () => {
 		expect(classifyOwnedSessionWorkerInvocation(["--list-models"], false, {})).toBeUndefined();
 		expect(classifyOwnedSessionWorkerInvocation(["--export", "session.jsonl"], false, {})).toBeUndefined();
 		expect(classifyOwnedSessionWorkerInvocation(["daemon", "list"], false, {})).toBeUndefined();
+		for (const command of PUBLIC_COMMAND_NAMES) {
+			expect(classifyOwnedSessionWorkerInvocation([command], false, {})).toBeUndefined();
+		}
 	});
 
 	it("does not recursively route an owned worker", () => {

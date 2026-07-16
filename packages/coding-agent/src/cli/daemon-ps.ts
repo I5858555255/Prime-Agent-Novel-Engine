@@ -244,13 +244,20 @@ function classifyReachable(probe: ProbeResult): DaemonStatus {
 export async function discoverDaemons(): Promise<DaemonInfo[]> {
 	const processBySocket = new Map<string, DiscoveredDaemonProcess>();
 	for (const daemon of scanListeningDaemons()) {
+		if (isWorkerSocketPath(daemon.socketPath)) {
+			continue;
+		}
 		processBySocket.set(daemon.socketPath, daemon);
 	}
 
 	const workerSockets = new Set(
 		findAllTrackedWorkers().map((worker) => normalizeSocketPath(worker.descriptor.supervisorSocketPath)),
 	);
-	const sockets = new Set<string>([...processBySocket.keys(), ...scanSocketDir(), ...workerSockets]);
+	const sockets = new Set<string>([
+		...processBySocket.keys(),
+		...scanSocketDir().filter((socketPath) => !isWorkerSocketPath(socketPath)),
+		...workerSockets,
+	]);
 	const defaultSocket = normalizeSocketPath(defaultDaemonSocketPath());
 
 	const infos = await Promise.all(
@@ -729,7 +736,7 @@ function recordShutdownFailure(
 	failed.push({ socketPath, reason });
 }
 
-function isWorkerSocketPath(socketPath: string): boolean {
+export function isWorkerSocketPath(socketPath: string): boolean {
 	return (
 		process.platform !== "win32" &&
 		resolve(dirname(socketPath)) === resolve(defaultDaemonSocketDir()) &&

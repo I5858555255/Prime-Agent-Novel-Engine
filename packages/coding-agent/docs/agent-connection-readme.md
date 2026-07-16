@@ -140,7 +140,7 @@ This matters because the in-process path still exists for explicit fallbacks:
 - startup benchmark
 - `--no-session`
 - `--help`
-- `--list-models`
+- `prime-agent model list`
 - other non-interactive modes that are not daemon-backed TUI clients
 
 The adapter preserves local behavior without preserving the old TUI ownership model.
@@ -328,7 +328,7 @@ Current explicit fallbacks include:
 - `PI_STARTUP_BENCHMARK`
 - `--no-session`
 - `--help`
-- `--list-models`
+- `prime-agent model list`
 
 In this path, startup creates the runtime and wraps it:
 

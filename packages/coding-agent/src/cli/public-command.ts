@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { APP_NAME } from "../config.js";
 import { handlePackageCommand, isSelfUpdateSource } from "../package-manager-cli.js";
+import { INTERNAL_RUNTIME_COMMAND_MARKER } from "./args.js";
 import {
 	findCommandSuggestion,
 	formatCommandHelp,
@@ -148,6 +149,9 @@ function isHelpRequest(path: string[]): boolean {
 	if (path.length === 0 || getCommandSpec(path)) {
 		return true;
 	}
+	if (getCommandSpec(path.slice(0, 1))) {
+		return true;
+	}
 	const parent = path.slice(0, -1);
 	const candidates = getChildCommandSpecs(parent).map((spec) => spec.path.at(-1)!);
 	return findCommandSuggestion(path.at(-1)!, candidates) !== undefined;
@@ -248,6 +252,9 @@ async function runPackage(args: string[]): Promise<PublicCommandResult> {
 		);
 	}
 	const rest = args.slice(1);
+	if (subcommand === "list" && rest.length > 0) {
+		return fail(`Usage: ${APP_NAME} package list`);
+	}
 	if (subcommand === "update") {
 		if (
 			rest.some((arg) => arg === "--self" || arg === "--extensions" || arg === "--extension" || arg === "--force")
@@ -285,7 +292,7 @@ function rewriteNestedCommand(parent: string, subcommand: string, flag: string, 
 	if (!validCount) {
 		return fail(`Usage: ${APP_NAME} ${getCommandSpec([parent, subcommand])?.usage ?? `${parent} ${subcommand}`}`);
 	}
-	return continueWith([flag, ...values]);
+	return continueWith([INTERNAL_RUNTIME_COMMAND_MARKER, flag, ...values]);
 }
 
 function parseBooleanOptions(args: string[], allowed: ReadonlySet<string>, command: string): Set<string> | undefined {

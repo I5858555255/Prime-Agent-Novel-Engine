@@ -95,7 +95,7 @@ function printPackageCommandHelp(command: PackageCommand): void {
 Install a package and add it to settings.
 
 Options:
-  -l, --local    Install project-locally (${CONFIG_DIR_NAME}/settings.json)
+  --local    Install project-locally (${CONFIG_DIR_NAME}/settings.json)
 
 Examples:
   ${APP_NAME} package install npm:@foo/bar
@@ -114,7 +114,7 @@ Examples:
 Remove a package and its source from settings.
 
 Options:
-  -l, --local    Remove from project settings (${CONFIG_DIR_NAME}/settings.json)
+  --local    Remove from project settings (${CONFIG_DIR_NAME}/settings.json)
 
 Examples:
   ${APP_NAME} package remove npm:@foo/bar
@@ -181,7 +181,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			continue;
 		}
 
-		if (arg === "-l" || arg === "--local") {
+		if (arg === "--local") {
 			if (command === "install" || command === "remove") {
 				local = true;
 			} else {
@@ -1135,6 +1135,11 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 	}
 
 	if (options.invalidOption) {
+		if (options.invalidOption === "-l") {
+			console.error(chalk.red('Option -l was removed. Use "--local".'));
+			process.exitCode = 1;
+			return true;
+		}
 		console.error(chalk.red(`Unknown option ${options.invalidOption} for "${options.command}".`));
 		console.error(chalk.dim(`Use "${APP_NAME} --help" or "${getPackageCommandUsage(options.command)}".`));
 		process.exitCode = 1;

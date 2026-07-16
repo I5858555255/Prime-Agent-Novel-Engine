@@ -35,6 +35,7 @@ vi.mock("../src/cli/daemon-ps.js", () => ({
 	},
 }));
 
+import { INTERNAL_RUNTIME_COMMAND_MARKER } from "../src/cli/args.js";
 import { formatTopLevelHelp } from "../src/cli/command-registry.js";
 import { handlePublicCommand } from "../src/cli/public-command.js";
 
@@ -134,12 +135,19 @@ describe("public command routing", () => {
 	it("maps model listing and session export to the existing runtime flags", async () => {
 		await expect(handlePublicCommand(["model", "list", "sonnet"])).resolves.toMatchObject({
 			handled: false,
-			args: ["--list-models", "sonnet"],
+			args: [INTERNAL_RUNTIME_COMMAND_MARKER, "--list-models", "sonnet"],
 		});
 		await expect(handlePublicCommand(["session", "export", "session.jsonl", "session.html"])).resolves.toMatchObject({
 			handled: false,
-			args: ["--export", "session.jsonl", "session.html"],
+			args: [INTERNAL_RUNTIME_COMMAND_MARKER, "--export", "session.jsonl", "session.html"],
 		});
+	});
+
+	it("rejects operands for package list", async () => {
+		await handlePublicCommand(["package", "list", "ignored-source"]);
+
+		expect(mocks.packageCommands).toEqual([]);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("prime-agent package list"));
 	});
 
 	it("uses force only when explicitly requested for full shutdown", async () => {
@@ -180,6 +188,13 @@ describe("public command routing", () => {
 			args,
 			explicitAgentsView: false,
 		});
+	});
+
+	it("rejects invalid paths below a known help command", async () => {
+		await handlePublicCommand(["help", "schedule", "nonsense"]);
+
+		expect(process.exitCode).toBe(1);
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Unknown command: schedule nonsense"));
 	});
 
 	it("shows command help when options precede the help flag", async () => {

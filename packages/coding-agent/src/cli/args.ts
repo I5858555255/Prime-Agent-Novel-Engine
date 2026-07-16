@@ -65,6 +65,8 @@ const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh
 const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
 const BUILTIN_TOOL_NAMES = ["ipython"];
 
+export const INTERNAL_RUNTIME_COMMAND_MARKER = "\0prime-agent-runtime-command";
+
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
 }
@@ -78,8 +80,10 @@ export function parseArgs(args: string[]): Args {
 	};
 
 	let endOfOptions = false;
+	const internalRuntimeCommand = args[0] === INTERNAL_RUNTIME_COMMAND_MARKER;
+	const firstArgIndex = internalRuntimeCommand ? 1 : 0;
 
-	for (let i = 0; i < args.length; i++) {
+	for (let i = firstArgIndex; i < args.length; i++) {
 		const arg = args[i];
 
 		// POSIX end-of-options: everything after a standalone "--" is a positional
@@ -182,8 +186,23 @@ export function parseArgs(args: string[]): Args {
 				result.messages.push(next);
 				i++;
 			}
-		} else if (arg === "--export" && i + 1 < args.length) {
-			result.export = args[++i];
+		} else if (arg === "--export") {
+			if (!internalRuntimeCommand) {
+				result.diagnostics.push({
+					type: "error",
+					message: `--export was removed. Use "${APP_NAME} session export <file> [output]".`,
+				});
+				if (i + 1 < args.length && !args[i + 1].startsWith("-")) i++;
+			} else if (i + 1 < args.length) {
+				result.export = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--export requires a value" });
+			}
+		} else if (arg.startsWith("--export=")) {
+			result.diagnostics.push({
+				type: "error",
+				message: `--export was removed. Use "${APP_NAME} session export <file> [output]".`,
+			});
 		} else if ((arg === "--extension" || arg === "-e") && i + 1 < args.length) {
 			result.extensions = result.extensions ?? [];
 			result.extensions.push(args[++i]);
@@ -245,12 +264,23 @@ export function parseArgs(args: string[]): Args {
 				result.autonomousTimeoutMs = parsePositiveInt(args[++i], "--autonomous-timeout-ms", result);
 			}
 		} else if (arg === "--list-models") {
-			// Check if next arg is a search pattern (not a flag or file arg)
-			if (i + 1 < args.length && !args[i + 1].startsWith("-") && !args[i + 1].startsWith("@")) {
+			const hasSearch = i + 1 < args.length && !args[i + 1].startsWith("-") && !args[i + 1].startsWith("@");
+			if (!internalRuntimeCommand) {
+				result.diagnostics.push({
+					type: "error",
+					message: `--list-models was removed. Use "${APP_NAME} model list [search]".`,
+				});
+				if (hasSearch) i++;
+			} else if (hasSearch) {
 				result.listModels = args[++i];
 			} else {
 				result.listModels = true;
 			}
+		} else if (arg.startsWith("--list-models=")) {
+			result.diagnostics.push({
+				type: "error",
+				message: `--list-models was removed. Use "${APP_NAME} model list [search]".`,
+			});
 		} else if (arg === "--verbose") {
 			result.verbose = true;
 		} else if (arg === "--offline") {
