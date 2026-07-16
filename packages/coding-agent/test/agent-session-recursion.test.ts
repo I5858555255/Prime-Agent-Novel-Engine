@@ -294,6 +294,31 @@ describe("AgentSession rlm recursion", () => {
 		);
 	});
 
+	it("makes an externally restored retained child listable and deletable", async () => {
+		const childId = "restored-child";
+		const childDir = join(tempDir, childId);
+		mkdirSync(childDir, { recursive: true });
+		const child = createSession({ rlmSessionDir: childDir });
+		child.setSessionName("restored-worker");
+		const disposeChild = vi.spyOn(child, "disposeAsync");
+		const root = createSession();
+
+		expect(root.retainFinishedRlmChildSession(childId, child)).toBe(true);
+		expect(root.listRlmSubagents().subagents).toEqual([
+			expect.objectContaining({
+				rlm_child_id: childId,
+				session_name: "restored-worker",
+				status: "completed",
+			}),
+		]);
+
+		await expect(root.deleteRlmSubagent("restored-worker")).resolves.toMatchObject({
+			subagent: { rlm_child_id: childId, session_name: "restored-worker" },
+		});
+		expect(disposeChild).toHaveBeenCalledOnce();
+		expect(root.listRlmSubagents()).toEqual({ subagents: [] });
+	});
+
 	it("makes an orchestrator-chosen name override a custom runtime's preexisting name", async () => {
 		const hostedChild = createSession();
 		hostedChild.setSessionName("factory-assigned-name");

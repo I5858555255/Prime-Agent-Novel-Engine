@@ -674,10 +674,14 @@ Together these APIs provide the parent-scoped lifecycle operations: create with
 `rlm(...)`, read with `rlm.list_subagents()` and `agent_observe`, continue/update
 with `agent_message.send(...)`, and delete with `rlm.delete_subagent(...)`.
 
-The registry is scoped to the current parent session. Closing or replacing the
-parent cascades cleanup to its retained children and clears the registry. A new
-parent session does not inherit them. There is no persistent identifier,
-sidecar, or cross-session reopen protocol.
+The registry is scoped to the parent session transcript. Closing or replacing a
+daemon runtime cascades cleanup to its resident children; reopening that same
+parent session rehydrates its successfully completed children from the
+parent's artifact registry so they remain listable, messageable, and deletable.
+An unrelated new parent session inherits nothing, and inline children are not
+rehydrated. Deletion writes a durable tombstone before it reports success, so a
+deleted child stays removed while its transcript and artifacts remain on disk.
+There is no task/result migration or general cross-session reopen API.
 
 ### Cost Accounting
 

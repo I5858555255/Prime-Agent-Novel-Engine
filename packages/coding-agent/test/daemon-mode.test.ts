@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -250,6 +250,12 @@ describe("daemon mode helpers", () => {
 			},
 		});
 		const parentState = makeState("parent");
+		parentState.runtime = {
+			...parentState.runtime,
+			session: {
+				sessionManager: { getSessionArtifactDir: () => undefined },
+			},
+		} as ActiveSessionState["runtime"];
 		const childState = makeState("child", parentState.activeSessionId);
 		const foreignChildState = makeState("foreign-child", "other-parent");
 		const childSession = {
@@ -297,6 +303,61 @@ describe("daemon mode helpers", () => {
 		} as unknown as ActiveSessionState["runtime"]["session"];
 		await host.deleteRlmSubagentRuntime("missing-child", missingSession);
 		expect(missingSession.disposeAsync).toHaveBeenCalledOnce();
+	});
+
+	it("keeps a child live when its durable deletion boundary cannot be read", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-delete-registry-failure-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const parentManager = SessionManager.create(tempDir, sessionDir);
+			parentManager.newSession();
+			const parentArtifactDir = parentManager.getSessionArtifactDir();
+			if (!parentArtifactDir) {
+				throw new Error("Missing parent artifact directory");
+			}
+			mkdirSync(join(parentArtifactDir, "rlm-subagents.jsonl"), { recursive: true });
+
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const parentState = makeState("parent");
+			parentState.runtime = {
+				...parentState.runtime,
+				session: makeRuntimeSession(parentManager),
+			} as ActiveSessionState["runtime"];
+			const childState = makeState("child", parentState.activeSessionId);
+			childState.runtime = {
+				...childState.runtime,
+				metadata: { ...childState.runtime.metadata, rlmChildId: "child-1" },
+				session: { disposeAsync: vi.fn(async () => {}) },
+			} as unknown as ActiveSessionState["runtime"];
+			const closeSession = vi.fn(async () => {});
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				closeSession: typeof closeSession;
+				createSubagentRuntimeHost(parent: ActiveSessionState): {
+					deleteRlmSubagentRuntime(
+						childId: string,
+						session: ActiveSessionState["runtime"]["session"],
+					): Promise<void>;
+				};
+			};
+			internals.sessions.set(childState.activeSessionId, childState);
+			internals.closeSession = closeSession;
+
+			await expect(
+				internals
+					.createSubagentRuntimeHost(parentState)
+					.deleteRlmSubagentRuntime("child-1", childState.runtime.session),
+			).rejects.toThrow();
+			expect(closeSession).not.toHaveBeenCalled();
+			expect(internals.sessions.get(childState.activeSessionId)).toBe(childState);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("hides daemon sessions from messaging and observation while they are closing", async () => {
@@ -2816,7 +2877,7 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("rehydrates completed RLM subagents from the parent registry", async () => {
+	it("rehydrates completed RLM subagents into the parent registry and durably deletes them", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-rlm-rehydrate-"));
 		try {
 			const sessionDir = join(tempDir, "sessions");
@@ -2874,6 +2935,14 @@ describe("daemon mode helpers", () => {
 			const internals = daemon as unknown as {
 				sessions: Map<string, ActiveSessionState>;
 				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createSubagentRuntimeHost(parent: ActiveSessionState): {
+					deleteRlmSubagentRuntime(
+						childId: string,
+						session: ActiveSessionState["runtime"]["session"],
+					): Promise<void>;
+				};
+				rehydrateCompletedRlmSubagents(parent: ActiveSessionState): Promise<void>;
+				closeSession(state: ActiveSessionState, reason: "killed", waitForAbort?: boolean): Promise<void>;
 			};
 
 			const parentState = await internals.createRuntime({ type: "create", sessionPath: parentSessionFile });
@@ -2891,6 +2960,33 @@ describe("daemon mode helpers", () => {
 				rlmParentNodeId: childId,
 				sessionDir: childSessionDir,
 			});
+			expect(parentState.runtime.session.retainFinishedRlmChildSession).toHaveBeenCalledWith(
+				childId,
+				childState?.runtime.session,
+			);
+
+			if (!childState) {
+				throw new Error("Missing rehydrated child state");
+			}
+			appendFileSync(join(parentArtifactDir, "rlm-subagents.jsonl"), "{unterminated malformed registry line");
+			internals.closeSession = vi.fn(async (state: ActiveSessionState) => {
+				internals.sessions.delete(state.activeSessionId);
+			});
+			await internals
+				.createSubagentRuntimeHost(parentState)
+				.deleteRlmSubagentRuntime(childId, childState.runtime.session);
+			expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
+			const persistedLines = readFileSync(join(parentArtifactDir, "rlm-subagents.jsonl"), "utf8")
+				.trim()
+				.split(/\r?\n/);
+			const persistedDeletion = JSON.parse(persistedLines.at(-1) ?? "") as { childId: string; status: string };
+			expect(persistedDeletion).toMatchObject({ childId, status: "deleted" });
+
+			await internals.rehydrateCompletedRlmSubagents(parentState);
+			expect(createRuntime).toHaveBeenCalledTimes(2);
+			expect([...internals.sessions.values()].some((state) => state.runtime.metadata.rlmChildId === childId)).toBe(
+				false,
+			);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -4634,6 +4730,7 @@ function makeRuntimeSession(
 			return sessionManager.getSessionName();
 		},
 		setSubagentRuntimeHost: vi.fn(),
+		retainFinishedRlmChildSession: vi.fn(() => true),
 		subscribe: vi.fn(() => vi.fn()),
 		bindExtensions: vi.fn(async () => {}),
 		setExecEnvProvider: vi.fn(),

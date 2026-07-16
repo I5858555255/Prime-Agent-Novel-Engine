@@ -8,7 +8,18 @@
 
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { getLogger } from "@earendil-works/pi-ai";
@@ -324,7 +335,7 @@ interface PersistedRlmSubagentRegistryEntry {
 	rlmParentNodeId?: string;
 	prompt?: string;
 	spawnCode?: string;
-	status: "running" | "completed";
+	status: "running" | "completed" | "deleted";
 	createdAt: number;
 	updatedAt: string;
 }
@@ -738,18 +749,28 @@ export class AgentDaemon {
 	private appendRlmSubagentRegistryEntry(
 		parentState: ActiveSessionState,
 		entry: PersistedRlmSubagentRegistryEntry,
-	): void {
+	): boolean {
 		const path = this.rlmSubagentRegistryPath(parentState.runtime.session);
 		if (!path) {
-			return;
+			return true;
 		}
 		try {
 			mkdirSync(dirname(path), { recursive: true });
-			appendFileSync(path, `${JSON.stringify(entry)}\n`);
+			const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+			const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+			const handle = openSync(path, "a");
+			try {
+				writeSync(handle, `${separator}${JSON.stringify(entry)}\n`);
+				fsyncSync(handle);
+			} finally {
+				closeSync(handle);
+			}
+			return true;
 		} catch (error) {
 			this.log(
 				`failed to persist RLM subagent registry entry: ${error instanceof Error ? error.message : String(error)}`,
 			);
+			return false;
 		}
 	}
 
@@ -785,18 +806,47 @@ export class AgentDaemon {
 		});
 	}
 
-	private readLatestRlmSubagentRegistry(parentState: ActiveSessionState): PersistedRlmSubagentRegistryEntry[] {
+	private recordRlmSubagentDeletion(parentState: ActiveSessionState, childId: string): void {
+		const latest = this.readLatestRlmSubagentRegistry(parentState, true).find((entry) => entry.childId === childId);
+		if (!latest || latest.status === "deleted") {
+			return;
+		}
+		if (
+			!this.appendRlmSubagentRegistryEntry(parentState, {
+				...latest,
+				status: "deleted",
+				updatedAt: new Date().toISOString(),
+			})
+		) {
+			throw new Error(`Failed to persist deletion for RLM subagent ${childId}`);
+		}
+	}
+
+	private readLatestRlmSubagentRegistry(
+		parentState: ActiveSessionState,
+		throwOnReadError = false,
+	): PersistedRlmSubagentRegistryEntry[] {
 		const path = this.rlmSubagentRegistryPath(parentState.runtime.session);
 		if (!path || !existsSync(path)) {
 			return [];
 		}
 		const latest = new Map<string, PersistedRlmSubagentRegistryEntry>();
+		let lines: string[];
 		try {
-			for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
-				const trimmed = line.trim();
-				if (!trimmed) {
-					continue;
-				}
+			lines = readFileSync(path, "utf8").split(/\r?\n/);
+		} catch (error) {
+			this.log(`failed to read RLM subagent registry: ${error instanceof Error ? error.message : String(error)}`);
+			if (throwOnReadError) {
+				throw error;
+			}
+			return [];
+		}
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) {
+				continue;
+			}
+			try {
 				const entry = JSON.parse(trimmed) as Partial<PersistedRlmSubagentRegistryEntry>;
 				if (
 					entry.type !== "rlm_subagent" ||
@@ -804,14 +854,16 @@ export class AgentDaemon {
 					typeof entry.sessionName !== "string" ||
 					typeof entry.sessionDir !== "string" ||
 					typeof entry.sessionFile !== "string" ||
-					(entry.status !== "running" && entry.status !== "completed")
+					(entry.status !== "running" && entry.status !== "completed" && entry.status !== "deleted")
 				) {
 					continue;
 				}
 				latest.set(entry.childId, entry as PersistedRlmSubagentRegistryEntry);
+			} catch (error) {
+				this.log(
+					`ignored malformed RLM subagent registry entry: ${error instanceof Error ? error.message : String(error)}`,
+				);
 			}
-		} catch (error) {
-			this.log(`failed to read RLM subagent registry: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		return [...latest.values()];
 	}
@@ -1616,6 +1668,10 @@ export class AgentDaemon {
 						candidate.runtime.metadata.parentActiveSessionId === parentState.activeSessionId &&
 						candidate.runtime.metadata.rlmChildId === childId,
 				);
+				// Persist the deletion boundary before tearing down the runtime. If the write
+				// fails, the live child remains available for the parent to retry instead of
+				// becoming a disposed session that can still rehydrate after a crash.
+				this.recordRlmSubagentDeletion(parentState, childId);
 				if (!state) {
 					await session.disposeAsync();
 					return;
@@ -1644,22 +1700,23 @@ export class AgentDaemon {
 					// Run shutdown side effects without disposing the still-readable session.
 					this.cancelSubagentRlmHeartbeats(state);
 					await flushAgentTraceUpload(state.runtime.session.sessionManager).catch(() => undefined);
-					if (runtime.session.sessionFile) {
-						this.recordRlmSubagentRegistryEntry(parentState, {
-							childId: options.id,
-							sessionName: options.sessionName,
-							sessionDir: options.sessionDir,
-							sessionFile: runtime.session.sessionFile,
-							rlmParentNodeId: options.rlmParentNodeId,
-							prompt: options.prompt.length <= 4096 ? options.prompt : undefined,
-							spawnCode: options.spawnCode,
-							status: "completed",
-							createdAt: state.runtime.metadata.createdAt,
-						});
-					}
-					// Retention can decline if the parent is already tearing down; if so, close
-					// the session here so it doesn't linger in the registry.
+					// Retention can decline if deletion or parent teardown won while the trace
+					// flush was in flight. Persist completion only after retention succeeds, so
+					// a late completion cannot overwrite a durable deletion tombstone.
 					if (options.parentSession.retainFinishedRlmChildSession(options.id, runtime.session)) {
+						if (runtime.session.sessionFile) {
+							this.recordRlmSubagentRegistryEntry(parentState, {
+								childId: options.id,
+								sessionName: options.sessionName,
+								sessionDir: options.sessionDir,
+								sessionFile: runtime.session.sessionFile,
+								rlmParentNodeId: options.rlmParentNodeId,
+								prompt: options.prompt.length <= 4096 ? options.prompt : undefined,
+								spawnCode: options.spawnCode,
+								status: "completed",
+								createdAt: state.runtime.metadata.createdAt,
+							});
+						}
 						return;
 					}
 				}
@@ -1823,9 +1880,10 @@ export class AgentDaemon {
 				continue;
 			}
 			let stateRef: ActiveSessionState | undefined;
+			let runtime: AgentSessionRuntime | undefined;
 			try {
 				const sessionManager = await SessionManager.openAsync(entry.sessionFile, entry.sessionDir);
-				const runtime = await withClientEnv(parentState.clientEnv, () =>
+				runtime = await withClientEnv(parentState.clientEnv, () =>
 					createAgentSessionRuntime(this.options.createRuntime, {
 						cwd: sessionManager.getCwd(),
 						agentDir: parentState.runtime.services.agentDir,
@@ -1880,13 +1938,21 @@ export class AgentDaemon {
 						},
 					}),
 				);
-				await this.addRuntime(runtime, undefined, parentState.clientEnv, (state) => {
-					stateRef = state;
+				const state = await this.addRuntime(runtime, undefined, parentState.clientEnv, (createdState) => {
+					stateRef = createdState;
 				});
 				if (runtime.session.sessionName !== entry.sessionName) {
 					runtime.session.setSessionName(entry.sessionName);
 				}
+				if (!parentState.runtime.session.retainFinishedRlmChildSession(entry.childId, runtime.session)) {
+					await this.closeSession(state, "replaced");
+				}
 			} catch (error) {
+				if (stateRef) {
+					await this.closeSession(stateRef, "completed").catch(() => undefined);
+				} else {
+					await runtime?.dispose().catch(() => undefined);
+				}
 				this.log(
 					`failed to rehydrate completed RLM subagent ${entry.sessionName}: ${
 						error instanceof Error ? error.message : String(error)
