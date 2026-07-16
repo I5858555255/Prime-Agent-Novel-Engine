@@ -29,7 +29,6 @@ export interface ImageOptions {
 	maxHeightCells?: number;
 	filename?: string;
 	fallbackOnly?: boolean;
-	includeFallbackDimensions?: boolean;
 	/** Kitty image ID. If provided, reuses this ID (for animations/updates). */
 	imageId?: number;
 }
@@ -57,11 +56,7 @@ export class Image implements Component {
 		this.mimeType = mimeType;
 		this.theme = theme;
 		this.options = options;
-		this.dimensions = dimensions ||
-			(this.options.includeFallbackDimensions === false ? undefined : getImageDimensions(base64Data, mimeType)) || {
-				widthPx: 800,
-				heightPx: 600,
-			};
+		this.dimensions = dimensions || getImageDimensions(base64Data, mimeType) || { widthPx: 800, heightPx: 600 };
 		this.imageId = options.imageId;
 	}
 
@@ -88,9 +83,7 @@ export class Image implements Component {
 
 		if (caps.images && (fullscreenFallback || this.options.fallbackOnly === true)) {
 			const parts = [this.mimeType];
-			if (this.options.includeFallbackDimensions !== false) {
-				parts.push(`${this.dimensions.widthPx}×${this.dimensions.heightPx}`);
-			}
+			parts.push(`${this.dimensions.widthPx}×${this.dimensions.heightPx}`);
 			if (this.options.filename) parts.unshift(this.options.filename);
 			if (fullscreenFallback && this.options.fallbackOnly !== true) parts.push("/fullscreen off to view");
 			lines = [this.theme.fallbackColor(`[${parts.join(" · ")}]`)];

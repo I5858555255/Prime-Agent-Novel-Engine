@@ -445,7 +445,6 @@ export class ToolExecutionComponent extends Container {
 					{
 						maxWidthCells: this.imageWidthCells,
 						fallbackOnly: !this.allowInlineImages,
-						includeFallbackDimensions: this.allowInlineImages,
 					},
 				);
 				this.imageComponents.push(imageComponent);

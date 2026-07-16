@@ -119,7 +119,7 @@ describe("ToolExecutionComponent parity", () => {
 
 			let rendered = component.render(120).join("\n");
 			expect(rendered).not.toContain("\x1b_G");
-			expect(stripAnsi(rendered)).toContain("[image/png]");
+			expect(stripAnsi(rendered)).toContain("[image/png · 800×600]");
 
 			component.setShowImages(false);
 			component.setShowImages(true);
@@ -203,7 +203,7 @@ describe("ToolExecutionComponent parity", () => {
 		}
 	});
 
-	test("suppressed history image fallbacks skip dimension parsing", () => {
+	test("historical image fallbacks include dimensions", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const onePixelPng =
@@ -223,8 +223,7 @@ describe("ToolExecutionComponent parity", () => {
 			});
 
 			const rendered = stripAnsi(component.render(120).join("\n"));
-			expect(rendered).toContain("[image/png]");
-			expect(rendered).not.toContain("1x1");
+			expect(rendered).toContain("[image/png · 1×1]");
 		} finally {
 			resetCapabilitiesCache();
 		}
