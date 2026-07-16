@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,19 +23,21 @@ const directories: string[] = [];
 
 interface WorkerHarness {
 	descriptor: { workerId: string; rootActiveSessionId: string; lifecycle: "ready"; pid: number };
+	client?: { request: ReturnType<typeof vi.fn> };
 	summaries: Map<string, SessionSummary>;
 	snapshotCache: Map<string, DaemonAttachResult>;
 	transcriptCaches: Map<string, SnapshotTranscriptCache>;
-	incomingTranscriptActiveSessionIds: Set<string>;
-	duplicateIncomingTranscriptChunkIndexes: Map<string, number>;
-	snapshotTransferFrames: Map<
+	snapshotGenerations: Map<
 		string,
-		{
-			begin: Buffer;
-			end?: Buffer;
-			duplicateResult?: DaemonAttachResult;
-			validation?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void };
-		}
+		Map<
+			string,
+			{
+				transcript: SnapshotTranscriptCache;
+				result: DaemonAttachResult;
+				incoming: boolean;
+				retired: boolean;
+			}
+		>
 	>;
 	snapshotLoads: Map<string, Promise<DaemonAttachResult>>;
 	intentionalStop: boolean;
@@ -132,9 +134,7 @@ function workerHarness(result: DaemonAttachResult, transcript: SnapshotTranscrip
 		summaries: new Map([[activeSessionId, result.snapshot.summary]]),
 		snapshotCache: new Map([[activeSessionId, result]]),
 		transcriptCaches: new Map([[activeSessionId, transcript]]),
-		incomingTranscriptActiveSessionIds: new Set(),
-		duplicateIncomingTranscriptChunkIndexes: new Map(),
-		snapshotTransferFrames: new Map(),
+		snapshotGenerations: new Map(),
 		snapshotLoads: new Map(),
 		intentionalStop: false,
 		stopRevision: 0,
@@ -142,6 +142,263 @@ function workerHarness(result: DaemonAttachResult, transcript: SnapshotTranscrip
 }
 
 describe("ENG-4677 snapshot catch-up replacement", () => {
+	it("lets an incomplete retained snapshot finish after a newer generation begins", async () => {
+		const root = tempDirectory();
+		const supervisor = new DaemonSupervisor(join(root, "supervisor.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			descriptorDir: join(root, "state"),
+		});
+		const firstSnapshotId = "snapshot-4677-incomplete-a";
+		const replacementSnapshotId = "snapshot-4677-incomplete-b";
+		const placeholder = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId: firstSnapshotId,
+			cacheRoot: root,
+			targetChunkBytes: 1,
+		});
+		const worker = workerHarness(streamedResult(firstSnapshotId, 1, 1), placeholder);
+		worker.snapshotCache.clear();
+		worker.transcriptCaches.clear();
+		const client = socketClient("incomplete-reader");
+		const written: DaemonOutbound[] = [];
+		const writeSnapshotBuffer = vi.fn((_client: DaemonSocketClient, buffer: Uint8Array) => {
+			written.push(JSON.parse(Buffer.from(buffer).toString("utf8")) as DaemonOutbound);
+			return Promise.resolve(true);
+		});
+		const internals = supervisor as unknown as {
+			writeSnapshotBuffer: typeof writeSnapshotBuffer;
+			handleWorkerFrame(worker: WorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): void;
+			streamSnapshot(
+				client: DaemonSocketClient,
+				worker: WorkerHarness,
+				result: DaemonAttachResult,
+				transcript: SnapshotTranscriptCache,
+			): Promise<void>;
+		};
+		internals.writeSnapshotBuffer = writeSnapshotBuffer;
+
+		const firstResult = streamedResult(firstSnapshotId, 1, 1);
+		const { messages: _firstMessages, ...firstSnapshot } = firstResult.snapshot;
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_begin",
+				activeSessionId,
+				snapshotId: firstSnapshotId,
+				snapshot: firstSnapshot,
+				messageCount: 1,
+				targetChunkBytes: 1,
+			}),
+		);
+		const firstTranscript = worker.transcriptCaches.get(activeSessionId);
+		if (!firstTranscript) {
+			throw new Error("first transcript was not initialized");
+		}
+		const firstStream = internals.streamSnapshot(client, worker, firstResult, firstTranscript);
+		void firstStream.catch(() => undefined);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		const replacementResult = streamedResult(replacementSnapshotId, 1, 2);
+		const { messages: _replacementMessages, ...replacementSnapshot } = replacementResult.snapshot;
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_begin",
+				activeSessionId,
+				snapshotId: replacementSnapshotId,
+				snapshot: replacementSnapshot,
+				messageCount: 1,
+				targetChunkBytes: 1,
+			}),
+		);
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_chunk",
+				activeSessionId,
+				snapshotId: firstSnapshotId,
+				index: 0,
+				messages: [{ role: "user", content: "first", timestamp: 1 }],
+			}),
+		);
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_end",
+				activeSessionId,
+				snapshotId: firstSnapshotId,
+				chunkCount: 1,
+				lastEventSequence: 1,
+			}),
+		);
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_chunk",
+				activeSessionId,
+				snapshotId: replacementSnapshotId,
+				index: 0,
+				messages: [{ role: "user", content: "replacement", timestamp: 2 }],
+			}),
+		);
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_end",
+				activeSessionId,
+				snapshotId: replacementSnapshotId,
+				chunkCount: 1,
+				lastEventSequence: 2,
+			}),
+		);
+
+		await expect(firstStream).resolves.toBeUndefined();
+		expect(written.some((message) => message.type === "session_snapshot_failed")).toBe(false);
+		expect(worker.transcriptCaches.get(activeSessionId)?.snapshotId).toBe(replacementSnapshotId);
+		client.socket.destroy();
+	});
+
+	it("does not let a stale attach response replace a newer completed generation", async () => {
+		const root = tempDirectory();
+		const supervisor = new DaemonSupervisor(join(root, "supervisor.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			descriptorDir: join(root, "state"),
+		});
+		const firstSnapshotId = "snapshot-4677-stale-a";
+		const replacementSnapshotId = "snapshot-4677-stale-b";
+		const firstResult = streamedResult(firstSnapshotId, 1, 1);
+		const placeholder = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId: firstSnapshotId,
+			cacheRoot: root,
+			targetChunkBytes: 1,
+		});
+		const worker = workerHarness(firstResult, placeholder);
+		worker.snapshotCache.clear();
+		worker.transcriptCaches.clear();
+		let resolveAttach!: (response: { success: true; data: DaemonAttachResult }) => void;
+		worker.client = {
+			request: vi.fn(
+				() =>
+					new Promise<{ success: true; data: DaemonAttachResult }>((resolve) => {
+						resolveAttach = resolve;
+					}),
+			),
+		};
+		const client = socketClient("stale-attach");
+		const internals = supervisor as unknown as {
+			workers: Map<string, WorkerHarness>;
+			attachClient(
+				client: DaemonSocketClient,
+				command: { type: "attach"; activeSessionId: string; capabilities: ["chunked_snapshot"] },
+			): Promise<{
+				result: DaemonAttachResult;
+				transcript?: SnapshotTranscriptCache;
+				releaseTranscript?: () => void;
+			}>;
+			handleWorkerFrame(worker: WorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): void;
+		};
+		internals.workers.set(worker.descriptor.workerId, worker);
+		const attaching = internals.attachClient(client, {
+			type: "attach",
+			activeSessionId,
+			capabilities: ["chunked_snapshot"],
+		});
+		await Promise.resolve();
+
+		for (const result of [firstResult, streamedResult(replacementSnapshotId, 1, 2)]) {
+			const { messages: _messages, ...snapshot } = result.snapshot;
+			const message = result.lastEventSequence === 1 ? "first" : "replacement";
+			internals.handleWorkerFrame(
+				worker,
+				snapshotFrame({
+					type: "session_snapshot_begin",
+					activeSessionId,
+					snapshotId: result.snapshotStream!.id,
+					snapshot,
+					messageCount: 1,
+					targetChunkBytes: 1,
+				}),
+			);
+			internals.handleWorkerFrame(
+				worker,
+				snapshotFrame({
+					type: "session_snapshot_chunk",
+					activeSessionId,
+					snapshotId: result.snapshotStream!.id,
+					index: 0,
+					messages: [{ role: "user", content: message, timestamp: result.lastEventSequence }],
+				}),
+			);
+			internals.handleWorkerFrame(
+				worker,
+				snapshotFrame({
+					type: "session_snapshot_end",
+					activeSessionId,
+					snapshotId: result.snapshotStream!.id,
+					chunkCount: 1,
+					lastEventSequence: result.lastEventSequence,
+				}),
+			);
+		}
+		resolveAttach({ success: true, data: firstResult });
+
+		const attached = await attaching;
+		expect(attached.result.snapshotStream?.id).toBe(replacementSnapshotId);
+		expect(attached.transcript?.snapshotId).toBe(replacementSnapshotId);
+		expect(attached.transcript?.complete).toBe(true);
+		expect(worker.transcriptCaches.get(activeSessionId)?.snapshotId).toBe(replacementSnapshotId);
+		attached.releaseTranscript?.();
+		client.socket.destroy();
+	});
+
+	it("fails and disposes an orphaned incomplete transcript before replacing it", async () => {
+		const root = tempDirectory();
+		const supervisor = new DaemonSupervisor(join(root, "supervisor.sock"), {
+			defaultSessionConfig: { agentDir: root, cwd: root },
+			descriptorDir: join(root, "state"),
+		});
+		const firstSnapshotId = "snapshot-4677-orphan-a";
+		const replacementSnapshotId = "snapshot-4677-orphan-b";
+		const firstResult = streamedResult(firstSnapshotId, 1, 1);
+		const firstTranscript = new SnapshotTranscriptCache({
+			activeSessionId,
+			snapshotId: firstSnapshotId,
+			cacheRoot: root,
+			targetChunkBytes: 1,
+			memoryCacheBytes: 1,
+		});
+		firstTranscript.appendEncodedChunk(Buffer.from("orphaned transcript chunk"));
+		expect(firstTranscript.fileBacked).toBe(true);
+		const cacheDirectory = join(root, firstSnapshotId);
+		expect(existsSync(cacheDirectory)).toBe(true);
+		const waiter = firstTranscript.waitForChunk(1);
+		void waiter.catch(() => undefined);
+		const worker = workerHarness(firstResult, firstTranscript);
+		const internals = supervisor as unknown as {
+			handleWorkerFrame(worker: WorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): void;
+		};
+		const replacementResult = streamedResult(replacementSnapshotId, 1, 2);
+		const { messages: _messages, ...snapshot } = replacementResult.snapshot;
+
+		internals.handleWorkerFrame(
+			worker,
+			snapshotFrame({
+				type: "session_snapshot_begin",
+				activeSessionId,
+				snapshotId: replacementSnapshotId,
+				snapshot,
+				messageCount: 1,
+				targetChunkBytes: 1,
+			}),
+		);
+
+		await expect(waiter).rejects.toThrow("superseded");
+		expect(firstTranscript.fileBacked).toBe(false);
+		expect(existsSync(cacheDirectory)).toBe(false);
+		expect(worker.transcriptCaches.get(activeSessionId)?.snapshotId).toBe(replacementSnapshotId);
+	});
+
 	it("lets a retained snapshot finish while a newer generation becomes current", async () => {
 		const root = tempDirectory();
 		const supervisor = new DaemonSupervisor(join(root, "supervisor.sock"), {

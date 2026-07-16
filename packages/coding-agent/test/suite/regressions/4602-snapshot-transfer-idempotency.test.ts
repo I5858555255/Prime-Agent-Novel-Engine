@@ -28,16 +28,18 @@ interface WorkerHarness {
 	summaries: Map<string, SessionSummary>;
 	snapshotCache: Map<string, DaemonAttachResult>;
 	transcriptCaches: Map<string, SnapshotTranscriptCache>;
-	incomingTranscriptActiveSessionIds: Set<string>;
-	duplicateIncomingTranscriptChunkIndexes: Map<string, number>;
-	snapshotTransferFrames: Map<
+	snapshotGenerations: Map<
 		string,
-		{
-			begin: Buffer;
-			end?: Buffer;
-			duplicateResult?: DaemonAttachResult;
-			validation?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void };
-		}
+		Map<
+			string,
+			{
+				transcript: SnapshotTranscriptCache;
+				result: DaemonAttachResult;
+				incoming: boolean;
+				retired: boolean;
+				validation?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void };
+			}
+		>
 	>;
 	snapshotLoads: Map<string, Promise<DaemonAttachResult>>;
 	intentionalStop: boolean;
@@ -111,9 +113,7 @@ function workerHarness() {
 		summaries: new Map([[activeSessionId, summary()]]),
 		snapshotCache: new Map(),
 		transcriptCaches: new Map<string, SnapshotTranscriptCache>(),
-		incomingTranscriptActiveSessionIds: new Set<string>(),
-		duplicateIncomingTranscriptChunkIndexes: new Map<string, number>(),
-		snapshotTransferFrames: new Map(),
+		snapshotGenerations: new Map(),
 		snapshotLoads: new Map(),
 		intentionalStop: false,
 		stopRevision: 0,
@@ -303,7 +303,6 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		});
 		worker.snapshotCache.set(activeSessionId, streamedResult([]));
 		worker.transcriptCaches.set(activeSessionId, transcript);
-		worker.incomingTranscriptActiveSessionIds.add(activeSessionId);
 		const internals = supervisor as unknown as {
 			handleWorkerFrame(worker: WorkerHarness, frame: PrivateFrame<DaemonWorkerFrameHeader>): void;
 		};
@@ -323,7 +322,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(worker.summaries.has("active-4602-sibling")).toBe(true);
 		expect(worker.snapshotCache.has(activeSessionId)).toBe(false);
 		expect(worker.transcriptCaches.has(activeSessionId)).toBe(false);
-		expect(worker.incomingTranscriptActiveSessionIds.has(activeSessionId)).toBe(false);
+		expect(worker.snapshotGenerations.has(activeSessionId)).toBe(false);
 	});
 
 	it("quarantines a completed duplicate until exact replacement validation", async () => {
@@ -479,7 +478,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		for (const message of [frames.begin, frames.chunk, frames.end, frames.begin]) {
 			internals.handleWorkerFrame(worker, frame(message));
 		}
-		const validation = worker.snapshotTransferFrames.get(activeSessionId)?.validation?.promise;
+		const validation = worker.snapshotGenerations.get(activeSessionId)?.get(snapshotId)?.validation?.promise;
 		if (!validation) {
 			throw new Error("duplicate validation was not created");
 		}
@@ -508,9 +507,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(close).toHaveBeenCalledOnce();
 		expect(worker.snapshotCache.size).toBe(0);
 		expect(worker.transcriptCaches.size).toBe(0);
-		expect(worker.incomingTranscriptActiveSessionIds.size).toBe(0);
-		expect(worker.duplicateIncomingTranscriptChunkIndexes.size).toBe(0);
-		expect(worker.snapshotTransferFrames.size).toBe(0);
+		expect(worker.snapshotGenerations.size).toBe(0);
 		expect(unhandled).not.toHaveBeenCalled();
 	});
 
@@ -544,7 +541,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		release();
 		expect(worker.transcriptCaches.size).toBe(0);
 		expect(worker.snapshotCache.size).toBe(0);
-		expect(worker.snapshotTransferFrames.size).toBe(0);
+		expect(worker.snapshotGenerations.size).toBe(0);
 	});
 
 	it("rejects same-ID reentrant begins and mismatched duplicate metadata", async () => {
