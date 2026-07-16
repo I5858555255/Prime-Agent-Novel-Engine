@@ -4,6 +4,7 @@
 
 - Fixed unsupported Node versions crashing before startup by requiring Node 22.8.0 or newer and showing upgrade guidance before loading the CLI ([ENG-4260](https://linear.app/primeintellect/issue/ENG-4260/incorrect-node-version-breaks-first-launch)).
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Fixed queued messages getting stranded when an agent turn ended ([ENG-4653](https://linear.app/primeintellect/issue/ENG-4653/queued-messages-can-get-stuck-with-heartbeats)).
 
 ## [0.3.1] - 2026-07-15
 

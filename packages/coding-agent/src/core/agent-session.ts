@@ -773,6 +773,7 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _agentEventQueue: Promise<void> = Promise.resolve();
+	private _pendingMessageResumeQueue: Promise<void> = Promise.resolve();
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: QueuedSteeringMessage[] = [];
@@ -2355,6 +2356,7 @@ export class AgentSession {
 			this._retryResolve();
 			this._retryResolve = undefined;
 			this._retryPromise = undefined;
+			this._schedulePendingMessageResume();
 		}
 	}
 
@@ -3432,6 +3434,7 @@ export class AgentSession {
 				) {
 					this._acceptedAgentMessagePrompt = undefined;
 				}
+				this._schedulePendingMessageResume();
 			})
 			.catch(() => undefined);
 		if (options?.returnAfterAccepted) {
@@ -3727,6 +3730,7 @@ export class AgentSession {
 		});
 		this.agent.steer(options.prefixMessages?.length ? [...options.prefixMessages, message] : message);
 		this._emitQueueUpdate();
+		this._schedulePendingMessageResume();
 	}
 
 	/**
@@ -3769,7 +3773,59 @@ export class AgentSession {
 		});
 		this.agent.followUp(options.prefixMessages?.length ? [...options.prefixMessages, message] : message);
 		this._emitQueueUpdate();
+		this._schedulePendingMessageResume();
 		return true;
+	}
+
+	private _schedulePendingMessageResume(): void {
+		if (this._disposed || this._disposing || this.pendingMessageCount === 0) {
+			return;
+		}
+		const resume = () => this._resumePendingMessages();
+		this._pendingMessageResumeQueue = this._pendingMessageResumeQueue.then(resume, resume);
+		this._pendingMessageResumeQueue.catch(() => {});
+	}
+
+	private async _resumePendingMessages(): Promise<void> {
+		while (!this._disposed && !this._disposing && this.pendingMessageCount > 0) {
+			await this.agent.waitForIdle();
+			await this._agentEventQueue;
+			await this._waitForRefineIdle();
+
+			const blockingOperations = [this._compactionOperation, this._branchSummaryOperation].filter(
+				(operation): operation is Promise<void> => operation !== undefined,
+			);
+			if (blockingOperations.length > 0) {
+				await Promise.allSettled(blockingOperations);
+				continue;
+			}
+			if (this.isRetrying) {
+				await this.waitForRetry();
+				continue;
+			}
+			const acceptedPrompts = [...this._acceptedPromptCompletions];
+			if (acceptedPrompts.length > 0) {
+				await Promise.allSettled(acceptedPrompts);
+				continue;
+			}
+
+			if (this._disposed || this._disposing || this.pendingMessageCount === 0) {
+				return;
+			}
+			if (this.isStreaming) {
+				continue;
+			}
+			if (this.isBashRunning || this.isCompacting || this.isRetrying || this.hasAcceptedPromptInFlight) {
+				return;
+			}
+
+			this._flushPendingBashMessages();
+			if (this._pendingNextTurnMessages.length > 0) {
+				await this._promptPendingMessagesWithNextTurnContext();
+			} else {
+				await this.agent.continue();
+			}
+		}
 	}
 
 	/**
@@ -4560,6 +4616,7 @@ export class AgentSession {
 				this._compactionOperation = undefined;
 			}
 			resolveCompactionOperation();
+			this._schedulePendingMessageResume();
 			if (didCompact) {
 				this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 				if (hadPostCompactionContinue) {
@@ -5003,6 +5060,7 @@ export class AgentSession {
 			if (this._refineInFlight === settled) {
 				this._refineInFlight = undefined;
 			}
+			this._schedulePendingMessageResume();
 		}
 	}
 
@@ -5401,6 +5459,7 @@ export class AgentSession {
 			return false;
 		} finally {
 			this._autoCompactionAbortController = undefined;
+			this._schedulePendingMessageResume();
 		}
 	}
 
@@ -6898,21 +6957,10 @@ export class AgentSession {
 		// Emitted after the slot is released so clients never observe a bash_end
 		// while the session still rejects new commands as already running.
 		this._emit({ type: "bash_end", ...end });
-		void this._drainQueuedMessagesAfterBash().catch(() => undefined);
+		this._schedulePendingMessageResume();
 	}
 
-	private async _drainQueuedMessagesAfterBash(): Promise<void> {
-		await this.agent.waitForIdle();
-		if (
-			this.isStreaming ||
-			this.isCompacting ||
-			this.isRetrying ||
-			this.hasAcceptedPromptInFlight ||
-			this.pendingMessageCount === 0
-		) {
-			return;
-		}
-
+	private async _promptPendingMessagesWithNextTurnContext(): Promise<void> {
 		const steeringMessages = [...this._steeringMessages];
 		const followUpMessages = [...this._followUpMessages];
 		const drainedSteeringMessages = steeringMessages.length > 0 ? steeringMessages : [];
@@ -7314,6 +7362,7 @@ export class AgentSession {
 				this._branchSummaryOperation = undefined;
 			}
 			resolveBranchSummaryOperation();
+			this._schedulePendingMessageResume();
 		}
 	}
 
