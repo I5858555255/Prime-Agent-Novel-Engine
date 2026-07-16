@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Fixed stashed prompts being lost when leaving and reopening a session from the Agents View ([ENG-4659](https://linear.app/primeintellect/issue/ENG-4659/stashed-prompts-should-persist)).
 
 ## [0.3.1] - 2026-07-15
 

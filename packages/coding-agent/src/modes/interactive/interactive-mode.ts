@@ -23,7 +23,6 @@ import type {
 	AutocompleteItem,
 	AutocompleteProvider,
 	EditorComponent,
-	EditorPasteSnapshot,
 	Keybinding,
 	KeyId,
 	MarkdownTheme,
@@ -195,6 +194,7 @@ import type {
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
 import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
+import type { ClientPromptStashStore, PromptStash, PromptStashState } from "./prompt-stash-state.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -218,12 +218,6 @@ import { setWorkingPulseFrame, WORKING_ICON_INTERVAL_MS } from "./theme/working-
 interface Expandable {
 	setExpanded(expanded: boolean): void;
 }
-
-type PromptStash = {
-	text: string;
-	expandedText?: string;
-	pasteSnapshot?: EditorPasteSnapshot;
-};
 
 interface PendingToolCallRenderInput {
 	id: string;
@@ -645,6 +639,10 @@ export interface InteractiveModeOptions {
 	agentsViewOwnsStartupNotices?: boolean;
 	/** Open the read-only detail view for this subagent node right after startup. */
 	initialSubagentNodeId?: string;
+	/** Client-owned stash store shared across chat views in this TUI process. */
+	promptStashStore?: ClientPromptStashStore;
+	/** Initial stable session id used to scope prompt stash state. */
+	promptStashSessionId?: string;
 }
 
 export type InteractiveModeRunResult = "agents_view";
@@ -666,7 +664,9 @@ export class InteractiveMode {
 	private sideQuestionContainer: Container;
 	private defaultEditor: CustomEditor;
 	private editor: EditorComponent;
-	private promptStash: PromptStash | undefined;
+	private readonly promptStashStore: ClientPromptStashStore | undefined;
+	private promptStashSessionId: string | undefined;
+	private promptStashState: PromptStashState;
 	private editorComponentFactory: EditorFactory | undefined;
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
@@ -851,6 +851,13 @@ export class InteractiveMode {
 		}
 		this.uiServices = uiServices;
 		this.agentConnection = options.agentConnection;
+		this.promptStashStore = options.promptStashStore;
+		this.promptStashSessionId = options.promptStashSessionId;
+		this.promptStashState =
+			this.promptStashStore && this.promptStashSessionId
+				? this.promptStashStore.forSession(this.promptStashSessionId)
+				: {};
+		this.hydratePromptStash();
 		this.localSessionHost = options.localSessionHost;
 		this.bindLocalSessionExtensions = options.bindLocalSessionExtensions ?? options.localSessionHost !== undefined;
 		if (this.bindLocalSessionExtensions && !options.localSessionHost) {
@@ -929,6 +936,43 @@ export class InteractiveMode {
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.uiServices.getThemes());
 		initTheme(this.settingsManager.getTheme(), true);
+	}
+
+	private get promptStash(): PromptStash | undefined {
+		return this.promptStashState.stash;
+	}
+
+	private set promptStash(stash: PromptStash | undefined) {
+		this.promptStashState.stash = stash;
+	}
+
+	private hydratePromptStash(): void {
+		const stash = this.promptStash;
+		if (!stash) {
+			return;
+		}
+		for (const [markerId, image] of stash.images ?? []) {
+			this.pastedImages.set(markerId, image);
+		}
+		for (const markerId of imageMarkerIds(stash.text)) {
+			this.nextImageMarkerId = Math.max(this.nextImageMarkerId, markerId + 1);
+		}
+	}
+
+	private bindPromptStashSession(sessionId: string): void {
+		if (!this.promptStashStore || this.promptStashSessionId === sessionId) {
+			return;
+		}
+		this.releasePromptStashSession();
+		this.promptStashSessionId = sessionId;
+		this.promptStashState = this.promptStashStore.forSession(sessionId);
+		this.hydratePromptStash();
+	}
+
+	private releasePromptStashSession(): void {
+		if (this.promptStashStore && this.promptStashSessionId) {
+			this.promptStashStore.release(this.promptStashSessionId, this.promptStashState);
+		}
 	}
 
 	private getAutocompleteSourceTag(sourceInfo?: AgentConnectionSourceInfo): string | undefined {
@@ -2210,6 +2254,7 @@ export class InteractiveMode {
 	}
 
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
+		this.bindPromptStashSession(state.sessionId);
 		this.connectionState = state;
 		// Don't touch contextUsageTokenBaseline: a mid-stream snapshot reflects only completed
 		// turns (the in-flight message isn't persisted yet), so the in-flight delta must keep
@@ -3628,10 +3673,12 @@ export class InteractiveMode {
 			return;
 		}
 		const pasteSnapshot = this.editor.getPasteSnapshot?.();
+		const images = this.getPromptStashImages(text);
 		this.promptStash = {
 			text,
 			expandedText: pasteSnapshot ? (this.editor.getExpandedText?.() ?? text) : undefined,
 			pasteSnapshot,
+			...(images.length > 0 ? { images } : {}),
 		};
 		this.editor.setText("");
 		this.showStatus("Stashed prompt");
@@ -3653,6 +3700,17 @@ export class InteractiveMode {
 		}
 		this.showStatus("Restored stashed prompt");
 		return true;
+	}
+
+	private getPromptStashImages(text: string): readonly (readonly [number, ImageContent])[] {
+		const images: Array<readonly [number, ImageContent]> = [];
+		for (const markerId of imageMarkerIds(text)) {
+			const image = this.pastedImages.get(markerId);
+			if (image) {
+				images.push([markerId, image]);
+			}
+		}
+		return images;
 	}
 
 	private async handleClipboardImagePaste(): Promise<void> {
@@ -4174,7 +4232,7 @@ export class InteractiveMode {
 					this.resetSideQuestion();
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
-					this.resetCurrentSessionRenderState({ clearPromptStash: true });
+					this.resetCurrentSessionRenderState();
 					await this.rebindCurrentSession();
 					await this.renderInitialMessages();
 					this.ui.requestRender();
@@ -5990,6 +6048,7 @@ export class InteractiveMode {
 	 */
 	async teardownSessionUi(options: { preserveAltScreen?: boolean } = {}): Promise<void> {
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
+		this.releasePromptStashSession();
 		this.stop({ preserveAltScreen: options.preserveAltScreen });
 		stopThemeWatcher();
 	}
