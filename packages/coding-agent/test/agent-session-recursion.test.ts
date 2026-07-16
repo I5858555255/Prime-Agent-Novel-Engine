@@ -1062,6 +1062,7 @@ describe("AgentSession rlm recursion", () => {
 		});
 		let runtimeCreationStarted = false;
 		const hostedChild = createSession();
+		const disposeHostedChild = vi.spyOn(hostedChild, "disposeAsync");
 		let deleteAttempts = 0;
 		const deleteRuntime = vi.fn(async () => {
 			deleteAttempts++;
@@ -1101,9 +1102,11 @@ describe("AgentSession rlm recursion", () => {
 		await waitFor(() => internals._retryableRlmSubagentDeletions.size === 1);
 		expect(root.listRlmSubagents()).toEqual({ subagents: [] });
 		expect(deleteRuntime).toHaveBeenCalledTimes(1);
+		expect(disposeHostedChild).not.toHaveBeenCalled();
 
 		await expect(root.deleteRlmSubagent("starting-worker")).resolves.toEqual({ subagent: starting });
 		expect(deleteRuntime).toHaveBeenCalledTimes(2);
+		expect(disposeHostedChild).toHaveBeenCalledOnce();
 		expect(internals._retryableRlmSubagentDeletions.size).toBe(0);
 	});
 

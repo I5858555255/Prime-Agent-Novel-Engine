@@ -6818,9 +6818,14 @@ export class AgentSession {
 						!this._deletedRlmChildIds.has(run.id)
 					) {
 						this._retainedRlmChildSessions.set(run.id, childSession);
-					} else if (run.releaseError && releaseStatus !== "done" && childSession) {
+					} else if (
+						run.releaseError &&
+						releaseStatus !== "done" &&
+						childSession &&
+						!this._retryableRlmSubagentDeletions.has(run.id)
+					) {
 						// Failed/cancelled runs are not registry entries, so make a best-effort
-						// local cleanup if the host failed before releasing its runtime.
+						// local cleanup unless the session is deliberately retained for retry.
 						await childSession.disposeAsync().catch(() => undefined);
 					}
 					// Keep the forwarder only if the child was actually retained (retention can
