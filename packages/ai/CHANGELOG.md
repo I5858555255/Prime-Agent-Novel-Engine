@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-15
+
+- Added provider service-tier forwarding to shared stream options.
+- Removed team-gated internal Prime Inference routes from the public model catalog so clients can discover them from authenticated team catalogs instead.
+- Fixed the generated Nemotron 3 Ultra output cap being dropped when OpenRouter omits max completion tokens ([#420](https://github.com/PrimeIntellect-ai/prime-agent/pull/420)).
+
 ## [0.3.0] - 2026-07-13
 
 ## [0.2.9] - 2026-07-13

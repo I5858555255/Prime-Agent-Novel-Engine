@@ -2667,10 +2667,11 @@ describe("daemon mode helpers", () => {
 				messages: [],
 			});
 
-			expect(write).toHaveBeenCalledTimes(1);
+			expect(write).toHaveBeenCalledTimes(2);
 			const replacementFrame = String(write.mock.calls[0]?.[0]);
 			expect(replacementFrame).toContain('"type":"session_replaced"');
-			expect(replacementFrame).not.toContain('"snapshotFollows":true');
+			expect(replacementFrame).toContain('"snapshotFollows":true');
+			expect(String(write.mock.calls[1]?.[0])).toContain('"type":"session_snapshot_begin"');
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -2940,6 +2941,7 @@ describe("daemon mode helpers", () => {
 				sessionDir: join(tempDir, "child"),
 				model: {} as Model<Api>,
 				thinkingLevel: "off",
+				serviceTier: null,
 				scopedModels: [],
 				activeToolNames: [],
 				customTools: [],
@@ -3041,6 +3043,7 @@ describe("daemon mode helpers", () => {
 					sessionDir: join(tempDir, "child"),
 					model: {} as Model<Api>,
 					thinkingLevel: "off",
+					serviceTier: null,
 					scopedModels: [],
 					activeToolNames: [],
 					customTools: [],
@@ -4373,8 +4376,7 @@ describe("daemon mode helpers", () => {
 			runtime: ActiveSessionState["runtime"] & {
 				session: {
 					modelRegistry: {
-						refresh(): void;
-						getAvailable(): unknown[];
+						refreshAvailableModels(): Promise<unknown[]>;
 					};
 					isStreaming: boolean;
 					isCompacting: boolean;
@@ -4384,8 +4386,7 @@ describe("daemon mode helpers", () => {
 		};
 		state.runtime.session = {
 			modelRegistry: {
-				refresh: vi.fn(),
-				getAvailable: vi.fn(() => [model]),
+				refreshAvailableModels: vi.fn(async () => [model]),
 			},
 			isStreaming: true,
 			isCompacting: false,
@@ -4432,8 +4433,7 @@ describe("daemon mode helpers", () => {
 			runtime: ActiveSessionState["runtime"] & {
 				session: {
 					modelRegistry: {
-						refresh(): void;
-						getAvailable(): unknown[];
+						refreshAvailableModels(): Promise<unknown[]>;
 					};
 					isStreaming: boolean;
 					isCompacting: boolean;
@@ -4443,8 +4443,7 @@ describe("daemon mode helpers", () => {
 		};
 		state.runtime.session = {
 			modelRegistry: {
-				refresh: vi.fn(),
-				getAvailable: vi.fn(() => [model]),
+				refreshAvailableModels: vi.fn(async () => [model]),
 			},
 			isStreaming: false,
 			isCompacting: false,
