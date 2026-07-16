@@ -29,6 +29,7 @@ import {
 } from "../../core/orphan-process-journal.js";
 import { getProcessStartId } from "../../core/session-lease.js";
 import type { SessionInfo } from "../../core/session-manager.js";
+import { signalProcessGroupOrProcess } from "../../utils/child-process.js";
 import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { PrivateFrame } from "../session-worker/private-framing.js";
@@ -114,6 +115,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"steer",
 	"follow_up",
 	"restore_next_turn",
+	"append_custom_message",
 	"resume_queue",
 	"send_message",
 	"agent_messages_status",
@@ -436,20 +438,6 @@ function isProcessAlive(pid: number): boolean {
 		return true;
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
-	try {
-		process.kill(-pid, signal);
-		return;
-	} catch {
-		// Fall back when process groups are unavailable or the group already exited.
-	}
-	try {
-		process.kill(pid, signal);
-	} catch {
-		// The process may already be fully reaped.
 	}
 }
 
@@ -3141,7 +3129,7 @@ export class DaemonSupervisor {
 		if (!agentDir) {
 			throw new Error("Daemon supervisor config is missing agentDir");
 		}
-		const path = getDaemonUpdateRestartManifestPath(agentDir);
+		const path = getDaemonUpdateRestartManifestPath(this.socketPath, agentDir);
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 		const tempPath = `${path}.${process.pid}.tmp`;
 		writeFileSync(tempPath, `${JSON.stringify(manifest)}\n`, { mode: 0o600 });

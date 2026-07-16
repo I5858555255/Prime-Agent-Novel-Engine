@@ -23,7 +23,6 @@ import type {
 	AutocompleteItem,
 	AutocompleteProvider,
 	EditorComponent,
-	EditorPasteSnapshot,
 	Keybinding,
 	KeyId,
 	MarkdownTheme,
@@ -50,6 +49,11 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { spawn, spawnSync } from "child_process";
+import {
+	buildDaemonUpdateRestartReport,
+	launchDaemonUpdateRestartCoordinator,
+	resolveDaemonUpdateRestartSocketPath,
+} from "../../cli/daemon-update-restart.js";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -202,6 +206,7 @@ import type {
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
 import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
+import type { ClientPromptStashStore, PromptStash, PromptStashState } from "./prompt-stash-state.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -225,12 +230,6 @@ import { setWorkingPulseFrame, WORKING_ICON_INTERVAL_MS } from "./theme/working-
 interface Expandable {
 	setExpanded(expanded: boolean): void;
 }
-
-type PromptStash = {
-	text: string;
-	expandedText?: string;
-	pasteSnapshot?: EditorPasteSnapshot;
-};
 
 interface PendingToolCallRenderInput {
 	id: string;
@@ -309,6 +308,7 @@ export function mergeChildAgentSnapshots(
 		...incoming,
 		parentId: incoming.parentId ?? previous.parentId,
 		activeSessionId: incoming.activeSessionId ?? previous.activeSessionId,
+		sessionName: incoming.sessionName ?? previous.sessionName,
 		durationMs: incoming.durationMs ?? previous.durationMs,
 		answerPreview: incoming.answerPreview ?? previous.answerPreview,
 		toolUseCount:
@@ -330,6 +330,7 @@ function childAgentSummaryChanged(
 	const nextTokens = next.tokenCount === undefined ? undefined : formatTokenCount(next.tokenCount);
 	return (
 		previous.parentId !== next.parentId ||
+		previous.sessionName !== next.sessionName ||
 		previous.label !== next.label ||
 		previous.status !== next.status ||
 		previous.durationMs !== next.durationMs ||
@@ -468,6 +469,11 @@ type GoalAnnouncementSnapshot = {
 
 type ModelFallbackWarningAction = "show" | "suppress";
 
+interface OnboardingSplashHandle {
+	showProgress(message: string): void;
+	dismiss(): void;
+}
+
 const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	off: "No reasoning",
 	minimal: "Very brief reasoning",
@@ -564,9 +570,10 @@ function getPayloadWorkingIndicatorOptions(
 	};
 }
 
-function updateArgsIncludeSelf(args: readonly string[]): boolean {
+export function updateArgsIncludeSelf(args: readonly string[]): boolean {
 	let selfFlag = false;
 	let extensionsOnlyFlag = false;
+	let positional: string | undefined;
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 		if (arg === "--self") {
@@ -576,6 +583,10 @@ function updateArgsIncludeSelf(args: readonly string[]): boolean {
 		} else if (arg === "--extension") {
 			extensionsOnlyFlag = true;
 			index++;
+		} else if (arg === "--daemon-socket") {
+			index++;
+		} else if (arg && !arg.startsWith("-") && positional === undefined) {
+			positional = arg;
 		}
 	}
 	if (selfFlag) {
@@ -584,7 +595,6 @@ function updateArgsIncludeSelf(args: readonly string[]): boolean {
 	if (extensionsOnlyFlag) {
 		return false;
 	}
-	const positional = args.find((arg) => !arg.startsWith("-"));
 	if (!positional) {
 		return true;
 	}
@@ -609,6 +619,18 @@ export function buildUpdateRelaunchArgs(args: readonly string[], sessionFile: st
 	return relaunchArgs;
 }
 
+export function buildUpdateChildArgs(args: readonly string[], daemonSocketPath: string): string[] {
+	return args.includes("--daemon-socket") ? [...args] : [...args, "--daemon-socket", daemonSocketPath];
+}
+
+export function resolveInteractiveUpdateDaemonSocketPath(
+	args: readonly string[],
+	activeDaemonSocketPath: string,
+): string {
+	const socketFlagIndex = args.indexOf("--daemon-socket");
+	return socketFlagIndex === -1 ? activeDaemonSocketPath : (args[socketFlagIndex + 1] ?? activeDaemonSocketPath);
+}
+
 /**
  * Options for InteractiveMode initialization.
  */
@@ -629,6 +651,8 @@ export interface InteractiveModeOptions {
 	verbose?: boolean;
 	/** Agent execution boundary. InteractiveMode never talks directly to AgentSession for core execution. */
 	agentConnection: AgentConnection;
+	/** Exact daemon socket to preserve across an interactive self-update restart. */
+	daemonSocketPath?: string;
 	/**
 	 * Local-only host for in-process extension binding and callback-bearing session operations.
 	 * This must remain optional adapter glue, not a generic execution dependency.
@@ -652,6 +676,10 @@ export interface InteractiveModeOptions {
 	agentsViewOwnsStartupNotices?: boolean;
 	/** Open the read-only detail view for this subagent node right after startup. */
 	initialSubagentNodeId?: string;
+	/** Client-owned stash store shared across chat views in this TUI process. */
+	promptStashStore?: ClientPromptStashStore;
+	/** Initial stable session id used to scope prompt stash state. */
+	promptStashSessionId?: string;
 }
 
 export type InteractiveModeRunResult = "agents_view";
@@ -673,7 +701,9 @@ export class InteractiveMode {
 	private sideQuestionContainer: Container;
 	private defaultEditor: CustomEditor;
 	private editor: EditorComponent;
-	private promptStash: PromptStash | undefined;
+	private readonly promptStashStore: ClientPromptStashStore | undefined;
+	private promptStashSessionId: string | undefined;
+	private promptStashState: PromptStashState;
 	private editorComponentFactory: EditorFactory | undefined;
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
@@ -864,6 +894,13 @@ export class InteractiveMode {
 		}
 		this.uiServices = uiServices;
 		this.agentConnection = options.agentConnection;
+		this.promptStashStore = options.promptStashStore;
+		this.promptStashSessionId = options.promptStashSessionId;
+		this.promptStashState =
+			this.promptStashStore && this.promptStashSessionId
+				? this.promptStashStore.forSession(this.promptStashSessionId)
+				: {};
+		this.hydratePromptStash();
 		this.localSessionHost = options.localSessionHost;
 		this.bindLocalSessionExtensions = options.bindLocalSessionExtensions ?? options.localSessionHost !== undefined;
 		if (this.bindLocalSessionExtensions && !options.localSessionHost) {
@@ -942,6 +979,43 @@ export class InteractiveMode {
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.uiServices.getThemes());
 		initTheme(this.settingsManager.getTheme(), true);
+	}
+
+	private get promptStash(): PromptStash | undefined {
+		return this.promptStashState.stash;
+	}
+
+	private set promptStash(stash: PromptStash | undefined) {
+		this.promptStashState.stash = stash;
+	}
+
+	private hydratePromptStash(): void {
+		const stash = this.promptStash;
+		if (!stash) {
+			return;
+		}
+		for (const [markerId, image] of stash.images ?? []) {
+			this.pastedImages.set(markerId, image);
+		}
+		for (const markerId of imageMarkerIds(stash.text)) {
+			this.nextImageMarkerId = Math.max(this.nextImageMarkerId, markerId + 1);
+		}
+	}
+
+	private bindPromptStashSession(sessionId: string): void {
+		if (!this.promptStashStore || this.promptStashSessionId === sessionId) {
+			return;
+		}
+		this.releasePromptStashSession();
+		this.promptStashSessionId = sessionId;
+		this.promptStashState = this.promptStashStore.forSession(sessionId);
+		this.hydratePromptStash();
+	}
+
+	private releasePromptStashSession(): void {
+		if (this.promptStashStore && this.promptStashSessionId) {
+			this.promptStashStore.release(this.promptStashSessionId, this.promptStashState);
+		}
 	}
 
 	private getAutocompleteSourceTag(sourceInfo?: AgentConnectionSourceInfo): string | undefined {
@@ -1459,15 +1533,23 @@ export class InteractiveMode {
 		return true;
 	}
 
+	private async showOnboardingModelSelection(splash: OnboardingSplashHandle): Promise<void> {
+		try {
+			await this.showConfigurationMenu("models");
+		} finally {
+			splash.dismiss();
+		}
+	}
+
 	private async runOnboardingFlow(showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash()): Promise<void> {
 		this.modelRegistry.refresh();
 		if (showPrimeCliSplash) {
-			const shouldContinue = await this.showOnboardingModelSelectionSplash();
-			if (!shouldContinue) {
+			const splash = await this.showOnboardingSplash("choose a model");
+			if (!splash) {
 				return;
 			}
 
-			await this.showConfigurationMenu("models");
+			await this.showOnboardingModelSelection(splash);
 			return;
 		}
 
@@ -1477,7 +1559,21 @@ export class InteractiveMode {
 			return;
 		}
 
-		await this.showConfigurationMenu("providers");
+		const splash = await this.showOnboardingSplash();
+		if (!splash) {
+			return;
+		}
+
+		splash.showProgress("Signing in to Prime Intellect...");
+		const authResult = await this.createAuthFlows().runPrimeInferenceLogin();
+		if (authResult.status !== "success") {
+			splash.dismiss();
+			return;
+		}
+
+		splash.showProgress("Preparing models...");
+		await this.prepareForModelSelectionAfterLogin(authResult);
+		await this.showOnboardingModelSelection(splash);
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -2253,6 +2349,7 @@ export class InteractiveMode {
 	}
 
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
+		this.bindPromptStashSession(state.sessionId);
 		this.connectionState = state;
 		// Don't touch contextUsageTokenBaseline: a mid-stream snapshot reflects only completed
 		// turns (the in-flight message isn't persisted yet), so the in-flight delta must keep
@@ -3675,10 +3772,12 @@ export class InteractiveMode {
 			return;
 		}
 		const pasteSnapshot = this.editor.getPasteSnapshot?.();
+		const images = this.getPromptStashImages(text);
 		this.promptStash = {
 			text,
 			expandedText: pasteSnapshot ? (this.editor.getExpandedText?.() ?? text) : undefined,
 			pasteSnapshot,
+			...(images.length > 0 ? { images } : {}),
 		};
 		this.editor.setText("");
 		this.showStatus("Stashed prompt");
@@ -3700,6 +3799,17 @@ export class InteractiveMode {
 		}
 		this.showStatus("Restored stashed prompt");
 		return true;
+	}
+
+	private getPromptStashImages(text: string): readonly (readonly [number, ImageContent])[] {
+		const images: Array<readonly [number, ImageContent]> = [];
+		for (const markerId of imageMarkerIds(text)) {
+			const image = this.pastedImages.get(markerId);
+			if (image) {
+				images.push([markerId, image]);
+			}
+		}
+		return images;
 	}
 
 	private async handleClipboardImagePaste(): Promise<void> {
@@ -4226,7 +4336,7 @@ export class InteractiveMode {
 					this.resetSideQuestion();
 					this.resetExtensionUI();
 					this.applyConnectionStateSnapshot(event.state);
-					this.resetCurrentSessionRenderState({ clearPromptStash: true });
+					this.resetCurrentSessionRenderState();
 					await this.rebindCurrentSession();
 					await this.renderInitialMessages();
 					this.ui.requestRender();
@@ -5436,6 +5546,7 @@ export class InteractiveMode {
 		const build = (child: AgentConnectionRlmChildAgentSnapshot): ChildAgentInspectorNode => ({
 			id: child.id,
 			activeSessionId: child.activeSessionId,
+			sessionName: child.sessionName,
 			label: child.label,
 			status: child.status,
 			durationMs: child.durationMs,
@@ -6031,6 +6142,7 @@ export class InteractiveMode {
 	 */
 	async teardownSessionUi(options: { preserveAltScreen?: boolean } = {}): Promise<void> {
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
+		this.releasePromptStashSession();
 		this.stop({ preserveAltScreen: options.preserveAltScreen });
 		stopThemeWatcher();
 	}
@@ -7132,13 +7244,6 @@ export class InteractiveMode {
 				hide();
 				resolve();
 			};
-			const restore = () => {
-				if (settled) return;
-				hidden = false;
-				handle?.setHidden(false);
-				handle?.focus();
-				this.ui.requestRender();
-			};
 			const refreshModels = (force: boolean) => {
 				const refreshPromise = this.getModelSelectorRefreshPromise({ force });
 				if (!refreshPromise) return;
@@ -7152,12 +7257,11 @@ export class InteractiveMode {
 			};
 			const authenticate = (provider: AuthSelectorProvider, tab: "providers" | "mcp-connections") => {
 				if (settled) return;
-				handle?.setHidden(true);
 				void authFlows
 					.loginProvider(provider)
 					.then(async (authResult) => {
 						if (settled) return;
-						restore();
+						handle?.focus();
 						menu.refreshAuthentication();
 						if (authResult.status !== "success") return;
 
@@ -7178,7 +7282,7 @@ export class InteractiveMode {
 						refreshModels(true);
 					})
 					.catch((error) => {
-						restore();
+						handle?.focus();
 						this.showError(error instanceof Error ? error.message : String(error));
 					});
 			};
@@ -7594,36 +7698,44 @@ export class InteractiveMode {
 		}
 	}
 
-	private showOnboardingModelSelectionSplash(): Promise<boolean> {
+	private showOnboardingSplash(continueActionLabel?: string): Promise<OnboardingSplashHandle | undefined> {
 		return new Promise((resolve) => {
 			let settled = false;
+			let dismissed = false;
 			let handle: OverlayHandle | undefined;
 			let selector: PrimeOnboardingSplashComponent | undefined;
-			const settle = (result: boolean) => {
+			const settle = (result: OnboardingSplashHandle | undefined) => {
 				if (settled) {
 					return;
 				}
 				settled = true;
 				resolve(result);
 			};
-			const close = () => {
+			const dismiss = () => {
+				if (dismissed) {
+					return;
+				}
+				dismissed = true;
 				selector?.dispose();
 				handle?.hide();
 				this.ui.requestRender();
 			};
 			selector = new PrimeOnboardingSplashComponent(
 				() => {
-					close();
-					settle(true);
+					selector?.dispose();
+					settle({
+						showProgress: (message) => selector?.showProgress(message),
+						dismiss,
+					});
 				},
 				() => {
-					close();
-					settle(false);
+					dismiss();
+					settle(undefined);
 				},
 				{
 					getRows: () => this.ui.terminal.rows,
 					requestRender: () => this.ui.requestRender(),
-					continueActionLabel: "choose a model",
+					...(continueActionLabel ? { continueActionLabel } : {}),
 				},
 			);
 			handle = this.ui.showOverlay(selector, {
@@ -7783,16 +7895,25 @@ export class InteractiveMode {
 		const updateArgs = parseCommandArgs(args);
 		const includesSelf = updateArgsIncludeSelf(updateArgs);
 		const updateCwd = this.getCurrentCwd();
+		const daemonSocketPath = resolveInteractiveUpdateDaemonSocketPath(
+			updateArgs,
+			resolveDaemonUpdateRestartSocketPath(this.options.daemonSocketPath),
+		);
+		const updateChildArgs = includesSelf ? buildUpdateChildArgs(updateArgs, daemonSocketPath) : updateArgs;
 		this.stopWorkingLoader();
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
 		this.ui.stop();
 
 		const updateEnv = includesSelf ? { ...process.env, [SELF_UPDATE_INTERACTIVE_CHILD_ENV]: "1" } : process.env;
-		const updateResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, "update", ...updateArgs], {
-			stdio: "inherit",
-			cwd: updateCwd,
-			env: updateEnv,
-		});
+		const updateResult = spawnSync(
+			process.execPath,
+			[...process.execArgv, entrypoint, "update", ...updateChildArgs],
+			{
+				stdio: "inherit",
+				cwd: updateCwd,
+				env: updateEnv,
+			},
+		);
 		const updateExitCode = updateResult.status ?? (updateResult.signal ? 1 : 0);
 		const selfUpdateNotAttempted =
 			includesSelf && !updateResult.error && updateExitCode === SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE;
@@ -7816,6 +7937,27 @@ export class InteractiveMode {
 				await this.options.onShutdown?.();
 			} catch {
 				// The update already completed; do not block relaunch on local teardown.
+			}
+			if (!updateResult.error && updateExitCode === 0) {
+				try {
+					const status = await launchDaemonUpdateRestartCoordinator({
+						socketPath: daemonSocketPath,
+						agentDir: getAgentDir(),
+						cwd: updateCwd,
+						originActiveSessionId: this.connectionState?.activeSessionId,
+					});
+					const report = buildDaemonUpdateRestartReport(status);
+					for (const message of report.info) {
+						console.log(message);
+					}
+					for (const warning of report.warnings) {
+						console.error(`Warning: ${warning}`);
+					}
+				} catch (error: unknown) {
+					console.error(
+						`Warning: updated, but could not coordinate the daemon restart (${error instanceof Error ? error.message : String(error)}).`,
+					);
+				}
 			}
 			const relaunchResult = spawnSync(process.execPath, [...process.execArgv, entrypoint, ...relaunchArgs], {
 				stdio: "inherit",
