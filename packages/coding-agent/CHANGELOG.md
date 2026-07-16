@@ -2,20 +2,26 @@
 
 ## [Unreleased]
 
+- Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Added a combined heartbeat indicator and manager for pausing, resuming, or stopping user and agent heartbeats ([ENG-4536](https://linear.app/primeintellect/issue/ENG-4536/add-heartbeat-observability-and-management-ui)).
+
+## [0.3.1] - 2026-07-15
+
+- Added `/fast` for OpenAI Fast mode on supported ChatGPT models ([ENG-4620](https://linear.app/primeintellect/issue/ENG-4620/add-support-for-gpt-fast-mode-maybe-fast)).
 - Changed wrapped diff rows to use a blank hanging gutter.
 - Fixed team-gated Prime Inference routes being missing from model selectors by merging the authenticated team catalog during model refresh ([ENG-4645](https://linear.app/primeintellect/issue/ENG-4645/internalglm-52-fast-isnt-working)).
 - Added confirmation when fullscreen text selection copies to the clipboard ([ENG-4644](https://linear.app/primeintellect/issue/ENG-4644/copy-issues)).
-- Added compact file change stats to collapsed tool calls and an agent-run edit total above the recap.
-- Added a combined heartbeat indicator and manager for pausing, resuming, or stopping user and agent heartbeats ([ENG-4536](https://linear.app/primeintellect/issue/ENG-4536/add-heartbeat-observability-and-management-ui)).
+- Added an agent-run edit total above the recap.
+- Changed edit tool calls to always show full diffs while keeping IPython source collapsed until Ctrl+O expands it.
 - Changed tool expansion hints to appear only on the latest tool row instead of every tool call ([ENG-4583](https://linear.app/primeintellect/issue/ENG-4583/too-many-ctrlo-alerts)).
 - Changed IPython kernels to set `NO_COLOR=1`, preventing ANSI color escapes from inflating `%%bash` output.
 - Fixed update restarts starting concurrent daemon supervisors or unlinking a replacement supervisor's socket ([ENG-4600](https://linear.app/primeintellect/issue/ENG-4600/prevent-concurrent-daemon-supervisors-after-update-restart)).
+- Fixed worker recovery races and made daemon shutdown-all converge across hidden supervisors ([ENG-4603](https://linear.app/primeintellect/issue/ENG-4603/serialize-worker-recovery-and-make-shutdown-all-converge)).
 - Changed provider, model, and MCP setup to use one tabbed configuration menu ([ENG-4539](https://linear.app/primeintellect/issue/ENG-4539/unify-providers-models-and-mcp-connections-menu)).
 - Changed the shared configuration menu to show prominent, responsive tabs with configurable navigation shortcuts ([ENG-4534](https://linear.app/primeintellect/issue/ENG-4534/make-login-tabs-more-obvious)).
 - Fixed IPython edit diffs replacing syntax highlighting with a single foreground color ([ENG-4616](https://linear.app/primeintellect/issue/ENG-4616/syntax-highlighting-is-overridden-in-diff-view)).
 - Fixed Prime Inference login leaving new sessions without a persisted model selection ([ENG-4573](https://linear.app/primeintellect/issue/ENG-4573/prompt-for-model-selection-after-prime-inference-login)).
 - Fixed empty prompt placeholders hiding the input caret.
-- Fixed update restarts starting concurrent daemon supervisors or unlinking a replacement supervisor's socket ([ENG-4600](https://linear.app/primeintellect/issue/ENG-4600/prevent-concurrent-daemon-supervisors-after-update-restart)).
 - Fixed automatic model selection preferring other configured providers over Prime Inference's GLM 5.2 default.
 - Fixed missing ripgrep blocking subagents and added actionable installation guidance for the optional search helper ([ENG-4572](https://linear.app/primeintellect/issue/ENG-4572/ripgrep-not-installed)).
 - Removed the shared worker snapshot spill cache to prevent concurrent workers from deleting each other's snapshot chunks ([ENG-4601](https://linear.app/primeintellect/issue/ENG-4601/remove-shared-worker-snapshot-spill-cache-directories)).
