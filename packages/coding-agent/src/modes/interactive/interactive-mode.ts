@@ -203,6 +203,7 @@ import {
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
+import { FeatureHintDeck } from "./feature-hints.js";
 import { collectMarkedImages, evictImagesToBudget, formatImageMarker, imageMarkerIds } from "./image-markers.js";
 import type {
 	InteractiveModeLocalSessionHost,
@@ -244,6 +245,7 @@ interface PendingToolCallRenderInput {
 const HEARTBEAT_LEGACY_PROMPT_MIN_TOLERANCE_MS = 15_000;
 const HEARTBEAT_LEGACY_PROMPT_MAX_TOLERANCE_MS = 120_000;
 const MODEL_CATALOG_REFRESH_TTL_MS = 60_000;
+const FEATURE_HINT_DELAY_MS = 5_000;
 
 export const START_HINTS = [
 	'Try "refactor @<filepath>"',
@@ -735,6 +737,11 @@ export class InteractiveMode {
 	private workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 	private workingStartedAt: number | undefined = undefined;
 	private workingTimer: NodeJS.Timeout | undefined = undefined;
+	private readonly featureHintDeck = new FeatureHintDeck();
+	private currentFeatureHint: string | undefined;
+	private featureHintEligibleAt = 0;
+	private featureHintTimer: NodeJS.Timeout | undefined;
+	private featureHintComponent: TruncatedText | undefined;
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
@@ -2578,6 +2585,7 @@ export class InteractiveMode {
 	}
 
 	private resetCurrentSessionRenderState(options?: { clearPromptStash?: boolean }): void {
+		this.endFeatureHintRun();
 		this.chatContainer.clear();
 		this.shortcutGuideContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -2921,9 +2929,11 @@ export class InteractiveMode {
 		this.loadingAnimation = this.createWorkingLoader();
 		this.statusContainer.addChild(this.loadingAnimation);
 		this.startWorkingTimer();
+		this.startFeatureHintPresentation();
 	}
 
 	private stopWorkingLoader(): void {
+		this.clearFeatureHintPresentation();
 		if (this.workingTimer) {
 			clearInterval(this.workingTimer);
 			this.workingTimer = undefined;
@@ -2934,6 +2944,70 @@ export class InteractiveMode {
 			this.loadingAnimation = undefined;
 		}
 		this.statusContainer.clear();
+	}
+
+	private startFeatureHintPresentation(): void {
+		this.clearFeatureHintPresentation();
+		if (!this.currentFeatureHint) {
+			const hint = this.featureHintDeck.next({
+				getKeybinding: (action) => {
+					const key = keyText(action);
+					return key ? this.capitalizeKey(key) : undefined;
+				},
+			});
+			this.currentFeatureHint = hint?.text;
+			this.featureHintEligibleAt = Date.now() + FEATURE_HINT_DELAY_MS;
+		}
+		if (!this.currentFeatureHint) {
+			return;
+		}
+		const delay = Math.max(0, this.featureHintEligibleAt - Date.now());
+		if (delay === 0) {
+			this.showFeatureHint();
+			return;
+		}
+		this.featureHintTimer = setTimeout(() => {
+			this.featureHintTimer = undefined;
+			this.showFeatureHint();
+		}, delay);
+		this.featureHintTimer.unref?.();
+	}
+
+	private showFeatureHint(): void {
+		if (
+			!this.currentFeatureHint ||
+			!this.loadingAnimation ||
+			!this.shouldShowWorkingLoader() ||
+			!this.statusContainer.children.includes(this.loadingAnimation)
+		) {
+			return;
+		}
+		this.featureHintComponent = new TruncatedText(theme.fg("dim", `Hint: ${this.currentFeatureHint}`), 1, 0);
+		this.statusContainer.addChild(this.featureHintComponent);
+		this.ui.requestRender();
+	}
+
+	private clearFeatureHintPresentation(): void {
+		if (this.featureHintTimer) {
+			clearTimeout(this.featureHintTimer);
+			this.featureHintTimer = undefined;
+		}
+		if (this.featureHintComponent) {
+			this.statusContainer.removeChild(this.featureHintComponent);
+			this.featureHintComponent = undefined;
+		}
+	}
+
+	private endFeatureHintRun(): void {
+		this.clearFeatureHintPresentation();
+		this.currentFeatureHint = undefined;
+		this.featureHintEligibleAt = 0;
+	}
+
+	private prepareFeatureHintRun(): void {
+		if (this.getRetryAttempt() === 0) {
+			this.endFeatureHintRun();
+		}
 	}
 
 	private updateWorkingPulse(): void {
@@ -4574,6 +4648,7 @@ export class InteractiveMode {
 
 		switch (event.type) {
 			case "agent_start":
+				this.prepareFeatureHintRun();
 				this.resetPendingToolState();
 				this.renderRecap();
 				if (this.settingsManager.getShowTerminalProgress()) {
@@ -9236,6 +9311,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 			this.ui.terminal.setProgress(false);
 		}
 		this.stopWorkingLoader();
+		this.endFeatureHintRun();
 		this.stopWorkingPulse();
 		this.stopGoalTrayTimer();
 		this.closeHeartbeatManager();
