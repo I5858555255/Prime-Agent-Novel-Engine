@@ -26,7 +26,7 @@ describe("ENG-4653 queued messages after agent end", () => {
 		const unsubscribe = harness.session.agent.subscribe(async (event) => {
 			if (event.type !== "agent_end" || queued) return;
 			queued = true;
-			await harness.session.steer("stop heartbeat");
+			await harness.session.steer("stop heartbeat", undefined, { resumeIfIdle: true });
 		});
 
 		await harness.session.prompt("start");
@@ -43,7 +43,7 @@ describe("ENG-4653 queued messages after agent end", () => {
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("idle steering handled")]);
 
-		await harness.session.steer("recover stale routing");
+		await harness.session.steer("recover stale routing", undefined, { resumeIfIdle: true });
 		await waitForDelivery(harness, 1);
 
 		expect(getUserTexts(harness)).toEqual(["recover stale routing"]);
@@ -59,7 +59,7 @@ describe("ENG-4653 queued messages after agent end", () => {
 		const unsubscribe = harness.session.agent.subscribe(async (event) => {
 			if (event.type !== "agent_end" || queued) return;
 			queued = true;
-			await harness.session.followUp("continue after end");
+			await harness.session.followUp("continue after end", undefined, { resumeIfIdle: true });
 		});
 
 		await harness.session.prompt("start");
