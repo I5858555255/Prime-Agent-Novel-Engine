@@ -30,6 +30,7 @@ import {
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type {
+	Api,
 	AssistantMessage,
 	ImageContent,
 	Model,
@@ -203,6 +204,7 @@ import {
 	createRlmDeleteSubagentHostHandler,
 	createRlmListSubagentsHostHandler,
 	createRlmRunHostHandler,
+	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
 	type RlmDeleteSubagentResult,
 	type RlmInternalRunResult,
@@ -2875,6 +2877,10 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 			allowRecursion: this._rlmDepth < this._rlmMaxDepth,
+			availableModels: this._modelRegistry.getAvailable().map((model) => ({
+				provider: model.provider,
+				id: model.id,
+			})),
 			harnessState: this._loadMergedHarnessState(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
@@ -6263,8 +6269,9 @@ export class AgentSession {
 			spawnCode: options.spawnCode,
 			sessionDir: options.sessionDir,
 			model: options.model,
-			thinkingLevel: this.thinkingLevel,
-			serviceTier: this.serviceTier,
+			thinkingLevel: clampThinkingLevel(options.model, this.thinkingLevel) as ThinkingLevel,
+			serviceTier:
+				this.serviceTier === "priority" && !supportsFastMode(options.model) ? "default" : this.serviceTier,
 			scopedModels: [...this._scopedModels],
 			activeToolNames: this.getActiveToolNames(),
 			allowedToolNames: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
@@ -6315,16 +6322,14 @@ export class AgentSession {
 		}
 		childSessionManager.appendModelChange(options.model.provider, options.model.id);
 		childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
-		const serviceTier =
-			options.serviceTier === "priority" && !supportsFastMode(options.model) ? "default" : options.serviceTier;
-		childSessionManager.appendServiceTierChange(serviceTier);
+		childSessionManager.appendServiceTierChange(options.serviceTier);
 
 		const childAgent = new Agent({
 			initialState: {
 				systemPrompt: "",
 				model: options.model,
 				thinkingLevel: options.thinkingLevel,
-				serviceTier,
+				serviceTier: options.serviceTier,
 				tools: [],
 			},
 			convertToLlm: this.agent.convertToLlm,
@@ -6736,25 +6741,53 @@ export class AgentSession {
 		}
 	}
 
-	private _startRlmChildRun(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): RlmChildRun {
-		const { name: rawName, ...unsupported } = kwargs;
+	private async _resolveRlmSubagentModel(selector: string | undefined): Promise<Model<Api>> {
+		if (!selector) {
+			const model = this.model;
+			if (!model) {
+				throw new Error(formatNoModelSelectedMessage());
+			}
+			return model;
+		}
+
+		const model = this._modelRegistry
+			.getAll()
+			.find((candidate) => `${candidate.provider}/${candidate.id}` === selector);
+		if (!model) {
+			throw new Error(`RLM subagent model "${selector}" was not found`);
+		}
+		if (!this._modelRegistry.hasConfiguredAuth(model)) {
+			throw new Error(`No API key for ${selector}`);
+		}
+		if (!(await this._modelRegistry.canUseModel(model))) {
+			throw new Error(`Model "${selector}" is not available for the current Prime team.`);
+		}
+		return model;
+	}
+
+	private async _startRlmChildRun(
+		prompt: string,
+		kwargs: Record<string, unknown> = {},
+		spawnCode?: string,
+	): Promise<RlmChildRun> {
+		const { name: rawName, model: rawModel, ...unsupported } = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
 		}
 		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName);
+		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel);
 		if (requestedSessionName) {
 			assertDirectAgentMessageTarget(requestedSessionName);
-			this._assertRlmSubagentSessionNameAvailable(requestedSessionName);
 		}
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
 				`RLM recursion depth limit reached (RLM_DEPTH=${this._rlmDepth}, RLM_MAX_DEPTH=${this._rlmMaxDepth})`,
 			);
 		}
-		const model = this.model;
-		if (!model) {
-			throw new Error(formatNoModelSelectedMessage());
+		const model = await this._resolveRlmSubagentModel(requestedModel);
+		if (requestedSessionName) {
+			this._assertRlmSubagentSessionNameAvailable(requestedSessionName);
 		}
 
 		const childSessionDir = this._createChildRlmSessionDir();
@@ -7010,7 +7043,7 @@ export class AgentSession {
 	}
 
 	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): Promise<RlmRunResult> {
-		const run = this._startRlmChildRun(prompt, kwargs, spawnCode);
+		const run = await this._startRlmChildRun(prompt, kwargs, spawnCode);
 		if (!run.task) {
 			throw new Error("RLM child failed to start");
 		}

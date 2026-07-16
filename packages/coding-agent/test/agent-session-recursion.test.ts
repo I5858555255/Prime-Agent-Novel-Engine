@@ -723,8 +723,8 @@ describe("AgentSession rlm recursion", () => {
 	it("rejects unsupported rlm.run kwargs loudly", async () => {
 		const root = createSession();
 
-		await expect(root.runRlmChild("nested", { model: "other-model" })).rejects.toThrow(
-			"Unsupported rlm.run kwargs: model",
+		await expect(root.runRlmChild("nested", { temperature: 0 })).rejects.toThrow(
+			"Unsupported rlm.run kwargs: temperature",
 		);
 	});
 

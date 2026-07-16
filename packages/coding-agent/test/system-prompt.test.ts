@@ -99,6 +99,23 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Each `%%bash` cell runs in a throw-away subshell");
 	});
 
+	test("advertises only provided authenticated models with provider-qualified selectors", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			activeTools: ["ipython"],
+			availableModels: [
+				{ provider: "deepseek", id: "deepseek-v4-flash" },
+				{ provider: "anthropic", id: "claude-sonnet-4-6" },
+			],
+		});
+
+		expect(prompt).toContain("`deepseek/deepseek-v4-flash`");
+		expect(prompt).toContain("`anthropic/claude-sonnet-4-6`");
+		expect(prompt).toContain("exact provider-qualified selector");
+		expect(prompt).toContain("do not choose a different model on your own");
+	});
+
 	test("only documents ipython shell prefixes when ipython is active", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",

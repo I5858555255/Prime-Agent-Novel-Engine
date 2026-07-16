@@ -70,6 +70,25 @@ export function normalizeRequestedRlmSubagentSessionName(value: unknown): string
 	return name;
 }
 
+/** Validate and normalize an orchestrator-supplied subagent model selector. */
+export function normalizeRequestedRlmSubagentModel(value: unknown): string | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new Error("rlm.run model must be a string");
+	}
+	const model = value.trim();
+	if (!model) {
+		throw new Error("rlm.run model must not be empty");
+	}
+	const separatorIndex = model.indexOf("/");
+	if (separatorIndex <= 0 || separatorIndex === model.length - 1) {
+		throw new Error('rlm.run model must use "provider/model" format');
+	}
+	return model;
+}
+
 /** Create a readable, collision-resistant default name usable as an agent-message selector. */
 export function createDefaultRlmSubagentSessionName(prompt: string, childId: string): string {
 	const promptSlug = prompt

@@ -166,7 +166,10 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
 
 
 async def run(prompt: str, **kwargs: Any) -> RLMResult:
-    """Run a recursive Prime Agent child through the TypeScript host."""
+    """Run a recursive Prime Agent child through the TypeScript host.
+
+    ``model`` selects an authenticated child model using ``provider/model``.
+    """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     _ensure_recursion_allowed()

@@ -544,10 +544,12 @@ hostHandlers: {
 Sequence:
 
 ```text
-runRlmChild(prompt)
+runRlmChild(prompt, kwargs)
   |
   | check current depth < max depth
-  | require selected model
+  | validate optional provider-qualified model selector
+  | require configured auth and team access
+  | otherwise inherit the parent model
   v
 create child session dir
   |
@@ -555,7 +557,7 @@ create child session dir
   v
 create child SessionManager
   |
-  | append model change
+  | append selected model change
   | append thinking level change
   v
 create child Agent
@@ -605,6 +607,24 @@ completion_tokens = output
 Turns are counted as assistant messages in the child transcript.
 
 The answer is the child's final assistant text. This matches the RLM-1 training surface: the model stops calling tools and the final assistant text is the answer.
+
+By default, a child inherits the parent's current model. An orchestrator can
+select a different authenticated model at spawn time with an exact
+provider-qualified selector:
+
+```python
+result = await rlm(
+    "Check the API",
+    model="deepseek/deepseek-v4-flash",
+)
+```
+
+The system prompt advertises only models for providers with configured auth,
+using `provider-id/model-id` selectors. The host resolves the selector exactly
+and rechecks authentication and Prime team access before creating child state.
+Unknown, unauthenticated, or unavailable selectors are rejected. The selected
+model is persisted with the child and remains active on later turns; changing
+the parent model does not update existing children.
 
 ### Parent-Scoped Subagent Registry
 
@@ -822,6 +842,9 @@ no selected model
 
 unsupported rlm.run kwargs
   -> TS runRlmChild throws "Unsupported rlm.run kwargs: ..."
+
+unknown, unauthenticated, or unavailable rlm.run model
+  -> TS runRlmChild rejects before creating the child session directory
 
 child provider error
   -> child agent final error behavior is reflected in its final assistant state

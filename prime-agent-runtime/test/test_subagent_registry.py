@@ -39,7 +39,7 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         self.assertEqual(subagents[0].status, "completed")
         host_request.assert_awaited_once_with("rlm.list_subagents")
 
-    def test_forwards_orchestrator_chosen_name_to_host(self) -> None:
+    def test_forwards_orchestrator_chosen_name_and_model_to_host(self) -> None:
         host_request = AsyncMock(
             return_value={
                 "answer": "done",
@@ -50,11 +50,23 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         )
 
         with patch.object(rlm_module, "host_request", host_request):
-            asyncio.run(rlm_module.rlm("check the API", name="api-reviewer"))
+            asyncio.run(
+                rlm_module.rlm(
+                    "check the API",
+                    name="api-reviewer",
+                    model="deepseek/deepseek-v4-flash",
+                )
+            )
 
         host_request.assert_awaited_once_with(
             "rlm.run",
-            {"prompt": "check the API", "kwargs": {"name": "api-reviewer"}},
+            {
+                "prompt": "check the API",
+                "kwargs": {
+                    "name": "api-reviewer",
+                    "model": "deepseek/deepseek-v4-flash",
+                },
+            },
         )
 
     def test_deletes_subagent_by_name_through_host(self) -> None:
