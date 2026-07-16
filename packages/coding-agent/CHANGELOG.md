@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed the Agents View reordering sessions whenever prompts or heartbeats updated their activity timestamps ([ENG-4650](https://linear.app/primeintellect/issue/ENG-4650/agents-view-shifts-session-list-constantly)).
 - Fixed unsupported Node versions crashing before startup by requiring Node 22.8.0 or newer and showing upgrade guidance before loading the CLI ([ENG-4260](https://linear.app/primeintellect/issue/ENG-4260/incorrect-node-version-breaks-first-launch)).
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
 - Added a combined heartbeat indicator and manager for pausing, resuming, or stopping user and agent heartbeats ([ENG-4536](https://linear.app/primeintellect/issue/ENG-4536/add-heartbeat-observability-and-management-ui)).
