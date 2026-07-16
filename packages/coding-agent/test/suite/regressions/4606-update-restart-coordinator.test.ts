@@ -174,6 +174,29 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+async function withSourceCliEntrypoint<T>(action: () => Promise<T>): Promise<T> {
+	const previousEntrypoint = process.argv[1];
+	if (!previousEntrypoint) {
+		throw new Error("Test process has no CLI entrypoint");
+	}
+	const previousExecArgv = [...process.execArgv];
+	const previousTsconfigPath = process.env.TSX_TSCONFIG_PATH;
+	process.argv[1] = cliPath;
+	process.execArgv.splice(0, process.execArgv.length, tsxPath);
+	process.env.TSX_TSCONFIG_PATH = tsconfigPath;
+	try {
+		return await action();
+	} finally {
+		process.argv[1] = previousEntrypoint;
+		process.execArgv.splice(0, process.execArgv.length, ...previousExecArgv);
+		if (previousTsconfigPath === undefined) {
+			delete process.env.TSX_TSCONFIG_PATH;
+		} else {
+			process.env.TSX_TSCONFIG_PATH = previousTsconfigPath;
+		}
+	}
+}
+
 function isProcessAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
@@ -281,34 +304,36 @@ describe("ENG-4606 update restart coordinator", () => {
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(coordinatorCwd, { recursive: true });
 		const socketPath = join(harness.tempDir, "missing-daemon.sock");
-		const previousEntrypoint = process.argv[1];
-		if (!previousEntrypoint) {
-			throw new Error("Test process has no CLI entrypoint");
-		}
-		const previousExecArgv = [...process.execArgv];
-		const previousTsconfigPath = process.env.TSX_TSCONFIG_PATH;
-		process.argv[1] = cliPath;
-		process.execArgv.splice(0, process.execArgv.length, tsxPath);
-		process.env.TSX_TSCONFIG_PATH = tsconfigPath;
 
-		try {
-			const status = await launchDaemonUpdateRestartCoordinator({
+		const status = await withSourceCliEntrypoint(() =>
+			launchDaemonUpdateRestartCoordinator({
 				socketPath,
 				agentDir: relative(process.cwd(), agentDir),
 				cwd: coordinatorCwd,
 				timeoutMs: 30_000,
-			});
+			}),
+		);
 
-			expect(status).toMatchObject({ phase: "skipped", socketPath });
-		} finally {
-			process.argv[1] = previousEntrypoint;
-			process.execArgv.splice(0, process.execArgv.length, ...previousExecArgv);
-			if (previousTsconfigPath === undefined) {
-				delete process.env.TSX_TSCONFIG_PATH;
-			} else {
-				process.env.TSX_TSCONFIG_PATH = previousTsconfigPath;
-			}
-		}
+		expect(status).toMatchObject({ phase: "skipped", socketPath });
+	});
+
+	it("resolves a relative custom socket before changing coordinator cwd", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const coordinatorCwd = join(harness.tempDir, "coordinator-cwd");
+		mkdirSync(coordinatorCwd, { recursive: true });
+		const socketPath = join(harness.tempDir, "missing-daemon.sock");
+
+		const status = await withSourceCliEntrypoint(() =>
+			launchDaemonUpdateRestartCoordinator({
+				socketPath: relative(process.cwd(), socketPath),
+				agentDir: harness.tempDir,
+				cwd: coordinatorCwd,
+				timeoutMs: 30_000,
+			}),
+		);
+
+		expect(status).toMatchObject({ phase: "skipped", socketPath });
 	});
 
 	it("outlives a daemon-owned updater and restores the exact custom socket", async () => {

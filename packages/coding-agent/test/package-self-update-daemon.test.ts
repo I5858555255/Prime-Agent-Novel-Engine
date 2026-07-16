@@ -12,6 +12,7 @@ import {
 import {
 	ENV_AGENT_DIR,
 	getDaemonUpdateRestartManifestPath,
+	getLegacyDaemonUpdateRestartManifestPath,
 	PACKAGE_NAME,
 	SELF_UPDATE_INTERACTIVE_CHILD_ENV,
 	SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE,
@@ -125,6 +126,7 @@ const mockState = vi.hoisted(() => ({
 	probeSocketPaths: [] as string[],
 	requestThrowTypes: [] as string[],
 	disconnectRequestTypes: [] as string[],
+	disconnectAfterPersistRequestTypes: [] as string[],
 	requestPayloads: [] as MockDaemonRequest[],
 	helloWaitFailures: 0,
 	restoreNextTurnFailures: 0,
@@ -328,6 +330,10 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 				const response = mockState.prepareResponse ?? { success: true, data: mockState.prepareManifest };
 				if (response.success) {
 					writeFileSync(mockState.preparedManifestPath, `${JSON.stringify(response.data)}\n`);
+					if (mockState.disconnectAfterPersistRequestTypes.includes(request.type)) {
+						this.connected = false;
+						throw new Error(`${request.type} disconnected after persist`);
+					}
 				}
 				return response;
 			}
@@ -398,6 +404,7 @@ describe("self-update daemon restart", () => {
 		mockState.createThrowSessionPaths = [];
 		mockState.daemonProbe = { reachable: true, activeSessions: [] };
 		mockState.daemonProbeAfterShutdown = undefined;
+		mockState.disconnectAfterPersistRequestTypes = [];
 		mockState.disconnectRequestTypes = [];
 		mockState.prepareManifest = { createdAt: "2026-07-07T00:00:00.000Z", sessions: [] };
 		mockState.preparedManifestPath = getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir);
@@ -847,6 +854,43 @@ describe("self-update daemon restart", () => {
 		const fenceIndex = mockState.calls.indexOf("persist-daemon-startup-fence");
 		expect(prepareIndex).toBeGreaterThanOrEqual(0);
 		expect(fenceIndex).toBeGreaterThan(prepareIndex);
+	});
+
+	it("recovers and clears a legacy manifest when the predecessor disconnects after persisting it", async () => {
+		useFixedOwnerHello();
+		const legacyManifestPath = getLegacyDaemonUpdateRestartManifestPath(agentDir);
+		mockState.preparedManifestPath = legacyManifestPath;
+		mockState.disconnectAfterPersistRequestTypes = ["prepare_update_restart"];
+		mockState.prepareManifest = {
+			createdAt: "2026-07-07T00:00:00.000Z",
+			sessions: [
+				{
+					activeSessionId: "old-active",
+					sessionId: "session-id",
+					sessionFile: join(tempDir, "session.jsonl"),
+					cwd: tempDir,
+					config: { apiKey: "legacy-secret" },
+					queue: { steering: [], followUp: [], nextTurn: [] },
+					shouldResume: false,
+					wasStreaming: false,
+					wasCompacting: false,
+					wasBashRunning: false,
+					hadRunningRlmChildren: false,
+					wasRetrying: false,
+					hadAcceptedPromptInFlight: false,
+				},
+			],
+		};
+
+		await performUpdateAndRunCoordinator();
+
+		expect(mockState.lastCoordinatorStatus).toMatchObject({
+			phase: "complete",
+			counts: { total: 1, restored: 1, resumed: 0, failed: 0 },
+		});
+		expect(mockState.calls).toContain("persist-daemon-startup-fence");
+		expect(existsSync(legacyManifestPath)).toBe(false);
+		expect(existsSync(getDaemonUpdateRestartManifestPath(mockState.socketPath, agentDir))).toBe(false);
 	});
 
 	it("fences a pending prepared restart only after verifying the live daemon is empty", async () => {

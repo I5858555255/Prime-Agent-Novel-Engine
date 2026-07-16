@@ -95,7 +95,8 @@ export interface AcquireDaemonUpdateRestartCoordinatorOptions {
 }
 
 export function resolveDaemonUpdateRestartSocketPath(socketPath?: string): string {
-	return socketPath ?? defaultDaemonSocketPath();
+	const selectedSocketPath = socketPath ?? defaultDaemonSocketPath();
+	return process.platform === "win32" ? selectedSocketPath : resolve(selectedSocketPath);
 }
 
 const TERMINAL_PHASES: ReadonlySet<DaemonUpdateRestartPhase> = new Set(["complete", "skipped", "failed"]);
@@ -533,14 +534,15 @@ export async function launchDaemonUpdateRestartCoordinator(
 ): Promise<DaemonUpdateRestartStatus> {
 	const requestId = randomUUID();
 	const agentDir = resolve(options.agentDir);
-	const statusPath = createStatusPath(agentDir, options.socketPath, requestId);
+	const socketPath = resolveDaemonUpdateRestartSocketPath(options.socketPath);
+	const statusPath = createStatusPath(agentDir, socketPath, requestId);
 	const inheritedOrigin = process.env[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV];
 	const originActiveSessionId = options.originActiveSessionId ?? inheritedOrigin;
 	const launch = createCliSubprocessLaunchSpec([
 		"update",
 		DAEMON_UPDATE_RESTART_COORDINATOR_FLAG,
 		"--daemon-socket",
-		options.socketPath,
+		socketPath,
 		DAEMON_UPDATE_RESTART_STATUS_FLAG,
 		statusPath,
 		...(originActiveSessionId ? [DAEMON_UPDATE_RESTART_ORIGIN_FLAG, originActiveSessionId] : []),
@@ -590,10 +592,10 @@ export async function launchDaemonUpdateRestartCoordinator(
 			throw new Error(`Daemon update restart coordinator exited with ${exitDescription}`);
 		}
 		if (Date.now() - lastLivenessAt >= COORDINATOR_LIVENESS_TIMEOUT_MS) {
-			throw new Error(`Daemon update restart coordinator stopped reporting liveness on ${options.socketPath}`);
+			throw new Error(`Daemon update restart coordinator stopped reporting liveness on ${socketPath}`);
 		}
 		if (Date.now() - lastProgressAt >= progressTimeoutMs) {
-			throw new Error(`Timed out waiting for daemon update restart progress on ${options.socketPath}`);
+			throw new Error(`Timed out waiting for daemon update restart progress on ${socketPath}`);
 		}
 		await delay(50);
 	}

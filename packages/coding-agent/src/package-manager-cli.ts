@@ -32,6 +32,7 @@ import {
 	CONFIG_DIR_NAME,
 	getAgentDir,
 	getDaemonUpdateRestartManifestPath,
+	getLegacyDaemonUpdateRestartManifestPath,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	PACKAGE_NAME,
@@ -752,10 +753,15 @@ function parseDaemonUpdateRestartManifest(value: unknown): DaemonUpdateRestartMa
 }
 
 function clearPreparedDaemonUpdateRestartManifest(socketPath: string, agentDir: string): void {
-	try {
-		rmSync(getDaemonUpdateRestartManifestPath(socketPath, agentDir), { force: true });
-	} catch {
-		// Best effort only; the mtime guard below prevents stale fallback use.
+	for (const manifestPath of [
+		getDaemonUpdateRestartManifestPath(socketPath, agentDir),
+		getLegacyDaemonUpdateRestartManifestPath(agentDir),
+	]) {
+		try {
+			rmSync(manifestPath, { force: true });
+		} catch {
+			// Best effort only; the mtime guard below prevents stale fallback use.
+		}
 	}
 }
 
@@ -764,18 +770,23 @@ function readPreparedDaemonUpdateRestartManifest(
 	agentDir: string,
 	notBeforeMs?: number,
 ): DaemonUpdateRestartManifest | undefined {
-	const manifestPath = getDaemonUpdateRestartManifestPath(socketPath, agentDir);
-	let modifiedAt: number;
-	try {
-		modifiedAt = statSync(manifestPath).mtimeMs;
-	} catch {
-		return undefined;
+	for (const manifestPath of [
+		getDaemonUpdateRestartManifestPath(socketPath, agentDir),
+		getLegacyDaemonUpdateRestartManifestPath(agentDir),
+	]) {
+		let modifiedAt: number;
+		try {
+			modifiedAt = statSync(manifestPath).mtimeMs;
+		} catch {
+			continue;
+		}
+		if (notBeforeMs !== undefined && modifiedAt < notBeforeMs - 1000) {
+			continue;
+		}
+		const parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as unknown;
+		return parseDaemonUpdateRestartManifest(parsed);
 	}
-	if (notBeforeMs !== undefined && modifiedAt < notBeforeMs - 1000) {
-		return undefined;
-	}
-	const parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as unknown;
-	return parseDaemonUpdateRestartManifest(parsed);
+	return undefined;
 }
 
 function tryReadPreparedDaemonUpdateRestartManifest(

@@ -566,6 +566,10 @@ export function getDaemonUpdateRestartManifestPath(socketPath: string, agentDir:
 	return join(agentDir, "daemon-update-restarts", `${socketHash}.json`);
 }
 
+export function getLegacyDaemonUpdateRestartManifestPath(agentDir: string = getAgentDir()): string {
+	return join(agentDir, "daemon-update-restart.json");
+}
+
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 /**
