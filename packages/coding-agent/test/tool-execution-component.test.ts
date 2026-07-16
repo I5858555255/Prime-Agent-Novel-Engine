@@ -1,7 +1,8 @@
-import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, resetCapabilitiesCache, setCapabilities, Text, TUI } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal.js";
 import type { ToolDefinition } from "../src/core/extensions/types.js";
 import { type BashOperations, createBashTool, createBashToolDefinition } from "../src/core/tools/bash.js";
 import { createEditToolDefinition } from "../src/core/tools/edit.js";
@@ -118,13 +119,86 @@ describe("ToolExecutionComponent parity", () => {
 
 			let rendered = component.render(120).join("\n");
 			expect(rendered).not.toContain("\x1b_G");
-			expect(stripAnsi(rendered)).toContain("[Image: [image/png]]");
+			expect(stripAnsi(rendered)).toContain("[image/png]");
 
 			component.setShowImages(false);
 			component.setShowImages(true);
 			rendered = component.render(120).join("\n");
 			expect(rendered).not.toContain("\x1b_G");
 		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test.each(["kitty", "iterm2"] as const)(
+		"keeps one visible IPython image row without emitting %s protocol during replay",
+		(protocol) => {
+			setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
+			try {
+				const component = new ToolExecutionComponent(
+					"ipython",
+					`tool-ipython-image-${protocol}`,
+					{ code: "display(image)" },
+					{ showImages: true, allowInlineImages: false },
+					undefined,
+					createFakeTui(),
+					process.cwd(),
+				);
+				component.setExpanded(true);
+				component.updateResult(
+					{
+						content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
+						isError: false,
+					},
+					false,
+				);
+
+				const rendered = component.render(120).join("\n");
+				expect(rendered).not.toContain("\x1b_G");
+				expect(rendered).not.toContain("\x1b]1337;File=");
+				const lines = stripAnsi(rendered).split("\n");
+				expect(lines.filter((line) => line.includes("image/png")).length).toBe(1);
+			} finally {
+				resetCapabilitiesCache();
+			}
+		},
+	);
+
+	test("uses the compact fallback for a live IPython image in fullscreen", async () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		const terminal = new VirtualTerminal(120, 12);
+		const tui = new TUI(terminal);
+		try {
+			const transcript = new Container();
+			const dock = new Text("> prompt", 0, 0);
+			const component = new ToolExecutionComponent(
+				"ipython",
+				"tool-ipython-image-fullscreen",
+				{ code: "display(image)" },
+				{ showImages: true },
+				undefined,
+				tui,
+				process.cwd(),
+			);
+			component.setExpanded(true);
+			component.updateResult(
+				{ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false },
+				false,
+			);
+			transcript.addChild(component);
+			tui.addChild(transcript);
+			tui.addChild(dock);
+			tui.start();
+			tui.enterFullscreen({ scroll: [transcript], dock });
+			await terminal.waitForRender();
+
+			const viewport = terminal.getViewport();
+			expect(
+				viewport.filter((line) => line.includes("[image/png · 800×600 · /fullscreen off to view]")).length,
+			).toBe(1);
+			expect(viewport.join("\n")).not.toContain("\x1b_G");
+		} finally {
+			tui.stop();
 			resetCapabilitiesCache();
 		}
 	});
@@ -149,7 +223,7 @@ describe("ToolExecutionComponent parity", () => {
 			});
 
 			const rendered = stripAnsi(component.render(120).join("\n"));
-			expect(rendered).toContain("[Image: [image/png]]");
+			expect(rendered).toContain("[image/png]");
 			expect(rendered).not.toContain("1x1");
 		} finally {
 			resetCapabilitiesCache();

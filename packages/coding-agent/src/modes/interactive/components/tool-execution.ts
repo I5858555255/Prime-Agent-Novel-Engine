@@ -385,7 +385,7 @@ export class ToolExecutionComponent extends Container {
 					executionStarted: this.executionStarted,
 					argsComplete: this.argsComplete,
 					showExpandHint: this.showExpandHint,
-					showImages: renderInlineImages,
+					showImages: this.showImages,
 					cwd: this.cwd,
 				};
 				if (!this.ipythonCellComponent) {
@@ -428,24 +428,28 @@ export class ToolExecutionComponent extends Container {
 			const caps = getCapabilities();
 			for (let i = 0; i < imageBlocks.length; i++) {
 				const img = imageBlocks[i];
-				if (caps.images && renderInlineImages && img.data && img.mimeType) {
-					const converted = this.convertedImages.get(i);
-					const imageData = converted?.data ?? img.data;
-					const imageMimeType = converted?.mimeType ?? img.mimeType;
-					if (caps.images === "kitty" && imageMimeType !== "image/png") continue;
+				if (!caps.images || !this.showImages || !img.data || !img.mimeType) continue;
 
-					const spacer = new Spacer(1);
-					this.addChild(spacer);
-					this.imageSpacers.push(spacer);
-					const imageComponent = new Image(
-						imageData,
-						imageMimeType,
-						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ maxWidthCells: this.imageWidthCells },
-					);
-					this.imageComponents.push(imageComponent);
-					this.addChild(imageComponent);
-				}
+				const converted = this.convertedImages.get(i);
+				const imageData = converted?.data ?? img.data;
+				const imageMimeType = converted?.mimeType ?? img.mimeType;
+				if (renderInlineImages && caps.images === "kitty" && imageMimeType !== "image/png") continue;
+
+				const spacer = new Spacer(1);
+				this.addChild(spacer);
+				this.imageSpacers.push(spacer);
+				const imageComponent = new Image(
+					imageData,
+					imageMimeType,
+					{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
+					{
+						maxWidthCells: this.imageWidthCells,
+						fallbackOnly: !this.allowInlineImages,
+						includeFallbackDimensions: this.allowInlineImages,
+					},
+				);
+				this.imageComponents.push(imageComponent);
+				this.addChild(imageComponent);
 			}
 		}
 
@@ -535,7 +539,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getTextOutput(): string {
-		return getRenderedTextOutput(this.result, this.shouldRenderInlineImages(), {
+		return getRenderedTextOutput(this.result, this.showImages, {
 			includeImageDimensions: this.allowInlineImages,
 		});
 	}
