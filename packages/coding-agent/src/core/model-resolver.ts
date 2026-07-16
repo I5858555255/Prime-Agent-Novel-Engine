@@ -9,6 +9,7 @@ import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ModelRegistry } from "./model-registry.js";
+import { isPrivatePrimeInferenceModel } from "./prime-inference-models.js";
 
 const log = getLogger("coding-agent.model-resolver");
 
@@ -177,6 +178,25 @@ function buildFallbackModel(provider: string, modelId: string, availableModels: 
 	};
 }
 
+function findPreferredDefaultModel(availableModels: Model<Api>[]): Model<Api> | undefined {
+	const primeInferenceDefault = availableModels.find(
+		(model) => model.provider === "prime-inference" && model.id === PRIME_INFERENCE_DEFAULT_MODEL_ID,
+	);
+	if (primeInferenceDefault) {
+		return primeInferenceDefault;
+	}
+
+	for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
+		const defaultId = defaultModelPerProvider[provider];
+		const match = availableModels.find((model) => model.provider === provider && model.id === defaultId);
+		if (match) {
+			return match;
+		}
+	}
+
+	return undefined;
+}
+
 /**
  * Parse a pattern to extract model and thinking level.
  * Handles models with colons in their IDs (e.g., OpenRouter's :exacto suffix).
@@ -319,7 +339,7 @@ export function resolveModelScopeFromModels(patterns: string[], availableModels:
 }
 
 export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
-	const availableModels = await modelRegistry.getAvailable();
+	const availableModels = await modelRegistry.refreshAvailableModels();
 	return resolveModelScopeFromModels(patterns, availableModels);
 }
 
@@ -514,6 +534,11 @@ export async function findInitialModel(options: {
 
 	let model: Model<Api> | undefined;
 	let thinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL;
+	let cachedAvailableModels: Model<Api>[] | undefined;
+	const getAvailableModels = async (): Promise<Model<Api>[]> => {
+		cachedAvailableModels ??= await modelRegistry.refreshAvailableModels();
+		return cachedAvailableModels;
+	};
 
 	// 1. CLI args take priority
 	if (cliProvider && cliModel) {
@@ -527,8 +552,21 @@ export async function findInitialModel(options: {
 			console.error(chalk.red(resolved.error));
 			process.exit(1);
 		}
-		if (resolved.model) {
-			return { model: resolved.model, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+		const resolvedModel = resolved.model;
+		if (resolvedModel) {
+			if (isPrivatePrimeInferenceModel(resolvedModel)) {
+				const availableModel = (await getAvailableModels()).find((candidate) =>
+					modelsAreEqual(candidate, resolvedModel),
+				);
+				if (!availableModel) {
+					const error = `Model "${resolvedModel.provider}/${resolvedModel.id}" is not available for the current Prime team.`;
+					log.error(error, { cliProvider, cliModel });
+					console.error(chalk.red(error));
+					process.exit(1);
+				}
+				return { model: availableModel, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
+			}
+			return { model: resolvedModel, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
 		}
 	}
 
@@ -540,15 +578,20 @@ export async function findInitialModel(options: {
 			fallbackMessage: undefined,
 		};
 	}
+	const availableModels = await getAvailableModels();
 
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
 		// Rebuild from the provider template when the saved id is missing from this
 		// build's snapshot (e.g. prime-inference catalog churn), so it survives updates.
 		const found =
-			modelRegistry.find(defaultProvider, defaultModelId) ??
-			buildFallbackModel(defaultProvider, defaultModelId, modelRegistry.getAll());
-		if (found && modelRegistry.hasConfiguredAuth(found)) {
+			availableModels.find(
+				(candidate) => candidate.provider === defaultProvider && candidate.id === defaultModelId,
+			) ??
+			(!isPrivatePrimeInferenceModel({ provider: defaultProvider, id: defaultModelId })
+				? buildFallbackModel(defaultProvider, defaultModelId, availableModels)
+				: undefined);
+		if (found) {
 			model = found;
 			if (defaultThinkingLevel) {
 				thinkingLevel = defaultThinkingLevel;
@@ -558,16 +601,10 @@ export async function findInitialModel(options: {
 	}
 
 	// 4. Try first available model with valid API key
-	const availableModels = await modelRegistry.getAvailable();
-
 	if (availableModels.length > 0) {
-		// Try to find a default model from known providers
-		for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
-			const defaultId = defaultModelPerProvider[provider];
-			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
-			if (match) {
-				return { model: match, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
-			}
+		const defaultModel = findPreferredDefaultModel(availableModels);
+		if (defaultModel) {
+			return { model: defaultModel, thinkingLevel: DEFAULT_THINKING_LEVEL, fallbackMessage: undefined };
 		}
 
 		// If no default found, use first available
@@ -588,12 +625,12 @@ export async function restoreModelFromSession(
 	shouldPrintMessages: boolean,
 	modelRegistry: ModelRegistry,
 ): Promise<{ model: Model<Api> | undefined; fallbackMessage: string | undefined }> {
-	const restoredModel = modelRegistry.find(savedProvider, savedModelId);
+	const availableModels = await modelRegistry.refreshAvailableModels();
+	const restoredModel = availableModels.find(
+		(candidate) => candidate.provider === savedProvider && candidate.id === savedModelId,
+	);
 
-	// Check if restored model exists and still has auth configured
-	const hasConfiguredAuth = restoredModel ? modelRegistry.hasConfiguredAuth(restoredModel) : false;
-
-	if (restoredModel && hasConfiguredAuth) {
+	if (restoredModel) {
 		if (shouldPrintMessages) {
 			console.log(chalk.dim(`Restored model: ${savedProvider}/${savedModelId}`));
 		}
@@ -601,7 +638,12 @@ export async function restoreModelFromSession(
 	}
 
 	// Model not found or no API key - fall back
-	const reason = !restoredModel ? "model no longer exists" : "no auth configured";
+	const registeredModel = modelRegistry.find(savedProvider, savedModelId);
+	const reason = !registeredModel
+		? "model no longer exists"
+		: !modelRegistry.hasConfiguredAuth(registeredModel)
+			? "no auth configured"
+			: "model is not available";
 	log.warn("could not restore model", { provider: savedProvider, model: savedModelId, reason });
 
 	if (shouldPrintMessages) {
@@ -609,35 +651,26 @@ export async function restoreModelFromSession(
 	}
 
 	// If we already have a model, use it as fallback
-	if (currentModel) {
+	const availableCurrentModel = currentModel
+		? availableModels.find((candidate) => modelsAreEqual(candidate, currentModel))
+		: undefined;
+	const fallbackCurrentModel =
+		currentModel && (!isPrivatePrimeInferenceModel(currentModel) || availableCurrentModel)
+			? (availableCurrentModel ?? currentModel)
+			: undefined;
+	if (fallbackCurrentModel) {
 		if (shouldPrintMessages) {
-			console.log(chalk.dim(`Falling back to: ${currentModel.provider}/${currentModel.id}`));
+			console.log(chalk.dim(`Falling back to: ${fallbackCurrentModel.provider}/${fallbackCurrentModel.id}`));
 		}
 		return {
-			model: currentModel,
-			fallbackMessage: `Could not restore model ${savedProvider}/${savedModelId} (${reason}). Using ${currentModel.provider}/${currentModel.id}.`,
+			model: fallbackCurrentModel,
+			fallbackMessage: `Could not restore model ${savedProvider}/${savedModelId} (${reason}). Using ${fallbackCurrentModel.provider}/${fallbackCurrentModel.id}.`,
 		};
 	}
 
 	// Try to find any available model
-	const availableModels = await modelRegistry.getAvailable();
-
 	if (availableModels.length > 0) {
-		// Try to find a default model from known providers
-		let fallbackModel: Model<Api> | undefined;
-		for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
-			const defaultId = defaultModelPerProvider[provider];
-			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
-			if (match) {
-				fallbackModel = match;
-				break;
-			}
-		}
-
-		// If no default found, use first available
-		if (!fallbackModel) {
-			fallbackModel = availableModels[0];
-		}
+		const fallbackModel = findPreferredDefaultModel(availableModels) ?? availableModels[0];
 
 		if (shouldPrintMessages) {
 			console.log(chalk.dim(`Falling back to: ${fallbackModel.provider}/${fallbackModel.id}`));

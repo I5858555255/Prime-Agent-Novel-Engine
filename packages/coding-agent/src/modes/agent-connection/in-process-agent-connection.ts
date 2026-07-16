@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Transport } from "@earendil-works/pi-ai";
+import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
@@ -108,8 +108,7 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async getAvailableModels(): Promise<AgentConnectionModel[]> {
-		this.session.modelRegistry.refresh();
-		return this.session.modelRegistry.getAvailable();
+		return this.session.modelRegistry.refreshAvailableModels();
 	}
 
 	async getSessionStats(): Promise<SessionStats> {
@@ -273,8 +272,8 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async setModel(provider: string, modelId: string): Promise<AgentConnectionModel> {
-		this.session.modelRegistry.refresh();
-		const model = this.session.modelRegistry.getAvailable().find((candidate) => {
+		const availableModels = await this.session.modelRegistry.refreshAvailableModels();
+		const model = availableModels.find((candidate) => {
 			return candidate.provider === provider && candidate.id === modelId;
 		});
 		if (!model) {
@@ -296,6 +295,10 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		this.session.setThinkingLevel(level);
+	}
+
+	async setServiceTier(serviceTier: ServiceTier): Promise<void> {
+		this.session.setServiceTier(serviceTier);
 	}
 
 	async cycleThinkingLevel(): Promise<ThinkingLevel | undefined> {

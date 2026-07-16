@@ -3,7 +3,8 @@ import type { EditorPasteSnapshot } from "../editor-component.js";
 import { getKeybindings } from "../keybindings.js";
 import { decodePrintableKey, matchesKey } from "../keys.js";
 import { KillRing } from "../kill-ring.js";
-import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.js";
+import { getSlashCommandContext, type SlashCommandContext } from "../slash-command-context.js";
+import { type Component, CURSOR_MARKER, type Focusable, type OverlayHandle, type TUI } from "../tui.js";
 import { UndoStack } from "../undo-stack.js";
 import { getSegmenter, isPunctuationChar, isWhitespaceChar, truncateToWidth, visibleWidth } from "../utils.js";
 import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.js";
@@ -230,6 +231,7 @@ interface LayoutLine {
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	backgroundColor?: (str: string) => string;
+	autocompleteBackgroundColor?: (str: string) => string;
 	selectList: SelectListTheme;
 	commandColor?: (str: string) => string;
 }
@@ -243,9 +245,11 @@ export interface EditorOptions {
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	minPrimaryColumnWidth: 12,
 	maxPrimaryColumnWidth: 32,
+	showSelectedDescription: true,
 };
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
+let autocompleteAnchorId = 0;
 
 export class Editor implements Component, Focusable {
 	private state: EditorState = {
@@ -271,6 +275,7 @@ export class Editor implements Component, Focusable {
 	// Border color (can be changed dynamically)
 	public borderColor: (str: string) => string;
 	public backgroundColor: ((str: string) => string) | undefined;
+	public autocompleteBackgroundColor: ((str: string) => string) | undefined;
 	public commandColor: ((str: string) => string) | undefined;
 
 	// Autocomplete support
@@ -278,12 +283,19 @@ export class Editor implements Component, Focusable {
 	private autocompleteList?: SelectList;
 	private autocompleteState: "regular" | "force" | null = null;
 	private autocompletePrefix: string = "";
+	private autocompleteKind?: AutocompleteSuggestions["kind"];
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
+	private autocompleteOverlay?: OverlayHandle;
+	private readonly autocompleteAnchorMarker = `\x1b_pi:autocomplete:${++autocompleteAnchorId}\x07`;
+	private readonly autocompleteOverlayComponent: Component = {
+		render: (width) => this.renderAutocompleteOverlay(width),
+		invalidate: () => this.autocompleteList?.invalidate(),
+	};
 
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
@@ -332,6 +344,7 @@ export class Editor implements Component, Focusable {
 		this.theme = theme;
 		this.borderColor = theme.borderColor;
 		this.backgroundColor = theme.backgroundColor;
+		this.autocompleteBackgroundColor = theme.autocompleteBackgroundColor;
 		this.commandColor = theme.commandColor;
 		const paddingX = options.paddingX ?? 0;
 		this.paddingX = Number.isFinite(paddingX) ? Math.max(0, Math.floor(paddingX)) : 0;
@@ -499,7 +512,13 @@ export class Editor implements Component, Focusable {
 		// No cached state to invalidate currently
 	}
 
-	render(width: number): string[] {
+	private getRenderMetrics(width: number): {
+		useBackgroundSurface: boolean;
+		paddingX: number;
+		promptPrefixText: string;
+		promptPrefixWidth: number;
+		inputWidth: number;
+	} {
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const useBackgroundSurface = this.backgroundColor !== undefined;
 		const configuredPaddingX = Math.min(this.paddingX, maxPadding);
@@ -509,7 +528,23 @@ export class Editor implements Component, Focusable {
 		const contentWidth = Math.max(1, width - paddingX * 2);
 		const promptPrefixText = this.getPromptPrefix();
 		const promptPrefixWidth = Math.min(visibleWidth(promptPrefixText), Math.max(0, contentWidth - 1));
-		const inputWidth = Math.max(1, contentWidth - promptPrefixWidth);
+
+		return {
+			useBackgroundSurface,
+			paddingX,
+			promptPrefixText,
+			promptPrefixWidth,
+			inputWidth: Math.max(1, contentWidth - promptPrefixWidth),
+		};
+	}
+
+	protected getAutocompleteAnchorMarker(): string {
+		return this.autocompleteOverlay && this.focused ? this.autocompleteAnchorMarker : "";
+	}
+
+	render(width: number): string[] {
+		const { useBackgroundSurface, paddingX, promptPrefixText, promptPrefixWidth, inputWidth } =
+			this.getRenderMetrics(width);
 		const promptPrefix =
 			promptPrefixWidth > 0 ? this.formatPromptPrefix(truncateToWidth(promptPrefixText, promptPrefixWidth, "")) : "";
 
@@ -576,7 +611,6 @@ export class Editor implements Component, Focusable {
 			const line = this.scrollOffset > 0 ? this.borderColor(` ↑ ${this.scrollOffset} more`) : "";
 			result.push(renderSurfaceLine(truncateToWidth(line, width)));
 		}
-
 		// Render each visible layout line
 		// Emit hardware cursor marker only when focused and not showing autocomplete
 		const emitCursorMarker = this.focused && !this.autocompleteState;
@@ -631,7 +665,8 @@ export class Editor implements Component, Focusable {
 
 			// Render the line (no side borders, just horizontal lines above and below)
 			const contentLine = `${promptLeadingPadding}${linePromptPrefix}${promptTrailingPadding}${displayText}${padding}${lineRightPadding}`;
-			result.push(useBackgroundSurface ? renderSurfaceLine(contentLine) : contentLine);
+			const anchorMarker = layoutLine.hasCursor ? this.getAutocompleteAnchorMarker() : "";
+			result.push(anchorMarker + (useBackgroundSurface ? renderSurfaceLine(contentLine) : contentLine));
 		}
 
 		// Render bottom border (with scroll indicator if more content below)
@@ -649,19 +684,23 @@ export class Editor implements Component, Focusable {
 			result.push(renderSurfaceLine(truncateToWidth(line, width)));
 		}
 
-		// Add autocomplete list if active
-		if (this.autocompleteState && this.autocompleteList) {
-			const autocompleteResult = this.autocompleteList.render(inputWidth);
-			const promptPrefixPadding = " ".repeat(promptPrefixWidth);
-			for (const line of autocompleteResult) {
-				const lineWidth = visibleWidth(line);
-				const linePadding = " ".repeat(Math.max(0, inputWidth - lineWidth));
-				const contentLine = `${promptLeadingPadding}${promptPrefixPadding}${promptTrailingPadding}${line}${linePadding}${rightPadding}`;
-				result.push(useBackgroundSurface ? renderSurfaceLine(contentLine) : contentLine);
-			}
-		}
-
 		return result;
+	}
+
+	private renderAutocompleteOverlay(width: number): string[] {
+		if (!(this.autocompleteState && this.autocompleteList)) return [];
+
+		const { useBackgroundSurface, paddingX, promptPrefixWidth, inputWidth } = this.getRenderMetrics(width);
+		const leftPadding = " ".repeat(paddingX + promptPrefixWidth);
+		const rightPadding = " ".repeat(paddingX);
+		const backgroundColor =
+			this.autocompleteBackgroundColor ?? (useBackgroundSurface ? this.backgroundColor : undefined);
+
+		return ["", ...this.autocompleteList.render(inputWidth), ""].map((line) => {
+			const linePadding = " ".repeat(Math.max(0, inputWidth - visibleWidth(line)));
+			const contentLine = `${leftPadding}${line}${linePadding}${rightPadding}`;
+			return backgroundColor ? backgroundColor(contentLine) : contentLine;
+		});
 	}
 
 	handleInput(data: string): void {
@@ -761,6 +800,14 @@ export class Editor implements Component, Focusable {
 			if (kb.matches(data, "tui.select.confirm")) {
 				const selected = this.autocompleteList.getSelectedItem();
 				if (selected && this.autocompleteProvider) {
+					const slashContext = this.getCurrentSlashCommandContext();
+					const isSlashCommandCompletion =
+						this.autocompleteKind === "slash-command" ||
+						(this.autocompleteKind === undefined &&
+							this.autocompleteState === "regular" &&
+							this.autocompletePrefix.startsWith("/"));
+					const shouldSubmitSlashCommand =
+						isSlashCommandCompletion && slashContext?.kind === "name" && slashContext.isAtPromptStart;
 					this.pushUndoSnapshot();
 					this.lastAction = null;
 					const result = this.autocompleteProvider.applyCompletion(
@@ -774,9 +821,9 @@ export class Editor implements Component, Focusable {
 					this.state.cursorLine = result.cursorLine;
 					this.setCursorCol(result.cursorCol);
 
-					if (this.autocompletePrefix.startsWith("/")) {
+					if (isSlashCommandCompletion) {
 						this.cancelAutocomplete();
-						if (selected.takesArgument) {
+						if (!shouldSubmitSlashCommand || selected.takesArgument) {
 							if (this.onChange) this.onChange(this.getText());
 							return;
 						}
@@ -1210,8 +1257,8 @@ export class Editor implements Component, Focusable {
 
 		// Check if we should trigger or update autocomplete
 		if (!this.autocompleteState) {
-			// Auto-trigger for "/" at the start of a line (slash commands)
-			if (char === "/" && this.isAtStartOfMessage()) {
+			const slashContext = this.getCurrentSlashCommandContext();
+			if (char === "/" && slashContext?.kind === "name") {
 				this.tryTriggerAutocomplete();
 			}
 			// Auto-trigger for symbol-based completion like @ or # at token boundaries
@@ -1227,8 +1274,7 @@ export class Editor implements Component, Focusable {
 			else if (/[a-zA-Z0-9.\-_]/.test(char)) {
 				const currentLine = this.state.lines[this.state.cursorLine] || "";
 				const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-				// Check if we're in a slash command (with or without space for arguments)
-				if (this.isInSlashCommandContext(textBeforeCursor)) {
+				if (slashContext) {
 					this.tryTriggerAutocomplete();
 				}
 				// Check if we're in a symbol-based completion context like @ or #
@@ -1237,7 +1283,7 @@ export class Editor implements Component, Focusable {
 				}
 			}
 		} else {
-			this.updateAutocomplete();
+			this.refreshAutocompleteAfterEdit();
 		}
 	}
 
@@ -1407,22 +1453,7 @@ export class Editor implements Component, Focusable {
 			this.onChange(this.getText());
 		}
 
-		// Update or re-trigger autocomplete after backspace
-		if (this.autocompleteState) {
-			this.updateAutocomplete();
-		} else {
-			// If autocomplete was cancelled (no matches), re-trigger if we're in a completable context
-			const currentLine = this.state.lines[this.state.cursorLine] || "";
-			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-			// Slash command context
-			if (this.isInSlashCommandContext(textBeforeCursor)) {
-				this.tryTriggerAutocomplete();
-			}
-			// Symbol-based completion context like @ or #
-			else if (textBeforeCursor.match(/(?:^|[\s])[@#][^\s]*$/)) {
-				this.tryTriggerAutocomplete();
-			}
-		}
+		this.refreshAutocompleteAfterEdit(true);
 	}
 
 	/**
@@ -1621,6 +1652,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private deleteToEndOfLine(): void {
@@ -1653,6 +1685,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private deleteWordBackwards(): void {
@@ -1698,6 +1731,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private deleteWordForward(): void {
@@ -1740,6 +1774,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	private handleForwardDelete(): void {
@@ -1775,21 +1810,7 @@ export class Editor implements Component, Focusable {
 			this.onChange(this.getText());
 		}
 
-		// Update or re-trigger autocomplete after forward delete
-		if (this.autocompleteState) {
-			this.updateAutocomplete();
-		} else {
-			const currentLine = this.state.lines[this.state.cursorLine] || "";
-			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-			// Slash command context
-			if (this.isInSlashCommandContext(textBeforeCursor)) {
-				this.tryTriggerAutocomplete();
-			}
-			// Symbol-based completion context like @ or #
-			else if (textBeforeCursor.match(/(?:^|[\s])[@#][^\s]*$/)) {
-				this.tryTriggerAutocomplete();
-			}
-		}
+		this.refreshAutocompleteAfterEdit(true);
 	}
 
 	/**
@@ -2002,6 +2023,7 @@ export class Editor implements Component, Focusable {
 		this.insertYankedText(text);
 
 		this.lastAction = "yank";
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	/**
@@ -2025,6 +2047,7 @@ export class Editor implements Component, Focusable {
 		this.insertYankedText(text);
 
 		this.lastAction = "yank";
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	/**
@@ -2137,6 +2160,7 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+		this.refreshAutocompleteAfterEdit();
 	}
 
 	/**
@@ -2226,21 +2250,8 @@ export class Editor implements Component, Focusable {
 		this.setCursorCol(newCol);
 	}
 
-	// Slash menu only allowed on the first line of the editor
-	private isSlashMenuAllowed(): boolean {
-		return this.state.cursorLine === 0;
-	}
-
-	// Helper method to check if cursor is at start of message (for slash command detection)
-	private isAtStartOfMessage(): boolean {
-		if (!this.isSlashMenuAllowed()) return false;
-		const currentLine = this.state.lines[this.state.cursorLine] || "";
-		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
-		return beforeCursor.trim() === "" || beforeCursor.trim() === "/";
-	}
-
-	private isInSlashCommandContext(textBeforeCursor: string): boolean {
-		return this.isSlashMenuAllowed() && textBeforeCursor.trimStart().startsWith("/");
+	private getCurrentSlashCommandContext(): SlashCommandContext | null {
+		return getSlashCommandContext(this.state.lines, this.state.cursorLine, this.state.cursorCol);
 	}
 
 	// Autocomplete methods
@@ -2273,12 +2284,12 @@ export class Editor implements Component, Focusable {
 		return firstPrefixIndex;
 	}
 
-	private createAutocompleteList(
-		prefix: string,
-		items: Array<{ value: string; label: string; description?: string }>,
-	): SelectList {
-		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
-		return new SelectList(items, this.autocompleteMaxVisible, this.theme.selectList, layout);
+	private createAutocompleteList(suggestions: AutocompleteSuggestions): SelectList {
+		const layout =
+			suggestions.kind === "slash-command" || (suggestions.kind === undefined && suggestions.prefix.startsWith("/"))
+				? SLASH_COMMAND_SELECT_LIST_LAYOUT
+				: undefined;
+		return new SelectList(suggestions.items, this.autocompleteMaxVisible, this.theme.selectList, layout);
 	}
 
 	private tryTriggerAutocomplete(explicitTab: boolean = false): void {
@@ -2288,10 +2299,7 @@ export class Editor implements Component, Focusable {
 	private handleTabCompletion(): void {
 		if (!this.autocompleteProvider) return;
 
-		const currentLine = this.state.lines[this.state.cursorLine] || "";
-		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
-
-		if (this.isInSlashCommandContext(beforeCursor) && !beforeCursor.trimStart().includes(" ")) {
+		if (this.getCurrentSlashCommandContext()?.kind === "name") {
 			this.handleSlashCommandCompletion();
 		} else {
 			this.forceFileAutocomplete(true);
@@ -2441,14 +2449,24 @@ export class Editor implements Component, Focusable {
 
 	private applyAutocompleteSuggestions(suggestions: AutocompleteSuggestions, state: "regular" | "force"): void {
 		this.autocompletePrefix = suggestions.prefix;
-		this.autocompleteList = this.createAutocompleteList(suggestions.prefix, suggestions.items);
+		this.autocompleteKind = suggestions.kind;
+		this.autocompleteList = this.createAutocompleteList(suggestions);
 
-		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, suggestions.prefix);
+		const matchingPrefix = suggestions.kind === "slash-command" ? suggestions.prefix.slice(1) : suggestions.prefix;
+		const bestMatchIndex = this.getBestAutocompleteMatchIndex(suggestions.items, matchingPrefix);
 		if (bestMatchIndex >= 0) {
 			this.autocompleteList.setSelectedIndex(bestMatchIndex);
 		}
 
 		this.autocompleteState = state;
+		if (!this.autocompleteOverlay) {
+			this.autocompleteOverlay = this.tui.showOverlay(this.autocompleteOverlayComponent, {
+				width: "100%",
+				aboveMarker: this.autocompleteAnchorMarker,
+				nonCapturing: true,
+				visible: () => this.focused && this.autocompleteState !== null,
+			});
+		}
 	}
 
 	private cancelAutocompleteRequest(): void {
@@ -2462,9 +2480,12 @@ export class Editor implements Component, Focusable {
 	}
 
 	private clearAutocompleteUi(): void {
+		this.autocompleteOverlay?.hide();
+		this.autocompleteOverlay = undefined;
 		this.autocompleteState = null;
 		this.autocompleteList = undefined;
 		this.autocompletePrefix = "";
+		this.autocompleteKind = undefined;
 	}
 
 	protected cancelAutocomplete(): void {
@@ -2474,6 +2495,26 @@ export class Editor implements Component, Focusable {
 
 	public isShowingAutocomplete(): boolean {
 		return this.autocompleteState !== null;
+	}
+
+	private refreshAutocompleteAfterEdit(retrigger = false): void {
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
+		const hasCompletionContext =
+			this.getCurrentSlashCommandContext() !== null || /(?:^|[\s])[@#][^\s]*$/.test(textBeforeCursor);
+
+		if (this.autocompleteState) {
+			if (this.getText().trim().length === 0 || (this.autocompleteState === "regular" && !hasCompletionContext)) {
+				this.cancelAutocomplete();
+				return;
+			}
+			this.updateAutocomplete();
+			return;
+		}
+
+		if (retrigger && hasCompletionContext) {
+			this.tryTriggerAutocomplete();
+		}
 	}
 
 	private updateAutocomplete(): void {

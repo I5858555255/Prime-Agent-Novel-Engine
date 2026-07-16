@@ -11,10 +11,11 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import {
 	type Api,
 	type AssistantMessage,
-	getSupportedThinkingLevels,
 	type ImageContent,
 	type Message,
 	type Model,
+	type ServiceTier,
+	supportsFastMode,
 	type ToolCall,
 } from "@earendil-works/pi-ai";
 import { BUILTIN_MCP_CATALOG } from "@earendil-works/pi-ai/mcp";
@@ -729,6 +730,7 @@ export class InteractiveMode {
 
 	// Serializes session event handling; see subscribeToAgent
 	private sessionEventQueue: Promise<void> = Promise.resolve();
+	private fastModeToggleQueue: Promise<void> = Promise.resolve();
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -862,7 +864,7 @@ export class InteractiveMode {
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.ui.onCopy = (text) => {
-			void copyToClipboard(text).catch(() => undefined);
+			void this.copyFullscreenSelection(text);
 		};
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
@@ -987,7 +989,9 @@ export class InteractiveMode {
 
 	private createBaseAutocompleteProvider(): AutocompleteProvider {
 		// Define commands for autocomplete
-		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
+		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.filter(
+			(command) => command.name !== "fast" || this.currentModelSupportsFastMode(),
+		).map((command) => ({
 			name: command.name,
 			aliases: command.aliases,
 			description: command.description,
@@ -2283,6 +2287,9 @@ export class InteractiveMode {
 				break;
 			case "thinking_level_changed":
 				this.patchConnectionState({ thinkingLevel: event.level });
+				break;
+			case "service_tier_changed":
+				this.patchConnectionState({ serviceTier: event.serviceTier });
 				break;
 			case "auto_retry_start":
 				this.patchConnectionState({ retryAttempt: event.attempt });
@@ -3886,6 +3893,15 @@ export class InteractiveMode {
 					this.handleEffortCommand(commandArgs);
 					return;
 				}
+				if (commandName === "fast") {
+					this.editor.setText("");
+					if (commandArgs) {
+						this.showError("Usage: /fast");
+					} else {
+						this.handleFastCommand();
+					}
+					return;
+				}
 				if (commandName === "export") {
 					await this.handleExportCommand(canonicalCommandText);
 					this.editor.setText("");
@@ -4422,7 +4438,13 @@ export class InteractiveMode {
 
 			case "thinking_level_changed":
 				this.footer.invalidate();
+				this.childAgentSummary.invalidate();
 				this.updateEditorBorderColor();
+				break;
+
+			case "service_tier_changed":
+				this.footer.invalidate();
+				this.childAgentSummary.invalidate();
 				break;
 
 			case "bash_start": {
@@ -5091,11 +5113,17 @@ export class InteractiveMode {
 		if (!model) {
 			return "—";
 		}
-		if (!model.reasoning) {
-			return model.name;
+		const parts = [model.name];
+		if (model.reasoning) {
+			const level = this.connectionState?.thinkingLevel ?? "off";
+			if (level !== "off") {
+				parts.push(level);
+			}
 		}
-		const level = this.connectionState?.thinkingLevel ?? "off";
-		return level === "off" ? model.name : `${model.name} • ${level}`;
+		if (this.connectionState?.serviceTier === "priority") {
+			parts.push("fast");
+		}
+		return parts.join(" • ");
 	}
 
 	private getAgentsViewTrayHint(): string | undefined {
@@ -5485,6 +5513,15 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private async copyFullscreenSelection(text: string): Promise<void> {
+		try {
+			await copyToClipboard(text);
+			this.showStatus("Copied selection to clipboard");
+		} catch (error) {
+			this.showError(`Failed to copy selection: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
 	// Local slash commands (/context, /system-prompt, …) print into the chat
 	// without round-tripping through the agent, so no user message event echoes
 	// the typed command. Render the turn ourselves, mirroring the "user" case
@@ -5756,6 +5793,7 @@ export class InteractiveMode {
 		return {
 			messages: snapshot.messages,
 			thinkingLevel: snapshot.state.thinkingLevel,
+			serviceTier: snapshot.state.serviceTier,
 			model: snapshot.state.model
 				? { provider: snapshot.state.model.provider, modelId: snapshot.state.model.id }
 				: null,
@@ -6768,13 +6806,25 @@ export class InteractiveMode {
 	}
 
 	private async applySelectedModel(model: AgentConnectionModel): Promise<void> {
-		await this.agentConnection.setModel(model.provider, model.id);
+		const connection = this.agentConnection;
+		const sessionId = this.connectionState?.sessionId;
+		await connection.setModel(model.provider, model.id);
+		const state = await connection.getState();
+		if (
+			this.agentConnection !== connection ||
+			this.connectionState?.sessionId !== sessionId ||
+			(sessionId !== undefined && state.sessionId !== sessionId)
+		) {
+			return;
+		}
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		this.patchConnectionState({
-			model,
-			availableThinkingLevels: getSupportedThinkingLevels(model) as ThinkingLevel[],
+			model: state.model ?? model,
+			serviceTier: state.serviceTier,
+			availableThinkingLevels: state.availableThinkingLevels,
 		});
 		this.footer.invalidate();
+		this.childAgentSummary.invalidate();
 		this.updateEditorBorderColor();
 		// Rebuild so the /effort argument hint reflects the new model's levels.
 		this.setupAutocompleteProvider();
@@ -6935,6 +6985,52 @@ export class InteractiveMode {
 				)
 			: HEARTBEAT_ARGUMENT_COMPLETIONS;
 		return filtered.length === 0 ? null : filtered;
+	}
+
+	private currentModelSupportsFastMode(): boolean {
+		const model = this.getCurrentModel();
+		return model !== undefined && supportsFastMode(model);
+	}
+
+	private handleFastCommand(): void {
+		const unavailableMessage = "Fast mode requires GPT-5.4, GPT-5.5, or GPT-5.6 with ChatGPT authentication";
+		if (!this.currentModelSupportsFastMode()) {
+			this.showStatus(unavailableMessage);
+			return;
+		}
+		const connection = this.agentConnection;
+		const sessionId = this.connectionState?.sessionId;
+		this.fastModeToggleQueue = this.fastModeToggleQueue
+			.then(async () => {
+				if (this.agentConnection !== connection || this.connectionState?.sessionId !== sessionId) {
+					return;
+				}
+				if (!this.currentModelSupportsFastMode()) {
+					this.showStatus(unavailableMessage);
+					return;
+				}
+				const enabled = this.connectionState?.serviceTier === "priority";
+				const serviceTier: ServiceTier = enabled ? "default" : "priority";
+				await connection.setServiceTier(serviceTier);
+				if (this.agentConnection !== connection || this.connectionState?.sessionId !== sessionId) {
+					return;
+				}
+				const state = await connection.getState();
+				if (
+					this.agentConnection !== connection ||
+					this.connectionState?.sessionId !== sessionId ||
+					state.sessionId !== sessionId
+				) {
+					return;
+				}
+				this.patchConnectionState({ serviceTier: state.serviceTier });
+				this.footer.invalidate();
+				this.childAgentSummary.invalidate();
+				this.showStatus(`Fast mode: ${state.serviceTier === "priority" ? "on" : "off"}`);
+			})
+			.catch((error) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
 	}
 
 	private handleEffortCommand(arg: string): void {
@@ -8512,6 +8608,7 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 | \`${viewportTop}\` | Scroll to top |
 | \`${viewportFollow}\` | Scroll to bottom and follow output |
 | mouse wheel | Scroll transcript |
+| mouse drag | Select and copy text |
 `;
 
 		const shortcuts = this.bindLocalSessionExtensions
