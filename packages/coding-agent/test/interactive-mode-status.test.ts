@@ -21,6 +21,7 @@ import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js
 import type {
 	AgentConnectionExtensionUiRequest,
 	AgentConnectionExtensionUiResponse,
+	AgentConnectionHeartbeat,
 	AgentConnectionModel,
 	AgentConnectionResourceDiagnostic,
 	AgentConnectionResourceSnapshot,
@@ -750,7 +751,7 @@ describe("InteractiveMode connection events", () => {
 		expect(resetRenderOrder).toBeLessThan(rebindOrder);
 		expect(rebindOrder).toBeLessThan(renderMessagesOrder);
 		expect(fakeThis.applyConnectionStateSnapshot).toHaveBeenCalledWith(state);
-		expect(fakeThis.resetCurrentSessionRenderState).toHaveBeenCalledWith({ clearPromptStash: true });
+		expect(fakeThis.resetCurrentSessionRenderState).toHaveBeenCalledWith();
 		expect(fakeThis.rebindCurrentSession).toHaveBeenCalledWith();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledWith();
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledWith();
@@ -2255,6 +2256,7 @@ describe("InteractiveMode goal status announcements", () => {
 describe("InteractiveMode tray goal label", () => {
 	type TrayUsage = { contextWindow: number; tokens: number | null; percent: number | null };
 	type TrayLabelHarness = {
+		heartbeats: AgentConnectionHeartbeat[];
 		connectionState: {
 			goal: GoalState;
 			heartbeat?: AgentCronJob | null;
@@ -2285,6 +2287,7 @@ describe("InteractiveMode tray goal label", () => {
 
 	test("shows active goals in the lower tray without an objective", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,
@@ -2303,6 +2306,7 @@ describe("InteractiveMode tray goal label", () => {
 
 	test("combines active goals with token/context usage in one lower-tray label", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,
@@ -2321,6 +2325,7 @@ describe("InteractiveMode tray goal label", () => {
 
 	test("combines active goals, active heartbeats, and context usage in one lower-tray label", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [{ job: createHeartbeat("active") }];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,
@@ -2335,11 +2340,12 @@ describe("InteractiveMode tray goal label", () => {
 		};
 		fakeThis.uiServices = { getContextUsage: () => undefined };
 
-		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · Heartbeat active (5m) · 75k (75%)");
+		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · 1 heartbeat · 75k (75%)");
 	});
 
 	test("omits the usage segment when token count is unknown", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
+		fakeThis.heartbeats = [];
 		fakeThis.connectionState = {
 			goal: {
 				active: true,
