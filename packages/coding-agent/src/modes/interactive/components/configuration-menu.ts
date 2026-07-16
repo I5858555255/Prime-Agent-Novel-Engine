@@ -34,6 +34,7 @@ export interface ConfigurationMenuOptions {
 	currentModel: Model<Api> | undefined;
 	scopedModels: ReadonlyArray<ConfigurationMenuScopedModel>;
 	availableModels: ReadonlyArray<Model<Api>>;
+	configuredProviders: ReadonlySet<string>;
 	recentModels?: ReadonlyArray<string>;
 	initialModelSearch?: string;
 	getRows?: () => number;
@@ -156,6 +157,7 @@ export class ConfigurationMenuComponent extends Container implements Focusable {
 			{
 				actions: MODEL_SELECTOR_ACTIONS,
 				availableModels: options.availableModels,
+				configuredProviders: options.configuredProviders,
 				header: tabBar,
 				getHeaderRows,
 				onAction: () => this.setActiveTab("providers"),
@@ -226,8 +228,12 @@ export class ConfigurationMenuComponent extends Container implements Focusable {
 		this.options.requestRender();
 	}
 
-	updateModels(currentModel: Model<Api> | undefined, models?: ReadonlyArray<Model<Api>>): void {
-		this.bodies.models.updateState(currentModel, models);
+	updateModels(
+		currentModel: Model<Api> | undefined,
+		models?: ReadonlyArray<Model<Api>>,
+		configuredProviders?: ReadonlySet<string>,
+	): void {
+		this.bodies.models.updateState(currentModel, models, configuredProviders);
 	}
 
 	handleInput(keyData: string): void {

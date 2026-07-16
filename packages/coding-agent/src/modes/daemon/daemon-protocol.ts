@@ -388,6 +388,7 @@ export type DaemonCommand =
 	| { id?: string; type: "get_context_tree"; activeSessionId: string }
 	| { id?: string; type: "get_commands"; activeSessionId: string }
 	| { id?: string; type: "get_resource_snapshot"; activeSessionId: string }
+	| { id?: string; type: "get_model_catalog"; activeSessionId: string }
 	| { id?: string; type: "get_available_models"; activeSessionId: string }
 	| { id?: string; type: "get_queue"; activeSessionId: string }
 	| { id?: string; type: "clear_queue"; activeSessionId: string }
@@ -705,6 +706,7 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"get_context_tree",
 	"get_commands",
 	"get_resource_snapshot",
+	"get_model_catalog",
 	"get_available_models",
 	"get_queue",
 	"cron_list",

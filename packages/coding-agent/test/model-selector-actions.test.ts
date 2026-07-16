@@ -65,9 +65,8 @@ describe("ModelSelectorComponent provider actions", () => {
 
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("Choose a Prime model, or add another provider.");
-		expect(output).toContain("Ctrl+X to add providers and access more models.");
-		expect(output.indexOf("add provider")).toBeLessThan(output.indexOf("Search models"));
-		expect(output.match(/add provider/g)).toHaveLength(1);
+		expect(output).toContain("Signed-in providers first.");
+		expect(output).toContain("Ctrl+X opens providers.");
 
 		selector.handleInput("\r");
 		expect(selectedModel).toBe("faux-1");

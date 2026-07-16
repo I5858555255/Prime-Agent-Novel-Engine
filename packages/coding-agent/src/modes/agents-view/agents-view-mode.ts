@@ -1011,14 +1011,14 @@ class AgentsViewMode implements Component, Focusable {
 			case "model": {
 				const searchTerm = command.args || undefined;
 				if (searchTerm) {
-					// Mirror the in-session /model behavior: an exact provider/id or
-					// unique model id reference applies directly without the picker.
-					const match = findExactModelReferenceMatch(
-						searchTerm,
-						await this.options.uiServices.modelRegistry.refreshAvailableModels(),
-					);
+					const authFlows = this.createAuthFlows();
+					const providerOptions = authFlows.getLoginProviderOptions();
+					const catalog = await this.options.uiServices.modelRegistry.refreshModelCatalog();
+					const match = findExactModelReferenceMatch(searchTerm, catalog.models);
 					if (match) {
-						this.applyDefaultModel(match);
+						if (await this.ensureDefaultModelProviderConfigured(match, authFlows, providerOptions)) {
+							this.applyDefaultModel(match);
+						}
 						return;
 					}
 				}
@@ -1088,10 +1088,41 @@ class AgentsViewMode implements Component, Focusable {
 		this.setStatusMessage(warning, { tone: "warning", sticky: true });
 	}
 
+	private async ensureDefaultModelProviderConfigured(
+		model: Model<Api>,
+		authFlows: ProviderAuthFlows,
+		providerOptions: ReadonlyArray<AuthSelectorProvider>,
+	): Promise<boolean> {
+		const modelRegistry = this.options.uiServices.modelRegistry;
+		if (modelRegistry.hasConfiguredAuth(model)) return true;
+
+		const provider = providerOptions.find(
+			(option) => option.id === model.provider && (option.category ?? "provider") === "provider",
+		);
+		if (!provider) {
+			this.setStatusMessage(`Authentication for ${model.provider} must be configured externally.`, {
+				tone: "error",
+			});
+			return false;
+		}
+
+		const result = await authFlows.loginProvider(provider);
+		if (result.status !== "success") return false;
+
+		await modelRegistry.refreshModelCatalog();
+		if (modelRegistry.hasConfiguredAuth(model)) return true;
+
+		this.setStatusMessage(`Authentication completed, but ${model.provider} is still unavailable.`, {
+			tone: "error",
+		});
+		return false;
+	}
+
 	private async showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
 		const modelRegistry = this.options.uiServices.modelRegistry;
 		const authFlows = this.createAuthFlows();
-		const availableModels = await modelRegistry.refreshAvailableModels();
+		const providerOptions = authFlows.getLoginProviderOptions();
+		const initialCatalog = await modelRegistry.refreshModelCatalog();
 		return new Promise((resolve) => {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
@@ -1120,7 +1151,12 @@ class AgentsViewMode implements Component, Focusable {
 						if (authResult.status !== "success" || tab === "mcp-connections") return;
 
 						await this.applyPrimeInferenceFallbackAfterLogin(authResult);
-						menu.updateModels(this.getDefaultModelForNewAgents(), await modelRegistry.refreshAvailableModels());
+						const catalog = await modelRegistry.refreshModelCatalog();
+						menu.updateModels(
+							this.getDefaultModelForNewAgents(),
+							catalog.models,
+							new Set(catalog.configuredProviders),
+						);
 						menu.setActiveTab("models");
 					})
 					.catch((error) => {
@@ -1133,11 +1169,12 @@ class AgentsViewMode implements Component, Focusable {
 				initialTab,
 				tui: this.ui,
 				authStorage: modelRegistry.authStorage,
-				providerOptions: authFlows.getLoginProviderOptions(),
+				providerOptions,
 				modelRegistry,
 				currentModel: this.getDefaultModelForNewAgents(),
 				scopedModels: [],
-				availableModels,
+				availableModels: initialCatalog.models,
+				configuredProviders: new Set(initialCatalog.configuredProviders),
 				recentModels: this.options.uiServices.settingsManager.getRecentModels(),
 				initialModelSearch,
 				getRows: () => this.ui.terminal.rows,
@@ -1145,8 +1182,18 @@ class AgentsViewMode implements Component, Focusable {
 				onSelectProvider: (provider) => authenticate(provider, "providers"),
 				onSelectMcpConnection: (provider) => authenticate(provider, "mcp-connections"),
 				onSelectModel: (model) => {
-					this.applyDefaultModel(model);
-					finish();
+					void (async () => {
+						try {
+							const ready = await this.ensureDefaultModelProviderConfigured(model, authFlows, providerOptions);
+							handle?.focus();
+							menu.refreshAuthentication();
+							if (!ready || settled) return;
+							this.applyDefaultModel(model);
+							finish();
+						} catch (error) {
+							this.setStatusMessage(error instanceof Error ? error.message : String(error), { tone: "error" });
+						}
+					})();
 				},
 				onCancel: finish,
 			});

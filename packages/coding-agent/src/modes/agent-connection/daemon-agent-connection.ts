@@ -44,6 +44,7 @@ import type {
 	AgentConnectionForkOptions,
 	AgentConnectionHeartbeat,
 	AgentConnectionModel,
+	AgentConnectionModelCatalog,
 	AgentConnectionModelCycleResult,
 	AgentConnectionNavigateTreeOptions,
 	AgentConnectionNavigateTreeResult,
@@ -382,6 +383,13 @@ export class DaemonAgentConnection implements AgentConnection {
 			activeSessionId: this.activeSessionId,
 		});
 		return data.models;
+	}
+
+	async getModelCatalog(): Promise<AgentConnectionModelCatalog> {
+		return this.requestData<AgentConnectionModelCatalog>({
+			type: "get_model_catalog",
+			activeSessionId: this.activeSessionId,
+		});
 	}
 
 	async getSessionStats(): Promise<SessionStats> {
@@ -1677,6 +1685,7 @@ function invalidatesCachedSnapshot(commandType: DaemonCommandBody["type"]): bool
 		case "get_session_stats":
 		case "get_commands":
 		case "get_resource_snapshot":
+		case "get_model_catalog":
 		case "get_available_models":
 		case "get_queue":
 		case "cron_list":
