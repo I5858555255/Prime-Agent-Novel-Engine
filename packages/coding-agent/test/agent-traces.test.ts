@@ -727,6 +727,38 @@ describe("agent trace upload", () => {
 		expect(progress.at(-1)).toEqual({ completed: 3, total: 3 });
 	});
 
+	it("stops scheduling batch uploads after cancellation", async () => {
+		const sessionDir = join(tempDir, "sessions");
+		writeSession(tempDir, sessionDir, "abort-all-a");
+		writeSession(tempDir, sessionDir, "abort-all-b");
+		writeSession(tempDir, sessionDir, "abort-all-c");
+		const controller = new AbortController();
+		const calls: FetchCall[] = [];
+
+		const result = await uploadAllAgentTraces({
+			sessionDir,
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: false } }),
+			requireEnabled: false,
+			baseUrl: "https://api.example.test",
+			fetchFn: createFetchRecorder(calls),
+			reloadConfig: false,
+			concurrency: 1,
+			signal: controller.signal,
+			onProgress: ({ completed }) => {
+				if (completed === 1) {
+					controller.abort(new Error("cancel batch"));
+				}
+			},
+		});
+
+		expect(calls).toHaveLength(1);
+		expect(result).toMatchObject({ total: 3, uploaded: 1, failed: 0, skipped: 2 });
+		expect(result.results).toHaveLength(1);
+	});
+
 	it("prefers the prime-inference credential over the prime-cli config key", async () => {
 		const session = writeSession(tempDir, join(tempDir, "sessions"), "credential-order-session");
 		const calls: FetchCall[] = [];

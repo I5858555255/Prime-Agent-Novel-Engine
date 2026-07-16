@@ -512,13 +512,17 @@ export async function findAgentTraceFiles(sessionDir: string = getSessionsDir())
 export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions): Promise<AgentTraceUploadAllResult> {
 	const { sessionDir, concurrency, onProgress, ...uploadOptions } = options;
 	const sessionFiles = await findAgentTraceFiles(sessionDir);
-	const results: AgentTraceUploadAllResult["results"] = new Array(sessionFiles.length);
+	type UploadResultItem = AgentTraceUploadAllResult["results"][number];
+	const results: Array<UploadResultItem | undefined> = new Array(sessionFiles.length);
 	let cursor = 0;
 	let completed = 0;
 	onProgress?.({ completed, total: sessionFiles.length });
 
 	const worker = async () => {
 		while (true) {
+			if (uploadOptions.signal?.aborted) {
+				return;
+			}
 			const index = cursor;
 			cursor += 1;
 			const sessionFile = sessionFiles[index];
@@ -544,10 +548,11 @@ export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions):
 	const workerCount = Math.min(sessionFiles.length, normalizedConcurrency);
 	await Promise.all(Array.from({ length: workerCount }, worker));
 
+	const completedResults = results.filter((item): item is UploadResultItem => item !== undefined);
 	let uploaded = 0;
 	let failed = 0;
 	let bytesStored = 0;
-	for (const item of results) {
+	for (const item of completedResults) {
 		if (item.result.status === "uploaded") {
 			uploaded += 1;
 			bytesStored += item.result.bytesStored;
@@ -556,12 +561,12 @@ export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions):
 		}
 	}
 	return {
-		total: results.length,
+		total: sessionFiles.length,
 		uploaded,
 		failed,
-		skipped: results.length - uploaded - failed,
+		skipped: sessionFiles.length - uploaded - failed,
 		bytesStored,
-		results,
+		results: completedResults,
 	};
 }
 

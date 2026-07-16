@@ -6,7 +6,11 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
 interface TracesCommandContext {
 	agentConnection: { getState: () => Promise<{ sessionDir?: string }> };
-	settingsManager: { getAgentTracesEnabled: () => boolean };
+	settingsManager: {
+		getAgentTracesEnabled: () => boolean;
+		setAgentTracesEnabled: (enabled: boolean) => void;
+		flush: () => Promise<void>;
+	};
 	modelRegistry: { authStorage: AuthStorage };
 	previewCurrentTrace: () => Promise<void>;
 	uploadCurrentTraceOnce: () => Promise<AgentTraceUploadResult>;
@@ -26,7 +30,11 @@ const prototype = InteractiveMode.prototype as unknown as TracesCommandPrototype
 function makeContext(enabled = true): TracesCommandContext {
 	return {
 		agentConnection: { getState: vi.fn(async () => ({ sessionDir: "/custom/sessions" })) },
-		settingsManager: { getAgentTracesEnabled: () => enabled },
+		settingsManager: {
+			getAgentTracesEnabled: () => enabled,
+			setAgentTracesEnabled: vi.fn(),
+			flush: vi.fn(async () => {}),
+		},
 		modelRegistry: {
 			authStorage: AuthStorage.inMemory({
 				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
@@ -78,6 +86,21 @@ describe("InteractiveMode /traces", () => {
 		expect(context.uploadAllTraces).not.toHaveBeenCalled();
 		expect(context.showStatus).toHaveBeenCalledWith("Trace uploaded (12 bytes).");
 	});
+
+	it.each(["no_session_file", "empty_session"] as const)(
+		"keeps future upload guidance when enabling from %s",
+		async (status) => {
+			const context = makeContext(false);
+			vi.mocked(context.uploadCurrentTraceOnce).mockResolvedValue({ status });
+
+			await prototype.handleTracesCommand.call(context, "/traces on");
+
+			expect(context.settingsManager.setAgentTracesEnabled).toHaveBeenCalledWith(true);
+			expect(context.showStatus).toHaveBeenCalledWith(
+				"Trace sharing enabled. Current session will upload after the first assistant response.",
+			);
+		},
+	);
 
 	it("backfills all discovered traces only for upload-all", async () => {
 		const context = makeContext(false);

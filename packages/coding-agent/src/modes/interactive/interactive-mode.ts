@@ -8361,7 +8361,10 @@ export class InteractiveMode {
 			this.settingsManager.setAgentTracesEnabled(true);
 			await this.settingsManager.flush();
 			const uploadResult = await this.uploadCurrentTraceOnce();
-			const uploadMessage = this.formatTraceUploadResult(uploadResult);
+			const uploadMessage =
+				uploadResult.status === "no_session_file" || uploadResult.status === "empty_session"
+					? "Current session will upload after the first assistant response."
+					: this.formatTraceUploadResult(uploadResult);
 			this.showStatus(`Trace sharing enabled. ${uploadMessage}`);
 			return;
 		}
