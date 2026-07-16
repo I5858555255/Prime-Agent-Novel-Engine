@@ -60,20 +60,40 @@ describe("OAuthSelectorComponent", () => {
 		]);
 	});
 
-	it("puts Prime Inference first within the same authentication state", () => {
-		const selector = new OAuthSelectorComponent(
-			"login",
-			AuthStorage.inMemory(),
-			[
-				{ id: "anthropic", name: "Anthropic", authType: "api_key" },
-				{ id: PRIME_INFERENCE_PROVIDER_ID, name: "Prime Inference", authType: "api_key" },
-			],
-			() => {},
-			() => {},
-		);
+	it("sorts Prime Inference first within every login auth-state group", () => {
+		const cases: Array<{ status: AuthStatus; configuredProviderLeads: boolean }> = [
+			{ status: { configured: true, source: "environment" }, configuredProviderLeads: false },
+			{ status: { configured: false, source: "stale", label: "expired" }, configuredProviderLeads: true },
+			{ status: { configured: false }, configuredProviderLeads: true },
+		];
 
-		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output.indexOf("Prime Inference")).toBeLessThan(output.indexOf("Anthropic"));
+		for (const { status, configuredProviderLeads } of cases) {
+			const selector = new OAuthSelectorComponent(
+				"login",
+				AuthStorage.inMemory(),
+				[
+					{ id: "anthropic", name: "Anthropic", authType: "api_key" },
+					{ id: PRIME_INFERENCE_PROVIDER_ID, name: "Prime Inference", authType: "api_key" },
+					{ id: "openai", name: "OpenAI", authType: "api_key" },
+				],
+				() => {},
+				() => {},
+				(providerId) =>
+					providerId === "openai" ? { configured: true, source: "environment", label: "OPENAI_API_KEY" } : status,
+			);
+
+			const output = stripAnsi(selector.render(120).join("\n"));
+			const primeIndex = output.indexOf("Prime Inference");
+			const anthropicIndex = output.indexOf("Anthropic");
+			const openAiIndex = output.indexOf("OpenAI");
+
+			expect(primeIndex).toBeLessThan(anthropicIndex);
+			if (configuredProviderLeads) {
+				expect(openAiIndex).toBeLessThan(primeIndex);
+			} else {
+				expect(primeIndex).toBeLessThan(openAiIndex);
+			}
+		}
 	});
 
 	it("preserves auth type when selecting duplicate provider ids", () => {
@@ -117,42 +137,6 @@ describe("OAuthSelectorComponent", () => {
 
 		expect(output.indexOf("OpenAI")).toBeLessThan(output.indexOf("Anthropic"));
 		expect(output.indexOf("OpenAI")).toBeLessThan(output.indexOf("GitHub Copilot"));
-	});
-
-	it("sorts Prime Inference first within every login auth-state group", () => {
-		const cases: Array<{ status: AuthStatus; configuredProviderLeads: boolean }> = [
-			{ status: { configured: true, source: "environment" }, configuredProviderLeads: false },
-			{ status: { configured: false, source: "stale", label: "expired" }, configuredProviderLeads: true },
-			{ status: { configured: false }, configuredProviderLeads: true },
-		];
-
-		for (const { status, configuredProviderLeads } of cases) {
-			const selector = new OAuthSelectorComponent(
-				"login",
-				AuthStorage.inMemory(),
-				[
-					{ id: "anthropic", name: "Anthropic", authType: "api_key" },
-					{ id: "prime-inference", name: "Prime Inference", authType: "api_key" },
-					{ id: "openai", name: "OpenAI", authType: "api_key" },
-				],
-				() => {},
-				() => {},
-				(providerId) =>
-					providerId === "openai" ? { configured: true, source: "environment", label: "OPENAI_API_KEY" } : status,
-			);
-
-			const output = stripAnsi(selector.render(120).join("\n"));
-			const primeIndex = output.indexOf("Prime Inference");
-			const anthropicIndex = output.indexOf("Anthropic");
-			const openAiIndex = output.indexOf("OpenAI");
-
-			expect(primeIndex).toBeLessThan(anthropicIndex);
-			if (configuredProviderLeads) {
-				expect(openAiIndex).toBeLessThan(primeIndex);
-			} else {
-				expect(primeIndex).toBeLessThan(openAiIndex);
-			}
-		}
 	});
 
 	it("shows stored OAuth auth distinctly in the API key selector", () => {
