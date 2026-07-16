@@ -17,6 +17,14 @@ interface HeartbeatManagementHarness {
 	manageHeartbeat(heartbeat: AgentConnectionHeartbeat, action: AgentHeartbeatManagementAction): Promise<void>;
 }
 
+interface HeartbeatRefreshHarness {
+	heartbeats: AgentConnectionHeartbeat[];
+	heartbeatManager: object | undefined;
+	heartbeatManagerRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+	refreshHeartbeatCatalog(): Promise<void>;
+	scheduleHeartbeatManagerRefresh(): void;
+}
+
 function heartbeat(): AgentCronJob {
 	return {
 		id: "heartbeat-1",
@@ -52,5 +60,24 @@ describe("interactive heartbeat management", () => {
 
 		expect(patches).toEqual([{ heartbeat: null }]);
 		expect(harness.refreshHeartbeatCatalog).toHaveBeenCalledOnce();
+	});
+
+	it("refreshes an open manager after the next scheduled run", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+			const harness = Object.create(InteractiveMode.prototype) as HeartbeatRefreshHarness;
+			harness.heartbeats = [{ job: { ...heartbeat(), nextRunAt: "2026-01-01T00:00:01.000Z" } }];
+			harness.heartbeatManager = {};
+			harness.heartbeatManagerRefreshTimer = undefined;
+			harness.refreshHeartbeatCatalog = vi.fn(async () => {});
+
+			harness.scheduleHeartbeatManagerRefresh();
+			await vi.advanceTimersByTimeAsync(1_250);
+
+			expect(harness.refreshHeartbeatCatalog).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

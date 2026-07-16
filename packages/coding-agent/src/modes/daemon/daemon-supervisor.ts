@@ -1089,8 +1089,31 @@ export class DaemonSupervisor {
 				return success(command.id, "heartbeats_list", { heartbeats: [...heartbeats.values()] });
 			}
 			case "heartbeat_manage": {
-				const match = await this.findWorker(command.activeSessionId);
-				return this.forwardToWorker(match.worker, command);
+				const cachedWorker = [...this.workers.values()].find((worker) =>
+					worker.heartbeatSnapshot?.some(
+						(heartbeat) =>
+							heartbeat.job.id === command.jobId && heartbeat.job.activeSessionId === command.activeSessionId,
+					),
+				);
+				const worker = cachedWorker ?? (await this.findWorker(command.activeSessionId)).worker;
+				const response = await this.forwardToWorker(worker, command);
+				if (
+					response.success &&
+					response.data &&
+					typeof response.data === "object" &&
+					"heartbeat" in response.data
+				) {
+					const job = (response.data as { heartbeat?: AgentCronJob }).heartbeat;
+					if (job && worker.heartbeatSnapshot) {
+						const existing = worker.heartbeatSnapshot.find((heartbeat) => heartbeat.job.id === job.id);
+						const remaining = worker.heartbeatSnapshot.filter((heartbeat) => heartbeat.job.id !== job.id);
+						worker.heartbeatSnapshot =
+							job.status === "active" || job.status === "paused"
+								? [...remaining, existing ? { ...existing, job } : { job }]
+								: remaining;
+					}
+				}
+				return response;
 			}
 			case "cron_add": {
 				const match = await this.findWorker(command.activeSessionId);

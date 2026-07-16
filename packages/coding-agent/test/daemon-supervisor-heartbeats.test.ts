@@ -112,4 +112,33 @@ describe("daemon supervisor heartbeat aggregation", () => {
 		});
 		expect(supervisor.forwardToWorker).toHaveBeenCalledOnce();
 	});
+
+	it("routes management by cached job ownership after a session unloads", async () => {
+		const supervisor = createSupervisorHarness();
+		const target = {
+			...worker("ready"),
+			heartbeatSnapshot: [{ job: { id: "heartbeat-1", activeSessionId: "unloaded-session" } }],
+		};
+		supervisor.workers.set("target", target);
+		supervisor.forwardToWorker = vi.fn(async (_worker, command) =>
+			success(command.id, command.type, {
+				heartbeat: { id: "heartbeat-1", activeSessionId: "unloaded-session", status: "cancelled" },
+			}),
+		);
+
+		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+			id: "manage-1",
+			type: "heartbeat_manage",
+			activeSessionId: "unloaded-session",
+			jobId: "heartbeat-1",
+			action: "stop",
+		});
+
+		expect(response).toMatchObject({ success: true });
+		expect(supervisor.forwardToWorker).toHaveBeenCalledWith(
+			target,
+			expect.objectContaining({ type: "heartbeat_manage", jobId: "heartbeat-1" }),
+		);
+		expect(target.heartbeatSnapshot).toEqual([]);
+	});
 });

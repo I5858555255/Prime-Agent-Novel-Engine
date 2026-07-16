@@ -787,6 +787,7 @@ export class InteractiveMode {
 	private heartbeatRefreshRequested = false;
 	private heartbeatManager: HeartbeatManagerComponent | undefined;
 	private heartbeatManagerHandle: OverlayHandle | undefined;
+	private heartbeatManagerRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 	// Registry of images pasted this session, keyed by the `[image #N]` marker
 	// shown to the user. Insertion-ordered; the bytes persist (bounded by
@@ -2234,6 +2235,7 @@ export class InteractiveMode {
 				if (this.agentConnection !== connection) return;
 				this.heartbeats = heartbeats;
 				this.heartbeatManager?.setHeartbeats(heartbeats);
+				this.scheduleHeartbeatManagerRefresh();
 				this.childAgentSummary.invalidate();
 				this.ui.requestRender();
 			} while (this.heartbeatRefreshRequested);
@@ -8474,13 +8476,46 @@ export class InteractiveMode {
 			fullWidth: true,
 			suspendFullscreenMouse: true,
 		});
+		this.scheduleHeartbeatManagerRefresh();
 	}
 
 	private closeHeartbeatManager(): void {
+		if (this.heartbeatManagerRefreshTimer) {
+			clearTimeout(this.heartbeatManagerRefreshTimer);
+			this.heartbeatManagerRefreshTimer = undefined;
+		}
 		this.heartbeatManagerHandle?.hide();
 		this.heartbeatManagerHandle = undefined;
 		this.heartbeatManager = undefined;
 		this.ui.requestRender();
+	}
+
+	private scheduleHeartbeatManagerRefresh(): void {
+		if (this.heartbeatManagerRefreshTimer) {
+			clearTimeout(this.heartbeatManagerRefreshTimer);
+			this.heartbeatManagerRefreshTimer = undefined;
+		}
+		if (!this.heartbeatManager) {
+			return;
+		}
+		const nextRunAt = this.heartbeats
+			.filter((heartbeat) => heartbeat.job.status === "active" && heartbeat.job.nextRunAt)
+			.map((heartbeat) => Date.parse(heartbeat.job.nextRunAt!))
+			.filter(Number.isFinite)
+			.sort((left, right) => left - right)[0];
+		if (nextRunAt === undefined) {
+			return;
+		}
+		const untilNextRun = nextRunAt - Date.now();
+		const delay = untilNextRun > 0 ? Math.min(60_000, untilNextRun + 250) : 5_000;
+		this.heartbeatManagerRefreshTimer = setTimeout(() => {
+			this.heartbeatManagerRefreshTimer = undefined;
+			if (!this.heartbeatManager) {
+				return;
+			}
+			void this.refreshHeartbeatCatalog().catch(() => this.scheduleHeartbeatManagerRefresh());
+		}, delay);
+		this.heartbeatManagerRefreshTimer.unref?.();
 	}
 
 	private async manageHeartbeat(
