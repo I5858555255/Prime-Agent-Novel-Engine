@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentCronJob, AgentHeartbeatManagementAction } from "../src/core/cron-jobs.js";
+import { KEYBINDINGS } from "../src/core/keybindings.js";
 import type { AgentConnectionHeartbeat } from "../src/modes/agent-connection/types.js";
 import { HeartbeatManagerComponent } from "../src/modes/interactive/components/heartbeat-manager.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -37,6 +38,10 @@ function stripAnsi(value: string): string {
 
 describe("HeartbeatManagerComponent", () => {
 	beforeAll(() => initTheme("dark"));
+
+	it("uses a terminal-stable default shortcut", () => {
+		expect(KEYBINDINGS["app.heartbeats.open"].defaultKeys).toBe("f6");
+	});
 
 	it("groups user and agent heartbeats and stays within terminal width", () => {
 		const component = new HeartbeatManagerComponent(

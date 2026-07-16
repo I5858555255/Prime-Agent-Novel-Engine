@@ -70,7 +70,6 @@ import {
 	type AgentHeartbeatDeliveryMode,
 	type AgentHeartbeatManagementAction,
 	type AgentHeartbeatUpdateAction,
-	createAgentHeartbeatToolDefinitions,
 	DEFAULT_HEARTBEAT_SCHEDULE,
 	isHeartbeatCronJob,
 	normalizeHeartbeatDeliveryMode,
@@ -811,16 +810,6 @@ export class AgentDaemon {
 					runtimeMetadata: command.runtimeMetadata,
 					sessionLease,
 					sessionOptions: {
-						customTools: [
-							...createAgentHeartbeatToolDefinitions({
-								getHeartbeat: () => {
-									if (!stateRef) {
-										throw new Error("Heartbeat state is not ready for this session yet");
-									}
-									return this.cronStore.getHeartbeat(stateRef.activeSessionId);
-								},
-							}),
-						],
 						rlmHeartbeatController: {
 							listRlmHeartbeats: (listOptions) => {
 								if (!stateRef) {

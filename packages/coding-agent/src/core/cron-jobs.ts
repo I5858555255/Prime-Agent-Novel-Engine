@@ -11,8 +11,6 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
-import { Type } from "typebox";
-import type { ToolDefinition } from "./extensions/types.js";
 
 export type AgentCronJobStatus = "active" | "paused" | "completed" | "cancelled";
 export type AgentCronScheduleKind = "once" | "cron" | "interval";
@@ -123,10 +121,6 @@ export type ParsedHeartbeatCommand =
 	| { type: "resume" }
 	| { type: "clear" }
 	| { type: "set"; schedule: string; instruction: string; deliveryMode?: AgentHeartbeatDeliveryMode };
-
-export interface AgentCronToolController {
-	getHeartbeat(): AgentCronJob | undefined;
-}
 
 export interface AgentRlmHeartbeatController {
 	listRlmHeartbeats(options?: { includeInactive?: boolean }): AgentCronJob[];
@@ -1191,27 +1185,6 @@ export function formatAgentCronJob(job: AgentCronJob): string {
 	const label = job.label ? ` label="${job.label}"` : "";
 	const skipped = job.lastSkippedAt ? ` skipped=${new Date(job.lastSkippedAt).toLocaleString()}` : "";
 	return `${job.id} ${job.status}${label} next=${next} last=${last}${skipped} runs=${job.runCount} schedule="${job.schedule.expression}" prompt="${preview}"${error}`;
-}
-
-export function createAgentHeartbeatToolDefinitions(controller: AgentCronToolController): ToolDefinition[] {
-	return [
-		{
-			name: "get_heartbeat",
-			label: "Get Heartbeat",
-			description: "Get the persistent heartbeat configured for this daemon-backed session, if one exists.",
-			promptGuidelines: [
-				"Use get_heartbeat to inspect the current heartbeat before changing it, or when the user asks about heartbeat status.",
-			],
-			parameters: Type.Object({}, { additionalProperties: false }),
-			execute: async () => {
-				const job = controller.getHeartbeat();
-				return {
-					content: [{ type: "text", text: JSON.stringify({ heartbeat: job ?? null }, null, 2) }],
-					details: job ?? null,
-				};
-			},
-		},
-	];
 }
 
 function consumeDeliveryOption(text: string): { deliveryMode: AgentHeartbeatDeliveryMode | undefined; rest: string } {
