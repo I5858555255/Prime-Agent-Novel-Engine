@@ -265,7 +265,7 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(this.createErrorComponent(errorMsg, "Error"));
 		}
 
-		if (hasToolCalls) {
+		if (hasToolCalls && (hasVisibleContent || message.stopReason === "aborted")) {
 			this.contentContainer.addChild(new Spacer(1));
 		}
 	}
