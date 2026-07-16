@@ -10,6 +10,7 @@ interface SupervisorHarness {
 	workers: Map<string, unknown>;
 	forwardToWorker(worker: unknown, command: DaemonCommand, timeoutMs?: number): Promise<DaemonResponse>;
 	handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
+	handleWorkerFrame(worker: unknown, frame: unknown): void;
 }
 
 const tempDirs: string[] = [];
@@ -91,6 +92,31 @@ describe("daemon supervisor heartbeat aggregation", () => {
 
 		expect(response).toMatchObject({ success: false, error: "worker unavailable" });
 		expect(supervisor.forwardToWorker).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not fall back to a snapshot after the worker reports heartbeat changes", async () => {
+		const supervisor = createSupervisorHarness();
+		const target = {
+			...worker("ready"),
+			heartbeatSnapshot: [{ job: { id: "heartbeat-1" } }],
+			heartbeatSnapshotStale: false,
+		};
+		supervisor.workers.set("target", target);
+		supervisor.forwardToWorker = vi.fn(async (_worker, command) =>
+			failure(command.id, command.type, "worker unavailable"),
+		);
+
+		supervisor.handleWorkerFrame(target, {
+			header: { kind: "outbound", outboundType: "heartbeats_changed" },
+			payload: Buffer.alloc(0),
+		});
+		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+			id: "list-stale",
+			type: "heartbeats_list",
+		});
+
+		expect(target.heartbeatSnapshotStale).toBe(true);
+		expect(response).toMatchObject({ success: false, error: "worker unavailable" });
 	});
 
 	it("fails rather than returning a partial catalog without a cached snapshot", async () => {
