@@ -1140,6 +1140,7 @@ describe("daemon worker supervisor monitoring", () => {
 			launchWorker: ReturnType<typeof vi.fn>;
 			persistWorker: ReturnType<typeof vi.fn>;
 			syncAgentPeers: ReturnType<typeof vi.fn>;
+			broadcastHeartbeatsChanged: ReturnType<typeof vi.fn>;
 			log: ReturnType<typeof vi.fn>;
 			assertRecoveryAllowed: ReturnType<typeof vi.fn>;
 			recoverWorker(worker: RecoveryWorker): Promise<void>;
@@ -1232,6 +1233,7 @@ describe("daemon worker supervisor monitoring", () => {
 			syncAgentPeers: vi.fn(async () => {
 				throw new Error("peer unavailable");
 			}),
+			broadcastHeartbeatsChanged: vi.fn(),
 			log: vi.fn(),
 			assertRecoveryAllowed: vi.fn(async () => {}),
 		}) as RecoveryHarness;
