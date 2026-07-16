@@ -2,10 +2,13 @@ import { type Component, type Focusable, getKeybindings, Spacer, TruncatedText }
 import type { AgentHeartbeatManagementAction } from "../../../core/cron-jobs.js";
 import type { AgentConnectionHeartbeat } from "../../agent-connection/types.js";
 import { theme } from "../theme/theme.js";
+import { keyHint } from "./keybinding-hints.js";
 import { getMenuListLayout, MenuList, MenuPanel, MenuRow } from "./menu-panel.js";
+import { shouldTreatAsBack } from "./modal-back.js";
 
+const HEARTBEAT_PANEL_MAX_WIDTH = 72;
 const PREFERRED_VISIBLE_HEARTBEATS = 8;
-const HEARTBEAT_LIST_RESERVED_ROWS = 5;
+const HEARTBEAT_LIST_RESERVED_ROWS = 7;
 const HEARTBEAT_SCROLL_INDICATOR_ROWS = 1;
 
 type HeartbeatManagerMode =
@@ -66,7 +69,11 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 	handleInput(data: string): void {
 		if (this.busy) return;
 		const keybindings = getKeybindings();
-		if (keybindings.matches(data, "tui.select.cancel")) {
+		if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.heartbeats.open")) {
+			this.options.onClose();
+			return;
+		}
+		if (shouldTreatAsBack(data)) {
 			if (this.mode.type === "list") {
 				this.options.onClose();
 			} else {
@@ -91,7 +98,11 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 
 	render(width: number): string[] {
 		const panel = this.mode.type === "list" ? this.createHeartbeatListPanel() : this.createActionPanel(this.mode);
-		return panel.render(width);
+		const safeWidth = Math.max(1, width);
+		const panelWidth = Math.min(safeWidth, HEARTBEAT_PANEL_MAX_WIDTH);
+		const leftPadding = Math.max(0, Math.floor((safeWidth - panelWidth) / 2));
+		const rightPadding = Math.max(0, safeWidth - panelWidth - leftPadding);
+		return panel.render(panelWidth).map((line) => " ".repeat(leftPadding) + line + " ".repeat(rightPadding));
 	}
 
 	private createHeartbeatListPanel(): MenuPanel {
@@ -109,6 +120,8 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 			panel.addChild(new Spacer(1));
 			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`), 1, 0));
 		}
+		panel.addChild(new Spacer(1));
+		panel.addChild(new TruncatedText(this.closeHint(), 1, 0));
 		return panel;
 	}
 
@@ -127,21 +140,15 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		for (let index = startIndex; index < endIndex; index++) {
 			const heartbeat = this.heartbeats[index];
 			if (!heartbeat) continue;
-			const source = heartbeat.job.source === "heartbeat" ? "User" : "Agent";
+			const source = this.sourceLabel(heartbeat);
 			const label = heartbeat.job.label?.trim();
 			const delivery = heartbeat.job.deliveryMode === "follow_up" ? "follow-up" : "steer";
-			const details = [
-				source,
-				this.sessionLabel(heartbeat),
-				heartbeat.job.schedule.expression,
-				delivery,
-				heartbeat.job.lastError ? `error: ${this.singleLine(heartbeat.job.lastError)}` : undefined,
-			]
-				.filter((value) => value !== undefined)
-				.join(" · ");
+			const details = heartbeat.job.lastError
+				? `${source} · error: ${this.singleLine(heartbeat.job.lastError)}`
+				: `${source} · ${this.sessionLabel(heartbeat)} · ${heartbeat.job.schedule.expression} · ${delivery}`;
 			list.addChild(
 				new MenuRow({
-					primary: label || this.singleLine(heartbeat.job.prompt) || `${source} heartbeat`,
+					primary: label || this.singleLine(heartbeat.job.prompt) || this.defaultHeartbeatName(heartbeat),
 					secondary: details,
 					meta: this.formatStatus(heartbeat),
 					selected: index === this.selectedIndex,
@@ -161,8 +168,7 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		if (!heartbeat) {
 			return new MenuPanel({ title: "Heartbeats", subtitle: "This heartbeat is no longer available." });
 		}
-		const source = heartbeat.job.source === "heartbeat" ? "User heartbeat" : "Agent heartbeat";
-		const name = heartbeat.job.label?.trim() || source;
+		const name = heartbeat.job.label?.trim() || this.defaultHeartbeatName(heartbeat);
 		const panel = new MenuPanel({
 			title: mode.type === "confirm-stop" ? "Stop heartbeat?" : name,
 			subtitle:
@@ -188,6 +194,8 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 				list.addChild(new MenuRow({ ...choice, selected: index === mode.selectedIndex }));
 			}
 			panel.addChild(list);
+			panel.addChild(new Spacer(1));
+			panel.addChild(new TruncatedText(this.detailHint(), 1, 0));
 			return panel;
 		}
 		for (const [index, action] of this.availableActions(heartbeat).entries()) {
@@ -200,6 +208,8 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 			);
 		}
 		panel.addChild(list);
+		panel.addChild(new Spacer(1));
+		panel.addChild(new TruncatedText(this.detailHint(), 1, 0));
 		return panel;
 	}
 
@@ -306,10 +316,25 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 	}
 
 	private formatHeartbeatDetails(heartbeat: AgentConnectionHeartbeat): string {
-		const source = heartbeat.job.source === "heartbeat" ? "User" : "Agent";
 		const delivery = heartbeat.job.deliveryMode === "follow_up" ? "follow-up" : "steer";
 		const next = heartbeat.job.nextRunAt ? this.formatTimestamp(heartbeat.job.nextRunAt) : "—";
-		return `${source} · ${this.sessionLabel(heartbeat)} · ${heartbeat.job.status} · ${heartbeat.job.schedule.expression} · ${delivery} · next ${next} · ${heartbeat.job.runCount} runs`;
+		return `${this.sourceLabel(heartbeat)} · ${this.sessionLabel(heartbeat)} · ${heartbeat.job.status} · ${heartbeat.job.schedule.expression} · ${delivery} · next ${next} · ${heartbeat.job.runCount} runs`;
+	}
+
+	private sourceLabel(heartbeat: AgentConnectionHeartbeat): string {
+		return heartbeat.job.source === "heartbeat" ? "Created by you" : "Created by agent";
+	}
+
+	private defaultHeartbeatName(heartbeat: AgentConnectionHeartbeat): string {
+		return heartbeat.job.source === "heartbeat" ? "Your heartbeat" : "Agent-created heartbeat";
+	}
+
+	private closeHint(): string {
+		return `${keyHint("app.modal.back", "close")}  ${keyHint("tui.select.cancel", "close", { primaryOnly: true })}`;
+	}
+
+	private detailHint(): string {
+		return `${keyHint("app.modal.back", "back")}  ${keyHint("tui.select.cancel", "close", { primaryOnly: true })}`;
 	}
 
 	private actionDescription(action: AgentHeartbeatManagementAction | "back"): string {

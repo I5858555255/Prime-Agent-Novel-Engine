@@ -1,7 +1,7 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentCronJob, AgentHeartbeatManagementAction } from "../src/core/cron-jobs.js";
-import { KEYBINDINGS } from "../src/core/keybindings.js";
+import { KEYBINDINGS, KeybindingsManager } from "../src/core/keybindings.js";
 import type { AgentConnectionHeartbeat } from "../src/modes/agent-connection/types.js";
 import { HeartbeatManagerComponent } from "../src/modes/interactive/components/heartbeat-manager.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -37,7 +37,10 @@ function stripAnsi(value: string): string {
 }
 
 describe("HeartbeatManagerComponent", () => {
-	beforeAll(() => initTheme("dark"));
+	beforeAll(() => {
+		initTheme("dark");
+		setKeybindings(new KeybindingsManager());
+	});
 
 	it("uses a terminal-stable default shortcut", () => {
 		expect(KEYBINDINGS["app.heartbeats.open"].defaultKeys).toBe("ctrl+r");
@@ -61,15 +64,42 @@ describe("HeartbeatManagerComponent", () => {
 			const lines = component.render(width);
 			expect(lines.every((line) => visibleWidth(line) === width)).toBe(true);
 		}
-		const output = stripAnsi(component.render(100).join("\n"));
+		const rendered = component.render(100).map(stripAnsi);
+		const output = rendered.join("\n");
 		expect(output).toContain("2 heartbeats · 1 paused");
 		expect(output).toContain("Primary session");
-		expect(output).toContain("User");
-		expect(output).toContain("Agent");
-		expect(output).toContain("follow-up");
+		expect(output).toContain("Created by you");
+		expect(output).toContain("Created by agent");
 		expect(output).toContain("previous delivery failed");
+		expect(output).toContain("Esc close");
 		expect(output).not.toContain("›");
 		expect(output).not.toContain("─");
+		expect(rendered.find((line) => line.includes("Heartbeats"))?.indexOf("Heartbeats")).toBeGreaterThan(2);
+	});
+
+	it("closes with escape or the toggle shortcut and uses left arrow as back", () => {
+		let closeCount = 0;
+		const component = new HeartbeatManagerComponent([heartbeat("user", { source: "heartbeat" })], {
+			getRows: () => 20,
+			onAction: async () => {},
+			onClose: () => closeCount++,
+			requestRender: () => {},
+		});
+
+		component.handleInput("\x1b[D");
+		expect(closeCount).toBe(1);
+
+		component.handleInput("\r");
+		component.handleInput("\x1b[D");
+		expect(closeCount).toBe(1);
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("Select a heartbeat to manage");
+
+		component.handleInput("\r");
+		component.handleInput("\x1b");
+		expect(closeCount).toBe(2);
+
+		component.handleInput("\x12");
+		expect(closeCount).toBe(3);
 	});
 
 	it("pauses and stops individual heartbeats with stop confirmation", async () => {
