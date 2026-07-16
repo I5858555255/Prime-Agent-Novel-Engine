@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Fixed first-launch Prime login and kept onboarding visible between team and model selection ([ENG-4658](https://linear.app/primeintellect/issue/ENG-4658/fix-onboarding-login-enter-key-and-model-selector-flicker)).
 
 ## [0.3.1] - 2026-07-15
 

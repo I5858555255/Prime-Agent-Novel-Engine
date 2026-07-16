@@ -1832,6 +1832,10 @@ describe("InteractiveMode model selection persistence", () => {
 });
 
 describe("InteractiveMode Prime CLI onboarding", () => {
+	type OnboardingSplashHandle = {
+		showProgress(message: string): void;
+		dismiss(): void;
+	};
 	type OnboardingHarness = {
 		shouldRunOnboarding(): boolean;
 		markOnboardingShown(): void;
@@ -1869,7 +1873,8 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		maybeWarnAboutAnthropicSubscriptionAuth?: (model?: AgentConnectionModel) => void;
 		checkDaxnutsEasterEgg?: (model: { provider: string; id: string }) => void;
 		findExactModelMatch?: (searchTerm: string) => Promise<AgentConnectionModel | undefined>;
-		showOnboardingModelSelectionSplash?: () => Promise<boolean>;
+		showOnboardingSplash?: (continueActionLabel?: string) => Promise<OnboardingSplashHandle | undefined>;
+		createAuthFlows?: () => { runPrimeInferenceLogin(): Promise<AuthenticationResult> };
 		showConfigurationMenu?: (tab: "providers" | "models" | "mcp-connections") => Promise<void>;
 		getModelCandidates?: () => Promise<AgentConnectionModel[]>;
 	};
@@ -2009,7 +2014,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 
 	test("cancelled Prime CLI splash exits onboarding before opening configuration", async () => {
 		const fakeThis = createPrimeCliHarness(false);
-		fakeThis.showOnboardingModelSelectionSplash = vi.fn(async () => false);
+		fakeThis.showOnboardingSplash = vi.fn(async () => undefined);
 		fakeThis.showConfigurationMenu = vi.fn(async () => {});
 
 		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBeUndefined();
@@ -2019,12 +2024,14 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 
 	test("opens the Models tab after the Prime CLI splash", async () => {
 		const fakeThis = createPrimeCliHarness(false);
-		fakeThis.showOnboardingModelSelectionSplash = vi.fn(async () => true);
+		const dismiss = vi.fn();
+		fakeThis.showOnboardingSplash = vi.fn(async () => ({ showProgress: vi.fn(), dismiss }));
 		fakeThis.showConfigurationMenu = vi.fn(async () => {});
 
 		await expect(runOnboardingFlow.call(fakeThis)).resolves.toBeUndefined();
 
 		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
+		expect(dismiss).toHaveBeenCalledTimes(1);
 	});
 
 	test("opens the Models tab when models are already available", async () => {
@@ -2039,15 +2046,33 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
 	});
 
-	test("opens the Providers tab when no models are available", async () => {
+	test("opens Prime login before the Models tab when no models are available", async () => {
 		const fakeThis = createPrimeCliHarness(false);
 		fakeThis.connectionState = createConnectionState({ model: undefined });
 		fakeThis.getModelCandidates = vi.fn(async () => []);
+		const showProgress = vi.fn();
+		const dismiss = vi.fn();
+		fakeThis.showOnboardingSplash = vi.fn(async () => ({ showProgress, dismiss }));
+		fakeThis.createAuthFlows = vi.fn(() => ({
+			runPrimeInferenceLogin: vi.fn(async () => ({
+				status: "success" as const,
+				providerId: PRIME_INFERENCE_PROVIDER_ID,
+				providerName: "Prime Inference",
+				authType: "api_key" as const,
+				kind: "provider" as const,
+			})),
+		}));
+		fakeThis.prepareForModelSelectionAfterLogin = vi.fn(async () => true);
 		fakeThis.showConfigurationMenu = vi.fn(async () => {});
 
 		await expect(runOnboardingFlow.call(fakeThis, false)).resolves.toBeUndefined();
 
-		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("providers");
+		expect(fakeThis.showOnboardingSplash).toHaveBeenCalledWith();
+		expect(showProgress).toHaveBeenNthCalledWith(1, "Signing in to Prime Intellect...");
+		expect(showProgress).toHaveBeenNthCalledWith(2, "Preparing models...");
+		expect(fakeThis.prepareForModelSelectionAfterLogin).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showConfigurationMenu).toHaveBeenCalledWith("models");
+		expect(dismiss).toHaveBeenCalledTimes(1);
 	});
 });
 

@@ -461,6 +461,11 @@ type GoalAnnouncementSnapshot = {
 
 type ModelFallbackWarningAction = "show" | "suppress";
 
+interface OnboardingSplashHandle {
+	showProgress(message: string): void;
+	dismiss(): void;
+}
+
 const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	off: "No reasoning",
 	minimal: "Very brief reasoning",
@@ -1449,12 +1454,14 @@ export class InteractiveMode {
 	private async runOnboardingFlow(showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash()): Promise<void> {
 		this.modelRegistry.refresh();
 		if (showPrimeCliSplash) {
-			const shouldContinue = await this.showOnboardingModelSelectionSplash();
-			if (!shouldContinue) {
+			const splash = await this.showOnboardingSplash("choose a model");
+			if (!splash) {
 				return;
 			}
 
-			await this.showConfigurationMenu("models");
+			const configuration = this.showConfigurationMenu("models");
+			splash.dismiss();
+			await configuration;
 			return;
 		}
 
@@ -1464,7 +1471,23 @@ export class InteractiveMode {
 			return;
 		}
 
-		await this.showConfigurationMenu("providers");
+		const splash = await this.showOnboardingSplash();
+		if (!splash) {
+			return;
+		}
+
+		splash.showProgress("Signing in to Prime Intellect...");
+		const authResult = await this.createAuthFlows().runPrimeInferenceLogin();
+		if (authResult.status !== "success") {
+			splash.dismiss();
+			return;
+		}
+
+		splash.showProgress("Preparing models...");
+		await this.prepareForModelSelectionAfterLogin(authResult);
+		const configuration = this.showConfigurationMenu("models");
+		splash.dismiss();
+		await configuration;
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -7091,13 +7114,6 @@ export class InteractiveMode {
 				hide();
 				resolve();
 			};
-			const restore = () => {
-				if (settled) return;
-				hidden = false;
-				handle?.setHidden(false);
-				handle?.focus();
-				this.ui.requestRender();
-			};
 			const refreshModels = (force: boolean) => {
 				const refreshPromise = this.getModelSelectorRefreshPromise({ force });
 				if (!refreshPromise) return;
@@ -7111,12 +7127,11 @@ export class InteractiveMode {
 			};
 			const authenticate = (provider: AuthSelectorProvider, tab: "providers" | "mcp-connections") => {
 				if (settled) return;
-				handle?.setHidden(true);
 				void authFlows
 					.loginProvider(provider)
 					.then(async (authResult) => {
 						if (settled) return;
-						restore();
+						handle?.focus();
 						menu.refreshAuthentication();
 						if (authResult.status !== "success") return;
 
@@ -7137,7 +7152,7 @@ export class InteractiveMode {
 						refreshModels(true);
 					})
 					.catch((error) => {
-						restore();
+						handle?.focus();
 						this.showError(error instanceof Error ? error.message : String(error));
 					});
 			};
@@ -7553,36 +7568,44 @@ export class InteractiveMode {
 		}
 	}
 
-	private showOnboardingModelSelectionSplash(): Promise<boolean> {
+	private showOnboardingSplash(continueActionLabel?: string): Promise<OnboardingSplashHandle | undefined> {
 		return new Promise((resolve) => {
 			let settled = false;
+			let dismissed = false;
 			let handle: OverlayHandle | undefined;
 			let selector: PrimeOnboardingSplashComponent | undefined;
-			const settle = (result: boolean) => {
+			const settle = (result: OnboardingSplashHandle | undefined) => {
 				if (settled) {
 					return;
 				}
 				settled = true;
 				resolve(result);
 			};
-			const close = () => {
+			const dismiss = () => {
+				if (dismissed) {
+					return;
+				}
+				dismissed = true;
 				selector?.dispose();
 				handle?.hide();
 				this.ui.requestRender();
 			};
 			selector = new PrimeOnboardingSplashComponent(
 				() => {
-					close();
-					settle(true);
+					selector?.dispose();
+					settle({
+						showProgress: (message) => selector?.showProgress(message),
+						dismiss,
+					});
 				},
 				() => {
-					close();
-					settle(false);
+					dismiss();
+					settle(undefined);
 				},
 				{
 					getRows: () => this.ui.terminal.rows,
 					requestRender: () => this.ui.requestRender(),
-					continueActionLabel: "choose a model",
+					...(continueActionLabel ? { continueActionLabel } : {}),
 				},
 			);
 			handle = this.ui.showOverlay(selector, {
