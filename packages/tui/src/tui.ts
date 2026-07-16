@@ -6,10 +6,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
-import { FullscreenViewport, type ScrollInfo } from "./fullscreen.js";
+import { FullscreenViewport, type ScrollInfo, type SelectionScrollDirection } from "./fullscreen.js";
 import { getKeybindings } from "./keybindings.js";
 import { isKeyRelease, matchesKey } from "./keys.js";
 import { isMouseSequence, isWheelDown, isWheelUp, MOUSE_BUTTON_LEFT, parseSgrMouseEvent } from "./mouse.js";
+import type { TableCellSelectionRegion } from "./selection-metadata.js";
 import type { Terminal } from "./terminal.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import {
@@ -53,6 +54,8 @@ export interface Component {
 	 * @returns Array of strings, each representing a line
 	 */
 	render(width: number): string[];
+
+	getSelectionRegions?(): ReadonlyArray<TableCellSelectionRegion>;
 
 	/**
 	 * Optional handler for keyboard input when component has focus
@@ -195,6 +198,8 @@ export interface OverlayOptions {
 	row?: SizeValue;
 	/** Column position: absolute number, or percentage (e.g., "50%" = centered horizontally) */
 	col?: SizeValue;
+	/** Zero-width marker in base content; positions the overlay immediately above its row. */
+	aboveMarker?: string;
 
 	// === Margin from terminal edges ===
 	/** Margin from terminal edges. Number applies to all sides. */
@@ -236,23 +241,28 @@ export interface OverlayHandle {
  */
 export class Container implements Component {
 	children: Component[] = [];
+	private selectionRegions: TableCellSelectionRegion[] = [];
 
 	addChild(component: Component): void {
 		this.children.push(component);
+		this.selectionRegions = [];
 	}
 
 	removeChild(component: Component): void {
 		const index = this.children.indexOf(component);
 		if (index !== -1) {
 			this.children.splice(index, 1);
+			this.selectionRegions = [];
 		}
 	}
 
 	clear(): void {
 		this.children = [];
+		this.selectionRegions = [];
 	}
 
 	invalidate(): void {
+		this.selectionRegions = [];
 		for (const child of this.children) {
 			child.invalidate?.();
 		}
@@ -260,13 +270,28 @@ export class Container implements Component {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
+		const selectionRegions: TableCellSelectionRegion[] = [];
 		for (const child of this.children) {
+			const lineOffset = lines.length;
 			const childLines = child.render(width);
+			for (const region of child.getSelectionRegions?.() ?? []) {
+				selectionRegions.push({
+					...region,
+					line: region.line + lineOffset,
+					tableTop: region.tableTop + lineOffset,
+					tableBottom: region.tableBottom + lineOffset,
+				});
+			}
 			for (const line of childLines) {
 				lines.push(line);
 			}
 		}
+		this.selectionRegions = selectionRegions;
 		return lines;
+	}
+
+	getSelectionRegions(): ReadonlyArray<TableCellSelectionRegion> {
+		return this.selectionRegions;
 	}
 }
 
@@ -321,6 +346,12 @@ export class TUI extends Container {
 		};
 	} | null = null;
 	private static readonly WHEEL_SCROLL_LINES = 3;
+	private static readonly SELECTION_AUTO_SCROLL_DELAY_MS = 150;
+	private static readonly SELECTION_AUTO_SCROLL_INTERVAL_MS = 50;
+	private selectionAutoScrollTimer: NodeJS.Timeout | undefined;
+	private selectionAutoScrollDirection: SelectionScrollDirection | null = null;
+	private selectionAutoScrollRow = 0;
+	private selectionAutoScrollColumn = 0;
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
@@ -508,8 +539,19 @@ export class TUI extends Container {
 		);
 	}
 
+	private isFullscreenOverlayFocused(): boolean {
+		return this.overlayStack.some((entry) => entry.component === this.focusedComponent);
+	}
+
 	private syncFullscreenMouseTracking(): void {
-		this.terminal.setMouseTracking(this.shouldEnableFullscreenMouseTracking());
+		const enabled = this.shouldEnableFullscreenMouseTracking();
+		if (!enabled) {
+			this.stopSelectionAutoScroll();
+			this.fullscreen?.viewport.clearSelection();
+		} else if (this.isFullscreenOverlayFocused()) {
+			this.stopSelectionAutoScroll();
+		}
+		this.terminal.setMouseTracking(enabled);
 	}
 
 	override invalidate(): void {
@@ -657,6 +699,7 @@ export class TUI extends Container {
 	 * so content produced while fullscreen flows into native scrollback.
 	 */
 	exitFullscreen(options: ExitFullscreenOptions = {}): void {
+		this.stopSelectionAutoScroll();
 		if (!this.fullscreen) return;
 		const { inlineState } = this.fullscreen;
 		this.fullscreen = null;
@@ -714,6 +757,46 @@ export class TUI extends Container {
 		// fallback: OSC 52 works locally, over SSH, and through tmux (set-clipboard)
 		const base64 = Buffer.from(text, "utf8").toString("base64");
 		this.terminal.write(`\x1b]52;c;${base64}\x07`);
+	}
+
+	private updateSelectionAutoScroll(viewport: FullscreenViewport, screenRow: number, screenColumn: number): void {
+		const direction = viewport.selectionAutoScrollDirection(screenRow);
+		this.selectionAutoScrollRow = screenRow;
+		this.selectionAutoScrollColumn = screenColumn;
+		if (direction === this.selectionAutoScrollDirection && this.selectionAutoScrollTimer) return;
+		this.stopSelectionAutoScroll();
+		if (direction === null) return;
+		this.selectionAutoScrollDirection = direction;
+		this.scheduleSelectionAutoScroll(TUI.SELECTION_AUTO_SCROLL_DELAY_MS);
+	}
+
+	private scheduleSelectionAutoScroll(delay: number): void {
+		this.selectionAutoScrollTimer = setTimeout(() => {
+			this.selectionAutoScrollTimer = undefined;
+			const fullscreen = this.fullscreen;
+			const direction = this.selectionAutoScrollDirection;
+			if (
+				!fullscreen ||
+				this.isFullscreenOverlayFocused() ||
+				direction === null ||
+				fullscreen.viewport.selectionAutoScrollDirection(this.selectionAutoScrollRow) !== direction ||
+				!fullscreen.viewport.scrollSelection(direction, this.selectionAutoScrollColumn)
+			) {
+				this.stopSelectionAutoScroll();
+				return;
+			}
+			this.requestRender();
+			this.scheduleSelectionAutoScroll(TUI.SELECTION_AUTO_SCROLL_INTERVAL_MS);
+		}, delay);
+		this.selectionAutoScrollTimer.unref();
+	}
+
+	private stopSelectionAutoScroll(): void {
+		if (this.selectionAutoScrollTimer) {
+			clearTimeout(this.selectionAutoScrollTimer);
+			this.selectionAutoScrollTimer = undefined;
+		}
+		this.selectionAutoScrollDirection = null;
 	}
 
 	private scheduleRender(): void {
@@ -802,7 +885,7 @@ export class TUI extends Container {
 		const fullscreen = this.fullscreen;
 		if (!fullscreen) return false;
 
-		const overlayFocused = this.overlayStack.some((o) => o.component === this.focusedComponent);
+		const overlayFocused = this.isFullscreenOverlayFocused();
 
 		if (isMouseSequence(data)) {
 			// consumed even when disabled — mouse reports are garbage downstream
@@ -810,25 +893,32 @@ export class TUI extends Container {
 			if (event && !overlayFocused) {
 				const viewport = fullscreen.viewport;
 				if (isWheelUp(event)) {
+					this.stopSelectionAutoScroll();
 					this.scrollBy(-TUI.WHEEL_SCROLL_LINES);
 				} else if (isWheelDown(event)) {
+					this.stopSelectionAutoScroll();
 					this.scrollBy(TUI.WHEEL_SCROLL_LINES);
 				} else if (event.button === MOUSE_BUTTON_LEFT && event.press && !event.motion) {
+					this.stopSelectionAutoScroll();
 					if (!viewport.beginSelection(event.y - 1, event.x - 1)) {
 						viewport.beginFrameSelection(event.y - 1, event.x - 1);
 					}
 					this.requestRender();
 				} else if (event.button === MOUSE_BUTTON_LEFT && event.press && event.motion) {
 					viewport.extendActiveSelection(event.y - 1, event.x - 1);
+					this.updateSelectionAutoScroll(viewport, event.y - 1, event.x - 1);
 					this.requestRender();
 				} else if (!event.press && viewport.hasSelection()) {
+					this.stopSelectionAutoScroll();
 					const text = viewport.endActiveSelection();
 					if (text) this.copySelection(text);
 					this.requestRender();
 				} else if (!event.press) {
+					this.stopSelectionAutoScroll();
 					viewport.clearSelection();
 				}
 			} else if (event && overlayFocused) {
+				this.stopSelectionAutoScroll();
 				const viewport = fullscreen.viewport;
 				if (event.button === MOUSE_BUTTON_LEFT && event.press && !event.motion) {
 					if (!viewport.beginFrameSelection(event.y - 1, event.x - 1)) {
@@ -848,6 +938,7 @@ export class TUI extends Container {
 			}
 			return true;
 		}
+		this.stopSelectionAutoScroll();
 
 		if (overlayFocused || !fullscreen.viewportControls) return false;
 
@@ -1043,6 +1134,7 @@ export class TUI extends Container {
 			col: number;
 			w: number;
 			scrollback: boolean;
+			aboveMarker?: { line: number; col: number };
 		}[] = [];
 		let minLinesNeeded = result.length;
 
@@ -1051,6 +1143,18 @@ export class TUI extends Container {
 		for (const entry of visibleEntries) {
 			const { component, options } = entry;
 			const scrollback = options?.scrollback === true;
+			let aboveMarker: { line: number; col: number } | undefined;
+			if (options?.aboveMarker) {
+				for (let line = result.length - 1; line >= 0; line--) {
+					const markerIndex = result[line].indexOf(options.aboveMarker);
+					if (markerIndex === -1) continue;
+					aboveMarker = { line, col: visibleWidth(result[line].slice(0, markerIndex)) };
+					result[line] =
+						result[line].slice(0, markerIndex) + result[line].slice(markerIndex + options.aboveMarker.length);
+					break;
+				}
+				if (!aboveMarker) continue;
+			}
 
 			// Get layout with height=0 first to determine width and maxHeight
 			// (width and maxHeight don't depend on overlay height)
@@ -1067,8 +1171,10 @@ export class TUI extends Container {
 			// Get final row/col with actual overlay height
 			const { row, col } = this.resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
 
-			rendered.push({ component, overlayLines, row, col, w: width, scrollback });
-			minLinesNeeded = Math.max(minLinesNeeded, row + overlayLines.length);
+			rendered.push({ component, overlayLines, row, col, w: width, scrollback, aboveMarker });
+			if (!aboveMarker) {
+				minLinesNeeded = Math.max(minLinesNeeded, row + overlayLines.length);
+			}
 		}
 
 		// Pad to at least terminal height so overlays have screen-relative positions.
@@ -1084,8 +1190,21 @@ export class TUI extends Container {
 		const viewportStart = Math.max(0, workingHeight - termHeight);
 
 		// Composite each overlay
-		for (const { component, overlayLines, row, col, w, scrollback } of rendered) {
-			const overlayStart = scrollback ? Math.max(0, workingHeight - (row + overlayLines.length)) : viewportStart;
+		for (const renderedOverlay of rendered) {
+			const { component, w, scrollback, aboveMarker } = renderedOverlay;
+			let { overlayLines, row, col } = renderedOverlay;
+			if (aboveMarker) {
+				const markerRow = aboveMarker.line - viewportStart;
+				if (markerRow <= 0 || markerRow >= termHeight) continue;
+				if (overlayLines.length > markerRow) {
+					overlayLines = overlayLines.slice(overlayLines.length - markerRow);
+				}
+				row = markerRow - overlayLines.length;
+				col = Math.max(0, Math.min(aboveMarker.col, termWidth - w));
+			}
+
+			const overlayStart =
+				scrollback && !aboveMarker ? Math.max(0, workingHeight - (row + overlayLines.length)) : viewportStart;
 			for (let i = 0; i < overlayLines.length; i++) {
 				const idx = overlayStart + row + i;
 				if (idx >= 0 && idx < result.length) {
@@ -1293,14 +1412,25 @@ export class TUI extends Container {
 		this.overlaySelectionRegions = [];
 
 		const transcript: string[] = [];
+		const selectionRegions: TableCellSelectionRegion[] = [];
 		for (const component of fullscreen.scroll) {
-			for (const line of component.render(width)) {
+			const lineOffset = transcript.length;
+			const componentLines = component.render(width);
+			for (const region of component.getSelectionRegions?.() ?? []) {
+				selectionRegions.push({
+					...region,
+					line: region.line + lineOffset,
+					tableTop: region.tableTop + lineOffset,
+					tableBottom: region.tableBottom + lineOffset,
+				});
+			}
+			for (const line of componentLines) {
 				transcript.push(line);
 			}
 		}
 		const dock = fullscreen.dock.render(width);
 
-		let frame = fullscreen.viewport.composeFrame(transcript, dock, height);
+		let frame = fullscreen.viewport.composeFrame(transcript, dock, height, selectionRegions);
 		this.overlaySelectionRegions.push(
 			...this.createDockSelectionRegions(frame, fullscreen.viewport.windowHeight(), width),
 		);

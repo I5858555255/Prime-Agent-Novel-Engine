@@ -2016,6 +2016,45 @@ describe("Editor component", () => {
 	});
 
 	describe("Autocomplete", () => {
+		it("shows suggestions in an overlay without changing editor height", async () => {
+			const tui = createTestTUI(60, 24);
+			const popupBackground = (text: string) => `\x1b[48;2;12;12;16m${text}\x1b[49m`;
+			const editor = new Editor(tui, {
+				...defaultEditorTheme,
+				autocompleteBackgroundColor: popupBackground,
+			});
+			tui.setFocus(editor);
+			editor.setAutocompleteProvider({
+				getSuggestions: async () => ({
+					items: [
+						{ value: "/model", label: "model", description: "Change model" },
+						{ value: "/help", label: "help", description: "Show help" },
+					],
+					prefix: "/",
+				}),
+				applyCompletion,
+			});
+			const editorHeight = editor.render(60).length;
+
+			editor.handleInput("/");
+			await flushAutocomplete();
+
+			assert.equal(editor.render(60).length, editorHeight);
+			assert.equal(tui.hasOverlay(), true);
+			assert.ok(!editor.render(60).some((line) => line.includes("Change model")));
+			const overlayLines = (
+				editor as unknown as { renderAutocompleteOverlay: (width: number) => string[] }
+			).renderAutocompleteOverlay(60);
+			assert.equal(stripVTControlCharacters(overlayLines[0] ?? "").trim(), "");
+			assert.match(stripVTControlCharacters(overlayLines[1] ?? ""), /model/);
+			assert.equal(stripVTControlCharacters(overlayLines.at(-1) ?? "").trim(), "");
+			assert.ok(overlayLines.every((line) => line.startsWith("\x1b[48;2;12;12;16m")));
+
+			editor.handleInput("\x15");
+			assert.equal(editor.getText(), "");
+			assert.equal(tui.hasOverlay(), false);
+		});
+
 		it("auto-applies single force-file suggestion without showing menu", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 
@@ -2293,6 +2332,80 @@ describe("Editor component", () => {
 			editor.handleInput("\x7f"); // Backspace
 			await flushAutocomplete();
 			assert.strictEqual(editor.getText(), "");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("accepts an inline slash command with Enter without submitting the prompt", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const submitted: string[] = [];
+			editor.onSubmit = (text) => submitted.push(text);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "help", description: "Show help" }], process.cwd()),
+			);
+			editor.setText("Please use ");
+
+			editor.handleInput("/");
+			editor.handleInput("h");
+			editor.handleInput("e");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			editor.handleInput("\r");
+			assert.strictEqual(editor.getText(), "Please use /help ");
+			assert.deepStrictEqual(submitted, []);
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("accepts inline slash commands with Tab on later prompt lines", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "help", description: "Show help" }], process.cwd()),
+			);
+			editor.setText("First line\nThen ");
+
+			editor.handleInput("/");
+			editor.handleInput("h");
+			editor.handleInput("e");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+
+			editor.handleInput("\t");
+			assert.strictEqual(editor.getText(), "First line\nThen /help ");
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+		});
+
+		it("preserves standalone slash command submission", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const submitted: string[] = [];
+			editor.onSubmit = (text) => submitted.push(text);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "help", description: "Show help" }], process.cwd()),
+			);
+
+			editor.handleInput("/");
+			editor.handleInput("h");
+			editor.handleInput("e");
+			await flushAutocomplete();
+			editor.handleInput("\r");
+
+			assert.deepStrictEqual(submitted, ["/help"]);
+			assert.strictEqual(editor.getText(), "");
+		});
+
+		it("does not trigger slash command autocomplete inside URLs or paths", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "help", description: "Show help" }], process.cwd()),
+			);
+
+			editor.setText("Visit https:/");
+			editor.handleInput("/");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+
+			editor.setText("Open src");
+			editor.handleInput("/");
+			await flushAutocomplete();
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 

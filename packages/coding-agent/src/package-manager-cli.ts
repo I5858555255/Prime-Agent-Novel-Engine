@@ -54,7 +54,11 @@ import {
 	isUnknownDaemonCommandError,
 } from "./modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketPath } from "./modes/daemon/daemon-socket.js";
-import { persistDaemonStartupFenceFromOwner } from "./modes/daemon/daemon-supervisor-ownership.js";
+import {
+	acquireDaemonShutdownAdmission,
+	persistDaemonStartupFenceFromOwner,
+	waitForDaemonStartupFence,
+} from "./modes/daemon/daemon-supervisor-ownership.js";
 import {
 	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
 	DAEMON_WORKER_SUPERVISOR_SOCKET_ENV,
@@ -63,6 +67,8 @@ import { shouldUseWindowsShell } from "./utils/child-process.js";
 import { getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.js";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
+
+const UPDATE_RESTART_PREDECESSOR_FENCE_TIMEOUT_MS = 60_000;
 
 type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string };
 
@@ -1264,6 +1270,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 	);
 	const stopStatusHeartbeat = statusWriter.startHeartbeat();
 	let lease: Awaited<ReturnType<typeof acquireDaemonUpdateRestartCoordinator>> | undefined;
+	let shutdownAdmission: Awaited<ReturnType<typeof acquireDaemonShutdownAdmission>> | undefined;
 	let connectedClient: DaemonClient | undefined;
 	let manifest: DaemonUpdateRestartManifest | undefined;
 	try {
@@ -1288,6 +1295,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 			});
 			return statusWriter.current();
 		}
+		shutdownAdmission = await acquireDaemonShutdownAdmission();
 		const daemonProbe = await probeRunningDaemonSessions(options.socketPath);
 		const reportRestoreProgress = (progress: RestoreDaemonUpdateRestartResult) => {
 			const { failures, ...counts } = progress;
@@ -1324,6 +1332,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 					failed: 0,
 				},
 			});
+			await shutdownAdmission.assertOrRenew();
 			const stopped = await shutdownConnectedDaemonAndWait(connectedClient, options.socketPath, 10000, hello);
 			connectedClient = undefined;
 			if (!stopped) {
@@ -1359,6 +1368,10 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 		}
 
 		statusWriter.update({ phase: "starting_daemon" });
+		await waitForDaemonStartupFence(options.socketPath, UPDATE_RESTART_PREDECESSOR_FENCE_TIMEOUT_MS);
+		await shutdownAdmission.assertOrRenew();
+		await shutdownAdmission.release();
+		shutdownAdmission = undefined;
 		await ensureInteractiveDaemonRunning(options.socketPath);
 		const successorClient = new DaemonClient(options.socketPath);
 		let successor: DaemonUpdateRestartProcessIdentity;
@@ -1403,6 +1416,7 @@ export async function runDaemonUpdateRestartCoordinator(options: {
 	} finally {
 		stopStatusHeartbeat();
 		connectedClient?.close();
+		await shutdownAdmission?.release();
 		await lease?.release();
 	}
 	return statusWriter.current();

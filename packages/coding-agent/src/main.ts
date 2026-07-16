@@ -71,6 +71,7 @@ import {
 	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
 	isDaemonWorkerProcess,
 	requireDaemonWorkerAuthenticationToken,
+	waitForDaemonWorkerStartupGate,
 } from "./modes/daemon/daemon-worker-protocol.js";
 import {
 	type AgentConnection,
@@ -750,6 +751,7 @@ export function resolveRuntimeSessionOptions(
 	return {
 		model: runtimeSessionOptions?.model ?? sessionOptions.model,
 		thinkingLevel: runtimeSessionOptions?.thinkingLevel ?? sessionOptions.thinkingLevel,
+		serviceTier: runtimeSessionOptions?.serviceTier ?? sessionOptions.serviceTier,
 		scopedModels: runtimeSessionOptions?.scopedModels ?? sessionOptions.scopedModels,
 		tools: runtimeSessionOptions?.tools ?? sessionOptions.tools,
 		noTools: runtimeSessionOptions?.noTools ?? sessionOptions.noTools,
@@ -1091,6 +1093,9 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	if (isDaemonWorkerProcess()) {
+		waitForDaemonWorkerStartupGate();
+	}
 	installFileLogSink();
 	if (isDaemonCatalogProcess()) {
 		await runDaemonCatalogProcess();
