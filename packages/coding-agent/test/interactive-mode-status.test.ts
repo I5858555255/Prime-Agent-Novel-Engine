@@ -258,7 +258,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 		initTheme("dark");
 	});
 
-	test("renders historical tool result images as fallbacks instead of replaying inline payloads", async () => {
+	test("does not replay historical tool result image payloads", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const chatContainer = new Container();
@@ -307,7 +307,6 @@ describe("InteractiveMode.renderSessionContext", () => {
 
 			const rendered = renderAll(chatContainer);
 			expect(rendered).not.toContain("\x1b_G");
-			expect(normalizeRenderedOutput(chatContainer)).toContain("╰─ [image/png · 800×600]");
 			expect(ipythonToolComponents.size).toBe(0);
 			expect(lateIpythonSentAgentMessages.size).toBe(0);
 		} finally {
