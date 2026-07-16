@@ -362,6 +362,10 @@ export class AgentDaemon {
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly sessions = new Map<string, ActiveSessionState>();
 	private readonly openingSessions = new Map<string, Promise<ActiveSessionState>>();
+	private readonly rlmRehydrationClaims = new Map<
+		string,
+		{ parentState: ActiveSessionState; entry: PersistedRlmSubagentRegistryEntry }
+	>();
 	private readonly closingSessions = new Map<string, Promise<void>>();
 	private readonly sideQuestionRuns = new Map<
 		string,
@@ -1099,6 +1103,16 @@ export class AgentDaemon {
 				},
 				runtimeOpenGuard,
 			);
+			const openedSessionFile = state.runtime.session.sessionFile;
+			const rehydrationKey = openedSessionFile ? resolve(openedSessionFile) : undefined;
+			const rehydrationClaim = rehydrationKey ? this.rlmRehydrationClaims.get(rehydrationKey) : undefined;
+			if (rehydrationKey && rehydrationClaim) {
+				if (this.rlmRehydrationClaims.get(rehydrationKey) === rehydrationClaim) {
+					this.rlmRehydrationClaims.delete(rehydrationKey);
+				}
+				await this.closeSession(state, "replaced");
+				return this.rehydrateCompletedRlmSubagent(rehydrationClaim.parentState, rehydrationClaim.entry);
+			}
 			if (state.runtime.metadata.kind === "top-level") {
 				await this.rehydrateCompletedRlmSubagents(state);
 			}
@@ -1855,114 +1869,195 @@ export class AgentDaemon {
 		return runtime;
 	}
 
+	private isRlmAncestorState(state: ActiveSessionState, candidate: ActiveSessionState): boolean {
+		const visited = new Set<string>();
+		let current: ActiveSessionState | undefined = state;
+		while (current && !visited.has(current.activeSessionId)) {
+			if (current.activeSessionId === candidate.activeSessionId) {
+				return true;
+			}
+			visited.add(current.activeSessionId);
+			const parentId: string | undefined = current.runtime.metadata.parentActiveSessionId;
+			current = parentId ? this.sessions.get(parentId) : undefined;
+		}
+		return false;
+	}
+
 	private hasRlmSubagentState(parentState: ActiveSessionState, childId: string, sessionFile?: string): boolean {
 		const targetSessionFile = sessionFile ? resolve(sessionFile) : undefined;
 		return [...this.sessions.values()].some((state) => {
-			const metadata = state.runtime.metadata;
-			if (metadata.kind !== "subagent") {
-				return false;
-			}
-			if (metadata.parentActiveSessionId === parentState.activeSessionId && metadata.rlmChildId === childId) {
+			const existingFile = state.runtime.session.sessionFile;
+			if (targetSessionFile && existingFile && resolve(existingFile) === targetSessionFile) {
 				return true;
 			}
-			const existingFile = state.runtime.session.sessionFile;
-			return !!targetSessionFile && !!existingFile && resolve(existingFile) === targetSessionFile;
+			const metadata = state.runtime.metadata;
+			return (
+				metadata.kind === "subagent" &&
+				metadata.parentActiveSessionId === parentState.activeSessionId &&
+				metadata.rlmChildId === childId
+			);
 		});
+	}
+
+	private async rehydrateCompletedRlmSubagent(
+		parentState: ActiveSessionState,
+		entry: PersistedRlmSubagentRegistryEntry,
+	): Promise<ActiveSessionState> {
+		let stateRef: ActiveSessionState | undefined;
+		let runtime: AgentSessionRuntime | undefined;
+		try {
+			const sessionManager = await SessionManager.openAsync(entry.sessionFile, entry.sessionDir);
+			runtime = await withClientEnv(parentState.clientEnv, () =>
+				createAgentSessionRuntime(this.options.createRuntime, {
+					cwd: sessionManager.getCwd(),
+					agentDir: parentState.runtime.services.agentDir,
+					sessionManager,
+					sessionStartEvent: { type: "session_start", reason: "startup" },
+					sessionConfig: parentState.runtime.runtimeConfig,
+					sessionOptions: {
+						agentMessageController: this.createAgentMessageController(() => stateRef),
+						agentObserveController: this.createAgentObserveController(() => stateRef),
+						rlmHeartbeatController: {
+							listRlmHeartbeats: (listOptions) => {
+								if (!stateRef) {
+									throw new Error("RLM heartbeat state is not ready for this session yet");
+								}
+								return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
+							},
+							createRlmHeartbeat: (input) => {
+								if (!stateRef) {
+									throw new Error("RLM heartbeat state is not ready for this session yet");
+								}
+								return this.createRlmHeartbeatForState(stateRef, input);
+							},
+							updateRlmHeartbeat: (input) => {
+								if (!stateRef) {
+									throw new Error("RLM heartbeat state is not ready for this session yet");
+								}
+								return this.updateRlmHeartbeatForState(stateRef, input);
+							},
+							deleteRlmHeartbeat: (id) => {
+								if (!stateRef) {
+									throw new Error("RLM heartbeat state is not ready for this session yet");
+								}
+								return this.deleteRlmHeartbeatForState(stateRef, id);
+							},
+						},
+						rlmSessionDir: entry.sessionDir,
+						rlmDepth: entry.rlmDepth ?? 1,
+						rlmMaxDepth: entry.rlmMaxDepth ?? 1,
+						rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
+					},
+					runtimeMetadata: {
+						kind: "subagent",
+						createdAt: entry.createdAt,
+						parentActiveSessionId: parentState.activeSessionId,
+						parentSessionId: parentState.runtime.session.sessionId,
+						...(parentState.runtime.session.sessionFile
+							? { parentSessionFile: parentState.runtime.session.sessionFile }
+							: {}),
+						rlmChildId: entry.childId,
+						rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
+						...(entry.prompt ? { prompt: entry.prompt } : {}),
+						...(entry.spawnCode ? { spawnCode: entry.spawnCode } : {}),
+						sessionDir: entry.sessionDir,
+					},
+				}),
+			);
+			const state = await this.addRuntime(runtime, undefined, parentState.clientEnv, (createdState) => {
+				stateRef = createdState;
+			});
+			// The session transcript is authoritative for mutable metadata such as a
+			// later user-assigned name; the registry value is only the spawn snapshot.
+			if (!parentState.runtime.session.retainFinishedRlmChildSession(entry.childId, runtime.session)) {
+				await this.closeSession(state, "replaced");
+				throw new RuntimeOpenCancelledError();
+			}
+			await this.rehydrateCompletedRlmSubagents(state);
+			return state;
+		} catch (error) {
+			if (stateRef && this.sessions.get(stateRef.activeSessionId) === stateRef) {
+				await this.closeSession(stateRef, "completed").catch(() => undefined);
+			} else {
+				await runtime?.dispose().catch(() => undefined);
+			}
+			throw error;
+		}
 	}
 
 	private async rehydrateCompletedRlmSubagents(parentState: ActiveSessionState): Promise<void> {
 		for (const entry of this.readLatestRlmSubagentRegistry(parentState)) {
-			if (entry.status !== "completed") {
+			if (entry.status !== "completed" || !existsSync(entry.sessionFile)) {
 				continue;
 			}
-			if (
-				!existsSync(entry.sessionFile) ||
-				this.hasRlmSubagentState(parentState, entry.childId, entry.sessionFile)
-			) {
+			const sessionKey = resolve(entry.sessionFile);
+			const existing = this.findSessionBySessionFile(entry.sessionFile);
+			if (existing && this.isRlmAncestorState(parentState, existing)) {
 				continue;
 			}
-			let stateRef: ActiveSessionState | undefined;
-			let runtime: AgentSessionRuntime | undefined;
-			try {
-				const sessionManager = await SessionManager.openAsync(entry.sessionFile, entry.sessionDir);
-				runtime = await withClientEnv(parentState.clientEnv, () =>
-					createAgentSessionRuntime(this.options.createRuntime, {
-						cwd: sessionManager.getCwd(),
-						agentDir: parentState.runtime.services.agentDir,
-						sessionManager,
-						sessionStartEvent: { type: "session_start", reason: "startup" },
-						sessionConfig: parentState.runtime.runtimeConfig,
-						sessionOptions: {
-							agentMessageController: this.createAgentMessageController(() => stateRef),
-							agentObserveController: this.createAgentObserveController(() => stateRef),
-							rlmHeartbeatController: {
-								listRlmHeartbeats: (listOptions) => {
-									if (!stateRef) {
-										throw new Error("RLM heartbeat state is not ready for this session yet");
-									}
-									return this.cronStore.listRlmHeartbeats(stateRef.activeSessionId, listOptions);
-								},
-								createRlmHeartbeat: (input) => {
-									if (!stateRef) {
-										throw new Error("RLM heartbeat state is not ready for this session yet");
-									}
-									return this.createRlmHeartbeatForState(stateRef, input);
-								},
-								updateRlmHeartbeat: (input) => {
-									if (!stateRef) {
-										throw new Error("RLM heartbeat state is not ready for this session yet");
-									}
-									return this.updateRlmHeartbeatForState(stateRef, input);
-								},
-								deleteRlmHeartbeat: (id) => {
-									if (!stateRef) {
-										throw new Error("RLM heartbeat state is not ready for this session yet");
-									}
-									return this.deleteRlmHeartbeatForState(stateRef, id);
-								},
-							},
-							rlmSessionDir: entry.sessionDir,
-							rlmDepth: entry.rlmDepth ?? 1,
-							rlmMaxDepth: entry.rlmMaxDepth ?? 1,
-							rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
-						},
-						runtimeMetadata: {
-							kind: "subagent",
-							createdAt: entry.createdAt,
-							parentActiveSessionId: parentState.activeSessionId,
-							parentSessionId: parentState.runtime.session.sessionId,
-							...(parentState.runtime.session.sessionFile
-								? { parentSessionFile: parentState.runtime.session.sessionFile }
-								: {}),
-							rlmChildId: entry.childId,
-							rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
-							...(entry.prompt ? { prompt: entry.prompt } : {}),
-							...(entry.spawnCode ? { spawnCode: entry.spawnCode } : {}),
-							sessionDir: entry.sessionDir,
-						},
-					}),
-				);
-				const state = await this.addRuntime(runtime, undefined, parentState.clientEnv, (createdState) => {
-					stateRef = createdState;
+			if (existing && !this.bindingSessions.has(existing.activeSessionId)) {
+				if (existing.runtime.metadata.kind !== "top-level") {
+					continue;
+				}
+				// A stable explicit open has already returned a valid active ID. Notify
+				// its clients before replacing it with the correctly configured child.
+				await this.closeSession(existing, "replaced").catch((error) => {
+					this.log(
+						`failed to replace top-level RLM subagent ${entry.sessionName}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
 				});
-				// The session transcript is authoritative for mutable metadata such as a
-				// later user-assigned name; the registry value is only the spawn snapshot.
-				if (!parentState.runtime.session.retainFinishedRlmChildSession(entry.childId, runtime.session)) {
-					await this.closeSession(state, "replaced");
-				} else {
-					await this.rehydrateCompletedRlmSubagents(state);
+			}
+			const pending = this.openingSessions.get(sessionKey);
+			if (pending) {
+				const claim = { parentState, entry };
+				const installedClaim = !this.rlmRehydrationClaims.has(sessionKey);
+				if (installedClaim) {
+					// createRuntime consumes this after binding but before top-level recursive
+					// recovery or promise resolution, so callers receive the child state.
+					this.rlmRehydrationClaims.set(sessionKey, claim);
 				}
+				try {
+					await pending;
+					continue;
+				} catch (error) {
+					this.log(
+						`failed to await completed RLM subagent ${entry.sessionName}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+					// The failed owner completed all runtime cleanup before rejecting. Clear
+					// only that stale claim, then let rehydration retry the persisted child.
+					if (this.openingSessions.get(sessionKey) === pending) {
+						this.openingSessions.delete(sessionKey);
+					}
+					if (this.hasRlmSubagentState(parentState, entry.childId, entry.sessionFile)) {
+						continue;
+					}
+				} finally {
+					if (installedClaim && this.rlmRehydrationClaims.get(sessionKey) === claim) {
+						this.rlmRehydrationClaims.delete(sessionKey);
+					}
+				}
+			}
+			if (this.hasRlmSubagentState(parentState, entry.childId, entry.sessionFile)) {
+				continue;
+			}
+			const opening = this.rehydrateCompletedRlmSubagent(parentState, entry);
+			this.openingSessions.set(sessionKey, opening);
+			try {
+				await opening;
 			} catch (error) {
-				if (stateRef) {
-					await this.closeSession(stateRef, "completed").catch(() => undefined);
-				} else {
-					await runtime?.dispose().catch(() => undefined);
-				}
 				this.log(
 					`failed to rehydrate completed RLM subagent ${entry.sessionName}: ${
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);
+			} finally {
+				if (this.openingSessions.get(sessionKey) === opening) {
+					this.openingSessions.delete(sessionKey);
+				}
 			}
 		}
 	}

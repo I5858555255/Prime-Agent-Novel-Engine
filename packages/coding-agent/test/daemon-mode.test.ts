@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionMessageController } from "../src/core/agent-messages.js";
@@ -2926,6 +2926,20 @@ describe("daemon mode helpers", () => {
 					status: "completed",
 					createdAt: 2,
 					updatedAt: "2026-01-01T00:00:00.000Z",
+				})}\n${JSON.stringify({
+					type: "rlm_subagent",
+					childId: "cycle-to-root",
+					sessionName: "cycle-to-root",
+					sessionDir: parentArtifactDir,
+					sessionFile: parentSessionFile,
+					parentSessionId: childManager.getSessionId(),
+					parentSessionFile: childSessionFile,
+					rlmDepth: 2,
+					rlmMaxDepth: 4,
+					rlmParentNodeId: "cycle-to-root",
+					status: "completed",
+					createdAt: 3,
+					updatedAt: "2026-01-01T00:00:00.000Z",
 				})}\n`,
 			);
 			writeFileSync(
@@ -3016,6 +3030,9 @@ describe("daemon mode helpers", () => {
 				grandchildId,
 				grandchildState?.runtime.session,
 			);
+			expect(
+				[...internals.sessions.values()].some((state) => state.runtime.metadata.rlmChildId === "cycle-to-root"),
+			).toBe(false);
 
 			if (!childState) {
 				throw new Error("Missing rehydrated child state");
@@ -3038,6 +3055,285 @@ describe("daemon mode helpers", () => {
 			expect(createRuntime).toHaveBeenCalledTimes(3);
 			expect([...internals.sessions.values()].some((state) => state.runtime.metadata.rlmChildId === childId)).toBe(
 				false,
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("coalesces retained rehydration with successful and failed explicit session opens", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-rehydrate-open-race-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const parentManager = SessionManager.create(tempDir, sessionDir);
+			parentManager.newSession();
+			const parentArtifactDir = parentManager.getSessionArtifactDir();
+			const parentSessionFile = parentManager.getSessionFile();
+			if (!parentArtifactDir || !parentSessionFile) {
+				throw new Error("Missing parent session paths");
+			}
+			const childId = "racing-child";
+			const childSessionDir = join(parentArtifactDir, childId);
+			const childManager = SessionManager.create(tempDir, childSessionDir);
+			childManager.newSession({ parentSession: parentSessionFile });
+			childManager.appendSessionInfo("racing-worker");
+			const childSessionFile = childManager.getSessionFile();
+			if (!childSessionFile) {
+				throw new Error("Missing child session file");
+			}
+			mkdirSync(parentArtifactDir, { recursive: true });
+			writeFileSync(
+				join(parentArtifactDir, "rlm-subagents.jsonl"),
+				`${JSON.stringify({
+					type: "rlm_subagent",
+					childId,
+					sessionName: "racing-worker",
+					sessionDir: childSessionDir,
+					sessionFile: childSessionFile,
+					parentSessionId: parentManager.getSessionId(),
+					parentSessionFile,
+					rlmDepth: 1,
+					rlmMaxDepth: 4,
+					rlmParentNodeId: childId,
+					status: "completed",
+					createdAt: 1,
+					updatedAt: "2026-01-01T00:00:00.000Z",
+				})}\n`,
+			);
+
+			let bindStarted = false;
+			let releaseBind: () => void = () => {};
+			const bindGate = new Promise<void>((resolve) => {
+				releaseBind = resolve;
+			});
+			let successfulBindStarted = false;
+			let releaseSuccessfulBind: () => void = () => {};
+			const successfulBindGate = new Promise<void>((resolve) => {
+				releaseSuccessfulBind = resolve;
+			});
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => {
+				const session = makeRuntimeSession(options.sessionManager);
+				const runtimeNumber = createRuntime.mock.calls.length;
+				session.bindExtensions = vi.fn(async () => {
+					if (runtimeNumber === 1) {
+						bindStarted = true;
+						await bindGate;
+						throw new Error("explicit bind failed");
+					}
+					if (runtimeNumber === 3) {
+						successfulBindStarted = true;
+						await successfulBindGate;
+					}
+				});
+				return {
+					session,
+					extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["extensionsResult"],
+					services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["services"],
+					diagnostics: [],
+				};
+			});
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime,
+			});
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				rehydrateCompletedRlmSubagents(parent: ActiveSessionState): Promise<void>;
+			};
+			const parentState = makeState("parent");
+			parentState.runtime = {
+				...parentState.runtime,
+				metadata: { kind: "top-level", createdAt: 1 },
+				runtimeConfig: {},
+				services: { cwd: tempDir, agentDir: tempDir },
+				session: makeRuntimeSession(parentManager),
+			} as unknown as ActiveSessionState["runtime"];
+			internals.sessions.set(parentState.activeSessionId, parentState);
+
+			const explicitOpen = internals.createRuntime({ type: "create", sessionPath: childSessionFile });
+			const explicitFailure = explicitOpen.catch((error: unknown) => error);
+			for (let attempt = 0; attempt < 50 && !bindStarted; attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 1));
+			}
+			expect(bindStarted).toBe(true);
+			const rehydrate = internals.rehydrateCompletedRlmSubagents(parentState);
+			releaseBind();
+			const [explicitError] = await Promise.all([explicitFailure, rehydrate]);
+
+			expect(explicitError).toEqual(expect.objectContaining({ message: "explicit bind failed" }));
+			expect(createRuntime).toHaveBeenCalledTimes(2);
+			expect(
+				[...internals.sessions.values()].filter(
+					(state) =>
+						state.runtime.session.sessionFile &&
+						resolve(state.runtime.session.sessionFile) === resolve(childSessionFile),
+				),
+			).toHaveLength(1);
+			const rehydrated = [...internals.sessions.values()].find(
+				(state) => state.runtime.metadata.rlmChildId === childId,
+			);
+			expect(rehydrated).toBeDefined();
+			expect(parentState.runtime.session.retainFinishedRlmChildSession).toHaveBeenCalledWith(
+				childId,
+				rehydrated?.runtime.session,
+			);
+
+			const siblingId = "successful-racing-child";
+			const siblingSessionDir = join(parentArtifactDir, siblingId);
+			const siblingManager = SessionManager.create(tempDir, siblingSessionDir);
+			siblingManager.newSession({ parentSession: parentSessionFile });
+			siblingManager.appendSessionInfo("successful-racing-worker");
+			const siblingSessionFile = siblingManager.getSessionFile();
+			if (!siblingSessionFile) {
+				throw new Error("Missing sibling session file");
+			}
+			const siblingArtifactDir = siblingManager.getSessionArtifactDir();
+			if (!siblingArtifactDir) {
+				throw new Error("Missing sibling artifact directory");
+			}
+			mkdirSync(siblingArtifactDir, { recursive: true });
+			writeFileSync(
+				join(siblingArtifactDir, "rlm-subagents.jsonl"),
+				`${JSON.stringify({
+					type: "rlm_subagent",
+					childId: "cycle-to-root",
+					sessionName: "cycle-to-root",
+					sessionDir,
+					sessionFile: parentSessionFile,
+					parentSessionId: siblingManager.getSessionId(),
+					parentSessionFile: siblingSessionFile,
+					rlmDepth: 0,
+					rlmMaxDepth: 4,
+					rlmParentNodeId: "cycle-to-root",
+					status: "completed",
+					createdAt: 2,
+					updatedAt: "2026-01-01T00:00:01.000Z",
+				})}\n`,
+			);
+			appendFileSync(
+				join(parentArtifactDir, "rlm-subagents.jsonl"),
+				`${JSON.stringify({
+					type: "rlm_subagent",
+					childId: siblingId,
+					sessionName: "successful-racing-worker",
+					sessionDir: siblingSessionDir,
+					sessionFile: siblingSessionFile,
+					parentSessionId: parentManager.getSessionId(),
+					parentSessionFile,
+					rlmDepth: 1,
+					rlmMaxDepth: 4,
+					rlmParentNodeId: siblingId,
+					status: "completed",
+					createdAt: 2,
+					updatedAt: "2026-01-01T00:00:01.000Z",
+				})}\n`,
+			);
+			const successfulExplicitOpen = internals.createRuntime({
+				type: "create",
+				sessionPath: siblingSessionFile,
+			});
+			for (let attempt = 0; attempt < 50 && !successfulBindStarted; attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 1));
+			}
+			expect(successfulBindStarted).toBe(true);
+			const successfulRehydrate = internals.rehydrateCompletedRlmSubagents(parentState);
+			releaseSuccessfulBind();
+			const [successfulState] = await Promise.all([successfulExplicitOpen, successfulRehydrate]);
+
+			expect(createRuntime).toHaveBeenCalledTimes(4);
+			expect(createRuntime.mock.calls[3]?.[0].sessionOptions).toEqual(
+				expect.objectContaining({
+					rlmSessionDir: siblingSessionDir,
+					rlmDepth: 1,
+					rlmMaxDepth: 4,
+					rlmParentNodeId: siblingId,
+				}),
+			);
+			expect(successfulState.runtime.metadata).toEqual(
+				expect.objectContaining({
+					kind: "subagent",
+					parentActiveSessionId: parentState.activeSessionId,
+					rlmChildId: siblingId,
+				}),
+			);
+			expect(internals.sessions.has(successfulState.activeSessionId)).toBe(true);
+			expect(parentState.runtime.session.retainFinishedRlmChildSession).toHaveBeenCalledWith(
+				siblingId,
+				successfulState.runtime.session,
+			);
+			expect(successfulState.runtime.session.retainFinishedRlmChildSession).not.toHaveBeenCalledWith(
+				"cycle-to-root",
+				expect.anything(),
+			);
+			expect(internals.sessions.get(parentState.activeSessionId)).toBe(parentState);
+			expect(
+				[...internals.sessions.values()].filter(
+					(state) =>
+						state.runtime.session.sessionFile &&
+						resolve(state.runtime.session.sessionFile) === resolve(siblingSessionFile),
+				),
+			).toHaveLength(1);
+
+			const stableId = "stable-explicit-child";
+			const stableSessionDir = join(parentArtifactDir, stableId);
+			const stableManager = SessionManager.create(tempDir, stableSessionDir);
+			stableManager.newSession({ parentSession: parentSessionFile });
+			stableManager.appendSessionInfo("stable-explicit-worker");
+			const stableSessionFile = stableManager.getSessionFile();
+			if (!stableSessionFile) {
+				throw new Error("Missing stable explicit session file");
+			}
+			appendFileSync(
+				join(parentArtifactDir, "rlm-subagents.jsonl"),
+				`${JSON.stringify({
+					type: "rlm_subagent",
+					childId: stableId,
+					sessionName: "stable-explicit-worker",
+					sessionDir: stableSessionDir,
+					sessionFile: stableSessionFile,
+					parentSessionId: parentManager.getSessionId(),
+					parentSessionFile,
+					rlmDepth: 2,
+					rlmMaxDepth: 5,
+					rlmParentNodeId: stableId,
+					status: "completed",
+					createdAt: 3,
+					updatedAt: "2026-01-01T00:00:02.000Z",
+				})}\n`,
+			);
+			const stableState = await internals.createRuntime({ type: "create", sessionPath: stableSessionFile });
+			expect(stableState.runtime.metadata.kind).toBe("top-level");
+			await internals.rehydrateCompletedRlmSubagents(parentState);
+
+			expect(createRuntime).toHaveBeenCalledTimes(6);
+			expect(createRuntime.mock.calls[5]?.[0].sessionOptions).toEqual(
+				expect.objectContaining({
+					rlmSessionDir: stableSessionDir,
+					rlmDepth: 2,
+					rlmMaxDepth: 5,
+					rlmParentNodeId: stableId,
+				}),
+			);
+			expect(stableState.runtime.metadata.kind).toBe("top-level");
+			expect(internals.sessions.has(stableState.activeSessionId)).toBe(false);
+			const restoredStableState = [...internals.sessions.values()].find(
+				(state) => state.runtime.metadata.rlmChildId === stableId,
+			);
+			expect(restoredStableState?.runtime.metadata).toEqual(
+				expect.objectContaining({
+					kind: "subagent",
+					parentActiveSessionId: parentState.activeSessionId,
+					rlmChildId: stableId,
+				}),
+			);
+			expect(parentState.runtime.session.retainFinishedRlmChildSession).toHaveBeenCalledWith(
+				stableId,
+				restoredStableState?.runtime.session,
 			);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -4801,6 +5097,11 @@ function makeRuntimeSession(
 ): Awaited<ReturnType<CreateAgentSessionRuntimeFactory>>["session"] {
 	return {
 		sessionManager,
+		messages: [],
+		extensionRunner: {
+			hasHandlers: vi.fn(() => false),
+			emit: vi.fn(async () => {}),
+		},
 		sessionFile: sessionManager.getSessionFile(),
 		sessionId: sessionManager.getSessionId(),
 		get sessionName() {
