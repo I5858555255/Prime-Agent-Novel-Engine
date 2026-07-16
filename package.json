@@ -46,11 +46,11 @@
 		"typescript": "^5.9.2"
 	},
 	"engines": {
-		"node": ">=20.0.0"
+		"node": ">=22.8.0"
 	},
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"dependencies": {
-		"@earendil-works/pi-coding-agent": "^0.3.0",
+		"@earendil-works/pi-coding-agent": "^0.3.1",
 		"get-east-asian-width": "^1.6.0"
 	},
 	"overrides": {

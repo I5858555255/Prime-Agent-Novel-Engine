@@ -1,10 +1,15 @@
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Transport } from "@earendil-works/pi-ai";
+import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
-import type { AgentCronJob, AgentHeartbeatDeliveryMode, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type {
+	AgentCronJob,
+	AgentHeartbeatDeliveryMode,
+	AgentHeartbeatManagementAction,
+	AgentHeartbeatUpdateAction,
+} from "../../core/cron-jobs.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
 import { SessionManager } from "../../core/session-manager.js";
@@ -25,6 +30,7 @@ import type {
 	AgentConnectionExecuteBashOptions,
 	AgentConnectionExtensionUiResponse,
 	AgentConnectionForkOptions,
+	AgentConnectionHeartbeat,
 	AgentConnectionModel,
 	AgentConnectionModelCycleResult,
 	AgentConnectionNavigateTreeOptions,
@@ -165,6 +171,18 @@ export class InProcessAgentConnection implements AgentConnection {
 		return [];
 	}
 
+	async listHeartbeats(): Promise<AgentConnectionHeartbeat[]> {
+		return [];
+	}
+
+	async manageHeartbeat(
+		_activeSessionId: string,
+		_jobId: string,
+		_action: AgentHeartbeatManagementAction,
+	): Promise<AgentCronJob> {
+		throw new Error("Heartbeats require daemon mode");
+	}
+
 	async addCronJob(_schedule: string, _prompt: string): Promise<AgentCronJob> {
 		throw new Error("Cron jobs require daemon mode");
 	}
@@ -244,11 +262,11 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async steer(message: string, images?: ImageContent[]): Promise<void> {
-		await this.session.steer(message, images);
+		await this.session.steer(message, images, { resumeIfIdle: true });
 	}
 
 	async followUp(message: string, images?: ImageContent[]): Promise<void> {
-		await this.session.followUp(message, images);
+		await this.session.followUp(message, images, { resumeIfIdle: true });
 	}
 
 	async abort(): Promise<void> {
@@ -295,6 +313,10 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		this.session.setThinkingLevel(level);
+	}
+
+	async setServiceTier(serviceTier: ServiceTier): Promise<void> {
+		this.session.setServiceTier(serviceTier);
 	}
 
 	async cycleThinkingLevel(): Promise<ThinkingLevel | undefined> {

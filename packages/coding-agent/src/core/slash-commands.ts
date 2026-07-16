@@ -39,6 +39,7 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "settings", description: "Open settings menu" },
 	{ name: "model", description: "Select model (opens selector UI)" },
 	{ name: "effort", description: "Set reasoning/thinking level", argumentHint: "[level]", takesArgument: true },
+	{ name: "fast", description: "Toggle OpenAI Fast mode" },
 	{ name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling" },
 	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)" },
 	{ name: "import", description: "Import and resume a session from a JSONL file" },
@@ -56,8 +57,8 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "logs", description: "Show where daemon and client logs are saved" },
 	{
 		name: "traces",
-		description: "Opt in or out of Prime Agent trace sharing",
-		argumentHint: "[status|on|off|upload|login]",
+		description: "Preview, upload, or configure Prime Agent traces",
+		argumentHint: "[status|on|off|preview|upload|upload-current|upload-all|login]",
 	},
 	{ name: "context", description: "Show token, cost, and context usage for agent and sub-agents" },
 	{ name: "changelog", description: "Show changelog entries" },
@@ -99,6 +100,7 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		argumentHint: "[status|pause|resume|stop|[every <duration>] [--steer|--follow-up] <instruction>]",
 		takesArgument: true,
 	},
+	{ name: "heartbeats", description: "View and manage all user and agent heartbeats" },
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{

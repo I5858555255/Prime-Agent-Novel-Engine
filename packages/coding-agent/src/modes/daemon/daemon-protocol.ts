@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, TextContent, Transport } from "@earendil-works/pi-ai";
+import type { ImageContent, ServiceTier, TextContent, Transport } from "@earendil-works/pi-ai";
 import type {
 	AgentSessionMessageDeliveryMode,
 	AgentSessionMessageReceipt,
@@ -7,12 +7,18 @@ import type {
 } from "../../core/agent-messages.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import type { AgentSessionRuntimeMetadata } from "../../core/agent-session-runtime.js";
-import type { AgentCronJob, AgentHeartbeatDeliveryMode, AgentHeartbeatUpdateAction } from "../../core/cron-jobs.js";
+import type {
+	AgentCronJob,
+	AgentHeartbeatDeliveryMode,
+	AgentHeartbeatManagementAction,
+	AgentHeartbeatUpdateAction,
+} from "../../core/cron-jobs.js";
 import type { CustomMessage } from "../../core/messages.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type {
 	AgentConnectionAgentStatus,
+	AgentConnectionHeartbeat,
 	AgentConnectionQueueMode,
 	AgentConnectionResourceSnapshot,
 	AgentConnectionRlmChildAgentSnapshot,
@@ -37,10 +43,11 @@ import type { SessionSummary } from "./daemon-session-list.js";
  */
 
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
-export const DAEMON_PROTOCOL_VERSION = 2;
+export const DAEMON_PROTOCOL_VERSION = 3;
+export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 2;
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
-export type DaemonProtocolVersion = typeof DAEMON_PROTOCOL_VERSION;
+export type DaemonProtocolVersion = number;
 export type DaemonCommandId = string;
 export type DaemonEventId = string;
 export type DaemonEventSequence = number;
@@ -286,6 +293,14 @@ export type DaemonCommand =
 			supportsExtensionUi?: boolean;
 	  } & DaemonAttachClientMetadata &
 			DaemonClientEnv)
+	| ({
+			id?: string;
+			type: "reattach";
+			activeSessionId: string;
+			targetActiveSessionId: string;
+			supportsExtensionUi?: boolean;
+	  } & DaemonAttachClientMetadata &
+			DaemonClientEnv)
 	| { id?: string; type: "detach"; activeSessionId?: string }
 	| { id?: string; type: "kill"; activeSessionId: string }
 	| { id?: string; type: "rename"; activeSessionId: string; name: string }
@@ -328,6 +343,12 @@ export type DaemonCommand =
 			prefixMessages?: CustomMessage[];
 	  }
 	| { id?: string; type: "restore_next_turn"; activeSessionId: string; messages: CustomMessage[] }
+	| {
+			id?: string;
+			type: "append_custom_message";
+			activeSessionId: string;
+			message: Pick<CustomMessage, "customType" | "content" | "display" | "details">;
+	  }
 	| { id?: string; type: "resume_queue"; activeSessionId: string }
 	| {
 			id?: string;
@@ -372,6 +393,14 @@ export type DaemonCommand =
 	| { id?: string; type: "clear_queue"; activeSessionId: string }
 	| { id?: string; type: "abort_and_clear_queue"; activeSessionId: string }
 	| { id?: string; type: "cron_list"; activeSessionId?: string; includeInactive?: boolean }
+	| { id?: string; type: "heartbeats_list" }
+	| {
+			id?: string;
+			type: "heartbeat_manage";
+			activeSessionId: string;
+			jobId: string;
+			action: AgentHeartbeatManagementAction;
+	  }
 	| { id?: string; type: "cron_add"; activeSessionId: string; schedule: string; prompt: string }
 	| { id?: string; type: "cron_cancel"; jobId: string }
 	| { id?: string; type: "heartbeat_get"; activeSessionId: string }
@@ -388,6 +417,7 @@ export type DaemonCommand =
 	| { id?: string; type: "cycle_model"; activeSessionId: string; direction?: "forward" | "backward" }
 	| { id?: string; type: "set_scoped_models"; activeSessionId: string; scopedModels: AgentConnectionScopedModel[] }
 	| { id?: string; type: "set_thinking_level"; activeSessionId: string; level: ThinkingLevel }
+	| { id?: string; type: "set_service_tier"; activeSessionId: string; serviceTier: ServiceTier }
 	| { id?: string; type: "cycle_thinking_level"; activeSessionId: string }
 	| { id?: string; type: "set_transport"; activeSessionId: string; transport: Transport }
 	| { id?: string; type: "set_steering_mode"; activeSessionId: string; mode: AgentConnectionQueueMode }
@@ -518,6 +548,7 @@ export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;
 export type DaemonResourceSnapshot = AgentConnectionResourceSnapshot;
 
 export type DaemonCronJob = AgentCronJob;
+export type DaemonHeartbeat = AgentConnectionHeartbeat;
 export type DaemonAgentSessionMessageReceipt = AgentSessionMessageReceipt;
 export type DaemonAgentSessionMessageSafetyStatus = AgentSessionMessageSafetyStatus;
 
@@ -544,6 +575,7 @@ export type DaemonOutbound =
 			serverCapabilities: readonly DaemonClientCapability[];
 	  }
 	| { type: "daemon_closing"; reason: DaemonClosingReason }
+	| { type: "heartbeats_changed" }
 	| { type: "session_event"; activeSessionId: string; event: AgentConnectionSessionEvent; meta?: DaemonEventMeta }
 	| { type: "side_question_event"; activeSessionId: string; event: AgentConnectionSideQuestionEvent }
 	| { type: "session_status"; activeSessionId: string; recap?: string; meta?: DaemonEventMeta }
@@ -623,11 +655,12 @@ export function createDaemonCommandEnvelope<TCommand extends DaemonCommand>(
 	command: TCommand,
 	id: DaemonCommandId,
 	clientId?: DaemonClientId,
+	protocolVersion: DaemonProtocolVersion = DAEMON_PROTOCOL_VERSION,
 ): DaemonCommandEnvelope<TCommand> {
 	return {
 		type: "command",
 		id,
-		protocol: DAEMON_PROTOCOL_INFO,
+		protocol: { name: DAEMON_PROTOCOL_NAME, version: protocolVersion },
 		...(clientId ? { clientId } : {}),
 		command,
 	};
@@ -648,7 +681,9 @@ export function isDaemonCommandEnvelope(value: unknown): value is DaemonCommandE
 		candidate.type === "command" &&
 		typeof candidate.id === "string" &&
 		candidate.protocol?.name === DAEMON_PROTOCOL_NAME &&
-		candidate.protocol.version === DAEMON_PROTOCOL_VERSION &&
+		typeof candidate.protocol.version === "number" &&
+		candidate.protocol.version >= DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION &&
+		candidate.protocol.version <= DAEMON_PROTOCOL_VERSION &&
 		(candidate.clientId === undefined || typeof candidate.clientId === "string") &&
 		typeof candidate.command === "object" &&
 		candidate.command !== null
@@ -660,6 +695,7 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"list",
 	"list_saved_sessions",
 	"attach",
+	"reattach",
 	"agent_messages_status",
 	"wait_for_idle",
 	"get_state",
@@ -672,6 +708,7 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"get_available_models",
 	"get_queue",
 	"cron_list",
+	"heartbeats_list",
 	"heartbeat_get",
 	"get_session_context",
 	"get_session_tree",
