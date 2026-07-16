@@ -116,6 +116,7 @@ const COORDINATOR_REGISTRY_LOCK_STALE_MS = 5000;
 const COORDINATOR_REGISTRY_LOCK_UPDATE_MS = 1000;
 const COORDINATOR_REGISTRY_LOCK_RETRIES = 500;
 const COORDINATOR_REGISTRY_LOCK_RETRY_MS = 10;
+const PROCESS_START_ID_RECHECK_MS = 1000;
 
 export function buildDaemonUpdateRestartReport(status: DaemonUpdateRestartStatus): DaemonUpdateRestartReport {
 	const report: DaemonUpdateRestartReport = { info: [], warnings: [] };
@@ -238,6 +239,11 @@ export function readDaemonUpdateRestartStatus(path: string): DaemonUpdateRestart
 	}
 }
 
+function readTerminalDaemonUpdateRestartStatus(path: string): DaemonUpdateRestartStatus | undefined {
+	const status = readDaemonUpdateRestartStatus(path);
+	return status && TERMINAL_PHASES.has(status.phase) ? status : undefined;
+}
+
 export class DaemonUpdateRestartStatusWriter {
 	private status: DaemonUpdateRestartStatus;
 
@@ -338,17 +344,43 @@ async function withCoordinatorRegistryGuard<T>(registryDir: string, action: () =
 	}
 }
 
-function isProcessIdentityAlive(identity: DaemonUpdateRestartProcessIdentity): boolean {
+function isProcessAlive(pid: number): boolean {
 	try {
-		process.kill(identity.pid, 0);
+		process.kill(pid, 0);
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code !== "ESRCH";
 	}
+	return true;
+}
+
+function matchesProcessStartId(identity: DaemonUpdateRestartProcessIdentity): boolean {
 	if (!identity.processStartId) {
 		return true;
 	}
 	const observed = getProcessStartId(identity.pid);
 	return observed === undefined || observed === identity.processStartId;
+}
+
+function isProcessIdentityAlive(identity: DaemonUpdateRestartProcessIdentity): boolean {
+	return isProcessAlive(identity.pid) && matchesProcessStartId(identity);
+}
+
+function createProcessIdentityLivenessCheck(identity: DaemonUpdateRestartProcessIdentity): () => boolean {
+	let lastStartIdCheckAt: number | undefined;
+	return () => {
+		if (!isProcessAlive(identity.pid)) {
+			return false;
+		}
+		if (!identity.processStartId) {
+			return true;
+		}
+		const now = Date.now();
+		if (lastStartIdCheckAt !== undefined && now - lastStartIdCheckAt < PROCESS_START_ID_RECHECK_MS) {
+			return true;
+		}
+		lastStartIdCheckAt = now;
+		return matchesProcessStartId(identity);
+	};
 }
 
 function readCoordinatorRecord(path: string): DaemonUpdateRestartCoordinatorRecord | undefined {
@@ -440,6 +472,7 @@ export async function waitForActiveDaemonUpdateRestartCoordinator(
 	record: DaemonUpdateRestartCoordinatorRecord,
 	progressTimeoutMs = DEFAULT_COORDINATOR_PROGRESS_TIMEOUT_MS,
 ): Promise<DaemonUpdateRestartStatus> {
+	const coordinatorIsAlive = createProcessIdentityLivenessCheck(record);
 	let observedUpdatedAt: string | undefined;
 	let observedLivenessId: string | undefined;
 	let lastProgressAt = Date.now();
@@ -457,7 +490,11 @@ export async function waitForActiveDaemonUpdateRestartCoordinator(
 		if (status && TERMINAL_PHASES.has(status.phase)) {
 			return status;
 		}
-		if (!isProcessIdentityAlive(record)) {
+		if (!coordinatorIsAlive()) {
+			const terminalStatus = readTerminalDaemonUpdateRestartStatus(record.statusPath);
+			if (terminalStatus) {
+				return terminalStatus;
+			}
 			throw new Error(`Active daemon update restart coordinator exited for ${record.socketPath}`);
 		}
 		if (Date.now() - lastLivenessAt >= COORDINATOR_LIVENESS_TIMEOUT_MS) {
@@ -544,6 +581,10 @@ export async function launchDaemonUpdateRestartCoordinator(
 			throw launchError;
 		}
 		if (exitDescription) {
+			const terminalStatus = readTerminalDaemonUpdateRestartStatus(statusPath);
+			if (terminalStatus) {
+				return terminalStatus;
+			}
 			throw new Error(`Daemon update restart coordinator exited with ${exitDescription}`);
 		}
 		if (Date.now() - lastLivenessAt >= COORDINATOR_LIVENESS_TIMEOUT_MS) {
