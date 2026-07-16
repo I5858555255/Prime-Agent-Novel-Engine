@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Changed shell commands to use discoverable agent, schedule, package, model, session, update, doctor, and full-shutdown verbs without exposing the background daemon hierarchy ([ENG-4538](https://linear.app/primeintellect/issue/ENG-4538/standardize-bash-command-conventions-and-improve-command-discovery)).
+- Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
 
 ## [0.3.1] - 2026-07-15
 
