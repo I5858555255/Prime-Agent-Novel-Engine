@@ -2894,7 +2894,8 @@ describe("daemon mode helpers", () => {
 			const childSessionDir = join(parentArtifactDir, childId);
 			const childManager = SessionManager.create(tempDir, childSessionDir);
 			childManager.newSession({ parentSession: parentSessionFile });
-			childManager.appendSessionInfo("completed-worker");
+			childManager.appendSessionInfo("spawn-worker");
+			childManager.appendSessionInfo("renamed-worker");
 			const childSessionFile = childManager.getSessionFile();
 			if (!childSessionFile) {
 				throw new Error("Missing child session file");
@@ -2904,7 +2905,7 @@ describe("daemon mode helpers", () => {
 				`${JSON.stringify({
 					type: "rlm_subagent",
 					childId,
-					sessionName: "completed-worker",
+					sessionName: "spawn-worker",
 					sessionDir: childSessionDir,
 					sessionFile: childSessionFile,
 					parentSessionId: parentManager.getSessionId(),
@@ -2957,7 +2958,7 @@ describe("daemon mode helpers", () => {
 				rlmDepth: 1,
 				rlmMaxDepth: 4,
 			});
-			expect(childState?.runtime.session.sessionName).toBe("completed-worker");
+			expect(childState?.runtime.session.sessionName).toBe("renamed-worker");
 			expect(childState?.runtime.metadata).toMatchObject({
 				kind: "subagent",
 				parentActiveSessionId: parentState.activeSessionId,

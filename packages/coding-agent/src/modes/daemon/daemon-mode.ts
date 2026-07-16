@@ -1720,7 +1720,7 @@ export class AgentDaemon {
 						if (runtime.session.sessionFile) {
 							this.recordRlmSubagentRegistryEntry(parentState, {
 								childId: options.id,
-								sessionName: options.sessionName,
+								sessionName: runtime.session.sessionName ?? options.sessionName,
 								sessionDir: options.sessionDir,
 								sessionFile: runtime.session.sessionFile,
 								rlmDepth: options.rlmDepth,
@@ -1945,9 +1945,8 @@ export class AgentDaemon {
 				const state = await this.addRuntime(runtime, undefined, parentState.clientEnv, (createdState) => {
 					stateRef = createdState;
 				});
-				if (runtime.session.sessionName !== entry.sessionName) {
-					runtime.session.setSessionName(entry.sessionName);
-				}
+				// The session transcript is authoritative for mutable metadata such as a
+				// later user-assigned name; the registry value is only the spawn snapshot.
 				if (!parentState.runtime.session.retainFinishedRlmChildSession(entry.childId, runtime.session)) {
 					await this.closeSession(state, "replaced");
 				}
