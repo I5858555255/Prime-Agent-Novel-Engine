@@ -332,6 +332,8 @@ interface PersistedRlmSubagentRegistryEntry {
 	sessionFile: string;
 	parentSessionId: string;
 	parentSessionFile?: string;
+	rlmDepth?: number;
+	rlmMaxDepth?: number;
 	rlmParentNodeId?: string;
 	prompt?: string;
 	spawnCode?: string;
@@ -781,6 +783,8 @@ export class AgentDaemon {
 			sessionName: string;
 			sessionDir: string;
 			sessionFile: string;
+			rlmDepth: number;
+			rlmMaxDepth: number;
 			rlmParentNodeId?: string;
 			prompt?: string;
 			spawnCode?: string;
@@ -797,6 +801,8 @@ export class AgentDaemon {
 			sessionFile: input.sessionFile,
 			parentSessionId: parentSession.sessionId,
 			...(parentSession.sessionFile ? { parentSessionFile: parentSession.sessionFile } : {}),
+			rlmDepth: input.rlmDepth,
+			rlmMaxDepth: input.rlmMaxDepth,
 			...(input.rlmParentNodeId ? { rlmParentNodeId: input.rlmParentNodeId } : {}),
 			...(input.prompt ? { prompt: input.prompt } : {}),
 			...(input.spawnCode ? { spawnCode: input.spawnCode } : {}),
@@ -854,7 +860,9 @@ export class AgentDaemon {
 					typeof entry.sessionName !== "string" ||
 					typeof entry.sessionDir !== "string" ||
 					typeof entry.sessionFile !== "string" ||
-					(entry.status !== "running" && entry.status !== "completed" && entry.status !== "deleted")
+					(entry.status !== "running" && entry.status !== "completed" && entry.status !== "deleted") ||
+					(entry.rlmDepth !== undefined && (!Number.isSafeInteger(entry.rlmDepth) || entry.rlmDepth < 0)) ||
+					(entry.rlmMaxDepth !== undefined && (!Number.isSafeInteger(entry.rlmMaxDepth) || entry.rlmMaxDepth < 0))
 				) {
 					continue;
 				}
@@ -1710,6 +1718,8 @@ export class AgentDaemon {
 								sessionName: options.sessionName,
 								sessionDir: options.sessionDir,
 								sessionFile: runtime.session.sessionFile,
+								rlmDepth: options.rlmDepth,
+								rlmMaxDepth: options.rlmMaxDepth,
 								rlmParentNodeId: options.rlmParentNodeId,
 								prompt: options.prompt.length <= 4096 ? options.prompt : undefined,
 								spawnCode: options.spawnCode,
@@ -1843,6 +1853,8 @@ export class AgentDaemon {
 				sessionName: options.sessionName,
 				sessionDir: options.sessionDir,
 				sessionFile: runtime.session.sessionFile,
+				rlmDepth: options.rlmDepth,
+				rlmMaxDepth: options.rlmMaxDepth,
 				rlmParentNodeId: options.rlmParentNodeId,
 				prompt: options.prompt.length <= 4096 ? options.prompt : undefined,
 				spawnCode: options.spawnCode,
@@ -1920,6 +1932,8 @@ export class AgentDaemon {
 								},
 							},
 							rlmSessionDir: entry.sessionDir,
+							rlmDepth: entry.rlmDepth ?? 1,
+							rlmMaxDepth: entry.rlmMaxDepth ?? 1,
 							rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
 						},
 						runtimeMetadata: {

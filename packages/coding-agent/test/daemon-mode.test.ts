@@ -2909,6 +2909,8 @@ describe("daemon mode helpers", () => {
 					sessionFile: childSessionFile,
 					parentSessionId: parentManager.getSessionId(),
 					parentSessionFile,
+					rlmDepth: 1,
+					rlmMaxDepth: 4,
 					rlmParentNodeId: childId,
 					status: "completed",
 					createdAt: 1,
@@ -2951,6 +2953,10 @@ describe("daemon mode helpers", () => {
 			);
 
 			expect(createRuntime).toHaveBeenCalledTimes(2);
+			expect(createRuntime.mock.calls[1]?.[0].sessionOptions).toMatchObject({
+				rlmDepth: 1,
+				rlmMaxDepth: 4,
+			});
 			expect(childState?.runtime.session.sessionName).toBe("completed-worker");
 			expect(childState?.runtime.metadata).toMatchObject({
 				kind: "subagent",
