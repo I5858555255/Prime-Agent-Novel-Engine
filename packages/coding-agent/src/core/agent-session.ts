@@ -6592,6 +6592,11 @@ export class AgentSession {
 				throw new Error(`RLM subagent session name "${name}" is already in use`);
 			}
 		}
+		for (const subagent of this._retryableRlmSubagentDeletions.values()) {
+			if (subagent.rlm_child_id === name || subagent.session_name === name) {
+				throw new Error(`RLM subagent session name "${name}" is already in use`);
+			}
+		}
 		const listedAgents = this._agentMessageController?.listAgents();
 		if (
 			listedAgents &&

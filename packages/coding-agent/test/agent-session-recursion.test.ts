@@ -380,6 +380,10 @@ describe("AgentSession rlm recursion", () => {
 		await expect(root.deleteRlmSubagent("retained-retry-worker")).rejects.toThrow("retained close failed");
 		expect(root.listRlmSubagents()).toEqual({ subagents: [] });
 		expect((root as unknown as InspectableRlmSession)._retryableRlmSubagentDeletions.size).toBe(1);
+		child.setSessionName("renamed-retry-worker");
+		await expect(root.runRlmChild("reuse retry selector", { name: "retained-retry-worker" })).rejects.toThrow(
+			'RLM subagent session name "retained-retry-worker" is already in use',
+		);
 
 		await expect(root.deleteRlmSubagent("retained-retry-worker")).resolves.toMatchObject({
 			subagent: { rlm_child_id: childId, session_name: "retained-retry-worker" },
