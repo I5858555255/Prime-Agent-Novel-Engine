@@ -11,10 +11,7 @@ const PREFERRED_VISIBLE_HEARTBEATS = 8;
 const HEARTBEAT_LIST_RESERVED_ROWS = 7;
 const HEARTBEAT_SCROLL_INDICATOR_ROWS = 1;
 
-type HeartbeatManagerMode =
-	| { type: "list" }
-	| { type: "actions"; heartbeatId: string; selectedIndex: number }
-	| { type: "confirm-stop"; heartbeatId: string; selectedIndex: number };
+type HeartbeatManagerMode = { type: "list" } | { type: "actions"; heartbeatId: string; selectedIndex: number };
 
 export interface HeartbeatManagerOptions {
 	getRows: () => number;
@@ -170,34 +167,16 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 		}
 		const name = heartbeat.job.label?.trim() || this.defaultHeartbeatName(heartbeat);
 		const panel = new MenuPanel({
-			title: mode.type === "confirm-stop" ? "Stop heartbeat?" : name,
-			subtitle:
-				mode.type === "confirm-stop"
-					? `This removes ${name} and clears its queued deliveries.`
-					: this.singleLine(heartbeat.job.prompt),
+			title: name,
+			subtitle: this.singleLine(heartbeat.job.prompt),
 		});
-		if (mode.type !== "confirm-stop") {
-			panel.addChild(new TruncatedText(theme.fg("muted", this.formatHeartbeatDetails(heartbeat)), 1, 0));
-			panel.addChild(new Spacer(1));
-		}
+		panel.addChild(new TruncatedText(theme.fg("muted", this.formatHeartbeatDetails(heartbeat)), 1, 0));
+		panel.addChild(new Spacer(1));
 		if (this.error) {
 			panel.addChild(new TruncatedText(theme.fg("error", `Error: ${this.error}`), 1, 0));
 			panel.addChild(new Spacer(1));
 		}
 		const list = new MenuList();
-		if (mode.type === "confirm-stop") {
-			const choices = [
-				{ primary: "Stop heartbeat", secondary: "Remove it and clear queued deliveries" },
-				{ primary: "Keep heartbeat", secondary: "Return without making changes" },
-			];
-			for (const [index, choice] of choices.entries()) {
-				list.addChild(new MenuRow({ ...choice, selected: index === mode.selectedIndex }));
-			}
-			panel.addChild(list);
-			panel.addChild(new Spacer(1));
-			panel.addChild(new TruncatedText(this.detailHint(), 1, 0));
-			return panel;
-		}
 		for (const [index, action] of this.availableActions(heartbeat).entries()) {
 			list.addChild(
 				new MenuRow({
@@ -218,10 +197,7 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 			if (this.heartbeats.length === 0) return;
 			this.selectedIndex = Math.max(0, Math.min(this.selectedIndex + delta, this.heartbeats.length - 1));
 		} else {
-			const count =
-				this.mode.type === "confirm-stop"
-					? 2
-					: this.availableActions(this.findHeartbeat(this.mode.heartbeatId)).length;
+			const count = this.availableActions(this.findHeartbeat(this.mode.heartbeatId)).length;
 			this.mode = { ...this.mode, selectedIndex: Math.max(0, Math.min(this.mode.selectedIndex + delta, count - 1)) };
 		}
 		this.options.requestRender();
@@ -242,20 +218,9 @@ export class HeartbeatManagerComponent implements Component, Focusable {
 			this.options.requestRender();
 			return;
 		}
-		if (this.mode.type === "confirm-stop") {
-			if (this.mode.selectedIndex === 0) await this.runAction(heartbeat, "stop");
-			else this.mode = { type: "list" };
-			this.options.requestRender();
-			return;
-		}
 		const selected = this.availableActions(heartbeat)[this.mode.selectedIndex];
 		if (!selected || selected.action === "back") {
 			this.mode = { type: "list" };
-			this.options.requestRender();
-			return;
-		}
-		if (selected.action === "stop") {
-			this.mode = { type: "confirm-stop", heartbeatId: heartbeat.job.id, selectedIndex: 1 };
 			this.options.requestRender();
 			return;
 		}

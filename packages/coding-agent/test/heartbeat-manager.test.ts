@@ -102,7 +102,7 @@ describe("HeartbeatManagerComponent", () => {
 		expect(closeCount).toBe(3);
 	});
 
-	it("pauses and stops individual heartbeats with stop confirmation", async () => {
+	it("pauses and stops individual heartbeats immediately", async () => {
 		const actions: Array<{ id: string; action: AgentHeartbeatManagementAction }> = [];
 		const component = new HeartbeatManagerComponent([heartbeat("user", { source: "heartbeat" })], {
 			getRows: () => 20,
@@ -120,8 +120,6 @@ describe("HeartbeatManagerComponent", () => {
 
 		component.handleInput("\r");
 		component.handleInput("\x1b[B");
-		component.handleInput("\r");
-		component.handleInput("\x1b[A");
 		component.handleInput("\r");
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		expect(actions).toEqual([
