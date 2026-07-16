@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -71,6 +72,18 @@ function writeSession(cwd: string, sessionDir: string, id: string, parentSession
 	sessionManager.appendMessage(createUserMessage(`user ${id}`));
 	sessionManager.appendMessage(createAssistantMessage(`assistant ${id}`));
 	return sessionManager;
+}
+
+async function advanceTimersUntil(condition: () => boolean): Promise<void> {
+	for (let step = 0; step < 20 && !condition(); step += 1) {
+		await stat(new URL(import.meta.url));
+		if (!condition() && vi.getTimerCount() > 0) {
+			await vi.advanceTimersToNextTimerAsync();
+		}
+	}
+	if (!condition()) {
+		throw new Error("Timed out advancing fake timers to the expected condition");
+	}
 }
 
 describe("agent trace upload", () => {
@@ -563,6 +576,80 @@ describe("agent trace upload", () => {
 		randomSpy.mockRestore();
 	});
 
+	it("waits a full platform window before retrying a rate limit without Retry-After", async () => {
+		vi.useFakeTimers();
+		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "rate-limit-retry-session");
+		let markFirstAttemptStarted: () => void = () => {};
+		const firstAttemptStarted = new Promise<void>((resolve) => {
+			markFirstAttemptStarted = resolve;
+		});
+		let attempts = 0;
+		const fetchFn: typeof fetch = async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				markFirstAttemptStarted();
+				return new Response(JSON.stringify({ detail: "Too Many Requests" }), { status: 429 });
+			}
+			return new Response(JSON.stringify({ bytes_stored: 42 }), { status: 200 });
+		};
+
+		const upload = uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn,
+			reloadConfig: false,
+		});
+
+		await firstAttemptStarted;
+		await vi.runAllTimersAsync();
+		const result = await upload;
+		expect(attempts).toBe(2);
+		expect(result.status).toBe("uploaded");
+		expect(timeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(60_000);
+	});
+
+	it("honors Retry-After when retrying a rate limit", async () => {
+		vi.useFakeTimers();
+		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		const session = writeSession(tempDir, join(tempDir, "sessions"), "retry-after-session");
+		let markFirstAttemptStarted: () => void = () => {};
+		const firstAttemptStarted = new Promise<void>((resolve) => {
+			markFirstAttemptStarted = resolve;
+		});
+		let attempts = 0;
+		const fetchFn: typeof fetch = async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				markFirstAttemptStarted();
+				return new Response(null, { status: 429, headers: { "retry-after": "17" } });
+			}
+			return new Response(JSON.stringify({ bytes_stored: 42 }), { status: 200 });
+		};
+
+		const upload = uploadAgentTraceFile({
+			sessionFile: session.getSessionFile(),
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
+			baseUrl: "https://api.example.test",
+			fetchFn,
+			reloadConfig: false,
+		});
+
+		await firstAttemptStarted;
+		await vi.runAllTimersAsync();
+		const result = await upload;
+		expect(attempts).toBe(2);
+		expect(result.status).toBe("uploaded");
+		expect(timeoutSpy.mock.calls.map((call) => Number(call[1]))).toContain(17_000);
+	});
+
 	it("surfaces the cancellation reason when aborted during the retry backoff", async () => {
 		const session = writeSession(tempDir, join(tempDir, "sessions"), "aborted-retry-session");
 		const controller = new AbortController();
@@ -734,9 +821,14 @@ describe("agent trace upload", () => {
 		const discovered = await findAgentTraceFiles(sessionDir);
 		expect(discovered).toEqual([child.getSessionFile(), grandchild.getSessionFile(), parent.getSessionFile()].sort());
 
+		vi.useFakeTimers();
 		const calls: FetchCall[] = [];
+		let resolveFirstCompletion: () => void = () => {};
+		const firstCompletion = new Promise<void>((resolve) => {
+			resolveFirstCompletion = resolve;
+		});
 		const progress: Array<{ completed: number; total: number }> = [];
-		const result = await uploadAllAgentTraces({
+		const upload = uploadAllAgentTraces({
 			sessionDir,
 			authStorage: AuthStorage.inMemory({
 				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
@@ -747,8 +839,16 @@ describe("agent trace upload", () => {
 			fetchFn: createFetchRecorder(calls),
 			reloadConfig: false,
 			concurrency: 0.5,
-			onProgress: ({ completed, total }) => progress.push({ completed, total }),
+			onProgress: ({ completed, total }) => {
+				progress.push({ completed, total });
+				if (completed === 1) {
+					resolveFirstCompletion();
+				}
+			},
 		});
+		await firstCompletion;
+		await advanceTimersUntil(() => calls.length === 3);
+		const result = await upload;
 
 		expect(result).toMatchObject({ total: 3, uploaded: 3, failed: 0, skipped: 0, bytesStored: 369 });
 		expect(calls.map((call) => call.url).sort()).toEqual(
@@ -764,6 +864,49 @@ describe("agent trace upload", () => {
 		expect(grandchildHeaders.get("x-parent-session")).toBe("all-child");
 		expect(progress[0]).toEqual({ completed: 0, total: 3 });
 		expect(progress.at(-1)).toEqual({ completed: 3, total: 3 });
+	});
+
+	it("paces batch request starts within the platform rate limit", async () => {
+		const sessionDir = join(tempDir, "sessions");
+		for (let index = 0; index < 6; index += 1) {
+			writeSession(tempDir, sessionDir, `rate-limited-all-${index}`);
+		}
+
+		vi.useFakeTimers();
+		let markFirstRequestStarted: () => void = () => {};
+		const firstRequestStarted = new Promise<void>((resolve) => {
+			markFirstRequestStarted = resolve;
+		});
+		const requestStarts: number[] = [];
+		const fetchFn: typeof fetch = async () => {
+			requestStarts.push(Date.now());
+			if (requestStarts.length === 1) {
+				markFirstRequestStarted();
+			}
+			return new Response(JSON.stringify({ bytes_stored: 1 }), { status: 200 });
+		};
+
+		const upload = uploadAllAgentTraces({
+			sessionDir,
+			authStorage: AuthStorage.inMemory({
+				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
+			}),
+			settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: false } }),
+			requireEnabled: false,
+			baseUrl: "https://api.example.test",
+			fetchFn,
+			reloadConfig: false,
+		});
+
+		await firstRequestStarted;
+		await advanceTimersUntil(() => requestStarts.length === 6);
+		const result = await upload;
+		expect(result).toMatchObject({ total: 6, uploaded: 6, failed: 0, skipped: 0 });
+		expect(requestStarts).toHaveLength(6);
+		for (let index = 1; index < requestStarts.length; index += 1) {
+			expect(requestStarts[index]! - requestStarts[index - 1]!).toBeGreaterThanOrEqual(12_000);
+		}
+		expect(requestStarts[5]! - requestStarts[0]!).toBeGreaterThanOrEqual(60_000);
 	});
 
 	it("stops scheduling batch uploads after cancellation", async () => {
@@ -805,9 +948,17 @@ describe("agent trace upload", () => {
 		writeSession(tempDir, sessionDir, "abort-in-flight-c");
 		const controller = new AbortController();
 		const abortReason = new Error("cancel in-flight batch");
+		vi.useFakeTimers();
+		let markFirstRequestStarted: () => void = () => {};
+		const firstRequestStarted = new Promise<void>((resolve) => {
+			markFirstRequestStarted = resolve;
+		});
 		let attempts = 0;
 		const fetchFn: typeof fetch = async (_input, init) => {
 			attempts += 1;
+			if (attempts === 1) {
+				markFirstRequestStarted();
+			}
 			return await new Promise<Response>((_resolve, reject) => {
 				init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
 				if (attempts === 2) {
@@ -816,7 +967,7 @@ describe("agent trace upload", () => {
 			});
 		};
 
-		const result = await uploadAllAgentTraces({
+		const upload = uploadAllAgentTraces({
 			sessionDir,
 			authStorage: AuthStorage.inMemory({
 				[PRIME_AGENT_TRACES_PROVIDER_ID]: { type: "api_key", key: "trace-key" },
@@ -829,6 +980,9 @@ describe("agent trace upload", () => {
 			concurrency: 2,
 			signal: controller.signal,
 		});
+		await firstRequestStarted;
+		await advanceTimersUntil(() => attempts === 2);
+		const result = await upload;
 
 		expect(attempts).toBe(2);
 		expect(result).toMatchObject({ total: 3, uploaded: 0, failed: 0, skipped: 3 });

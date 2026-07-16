@@ -24,6 +24,11 @@ const TRACE_UPLOAD_MAX_RETRIES = 3;
 const TRACE_UPLOAD_RETRY_JITTER = 0.2;
 const TRACE_PREVIEW_MAX_CHARS = 8_000;
 const TRACE_UPLOAD_ALL_CONCURRENCY = 4;
+const TRACE_UPLOAD_RATE_LIMIT_REQUESTS = 5;
+const TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS = 60_000;
+const TRACE_UPLOAD_RATE_LIMIT_SAFETY_MS = 100;
+const TRACE_UPLOAD_ALL_MIN_REQUEST_INTERVAL_MS =
+	Math.ceil(TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS / TRACE_UPLOAD_RATE_LIMIT_REQUESTS) + TRACE_UPLOAD_RATE_LIMIT_SAFETY_MS;
 
 export type AgentTraceCredentialSource = "environment" | "stored" | "prime-inference" | "prime-cli";
 
@@ -382,18 +387,42 @@ function traceUploadRetryDelay(retryIndex: number): number {
 	return Math.max(0, Math.round(exponentialDelay * jitterMultiplier));
 }
 
+function retryAfterDelay(response: Response): number | undefined {
+	const value = response.headers.get("retry-after")?.trim();
+	if (!value) {
+		return undefined;
+	}
+	const seconds = Number(value);
+	if (Number.isFinite(seconds) && seconds >= 0) {
+		return Math.ceil(seconds * 1_000);
+	}
+	const retryAt = Date.parse(value);
+	return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : undefined;
+}
+
+type BeforeTraceUploadRequest = () => Promise<void>;
+
 async function fetchWithRetry(
 	fetchFn: typeof fetch,
 	url: string,
 	init: RequestInit,
 	timeoutMs: number,
 	signal?: AbortSignal,
+	beforeRequest?: BeforeTraceUploadRequest,
 ): Promise<Response> {
 	for (let attempt = 0; ; attempt += 1) {
+		let retryDelayMs: number | undefined;
 		try {
+			await beforeRequest?.();
+			if (signal?.aborted) {
+				throw signal.reason ?? new Error("Trace upload cancelled");
+			}
 			const response = await fetchWithTimeout(fetchFn, url, init, timeoutMs, signal);
 			if (attempt >= TRACE_UPLOAD_MAX_RETRIES || !RETRIABLE_HTTP_STATUSES.has(response.status)) {
 				return response;
+			}
+			if (response.status === 429) {
+				retryDelayMs = retryAfterDelay(response) ?? TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS;
 			}
 			await response.body?.cancel().catch(() => undefined);
 		} catch (error) {
@@ -405,7 +434,7 @@ async function fetchWithRetry(
 			}
 		}
 
-		await delay(traceUploadRetryDelay(attempt), signal);
+		await delay(retryDelayMs ?? traceUploadRetryDelay(attempt), signal);
 		if (signal?.aborted) {
 			throw signal.reason ?? new Error("Trace upload cancelled");
 		}
@@ -513,6 +542,24 @@ export async function findAgentTraceFiles(sessionDir: string = getSessionsDir())
 	return [...files].sort();
 }
 
+function createTraceUploadAllRequestGate(signal?: AbortSignal): BeforeTraceUploadRequest {
+	let nextRequestAt = 0;
+	let queue = Promise.resolve();
+	return () => {
+		const slot = queue.then(async () => {
+			const waitMs = Math.max(0, nextRequestAt - Date.now());
+			if (waitMs > 0) {
+				await delay(waitMs, signal);
+			}
+			if (!signal?.aborted) {
+				nextRequestAt = Date.now() + TRACE_UPLOAD_ALL_MIN_REQUEST_INTERVAL_MS;
+			}
+		});
+		queue = slot.catch(() => undefined);
+		return slot;
+	};
+}
+
 export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions): Promise<AgentTraceUploadAllResult> {
 	const { sessionDir, concurrency, onProgress, ...uploadOptions } = options;
 	const sessionFiles = await findAgentTraceFiles(sessionDir);
@@ -520,6 +567,7 @@ export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions):
 	const results: Array<UploadResultItem | undefined> = new Array(sessionFiles.length);
 	let cursor = 0;
 	let completed = 0;
+	const beforeRequest = createTraceUploadAllRequestGate(uploadOptions.signal);
 	onProgress?.({ completed, total: sessionFiles.length });
 
 	const worker = async () => {
@@ -533,11 +581,14 @@ export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions):
 			if (!sessionFile) {
 				return;
 			}
-			const result = await uploadAgentTraceFile({
-				...uploadOptions,
-				sessionFile,
-				reloadConfig: false,
-			});
+			const result = await uploadAgentTraceFileWithRequestGate(
+				{
+					...uploadOptions,
+					sessionFile,
+					reloadConfig: false,
+				},
+				beforeRequest,
+			);
 			if (uploadOptions.signal?.aborted && result.status === "failed") {
 				return;
 			}
@@ -625,10 +676,17 @@ async function getAgentTracesEnabled(
 	return options.settingsManager.getAgentTracesEnabled();
 }
 
-export async function uploadAgentTraceFile(options: AgentTraceUploadOptions): Promise<AgentTraceUploadResult> {
-	const result = await performAgentTraceUpload(options);
+async function uploadAgentTraceFileWithRequestGate(
+	options: AgentTraceUploadOptions,
+	beforeRequest?: BeforeTraceUploadRequest,
+): Promise<AgentTraceUploadResult> {
+	const result = await performAgentTraceUpload(options, beforeRequest);
 	logAgentTraceOutcome(options.sessionFile, result);
 	return result;
+}
+
+export function uploadAgentTraceFile(options: AgentTraceUploadOptions): Promise<AgentTraceUploadResult> {
+	return uploadAgentTraceFileWithRequestGate(options);
 }
 
 function logAgentTraceOutcome(sessionFile: string | undefined, result: AgentTraceUploadResult): void {
@@ -656,7 +714,10 @@ function logAgentTraceOutcome(sessionFile: string | undefined, result: AgentTrac
 	appendRotatingLog(getAgentTracesLogPath(), `[${new Date().toISOString()}] ${line}${suffix}`);
 }
 
-async function performAgentTraceUpload(options: AgentTraceUploadOptions): Promise<AgentTraceUploadResult> {
+async function performAgentTraceUpload(
+	options: AgentTraceUploadOptions,
+	beforeRequest?: BeforeTraceUploadRequest,
+): Promise<AgentTraceUploadResult> {
 	const requireEnabled = options.requireEnabled !== false;
 	if (requireEnabled && !(await getAgentTracesEnabled(options))) {
 		return { status: "disabled" };
@@ -750,6 +811,7 @@ async function performAgentTraceUpload(options: AgentTraceUploadOptions): Promis
 			},
 			options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
 			options.signal,
+			beforeRequest,
 		);
 	} catch (error) {
 		return { status: "failed", message: describeError(error) };

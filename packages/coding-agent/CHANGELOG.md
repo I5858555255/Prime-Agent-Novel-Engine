@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Changed `/traces upload-all` to pace requests within the platform rate limit and honor `Retry-After` responses.
 
 ## [0.3.1] - 2026-07-15
 
