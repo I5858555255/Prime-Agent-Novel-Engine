@@ -4,6 +4,7 @@ import type { AgentConnectionHeartbeat } from "../src/modes/agent-connection/typ
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
 interface HeartbeatManagementHarness {
+	heartbeats: AgentConnectionHeartbeat[];
 	agentConnection: {
 		manageHeartbeat(
 			activeSessionId: string,
@@ -13,6 +14,7 @@ interface HeartbeatManagementHarness {
 	};
 	connectionState: { activeSessionId: string };
 	patchConnectionState(patch: { heartbeat: AgentCronJob | null }): void;
+	applyHeartbeatCatalog(heartbeats: AgentConnectionHeartbeat[]): void;
 	refreshHeartbeatCatalog(): Promise<void>;
 	manageHeartbeat(heartbeat: AgentConnectionHeartbeat, action: AgentHeartbeatManagementAction): Promise<void>;
 }
@@ -49,16 +51,40 @@ describe("interactive heartbeat management", () => {
 		const stopped = { ...current, status: "cancelled" as const, nextRunAt: undefined };
 		const patches: Array<{ heartbeat: AgentCronJob | null }> = [];
 		const harness = Object.create(InteractiveMode.prototype) as HeartbeatManagementHarness;
+		harness.heartbeats = [{ job: current }];
 		harness.connectionState = { activeSessionId: current.activeSessionId };
 		harness.agentConnection = {
 			manageHeartbeat: vi.fn(async () => stopped),
 		};
 		harness.patchConnectionState = (patch) => patches.push(patch);
+		harness.applyHeartbeatCatalog = vi.fn();
 		harness.refreshHeartbeatCatalog = vi.fn(async () => {});
 
 		await harness.manageHeartbeat({ job: current }, "stop");
 
 		expect(patches).toEqual([{ heartbeat: null }]);
+		expect(harness.applyHeartbeatCatalog).toHaveBeenCalledWith([]);
+		expect(harness.refreshHeartbeatCatalog).toHaveBeenCalledOnce();
+	});
+
+	it("keeps a successful action successful when the catalog refresh fails", async () => {
+		const current = heartbeat();
+		const paused = { ...current, status: "paused" as const, nextRunAt: undefined };
+		const harness = Object.create(InteractiveMode.prototype) as HeartbeatManagementHarness;
+		harness.heartbeats = [{ job: current, sessionName: "Primary session" }];
+		harness.connectionState = { activeSessionId: current.activeSessionId };
+		harness.agentConnection = { manageHeartbeat: vi.fn(async () => paused) };
+		harness.patchConnectionState = vi.fn();
+		harness.applyHeartbeatCatalog = vi.fn();
+		harness.refreshHeartbeatCatalog = vi.fn(async () => {
+			throw new Error("worker recovering");
+		});
+
+		await expect(harness.manageHeartbeat({ job: current, sessionName: "Primary session" }, "pause")).resolves.toBe(
+			undefined,
+		);
+
+		expect(harness.applyHeartbeatCatalog).toHaveBeenCalledWith([{ job: paused, sessionName: "Primary session" }]);
 		expect(harness.refreshHeartbeatCatalog).toHaveBeenCalledOnce();
 	});
 

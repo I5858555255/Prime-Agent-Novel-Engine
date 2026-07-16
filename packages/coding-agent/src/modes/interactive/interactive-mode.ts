@@ -2233,11 +2233,7 @@ export class InteractiveMode {
 				this.heartbeatRefreshRequested = false;
 				const heartbeats = await connection.listHeartbeats();
 				if (this.agentConnection !== connection) return;
-				this.heartbeats = heartbeats;
-				this.heartbeatManager?.setHeartbeats(heartbeats);
-				this.scheduleHeartbeatManagerRefresh();
-				this.childAgentSummary.invalidate();
-				this.ui.requestRender();
+				this.applyHeartbeatCatalog(heartbeats);
 			} while (this.heartbeatRefreshRequested);
 		})().finally(() => {
 			if (this.heartbeatRefreshPromise === refresh) {
@@ -2246,6 +2242,14 @@ export class InteractiveMode {
 		});
 		this.heartbeatRefreshPromise = refresh;
 		return refresh;
+	}
+
+	private applyHeartbeatCatalog(heartbeats: AgentConnectionHeartbeat[]): void {
+		this.heartbeats = heartbeats;
+		this.heartbeatManager?.setHeartbeats(heartbeats);
+		this.scheduleHeartbeatManagerRefresh();
+		this.childAgentSummary.invalidate();
+		this.ui.requestRender();
 	}
 
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
@@ -8530,7 +8534,13 @@ export class InteractiveMode {
 		if (updated.source === "heartbeat" && updated.activeSessionId === this.connectionState?.activeSessionId) {
 			this.patchConnectionState({ heartbeat: action === "stop" ? null : updated });
 		}
-		await this.refreshHeartbeatCatalog();
+		const remaining = this.heartbeats.filter((entry) => entry.job.id !== updated.id);
+		this.applyHeartbeatCatalog(
+			updated.status === "active" || updated.status === "paused"
+				? [...remaining, { ...heartbeat, job: updated }]
+				: remaining,
+		);
+		void this.refreshHeartbeatCatalog().catch(() => undefined);
 	}
 
 	private showHeartbeat(job: AgentCronJob | undefined): void {
