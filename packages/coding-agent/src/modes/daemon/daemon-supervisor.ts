@@ -27,7 +27,7 @@ import {
 	ORPHAN_PROCESS_JOURNAL_ENV,
 	readActiveOrphanProcesses,
 } from "../../core/orphan-process-journal.js";
-import { getProcessStartId } from "../../core/session-lease.js";
+import { canonicalSessionPath, getProcessStartId } from "../../core/session-lease.js";
 import type { SessionInfo } from "../../core/session-manager.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { PrivateFrame } from "../session-worker/private-framing.js";
@@ -106,6 +106,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"list_saved_sessions",
 	"create",
 	"attach",
+	"reattach",
 	"detach",
 	"kill",
 	"rename",
@@ -962,6 +963,50 @@ export class DaemonSupervisor {
 				}
 				return success(command.id, "attach", attached.result);
 			}
+			case "reattach": {
+				const target = await this.findWorker(command.targetActiveSessionId);
+				const targetActiveSessionId = target.summary.activeSessionId ?? target.summary.id;
+				if (targetActiveSessionId === command.activeSessionId) {
+					return success(command.id, command.type, { cancelled: false });
+				}
+				const targetWasAttached = client.attachedActiveSessionIds.has(targetActiveSessionId);
+				const releaseSnapshotReservation = this.reserveSnapshotStream(client, targetActiveSessionId);
+				client.attachedActiveSessionIds.add(targetActiveSessionId);
+				try {
+					const attached = await this.attachClient(client, {
+						...command,
+						type: "attach",
+						activeSessionId: targetActiveSessionId,
+					});
+					if (client.capabilities.has("chunked_snapshot")) {
+						const transcript = this.getOrCreateTranscriptCache(attached.worker, attached.result);
+						const streamedResult = this.createStreamedAttachResult(attached.result, transcript);
+						this.write(client, success(command.id, command.type, streamedResult));
+						this.detachClient(client, command.activeSessionId);
+						void this.streamSnapshot(
+							client,
+							attached.worker,
+							streamedResult,
+							transcript,
+							"replacement",
+							releaseSnapshotReservation,
+						).catch((error) =>
+							this.log(`Failed to stream reattach snapshot for ${targetActiveSessionId}: ${String(error)}`),
+						);
+						return undefined;
+					}
+					this.write(client, success(command.id, command.type, attached.result));
+					this.detachClient(client, command.activeSessionId);
+					releaseSnapshotReservation();
+					return undefined;
+				} catch (error) {
+					if (!targetWasAttached) {
+						this.detachClient(client, targetActiveSessionId);
+					}
+					releaseSnapshotReservation();
+					throw error;
+				}
+			}
 			case "detach":
 				this.detachClient(client, command.activeSessionId);
 				return success(command.id, "detach");
@@ -1223,7 +1268,7 @@ export class DaemonSupervisor {
 			}
 		}
 		const key = createCommand.sessionPath
-			? resolve(createCommand.sessionPath)
+			? canonicalSessionPath(createCommand.sessionPath)
 			: `new:${command.id ? createCommandIdempotencyKey(clientId, command.id) : createActiveSessionId()}`;
 		const pending = this.openingWorkers.get(key);
 		if (pending) {
@@ -2011,10 +2056,10 @@ export class DaemonSupervisor {
 	}
 
 	private findWorkerBySessionFile(sessionFile: string): WorkerMatch | undefined {
-		const target = resolve(sessionFile);
+		const target = canonicalSessionPath(sessionFile);
 		for (const worker of this.workers.values()) {
 			for (const summary of worker.summaries.values()) {
-				if (summary.sessionFile && resolve(summary.sessionFile) === target) {
+				if (summary.sessionFile && canonicalSessionPath(summary.sessionFile) === target) {
 					return { worker, summary };
 				}
 			}
@@ -2108,6 +2153,7 @@ export class DaemonSupervisor {
 			}
 			result = await loading;
 		}
+		const wasAttached = client.attachedActiveSessionIds.has(activeSessionId);
 		client.attachedActiveSessionIds.add(activeSessionId);
 		try {
 			const publicSummary = this.publicSummary(match.worker, result.snapshot.summary);
@@ -2142,7 +2188,9 @@ export class DaemonSupervisor {
 			await this.syncWorkerExtensionUi(activeSessionId);
 			return { result: publicResult, worker: match.worker };
 		} catch (error) {
-			client.attachedActiveSessionIds.delete(activeSessionId);
+			if (!wasAttached) {
+				client.attachedActiveSessionIds.delete(activeSessionId);
+			}
 			throw error;
 		}
 	}
@@ -2200,22 +2248,14 @@ export class DaemonSupervisor {
 		result: DaemonAttachResult,
 		transcript: SnapshotTranscriptCache,
 		purpose: "attach" | "replacement" | "resync" = "attach",
+		releaseSnapshotReservation = this.reserveSnapshotStream(client, result.activeSessionId),
 	): Promise<void> {
 		const stream = result.snapshotStream;
 		if (!stream || client.socket.destroyed) {
+			releaseSnapshotReservation();
 			return;
 		}
 		const releaseTranscript = transcript.retain();
-		client.snapshotStreaming = true;
-		if (!client.snapshotActiveSessionIds) {
-			client.snapshotActiveSessionIds = new Set();
-		}
-		client.snapshotActiveSessionIds.add(result.activeSessionId);
-		client.snapshotActiveSessionCounts ??= new Map();
-		client.snapshotActiveSessionCounts.set(
-			result.activeSessionId,
-			(client.snapshotActiveSessionCounts.get(result.activeSessionId) ?? 0) + 1,
-		);
 		const { messages: _messages, ...snapshotHeader } = result.snapshot;
 		try {
 			if (
@@ -2270,25 +2310,44 @@ export class DaemonSupervisor {
 			}
 			throw streamError;
 		} finally {
-			const streamCount = client.snapshotActiveSessionCounts?.get(result.activeSessionId) ?? 1;
+			releaseSnapshotReservation();
+			releaseTranscript();
+		}
+	}
+
+	private reserveSnapshotStream(client: DaemonSocketClient, activeSessionId: string): () => void {
+		client.snapshotStreaming = true;
+		client.snapshotActiveSessionIds ??= new Set();
+		client.snapshotActiveSessionIds.add(activeSessionId);
+		client.snapshotActiveSessionCounts ??= new Map();
+		client.snapshotActiveSessionCounts.set(
+			activeSessionId,
+			(client.snapshotActiveSessionCounts.get(activeSessionId) ?? 0) + 1,
+		);
+		let released = false;
+		return () => {
+			if (released) {
+				return;
+			}
+			released = true;
+			const streamCount = client.snapshotActiveSessionCounts?.get(activeSessionId) ?? 1;
 			if (streamCount > 1) {
-				client.snapshotActiveSessionCounts?.set(result.activeSessionId, streamCount - 1);
+				client.snapshotActiveSessionCounts?.set(activeSessionId, streamCount - 1);
 			} else {
-				client.snapshotActiveSessionCounts?.delete(result.activeSessionId);
-				client.snapshotActiveSessionIds?.delete(result.activeSessionId);
+				client.snapshotActiveSessionCounts?.delete(activeSessionId);
+				client.snapshotActiveSessionIds?.delete(activeSessionId);
 			}
 			client.snapshotStreaming = (client.snapshotActiveSessionIds?.size ?? 0) > 0;
 			if (!client.snapshotStreaming) {
 				client.backpressured = false;
 			}
-			this.flushPendingReplacementSnapshot(client, result.activeSessionId);
-			releaseTranscript();
+			this.flushPendingReplacementSnapshot(client, activeSessionId);
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpClient(client).catch((error) =>
 					this.log(`Failed to catch up client ${client.id}: ${String(error)}`),
 				);
 			}
-		}
+		};
 	}
 
 	private writeSnapshotRecord(client: DaemonSocketClient, message: DaemonOutbound): Promise<boolean> {
@@ -2330,6 +2389,8 @@ export class DaemonSupervisor {
 			if (!client.attachedActiveSessionIds.delete(resolvedId)) {
 				continue;
 			}
+			client.catchupActiveSessionIds?.delete(resolvedId);
+			client.catchupPurposes?.delete(resolvedId);
 			this.dropPendingReplacementSnapshot(client, resolvedId);
 			this.write(client, { type: "session_detached", activeSessionId: resolvedId });
 			void this.syncWorkerExtensionUi(resolvedId);
