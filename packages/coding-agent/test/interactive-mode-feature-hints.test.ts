@@ -66,6 +66,20 @@ describe("feature hint deck", () => {
 		expect(hints.find((hint) => hint?.id === "prompt-stash")?.text).toContain("Meta+S");
 		expect(hints.find((hint) => hint?.id === "follow-up")?.text).toContain("Meta+Enter");
 	});
+
+	it("covers Prime Agent workflows without advertising a subagent shortcut", () => {
+		const deck = new FeatureHintDeck(() => 0);
+		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Meta+A" }));
+		const textById = new Map(hints.map((hint) => [hint?.id, hint?.text]));
+
+		expect(textById.get("goal")).toContain("/goal");
+		expect(textById.get("refine")).toContain("/refine");
+		expect(textById.get("persistent-ipython")).toContain("IPython");
+		expect(textById.get("context-usage")).toContain("/context");
+		expect(textById.get("session-fork")).toContain("/fork");
+		expect(textById.get("compaction")).toContain("/compact");
+		expect(textById.get("subagents")).not.toContain("Meta+A");
+	});
 });
 
 describe("InteractiveMode feature hints", () => {

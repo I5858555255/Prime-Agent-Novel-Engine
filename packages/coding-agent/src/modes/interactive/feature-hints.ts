@@ -39,12 +39,33 @@ export const FEATURE_HINTS: readonly FeatureHintDefinition[] = [
 	},
 	{
 		id: "subagents",
-		getText: ({ getKeybinding }) => {
-			const key = getKeybinding("app.subagents.focus");
-			return key
-				? `Ask Prime Agent to delegate independent work to subagents, then press ${key} to inspect them.`
-				: "Ask Prime Agent to delegate independent work to subagents.";
-		},
+		getText: () => "Ask Prime Agent to delegate independent work to subagents so tasks can run in parallel.",
+	},
+	{
+		id: "goal",
+		getText: () =>
+			"Use /goal <objective> to let Prime Agent keep working across turns until a longer-running outcome is complete.",
+	},
+	{
+		id: "refine",
+		getText: () =>
+			"Use /refine after a reusable discovery to update Prime Agent's local skills, memory, prompts, or subagents.",
+	},
+	{
+		id: "persistent-ipython",
+		getText: () => "Prime Agent's IPython kernel preserves variables and helpers across turns and compaction.",
+	},
+	{
+		id: "context-usage",
+		getText: () => "Use /context to inspect token, cost, and context usage across the agent and its subagents.",
+	},
+	{
+		id: "session-fork",
+		getText: () => "Use /fork to branch from an earlier prompt without losing the current session.",
+	},
+	{
+		id: "compaction",
+		getText: () => "Use /compact <instructions> to summarize older context around the details you want to preserve.",
 	},
 ] as const;
 
