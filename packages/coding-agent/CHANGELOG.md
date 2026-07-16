@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added `@` file-path autocomplete to new-agent and reply prompts in the Agents View.
+- Fixed daemon backpressure triggering redundant catch-up snapshots for events already queued by the socket.
 
 ## [0.3.1] - 2026-07-15
 
