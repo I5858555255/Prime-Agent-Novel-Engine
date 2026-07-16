@@ -279,7 +279,11 @@ describe("AgentSession rlm recursion", () => {
 			throw new Error("Missing child session directory");
 		}
 		const childId = basename(result.session_dir);
-		expect(root.getRlmChildSession(childId)?.sessionName).toBe("api-reviewer");
+		const childSession = root.getRlmChildSession(childId);
+		if (!childSession) {
+			throw new Error("Missing retained child session");
+		}
+		expect(childSession.sessionName).toBe("api-reviewer");
 		expect(root.listRlmSubagents().subagents[0]?.session_name).toBe("api-reviewer");
 
 		await expect(root.runRlmChild("collide with child id", { name: childId })).rejects.toThrow(
@@ -288,6 +292,9 @@ describe("AgentSession rlm recursion", () => {
 		await expect(root.runRlmChild("inspect another API", { name: "api-reviewer" })).rejects.toThrow(
 			'RLM subagent session name "api-reviewer" is already in use',
 		);
+		await expect(
+			root.runRlmChild("collide with retained session id", { name: childSession.sessionId }),
+		).rejects.toThrow(`RLM subagent session name "${childSession.sessionId}" is already in use`);
 		await expect(root.runRlmChild("invalid name", { name: "   " })).rejects.toThrow("rlm.run name must not be empty");
 		await expect(root.runRlmChild("reserved name", { name: "all" })).rejects.toThrow(
 			"Broadcast agent messaging is not supported",
@@ -320,11 +327,17 @@ describe("AgentSession rlm recursion", () => {
 		if (!running) {
 			throw new Error("Missing running child");
 		}
+		if (!running.session_id) {
+			throw new Error("Missing running child session ID");
+		}
 		root.getRlmChildSession(running.rlm_child_id)?.setSessionName("renamed-running-worker");
 		expect(root.listRlmSubagents().subagents[0]?.session_name).toBe("renamed-running-worker");
 
 		await expect(root.runRlmChild("reuse renamed selector", { name: "renamed-running-worker" })).rejects.toThrow(
 			'RLM subagent session name "renamed-running-worker" is already in use',
+		);
+		await expect(root.runRlmChild("reuse running session id", { name: running.session_id })).rejects.toThrow(
+			`RLM subagent session name "${running.session_id}" is already in use`,
 		);
 		releaseChild();
 		await runPromise;

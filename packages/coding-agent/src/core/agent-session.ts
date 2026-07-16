@@ -6583,12 +6583,17 @@ export class AgentSession {
 			endpoint.sessionName === name ||
 			endpoint.rlmChildId === name;
 		for (const [childId, run] of this._activeRlmChildRuns) {
-			if (childId === name || run.sessionName === name || run.session?.sessionName === name) {
+			if (
+				childId === name ||
+				run.sessionName === name ||
+				run.session?.sessionId === name ||
+				run.session?.sessionName === name
+			) {
 				throw new Error(`RLM subagent session name "${name}" is already in use`);
 			}
 		}
 		for (const [childId, session] of this._retainedRlmChildSessions) {
-			if (childId === name || session.sessionName === name) {
+			if (childId === name || session.sessionId === name || session.sessionName === name) {
 				throw new Error(`RLM subagent session name "${name}" is already in use`);
 			}
 		}

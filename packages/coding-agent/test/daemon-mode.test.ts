@@ -2897,9 +2897,37 @@ describe("daemon mode helpers", () => {
 			childManager.appendSessionInfo("spawn-worker");
 			childManager.appendSessionInfo("renamed-worker");
 			const childSessionFile = childManager.getSessionFile();
-			if (!childSessionFile) {
-				throw new Error("Missing child session file");
+			const childArtifactDir = childManager.getSessionArtifactDir();
+			if (!childSessionFile || !childArtifactDir) {
+				throw new Error("Missing child session paths");
 			}
+			const grandchildId = "grandchild-1";
+			const grandchildSessionDir = join(childArtifactDir, grandchildId);
+			const grandchildManager = SessionManager.create(tempDir, grandchildSessionDir);
+			grandchildManager.newSession({ parentSession: childSessionFile });
+			grandchildManager.appendSessionInfo("nested-worker");
+			const grandchildSessionFile = grandchildManager.getSessionFile();
+			if (!grandchildSessionFile) {
+				throw new Error("Missing grandchild session file");
+			}
+			writeFileSync(
+				join(childArtifactDir, "rlm-subagents.jsonl"),
+				`${JSON.stringify({
+					type: "rlm_subagent",
+					childId: grandchildId,
+					sessionName: "nested-worker",
+					sessionDir: grandchildSessionDir,
+					sessionFile: grandchildSessionFile,
+					parentSessionId: childManager.getSessionId(),
+					parentSessionFile: childSessionFile,
+					rlmDepth: 2,
+					rlmMaxDepth: 4,
+					rlmParentNodeId: grandchildId,
+					status: "completed",
+					createdAt: 2,
+					updatedAt: "2026-01-01T00:00:00.000Z",
+				})}\n`,
+			);
 			writeFileSync(
 				join(parentArtifactDir, "rlm-subagents.jsonl"),
 				`${JSON.stringify({
@@ -2952,10 +2980,17 @@ describe("daemon mode helpers", () => {
 			const childState = [...internals.sessions.values()].find(
 				(state) => state.runtime.metadata.rlmChildId === childId,
 			);
+			const grandchildState = [...internals.sessions.values()].find(
+				(state) => state.runtime.metadata.rlmChildId === grandchildId,
+			);
 
-			expect(createRuntime).toHaveBeenCalledTimes(2);
+			expect(createRuntime).toHaveBeenCalledTimes(3);
 			expect(createRuntime.mock.calls[1]?.[0].sessionOptions).toMatchObject({
 				rlmDepth: 1,
+				rlmMaxDepth: 4,
+			});
+			expect(createRuntime.mock.calls[2]?.[0].sessionOptions).toMatchObject({
+				rlmDepth: 2,
 				rlmMaxDepth: 4,
 			});
 			expect(childState?.runtime.session.sessionName).toBe("renamed-worker");
@@ -2970,6 +3005,16 @@ describe("daemon mode helpers", () => {
 			expect(parentState.runtime.session.retainFinishedRlmChildSession).toHaveBeenCalledWith(
 				childId,
 				childState?.runtime.session,
+			);
+			expect(grandchildState?.runtime.metadata).toMatchObject({
+				kind: "subagent",
+				parentActiveSessionId: childState?.activeSessionId,
+				parentSessionId: childState?.runtime.session.sessionId,
+				rlmChildId: grandchildId,
+			});
+			expect(childState?.runtime.session.retainFinishedRlmChildSession).toHaveBeenCalledWith(
+				grandchildId,
+				grandchildState?.runtime.session,
 			);
 
 			if (!childState) {
@@ -2990,7 +3035,7 @@ describe("daemon mode helpers", () => {
 			expect(persistedDeletion).toMatchObject({ childId, status: "deleted" });
 
 			await internals.rehydrateCompletedRlmSubagents(parentState);
-			expect(createRuntime).toHaveBeenCalledTimes(2);
+			expect(createRuntime).toHaveBeenCalledTimes(3);
 			expect([...internals.sessions.values()].some((state) => state.runtime.metadata.rlmChildId === childId)).toBe(
 				false,
 			);

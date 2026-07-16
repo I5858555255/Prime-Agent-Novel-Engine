@@ -1949,6 +1949,8 @@ export class AgentDaemon {
 				// later user-assigned name; the registry value is only the spawn snapshot.
 				if (!parentState.runtime.session.retainFinishedRlmChildSession(entry.childId, runtime.session)) {
 					await this.closeSession(state, "replaced");
+				} else {
+					await this.rehydrateCompletedRlmSubagents(state);
 				}
 			} catch (error) {
 				if (stateRef) {
