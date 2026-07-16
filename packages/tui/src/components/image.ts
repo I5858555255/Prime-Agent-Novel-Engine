@@ -30,6 +30,7 @@ export interface ImageOptions {
 	filename?: string;
 	fallbackOnly?: boolean;
 	fallbackPrefix?: string;
+	inlineMarginTop?: number;
 	/** Kitty image ID. If provided, reuses this ID (for animations/updates). */
 	imageId?: number;
 }
@@ -117,6 +118,7 @@ export class Image implements Component {
 				const moveUp = rowOffset > 0 ? `\x1b[${rowOffset}A` : "";
 				const moveDown = caps.images === "kitty" && rowOffset > 0 ? `\x1b[${rowOffset}B` : "";
 				lines.push(moveUp + result.sequence + moveDown);
+				for (let i = 0; i < (this.options.inlineMarginTop ?? 0); i++) lines.unshift("");
 			} else {
 				const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
 				lines = [this.theme.fallbackColor(fallback)];

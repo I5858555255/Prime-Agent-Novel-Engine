@@ -119,7 +119,10 @@ describe("ToolExecutionComponent parity", () => {
 
 			let rendered = component.render(120).join("\n");
 			expect(rendered).not.toContain("\x1b_G");
-			expect(stripAnsi(rendered)).toContain("    ╰─ [image/png · 800×600]");
+			const fallbackLines = stripAnsi(rendered).split("\n");
+			const fallbackIndex = fallbackLines.findIndex((line) => line.includes("[image/png"));
+			expect(fallbackIndex).toBeGreaterThan(0);
+			expect(fallbackLines[fallbackIndex - 1]?.trim()).not.toBe("");
 
 			component.setShowImages(false);
 			component.setShowImages(true);

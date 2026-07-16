@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Container, getCapabilities, Image, Text, type TUI } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.js";
 import type { KernelSentAgentMessage } from "../../../core/kernel/index.js";
 import { createBashToolDefinition } from "../../../core/tools/bash.js";
@@ -80,7 +80,6 @@ export class ToolExecutionComponent extends Container {
 	private ipythonCellComponent?: IPythonCellComponent;
 	private rendererState: any = {};
 	private imageComponents: Image[] = [];
-	private imageSpacers: Spacer[] = [];
 	private toolName: string;
 	private toolCallId: string;
 	private args: any;
@@ -418,10 +417,6 @@ export class ToolExecutionComponent extends Container {
 			this.removeChild(img);
 		}
 		this.imageComponents = [];
-		for (const spacer of this.imageSpacers) {
-			this.removeChild(spacer);
-		}
-		this.imageSpacers = [];
 
 		if (this.result) {
 			const imageBlocks = this.result.content.filter((c) => c.type === "image");
@@ -435,9 +430,6 @@ export class ToolExecutionComponent extends Container {
 				const imageMimeType = converted?.mimeType ?? img.mimeType;
 				if (renderInlineImages && caps.images === "kitty" && imageMimeType !== "image/png") continue;
 
-				const spacer = new Spacer(1);
-				this.addChild(spacer);
-				this.imageSpacers.push(spacer);
 				const imageComponent = new Image(
 					imageData,
 					imageMimeType,
@@ -446,6 +438,7 @@ export class ToolExecutionComponent extends Container {
 						maxWidthCells: this.imageWidthCells,
 						fallbackOnly: !this.allowInlineImages,
 						fallbackPrefix: "    ╰─ ",
+						inlineMarginTop: 1,
 					},
 				);
 				this.imageComponents.push(imageComponent);
