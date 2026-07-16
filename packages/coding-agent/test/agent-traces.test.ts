@@ -96,6 +96,7 @@ describe("agent trace upload", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		vi.useRealTimers();
 		if (originalAgentDir === undefined) {
 			delete process.env[ENV_AGENT_DIR];
@@ -706,7 +707,7 @@ describe("agent trace upload", () => {
 			baseUrl: "https://api.example.test",
 			fetchFn: createFetchRecorder(calls),
 			reloadConfig: false,
-			concurrency: 2,
+			concurrency: 0.5,
 			onProgress: ({ completed, total }) => progress.push({ completed, total }),
 		});
 

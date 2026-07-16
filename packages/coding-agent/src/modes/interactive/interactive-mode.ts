@@ -8282,10 +8282,11 @@ export class InteractiveMode {
 		return lines.join("\n");
 	}
 
-	private async uploadAllTraces(): Promise<AgentTraceUploadAllResult> {
+	private async uploadAllTraces(sessionDir?: string): Promise<AgentTraceUploadAllResult> {
 		return uploadAllAgentTraces({
 			authStorage: this.modelRegistry.authStorage,
 			settingsManager: this.settingsManager,
+			sessionDir,
 			requireEnabled: false,
 			reloadConfig: false,
 			onProgress: ({ completed, total }) => {
@@ -8387,7 +8388,8 @@ export class InteractiveMode {
 				this.showError("Trace sharing needs a Prime API key. Run /traces login.");
 				return;
 			}
-			const result = await this.uploadAllTraces();
+			const state = await this.agentConnection.getState();
+			const result = await this.uploadAllTraces(state.sessionDir);
 			if (result.total === 0) {
 				this.showStatus("No persisted traces were found.");
 				return;

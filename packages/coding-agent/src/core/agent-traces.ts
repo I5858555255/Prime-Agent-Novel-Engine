@@ -539,7 +539,7 @@ export async function uploadAllAgentTraces(options: AgentTraceUploadAllOptions):
 	const requestedConcurrency = concurrency ?? TRACE_UPLOAD_ALL_CONCURRENCY;
 	const normalizedConcurrency =
 		Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
-			? Math.floor(requestedConcurrency)
+			? Math.max(1, Math.floor(requestedConcurrency))
 			: TRACE_UPLOAD_ALL_CONCURRENCY;
 	const workerCount = Math.min(sessionFiles.length, normalizedConcurrency);
 	await Promise.all(Array.from({ length: workerCount }, worker));

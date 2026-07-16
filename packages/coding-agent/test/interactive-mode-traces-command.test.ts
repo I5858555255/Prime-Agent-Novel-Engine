@@ -5,11 +5,12 @@ import { PRIME_AGENT_TRACES_PROVIDER_ID } from "../src/core/prime-inference-auth
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
 interface TracesCommandContext {
+	agentConnection: { getState: () => Promise<{ sessionDir?: string }> };
 	settingsManager: { getAgentTracesEnabled: () => boolean };
 	modelRegistry: { authStorage: AuthStorage };
 	previewCurrentTrace: () => Promise<void>;
 	uploadCurrentTraceOnce: () => Promise<AgentTraceUploadResult>;
-	uploadAllTraces: () => Promise<AgentTraceUploadAllResult>;
+	uploadAllTraces: (sessionDir?: string) => Promise<AgentTraceUploadAllResult>;
 	formatTraceUploadResult: (result: AgentTraceUploadResult) => string;
 	showStatus: (message: string) => void;
 	showWarning: (message: string) => void;
@@ -24,6 +25,7 @@ const prototype = InteractiveMode.prototype as unknown as TracesCommandPrototype
 
 function makeContext(enabled = true): TracesCommandContext {
 	return {
+		agentConnection: { getState: vi.fn(async () => ({ sessionDir: "/custom/sessions" })) },
 		settingsManager: { getAgentTracesEnabled: () => enabled },
 		modelRegistry: {
 			authStorage: AuthStorage.inMemory({
@@ -82,7 +84,7 @@ describe("InteractiveMode /traces", () => {
 
 		await prototype.handleTracesCommand.call(context, "/traces upload-all");
 
-		expect(context.uploadAllTraces).toHaveBeenCalledOnce();
+		expect(context.uploadAllTraces).toHaveBeenCalledWith("/custom/sessions");
 		expect(context.uploadCurrentTraceOnce).not.toHaveBeenCalled();
 		expect(context.showStatus).toHaveBeenCalledWith("Uploaded 2 of 2 traces; 24 bytes stored.");
 	});
