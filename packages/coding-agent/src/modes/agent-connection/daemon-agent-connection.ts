@@ -500,7 +500,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	async listHeartbeats(): Promise<AgentConnectionHeartbeat[]> {
 		const data = await this.requestData<{ heartbeats: AgentConnectionHeartbeat[] }>({
 			type: "heartbeats_list",
-			activeSessionId: this.activeSessionId,
+			...(this.options.ownedSession ? { activeSessionId: this.activeSessionId } : {}),
 		});
 		return data.heartbeats;
 	}

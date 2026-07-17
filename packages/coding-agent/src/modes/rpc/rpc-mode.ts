@@ -83,6 +83,7 @@ async function runRpcModeWithConnectionInternal(
 	const pendingConnectionUiRequests = new Set<string>();
 	const signalCleanupHandlers: Array<() => void> = [];
 	const extensionUi = createRpcExtensionUiBridge(output);
+	const observationCommandTails = new Map<string, Promise<void>>();
 
 	interface ActiveObservation {
 		watcher: AgentConnectionSessionWatcher;
@@ -495,6 +496,20 @@ async function runRpcModeWithConnectionInternal(
 			}
 			if (shutdownRequested) await shutdown();
 		};
+		if (command.type === "observe" || command.type === "unobserve") {
+			const previous = observationCommandTails.get(command.activeSessionId) ?? Promise.resolve();
+			const ordered = previous.then(executeCommand, executeCommand);
+			const tail = ordered.then(
+				() => undefined,
+				() => undefined,
+			);
+			observationCommandTails.set(command.activeSessionId, tail);
+			await ordered;
+			if (observationCommandTails.get(command.activeSessionId) === tail) {
+				observationCommandTails.delete(command.activeSessionId);
+			}
+			return;
+		}
 		if (command.type === "prompt") {
 			const ordered = promptCommandTail.then(executeCommand, executeCommand);
 			promptCommandTail = ordered.then(

@@ -3,6 +3,7 @@ import { runRpcModeWithConnection } from "../../src/modes/rpc/rpc-mode.js";
 
 let listener: AgentConnectionEventListener = () => {};
 let resolveExtensionUi: (() => void) | undefined;
+let slowWatcherCount = 0;
 
 const heartbeat = {
 	id: "heartbeat-1",
@@ -85,9 +86,13 @@ const connection = {
 			deliveryMode: "auto" as const,
 		};
 	},
-	async watchSession() {
+	async watchSession(activeSessionId: string) {
+		const watcherIndex = activeSessionId === "slow-child" ? slowWatcherCount++ : -1;
 		return {
 			async getMessages() {
+				if (watcherIndex === 0) {
+					await new Promise((resolve) => setTimeout(resolve, 30));
+				}
 				return [{ role: "user" as const, content: "child message", timestamp: 1 }];
 			},
 			subscribe(next: AgentConnectionEventListener) {

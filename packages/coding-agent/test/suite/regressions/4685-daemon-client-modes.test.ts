@@ -420,6 +420,20 @@ describe("ENG-4685 daemon-backed client modes", () => {
 		expect(observed).toEqual(["observed_session_closed"]);
 	});
 
+	it("orders concurrent observation baselines before their live events", async () => {
+		const result = await runRpc([
+			{ id: "observe-1", type: "observe", activeSessionId: "slow-child" },
+			{ id: "observe-2", type: "observe", activeSessionId: "slow-child" },
+		]);
+		const firstResponse = result.stdout.findIndex((record) => "id" in record && record.id === "observe-1");
+		const firstEvent = result.stdout.findIndex(
+			(record) => "type" in record && record.type === "observed_session_event",
+		);
+
+		expect(firstResponse).toBeGreaterThanOrEqual(0);
+		expect(firstEvent).toBeGreaterThan(firstResponse);
+	});
+
 	it("preserves prompt acknowledgements before events and repeated prompts", async () => {
 		const result = await runRpc([
 			{ id: "prompt-1", type: "prompt", message: "one" },

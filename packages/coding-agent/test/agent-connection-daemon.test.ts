@@ -97,6 +97,13 @@ class FakeDaemonClient {
 					success: true,
 					data: { steering: ["steer"], followUp: ["follow"] },
 				};
+			case "heartbeats_list":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { heartbeats: [] },
+				};
 			case "get_connection_state":
 				await this.connectionStateGate;
 				return {
@@ -615,6 +622,22 @@ function emitSequencedQueueUpdate(client: FakeDaemonClient, activeSessionId: str
 }
 
 describe("DaemonAgentConnection", () => {
+	it("uses fleet heartbeat scope for residents and session scope for owned workers", async () => {
+		const residentClient = new FakeDaemonClient();
+		const resident = new DaemonAgentConnection(asDaemonClient(residentClient), "resident-1");
+		await resident.listHeartbeats();
+
+		const ownedClient = new FakeDaemonClient();
+		const owned = new DaemonAgentConnection(asDaemonClient(ownedClient), "owned-1", { ownedSession: true });
+		await owned.listHeartbeats();
+
+		expect(residentClient.requests.at(-1)).toEqual(expect.objectContaining({ type: "heartbeats_list" }));
+		expect(residentClient.requests.at(-1)).not.toHaveProperty("activeSessionId");
+		expect(ownedClient.requests.at(-1)).toEqual(
+			expect.objectContaining({ type: "heartbeats_list", activeSessionId: "owned-1" }),
+		);
+	});
+
 	it("serializes concurrent owned-session promotion commands", async () => {
 		const fakeClient = new FakeDaemonClient();
 		let releaseFirst = () => {};
