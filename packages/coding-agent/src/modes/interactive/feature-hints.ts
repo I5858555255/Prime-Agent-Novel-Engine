@@ -39,7 +39,31 @@ export const FEATURE_HINTS: readonly FeatureHintDefinition[] = [
 	},
 	{
 		id: "subagents",
-		getText: () => "Ask Prime Agent to delegate independent work to subagents so tasks can run in parallel.",
+		getText: () => "Prime Agent can delegate independent work to subagents so tasks can run in parallel.",
+	},
+	{
+		id: "agents-view",
+		getText: () =>
+			"The Agents View brings active, waiting, and completed agents together for monitoring and management.",
+	},
+	{
+		id: "session-rewind",
+		getText: ({ getKeybinding }) => {
+			const key = getKeybinding("app.input.clear");
+			return key
+				? `Press ${key} twice from an empty prompt to open the tree view and rewind the session.`
+				: undefined;
+		},
+	},
+	{
+		id: "steering",
+		getText: () =>
+			"Messages sent while Prime Agent is working steer the current task after its active tool calls finish.",
+	},
+	{
+		id: "agent-messaging",
+		getText: () =>
+			"Agents can message one another to share context, coordinate dependencies, and orchestrate parallel work.",
 	},
 	{
 		id: "goal",

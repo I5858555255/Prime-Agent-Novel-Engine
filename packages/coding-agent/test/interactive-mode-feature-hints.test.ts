@@ -59,26 +59,33 @@ describe("feature hint deck", () => {
 		const deck = new FeatureHintDeck(() => 0);
 		const context = {
 			getKeybinding: (action: string) =>
-				action === "app.prompt.stash" ? "Meta+S" : action === "app.message.followUp" ? "Meta+Enter" : "Meta+A",
+				action === "app.prompt.stash" ? "Meta+S" : action === "app.message.followUp" ? "Meta+Enter" : "Meta+Escape",
 		};
 		const hints = FEATURE_HINTS.map(() => deck.next(context));
 
 		expect(hints.find((hint) => hint?.id === "prompt-stash")?.text).toContain("Meta+S");
 		expect(hints.find((hint) => hint?.id === "follow-up")?.text).toContain("Meta+Enter");
+		expect(hints.find((hint) => hint?.id === "session-rewind")?.text).toContain("Meta+Escape twice");
 	});
 
-	it("covers Prime Agent workflows without advertising a subagent shortcut", () => {
+	it("covers Prime Agent workflows with capability-focused copy", () => {
 		const deck = new FeatureHintDeck(() => 0);
 		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Meta+A" }));
 		const textById = new Map(hints.map((hint) => [hint?.id, hint?.text]));
 
+		expect(textById.get("subagents")).toBe(
+			"Prime Agent can delegate independent work to subagents so tasks can run in parallel.",
+		);
+		expect(textById.get("agents-view")).toContain("Agents View");
+		expect(textById.get("session-rewind")).toContain("tree view");
+		expect(textById.get("steering")).toContain("steer");
+		expect(textById.get("agent-messaging")).toContain("message one another");
 		expect(textById.get("goal")).toContain("/goal");
 		expect(textById.get("refine")).toContain("/refine");
 		expect(textById.get("persistent-ipython")).toContain("IPython");
 		expect(textById.get("context-usage")).toContain("/context");
 		expect(textById.get("session-fork")).toContain("/fork");
 		expect(textById.get("compaction")).toContain("/compact");
-		expect(textById.get("subagents")).not.toContain("Meta+A");
 	});
 });
 
