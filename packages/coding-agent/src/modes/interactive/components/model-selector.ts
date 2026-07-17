@@ -272,7 +272,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private isProviderConfigured(item: ModelItem): boolean {
-		return this.configuredProviders?.has(item.provider) ?? this.modelRegistry.hasConfiguredAuth(item.model);
+		return this.configuredProviders?.has(item.provider) || this.modelRegistry.hasConfiguredAuth(item.model);
 	}
 
 	private sortModels(models: ModelItem[]): ModelItem[] {

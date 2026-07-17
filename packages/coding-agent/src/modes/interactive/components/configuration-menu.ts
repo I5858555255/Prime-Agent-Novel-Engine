@@ -231,7 +231,10 @@ export class ConfigurationMenuComponent extends Container implements Focusable {
 			this.switchTab();
 			return;
 		}
-		if (kb.matches(keyData, "tui.editor.cursorLeft") || kb.matches(keyData, "tui.editor.cursorRight")) {
+		if (
+			this.activeTab === "models" &&
+			(kb.matches(keyData, "tui.editor.cursorLeft") || kb.matches(keyData, "tui.editor.cursorRight"))
+		) {
 			this.activeBody.getSearchInput().handleInput(keyData);
 			return;
 		}

@@ -93,6 +93,33 @@ describe("ENG-4575 model authentication", () => {
 		expect(selectedProvider).toBe(unauthenticated.provider);
 	});
 
+	test("keeps locally authenticated providers configured when the connection catalog omits them", async () => {
+		const harness = await createHarness({
+			models: [{ id: "base", name: "Base", reasoning: true }],
+		});
+		harnesses.push(harness);
+		const model = harness.getModel("base")!;
+		const selector = new ModelSelectorComponent(
+			{ requestRender: () => {} } as unknown as TUI,
+			undefined,
+			harness.session.modelRegistry,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			{
+				availableModels: [model],
+				configuredProviders: new Set(),
+			},
+		);
+
+		const row = stripAnsi(selector.render(120).join("\n"))
+			.split("\n")
+			.find((line) => line.includes("base"));
+		expect(row).toBeDefined();
+		expect(row).not.toContain("sign in");
+	});
+
 	test("refetches configured providers after authentication changes", async () => {
 		const harness = await createHarness({ models: [{ id: "base", name: "Base", reasoning: true }] });
 		harnesses.push(harness);
