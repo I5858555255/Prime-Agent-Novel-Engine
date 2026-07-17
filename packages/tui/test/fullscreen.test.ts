@@ -140,9 +140,9 @@ describe("TUI fullscreen mode", () => {
 			await terminal.waitForRender();
 
 			const viewport = terminal.getViewport();
-			const imageRow = viewport.indexOf("[image/png · 120×80 · /fullscreen off to view]");
+			const imageRow = viewport.indexOf("[image/png · 120×80]");
 			assert.strictEqual(viewport.indexOf("before") + 1, imageRow);
-			assert.strictEqual(viewport.filter((line) => line.includes("/fullscreen off to view")).length, 1);
+			assert.strictEqual(viewport.filter((line) => line.includes("/fullscreen off to view")).length, 0);
 			assert.ok(!terminal.getWrites().includes("\x1b_G"));
 
 			tui.stop();
@@ -152,7 +152,7 @@ describe("TUI fullscreen mode", () => {
 		}
 	});
 
-	it("preserves inline terminal image rendering after fullscreen exits", async () => {
+	it("restores inline rendering after leaving fullscreen", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		setCellDimensions({ widthPx: 10, heightPx: 10 });
 		try {
@@ -162,7 +162,7 @@ describe("TUI fullscreen mode", () => {
 				"AAAA",
 				"image/png",
 				{ fallbackColor: (value) => value },
-				{ maxWidthCells: 2 },
+				{ maxWidthCells: 2, fallbackOnly: false },
 				{ widthPx: 20, heightPx: 20 },
 			);
 			const dock = new TestComponent();
@@ -174,7 +174,7 @@ describe("TUI fullscreen mode", () => {
 
 			tui.enterFullscreen({ scroll: [image], dock });
 			await terminal.waitForRender();
-			assert.ok(terminal.getViewport().includes("[image/png · 20×20 · /fullscreen off to view]"));
+			assert.ok(terminal.getViewport().includes("[image/png · 20×20]"));
 
 			tui.exitFullscreen({ flush: false });
 			assert.strictEqual(image.render(80).length, 2);
@@ -184,6 +184,32 @@ describe("TUI fullscreen mode", () => {
 		} finally {
 			resetCapabilitiesCache();
 			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("uses compact metadata for images in fullscreen overlays", async () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const { terminal, tui, chat, dock } = setup(["history"], 80);
+			tui.enterFullscreen({ scroll: [chat], dock });
+			tui.showOverlay(
+				new Image(
+					"AAAA",
+					"image/png",
+					{ fallbackColor: (value) => value },
+					{ fallbackOnly: false },
+					{ widthPx: 20, heightPx: 20 },
+				),
+				{ width: 30 },
+			);
+			await terminal.waitForRender();
+
+			assert.ok(!terminal.getWrites().includes("\x1b_G"));
+			assert.ok(terminal.getViewport().some((line) => line.includes("[image/png · 20×20]")));
+
+			tui.stop();
+		} finally {
+			resetCapabilitiesCache();
 		}
 	});
 

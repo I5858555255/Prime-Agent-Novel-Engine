@@ -6,7 +6,6 @@ import { createBashToolDefinition } from "../../../core/tools/bash.js";
 import { createEditToolDefinition } from "../../../core/tools/edit.js";
 import { createAllToolDefinitions } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.js";
-import { convertToPng } from "../../../utils/image-convert.js";
 import type { AgentConnectionToolDefinition } from "../../agent-connection/index.js";
 import { type Theme, theme } from "../theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../theme/working-icon.js";
@@ -15,13 +14,8 @@ import { ToolPanel } from "./tool-panel.js";
 
 export interface ToolExecutionOptions {
 	showImages?: boolean;
-	imageWidthCells?: number;
-	/**
-	 * Whether this component may emit inline terminal image escape sequences.
-	 * Historical session replay disables this so loading image-heavy sessions does
-	 * not re-send every image in the scrollback.
-	 */
-	allowInlineImages?: boolean;
+	/** Whether image metadata may parse dimensions from base64 data. */
+	includeImageDimensions?: boolean;
 }
 
 export interface ToolExecutionRendererDefinition {
@@ -86,8 +80,7 @@ export class ToolExecutionComponent extends Container {
 	private expanded = false;
 	private showExpandHint = true;
 	private showImages: boolean;
-	private allowInlineImages: boolean;
-	private imageWidthCells: number;
+	private includeImageDimensions: boolean;
 	private isPartial = true;
 	private toolDefinition?: ToolExecutionDefinition;
 	private builtInToolDefinition?: ToolDefinition<any, any>;
@@ -101,7 +94,6 @@ export class ToolExecutionComponent extends Container {
 		isError: boolean;
 		details?: any;
 	};
-	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
 
 	constructor(
@@ -120,8 +112,7 @@ export class ToolExecutionComponent extends Container {
 		this.toolDefinition = toolDefinition;
 		this.builtInToolDefinition = createReplayBuiltInToolDefinition(toolName, cwd, toolDefinition);
 		this.showImages = options.showImages ?? true;
-		this.allowInlineImages = options.allowInlineImages ?? true;
-		this.imageWidthCells = options.imageWidthCells ?? 60;
+		this.includeImageDimensions = options.includeImageDimensions ?? true;
 		this.ui = ui;
 		this.cwd = cwd;
 
@@ -182,10 +173,6 @@ export class ToolExecutionComponent extends Container {
 		return this.toolName === "ipython" && !this.toolDefinition?.renderCall && !this.toolDefinition?.renderResult;
 	}
 
-	private shouldRenderInlineImages(): boolean {
-		return this.showImages && this.allowInlineImages;
-	}
-
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
 		return {
 			args: this.args,
@@ -203,7 +190,7 @@ export class ToolExecutionComponent extends Container {
 			expanded: this.expanded,
 			showExpandHint: this.showExpandHint,
 			showImages: this.showImages,
-			includeImageDimensions: this.allowInlineImages,
+			includeImageDimensions: this.includeImageDimensions,
 			isError: this.result?.isError ?? false,
 		};
 	}
@@ -262,7 +249,6 @@ export class ToolExecutionComponent extends Container {
 		this.result = sentAgentMessages.length > 0 ? { ...result, details: { ...details, sentAgentMessages } } : result;
 		this.isPartial = isPartial;
 		this.updateDisplay();
-		this.maybeConvertImagesForKitty();
 	}
 
 	appendSentAgentMessage(message: KernelSentAgentMessage): void {
@@ -272,30 +258,6 @@ export class ToolExecutionComponent extends Container {
 		this.pendingSentAgentMessages.push(message);
 		if (this.result) {
 			this.updateResult(this.result, this.isPartial);
-		}
-	}
-
-	private maybeConvertImagesForKitty(): void {
-		if (!this.allowInlineImages) return;
-		const caps = getCapabilities();
-		if (caps.images !== "kitty") return;
-		if (!this.result) return;
-
-		const imageBlocks = this.result.content.filter((c) => c.type === "image");
-		for (let i = 0; i < imageBlocks.length; i++) {
-			const img = imageBlocks[i];
-			if (!img.data || !img.mimeType) continue;
-			if (img.mimeType === "image/png") continue;
-			if (this.convertedImages.has(i)) continue;
-
-			const index = i;
-			convertToPng(img.data, img.mimeType).then((converted) => {
-				if (converted) {
-					this.convertedImages.set(index, converted);
-					this.updateDisplay();
-					this.ui.requestRender();
-				}
-			});
 		}
 	}
 
@@ -314,22 +276,11 @@ export class ToolExecutionComponent extends Container {
 
 	setShowImages(show: boolean): void {
 		this.showImages = show;
-		if (show) {
-			this.maybeConvertImagesForKitty();
-		}
 		this.updateDisplay();
 	}
 
-	setAllowInlineImages(allow: boolean): void {
-		this.allowInlineImages = allow;
-		if (allow) {
-			this.maybeConvertImagesForKitty();
-		}
-		this.updateDisplay();
-	}
-
-	setImageWidthCells(width: number): void {
-		this.imageWidthCells = Math.max(1, Math.floor(width));
+	setIncludeImageDimensions(include: boolean): void {
+		this.includeImageDimensions = include;
 		this.updateDisplay();
 	}
 
@@ -366,7 +317,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		const renderInlineImages = this.shouldRenderInlineImages();
 		let hasContent = false;
 		this.hideComponent = false;
 		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
@@ -424,20 +374,13 @@ export class ToolExecutionComponent extends Container {
 				const img = imageBlocks[i];
 				if (!caps.images || !this.showImages || !img.data || !img.mimeType) continue;
 
-				const converted = this.convertedImages.get(i);
-				const imageData = converted?.data ?? img.data;
-				const imageMimeType = converted?.mimeType ?? img.mimeType;
-				if (renderInlineImages && caps.images === "kitty" && imageMimeType !== "image/png") continue;
-
 				const imageComponent = new Image(
-					imageData,
-					imageMimeType,
+					img.data,
+					img.mimeType,
 					{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
 					{
-						maxWidthCells: this.imageWidthCells,
-						fallbackOnly: !this.allowInlineImages,
+						fallbackOnly: true,
 						fallbackPrefix: "    ╰─ ",
-						inlineMarginTop: 1,
 					},
 				);
 				this.imageComponents.push(imageComponent);
@@ -532,7 +475,7 @@ export class ToolExecutionComponent extends Container {
 
 	private getTextOutput(): string {
 		return getRenderedTextOutput(this.result, this.showImages, {
-			includeImageDimensions: this.allowInlineImages,
+			includeImageDimensions: this.includeImageDimensions,
 		});
 	}
 

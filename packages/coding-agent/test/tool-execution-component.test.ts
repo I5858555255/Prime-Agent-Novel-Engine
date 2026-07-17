@@ -38,14 +38,6 @@ function createMetadataOnlyToolDefinition(definition: ToolDefinition<any, any>) 
 	return metadata;
 }
 
-async function waitForCondition(condition: () => boolean): Promise<void> {
-	for (let i = 0; i < 50; i++) {
-		if (condition()) return;
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-	throw new Error("condition was not met");
-}
-
 describe("ToolExecutionComponent parity", () => {
 	beforeAll(() => {
 		initTheme("dark");
@@ -83,6 +75,57 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom result");
 	});
 
+	test("renders compact image metadata by default when terminal supports graphics", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-default",
+				{},
+				{ showImages: true },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			expect(rendered).not.toContain("\x1b_G");
+			expect(rendered).toContain("    ╰─ [image/png · 800×600]");
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("keeps image metadata escape-free across visibility toggles", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-history",
+				{},
+				{ showImages: true, includeImageDimensions: false },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+
+			let rendered = component.render(120).join("\n");
+			expect(rendered).not.toContain("\x1b_G");
+			const fallbackLines = stripAnsi(rendered).split("\n");
+			const fallbackIndex = fallbackLines.findIndex((line) => line.includes("[image/png"));
+			expect(fallbackIndex).toBeGreaterThan(0);
+			expect(fallbackLines[fallbackIndex - 1]?.trim()).not.toBe("");
+
+			component.setShowImages(false);
+			component.setShowImages(true);
+			rendered = component.render(120).join("\n");
+			expect(rendered).not.toContain("\x1b_G");
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
 	test("does not duplicate replayed image fallbacks through built-in renderers", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
@@ -90,7 +133,7 @@ describe("ToolExecutionComponent parity", () => {
 				"bash",
 				"tool-bash-image-history",
 				{ command: "generate-image" },
-				{ showImages: true, allowInlineImages: false },
+				{ showImages: true, includeImageDimensions: false },
 				undefined,
 				createFakeTui(),
 				process.cwd(),
@@ -113,7 +156,7 @@ describe("ToolExecutionComponent parity", () => {
 					"ipython",
 					`tool-ipython-image-${protocol}`,
 					{ code: "display(image)" },
-					{ showImages: true, allowInlineImages: false },
+					{ showImages: true, includeImageDimensions: false },
 					undefined,
 					createFakeTui(),
 					process.cwd(),
@@ -167,9 +210,7 @@ describe("ToolExecutionComponent parity", () => {
 			await terminal.waitForRender();
 
 			const viewport = terminal.getViewport();
-			expect(
-				viewport.filter((line) => line.includes("    ╰─ [image/png · 800×600 · /fullscreen off to view]")).length,
-			).toBe(1);
+			expect(viewport.filter((line) => line.includes("    ╰─ [image/png · 800×600]")).length).toBe(1);
 			expect(viewport.join("\n")).not.toContain("\x1b_G");
 		} finally {
 			tui.stop();
@@ -186,7 +227,7 @@ describe("ToolExecutionComponent parity", () => {
 				"custom_tool",
 				"tool-image-history-dims",
 				{},
-				{ showImages: true, allowInlineImages: false },
+				{ showImages: true, includeImageDimensions: false },
 				undefined,
 				createFakeTui(),
 				process.cwd(),
@@ -203,7 +244,32 @@ describe("ToolExecutionComponent parity", () => {
 		}
 	});
 
-	test("converts kitty images even if image display is toggled off when the result arrives", async () => {
+	test("pending history components remain metadata-only when restored to live output", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		try {
+			const component = new ToolExecutionComponent(
+				"custom_tool",
+				"tool-image-pending-history",
+				{},
+				{ showImages: true, includeImageDimensions: false },
+				undefined,
+				createFakeTui(),
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
+			expect(component.render(120).join("\n")).not.toContain("\x1b_G");
+
+			component.setIncludeImageDimensions(true);
+
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			expect(rendered).not.toContain("\x1b_G");
+			expect(rendered).toContain("    ╰─ [image/png · 800×600]");
+		} finally {
+			resetCapabilitiesCache();
+		}
+	});
+
+	test("preserves original image metadata when display is toggled back on", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const tinyJpeg =
@@ -222,10 +288,11 @@ describe("ToolExecutionComponent parity", () => {
 				isError: false,
 			});
 
-			await waitForCondition(() => (component as any).convertedImages.size === 1);
 			component.setShowImages(true);
 
-			expect(component.render(120).join("\n")).toContain("\x1b_G");
+			const rendered = stripAnsi(component.render(120).join("\n"));
+			expect(rendered).not.toContain("\x1b_G");
+			expect(rendered).toContain("    ╰─ [image/jpeg · 2×2]");
 		} finally {
 			resetCapabilitiesCache();
 		}

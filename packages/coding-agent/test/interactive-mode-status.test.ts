@@ -279,7 +279,6 @@ describe("InteractiveMode.renderSessionContext", () => {
 				preloadToolDefinitions: vi.fn(async () => {}),
 				settingsManager: {
 					getShowImages: () => true,
-					getImageWidthCells: () => 60,
 				},
 				getCachedToolDefinition: () => undefined,
 				getCurrentCwd: () => process.cwd(),
@@ -317,7 +316,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 		}
 	});
 
-	test("keeps pending history tool calls eligible for live inline image updates", async () => {
+	test("keeps pending history tool calls metadata-only when live results arrive", async () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		try {
 			const chatContainer = new Container();
@@ -334,7 +333,6 @@ describe("InteractiveMode.renderSessionContext", () => {
 				preloadToolDefinitions: vi.fn(async () => {}),
 				settingsManager: {
 					getShowImages: () => true,
-					getImageWidthCells: () => 60,
 				},
 				getCachedToolDefinition: () => undefined,
 				getCurrentCwd: () => process.cwd(),
@@ -361,7 +359,9 @@ describe("InteractiveMode.renderSessionContext", () => {
 			expect(component).toBeDefined();
 			component!.updateResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], isError: false });
 
-			expect(component!.render(120).join("\n")).toContain("\x1b_G");
+			const rendered = normalizeRenderedOutput(chatContainer);
+			expect(rendered).not.toContain("\x1b_G");
+			expect(rendered).toContain("╰─ [image/png · 800×600]");
 		} finally {
 			resetCapabilitiesCache();
 		}
@@ -1089,7 +1089,6 @@ describe("InteractiveMode tool event rendering", () => {
 			uiServices: {
 				settingsManager: {
 					getShowImages: () => true,
-					getImageWidthCells: () => 60,
 				},
 			},
 			toolOutputExpanded: false,

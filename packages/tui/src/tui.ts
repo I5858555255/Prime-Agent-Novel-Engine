@@ -1460,7 +1460,7 @@ export class TUI extends Container {
 			}
 		}
 		if (this.overlayStack.length > 0) {
-			frame = this.compositeOverlays(frame, width, height);
+			frame = withFullscreenImageFallback(() => this.compositeOverlays(frame, width, height));
 		}
 		const cursorPos = this.extractCursorPosition(frame, height);
 		fullscreen.viewport.applyFrameSelection(frame, height, this.overlaySelectionRegions);
