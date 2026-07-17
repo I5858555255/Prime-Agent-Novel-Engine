@@ -58,11 +58,18 @@ type DaemonVersionProbe =
 
 /** Connect to a running daemon and check whether it matches this client's protocol and app version. */
 export async function probeDaemonVersion(socketPath: string): Promise<DaemonVersionProbe> {
-	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(250);
-	} catch {
-		client.close();
+	let client: DaemonClient | undefined;
+	for (const timeoutMs of [250, 2000]) {
+		const candidate = new DaemonClient(socketPath);
+		try {
+			await candidate.connect(timeoutMs);
+			client = candidate;
+			break;
+		} catch {
+			candidate.close();
+		}
+	}
+	if (!client) {
 		return { status: "absent" };
 	}
 	try {

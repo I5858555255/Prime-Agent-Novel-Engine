@@ -642,9 +642,10 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-original",
 			reason: "update",
 		});
-		await Promise.resolve();
-		expect(fakeClient.closeCount).toBe(1);
-		expect(fakeClient.reconnectCount).toBe(1);
+		await vi.waitFor(() => {
+			expect(fakeClient.closeCount).toBe(1);
+			expect(fakeClient.reconnectCount).toBe(1);
+		});
 
 		await expect(restored).resolves.toMatchObject({
 			type: "session_resynced",
@@ -660,14 +661,18 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-restored",
 			resumeCursor: undefined,
 		});
-		expect(events).toEqual([
-			expect.objectContaining({
-				type: "session_resynced",
-				snapshot: expect.objectContaining({
-					state: expect.objectContaining({ activeSessionId: "active-restored" }),
+		await vi.waitFor(() => {
+			expect(events).toEqual([
+				expect.objectContaining({ type: "connection_status", status: "reconnecting" }),
+				expect.objectContaining({
+					type: "session_resynced",
+					snapshot: expect.objectContaining({
+						state: expect.objectContaining({ activeSessionId: "active-restored" }),
+					}),
 				}),
-			}),
-		]);
+				{ type: "connection_status", status: "connected" },
+			]);
+		});
 	});
 
 	it("reattaches when an update socket close arrives before the session notice", async () => {
@@ -931,7 +936,7 @@ describe("DaemonAgentConnection", () => {
 			await Promise.resolve();
 		}
 
-		expect(events).toEqual([]);
+		expect(events).toEqual([expect.objectContaining({ type: "connection_status", status: "reconnecting" })]);
 		expect(fakeClient.requests.at(-1)).toMatchObject({ type: "detach", activeSessionId: "active-restored" });
 	});
 

@@ -6,11 +6,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ensureInteractiveDaemonRunning,
+	probeDaemonVersion,
 	probeRunningDaemonSessions,
 	shouldStartInteractiveDaemonEarly,
 	shutdownDaemonAndWait,
 } from "../src/cli/daemon-launch.js";
 import { VERSION } from "../src/config.js";
+import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../src/modes/daemon/daemon-protocol.js";
 
 interface FakeDaemonOptions {
 	/** Sessions returned for a `list` command. */
@@ -38,6 +40,7 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 	const dir = mkdtempSync(join(tmpdir(), "pa-launch-"));
 	const socketPath = join(dir, "d.sock");
 	const server: Server = createServer((socket) => {
+		socket.on("error", () => undefined);
 		send(socket, {
 			type: "daemon_hello",
 			socketPath,
@@ -231,6 +234,20 @@ describe("ensureInteractiveDaemonRunning", () => {
 		await expect(ensureInteractiveDaemonRunning(daemon.socketPath)).resolves.toBeUndefined();
 		expect(commands).toContain("list");
 		expect(commands).not.toContain("shutdown");
+	});
+
+	it("does not treat a live daemon as absent when cold startup delays the first connection", async () => {
+		const daemon = await startFakeDaemon({
+			protocolVersion: DAEMON_PROTOCOL_VERSION,
+			appVersion: VERSION,
+			schemaId: DAEMON_SCHEMA_ID,
+		});
+		cleanups.push(daemon.close);
+
+		const probe = probeDaemonVersion(daemon.socketPath);
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+
+		await expect(probe).resolves.toMatchObject({ status: "current" });
 	});
 });
 

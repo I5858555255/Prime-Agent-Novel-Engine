@@ -1250,8 +1250,18 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (this.updateReconnectPromise) {
 			return this.updateReconnectPromise;
 		}
-		const reconnectPromise = reconnectDaemonTransportAfterUpdate(this.client)
+		const reconnectPromise = this.emit({
+			type: "connection_status",
+			status: "reconnecting",
+			error: "The Prime Agent daemon is restarting for an update.",
+		})
+			.then(() => reconnectDaemonTransportAfterUpdate(this.client))
 			.then(() => this.restoreConnectionAfterUpdate())
+			.then(async () => {
+				if (!this.disposed) {
+					await this.emit({ type: "connection_status", status: "connected" });
+				}
+			})
 			.catch(async (error: unknown) => {
 				this.updateRestartPending = false;
 				this.updateReconnectFailed = true;
