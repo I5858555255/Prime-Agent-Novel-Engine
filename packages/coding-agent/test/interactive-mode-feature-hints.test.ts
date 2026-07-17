@@ -140,8 +140,9 @@ describe("InteractiveMode feature hints", () => {
 		expect(statusContainer.children).toHaveLength(1);
 		expect(featureHintContainer.children).toHaveLength(1);
 		const lines = featureHintContainer.children[0]?.render(24) ?? [];
-		expect(lines).toHaveLength(1);
+		expect(lines).toHaveLength(2);
 		expect(stripAnsi(lines[0] ?? "")).toContain("Hint:");
+		expect(lines[1]?.trim()).toBe("");
 		expect(visibleWidth(lines[0] ?? "")).toBeLessThanOrEqual(24);
 		expect(featureHintDeck.next).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
