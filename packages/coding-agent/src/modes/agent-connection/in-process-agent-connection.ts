@@ -286,19 +286,36 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
-		if (!options) {
-			await this.session.prompt(message);
-			return;
-		}
+		await new Promise<void>((resolve, reject) => {
+			let settled = false;
+			const resolveOnce = () => {
+				if (settled) return;
+				settled = true;
+				resolve();
+			};
+			const rejectOnce = (error: unknown) => {
+				if (settled) return;
+				settled = true;
+				reject(error);
+			};
+			const prompt = this.session.prompt(message, {
+				images: options?.images,
+				streamingBehavior: options?.streamingBehavior,
+				source: options?.source,
+				preflightResult: (success) => {
+					if (success) resolveOnce();
+				},
+			});
+			void prompt.then(resolveOnce, rejectOnce);
+		});
+	}
+
+	async promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
 		await this.session.prompt(message, {
 			images: options?.images,
 			streamingBehavior: options?.streamingBehavior,
 			source: options?.source,
 		});
-	}
-
-	async promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
-		await this.prompt(message, options);
 	}
 
 	async startSideQuestion(id: string, question: string): Promise<void> {
