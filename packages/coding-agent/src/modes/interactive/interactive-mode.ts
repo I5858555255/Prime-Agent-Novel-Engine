@@ -7813,10 +7813,6 @@ export class InteractiveMode {
 	}
 
 	private async prepareForModelSelectionAfterLogin(authResult: AuthenticationResult): Promise<boolean> {
-		if (authResult.status === "success" && authResult.kind !== "service") {
-			this.invalidateConnectionModels();
-		}
-
 		const currentModel = this.getCurrentModel();
 		// The agent core uses unknown/unknown as its no-model sentinel.
 		const selectedModel =

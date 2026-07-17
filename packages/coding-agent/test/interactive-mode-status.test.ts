@@ -2317,12 +2317,12 @@ describe("InteractiveMode post-login model preparation", () => {
 			}),
 		).resolves.toBe(true);
 
-		expect(fakeThis.invalidateConnectionModels).toHaveBeenCalledTimes(1);
+		expect(fakeThis.invalidateConnectionModels).not.toHaveBeenCalled();
 		expect(fakeThis.applySelectedModel).toHaveBeenCalledWith(fallbackModel);
 		expect(flushSettings).toHaveBeenCalledTimes(1);
 	});
 
-	test("invalidates cached models after any model-provider login", async () => {
+	test("preserves refreshed models after any model-provider login", async () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as LoginHarness;
 		fakeThis.invalidateConnectionModels = vi.fn();
 		fakeThis.getCurrentModel = vi.fn(() => loginPrimeModel);
@@ -2347,7 +2347,7 @@ describe("InteractiveMode post-login model preparation", () => {
 			}),
 		).resolves.toBe(false);
 
-		expect(fakeThis.invalidateConnectionModels).toHaveBeenCalledTimes(1);
+		expect(fakeThis.invalidateConnectionModels).not.toHaveBeenCalled();
 		expect(fakeThis.applySelectedModel).not.toHaveBeenCalled();
 	});
 });
