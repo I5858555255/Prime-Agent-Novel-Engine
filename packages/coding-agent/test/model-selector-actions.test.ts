@@ -1,4 +1,4 @@
-import { type KeyId, setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -16,7 +16,7 @@ async function waitForAsyncRender(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-describe("ModelSelectorComponent provider actions", () => {
+describe("ModelSelectorComponent", () => {
 	const harnesses: Harness[] = [];
 
 	beforeAll(() => {
@@ -33,15 +33,13 @@ describe("ModelSelectorComponent provider actions", () => {
 		}
 	});
 
-	it("shows provider setup shortcut in the warning and emits the selected action", async () => {
+	it("explains model authentication without a provider shortcut", async () => {
 		const harness = await createHarness({
 			models: [{ id: "faux-1", name: "One", reasoning: true }],
 		});
 		harnesses.push(harness);
 
-		let selectedAction: string | undefined;
 		let selectedModel: string | undefined;
-		setKeybindings(new KeybindingsManager({ "app.provider.add": "ctrl+x" as KeyId }));
 		const selector = new ModelSelectorComponent(
 			createFakeTui(),
 			harness.getModel("faux-1"),
@@ -53,10 +51,6 @@ describe("ModelSelectorComponent provider actions", () => {
 			() => {},
 			undefined,
 			{
-				actions: [{ id: "add_provider", label: "Add provider...", description: "subscription or API key" }],
-				onAction: (actionId) => {
-					selectedAction = actionId;
-				},
 				subtitle: "Choose a Prime model, or add another provider.",
 			},
 		);
@@ -66,14 +60,10 @@ describe("ModelSelectorComponent provider actions", () => {
 		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("Choose a Prime model, or add another provider.");
 		expect(output).toContain("Signed-in providers first.");
-		expect(output).toContain("Ctrl+X opens providers.");
+		expect(output).not.toContain("opens providers");
 
 		selector.handleInput("\r");
 		expect(selectedModel).toBe("faux-1");
-
-		selector.handleInput("\x18");
-
-		expect(selectedAction).toBe("add_provider");
 	});
 
 	it("renders injected daemon models without refreshing the local registry", async () => {

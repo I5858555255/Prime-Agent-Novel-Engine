@@ -1,4 +1,4 @@
-import { type KeyId, setKeybindings, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { setKeybindings, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -109,27 +109,21 @@ describe("ConfigurationMenuComponent", () => {
 		expect(output).not.toContain("Anthropic");
 	});
 
-	it("switches tabs with configured bindings and preserves focus and search state", async () => {
-		setKeybindings(
-			new KeybindingsManager({
-				"app.configuration.previousTab": "ctrl+y" as KeyId,
-				"app.configuration.nextTab": "ctrl+x" as KeyId,
-			}),
-		);
+	it("switches tabs with Tab and preserves focus and search state", async () => {
 		const menu = await createMenu();
 		menu.focused = true;
-		expect(stripAnsi(menu.render(120).join("\n"))).toContain("Ctrl+Y/Ctrl+X switch tabs");
+		expect(stripAnsi(menu.render(120).join("\n"))).toContain("Tab switch tabs");
 
-		menu.handleInput("\x18");
+		menu.handleInput("\t");
 		expect(menu.getActiveTab()).toBe("models");
 		expect(menu.focused).toBe(true);
 		menu.handleInput("f");
 		expect(menu.getSearchValue("models")).toBe("f");
-		menu.handleInput("\x18");
+		menu.handleInput("\t");
 		expect(menu.getActiveTab()).toBe("mcp-connections");
 		expect(menu.getSearchValue("models")).toBe("f");
-		menu.handleInput("\x19");
-		expect(menu.getActiveTab()).toBe("models");
+		menu.handleInput("\t");
+		expect(menu.getActiveTab()).toBe("providers");
 	});
 
 	it("keeps the existing catalog while syncing a post-login current model", async () => {
@@ -171,7 +165,7 @@ describe("ConfigurationMenuComponent", () => {
 		expect(postLoginRow).toContain("current");
 	});
 
-	it("keeps default arrow keys in the active search field while it contains text", async () => {
+	it("keeps arrow keys in the active search field", async () => {
 		const menu = await createMenu();
 
 		menu.handleInput("a");
