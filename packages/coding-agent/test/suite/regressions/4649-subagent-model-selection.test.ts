@@ -1,12 +1,13 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
+import type { HostRequestHandlers } from "../../../src/core/kernel/index.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
 import { createHarness } from "../harness.js";
 
 const provider = "faux-eng-4649";
 
 describe("ENG-4649 subagent model selection", () => {
-	it("resolves a requested model from the authenticated catalog without advertising it", async () => {
+	it("searches a bounded authenticated catalog without advertising it", async () => {
 		const harness = await createHarness({
 			provider,
 			models: Array.from({ length: 320 }, (_, index) => ({ id: `model-${index}` })),
@@ -14,13 +15,49 @@ describe("ENG-4649 subagent model selection", () => {
 		try {
 			const prompt = harness.session.agent.state.systemPrompt;
 			expect(prompt).not.toContain(`${provider}/model-319`);
+			const handlers = (
+				harness.session as unknown as { _createKernelHostHandlers(): HostRequestHandlers }
+			)._createKernelHostHandlers();
+			const findModels = handlers["rlm.find_models"];
+			if (!findModels) throw new Error("Missing rlm.find_models host handler");
+			await expect(findModels({ query: "model 319", limit: 5 })).resolves.toEqual({
+				models: [
+					{
+						provider,
+						id: "model-319",
+						name: "model-319",
+						selector: `${provider}/model-319`,
+					},
+				],
+			});
+			await expect(findModels({ query: "model", limit: 21 })).rejects.toThrow("integer from 1 to 20");
 			harness.setResponses([fauxAssistantMessage("resolved child answer")]);
 
-			await harness.session.runRlmChild("use the requested model", { model: "model 319" });
+			const result = await harness.session.runRlmChild("use the requested model", {
+				model: `${provider}/model-319`,
+			});
 
 			const childEntry = harness.session.listRlmSubagents().subagents[0];
 			const child = harness.session.getRlmChildSession(childEntry!.rlm_child_id);
 			expect(child?.model?.id).toBe("model-319");
+			expect(result.model).toBe(`${provider}/model-319`);
+			expect(result.warning).toBeUndefined();
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("omits providers whose credentials are marked expired", async () => {
+		const harness = await createHarness({ provider, models: [{ id: "parent-model" }, { id: "child-model" }] });
+		try {
+			expect(harness.session.findRlmModels("child", 8).models).toHaveLength(1);
+			expect(harness.session.modelRegistry.markProviderAuthStale(provider)).toBe(true);
+			expect(harness.session.modelRegistry.markProviderAuthStale(provider)).toBe(true);
+			expect(harness.session.modelRegistry.getProviderAuthStatus(provider)).toMatchObject({
+				source: "stale",
+				label: "expired",
+			});
+			expect(harness.session.findRlmModels("", 8)).toEqual({ models: [] });
 		} finally {
 			harness.cleanup();
 		}
@@ -70,7 +107,7 @@ describe("ENG-4649 subagent model selection", () => {
 
 			const result = await harness.session.runRlmChild("inspect the API", {
 				name: "api-reviewer",
-				model: "Child Model",
+				model: `${provider}/child-model`,
 			});
 			const childEntry = harness.session.listRlmSubagents().subagents[0];
 			expect(childEntry?.status).toBe("completed");
@@ -118,7 +155,7 @@ describe("ENG-4649 subagent model selection", () => {
 		}
 	});
 
-	it("rejects invalid or unavailable selectors before creating a child", async () => {
+	it("falls back to the parent model and returns a user-facing warning", async () => {
 		const harness = await createHarness({
 			provider,
 			models: [{ id: "parent-model" }, { id: "child-model" }],
@@ -127,26 +164,51 @@ describe("ENG-4649 subagent model selection", () => {
 			await expect(harness.session.runRlmChild("bad type", { model: 42 })).rejects.toThrow(
 				"rlm.run model must be a string",
 			);
-			await expect(
-				harness.session.runRlmChild("unknown model", { model: `${provider}/missing-model` }),
-			).rejects.toThrow(
-				`RLM subagent model "${provider}/missing-model" was not found among authenticated, available models`,
-			);
-			await expect(
-				harness.session.runRlmChild("unauthenticated provider", {
-					model: "anthropic/claude-sonnet-4-5",
-				}),
-			).rejects.toThrow("was not found among authenticated, available models");
+			harness.setResponses([
+				fauxAssistantMessage("unknown fallback"),
+				fauxAssistantMessage("unauthenticated fallback"),
+				fauxAssistantMessage("unavailable fallback"),
+				fauxAssistantMessage("preflight fallback"),
+			]);
+
+			const unknown = await harness.session.runRlmChild("unknown model", {
+				model: `${provider}/missing-model`,
+			});
+			expect(unknown.model).toBe(`${provider}/parent-model`);
+			expect(unknown.warning).toContain(`not "${provider}/missing-model"`);
+			expect(unknown.warning).toContain("Tell the user");
+
+			const unauthenticated = await harness.session.runRlmChild("unauthenticated provider", {
+				model: "not-authed/missing-model",
+			});
+			expect(unauthenticated.model).toBe(`${provider}/parent-model`);
+			expect(unauthenticated.warning).toContain("unauthenticated");
 
 			const availability = vi
 				.spyOn(harness.session.modelRegistry, "getAvailable")
 				.mockReturnValue([harness.getModel("parent-model")!]);
-			await expect(harness.session.runRlmChild("unavailable model", { model: "child-model" })).rejects.toThrow(
-				'RLM subagent model "child-model" was not found among authenticated, available models',
-			);
+			const unavailable = await harness.session.runRlmChild("unavailable model", {
+				model: `${provider}/child-model`,
+			});
 			availability.mockRestore();
 
-			expect(harness.session.listRlmSubagents().subagents).toEqual([]);
+			expect(unavailable.model).toBe(`${provider}/parent-model`);
+			expect(unavailable.warning).toContain(`not "${provider}/child-model"`);
+
+			const authPreflight = vi
+				.spyOn(harness.session.modelRegistry, "getApiKeyAndHeaders")
+				.mockResolvedValueOnce({ ok: false, error: "token expired" });
+			const failedPreflight = await harness.session.runRlmChild("failed auth preflight", {
+				model: `${provider}/child-model`,
+			});
+			authPreflight.mockRestore();
+			expect(failedPreflight.model).toBe(`${provider}/parent-model`);
+			expect(failedPreflight.warning).toContain("failed authentication preflight");
+
+			expect(harness.session.listRlmSubagents().subagents).toHaveLength(4);
+			for (const child of harness.session.listRlmSubagents().subagents) {
+				expect(harness.session.getRlmChildSession(child.rlm_child_id)?.model?.id).toBe("parent-model");
+			}
 		} finally {
 			harness.cleanup();
 		}

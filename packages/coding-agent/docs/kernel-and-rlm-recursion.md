@@ -382,9 +382,11 @@ It exports:
 ```python
 rlm
 run(prompt: str, **kwargs)
+find_models(query: str = "", limit: int = 8)
 list_subagents()
 host_request(request_type: str, payload: dict | None = None)
 RLMResult
+RLMModel
 RLMSubagent
 TokenUsage
 ```
@@ -396,6 +398,8 @@ result.answer       # str
 result.usage        # TokenUsage
 result.turns        # int
 result.session_dir  # pathlib.Path | None
+result.model        # exact provider/model selector
+result.warning      # fallback notice to surface to the user, or None
 ```
 
 The shim also makes the module callable so `import rlm; await rlm("...")` can work, but the ipython tool normally injects the callable object directly as `rlm`.
@@ -442,7 +446,7 @@ awaits the Future
 
 The callback strips the reply's `status` field and converts the payload into `RLMResult`, or raises `RuntimeError` when the host reports an error. The comm-open/await machinery is the public `host_request()`; `run()` is a typed wrapper around it, and other kernel-side skills reuse `host_request()` for their own request types.
 
-The shim accepts `**kwargs` and includes them in the comm payload. The TypeScript host supports `name="..."` for an orchestrator-chosen child session name; all other kwargs are rejected with a clear error instead of being ignored.
+The shim accepts `**kwargs` and includes them in the comm payload. The TypeScript host supports `name="..."` for an orchestrator-chosen child session name and `model="provider/model"` for an exact model selection; all other kwargs are rejected with a clear error instead of being ignored. `find_models()` searches a bounded catalog containing only models backed by active, non-expired credentials and returns `provider`, `id`, `name`, and exact `selector` fields.
 
 ### Why Control-Channel Comm Replies Exist
 
@@ -510,8 +514,7 @@ options.hostHandlers[data.type](data)
 sendCommMessage(comm_id, { status: "ok", ...result })
 ```
 
-The RLM handlers include `rlm.run` for child creation and
-`rlm.list_subagents` for the current parent session's automatic child registry.
+The RLM handlers include `rlm.run` for child creation, `rlm.find_models` for bounded authenticated model discovery, and `rlm.list_subagents` for the current parent session's automatic child registry.
 
 Unknown types fail with `host request type "<type>" is not available in this session`.
 
@@ -547,7 +550,8 @@ Sequence:
 runRlmChild(prompt, kwargs)
   |
   | check current depth < max depth
-  | resolve optional model reference against authenticated models
+  | resolve an exact optional model selector against authenticated models
+  | fall back to the parent model with a user-facing warning if unavailable
   | otherwise inherit the parent model
   v
 create child session dir
@@ -842,8 +846,8 @@ no selected model
 unsupported rlm.run kwargs
   -> TS runRlmChild throws "Unsupported rlm.run kwargs: ..."
 
-unknown, unauthenticated, or unavailable rlm.run model
-  -> TS runRlmChild rejects before creating the child session directory
+unknown, unauthenticated, expired, or unavailable rlm.run model
+  -> TS runRlmChild uses the parent model and returns RLMResult.warning
 
 child provider error
   -> child agent final error behavior is reflected in its final assistant state

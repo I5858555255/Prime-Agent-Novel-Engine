@@ -4,7 +4,6 @@ import {
 	defaultModelPerProvider,
 	findInitialModel,
 	parseModelPattern,
-	resolveAvailableModelReference,
 	resolveCliModel,
 	resolveModelScopeFromModels,
 } from "../src/core/model-resolver.js";
@@ -66,30 +65,6 @@ const mockOpenRouterModels: Model<"anthropic-messages">[] = [
 ];
 
 const allModels = [...mockModels, ...mockOpenRouterModels];
-
-describe("resolveAvailableModelReference", () => {
-	test("resolves canonical selectors, bare ids, and human-readable names", () => {
-		expect(resolveAvailableModelReference("anthropic/claude-sonnet-4-5", allModels).model).toBe(mockModels[0]);
-		expect(resolveAvailableModelReference("gpt-4o", allModels).model).toBe(mockModels[1]);
-		expect(resolveAvailableModelReference("Claude Sonnet 4.5", allModels).model).toBe(mockModels[0]);
-	});
-
-	test("normalizes punctuation in human-readable references", () => {
-		expect(resolveAvailableModelReference("gpt 4o", allModels).model).toBe(mockModels[1]);
-	});
-
-	test("returns ambiguous candidates instead of choosing silently", () => {
-		const duplicate = { ...mockModels[1], provider: "openrouter" };
-		const result = resolveAvailableModelReference("gpt-4o", [...allModels, duplicate]);
-
-		expect(result.model).toBeUndefined();
-		expect(result.candidates.map((model) => model.provider)).toEqual(["openai", "openrouter"]);
-	});
-
-	test("returns no candidates when the supplied catalog has no match", () => {
-		expect(resolveAvailableModelReference("missing model", allModels)).toEqual({ candidates: [] });
-	});
-});
 
 describe("resolveModelScopeFromModels", () => {
 	test("resolves scope patterns against the supplied model list", () => {

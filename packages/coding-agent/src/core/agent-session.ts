@@ -177,7 +177,6 @@ import {
 	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
-import { resolveAvailableModelReference } from "./model-resolver.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
 	type AutoRefineReason,
@@ -203,11 +202,14 @@ import {
 	type CreateRlmSubagentRuntimeOptions,
 	createDefaultRlmSubagentSessionName,
 	createRlmDeleteSubagentHostHandler,
+	createRlmFindModelsHostHandler,
 	createRlmListSubagentsHostHandler,
 	createRlmRunHostHandler,
+	findRlmModelMatches,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
 	type RlmDeleteSubagentResult,
+	type RlmFindModelsResult,
 	type RlmInternalRunResult,
 	type RlmListSubagentsResult,
 	type RlmRunResult,
@@ -689,6 +691,11 @@ interface RlmChildRun {
 	rejectTask?: (error: Error) => void;
 	/** Snapshot retained until an in-flight runtime creation is released after early deletion. */
 	detachedDeletion?: RlmSubagentRegistryEntry;
+}
+
+interface RlmSubagentModelSelection {
+	model: Model<Api>;
+	warning?: string;
 }
 
 // ============================================================================
@@ -6009,6 +6016,7 @@ export class AgentSession {
 			"rlm.run": createRlmRunHostHandler(({ prompt, kwargs, cellSourceCode }) =>
 				this.runRlmChild(prompt, kwargs, cellSourceCode),
 			),
+			"rlm.find_models": createRlmFindModelsHostHandler((query, limit) => this.findRlmModels(query, limit)),
 			"rlm.list_subagents": createRlmListSubagentsHostHandler(() => this.listRlmSubagents()),
 			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => this.deleteRlmSubagent(target)),
 			"model.info": async () => ({
@@ -6742,27 +6750,47 @@ export class AgentSession {
 		}
 	}
 
-	private async _resolveRlmSubagentModel(reference: string | undefined): Promise<Model<Api>> {
+	private _authenticatedRlmModels(): Model<Api>[] {
+		return this._modelRegistry.getAvailable().filter((model) => {
+			const status = this._modelRegistry.getProviderAuthStatus(model.provider);
+			return status.source !== "stale" && status.label !== "expired";
+		});
+	}
+
+	findRlmModels(query: string, limit: number): RlmFindModelsResult {
+		return { models: findRlmModelMatches(query, this._authenticatedRlmModels(), limit) };
+	}
+
+	private _rlmModelFallback(reference: string, parentModel: Model<Api>, reason: string): RlmSubagentModelSelection {
+		const parentSelector = `${parentModel.provider}/${parentModel.id}`;
+		return {
+			model: parentModel,
+			warning: `Requested subagent model "${reference}" ${reason}. Used the parent model "${parentSelector}" instead. Tell the user the subagent ran with "${parentSelector}", not "${reference}".`,
+		};
+	}
+
+	private async _resolveRlmSubagentModel(reference: string | undefined): Promise<RlmSubagentModelSelection> {
+		const parentModel = this.model;
+		if (!parentModel) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
 		if (!reference) {
-			const model = this.model;
-			if (!model) {
-				throw new Error(formatNoModelSelectedMessage());
-			}
-			return model;
+			return { model: parentModel };
 		}
 
-		const availableModels = this._modelRegistry.getAvailable();
-		const { model, candidates } = resolveAvailableModelReference(reference, availableModels);
-		if (model) {
-			return model;
+		const normalizedReference = reference.toLowerCase();
+		const model = this._authenticatedRlmModels().find(
+			(candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === normalizedReference,
+		);
+		if (!model) {
+			return this._rlmModelFallback(reference, parentModel, "is unavailable, unauthenticated, or expired");
 		}
-		if (candidates.length > 1) {
-			const selectors = candidates.slice(0, 5).map((candidate) => `${candidate.provider}/${candidate.id}`);
-			const remainder =
-				candidates.length > selectors.length ? ` and ${candidates.length - selectors.length} more` : "";
-			throw new Error(`RLM subagent model "${reference}" is ambiguous: ${selectors.join(", ")}${remainder}`);
+
+		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok || !auth.apiKey) {
+			return this._rlmModelFallback(reference, parentModel, "failed authentication preflight");
 		}
-		throw new Error(`RLM subagent model "${reference}" was not found among authenticated, available models`);
+		return { model };
 	}
 
 	private async _startRlmChildRun(
@@ -6789,9 +6817,9 @@ export class AgentSession {
 			this._assertRlmSubagentSessionNameAvailable(requestedSessionName);
 			this._pendingRlmSubagentSessionNames.add(requestedSessionName);
 		}
-		let model: Model<Api>;
+		let modelSelection: RlmSubagentModelSelection;
 		try {
-			model = await this._resolveRlmSubagentModel(requestedModel);
+			modelSelection = await this._resolveRlmSubagentModel(requestedModel);
 		} finally {
 			if (requestedSessionName) {
 				this._pendingRlmSubagentSessionNames.delete(requestedSessionName);
@@ -6867,7 +6895,7 @@ export class AgentSession {
 				sessionName,
 				spawnCode,
 				sessionDir: childSessionDir,
-				model,
+				model: modelSelection.model,
 			}),
 			onSessionPublished: publishChildSession,
 		};
@@ -6964,6 +6992,8 @@ export class AgentSession {
 					usage,
 					turns: child._assistantTurnCount(),
 					session_dir: childSessionDir,
+					model: `${modelSelection.model.provider}/${modelSelection.model.id}`,
+					...(modelSelection.warning ? { warning: modelSelection.warning } : {}),
 				};
 				run.result = result;
 				return { ...result, assistantUsage };
@@ -7061,6 +7091,8 @@ export class AgentSession {
 			usage: result.usage,
 			turns: result.turns,
 			session_dir: result.session_dir,
+			model: result.model,
+			...(result.warning ? { warning: result.warning } : {}),
 		};
 	}
 
