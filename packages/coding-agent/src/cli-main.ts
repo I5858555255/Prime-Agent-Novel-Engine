@@ -3,6 +3,7 @@ import { maybeStartDaemonEarly } from "./cli/daemon-launch.js";
 import {
 	closeOwnedSessionWorkerOwnerWatch,
 	installOwnedSessionWorkerOwnerWatch,
+	isOwnedSessionWorkerProcess,
 	maybeRunOwnedSessionWorkerFrontend,
 } from "./cli/owned-session-worker.js";
 import { APP_NAME } from "./config.js";
@@ -18,13 +19,14 @@ export async function runCli(): Promise<void> {
 	process.env.PI_CODING_AGENT = "true";
 	process.emitWarning = (() => {}) as typeof process.emitWarning;
 
-	// Boot a cold daemon concurrently with this process's heavy imports.
-	maybeStartDaemonEarly(process.argv.slice(2));
-
 	installOwnedSessionWorkerOwnerWatch();
 
 	const handledByOwnedWorker = await maybeRunOwnedSessionWorkerFrontend(process.argv.slice(2));
 	if (!handledByOwnedWorker) {
+		if (!isOwnedSessionWorkerProcess()) {
+			// Boot a cold daemon concurrently with this process's heavy imports.
+			maybeStartDaemonEarly(process.argv.slice(2));
+		}
 		const [{ EnvHttpProxyAgent, setGlobalDispatcher }, { main }] = await Promise.all([
 			import("undici"),
 			import("./main.js"),

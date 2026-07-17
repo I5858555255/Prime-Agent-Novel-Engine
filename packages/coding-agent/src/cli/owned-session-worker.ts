@@ -24,6 +24,10 @@ let closeOwnerWatch: (() => void) | undefined;
 
 export type OwnedSessionWorkerProfile = "print" | "json" | "rpc" | "interactive-ephemeral";
 
+export function isOwnedSessionWorkerProcess(environment: NodeJS.ProcessEnv = process.env): boolean {
+	return environment[OWNED_WORKER_ENV] === "1";
+}
+
 interface OwnedSessionRecoveryDescriptor {
 	version: 1;
 	profile: OwnedSessionWorkerProfile;
@@ -63,7 +67,7 @@ export function classifyOwnedSessionWorkerInvocation(
 	stdinIsTTY: boolean | undefined,
 	environment: NodeJS.ProcessEnv = process.env,
 ): OwnedSessionWorkerProfile | undefined {
-	if (environment[OWNED_WORKER_ENV] === "1" || hasNonSessionOperation(args)) {
+	if (isOwnedSessionWorkerProcess(environment) || hasNonSessionOperation(args)) {
 		return undefined;
 	}
 
@@ -485,7 +489,7 @@ export async function maybeRunOwnedSessionWorkerFrontend(args: readonly string[]
 }
 
 export function installOwnedSessionWorkerOwnerWatch(): void {
-	if (process.env[OWNED_WORKER_ENV] !== "1") {
+	if (!isOwnedSessionWorkerProcess()) {
 		return;
 	}
 	if (!process.channel) {

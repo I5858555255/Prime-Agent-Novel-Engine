@@ -1,19 +1,27 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCliSubprocessEnv, createCliSubprocessLaunchSpec } from "../../../src/cli/subprocess-launch.js";
+import { ENV_AGENT_DIR } from "../../../src/config.js";
 import type { AutonomousRuntimeState } from "../../../src/core/autonomous.js";
+import { DaemonClient } from "../../../src/modes/daemon/daemon-client.js";
 import { waitForHeadlessCompletion } from "../../../src/modes/headless-completion.js";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "../harness.js";
 
 const fixturePath = resolve(__dirname, "../../fixtures/rpc-connection-mode-fixture.ts");
+const fauxExtensionPath = resolve(__dirname, "../../fixtures/eng-4600-faux-extension.ts");
+const cliPath = resolve(__dirname, "../../../src/cli.ts");
 const tsxPath = resolve(__dirname, "../../../../../node_modules/tsx/dist/cli.mjs");
 const repoTsconfigPath = resolve(__dirname, "../../../../../tsconfig.json");
 const children = new Set<ChildProcess>();
 const harnesses: Harness[] = [];
+const daemonSockets = new Set<string>();
+const tempRoots = new Set<string>();
 
-afterEach(() => {
+afterEach(async () => {
 	for (const child of children) {
 		if (child.exitCode === null && child.signalCode === null) {
 			child.kill("SIGKILL");
@@ -23,7 +31,72 @@ afterEach(() => {
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
 	}
+	for (const socketPath of daemonSockets) {
+		const client = new DaemonClient(socketPath);
+		try {
+			await client.connect(500);
+			await client.request({ type: "shutdown" }, 5000);
+		} catch {
+			// The process may have exited before publishing its socket.
+		} finally {
+			client.close();
+		}
+		for (let attempt = 0; attempt < 50 && existsSync(socketPath); attempt++) {
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+		}
+	}
+	daemonSockets.clear();
+	for (const root of tempRoots) {
+		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	}
+	tempRoots.clear();
 });
+
+interface CliResult {
+	code: number | null;
+	signal: NodeJS.Signals | null;
+	stdout: string;
+	stderr: string;
+}
+
+async function runCli(
+	args: string[],
+	options: { agentDir: string; stdin?: string; environment?: NodeJS.ProcessEnv },
+): Promise<CliResult> {
+	const child = spawn(process.execPath, [tsxPath, cliPath, ...args], {
+		env: {
+			...process.env,
+			TSX_TSCONFIG_PATH: repoTsconfigPath,
+			[ENV_AGENT_DIR]: options.agentDir,
+			PI_SKIP_VERSION_CHECK: "1",
+			PRIME_AGENT_INTERNAL_LEGACY_OWNED_WORKER_FRONTEND: "0",
+			...options.environment,
+		},
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	children.add(child);
+	let stdout = "";
+	let stderr = "";
+	child.stdout?.on("data", (chunk: Buffer) => {
+		stdout += chunk.toString("utf8");
+	});
+	child.stderr?.on("data", (chunk: Buffer) => {
+		stderr += chunk.toString("utf8");
+	});
+	child.stdin?.end(options.stdin ?? "");
+	const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
+		const timeout = setTimeout(() => {
+			child.kill("SIGKILL");
+			reject(new Error(`CLI timed out\n${stderr}`));
+		}, 20_000);
+		child.once("exit", (code, signal) => {
+			clearTimeout(timeout);
+			resolveExit({ code, signal: signal as NodeJS.Signals | null });
+		});
+	});
+	children.delete(child);
+	return { ...exit, stdout, stderr };
+}
 
 async function runRpc(commands: object[]): Promise<{ stdout: object[]; stderr: string }> {
 	const child = spawn(process.execPath, [tsxPath, fixturePath], {
@@ -104,6 +177,114 @@ describe("ENG-4685 daemon-backed client modes", () => {
 		expect(environment.TSX_TSCONFIG_PATH).toBe(repoTsconfigPath);
 	});
 
+	it("launches real daemon workers for every migrated client surface", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-4685-clients-"));
+		tempRoots.add(root);
+		const agentDir = join(root, "agent dir");
+		const socketPath = join(root, "daemon.sock");
+		daemonSockets.add(socketPath);
+		const baseArgs = [
+			"--daemon-socket",
+			socketPath,
+			"--model",
+			"faux/faux",
+			"--extension",
+			fauxExtensionPath,
+			"--no-tools",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--no-context-files",
+		];
+		const cases = [
+			{ name: "print", args: ["--print"], stdin: "" },
+			{ name: "json", args: ["--mode", "json"], stdin: "" },
+			{ name: "rpc", args: ["--mode", "rpc"], stdin: '{"id":"state","type":"get_state"}\n' },
+			{ name: "piped stdin", args: [], stdin: "   \n" },
+			{ name: "no-session", args: ["--print", "--no-session"], stdin: "" },
+		];
+
+		for (const testCase of cases) {
+			const result = await runCli([...baseArgs, ...testCase.args], { agentDir, stdin: testCase.stdin });
+			expect(result, testCase.name).toMatchObject({ code: 0, signal: null });
+			expect(result.stderr, testCase.name).not.toContain("Timed out waiting for daemon worker");
+			if (testCase.name === "rpc") {
+				expect(result.stdout).toContain('"command":"get_state","success":true');
+			}
+		}
+		expect(existsSync(socketPath)).toBe(true);
+	}, 90_000);
+
+	it("keeps the rollback frontend fully off the daemon path", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-4685-rollback-"));
+		tempRoots.add(root);
+		const agentDir = join(root, "agent");
+		const socketPath = join(root, "must-not-exist.sock");
+		const result = await runCli(
+			[
+				"--print",
+				"--daemon-socket",
+				socketPath,
+				"--model",
+				"faux/faux",
+				"--extension",
+				fauxExtensionPath,
+				"--no-tools",
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--no-context-files",
+			],
+			{
+				agentDir,
+				environment: { PRIME_AGENT_INTERNAL_LEGACY_OWNED_WORKER_FRONTEND: "1" },
+			},
+		);
+
+		expect(result).toMatchObject({ code: 0, signal: null });
+		expect(existsSync(socketPath)).toBe(false);
+	}, 30_000);
+
+	it("loads headless runtime services only in the worker", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-4685-services-"));
+		tempRoots.add(root);
+		const agentDir = join(root, "agent");
+		const socketPath = join(root, "daemon.sock");
+		const markerPath = join(root, "extension-loads.txt");
+		const extensionPath = join(root, "load-marker.ts");
+		daemonSockets.add(socketPath);
+		writeFileSync(
+			extensionPath,
+			'import { appendFileSync } from "node:fs";\nexport default function() { appendFileSync(process.env.PRIME_AGENT_TEST_EXTENSION_LOAD_MARKER, "loaded\\n"); }\n',
+		);
+
+		const result = await runCli(
+			[
+				"--print",
+				"--daemon-socket",
+				socketPath,
+				"--model",
+				"faux/faux",
+				"--extension",
+				fauxExtensionPath,
+				"--extension",
+				extensionPath,
+				"--no-tools",
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--no-context-files",
+			],
+			{
+				agentDir,
+				environment: { PRIME_AGENT_TEST_EXTENSION_LOAD_MARKER: markerPath },
+			},
+		);
+
+		expect(result).toMatchObject({ code: 0, signal: null });
+		expect(readFileSync(markerPath, "utf8").trim().split("\n")).toEqual(["loaded"]);
+	}, 30_000);
+
 	it("drains accepted RPC commands before EOF releases the connection", async () => {
 		const result = await runRpc([{ id: "models", type: "get_available_models" }]);
 		expect(result.stderr).toBe("");
@@ -129,6 +310,18 @@ describe("ENG-4685 daemon-backed client modes", () => {
 			{ type: "agent_start" },
 			{ id: "prompt-2", type: "response", command: "prompt", success: true },
 			{ type: "agent_start" },
+		]);
+	});
+
+	it("preserves RPC trimming and omitted-value encoding", async () => {
+		const result = await runRpc([
+			{ id: "last", type: "get_last_assistant_text" },
+			{ id: "name", type: "set_session_name", name: "  exact name  " },
+		]);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toEqual([
+			{ id: "last", type: "response", command: "get_last_assistant_text", success: true, data: {} },
+			{ id: "name", type: "response", command: "set_session_name", success: true },
 		]);
 	});
 

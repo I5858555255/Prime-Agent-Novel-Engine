@@ -17,6 +17,7 @@ import type {
 	AgentHeartbeatManagementAction,
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
+import type { ExtensionUIContext } from "../../core/extensions/types.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
 import { SessionManager } from "../../core/session-manager.js";
@@ -64,28 +65,44 @@ import type {
 	AgentConnectionUserMessage,
 } from "./types.js";
 
+export interface InProcessHeadlessExtensionOptions {
+	uiContext?: ExtensionUIContext;
+	shutdownHandler?: () => void;
+}
+
 export class InProcessAgentConnection implements AgentConnection {
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 	private readonly beforeSessionInvalidateListeners = new Set<AgentConnectionBeforeSessionInvalidateListener>();
 	private readonly sideQuestionRuns = new Map<string, SideQuestionRun>();
+	private headlessExtensionOptions: InProcessHeadlessExtensionOptions | undefined;
 	private unsubscribeSessionEvents: (() => void) | undefined;
 
 	constructor(private readonly runtimeHost: AgentSessionRuntime) {
 		this.bindCurrentSessionEvents();
-		this.runtimeHost.setBeforeSessionInvalidate(() => {
-			this.abortAllSideQuestions();
-			for (const listener of [...this.beforeSessionInvalidateListeners]) {
-				listener();
-			}
-		});
+		if (typeof this.runtimeHost.setBeforeSessionInvalidate === "function") {
+			this.runtimeHost.setBeforeSessionInvalidate(() => {
+				this.abortAllSideQuestions();
+				for (const listener of [...this.beforeSessionInvalidateListeners]) {
+					listener();
+				}
+			});
+		}
 		this.runtimeHost.setRebindSession(async () => {
 			this.bindCurrentSessionEvents();
+			if (this.headlessExtensionOptions) {
+				await this.bindCurrentSessionExtensions();
+			}
 			await this.emit({
 				type: "session_replaced",
 				state: createAgentConnectionState(this.runtimeHost),
 				messages: this.runtimeHost.session.messages,
 			});
 		});
+	}
+
+	async bindHeadlessExtensions(options: InProcessHeadlessExtensionOptions = {}): Promise<void> {
+		this.headlessExtensionOptions = options;
+		await this.bindCurrentSessionExtensions();
 	}
 
 	subscribe(listener: AgentConnectionEventListener): () => void {
@@ -111,7 +128,7 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async getMessages(): Promise<AgentMessage[]> {
-		return this.session.messages;
+		return this.session.state.messages;
 	}
 
 	async getSessionHeader(): Promise<AgentConnectionSessionHeader | undefined> {
@@ -269,6 +286,10 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
+		if (!options) {
+			await this.session.prompt(message);
+			return;
+		}
 		await this.session.prompt(message, {
 			images: options?.images,
 			streamingBehavior: options?.streamingBehavior,
@@ -512,7 +533,9 @@ export class InProcessAgentConnection implements AgentConnection {
 		this.abortAllSideQuestions();
 		this.unsubscribeSessionEvents?.();
 		this.unsubscribeSessionEvents = undefined;
-		this.runtimeHost.setBeforeSessionInvalidate(undefined);
+		if (typeof this.runtimeHost.setBeforeSessionInvalidate === "function") {
+			this.runtimeHost.setBeforeSessionInvalidate(undefined);
+		}
 		this.runtimeHost.setRebindSession(undefined);
 		await this.runtimeHost.dispose();
 	}
@@ -525,6 +548,36 @@ export class InProcessAgentConnection implements AgentConnection {
 		this.unsubscribeSessionEvents?.();
 		this.unsubscribeSessionEvents = this.session.subscribe((event) => {
 			void this.emit({ type: "session_event", event });
+		});
+	}
+
+	private async bindCurrentSessionExtensions(): Promise<void> {
+		const session = this.session;
+		await session.bindExtensions({
+			uiContext: this.headlessExtensionOptions?.uiContext,
+			commandContextActions: {
+				waitForIdle: () => session.agent.waitForIdle(),
+				newSession: (options) => this.runtimeHost.newSession(options),
+				fork: async (entryId, options) => {
+					const result = await this.runtimeHost.fork(entryId, options);
+					return { cancelled: result.cancelled };
+				},
+				navigateTree: async (targetId, options) => {
+					const result = await session.navigateTree(targetId, options);
+					return { cancelled: result.cancelled };
+				},
+				switchSession: (sessionPath, options) => this.runtimeHost.switchSession(sessionPath, options),
+				reload: () => session.reload(),
+			},
+			shutdownHandler: this.headlessExtensionOptions?.shutdownHandler,
+			onError: (error) => {
+				void this.emit({
+					type: "extension_error",
+					extensionPath: error.extensionPath,
+					event: error.event,
+					error: error.error,
+				});
+			},
 		});
 	}
 

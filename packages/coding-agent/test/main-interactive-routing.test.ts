@@ -17,6 +17,7 @@ import {
 	shouldOpenAgentsViewForDaemonInteractive,
 	shouldRejectNonInteractiveAttach,
 	shouldUseDaemonClient,
+	shouldUseDaemonClientRuntime,
 	shouldUseDaemonInteractive,
 	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
@@ -43,6 +44,23 @@ describe("interactive startup routing", () => {
 				noSession: true,
 			}),
 		).toBe(true);
+	});
+
+	test("keeps process-local extension factories and rollback workers in process", () => {
+		expect(
+			shouldUseDaemonClientRuntime({
+				appMode: "print",
+				startupBenchmark: false,
+				hasProcessLocalExtensionFactories: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldUseDaemonClientRuntime({
+				appMode: "rpc",
+				startupBenchmark: false,
+				ownedSessionWorker: true,
+			}),
+		).toBe(false);
 	});
 
 	test.each([

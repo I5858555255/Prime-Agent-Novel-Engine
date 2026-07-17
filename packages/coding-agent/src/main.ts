@@ -24,7 +24,7 @@ import { confirmDaemonSessionLoss, type DaemonSessionLossCopy, pluralizeSessions
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
-import { installOwnedSessionRecoveryTracking } from "./cli/owned-session-worker.js";
+import { installOwnedSessionRecoveryTracking, isOwnedSessionWorkerProcess } from "./cli/owned-session-worker.js";
 import { handlePublicCommand } from "./cli/public-command.js";
 import { selectSession } from "./cli/session-picker.js";
 import { expandTildePath, getAgentDir, getSessionDirEnvOverride, VERSION } from "./config.js";
@@ -207,6 +207,15 @@ export function shouldUseDaemonClient(options: DaemonClientStartupDecision): boo
 	return (
 		options.appMode !== "daemon" && !options.startupBenchmark && !options.help && options.listModels === undefined
 	);
+}
+
+export function shouldUseDaemonClientRuntime(
+	options: DaemonClientStartupDecision & {
+		ownedSessionWorker?: boolean;
+		hasProcessLocalExtensionFactories?: boolean;
+	},
+): boolean {
+	return shouldUseDaemonClient(options) && !options.ownedSessionWorker && !options.hasProcessLocalExtensionFactories;
 }
 
 export function shouldEnsureInteractiveDaemonForStartup(
@@ -1162,12 +1171,16 @@ export async function main(args: string[], options?: MainOptions) {
 		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
 		process.exit(1);
 	}
-	const useDaemonClient = shouldUseDaemonClient({
+	// Programmatic factories are process-local functions and cannot be serialized to a daemon worker.
+	const hasProcessLocalExtensionFactories = (options?.extensionFactories?.length ?? 0) > 0;
+	const useDaemonClient = shouldUseDaemonClientRuntime({
 		appMode,
 		startupBenchmark,
 		noSession: parsed.noSession,
 		help: parsed.help,
 		listModels: parsed.listModels,
+		ownedSessionWorker: isOwnedSessionWorkerProcess(),
+		hasProcessLocalExtensionFactories,
 	});
 	const useDaemonInteractive = useDaemonClient && appMode === "interactive";
 
@@ -1469,15 +1482,7 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 	if (useDaemonClient) {
-		const prepared = await prepareRuntimeServices({
-			config: defaultSessionConfig,
-			cwd: sessionManager.getCwd(),
-			agentDir,
-			sessionManager,
-			extensionFactories: options?.extensionFactories,
-		});
-		const { settingsManager } = prepared.services;
-		const startupModel = await resolvePreparedStartupModel({ prepared, sessionManager });
+		const settingsManager = SettingsManager.create(sessionManager.getCwd(), agentDir);
 		let stdinContent: string | undefined;
 		if (appMode !== "rpc") {
 			stdinContent = await readPipedStdin();
@@ -1491,19 +1496,12 @@ export async function main(args: string[], options?: MainOptions) {
 		time("prepareInitialMessage");
 		initTheme(settingsManager.getTheme(), false);
 		time("initTheme");
-		reportDiagnostics(prepared.diagnostics);
-		if (prepared.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
-			process.exit(1);
-		}
-		if (!startupModel.model) {
-			console.error(chalk.red(formatNoModelsAvailableMessage()));
-			process.exit(1);
-		}
 
 		daemonReady = (await awaitDaemonReady(daemonReady)).ready;
 		let connection: DaemonAgentConnection;
+		let summary: SessionSummary;
 		try {
-			({ connection } = await createDaemonClientConnection({
+			({ connection, summary } = await createDaemonClientConnection({
 				socketPath: daemonSocketPath,
 				config: defaultSessionConfig,
 				sessionPath: parsed.noSession ? undefined : sessionManager.getSessionFile(),
@@ -1518,6 +1516,17 @@ export async function main(args: string[], options?: MainOptions) {
 				process.exit(1);
 			}
 			throw error;
+		}
+		const diagnostics = summary.diagnostics ?? [];
+		reportDiagnostics(diagnostics);
+		if (diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			await connection.dispose();
+			process.exit(1);
+		}
+		if (!summary.model) {
+			console.error(chalk.red(summary.modelFallbackMessage ?? formatNoModelsAvailableMessage()));
+			await connection.dispose();
+			process.exit(1);
 		}
 
 		printTimings();

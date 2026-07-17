@@ -31,6 +31,14 @@ const connection = {
 		await new Promise((resolve) => setTimeout(resolve, 25));
 		return [];
 	},
+	async getLastAssistantText() {
+		return undefined;
+	},
+	async setSessionName(name: string) {
+		if (name !== name.trim()) {
+			throw new Error("Session name was not trimmed");
+		}
+	},
 	async listCronJobs() {
 		return [heartbeat];
 	},

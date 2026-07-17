@@ -1567,8 +1567,12 @@ export class DaemonSupervisor {
 				[SESSION_LEASES_ENABLED_ENV]: "1",
 				[SESSION_LEASE_OWNER_ID_ENV]: rootActiveSessionId,
 			}),
-			stdio: ["ignore", "ignore", "ignore", "pipe"],
+			stdio: ["ignore", "ignore", "pipe", "pipe"],
 		});
+		const detachWorkerStderr = child.stderr
+			? attachJsonlLineReader(child.stderr, (line) => this.log(`Session worker ${workerId} stderr: ${line}`))
+			: () => {};
+		child.once("close", detachWorkerStderr);
 		const childClosed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
 		child.on("error", (error) => {
 			this.log(
