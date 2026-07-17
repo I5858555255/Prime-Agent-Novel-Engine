@@ -34,7 +34,6 @@ import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
-	fuzzyFilter,
 	Loader,
 	type LoaderIndicatorOptions,
 	Markdown,
@@ -150,6 +149,7 @@ import type {
 	AgentConnectionState,
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
+import { getModelArgumentCompletions } from "../model-autocomplete.js";
 import {
 	checkForPackageUpdates,
 	checkTmuxKeyboardSetup,
@@ -1096,32 +1096,8 @@ export class InteractiveMode {
 
 		const modelCommand = slashCommands.find((command) => command.name === "model");
 		if (modelCommand) {
-			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
-				const models =
-					this.connectionState && this.connectionState.scopedModels.length > 0
-						? this.connectionState.scopedModels.map((s) => s.model)
-						: this.connectionModels;
-
-				if (models.length === 0) return null;
-
-				// Create items with provider/id format
-				const items = models.map((m) => ({
-					id: m.id,
-					provider: m.provider,
-					label: `${m.provider}/${m.id}`,
-				}));
-
-				// Fuzzy filter by model ID + provider (allows "opus anthropic" to match)
-				const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
-
-				if (filtered.length === 0) return null;
-
-				return filtered.map((item) => ({
-					value: item.label,
-					label: item.id,
-					description: item.provider,
-				}));
-			};
+			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
+				getModelArgumentCompletions(prefix, this.connectionModelCatalog);
 		}
 
 		const effortCommand = slashCommands.find((command) => command.name === "effort");
@@ -7097,6 +7073,11 @@ export class InteractiveMode {
 		this.invalidateConnectionModelRefresh();
 	}
 
+	private async refreshConnectionModelsAfterAuthChange(): Promise<void> {
+		this.invalidateConnectionModels();
+		await this.getConnectionAvailableModels();
+	}
+
 	private async getModelCandidates(): Promise<AgentConnectionModel[]> {
 		const scopedModels = this.getScopedModelState();
 		if (scopedModels.length > 0) {
@@ -7820,6 +7801,7 @@ export class InteractiveMode {
 			showError: (message) => this.showError(message),
 			getAvailableModels: () => this.getConnectionAvailableModels(),
 			onAuthChanged: async () => {
+				await this.refreshConnectionModelsAfterAuthChange();
 				await this.updateAvailableProviderCount();
 				this.footer.invalidate();
 				this.updateEditorBorderColor();

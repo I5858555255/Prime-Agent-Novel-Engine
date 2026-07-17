@@ -7,7 +7,6 @@ import {
 	type Component,
 	clippedFullscreenDockHeight,
 	type Focusable,
-	fuzzyFilter,
 	ProcessTerminal,
 	setKeybindings,
 	TUI,
@@ -67,6 +66,7 @@ import {
 	theme,
 } from "../interactive/theme/theme.js";
 import { WORKING_ICON_INTERVAL_MS, workingIconFrame } from "../interactive/theme/working-icon.js";
+import { getModelArgumentCompletions } from "../model-autocomplete.js";
 import {
 	formatPackageUpdateNotice,
 	formatTmuxWarningNotice,
@@ -230,22 +230,10 @@ export function formatAgentsViewStatusLine(text: string): string {
 
 export async function getAgentsViewModelArgumentCompletions(
 	prefix: string,
-	modelRegistry: Pick<ModelRegistry, "refreshAvailableModels">,
+	modelRegistry: Pick<ModelRegistry, "refreshModelCatalog">,
 ): Promise<AutocompleteItem[] | null> {
-	const models = await modelRegistry.refreshAvailableModels();
-	if (models.length === 0) {
-		return null;
-	}
-	const items = models.map((model) => ({
-		id: model.id,
-		provider: model.provider,
-		label: `${model.provider}/${model.id}`,
-	}));
-	const filtered = fuzzyFilter(items, prefix, (item) => `${item.id} ${item.provider}`);
-	if (filtered.length === 0) {
-		return null;
-	}
-	return filtered.map((item) => ({ value: item.label, label: item.id, description: item.provider }));
+	const catalog = await modelRegistry.refreshModelCatalog();
+	return getModelArgumentCompletions(prefix, catalog.models);
 }
 
 export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
