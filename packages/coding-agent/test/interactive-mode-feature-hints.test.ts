@@ -38,6 +38,7 @@ function createMode() {
 		featureHintEligibleAt: 0,
 		featureHintTimer: undefined,
 		featureHintComponent: undefined,
+		options: { returnToAgentsView: true },
 		ui: { requestRender },
 	};
 	Object.setPrototypeOf(mode, InteractiveMode.prototype);
@@ -47,7 +48,7 @@ function createMode() {
 describe("feature hint deck", () => {
 	it("shows every available hint before repeating and avoids a boundary repeat", () => {
 		const deck = new FeatureHintDeck(() => 0);
-		const context = { getKeybinding: (action: string) => `Custom ${action}` };
+		const context = { getKeybinding: (action: string) => `Custom ${action}`, isResidentSession: true };
 		const firstCycle = FEATURE_HINTS.map(() => deck.next(context));
 
 		expect(firstCycle.every((hint) => hint !== undefined)).toBe(true);
@@ -63,6 +64,7 @@ describe("feature hint deck", () => {
 				if (action === "app.message.followUp") return "Meta+Enter";
 				return "Meta+Left";
 			},
+			isResidentSession: true,
 		};
 		const hints = FEATURE_HINTS.map(() => deck.next(context));
 
@@ -73,7 +75,7 @@ describe("feature hint deck", () => {
 
 	it("covers Prime Agent workflows with capability-focused copy", () => {
 		const deck = new FeatureHintDeck(() => 0);
-		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Meta+A" }));
+		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Meta+A", isResidentSession: true }));
 		const textById = new Map(hints.map((hint) => [hint?.id, hint?.text]));
 
 		expect(textById.get("subagents")).toBe("Prime Agent can delegate tasks to subagents and run them in parallel.");
@@ -87,13 +89,26 @@ describe("feature hint deck", () => {
 		expect(textById.get("context-usage")).toContain("/context");
 		expect(textById.get("session-fork")).toContain("/fork");
 		expect(textById.get("compaction")).toContain("/compact");
+		expect(textById.get("auto-compaction")).toContain("automatically summarizes");
+		expect(textById.get("auto-refine")).toContain("automatically saves useful lessons");
+		expect(textById.get("background-running")).toContain("close the terminal");
+		expect(textById.get("auto-retry")).toContain("automatically retries");
+		expect(textById.get("session-autosave")).toContain("automatically saves sessions");
 	});
 
 	it("keeps every hint concise", () => {
 		const deck = new FeatureHintDeck(() => 0);
-		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Ctrl+Key" }));
+		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Ctrl+Key", isResidentSession: true }));
 
 		expect(hints.every((hint) => hint !== undefined && hint.text.length <= 80)).toBe(true);
+	});
+
+	it("hides resident-only hints in ephemeral sessions", () => {
+		const context = { getKeybinding: () => "Left", isResidentSession: false };
+		const textById = new Map(FEATURE_HINTS.map((hint) => [hint.id, hint.getText(context)]));
+
+		expect(textById.get("agents-view")).toBeUndefined();
+		expect(textById.get("background-running")).toBeUndefined();
 	});
 });
 

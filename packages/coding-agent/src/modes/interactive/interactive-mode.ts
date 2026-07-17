@@ -2954,6 +2954,7 @@ export class InteractiveMode {
 					const key = keyText(action);
 					return key ? this.capitalizeKey(key) : undefined;
 				},
+				isResidentSession: this.options.returnToAgentsView === true,
 			});
 			this.currentFeatureHint = hint?.text;
 			this.featureHintEligibleAt = Date.now() + FEATURE_HINT_DELAY_MS;

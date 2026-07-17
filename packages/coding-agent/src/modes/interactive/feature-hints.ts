@@ -2,6 +2,7 @@ import type { AppKeybinding } from "../../core/keybindings.js";
 
 export interface FeatureHintContext {
 	getKeybinding(action: AppKeybinding): string | undefined;
+	isResidentSession: boolean;
 }
 
 interface FeatureHintDefinition {
@@ -43,7 +44,8 @@ export const FEATURE_HINTS: readonly FeatureHintDefinition[] = [
 	},
 	{
 		id: "agents-view",
-		getText: ({ getKeybinding }) => {
+		getText: ({ getKeybinding, isResidentSession }) => {
+			if (!isResidentSession) return undefined;
 			const key = getKeybinding("app.agents.back");
 			return key ? `Hit ${key} for Agents View, where you can manage all your running agents.` : undefined;
 		},
@@ -83,6 +85,27 @@ export const FEATURE_HINTS: readonly FeatureHintDefinition[] = [
 	{
 		id: "compaction",
 		getText: () => "Use /compact <instructions> to summarize old messages and free up context.",
+	},
+	{
+		id: "auto-compaction",
+		getText: () => "Prime Agent automatically summarizes long sessions before context fills up.",
+	},
+	{
+		id: "auto-refine",
+		getText: () => "Prime Agent automatically saves useful lessons from longer sessions.",
+	},
+	{
+		id: "background-running",
+		getText: ({ isResidentSession }) =>
+			isResidentSession ? "You can close the terminal while your agent keeps running in the background." : undefined,
+	},
+	{
+		id: "auto-retry",
+		getText: () => "Prime Agent automatically retries temporary provider errors.",
+	},
+	{
+		id: "session-autosave",
+		getText: () => "Prime Agent automatically saves sessions so you can resume them later.",
 	},
 ] as const;
 
