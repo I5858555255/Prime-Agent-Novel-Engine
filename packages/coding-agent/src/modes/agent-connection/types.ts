@@ -1,5 +1,10 @@
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, ServiceTier, TextContent, Transport, Usage } from "@earendil-works/pi-ai";
+import type {
+	AgentSessionMessageDeliveryMode,
+	AgentSessionMessageReceipt,
+	AgentSessionMessageSafetyStatus,
+} from "../../core/agent-messages.js";
 import type { AuthSourceToken } from "../../core/auth-storage.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import type { BashResult } from "../../core/bash-executor.js";
@@ -17,7 +22,6 @@ import type { GoalState } from "../../core/goals.js";
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
-import type { SessionHeader } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 
 /**
@@ -43,6 +47,20 @@ import type { SessionStats } from "../../core/session-stats.js";
 export type AgentConnectionQueueMode = "all" | "one-at-a-time";
 export type AgentConnectionModel = Model<Api>;
 export type AgentConnectionSavedSessionScope = "current" | "all";
+
+export interface AgentConnectionSessionHeader {
+	type: "session";
+	version?: number;
+	id: string;
+	timestamp: string;
+	cwd: string;
+	parentSession?: string;
+	git?: {
+		repoUrl?: string;
+		commit?: string;
+		branch?: string;
+	};
+}
 
 export type AgentConnectionSavedSessionStateStatus = "active" | "archived" | "crash";
 
@@ -567,7 +585,7 @@ export interface AgentConnection {
 	getState(): Promise<AgentConnectionState>;
 	getInitialSnapshot(): Promise<AgentConnectionSnapshot>;
 	getMessages(): Promise<AgentMessage[]>;
-	getSessionHeader(): Promise<SessionHeader | undefined>;
+	getSessionHeader(): Promise<AgentConnectionSessionHeader | undefined>;
 	getCommands(): Promise<AgentConnectionSlashCommand[]>;
 	getResourceSnapshot(): Promise<AgentConnectionResourceSnapshot>;
 	getAvailableModels(): Promise<AgentConnectionModel[]>;
@@ -598,6 +616,15 @@ export interface AgentConnection {
 		deliveryMode?: AgentHeartbeatDeliveryMode,
 	): Promise<AgentCronJob>;
 	updateHeartbeat(action: AgentHeartbeatUpdateAction): Promise<AgentCronJob | undefined>;
+	sendAgentMessage(
+		targetActiveSessionId: string,
+		message: string,
+		deliveryMode?: AgentSessionMessageDeliveryMode,
+	): Promise<AgentSessionMessageReceipt>;
+	getAgentMessageStatus(): Promise<AgentSessionMessageSafetyStatus>;
+	pauseAgentMessages(): Promise<AgentSessionMessageSafetyStatus>;
+	resumeAgentMessages(): Promise<AgentSessionMessageSafetyStatus>;
+	clearAgentMessages(): Promise<number>;
 	getUserMessagesForForking(): Promise<AgentConnectionUserMessage[]>;
 	getLastAssistantText(): Promise<string | undefined>;
 	/** The system prompt currently in effect for the model (with any per-turn extension changes). */

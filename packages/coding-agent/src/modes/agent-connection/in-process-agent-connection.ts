@@ -1,6 +1,11 @@
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
+import type {
+	AgentSessionMessageDeliveryMode,
+	AgentSessionMessageReceipt,
+	AgentSessionMessageSafetyStatus,
+} from "../../core/agent-messages.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import type { BashResult } from "../../core/bash-executor.js";
@@ -14,7 +19,7 @@ import type {
 } from "../../core/cron-jobs.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
-import { type SessionHeader, SessionManager } from "../../core/session-manager.js";
+import { SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
 import { waitForHeadlessCompletion } from "../headless-completion.js";
@@ -47,6 +52,7 @@ import type {
 	AgentConnectionSavedSessionScope,
 	AgentConnectionScopedModel,
 	AgentConnectionSessionContext,
+	AgentConnectionSessionHeader,
 	AgentConnectionSessionListCallbacks,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
@@ -108,7 +114,7 @@ export class InProcessAgentConnection implements AgentConnection {
 		return this.session.messages;
 	}
 
-	async getSessionHeader(): Promise<SessionHeader | undefined> {
+	async getSessionHeader(): Promise<AgentConnectionSessionHeader | undefined> {
 		return this.session.sessionManager.getHeader() ?? undefined;
 	}
 
@@ -212,6 +218,30 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async updateHeartbeat(_action: AgentHeartbeatUpdateAction): Promise<AgentCronJob | undefined> {
 		throw new Error("Heartbeats require daemon mode");
+	}
+
+	async sendAgentMessage(
+		_targetActiveSessionId: string,
+		_message: string,
+		_deliveryMode?: AgentSessionMessageDeliveryMode,
+	): Promise<AgentSessionMessageReceipt> {
+		throw new Error("Agent messaging requires daemon mode");
+	}
+
+	async getAgentMessageStatus(): Promise<AgentSessionMessageSafetyStatus> {
+		throw new Error("Agent messaging requires daemon mode");
+	}
+
+	async pauseAgentMessages(): Promise<AgentSessionMessageSafetyStatus> {
+		throw new Error("Agent messaging requires daemon mode");
+	}
+
+	async resumeAgentMessages(): Promise<AgentSessionMessageSafetyStatus> {
+		throw new Error("Agent messaging requires daemon mode");
+	}
+
+	async clearAgentMessages(): Promise<number> {
+		throw new Error("Agent messaging requires daemon mode");
 	}
 
 	async getUserMessagesForForking(): Promise<AgentConnectionUserMessage[]> {

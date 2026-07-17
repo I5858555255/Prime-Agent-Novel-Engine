@@ -328,7 +328,16 @@ describe("daemon supervisor resident workers", () => {
 			supportsExtensionUi: false,
 		});
 		await expect(connection.listHeartbeats()).resolves.toEqual([]);
-		const cronJob = await connection.addCronJob("every 1h", "check status");
+		const cronResponse = await client.request({
+			type: "cron_add",
+			activeSessionId: summary.activeSessionId,
+			schedule: "every 1h",
+			prompt: "check status",
+		});
+		if (!cronResponse.success || !cronResponse.data || typeof cronResponse.data !== "object") {
+			throw new Error(cronResponse.success ? "Cron response was missing its job" : cronResponse.error);
+		}
+		const cronJob = (cronResponse.data as { job: { id: string } }).job;
 		await expect(connection.listCronJobs()).resolves.toEqual([expect.objectContaining({ id: cronJob.id })]);
 		await expect(connection.cancelCronJob(cronJob.id)).resolves.toMatchObject({ id: cronJob.id });
 
@@ -349,6 +358,54 @@ describe("daemon supervisor resident workers", () => {
 
 		await client.request({ type: "shutdown" });
 		client.close();
+		await waitForSocketGone(socketPath);
+	}, 60_000);
+
+	it("releases an adopted client-owned worker when disposal races supervisor replacement", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const socketPath = join(tmpdir(), `prime-supervisor-owned-adopt-${process.pid}-${randomUUID().slice(0, 8)}.sock`);
+		mkdirSync(projectDir, { recursive: true });
+
+		const supervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, supervisor);
+		const created = await client.request({
+			type: "create",
+			lifecycle: "client_owned",
+			noSession: true,
+			launchEnv: { TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json") },
+			config: { cwd: projectDir, agentDir, noTools: true, noExtensions: true },
+		});
+		if (!created.success) {
+			throw new Error(created.error);
+		}
+		const summary = requireSummary(created.data);
+		if (!summary.workerPid || !summary.activeSessionId) {
+			throw new Error("Client-owned worker did not expose its process identity");
+		}
+		workerPids.add(summary.workerPid);
+		const connection = await DaemonAgentConnection.attach(client, summary.activeSessionId, {
+			closeClientOnDispose: true,
+			ownedSession: true,
+			recoverDaemon: async () => {},
+			supportsExtensionUi: false,
+		});
+
+		supervisor.kill("SIGTERM");
+		await waitForExit(supervisor);
+		children.delete(supervisor);
+		await connection.dispose();
+
+		await waitForProcessGone(summary.workerPid);
+		workerPids.delete(summary.workerPid);
+		await waitForCondition(
+			() => countWorkerDescriptors(agentDir) === 0,
+			"Adopted client-owned worker descriptor was not removed",
+		);
+		const replacementClient = await connectEventually(socketPath);
+		await replacementClient.request({ type: "shutdown" });
+		replacementClient.close();
 		await waitForSocketGone(socketPath);
 	}, 60_000);
 

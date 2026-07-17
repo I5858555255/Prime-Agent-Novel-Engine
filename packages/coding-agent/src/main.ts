@@ -66,6 +66,7 @@ import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import { isDaemonCatalogProcess, runDaemonCatalogProcess } from "./modes/daemon/daemon-catalog-process.js";
+import { deserializeDaemonError } from "./modes/daemon/daemon-errors.js";
 import { collectDaemonClientEnv, collectDaemonLaunchEnv } from "./modes/daemon/daemon-protocol.js";
 import {
 	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
@@ -1029,7 +1030,7 @@ async function createDaemonClientConnection(options: {
 			launchEnv: options.clientOwned ? collectDaemonLaunchEnv() : undefined,
 		});
 		if (!response.success) {
-			throw new Error(response.error);
+			throw deserializeDaemonError(response);
 		}
 		if (!isDaemonSessionSummary(response.data)) {
 			throw new Error("Daemon returned an invalid create response");

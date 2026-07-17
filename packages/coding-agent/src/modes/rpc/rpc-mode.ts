@@ -21,7 +21,11 @@ import type {
 } from "../../core/extensions/index.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
-import type { AgentConnection, AgentConnectionExtensionUiResponse } from "../agent-connection/types.js";
+import type {
+	AgentConnection,
+	AgentConnectionExtensionUiResponse,
+	AgentConnectionSessionWatcher,
+} from "../agent-connection/types.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type {
@@ -38,6 +42,7 @@ export type {
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcObservedSessionEvent,
 	RpcResponse,
 	RpcSessionState,
 } from "./rpc-types.js";
@@ -663,6 +668,23 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_commands", { commands });
 			}
 
+			case "send_message":
+			case "agent_messages_status":
+			case "agent_messages_pause":
+			case "agent_messages_resume":
+			case "agent_messages_clear":
+			case "list_schedules":
+			case "add_schedule":
+			case "cancel_schedule":
+			case "list_heartbeats":
+			case "get_heartbeat":
+			case "set_heartbeat":
+			case "update_heartbeat":
+			case "manage_heartbeat":
+			case "observe":
+			case "unobserve":
+				return error(id, command.type, `${command.type} requires a daemon-backed connection`);
+
 			default: {
 				const unknownCommand = command as { type: string };
 				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
@@ -744,16 +766,21 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			);
 		}
 	};
+	const pendingInputHandlers = new Set<Promise<void>>();
+	const dispatchInputLine = (line: string) => {
+		const pending = handleInputLine(line).finally(() => pendingInputHandlers.delete(pending));
+		pendingInputHandlers.add(pending);
+	};
 
 	const onInputEnd = () => {
-		void shutdown();
+		detachInput();
+		process.stdin.pause();
+		void Promise.allSettled([...pendingInputHandlers]).then(() => shutdown());
 	};
 	process.stdin.on("end", onInputEnd);
 
 	detachInput = (() => {
-		const detachJsonl = attachJsonlLineReader(process.stdin, (line) => {
-			void handleInputLine(line);
-		});
+		const detachJsonl = attachJsonlLineReader(process.stdin, dispatchInputLine);
 		return () => {
 			detachJsonl();
 			process.stdin.off("end", onInputEnd);
@@ -787,14 +814,59 @@ export async function runRpcModeWithConnection(connection: AgentConnection): Pro
 
 	let shuttingDown = false;
 	let detachInput = () => {};
+	let promptResponsePending = false;
+	let promptCommandTail = Promise.resolve();
+	const bufferedConnectionOutputs: object[] = [];
+	interface ActiveObservation {
+		watcher: AgentConnectionSessionWatcher;
+		unsubscribe: () => void;
+		ready: boolean;
+		closed: boolean;
+		pendingEvents: object[];
+	}
+	const observations = new Map<string, ActiveObservation>();
 	const signalCleanupHandlers: Array<() => void> = [];
+	const outputConnectionEvent = (event: object) => {
+		if (promptResponsePending) {
+			bufferedConnectionOutputs.push(event);
+			return;
+		}
+		output(event);
+	};
+	const flushConnectionEvents = () => {
+		for (const event of bufferedConnectionOutputs.splice(0)) {
+			output(event);
+		}
+	};
+	const stopObservation = async (activeSessionId: string) => {
+		const observation = observations.get(activeSessionId);
+		if (!observation) {
+			return;
+		}
+		observations.delete(activeSessionId);
+		observation.unsubscribe();
+		await observation.watcher.close();
+	};
+	const activateObservation = (activeSessionId: string) => {
+		const observation = observations.get(activeSessionId);
+		if (!observation || observation.ready) {
+			return;
+		}
+		observation.ready = true;
+		for (const event of observation.pendingEvents.splice(0)) {
+			outputConnectionEvent(event);
+		}
+		if (observation.closed) {
+			void stopObservation(activeSessionId);
+		}
+	};
 	const unsubscribe = connection.subscribe((event) => {
 		if (event.type === "session_event") {
-			output(event.event);
+			outputConnectionEvent(event.event);
 			return;
 		}
 		if (event.type === "extension_error") {
-			output({
+			outputConnectionEvent({
 				type: "extension_error",
 				extensionPath: event.extensionPath,
 				event: event.event,
@@ -815,7 +887,7 @@ export async function runRpcModeWithConnection(connection: AgentConnection): Pro
 				method === "setTitle" ||
 				method === "set_editor_text"
 			) {
-				output({
+				outputConnectionEvent({
 					type: "extension_ui_request",
 					id: event.request.id,
 					method,
@@ -840,6 +912,7 @@ export async function runRpcModeWithConnection(connection: AgentConnection): Pro
 		unsubscribe();
 		detachInput();
 		process.stdin.pause();
+		await Promise.allSettled([...observations.keys()].map((activeSessionId) => stopObservation(activeSessionId)));
 		await connection.dispose();
 		process.exit(exitCode);
 	}
@@ -974,6 +1047,101 @@ export async function runRpcModeWithConnection(connection: AgentConnection): Pro
 				return success(id, command.type);
 			case "get_messages":
 				return success(id, command.type, { messages: await connection.getMessages() });
+			case "send_message":
+				return success(
+					id,
+					command.type,
+					await connection.sendAgentMessage(command.targetActiveSessionId, command.message, command.deliveryMode),
+				);
+			case "agent_messages_status":
+				return success(id, command.type, await connection.getAgentMessageStatus());
+			case "agent_messages_pause":
+				return success(id, command.type, await connection.pauseAgentMessages());
+			case "agent_messages_resume":
+				return success(id, command.type, await connection.resumeAgentMessages());
+			case "agent_messages_clear":
+				return success(id, command.type, { cleared: await connection.clearAgentMessages() });
+			case "list_schedules":
+				return success(id, command.type, {
+					jobs: await connection.listCronJobs({ includeInactive: command.includeInactive }),
+				});
+			case "add_schedule":
+				return success(id, command.type, {
+					job: await connection.addCronJob(command.schedule, command.prompt),
+				});
+			case "cancel_schedule":
+				return success(id, command.type, { job: await connection.cancelCronJob(command.jobId) });
+			case "list_heartbeats":
+				return success(id, command.type, { heartbeats: await connection.listHeartbeats() });
+			case "get_heartbeat":
+				return success(id, command.type, { heartbeat: (await connection.getHeartbeat()) ?? null });
+			case "set_heartbeat":
+				return success(id, command.type, {
+					heartbeat: await connection.setHeartbeat(command.schedule, command.prompt, command.deliveryMode),
+				});
+			case "update_heartbeat":
+				return success(id, command.type, {
+					heartbeat: (await connection.updateHeartbeat(command.action)) ?? null,
+				});
+			case "manage_heartbeat":
+				return success(id, command.type, {
+					heartbeat: await connection.manageHeartbeat(command.activeSessionId, command.jobId, command.action),
+				});
+			case "observe": {
+				const existing = observations.get(command.activeSessionId);
+				if (existing) {
+					return success(id, command.type, { messages: await existing.watcher.getMessages() });
+				}
+				const watcher = await connection.watchSession(command.activeSessionId);
+				if (!watcher) {
+					throw new Error(`Unknown active session: ${command.activeSessionId}`);
+				}
+				const observation: ActiveObservation = {
+					watcher,
+					unsubscribe: () => {},
+					ready: false,
+					closed: false,
+					pendingEvents: [],
+				};
+				observations.set(command.activeSessionId, observation);
+				observation.unsubscribe = watcher.subscribe((event) => {
+					let observed: object | undefined;
+					if (event.type === "session_event") {
+						observed = {
+							type: "observed_session_event",
+							activeSessionId: command.activeSessionId,
+							event: event.event,
+						};
+					} else if (event.type === "closed") {
+						observed = {
+							type: "observed_session_closed",
+							activeSessionId: command.activeSessionId,
+							error: event.error,
+						};
+						observation.closed = true;
+					}
+					if (!observed) {
+						return;
+					}
+					if (observation.ready) {
+						outputConnectionEvent(observed);
+						if (observation.closed) {
+							void stopObservation(command.activeSessionId);
+						}
+					} else {
+						observation.pendingEvents.push(observed);
+					}
+				});
+				try {
+					return success(id, command.type, { messages: await watcher.getMessages() });
+				} catch (observationError) {
+					await stopObservation(command.activeSessionId);
+					throw observationError;
+				}
+			}
+			case "unobserve":
+				await stopObservation(command.activeSessionId);
+				return success(id, command.type);
 			case "get_commands": {
 				const commands: RpcSlashCommand[] = (await connection.getCommands()).map((available) => ({
 					name: available.name,
@@ -1023,25 +1191,56 @@ export async function runRpcModeWithConnection(connection: AgentConnection): Pro
 		}
 
 		const command = parsed as RpcCommand;
-		try {
-			output(await handleCommand(command));
-		} catch (commandError: unknown) {
-			output(
-				error(
-					command.id,
-					command.type,
-					commandError instanceof Error ? commandError.message : String(commandError),
-				),
+		const executeCommand = async () => {
+			const isPrompt = command.type === "prompt";
+			if (isPrompt) {
+				promptResponsePending = true;
+			}
+			try {
+				output(await handleCommand(command));
+				if (command.type === "observe") {
+					activateObservation(command.activeSessionId);
+				}
+			} catch (commandError: unknown) {
+				output(
+					error(
+						command.id,
+						command.type,
+						commandError instanceof Error ? commandError.message : String(commandError),
+					),
+				);
+			} finally {
+				if (isPrompt) {
+					promptResponsePending = false;
+					flushConnectionEvents();
+				}
+			}
+		};
+		if (command.type === "prompt") {
+			const ordered = promptCommandTail.then(executeCommand, executeCommand);
+			promptCommandTail = ordered.then(
+				() => undefined,
+				() => undefined,
 			);
+			await ordered;
+			return;
 		}
+		await executeCommand();
+	};
+	const pendingInputHandlers = new Set<Promise<void>>();
+	const dispatchInputLine = (line: string) => {
+		const pending = handleInputLine(line).finally(() => pendingInputHandlers.delete(pending));
+		pendingInputHandlers.add(pending);
 	};
 
 	const onInputEnd = () => {
-		void shutdown();
+		detachInput();
+		process.stdin.pause();
+		void Promise.allSettled([...pendingInputHandlers]).then(() => shutdown());
 	};
 	process.stdin.on("end", onInputEnd);
 	detachInput = (() => {
-		const detachJsonl = attachJsonlLineReader(process.stdin, (line) => void handleInputLine(line));
+		const detachJsonl = attachJsonlLineReader(process.stdin, dispatchInputLine);
 		return () => {
 			detachJsonl();
 			process.stdin.off("end", onInputEnd);

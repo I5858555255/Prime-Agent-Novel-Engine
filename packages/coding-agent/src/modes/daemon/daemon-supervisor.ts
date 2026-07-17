@@ -5,7 +5,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Writable } from "node:stream";
 import { getLogger } from "@earendil-works/pi-ai";
-import { createCliSubprocessLaunchSpec } from "../../cli/subprocess-launch.js";
+import { createCliSubprocessEnv, createCliSubprocessLaunchSpec } from "../../cli/subprocess-launch.js";
 import {
 	appendRotatingLog,
 	getCronJobsPath,
@@ -1121,17 +1121,7 @@ export class DaemonSupervisor {
 			}
 			case "promote_owned_session": {
 				const match = await this.findWorker(command.activeSessionId);
-				if (match.worker.descriptor.ownerClientId !== this.protocolClientId(client)) {
-					throw new Error("Session is not owned by this client");
-				}
-				if (match.worker.ownerCleanupTimer) {
-					clearTimeout(match.worker.ownerCleanupTimer);
-					match.worker.ownerCleanupTimer = undefined;
-				}
-				match.worker.descriptor.ownerClientId = undefined;
-				match.worker.launchEnv = undefined;
-				this.persistWorker(match.worker);
-				await this.syncAgentPeers();
+				await this.promoteOwnedWorker(client, match.worker);
 				return success(command.id, command.type, this.publicSummary(match.worker, match.summary));
 			}
 			case "retry_worker": {
@@ -1163,6 +1153,10 @@ export class DaemonSupervisor {
 				return success(command.id, "prepare_update_restart", manifest);
 			}
 			case "agent_messages_status": {
+				if (command.activeSessionId) {
+					const match = await this.findWorker(command.activeSessionId);
+					return this.forwardToWorker(match.worker, command);
+				}
 				const first = [...this.workers.values()].find((worker) => this.isVisibleWorker(worker) && worker.client);
 				if (!first) {
 					return success(command.id, command.type, { paused: false, limits: {} });
@@ -1171,6 +1165,10 @@ export class DaemonSupervisor {
 			}
 			case "agent_messages_pause":
 			case "agent_messages_resume": {
+				if (command.activeSessionId) {
+					const match = await this.findWorker(command.activeSessionId);
+					return this.forwardToWorker(match.worker, command);
+				}
 				const responses = await Promise.all(
 					[...this.workers.values()]
 						.filter((worker) => this.isVisibleWorker(worker) && worker.client)
@@ -1282,7 +1280,11 @@ export class DaemonSupervisor {
 			}
 			case "cron_add": {
 				const match = await this.findWorker(command.activeSessionId);
-				return this.forwardToWorker(match.worker, command);
+				const response = await this.forwardToWorker(match.worker, command);
+				if (response.success && command.promoteOwnedSession) {
+					await this.promoteOwnedWorker(client, match.worker);
+				}
+				return response;
 			}
 			case "cron_cancel": {
 				if (command.activeSessionId) {
@@ -1320,7 +1322,11 @@ export class DaemonSupervisor {
 			}
 			case "heartbeat_set": {
 				const match = await this.findWorker(command.activeSessionId);
-				return this.forwardToWorker(match.worker, command);
+				const response = await this.forwardToWorker(match.worker, command);
+				if (response.success && command.promoteOwnedSession) {
+					await this.promoteOwnedWorker(client, match.worker);
+				}
+				return response;
 			}
 			case "heartbeat_update": {
 				const match = await this.findWorker(command.activeSessionId);
@@ -1503,6 +1509,20 @@ export class DaemonSupervisor {
 		throw new SessionAlreadyActiveError(sessionPath, worker.descriptor.rootActiveSessionId);
 	}
 
+	private async promoteOwnedWorker(client: DaemonSocketClient, worker: ResidentWorker): Promise<void> {
+		if (worker.descriptor.ownerClientId !== this.protocolClientId(client)) {
+			throw new Error("Session is not owned by this client");
+		}
+		if (worker.ownerCleanupTimer) {
+			clearTimeout(worker.ownerCleanupTimer);
+			worker.ownerCleanupTimer = undefined;
+		}
+		worker.descriptor.ownerClientId = undefined;
+		worker.launchEnv = undefined;
+		this.persistWorker(worker);
+		await this.syncAgentPeers();
+	}
+
 	private async launchWorker(
 		command: DaemonCreateCommand,
 		existing?: ResidentWorker,
@@ -1534,7 +1554,7 @@ export class DaemonSupervisor {
 		const child: ChildProcess = spawn(launch.command, launch.args, {
 			cwd: createCommand.config?.cwd ?? process.cwd(),
 			detached: true,
-			env: {
+			env: createCliSubprocessEnv({
 				...process.env,
 				...launchEnv,
 				[DAEMON_WORKER_ROLE_ENV]: "1",
@@ -1546,7 +1566,7 @@ export class DaemonSupervisor {
 				[ORPHAN_PROCESS_JOURNAL_ENV]: orphanProcessJournalPath,
 				[SESSION_LEASES_ENABLED_ENV]: "1",
 				[SESSION_LEASE_OWNER_ID_ENV]: rootActiveSessionId,
-			},
+			}),
 			stdio: ["ignore", "ignore", "ignore", "pipe"],
 		});
 		const childClosed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
@@ -3906,7 +3926,7 @@ export class DaemonSupervisor {
 		await this.runCleanupStep("daemon ownership", async () => ownership?.release());
 		if (relaunch) {
 			const launch = createCliSubprocessLaunchSpec(["--mode", "daemon", "--daemon-socket", this.socketPath]);
-			const environment = { ...process.env };
+			const environment = createCliSubprocessEnv();
 			delete environment[DAEMON_CATALOG_ROLE_ENV];
 			delete environment[DAEMON_WORKER_ROLE_ENV];
 			delete environment[DAEMON_WORKER_TOKEN_ENV];

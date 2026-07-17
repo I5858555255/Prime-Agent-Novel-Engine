@@ -19,7 +19,6 @@ import type { InputSource } from "../../core/extensions/types.js";
 import type { CustomMessage } from "../../core/messages.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
-import type { SessionHeader } from "../../core/session-manager.js";
 import type {
 	AgentConnectionAgentStatus,
 	AgentConnectionHeartbeat,
@@ -31,6 +30,7 @@ import type {
 	AgentConnectionScopedModel,
 	AgentConnectionSessionContext,
 	AgentConnectionSessionEvent,
+	AgentConnectionSessionHeader,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSideQuestionEvent,
 	AgentConnectionState,
@@ -405,9 +405,9 @@ export type DaemonCommand =
 			fromActiveSessionId?: string;
 			deliveryMode?: AgentSessionMessageDeliveryMode;
 	  }
-	| { id?: string; type: "agent_messages_status" }
-	| { id?: string; type: "agent_messages_pause" }
-	| { id?: string; type: "agent_messages_resume" }
+	| { id?: string; type: "agent_messages_status"; activeSessionId?: string }
+	| { id?: string; type: "agent_messages_pause"; activeSessionId?: string }
+	| { id?: string; type: "agent_messages_resume"; activeSessionId?: string }
 	| { id?: string; type: "agent_messages_clear"; activeSessionId: string }
 	| { id?: string; type: "abort"; activeSessionId: string }
 	| {
@@ -450,7 +450,14 @@ export type DaemonCommand =
 			jobId: string;
 			action: AgentHeartbeatManagementAction;
 	  }
-	| { id?: string; type: "cron_add"; activeSessionId: string; schedule: string; prompt: string }
+	| {
+			id?: string;
+			type: "cron_add";
+			activeSessionId: string;
+			schedule: string;
+			prompt: string;
+			promoteOwnedSession?: boolean;
+	  }
 	| { id?: string; type: "cron_cancel"; activeSessionId?: string; jobId: string }
 	| { id?: string; type: "heartbeat_get"; activeSessionId: string }
 	| {
@@ -460,6 +467,7 @@ export type DaemonCommand =
 			schedule: string;
 			prompt: string;
 			deliveryMode?: AgentHeartbeatDeliveryMode;
+			promoteOwnedSession?: boolean;
 	  }
 	| { id?: string; type: "heartbeat_update"; activeSessionId: string; action: AgentHeartbeatUpdateAction }
 	| { id?: string; type: "set_model"; activeSessionId: string; provider: string; modelId: string }
@@ -597,7 +605,7 @@ export interface DaemonSavedSessionInfo {
 export type DaemonDeleteSavedSessionResult = DeleteSessionFileResult;
 export type DaemonAutonomousStatus = AgentAutonomousStatus;
 export type DaemonBashResult = BashResult;
-export type DaemonSessionHeader = SessionHeader;
+export type DaemonSessionHeader = AgentConnectionSessionHeader;
 
 export type DaemonResourceSnapshot = AgentConnectionResourceSnapshot;
 

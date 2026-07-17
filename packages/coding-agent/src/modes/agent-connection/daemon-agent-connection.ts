@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
 import { getAgentLogPath, getDaemonLogPath } from "../../config.js";
+import type {
+	AgentSessionMessageDeliveryMode,
+	AgentSessionMessageReceipt,
+	AgentSessionMessageSafetyStatus,
+} from "../../core/agent-messages.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import type { BashResult } from "../../core/bash-executor.js";
@@ -16,7 +21,6 @@ import type {
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
-import type { SessionHeader } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type DaemonClient, getDaemonSocketCloseReason } from "../daemon/daemon-client.js";
 import { deserializeDaemonError } from "../daemon/daemon-errors.js";
@@ -60,6 +64,7 @@ import type {
 	AgentConnectionSavedSessionScope,
 	AgentConnectionScopedModel,
 	AgentConnectionSessionContext,
+	AgentConnectionSessionHeader,
 	AgentConnectionSessionListCallbacks,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
@@ -93,6 +98,7 @@ const MAX_IGNORED_SNAPSHOT_IDS = 128;
 const UPDATE_RECONNECT_TIMEOUT_MS = 120000;
 const UPDATE_RECONNECT_RETRY_MS = 100;
 const MAX_COMPLETED_SNAPSHOTS = 128;
+const OWNED_SESSION_DISPOSE_RECONNECT_WAIT_MS = 10_000;
 const updateTransportReconnects = new WeakMap<DaemonClient, Promise<void>>();
 
 function delay(ms: number): Promise<void> {
@@ -188,6 +194,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly snapshotRecoveryPromises = new Map<string, Promise<void>>();
 	private readonly ignoredSnapshotIds = new Set<string>();
 	private reconnectPromise?: Promise<void>;
+	private disposing = false;
 	private disposed = false;
 
 	constructor(
@@ -379,8 +386,8 @@ export class DaemonAgentConnection implements AgentConnection {
 		return data.messages;
 	}
 
-	async getSessionHeader(): Promise<SessionHeader | undefined> {
-		const data = await this.requestData<{ header?: SessionHeader | null }>({
+	async getSessionHeader(): Promise<AgentConnectionSessionHeader | undefined> {
+		const data = await this.requestData<{ header?: AgentConnectionSessionHeader | null }>({
 			type: "get_session_header",
 			activeSessionId: this.activeSessionId,
 		});
@@ -512,12 +519,17 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async addCronJob(schedule: string, prompt: string): Promise<AgentCronJob> {
+		const promoteOwnedSession = this.options.ownedSession === true;
 		const data = await this.requestData<{ job: AgentCronJob }>({
 			type: "cron_add",
 			activeSessionId: this.activeSessionId,
 			schedule,
 			prompt,
+			promoteOwnedSession,
 		});
+		if (promoteOwnedSession) {
+			this.options.ownedSession = false;
+		}
 		return data.job;
 	}
 
@@ -543,13 +555,18 @@ export class DaemonAgentConnection implements AgentConnection {
 		instruction: string,
 		deliveryMode?: AgentHeartbeatDeliveryMode,
 	): Promise<AgentCronJob> {
+		const promoteOwnedSession = this.options.ownedSession === true;
 		const data = await this.requestData<{ heartbeat: AgentCronJob }>({
 			type: "heartbeat_set",
 			activeSessionId: this.activeSessionId,
 			schedule,
 			prompt: instruction,
 			...(deliveryMode ? { deliveryMode } : {}),
+			promoteOwnedSession,
 		});
+		if (promoteOwnedSession) {
+			this.options.ownedSession = false;
+		}
 		return data.heartbeat;
 	}
 
@@ -560,6 +577,48 @@ export class DaemonAgentConnection implements AgentConnection {
 			action,
 		});
 		return data.heartbeat ?? undefined;
+	}
+
+	async sendAgentMessage(
+		targetActiveSessionId: string,
+		message: string,
+		deliveryMode?: AgentSessionMessageDeliveryMode,
+	): Promise<AgentSessionMessageReceipt> {
+		return this.requestData<AgentSessionMessageReceipt>({
+			type: "send_message",
+			targetActiveSessionId,
+			message,
+			fromActiveSessionId: this.activeSessionId,
+			deliveryMode,
+		});
+	}
+
+	async getAgentMessageStatus(): Promise<AgentSessionMessageSafetyStatus> {
+		return this.requestData<AgentSessionMessageSafetyStatus>({
+			type: "agent_messages_status",
+			activeSessionId: this.activeSessionId,
+		});
+	}
+
+	async pauseAgentMessages(): Promise<AgentSessionMessageSafetyStatus> {
+		return this.requestData<AgentSessionMessageSafetyStatus>({
+			type: "agent_messages_pause",
+			activeSessionId: this.activeSessionId,
+		});
+	}
+
+	async resumeAgentMessages(): Promise<AgentSessionMessageSafetyStatus> {
+		return this.requestData<AgentSessionMessageSafetyStatus>({
+			type: "agent_messages_resume",
+			activeSessionId: this.activeSessionId,
+		});
+	}
+
+	async clearAgentMessages(): Promise<number> {
+		return this.requestData<number>({
+			type: "agent_messages_clear",
+			activeSessionId: this.activeSessionId,
+		});
 	}
 
 	async getUserMessagesForForking(): Promise<AgentConnectionUserMessage[]> {
@@ -1048,6 +1107,15 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async dispose(): Promise<void> {
+		if (this.disposed || this.disposing) {
+			return;
+		}
+		this.disposing = true;
+		if (this.options.ownedSession && !this.client.isConnected && this.reconnectPromise) {
+			await Promise.race([this.reconnectPromise, delay(OWNED_SESSION_DISPOSE_RECONNECT_WAIT_MS)]).catch(
+				() => undefined,
+			);
+		}
 		this.disposed = true;
 		this.updateRestartPending = false;
 		await Promise.allSettled([...this.activeSideQuestionIds].map((id) => this.abortSideQuestion(id)));

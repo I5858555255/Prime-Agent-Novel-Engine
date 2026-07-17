@@ -15,6 +15,9 @@ import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isHelpCommandRequest, PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } from "./command-registry.js";
+import { createCliSubprocessEnv } from "./subprocess-launch.js";
+
+const DAEMON_STARTUP_TIMEOUT_MS = 30_000;
 
 export function isDaemonSessionSummary(value: unknown): value is SessionSummary {
 	if (!value || typeof value !== "object") {
@@ -309,7 +312,7 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 		{
 			cwd: spawnCwd ?? process.cwd(),
 			detached: true,
-			env: process.env,
+			env: createCliSubprocessEnv(),
 			// The daemon writes its own rotating log (see daemon-mode); nothing here
 			// needs its stdout/stderr, so leave them detached.
 			stdio: "ignore",
@@ -317,7 +320,7 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 	);
 	child.unref();
 
-	const deadline = Date.now() + 10000;
+	const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		if (await canConnectToDaemon(socketPath, 250)) {
 			return;
@@ -352,13 +355,6 @@ export function ensureInteractiveDaemonRunning(socketPath: string, spawnCwd?: st
 }
 
 const EARLY_LAUNCH_EXCLUDED_FLAGS = new Set(["--help", "-h", "--version", "-v", "--list-models", "--export"]);
-const INTERACTIVE_EARLY_LAUNCH_EXCLUDED_FLAGS = new Set([
-	...EARLY_LAUNCH_EXCLUDED_FLAGS,
-	"--mode",
-	"--print",
-	"-p",
-	"--no-session",
-]);
 const EARLY_LAUNCH_VALUE_FLAGS = new Set([
 	"--mode",
 	"--daemon-socket",
@@ -438,58 +434,6 @@ export function shouldStartDaemonEarly(args: readonly string[], startupBenchmark
 		return false;
 	}
 	return true;
-}
-
-/** Conservative pre-parse of argv: true only when startup clearly heads into daemon-backed interactive mode. */
-export function shouldStartInteractiveDaemonEarly(
-	args: readonly string[],
-	stdinIsTTY: boolean | undefined,
-	startupBenchmark: boolean,
-): boolean {
-	if (startupBenchmark || !stdinIsTTY) {
-		return false;
-	}
-	const firstPositionalIndex = args.findIndex((arg) => arg.length > 0 && !arg.startsWith("-"));
-	const firstPositional = args[firstPositionalIndex];
-	const isHelpCommand = firstPositional === "help" && isHelpCommandRequest(args.slice(firstPositionalIndex + 1));
-	if (
-		firstPositional &&
-		(REMOVED_COMMAND_NAMES.has(firstPositional) ||
-			(PUBLIC_COMMAND_NAMES.has(firstPositional) &&
-				firstPositional !== "agents" &&
-				(firstPositional !== "help" || isHelpCommand)))
-	) {
-		return false;
-	}
-	return !args.some((arg) => INTERACTIVE_EARLY_LAUNCH_EXCLUDED_FLAGS.has(arg));
-}
-
-/**
- * Fire-and-forget daemon launch for interactive startups, called from cli.ts
- * before the heavy module graph is imported. A wrong "yes" merely starts the
- * daemon that the next interactive run would need anyway; a wrong "no" only
- * means main.ts starts it later, as before. Never throws — errors surface when
- * main.ts awaits the memoized promise.
- */
-export function maybeStartInteractiveDaemonEarly(args: readonly string[]): void {
-	const benchmarkFlag = (process.env.PI_STARTUP_BENCHMARK ?? "").toLowerCase();
-	const startupBenchmark = benchmarkFlag === "1" || benchmarkFlag === "true" || benchmarkFlag === "yes";
-	if (!shouldStartInteractiveDaemonEarly(args, process.stdin.isTTY, startupBenchmark)) {
-		return;
-	}
-	const socketIndex = args.indexOf("--daemon-socket");
-	const socketPath =
-		socketIndex !== -1 && args[socketIndex + 1] ? (args[socketIndex + 1] as string) : defaultDaemonSocketPath();
-	// Honor --cwd: main() chdirs after parsing, but this runs before; spawn the
-	// daemon from the target directory so it matches the old post-chdir behavior.
-	const cwdIndex = args.indexOf("--cwd");
-	const cwdArg = cwdIndex !== -1 ? args[cwdIndex + 1] : undefined;
-	const spawnCwd = cwdArg ? resolve(expandTildePath(cwdArg)) : undefined;
-	if (spawnCwd && !existsSync(spawnCwd)) {
-		// Invalid --cwd: skip the early spawn; main() reports the error.
-		return;
-	}
-	void ensureInteractiveDaemonRunning(socketPath, spawnCwd);
 }
 
 export function maybeStartDaemonEarly(args: readonly string[]): void {
