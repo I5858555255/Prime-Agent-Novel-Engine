@@ -75,8 +75,8 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom result");
 	});
 
-	test("renders compact image metadata by default when terminal supports graphics", () => {
-		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	test.each(["kitty", null] as const)("renders one compact image metadata row for %s capability", (protocol) => {
+		setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
 		try {
 			const component = new ToolExecutionComponent(
 				"custom_tool",
@@ -92,6 +92,7 @@ describe("ToolExecutionComponent parity", () => {
 			const rendered = stripAnsi(component.render(120).join("\n"));
 			expect(rendered).not.toContain("\x1b_G");
 			expect(rendered).toContain("    ╰─ [image/png · 800×600]");
+			expect(rendered.match(/image\/png/g)).toHaveLength(1);
 		} finally {
 			resetCapabilitiesCache();
 		}
