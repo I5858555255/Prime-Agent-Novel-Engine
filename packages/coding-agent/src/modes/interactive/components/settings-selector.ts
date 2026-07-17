@@ -2,7 +2,6 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Transport } from "@earendil-works/pi-ai";
 import {
 	Container,
-	getCapabilities,
 	type SelectItem,
 	SelectList,
 	type SelectListLayoutOptions,
@@ -200,7 +199,6 @@ export class SettingsSelectorComponent extends Container {
 	constructor(config: SettingsConfig, callbacks: SettingsCallbacks) {
 		super();
 
-		const supportsImages = getCapabilities().images;
 		let currentWarnings = { ...config.warnings };
 
 		const items: SettingItem[] = [
@@ -323,20 +321,16 @@ export class SettingsSelectorComponent extends Container {
 			},
 		];
 
-		// Only show image toggle if terminal supports it
-		if (supportsImages) {
-			// Insert after autocompact
-			items.splice(1, 0, {
-				id: "show-images",
-				label: "Show image metadata",
-				description: "Show image type and dimensions in terminal",
-				currentValue: config.showImages ? "true" : "false",
-				values: ["true", "false"],
-			});
-		}
+		items.splice(1, 0, {
+			id: "show-images",
+			label: "Show image metadata",
+			description: "Show image type and dimensions in terminal",
+			currentValue: config.showImages ? "true" : "false",
+			values: ["true", "false"],
+		});
 
 		// Image auto-resize toggle (always available, affects both attached and read images)
-		items.splice(supportsImages ? 2 : 1, 0, {
+		items.splice(2, 0, {
 			id: "auto-resize-images",
 			label: "Auto-resize images",
 			description: "Resize large images to 2000x2000 max for better model compatibility",
