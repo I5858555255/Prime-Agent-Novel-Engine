@@ -18,6 +18,7 @@ import {
 	type DaemonClientCloseListener,
 	type DaemonClientMessageListener,
 	type DaemonClientRequestOptions,
+	type DaemonHello,
 	DaemonSocketClosedError,
 } from "../src/modes/daemon/daemon-client.js";
 import {
@@ -45,8 +46,10 @@ class FakeDaemonClient {
 	connectionStateFactory: ((activeSessionId: string) => AgentConnectionState) | undefined;
 	abortBashUnknownCommand = false;
 	abortAndClearQueueUnknownCommand = false;
+	legacyHeartbeatCommandsSupported = false;
 	serverCapabilities = new Set<string>();
 	updateRestartSessions: Array<Record<string, unknown>> = [];
+	hello: DaemonHello | undefined;
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
 
@@ -219,6 +222,29 @@ class FakeDaemonClient {
 					success: true,
 					data: { steering: ["aborted"], followUp: ["cleared"] },
 				};
+			case "heartbeats_list":
+				return this.legacyHeartbeatCommandsSupported
+					? { type: "response", command: command.type, success: true, data: { heartbeats: [] } }
+					: {
+							type: "response",
+							command: command.type,
+							success: false,
+							error: "Unknown daemon command: heartbeats_list",
+						};
+			case "heartbeat_manage":
+				return this.legacyHeartbeatCommandsSupported
+					? {
+							type: "response",
+							command: command.type,
+							success: true,
+							data: { heartbeat: { id: command.jobId } },
+						}
+					: {
+							type: "response",
+							command: command.type,
+							success: false,
+							error: "Unknown daemon command: heartbeat_manage",
+						};
 			case "list_saved_sessions": {
 				const activeSessionId = "activeSessionId" in command ? command.activeSessionId : undefined;
 				options.onProgress?.({
@@ -366,6 +392,14 @@ class FakeDaemonClient {
 			default:
 				throw new Error(`Unexpected command: ${command.type}`);
 		}
+	}
+
+	async requestLegacy(
+		command: DaemonCommand,
+		timeoutMs = 30000,
+		options: DaemonClientRequestOptions = {},
+	): Promise<DaemonResponse> {
+		return this.request(command, timeoutMs, options);
 	}
 
 	supportsServerCapability(capability: string): boolean {
@@ -606,6 +640,43 @@ describe("DaemonAgentConnection", () => {
 			"requires a newer Prime Agent daemon",
 		);
 		expect(fakeClient.requests).toEqual([]);
+	});
+
+	it("uses heartbeat commands supported by a retained protocol-3 daemon", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.hello = {
+			type: "daemon_hello",
+			socketPath: "/tmp/prime-agent.sock",
+			protocol: { ...DAEMON_PROTOCOL_INFO, version: 3 },
+			clientId: "legacy-client",
+			serverCapabilities: [],
+		};
+		fakeClient.legacyHeartbeatCommandsSupported = true;
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+
+		await expect(connection.listHeartbeats()).resolves.toEqual([]);
+		await expect(connection.manageHeartbeat("active-original", "job-1", "pause")).resolves.toMatchObject({
+			id: "job-1",
+		});
+		expect(fakeClient.requests.map((request) => request.type)).toEqual(["heartbeats_list", "heartbeat_manage"]);
+	});
+
+	it("degrades heartbeat commands missing from an older protocol-3 daemon", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.hello = {
+			type: "daemon_hello",
+			socketPath: "/tmp/prime-agent.sock",
+			protocol: { ...DAEMON_PROTOCOL_INFO, version: 3 },
+			clientId: "legacy-client",
+			serverCapabilities: [],
+		};
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+
+		await expect(connection.listHeartbeats()).resolves.toEqual([]);
+		await expect(connection.manageHeartbeat("active-original", "job-1", "pause")).rejects.toThrow(
+			"Heartbeat management requires a newer Prime Agent daemon.",
+		);
+		expect(fakeClient.requests.map((request) => request.type)).toEqual(["heartbeats_list", "heartbeat_manage"]);
 	});
 
 	it("reattaches an open window to its restored session after an update restart", async () => {

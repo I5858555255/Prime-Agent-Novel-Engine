@@ -473,11 +473,15 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async listHeartbeats(): Promise<AgentConnectionHeartbeat[]> {
-		if (!this.client.supportsServerCapability("heartbeat_catalog")) {
+		const hasCapability = this.client.supportsServerCapability("heartbeat_catalog");
+		if (!hasCapability && this.client.hello?.protocol.version !== 3) {
 			return [];
 		}
 		try {
-			const data = await this.requestData<{ heartbeats: AgentConnectionHeartbeat[] }>({ type: "heartbeats_list" });
+			const command = { type: "heartbeats_list" } as const;
+			const data = hasCapability
+				? await this.requestData<{ heartbeats: AgentConnectionHeartbeat[] }>(command)
+				: await this.requestLegacyData<{ heartbeats: AgentConnectionHeartbeat[] }>(command);
 			return data.heartbeats;
 		} catch (error) {
 			if (isUnknownDaemonCommandError(error, "heartbeats_list")) {
@@ -492,16 +496,20 @@ export class DaemonAgentConnection implements AgentConnection {
 		jobId: string,
 		action: AgentHeartbeatManagementAction,
 	): Promise<AgentCronJob> {
-		if (!this.client.supportsServerCapability("heartbeat_management")) {
+		const hasCapability = this.client.supportsServerCapability("heartbeat_management");
+		if (!hasCapability && this.client.hello?.protocol.version !== 3) {
 			throw new Error("Heartbeat management requires a newer Prime Agent daemon.");
 		}
 		try {
-			const data = await this.requestData<{ heartbeat: AgentCronJob }>({
+			const command = {
 				type: "heartbeat_manage",
 				activeSessionId,
 				jobId,
 				action,
-			});
+			} as const;
+			const data = hasCapability
+				? await this.requestData<{ heartbeat: AgentCronJob }>(command)
+				: await this.requestLegacyData<{ heartbeat: AgentCronJob }>(command);
 			return data.heartbeat;
 		} catch (error) {
 			if (isUnknownDaemonCommandError(error, "heartbeat_manage")) {
@@ -1055,6 +1063,14 @@ export class DaemonAgentConnection implements AgentConnection {
 
 	private async requestOk(command: DaemonCommandBody): Promise<void> {
 		await this.requestData<unknown>(command);
+	}
+
+	private async requestLegacyData<T>(command: DaemonCommandBody, timeoutMs?: number): Promise<T> {
+		const response = await this.client.requestLegacy(command, timeoutMs);
+		if (!response.success) {
+			throw deserializeDaemonError(response);
+		}
+		return response.data as T;
 	}
 
 	private async requestData<T>(command: DaemonCommandBody, timeoutMs?: number): Promise<T> {
