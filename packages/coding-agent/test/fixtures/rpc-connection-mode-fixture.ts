@@ -4,6 +4,7 @@ import { runRpcModeWithConnection } from "../../src/modes/rpc/rpc-mode.js";
 let listener: AgentConnectionEventListener = () => {};
 let resolveExtensionUi: (() => void) | undefined;
 let slowWatcherCount = 0;
+let activePrompt: Promise<void> | undefined;
 
 const heartbeat = {
 	id: "heartbeat-1",
@@ -26,6 +27,14 @@ const connection = {
 		return () => {};
 	},
 	async prompt(message: string) {
+		if (message === "async-eof") {
+			activePrompt = (async () => {
+				await listener({ type: "session_event", event: { type: "agent_start" } });
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				await listener({ type: "session_event", event: { type: "agent_end", messages: [] } });
+			})();
+			return;
+		}
 		if (message === "extension-ui") {
 			await new Promise<void>((resolve) => {
 				resolveExtensionUi = resolve;
@@ -51,6 +60,9 @@ const connection = {
 	async getAvailableModels() {
 		await new Promise((resolve) => setTimeout(resolve, 25));
 		return [];
+	},
+	async waitForIdle() {
+		await activePrompt;
 	},
 	async getLastAssistantText() {
 		return undefined;

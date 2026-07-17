@@ -533,7 +533,11 @@ async function runRpcModeWithConnectionInternal(
 		queueMicrotask(() => {
 			void cancelPendingExtensionUi()
 				.then(() => Promise.allSettled([...pendingInputHandlers]))
-				.then(() => shutdown());
+				.then(() => connection.waitForIdle())
+				.then(
+					() => shutdown(),
+					() => shutdown(1),
+				);
 		});
 	};
 	process.stdin.on("end", onInputEnd);

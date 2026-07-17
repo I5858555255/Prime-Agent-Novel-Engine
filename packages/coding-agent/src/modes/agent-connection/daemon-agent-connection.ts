@@ -788,7 +788,10 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async waitForIdle(): Promise<void> {
-		await this.requestOk({ type: "wait_for_idle", activeSessionId: this.activeSessionId });
+		await this.requestData<unknown>(
+			{ type: "wait_for_idle", activeSessionId: this.activeSessionId },
+			DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
+		);
 	}
 
 	async waitForHeadlessCompletion(): Promise<AgentAutonomousStatus> {

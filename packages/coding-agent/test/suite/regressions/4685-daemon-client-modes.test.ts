@@ -17,6 +17,7 @@ import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "..
 
 const fixturePath = resolve(__dirname, "../../fixtures/rpc-connection-mode-fixture.ts");
 const fauxExtensionPath = resolve(__dirname, "../../fixtures/eng-4600-faux-extension.ts");
+const rpcEofFauxExtensionPath = resolve(__dirname, "../../fixtures/rpc-eof-faux-extension.ts");
 const cliPath = resolve(__dirname, "../../../src/cli.ts");
 const tsxPath = resolve(__dirname, "../../../../../node_modules/tsx/dist/cli.mjs");
 const repoTsconfigPath = resolve(__dirname, "../../../../../tsconfig.json");
@@ -362,6 +363,50 @@ describe("ENG-4685 daemon-backed client modes", () => {
 			},
 		]);
 	});
+
+	it("drains accepted RPC prompt work before EOF releases the connection", async () => {
+		const result = await runRpc([{ id: "prompt", type: "prompt", message: "async-eof" }]);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toEqual([
+			{ id: "prompt", type: "response", command: "prompt", success: true },
+			{ type: "agent_start" },
+			{ type: "agent_end", messages: [] },
+		]);
+	});
+
+	it("drains accepted daemon RPC prompt work before EOF", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-4685-rpc-eof-"));
+		tempRoots.add(root);
+		const socketPath = join(root, "daemon.sock");
+		daemonSockets.add(socketPath);
+		const result = await runCli(
+			[
+				"--mode",
+				"rpc",
+				"--no-session",
+				"--daemon-socket",
+				socketPath,
+				"--model",
+				"faux/faux",
+				"--extension",
+				rpcEofFauxExtensionPath,
+				"--no-tools",
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--no-context-files",
+			],
+			{
+				agentDir: join(root, "agent"),
+				stdin: '{"id":"prompt","type":"prompt","message":"finish before EOF"}\n',
+			},
+		);
+
+		expect(result).toMatchObject({ code: 0, signal: null, stderr: "" });
+		expect(result.stdout).toContain('{"id":"prompt","type":"response","command":"prompt","success":true}');
+		expect(result.stdout).toContain("rpc eof response");
+		expect(result.stdout).toContain('"type":"agent_end"');
+	}, 30_000);
 
 	it("drains an unterminated final RPC command before EOF", async () => {
 		const result = await runRpc([{ id: "models", type: "get_available_models" }], {
