@@ -1,48 +1,21 @@
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.js";
 
-const SHIMMER_RADIUS = 4;
-const SHIMMER_CORE_RADIUS = 1;
-const SHIMMER_SPACING = 28;
+const LABEL = "Hint:";
+const SHIMMER_RADIUS = 1;
+const SHIMMER_PAUSE_FRAMES = 14;
 
-export const FEATURE_HINT_ANIMATION_INTERVAL_MS = 24;
+export const FEATURE_HINT_ANIMATION_INTERVAL_MS = 80;
 
-type ShimmerColor = "dim" | "muted" | "text";
-
-function shimmerColor(index: number, length: number, frame: number): ShimmerColor {
-	const highlightCount = Math.min(3, Math.max(1, Math.ceil(length / SHIMMER_SPACING)));
-	const phase = frame % length;
-	let nearestDistance = length;
-
-	for (let highlight = 0; highlight < highlightCount; highlight++) {
-		const center = (phase + (highlight * length) / highlightCount) % length;
-		const distance = Math.abs(index - center);
-		nearestDistance = Math.min(nearestDistance, distance, length - distance);
-	}
-
-	if (nearestDistance <= SHIMMER_CORE_RADIUS) return "text";
-	if (nearestDistance <= SHIMMER_RADIUS) return "muted";
-	return "dim";
-}
-
-function renderShimmer(characters: string[], frame: number): string {
+function renderLabelShimmer(characters: string[], frame: number): string {
 	if (characters.length === 0) return "";
 
-	let output = "";
-	let run = "";
-	let runColor = shimmerColor(0, characters.length, frame);
-
-	for (let index = 0; index < characters.length; index++) {
-		const color = shimmerColor(index, characters.length, frame);
-		if (color !== runColor) {
-			output += theme.fg(runColor, run);
-			run = "";
-			runColor = color;
-		}
-		run += characters[index]!;
-	}
-
-	return output + theme.fg(runColor, run);
+	const travelFrames = characters.length + SHIMMER_RADIUS * 2;
+	const phase = frame % (travelFrames + SHIMMER_PAUSE_FRAMES);
+	const center = phase - SHIMMER_RADIUS;
+	return characters
+		.map((character, index) => theme.fg(Math.abs(index - center) <= SHIMMER_RADIUS ? "muted" : "dim", character))
+		.join("");
 }
 
 export class FeatureHintComponent implements Component {
@@ -59,9 +32,12 @@ export class FeatureHintComponent implements Component {
 	render(width: number): string[] {
 		const paddingX = width > 2 ? 1 : 0;
 		const availableWidth = Math.max(1, width - paddingX * 2);
-		const displayText = truncateToWidth(`Hint: ${this.text}`, availableWidth);
+		const displayText = truncateToWidth(`${LABEL} ${this.text}`, availableWidth);
 		const characters = Array.from(displayText);
-		const line = `${" ".repeat(paddingX)}${renderShimmer(characters, this.frame)}`;
+		const labelLength = Math.min(LABEL.length, characters.length);
+		const label = renderLabelShimmer(characters.slice(0, labelLength), this.frame);
+		const hint = theme.fg("dim", characters.slice(labelLength).join(""));
+		const line = `${" ".repeat(paddingX)}${label}${hint}`;
 
 		return [line + " ".repeat(Math.max(0, width - visibleWidth(line))), " ".repeat(width)];
 	}
