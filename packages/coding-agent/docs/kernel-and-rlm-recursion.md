@@ -69,13 +69,15 @@ packages/coding-agent/src/core/agent-session.ts
   Parent session owns recursion settings and implements runRlmChild().
 
 packages/coding-agent/src/core/rlm-runtime.ts
-  TypeScript request/result types for rlm.run, rlm.list_subagents, and
-  rlm.delete_subagent plus their typed host request handlers.
+  TypeScript request/result types for rlm.run, rlm.find_models,
+  rlm.list_subagents, and rlm.delete_subagent plus their typed host request
+  handlers.
 
 prime-agent-runtime/src/rlm/__init__.py
   Python shim installed into ~/.prime/agent/kernel-venv. Exposes rlm, rlm.run(),
-  rlm.list_subagents(), rlm.delete_subagent(), host_request(), RLMResult,
-  RLMSubagent, TokenUsage, and the session-backed harness state helper.
+  rlm.find_models(), rlm.list_subagents(), rlm.delete_subagent(),
+  host_request(), RLMResult, RLMModel, RLMSubagent, TokenUsage, and the
+  session-backed harness state helper.
 
 prime-agent-runtime/src/rlm/harness.py
   Session-backed JSON store for reset-free harness refinement notes: prompt
@@ -597,6 +599,8 @@ The child returns:
   };
   turns: number;
   session_dir: string | null;
+  model: string;
+  warning?: string;
 }
 ```
 
@@ -612,22 +616,28 @@ Turns are counted as assistant messages in the child transcript.
 The answer is the child's final assistant text. This matches the RLM-1 training surface: the model stops calling tools and the final assistant text is the answer.
 
 By default, a child inherits the parent's current model. When a user or skill
-requests a different model, the orchestrator passes its name, ID, or
-provider-qualified reference through to the host:
+requests a different model, the orchestrator first searches the bounded
+authenticated catalog, chooses a candidate, and passes its exact selector:
 
 ```python
+matches = await rlm.find_models("DeepSeek V4 Flash")
 result = await rlm(
     "Check the API",
-    model="DeepSeek V4 Flash",
+    model=matches[0].selector,
 )
 ```
 
-The system prompt never injects the model catalog. The host resolves the
-requested reference to a unique model from the current authenticated, available
-catalog. Unknown, unauthenticated, unavailable, or ambiguous references are
-rejected before child state is created. The selected model is persisted with
-the child and remains active on later turns; changing the parent model does not
-update existing children.
+`find_models()` returns up to eight matches by default and never more than 20.
+Each match exposes `provider`, `id`, `name`, and the exact `provider/model`
+`selector`; only models backed by active, non-expired credentials are included.
+The full catalog is never injected into the system prompt.
+
+`rlm.run(model=...)` intentionally accepts only an exact selector. If that
+selector is unknown, unauthenticated, expired, unavailable, or fails auth
+preflight, the child uses the parent model and the result returns the actual
+`.model` plus a `.warning` that the parent must surface to the user. A selected
+model is persisted with the child and remains active on later turns; changing
+the parent model does not update existing children.
 
 ### Parent-Scoped Subagent Registry
 
