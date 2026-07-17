@@ -311,10 +311,14 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
+		if (!options) {
+			await this.session.prompt(message);
+			return;
+		}
 		await this.session.prompt(message, {
-			images: options?.images,
-			streamingBehavior: options?.streamingBehavior,
-			source: options?.source,
+			images: options.images,
+			streamingBehavior: options.streamingBehavior,
+			source: options.source,
 		});
 	}
 
