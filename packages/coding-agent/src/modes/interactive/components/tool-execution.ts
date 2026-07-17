@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Component, Container, getCapabilities, Image, Text, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Container, Image, Text, type TUI } from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.js";
 import type { KernelSentAgentMessage } from "../../../core/kernel/index.js";
 import { createBashToolDefinition } from "../../../core/tools/bash.js";
@@ -369,10 +369,9 @@ export class ToolExecutionComponent extends Container {
 
 		if (this.result) {
 			const imageBlocks = this.result.content.filter((c) => c.type === "image");
-			const caps = getCapabilities();
 			for (let i = 0; i < imageBlocks.length; i++) {
 				const img = imageBlocks[i];
-				if (!caps.images || !this.showImages || !img.data || !img.mimeType) continue;
+				if (!this.showImages || !img.data || !img.mimeType) continue;
 
 				const imageComponent = new Image(
 					img.data,

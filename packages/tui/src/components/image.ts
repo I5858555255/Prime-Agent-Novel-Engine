@@ -31,7 +31,6 @@ export interface ImageOptions {
 	/** Render metadata instead of terminal graphics. */
 	fallbackOnly?: boolean;
 	fallbackPrefix?: string;
-	inlineMarginTop?: number;
 	/** Kitty image ID. If provided, reuses this ID (for animations/updates). */
 	imageId?: number;
 }
@@ -84,7 +83,7 @@ export class Image implements Component {
 		const caps = getCapabilities();
 		let lines: string[];
 
-		if (caps.images && (fullscreenFallback || this.options.fallbackOnly === true)) {
+		if (fullscreenFallback || this.options.fallbackOnly === true) {
 			const parts = [this.mimeType];
 			parts.push(`${this.dimensions.widthPx}×${this.dimensions.heightPx}`);
 			if (this.options.filename) parts.unshift(this.options.filename);
@@ -118,7 +117,6 @@ export class Image implements Component {
 				const moveUp = rowOffset > 0 ? `\x1b[${rowOffset}A` : "";
 				const moveDown = caps.images === "kitty" && rowOffset > 0 ? `\x1b[${rowOffset}B` : "";
 				lines.push(moveUp + result.sequence + moveDown);
-				for (let i = 0; i < (this.options.inlineMarginTop ?? 0); i++) lines.unshift("");
 			} else {
 				const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
 				lines = [this.theme.fallbackColor(fallback)];

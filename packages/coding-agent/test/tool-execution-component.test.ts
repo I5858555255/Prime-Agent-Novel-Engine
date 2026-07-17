@@ -147,8 +147,8 @@ describe("ToolExecutionComponent parity", () => {
 		}
 	});
 
-	test.each(["kitty", "iterm2"] as const)(
-		"keeps one visible IPython image row without emitting %s protocol during replay",
+	test.each(["kitty", "iterm2", null] as const)(
+		"keeps one visible IPython image row without emitting terminal graphics for %s capability",
 		(protocol) => {
 			setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
 			try {
