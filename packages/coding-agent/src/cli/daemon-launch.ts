@@ -303,11 +303,7 @@ export async function probeRunningDaemonSessions(socketPath: string): Promise<Ru
 
 export async function shouldUseLegacyOwnedSessionWorkerFrontend(socketPath: string): Promise<boolean> {
 	const version = await probeDaemonVersion(socketPath);
-	if (
-		version.status !== "stale" ||
-		!version.compatible ||
-		version.hello?.serverCapabilities?.includes("client_owned_sessions")
-	) {
+	if (version.status !== "stale") {
 		return false;
 	}
 	const running = await probeRunningDaemonSessions(socketPath);

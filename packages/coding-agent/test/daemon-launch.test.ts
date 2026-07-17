@@ -249,6 +249,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 		});
 		cleanups.push(daemon.close);
 
+		await expect(shouldUseLegacyOwnedSessionWorkerFrontend(daemon.socketPath)).resolves.toBe(true);
 		await expect(ensureInteractiveDaemonRunning(daemon.socketPath)).rejects.toThrow("stale");
 		expect(commands).toContain("list");
 		expect(commands).not.toContain("shutdown");
