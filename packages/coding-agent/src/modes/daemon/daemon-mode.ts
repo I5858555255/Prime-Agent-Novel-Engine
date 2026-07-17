@@ -1600,6 +1600,9 @@ export class AgentDaemon {
 			return undefined;
 		}
 		if (dueJob.source === "rlm_heartbeat" && dueJob.runtimeKind === "subagent") {
+			if (current && this.bindingSessions.has(current.activeSessionId)) {
+				return undefined;
+			}
 			return this.restoreRlmHeartbeatSession(dueJob);
 		}
 		if (!(await this.isPersistedCronJobRunnable(dueJob.id))) {

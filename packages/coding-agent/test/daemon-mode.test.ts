@@ -370,6 +370,135 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("defers RLM heartbeats while a subagent is binding", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-binding-heartbeat-"));
+		let releaseChildBinding: (() => void) | undefined;
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const parentManager = SessionManager.create(tempDir, sessionDir);
+			parentManager.newSession();
+			const parentSessionFile = parentManager.getSessionFile();
+			if (!parentSessionFile) {
+				throw new Error("Missing parent session file");
+			}
+			const childSessionDir = join(parentManager.getSessionArtifactDir() ?? tempDir, "child-1");
+			let markChildBindingStarted: (() => void) | undefined;
+			const childBindingStarted = new Promise<void>((resolve) => {
+				markChildBindingStarted = resolve;
+			});
+			const childBindingGate = new Promise<void>((resolve) => {
+				releaseChildBinding = resolve;
+			});
+			const promptHeartbeat = vi.fn(
+				async (_job: AgentCronJob, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+					options?.preflightResult?.(true);
+				},
+			);
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => {
+				const session = makeRuntimeSession(options.sessionManager);
+				Object.assign(session, {
+					isStreaming: false,
+					isCompacting: false,
+					isRetrying: false,
+					isBashRunning: false,
+					hasAcceptedPromptInFlight: false,
+					pendingMessageCount: 0,
+					promptHeartbeat,
+				});
+				if (options.sessionOptions?.rlmSessionDir === childSessionDir) {
+					session.bindExtensions = vi.fn(async () => {
+						markChildBindingStarted?.();
+						await childBindingGate;
+					});
+				}
+				return {
+					session,
+					extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["extensionsResult"],
+					services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+						ReturnType<CreateAgentSessionRuntimeFactory>
+					>["services"],
+					diagnostics: [],
+				};
+			});
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime,
+			});
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				cronScheduler: { runDue(now: Date): Promise<number> };
+				sessions: Map<string, ActiveSessionState>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createRlmSubagentRuntime(
+					parentState: ActiveSessionState,
+					options: CreateRlmSubagentRuntimeOptions,
+				): Promise<ActiveSessionState["runtime"]>;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: parentSessionFile });
+			const childRuntimePromise = internals.createRlmSubagentRuntime(parentState, {
+				parentSession: parentState.runtime.session,
+				id: "child-1",
+				prompt: "initialize a heartbeat",
+				sessionName: "heartbeat-child",
+				sessionDir: childSessionDir,
+				model: {} as Model<Api>,
+				thinkingLevel: "off",
+				serviceTier: null,
+				scopedModels: [],
+				activeToolNames: [],
+				customTools: [],
+				includeGoals: false,
+				includeCompactSkill: false,
+				rlmDepth: 1,
+				rlmMaxDepth: 4,
+				rlmParentNodeId: "child-1",
+			});
+			await childBindingStarted;
+			const childState = [...internals.sessions.values()].find(
+				(state) => state.runtime.metadata.rlmChildId === "child-1",
+			);
+			const childSessionFile = childState?.runtime.session.sessionFile;
+			if (!childState || !childSessionFile) {
+				throw new Error("Missing binding child session");
+			}
+			const heartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: childState.activeSessionId,
+				sessionId: childState.runtime.session.sessionId,
+				sessionFile: childSessionFile,
+				cwd: tempDir,
+				runtimeKind: "subagent",
+				scheduleText: "every 30s",
+				prompt: "report exactly: hi",
+				now: new Date("2026-01-01T00:00:00.000Z"),
+			});
+
+			expect(await internals.cronScheduler.runDue(new Date("2026-07-16T00:00:00.000Z"))).toBe(0);
+			expect(promptHeartbeat).not.toHaveBeenCalled();
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "active",
+				runCount: 0,
+			});
+
+			if (!releaseChildBinding) {
+				throw new Error("Missing child binding release");
+			}
+			releaseChildBinding();
+			releaseChildBinding = undefined;
+			await childRuntimePromise;
+			expect(await internals.cronScheduler.runDue(new Date("2027-01-01T00:00:00.000Z"))).toBe(1);
+			expect(promptHeartbeat).toHaveBeenCalledOnce();
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "active",
+				runCount: 1,
+			});
+		} finally {
+			releaseChildBinding?.();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("closes the exact parent-scoped daemon runtime when a retained subagent is deleted", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
