@@ -748,7 +748,7 @@ async function terminateVerifiedResiduals(
 	const deadline = Date.now() + SHUTDOWN_CONVERGENCE_TIMEOUT_MS + SHUTDOWN_QUIET_PERIOD_MS;
 	while (true) {
 		await assertAdmission();
-		const listeners = await discoverListeningDaemonProcesses();
+		const listeners = scanListeningDaemons();
 		const now = Date.now();
 		if (listeners.length === 0) {
 			quietSince ??= now;
@@ -797,7 +797,7 @@ async function terminateVerifiedResiduals(
 			}
 		}
 	}
-	const remainingListeners = await discoverListeningDaemonProcesses();
+	const remainingListeners = scanListeningDaemons();
 	if (remainingListeners.length === 0) {
 		recordShutdownFailure(
 			failed,
@@ -820,22 +820,6 @@ async function terminateVerifiedResiduals(
 		);
 	}
 }
-
-async function discoverListeningDaemonProcesses(): Promise<DiscoveredDaemonProcess[]> {
-	const byIdentity = new Map<string, DiscoveredDaemonProcess>();
-	for (const listener of scanListeningDaemons()) {
-		byIdentity.set(`${listener.pid}:${listener.socketPath}`, listener);
-	}
-	for (const daemon of await discoverDaemons()) {
-		if (daemon.pid === undefined || daemon.status === "orphan-file") {
-			continue;
-		}
-		const listener = { pid: daemon.pid, socketPath: daemon.socketPath, uptimeSeconds: daemon.uptimeSeconds };
-		byIdentity.set(`${listener.pid}:${listener.socketPath}`, listener);
-	}
-	return [...byIdentity.values()];
-}
-
 function describeDaemonParent(pid: number): string {
 	const result = spawnSync("ps", ["-o", "ppid=,tty=,command=", "-p", String(pid)], { encoding: "utf8" });
 	if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
