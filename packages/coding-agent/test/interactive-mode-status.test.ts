@@ -1422,6 +1422,7 @@ describe("InteractiveMode model selection persistence", () => {
 		currentModel?: AgentConnectionModel;
 		connectionModelsFetchedAt?: number;
 		scopedModels?: AgentConnectionState["scopedModels"];
+		hasConfiguredAuth?: (model: AgentConnectionModel) => boolean;
 	}) {
 		let overlayComponent: Component | undefined;
 		const hide = vi.fn();
@@ -1437,7 +1438,7 @@ describe("InteractiveMode model selection persistence", () => {
 			refresh: vi.fn(),
 			getError: vi.fn(() => undefined),
 			getAvailable: vi.fn(() => registryModels),
-			hasConfiguredAuth: vi.fn(() => false),
+			hasConfiguredAuth: vi.fn((model: AgentConnectionModel) => options.hasConfiguredAuth?.(model) ?? false),
 			getProviderAuthStatus: vi.fn(() => ({ configured: false })),
 			find: vi.fn((provider: string, modelId: string) =>
 				registryModels.find((model) => model.provider === provider && model.id === modelId),
@@ -1867,7 +1868,7 @@ describe("InteractiveMode model selection persistence", () => {
 		let authenticated = false;
 		const getModelCatalog = vi.fn(async () => ({
 			models: [model],
-			configuredProviders: authenticated ? [model.provider] : [],
+			configuredProviders: [],
 		}));
 		const loginProvider = vi.fn(async (): Promise<AuthenticationResult> => {
 			authenticated = true;
@@ -1888,6 +1889,7 @@ describe("InteractiveMode model selection persistence", () => {
 			providerOptions: [provider],
 			loginProvider,
 			applySelectedModel,
+			hasConfiguredAuth: () => authenticated,
 		});
 
 		const result = fakeThis.showConfigurationMenu("models");

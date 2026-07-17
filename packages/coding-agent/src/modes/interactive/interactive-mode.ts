@@ -7094,7 +7094,7 @@ export class InteractiveMode {
 		authFlows: ProviderAuthFlows,
 		providerOptions: ReadonlyArray<AuthSelectorProvider>,
 	): Promise<boolean> {
-		if (this.connectionConfiguredProviders.has(model.provider)) return true;
+		if (this.isModelProviderConfigured(model)) return true;
 
 		const provider = providerOptions.find(
 			(option) => option.id === model.provider && (option.category ?? "provider") === "provider",
@@ -7109,10 +7109,14 @@ export class InteractiveMode {
 
 		this.invalidateConnectionModels();
 		await this.getConnectionAvailableModels();
-		if (this.connectionConfiguredProviders.has(model.provider)) return true;
+		if (this.isModelProviderConfigured(model)) return true;
 
 		this.showError(`Authentication completed, but ${model.provider} is still unavailable.`);
 		return false;
+	}
+
+	private isModelProviderConfigured(model: AgentConnectionModel): boolean {
+		return this.connectionConfiguredProviders.has(model.provider) || this.modelRegistry.hasConfiguredAuth(model);
 	}
 
 	private applyConnectionModelCatalog(catalog: AgentConnectionModelCatalog): void {
