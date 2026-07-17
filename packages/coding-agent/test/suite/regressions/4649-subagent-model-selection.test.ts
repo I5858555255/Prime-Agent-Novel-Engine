@@ -155,6 +155,29 @@ describe("ENG-4649 subagent model selection", () => {
 		}
 	});
 
+	it("accepts a selected model authenticated by headers", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model" }, { id: "child-model" }],
+		});
+		try {
+			harness.setResponses([fauxAssistantMessage("header-auth child answer")]);
+			const authPreflight = vi
+				.spyOn(harness.session.modelRegistry, "getApiKeyAndHeaders")
+				.mockResolvedValueOnce({ ok: true, headers: { Authorization: "Bearer header-token" } });
+
+			const result = await harness.session.runRlmChild("use header auth", {
+				model: `${provider}/child-model`,
+			});
+			authPreflight.mockRestore();
+
+			expect(result.model).toBe(`${provider}/child-model`);
+			expect(result.warning).toBeUndefined();
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("falls back to the parent model and returns a user-facing warning", async () => {
 		const harness = await createHarness({
 			provider,

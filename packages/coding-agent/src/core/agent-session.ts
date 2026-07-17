@@ -256,6 +256,8 @@ export interface RlmChildAgentSnapshot {
 	activeSessionId?: string;
 	/** Stable daemon-visible session name for addressing/displaying the child. */
 	sessionName?: string;
+	/** Exact provider/model selector used by the child. */
+	model?: string;
 	label: string;
 	status: RlmChildAgentStatus;
 	durationMs?: number;
@@ -6787,7 +6789,7 @@ export class AgentSession {
 		}
 
 		const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok || !auth.apiKey) {
+		if (!auth.ok) {
 			return this._rlmModelFallback(reference, parentModel, "failed authentication preflight");
 		}
 		return { model };
@@ -6854,12 +6856,14 @@ export class AgentSession {
 		this._activeRlmChildRuns.set(run.id, run);
 		// Status-only relay; the conversation is read from the child's own session.
 		const emitChildUpdate = () => {
+			const childModel = childSession?.model ?? modelSelection.model;
 			this._emit({
 				type: "rlm_child_update",
 				child: {
 					id: childNodeId,
 					parentId: this._rlmParentNodeId,
 					sessionName: childSession?.sessionName ?? sessionName,
+					model: `${childModel.provider}/${childModel.id}`,
 					label,
 					status: run.status,
 					durationMs,

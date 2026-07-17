@@ -313,6 +313,7 @@ export function mergeChildAgentSnapshots(
 		parentId: incoming.parentId ?? previous.parentId,
 		activeSessionId: incoming.activeSessionId ?? previous.activeSessionId,
 		sessionName: incoming.sessionName ?? previous.sessionName,
+		model: incoming.model ?? previous.model,
 		durationMs: incoming.durationMs ?? previous.durationMs,
 		answerPreview: incoming.answerPreview ?? previous.answerPreview,
 		toolUseCount:
@@ -335,6 +336,7 @@ function childAgentSummaryChanged(
 	return (
 		previous.parentId !== next.parentId ||
 		previous.sessionName !== next.sessionName ||
+		previous.model !== next.model ||
 		previous.label !== next.label ||
 		previous.status !== next.status ||
 		previous.durationMs !== next.durationMs ||
@@ -5553,6 +5555,7 @@ export class InteractiveMode {
 			id: child.id,
 			activeSessionId: child.activeSessionId,
 			sessionName: child.sessionName,
+			model: child.model,
 			label: child.label,
 			status: child.status,
 			durationMs: child.durationMs,

@@ -26,6 +26,8 @@ export interface ChildAgentInspectorNode {
 	activeSessionId?: string;
 	/** Stable daemon-visible session name for addressing/displaying the child. */
 	sessionName?: string;
+	/** Exact provider/model selector used by the child. */
+	model?: string;
 	label: string;
 	status: ChildAgentStatus;
 	durationMs?: number;
@@ -198,12 +200,12 @@ const SHARED_PREFIX_MIN = 12;
 const SUMMARY_COLUMN_GAP = 2;
 const SUMMARY_PROMPT_MAX_WIDTH = 24;
 const SUMMARY_RECAP_MIN_WIDTH = 12;
-const SUMMARY_TOOLS_WIDTH = 7;
+const SUMMARY_MODEL_WIDTH = 20;
 const SUMMARY_TOKENS_WIDTH = 8;
 const SUMMARY_DURATION_WIDTH = 4;
 const SUMMARY_TOKEN_TIME_GAP = 2;
 const SUMMARY_METRICS_WIDTH =
-	SUMMARY_TOOLS_WIDTH + 1 + SUMMARY_TOKENS_WIDTH + SUMMARY_TOKEN_TIME_GAP + SUMMARY_DURATION_WIDTH;
+	SUMMARY_MODEL_WIDTH + 1 + SUMMARY_TOKENS_WIDTH + SUMMARY_TOKEN_TIME_GAP + SUMMARY_DURATION_WIDTH;
 // Opening chars of the prompt kept for context before eliding a shared prefix.
 const PROMPT_LEADING_CONTEXT = 6;
 // Words of context kept on each side of the divergence.
@@ -449,16 +451,13 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		const agentCell = theme.fg("muted", padTableCell(agentLabel, agentWidth));
 		const promptCell = this.elidePrompt(this.entryLabel(entry), sharedPrefix, sharedSuffix, promptWidth);
 		const recapCell = theme.fg("muted", padTableCell(childAgentRecap(entry.node), recapWidth, "…"));
-		const tools =
-			entry.node.toolUseCount === undefined
-				? ""
-				: `${entry.node.toolUseCount} ${entry.node.toolUseCount === 1 ? "tool" : "tools"}`;
+		const model = entry.node.model ?? "";
 		const tokens = entry.node.tokenCount === undefined ? "" : `${formatTokenCount(entry.node.tokenCount)} tok`;
 		const duration = formatChildAgentDuration(entry.node.durationMs);
-		const toolsCell = padTableCell(tools, SUMMARY_TOOLS_WIDTH, "…");
+		const modelCell = padTableCell(model, SUMMARY_MODEL_WIDTH, "…");
 		const tokensCell = padTableCell(tokens, SUMMARY_TOKENS_WIDTH, "…");
 		const durationCell = padTableCell(duration, SUMMARY_DURATION_WIDTH, "…");
-		const metrics = `${toolsCell} ${tokensCell}${" ".repeat(SUMMARY_TOKEN_TIME_GAP)}${durationCell}`;
+		const metrics = `${modelCell} ${tokensCell}${" ".repeat(SUMMARY_TOKEN_TIME_GAP)}${durationCell}`;
 		const gap = " ".repeat(SUMMARY_COLUMN_GAP);
 		return `${indent}${icon} ${agentCell}${gap}${promptCell}${gap}${recapCell}${gap}${theme.fg("muted", metrics)}`;
 	}
@@ -812,7 +811,12 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 				? theme.fg("error", `${keyText("app.agents.delete", { primaryOnly: true }).trim()} again to stop`)
 				: keyAction("app.agents.delete", "stop", { primaryOnly: true });
 		return hintLine(
-			[keyAction("app.agents.back", this.backHintLabel, { primaryOnly: true }), expandAction, stopAction],
+			[
+				keyAction("app.agents.back", this.backHintLabel, { primaryOnly: true }),
+				this.node?.model ? theme.fg("muted", this.node.model) : undefined,
+				expandAction,
+				stopAction,
+			],
 			width,
 		);
 	}
