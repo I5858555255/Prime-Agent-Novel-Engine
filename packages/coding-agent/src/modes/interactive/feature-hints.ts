@@ -92,7 +92,7 @@ export const FEATURE_HINTS: readonly FeatureHintDefinition[] = [
 	},
 	{
 		id: "auto-refine",
-		getText: () => "Prime Agent automatically refines skills, memory, prompts, and subagents.",
+		getText: () => "Prime Agent's self-improvement refines skills, memory, prompts, and subagents.",
 	},
 	{
 		id: "background-running",

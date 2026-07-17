@@ -90,7 +90,7 @@ describe("feature hint deck", () => {
 		expect(textById.get("session-fork")).toContain("/fork");
 		expect(textById.get("compaction")).toContain("/compact");
 		expect(textById.get("auto-compaction")).toContain("automatically compacts");
-		expect(textById.get("auto-refine")).toContain("skills, memory, prompts, and subagents");
+		expect(textById.get("auto-refine")).toContain("self-improvement");
 		expect(textById.get("background-running")).toContain("close the terminal");
 	});
 
