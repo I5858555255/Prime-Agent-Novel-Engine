@@ -27,8 +27,6 @@ export interface BuildSystemPromptOptions {
 	skills?: Skill[];
 	/** Whether to include the model-facing rlm recursion guidance. */
 	allowRecursion?: boolean;
-	/** User-scoped, authenticated models available for subagent selection. */
-	subagentModelChoices?: Array<{ provider: string; id: string }>;
 	/** Global harness state to inject as compact persistent context. */
 	harnessState?: HarnessState;
 }
@@ -45,7 +43,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
 		allowRecursion,
-		subagentModelChoices,
 		harnessState,
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
@@ -106,7 +103,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		installedSkills: getPythonSkillRuntimeInfo(visibleSkills).map((skill) => skill.importName),
 		activeTools: tools.filter((name) => name === "ipython" || name === "bash" || name === "edit"),
 		allowRecursion,
-		subagentModelChoices,
 	});
 
 	// Appended AFTER the trained buildRlmPrompt prefix, and before the harness-state

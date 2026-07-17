@@ -547,8 +547,7 @@ Sequence:
 runRlmChild(prompt, kwargs)
   |
   | check current depth < max depth
-  | validate optional provider-qualified model selector
-  | require configured auth and team access
+  | resolve optional model reference against authenticated models
   | otherwise inherit the parent model
   v
 create child session dir
@@ -608,26 +607,23 @@ Turns are counted as assistant messages in the child transcript.
 
 The answer is the child's final assistant text. This matches the RLM-1 training surface: the model stops calling tools and the final assistant text is the answer.
 
-By default, a child inherits the parent's current model. An orchestrator can
-select a different authenticated model at spawn time with an exact
-provider-qualified selector:
+By default, a child inherits the parent's current model. When a user or skill
+requests a different model, the orchestrator passes its name, ID, or
+provider-qualified reference through to the host:
 
 ```python
 result = await rlm(
     "Check the API",
-    model="deepseek/deepseek-v4-flash",
+    model="DeepSeek V4 Flash",
 )
 ```
 
-The system prompt never injects the full authenticated model catalog. When the
-user supplies an explicit model scope, such as `--models`, it advertises only
-those choices that are currently authenticated and available, using
-`provider-id/model-id` selectors. A user or skill can also supply an exact
-selector directly. The host resolves every selector exactly and rechecks
-authentication and Prime team access before creating child state.
-Unknown, unauthenticated, or unavailable selectors are rejected. The selected
-model is persisted with the child and remains active on later turns; changing
-the parent model does not update existing children.
+The system prompt never injects the model catalog. The host resolves the
+requested reference to a unique model from the current authenticated, available
+catalog. Unknown, unauthenticated, unavailable, or ambiguous references are
+rejected before child state is created. The selected model is persisted with
+the child and remains active on later turns; changing the parent model does not
+update existing children.
 
 ### Parent-Scoped Subagent Registry
 

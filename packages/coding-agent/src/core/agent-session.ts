@@ -177,6 +177,7 @@ import {
 	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
+import { resolveAvailableModelReference } from "./model-resolver.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
 	type AutoRefineReason,
@@ -2813,8 +2814,6 @@ export class AgentSession {
 	/** Update scoped models for cycling */
 	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>): void {
 		this._scopedModels = scopedModels;
-		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
 	}
 
 	/** File-based prompt templates */
@@ -2868,7 +2867,6 @@ export class AgentSession {
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._modelVisibleSkills();
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
-		const availableModels = this._modelRegistry.getAvailable();
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
@@ -2881,9 +2879,6 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 			allowRecursion: this._rlmDepth < this._rlmMaxDepth,
-			subagentModelChoices: this._scopedModels
-				.filter((scoped) => availableModels.some((model) => modelsAreEqual(model, scoped.model)))
-				.map((scoped) => ({ provider: scoped.model.provider, id: scoped.model.id })),
 			harnessState: this._loadMergedHarnessState(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
@@ -6747,8 +6742,8 @@ export class AgentSession {
 		}
 	}
 
-	private async _resolveRlmSubagentModel(selector: string | undefined): Promise<Model<Api>> {
-		if (!selector) {
+	private async _resolveRlmSubagentModel(reference: string | undefined): Promise<Model<Api>> {
+		if (!reference) {
 			const model = this.model;
 			if (!model) {
 				throw new Error(formatNoModelSelectedMessage());
@@ -6756,19 +6751,18 @@ export class AgentSession {
 			return model;
 		}
 
-		const model = this._modelRegistry
-			.getAll()
-			.find((candidate) => `${candidate.provider}/${candidate.id}` === selector);
-		if (!model) {
-			throw new Error(`RLM subagent model "${selector}" was not found`);
+		const availableModels = this._modelRegistry.getAvailable();
+		const { model, candidates } = resolveAvailableModelReference(reference, availableModels);
+		if (model) {
+			return model;
 		}
-		if (!this._modelRegistry.hasConfiguredAuth(model)) {
-			throw new Error(`No API key for ${selector}`);
+		if (candidates.length > 1) {
+			const selectors = candidates.slice(0, 5).map((candidate) => `${candidate.provider}/${candidate.id}`);
+			const remainder =
+				candidates.length > selectors.length ? ` and ${candidates.length - selectors.length} more` : "";
+			throw new Error(`RLM subagent model "${reference}" is ambiguous: ${selectors.join(", ")}${remainder}`);
 		}
-		if (!(await this._modelRegistry.canUseModel(model))) {
-			throw new Error(`Model "${selector}" is not available for the current Prime team.`);
-		}
-		return model;
+		throw new Error(`RLM subagent model "${reference}" was not found among authenticated, available models`);
 	}
 
 	private async _startRlmChildRun(

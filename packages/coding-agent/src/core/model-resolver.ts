@@ -120,6 +120,65 @@ export function findExactModelReferenceMatch(
 	return idMatches.length === 1 ? idMatches[0] : undefined;
 }
 
+export interface AvailableModelReferenceResolution {
+	model?: Model<Api>;
+	candidates: Model<Api>[];
+}
+
+function normalizeModelReference(value: string): string {
+	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function modelReferenceResolution(matches: Model<Api>[]): AvailableModelReferenceResolution {
+	if (matches.length === 1) {
+		return { model: matches[0], candidates: matches };
+	}
+	return {
+		candidates: [...matches].sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`)),
+	};
+}
+
+export function resolveAvailableModelReference(
+	modelReference: string,
+	availableModels: Model<Api>[],
+): AvailableModelReferenceResolution {
+	const reference = modelReference.trim();
+	if (!reference) {
+		return { candidates: [] };
+	}
+
+	const lowerReference = reference.toLowerCase();
+	const canonicalMatches = availableModels.filter(
+		(model) => `${model.provider}/${model.id}`.toLowerCase() === lowerReference,
+	);
+	if (canonicalMatches.length > 0) {
+		return modelReferenceResolution(canonicalMatches);
+	}
+
+	const idMatches = availableModels.filter((model) => model.id.toLowerCase() === lowerReference);
+	if (idMatches.length > 0) {
+		return modelReferenceResolution(idMatches);
+	}
+
+	const normalizedReference = normalizeModelReference(reference);
+	if (!normalizedReference) {
+		return { candidates: [] };
+	}
+	const nameMatches = availableModels.filter(
+		(model) => model.name && normalizeModelReference(model.name) === normalizedReference,
+	);
+	if (nameMatches.length > 0) {
+		return modelReferenceResolution(nameMatches);
+	}
+
+	const partialMatches = availableModels.filter(
+		(model) =>
+			normalizeModelReference(model.id).includes(normalizedReference) ||
+			(model.name ? normalizeModelReference(model.name).includes(normalizedReference) : false),
+	);
+	return modelReferenceResolution(partialMatches);
+}
+
 /**
  * Try to match a pattern to a model from the available models list.
  * Returns the matched model or undefined if no match found.

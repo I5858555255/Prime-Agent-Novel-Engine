@@ -7,7 +7,6 @@ export interface RlmPromptOptions {
 	messagesPath: string;
 	allowRecursion?: boolean;
 	activeTools?: string[];
-	subagentModelChoices?: Array<{ provider: string; id: string }>;
 }
 
 const IPYTHON_CONTROL_PROMPT = [
@@ -41,7 +40,6 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	const activeTools = options.activeTools ?? [];
 	const hasIpython = options.activeTools === undefined ? true : activeTools.includes("ipython");
 	const canRunShellSkills = hasIpython || activeTools.includes("bash");
-	const subagentModelSelectors = (options.subagentModelChoices ?? []).map((model) => `${model.provider}/${model.id}`);
 	const parts = [
 		"You are a general purpose agent that uses code to solve tasks.",
 		"You solve tasks by breaking down problems into sub-tasks, writing and executing code, observing results, and iterating one step at a time.",
@@ -87,12 +85,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"",
 			"A callable `rlm` is already in your global namespace. It returns an `RLMResult` with `.answer` (string), `.usage`, `.turns`, and `.session_dir`. A direct `await rlm('sub-task')` is valid only when the result is immediately required.",
 			"Choose a stable child name with `await rlm('sub-task', name='api-reviewer')`; names must be non-empty and unique among addressable sessions. If omitted, the host generates a readable unique name.",
-			"A child inherits your current model by default. Pass `model='provider-id/model-id'` only when the user or an applicable skill supplies that exact selector or explicitly asks you to choose from the user-scoped choices below; do not choose a different model on your own.",
-			...(subagentModelSelectors.length > 0
-				? [
-						`User-scoped authenticated model choices for subagents: ${subagentModelSelectors.map((selector) => `\`${selector}\``).join(", ")}.`,
-					]
-				: []),
+			"A child inherits your current model by default. When the user or an applicable skill requests a different model, pass the requested model name, ID, or provider/model reference through `model=...`; the host resolves it against authenticated, available models. Do not choose a different model on your own.",
 			"Sub-agents should not block Prime Agent by default: start them with `task = asyncio.create_task(rlm('sub-task'))`, keep the task handle, continue any independent work, and await the task only when you need its result.",
 			"For long-running fan-out, do not rely only on in-memory `asyncio.Task` handles: they can be lost if the kernel restarts or state is restored. Recover the current parent session's automatic child registry with `children = await rlm.list_subagents()`; each entry exposes `rlm_child_id`, `active_session_id`, `session_id`, `session_name`, `session_dir`, and `status`.",
 			"Delete a running or retained direct child with `await rlm.delete_subagent(child)` (or pass its name/ID); deletion cancels running work, closes the child runtime, and removes it from the registry and daemon addressability.",
@@ -126,7 +119,7 @@ export function buildSubagentGuidance(): string {
 		"The host automatically keeps a parent-scoped subagent registry across kernel restarts, state restore, and compaction. Recover it with `children = await rlm.list_subagents()` instead of maintaining a separate registry file or relying on lost `asyncio.Task` handles.",
 		"Successful subagent sessions remain in that registry after their initial `rlm()` call finishes, but only while the current parent session remains open. Failed or cancelled children are removed, and retained children close when their parent session closes.",
 		"Choose a child name at spawn time with `rlm('task', name='api-reviewer')`, or let the host generate a readable, unique default `session_name`. If the `agent_observe` skill is installed and a registry entry has `active_session_id`, inspect it by name with `await agent_observe.get_agent(child.session_name)` or read bounded previews with `await agent_observe.recent_messages(child.session_name, limit=...)`.",
-		"Subagents inherit the parent model. Use `model='provider-id/model-id'` only when the user or an applicable skill supplies the exact selector or explicitly requests a choice advertised above; the selected model remains attached to that child across later turns.",
+		"Subagents inherit the parent model. Use `model=...` only when the user or an applicable skill requests another model; pass the requested name or ID through and let the host resolve it. The selected model remains attached to that child across later turns.",
 		"If the `agent_message` skill is installed and a registry entry has `active_session_id`, continue that same child by name with `await agent_message.send(child.session_name, message, mode='auto')`; use `mode='steer'` only when you intend to interrupt current work.",
 		"Delete a direct child by registry entry or selector with `await rlm.delete_subagent(child)` or `await rlm.delete_subagent('api-reviewer')`. Deleting a running child cancels it first; deleting any child closes its runtime, removes it from the parent registry, and makes it unavailable to messaging and observation.",
 		"",

@@ -6,34 +6,21 @@ import { createHarness } from "../harness.js";
 const provider = "faux-eng-4649";
 
 describe("ENG-4649 subagent model selection", () => {
-	it("advertises only user-scoped authenticated models instead of the full catalog", async () => {
+	it("resolves a requested model from the authenticated catalog without advertising it", async () => {
 		const harness = await createHarness({
 			provider,
 			models: Array.from({ length: 320 }, (_, index) => ({ id: `model-${index}` })),
 		});
 		try {
-			const defaultPrompt = harness.session.agent.state.systemPrompt;
-			expect(defaultPrompt).not.toContain("model choices for subagents");
-			expect(defaultPrompt).not.toContain(`${provider}/model-319`);
+			const prompt = harness.session.agent.state.systemPrompt;
+			expect(prompt).not.toContain(`${provider}/model-319`);
+			harness.setResponses([fauxAssistantMessage("resolved child answer")]);
 
-			const unauthenticatedModel = harness.session.modelRegistry
-				.getAll()
-				.find((model) => !harness.session.modelRegistry.hasConfiguredAuth(model));
-			expect(unauthenticatedModel).toBeDefined();
-			harness.session.setScopedModels([
-				{ model: harness.getModel("model-1")! },
-				{ model: harness.getModel("model-319")! },
-				{ model: unauthenticatedModel! },
-			]);
+			await harness.session.runRlmChild("use the requested model", { model: "model 319" });
 
-			const scopedPrompt = harness.session.agent.state.systemPrompt;
-			const choices = scopedPrompt
-				.split("\n")
-				.find((line) => line.startsWith("User-scoped authenticated model choices for subagents:"));
-			expect(choices).toBe(
-				`User-scoped authenticated model choices for subagents: \`${provider}/model-1\`, \`${provider}/model-319\`.`,
-			);
-			expect(choices).not.toContain(`${unauthenticatedModel!.provider}/${unauthenticatedModel!.id}`);
+			const childEntry = harness.session.listRlmSubagents().subagents[0];
+			const child = harness.session.getRlmChildSession(childEntry!.rlm_child_id);
+			expect(child?.model?.id).toBe("model-319");
 		} finally {
 			harness.cleanup();
 		}
@@ -62,7 +49,7 @@ describe("ENG-4649 subagent model selection", () => {
 			provider,
 			models: [
 				{ id: "parent-model", reasoning: true },
-				{ id: "child-model", reasoning: false },
+				{ id: "child-model", name: "Child Model", reasoning: false },
 				{ id: "later-parent-model", reasoning: true },
 			],
 			persistSession: true,
@@ -83,7 +70,7 @@ describe("ENG-4649 subagent model selection", () => {
 
 			const result = await harness.session.runRlmChild("inspect the API", {
 				name: "api-reviewer",
-				model: `${provider}/child-model`,
+				model: "Child Model",
 			});
 			const childEntry = harness.session.listRlmSubagents().subagents[0];
 			expect(childEntry?.status).toBe("completed");
@@ -95,6 +82,7 @@ describe("ENG-4649 subagent model selection", () => {
 			await child!.prompt("check the follow-up", { expandPromptTemplates: false, source: "extension" });
 			await child!.agent.waitForIdle();
 
+			expect(result.answer).toBe("initial child answer");
 			expect(seenModels).toEqual(["child-model", "child-model"]);
 			expect(child?.model?.id).toBe("child-model");
 			expect(result.session_dir).not.toBeNull();
@@ -139,22 +127,23 @@ describe("ENG-4649 subagent model selection", () => {
 			await expect(harness.session.runRlmChild("bad type", { model: 42 })).rejects.toThrow(
 				"rlm.run model must be a string",
 			);
-			await expect(harness.session.runRlmChild("missing provider", { model: "child-model" })).rejects.toThrow(
-				'rlm.run model must use "provider/model" format',
-			);
 			await expect(
 				harness.session.runRlmChild("unknown model", { model: `${provider}/missing-model` }),
-			).rejects.toThrow(`RLM subagent model "${provider}/missing-model" was not found`);
+			).rejects.toThrow(
+				`RLM subagent model "${provider}/missing-model" was not found among authenticated, available models`,
+			);
 			await expect(
 				harness.session.runRlmChild("unauthenticated provider", {
 					model: "anthropic/claude-sonnet-4-5",
 				}),
-			).rejects.toThrow("No API key for anthropic/claude-sonnet-4-5");
+			).rejects.toThrow("was not found among authenticated, available models");
 
-			const availability = vi.spyOn(harness.session.modelRegistry, "canUseModel").mockResolvedValue(false);
-			await expect(
-				harness.session.runRlmChild("disallowed model", { model: `${provider}/child-model` }),
-			).rejects.toThrow(`Model "${provider}/child-model" is not available for the current Prime team.`);
+			const availability = vi
+				.spyOn(harness.session.modelRegistry, "getAvailable")
+				.mockReturnValue([harness.getModel("parent-model")!]);
+			await expect(harness.session.runRlmChild("unavailable model", { model: "child-model" })).rejects.toThrow(
+				'RLM subagent model "child-model" was not found among authenticated, available models',
+			);
 			availability.mockRestore();
 
 			expect(harness.session.listRlmSubagents().subagents).toEqual([]);

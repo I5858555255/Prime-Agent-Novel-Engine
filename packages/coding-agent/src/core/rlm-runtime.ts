@@ -70,7 +70,7 @@ export function normalizeRequestedRlmSubagentSessionName(value: unknown): string
 	return name;
 }
 
-/** Validate and normalize an orchestrator-supplied subagent model selector. */
+/** Validate and normalize an orchestrator-supplied subagent model reference. */
 export function normalizeRequestedRlmSubagentModel(value: unknown): string | undefined {
 	if (value === undefined) {
 		return undefined;
@@ -81,10 +81,6 @@ export function normalizeRequestedRlmSubagentModel(value: unknown): string | und
 	const model = value.trim();
 	if (!model) {
 		throw new Error("rlm.run model must not be empty");
-	}
-	const separatorIndex = model.indexOf("/");
-	if (separatorIndex <= 0 || separatorIndex === model.length - 1) {
-		throw new Error('rlm.run model must use "provider/model" format');
 	}
 	return model;
 }
