@@ -5,8 +5,10 @@
 - Changed interactive, print, JSON, RPC, piped-stdin, and no-session clients to use the same daemon-owned runtime while preserving their existing commands, output protocols, and lifecycle behavior ([ENG-4685](https://linear.app/primeintellect/issue/ENG-4685)).
 - Added RPC controls for schedules, heartbeats, agent messaging, and live session observation ([ENG-4685](https://linear.app/primeintellect/issue/ENG-4685)).
 - Fixed daemon-backed headless startup, rollback routing, RPC wire compatibility, and duplicate client runtime preparation ([ENG-4685](https://linear.app/primeintellect/issue/ENG-4685)).
+- Fixed agents with heartbeat-owning subagents appearing completed and showing completion checkmarks in the Agents View.
 - Fixed daemon backpressure triggering redundant catch-up snapshots for events already queued by the socket.
 - Fixed incompatible daemon builds crashing startup or respawning after shutdown, with capability negotiation, verified provenance, and convergent force shutdown ([ENG-4687](https://linear.app/primeintellect/issue/ENG-4687/make-daemon-version-mismatches-self-healing)).
+- Changed tool-result and announcement images to show compact metadata instead of terminal graphics ([#437](https://github.com/PrimeIntellect-ai/prime-agent/pull/437) by [@snimu](https://github.com/snimu)).
 - Changed top-level CLI help to show concise common options and commands without loading runtime resources ([ENG-4688](https://linear.app/primeintellect/issue/ENG-4688/help-command-is-obscenely-verbose)).
 - Fixed completed subagents cancelling their RLM heartbeats before the first run ([ENG-4652](https://linear.app/primeintellect/issue/ENG-4652/subagent-heartbeats-dont-work)).
 - Changed the fullscreen follow shortcut from `Alt+Down` to `Ctrl+Shift+Down` for more reliable terminal input ([ENG-4684](https://linear.app/primeintellect/issue/ENG-4684/altdown-doesnt-work)).
