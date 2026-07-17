@@ -43,6 +43,7 @@ function createMode() {
 		featureHintAnimationTimer: undefined,
 		featureHintComponent: undefined,
 		featureHintRunPending: false,
+		childAgentPanelMode: undefined,
 		options: { returnToAgentsView: true },
 		ui: { requestRender },
 	};
@@ -168,6 +169,22 @@ describe("InteractiveMode feature hints", () => {
 		expect(featureHintContainer.children).toHaveLength(0);
 		expect(featureHintDeck.next).not.toHaveBeenCalled();
 		expect(requestRender).not.toHaveBeenCalled();
+	});
+
+	it("suspends hints in subagent detail and resumes them in the parent view", () => {
+		const { mode, featureHintContainer, featureHintDeck } = createMode();
+		Reflect.set(mode, "childAgentPanelMode", "detail");
+
+		callPrivate(mode, "startFeatureHintPresentation");
+		vi.advanceTimersByTime(5_000);
+		expect(featureHintContainer.children).toHaveLength(0);
+		expect(featureHintDeck.next).not.toHaveBeenCalled();
+
+		Reflect.set(mode, "childAgentPanelMode", undefined);
+		callPrivate(mode, "resumeFeatureHintPresentation");
+		vi.advanceTimersByTime(5_000);
+		expect(featureHintContainer.children).toHaveLength(1);
+		expect(featureHintDeck.next).toHaveBeenCalledOnce();
 	});
 
 	it("retains the hint and remaining delay when the loader is recreated", () => {
