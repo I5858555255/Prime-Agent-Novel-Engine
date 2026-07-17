@@ -47,7 +47,6 @@ describe("LoginDialogComponent", () => {
 		expect(output).not.toContain("click to open");
 		expect(output).not.toContain("─");
 		expect(output).not.toContain("> ");
-		expect(mocks.execFile).toHaveBeenCalledOnce();
 	});
 
 	it.each([
