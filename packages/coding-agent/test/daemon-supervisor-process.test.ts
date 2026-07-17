@@ -323,6 +323,14 @@ describe("daemon supervisor resident workers", () => {
 		const internalList = await client.request({ type: "list", includeClientOwned: true });
 		expect(internalList.success).toBe(true);
 		expect(requireSessionList(internalList.success ? internalList.data : undefined)).toHaveLength(1);
+		const otherClient = await connectEventually(socketPath);
+		const privateSelector = summary.sessionId.slice(-8);
+		const deniedAttach = await otherClient.request({ type: "attach", activeSessionId: privateSelector });
+		expect(deniedAttach).toMatchObject({
+			success: false,
+			error: `Unknown active session: ${privateSelector}`,
+		});
+		otherClient.close();
 		const connection = await DaemonAgentConnection.attach(client, summary.activeSessionId, {
 			ownedSession: true,
 			supportsExtensionUi: false,

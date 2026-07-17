@@ -616,7 +616,9 @@ export class RpcClient {
 				for (const listener of [...this.observedSessionListeners]) {
 					try {
 						listener(data as RpcObservedSessionEvent);
-					} catch {}
+					} catch {
+						// Listener failures must not block other RPC subscribers.
+					}
 				}
 				return;
 			}
@@ -625,7 +627,9 @@ export class RpcClient {
 			for (const listener of [...this.eventListeners]) {
 				try {
 					listener(data as AgentEvent);
-				} catch {}
+				} catch {
+					// Listener failures must not block other RPC subscribers.
+				}
 			}
 		} catch {
 			// Ignore non-JSON lines

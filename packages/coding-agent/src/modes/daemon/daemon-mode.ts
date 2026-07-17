@@ -470,6 +470,11 @@ export class AgentDaemon {
 	}
 
 	async start(): Promise<void> {
+		if (this.options.worker) {
+			process.stderr.on("error", () => {
+				// A detached worker must survive the supervisor closing its diagnostic pipe.
+			});
+		}
 		this.installCrashHandlers();
 		await prepareDaemonSocketPath(this.socketPath);
 

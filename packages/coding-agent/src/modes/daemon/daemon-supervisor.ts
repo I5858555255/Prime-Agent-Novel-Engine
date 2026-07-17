@@ -2538,6 +2538,12 @@ export class DaemonSupervisor {
 			}
 		}
 		const match = await this.findWorker(command.activeSessionId);
+		if (
+			match.worker.descriptor.ownerClientId !== undefined &&
+			match.worker.descriptor.ownerClientId !== this.protocolClientId(client)
+		) {
+			throw new Error(`Unknown active session: ${command.activeSessionId}`);
+		}
 		const activeSessionId = match.summary.activeSessionId ?? match.summary.id;
 		const duplicateValidation = this.currentSnapshotGeneration(match.worker, activeSessionId)?.validation;
 		if (duplicateValidation) {
