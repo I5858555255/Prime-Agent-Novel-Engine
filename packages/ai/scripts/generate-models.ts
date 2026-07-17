@@ -1402,29 +1402,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		if (data["kimi-for-coding"]?.models) {
 			const kimiModels = data["kimi-for-coding"].models as Record<string, ModelsDevModel>;
 			const hasCanonicalModel = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
-			const createKimiCodingModel = (
-				id: string,
-				name: string,
-				model: ModelsDevModel,
-			): Model<"anthropic-messages"> => ({
-				id,
-				name,
-				api: "anthropic-messages",
-				provider: "kimi-coding",
-				// Kimi For Coding's Anthropic-compatible API - SDK appends /v1/messages
-				baseUrl: "https://api.kimi.com/coding",
-				headers: { ...KIMI_STATIC_HEADERS },
-				reasoning: model.reasoning === true,
-				input: model.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
-				cost: {
-					input: model.cost?.input || 0,
-					output: model.cost?.output || 0,
-					cacheRead: model.cost?.cache_read || 0,
-					cacheWrite: model.cost?.cache_write || 0,
-				},
-				contextWindow: model.limit?.context || 4096,
-				maxTokens: model.limit?.output || 4096,
-			});
 
 			const kimiAliases = new Set(["k2p5", "k2p6"]);
 
@@ -1438,17 +1415,25 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const normalizedId = kimiAliases.has(modelId) ? "kimi-for-coding" : modelId;
 				const normalizedName = kimiAliases.has(modelId) ? "Kimi For Coding" : m.name || normalizedId;
 
-				models.push(createKimiCodingModel(normalizedId, normalizedName, m));
-			}
-
-			const k2p7 = kimiModels.k2p7;
-			if (k2p7?.tool_call === true) {
-				if (!hasCanonicalModel) {
-					models.push(createKimiCodingModel("kimi-for-coding", "Kimi For Coding", k2p7));
-				}
-				if (!Object.prototype.hasOwnProperty.call(kimiModels, "kimi-k2-thinking")) {
-					models.push(createKimiCodingModel("kimi-k2-thinking", "Kimi K2 Thinking", k2p7));
-				}
+				models.push({
+					id: normalizedId,
+					name: normalizedName,
+					api: "anthropic-messages",
+					provider: "kimi-coding",
+					// Kimi For Coding's Anthropic-compatible API - SDK appends /v1/messages
+					baseUrl: "https://api.kimi.com/coding",
+					headers: { ...KIMI_STATIC_HEADERS },
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+				});
 			}
 		}
 
