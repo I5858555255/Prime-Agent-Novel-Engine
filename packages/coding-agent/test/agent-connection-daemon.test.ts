@@ -45,6 +45,7 @@ class FakeDaemonClient {
 	connectionStateFactory: ((activeSessionId: string) => AgentConnectionState) | undefined;
 	abortBashUnknownCommand = false;
 	abortAndClearQueueUnknownCommand = false;
+	serverCapabilities = new Set<string>();
 	updateRestartSessions: Array<Record<string, unknown>> = [];
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
@@ -367,6 +368,10 @@ class FakeDaemonClient {
 		}
 	}
 
+	supportsServerCapability(capability: string): boolean {
+		return this.serverCapabilities.has(capability);
+	}
+
 	onMessage(listener: DaemonClientMessageListener): () => void {
 		this.messageListeners.add(listener);
 		return () => {
@@ -591,6 +596,18 @@ function emitSequencedQueueUpdate(client: FakeDaemonClient, activeSessionId: str
 }
 
 describe("DaemonAgentConnection", () => {
+	it("degrades an unavailable heartbeat catalog without sending an unsupported command", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+
+		await expect(connection.listHeartbeats()).resolves.toEqual([]);
+		expect(fakeClient.requests).toEqual([]);
+		await expect(connection.manageHeartbeat("active-original", "job-1", "pause")).rejects.toThrow(
+			"requires a newer Prime Agent daemon",
+		);
+		expect(fakeClient.requests).toEqual([]);
+	});
+
 	it("reattaches an open window to its restored session after an update restart", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.emitCloseOnClose = true;

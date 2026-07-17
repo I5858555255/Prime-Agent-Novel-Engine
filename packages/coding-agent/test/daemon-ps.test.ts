@@ -4,13 +4,16 @@ import {
 	type DaemonInfo,
 	isWorkerSocketPath,
 	parseLsofListeners,
+	parsePrimeAgentProcessIds,
 	parsePsEtimes,
 	parseSsListeners,
 	planReap,
 	planShutdownAll,
 	planShutdownConfirmation,
 	sortDaemons,
+	verifyHelloSupervisorPid,
 } from "../src/cli/daemon-ps.js";
+import { getProcessStartId } from "../src/core/session-lease.js";
 import { defaultDaemonSocketDir } from "../src/modes/daemon/daemon-socket.js";
 
 describe("worker socket classification", () => {
@@ -57,6 +60,29 @@ describe("parseLsofListeners", () => {
 			{ pid: 1234, socketPath: "/tmp/a.sock" },
 			{ pid: 5678, socketPath: "/tmp/b.sock" },
 		]);
+	});
+});
+
+describe("parsePrimeAgentProcessIds", () => {
+	it("finds process.title names even when lsof reports the executable as node", () => {
+		const stdout = [
+			"  123 node prime-agent --mode daemon",
+			"  456 prime-agent prime-agent",
+			"  789 /usr/local/bin/prime-agent prime-agent",
+			"  900 node unrelated.js",
+			"",
+		].join("\n");
+		expect(parsePrimeAgentProcessIds(stdout, "prime-agent")).toEqual([123, 456, 789]);
+	});
+});
+
+describe("verifyHelloSupervisorPid", () => {
+	it("accepts the hello pid only while its process identity still matches", () => {
+		const processStartId = getProcessStartId(process.pid);
+		expect(verifyHelloSupervisorPid(process.pid, processStartId)).toBe(process.pid);
+		if (processStartId) {
+			expect(verifyHelloSupervisorPid(process.pid, `${processStartId}-stale`)).toBeUndefined();
+		}
 	});
 });
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
-import { getAgentLogPath, getDaemonLogPath } from "../../config.js";
+import { appendRotatingLog, getAgentLogPath, getDaemonLogPath } from "../../config.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
@@ -190,7 +190,14 @@ export class DaemonAgentConnection implements AgentConnection {
 			this.client.enableRequestRecovery();
 		}
 		this.unsubscribeDaemonMessages = this.client.onMessage((message) => {
-			void this.handleDaemonMessage(message);
+			void this.handleDaemonMessage(message).catch((error: unknown) => {
+				try {
+					appendRotatingLog(
+						getAgentLogPath(),
+						`[${new Date().toISOString()}] daemon-message: ignored ${message.type} failure: ${String(error)}`,
+					);
+				} catch {}
+			});
 		});
 		this.captureDaemonLogPath();
 		this.unsubscribeDaemonClose = this.client.onClose((error) => {
@@ -464,8 +471,18 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async listHeartbeats(): Promise<AgentConnectionHeartbeat[]> {
-		const data = await this.requestData<{ heartbeats: AgentConnectionHeartbeat[] }>({ type: "heartbeats_list" });
-		return data.heartbeats;
+		if (!this.client.supportsServerCapability("heartbeat_catalog")) {
+			return [];
+		}
+		try {
+			const data = await this.requestData<{ heartbeats: AgentConnectionHeartbeat[] }>({ type: "heartbeats_list" });
+			return data.heartbeats;
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "heartbeats_list")) {
+				return [];
+			}
+			throw error;
+		}
 	}
 
 	async manageHeartbeat(
@@ -473,13 +490,23 @@ export class DaemonAgentConnection implements AgentConnection {
 		jobId: string,
 		action: AgentHeartbeatManagementAction,
 	): Promise<AgentCronJob> {
-		const data = await this.requestData<{ heartbeat: AgentCronJob }>({
-			type: "heartbeat_manage",
-			activeSessionId,
-			jobId,
-			action,
-		});
-		return data.heartbeat;
+		if (!this.client.supportsServerCapability("heartbeat_management")) {
+			throw new Error("Heartbeat management requires a newer Prime Agent daemon.");
+		}
+		try {
+			const data = await this.requestData<{ heartbeat: AgentCronJob }>({
+				type: "heartbeat_manage",
+				activeSessionId,
+				jobId,
+				action,
+			});
+			return data.heartbeat;
+		} catch (error) {
+			if (isUnknownDaemonCommandError(error, "heartbeat_manage")) {
+				throw new Error("Heartbeat management requires a newer Prime Agent daemon.");
+			}
+			throw error;
+		}
 	}
 
 	async addCronJob(schedule: string, prompt: string): Promise<AgentCronJob> {

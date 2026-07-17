@@ -2560,7 +2560,7 @@ export class InteractiveMode {
 			this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
 		}
 		this.subscribeToAgent();
-		await Promise.all([this.refreshConnectionQueue(), this.refreshHeartbeatCatalog()]);
+		await Promise.allSettled([this.refreshConnectionQueue(), this.refreshHeartbeatCatalog()]);
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();

@@ -6,7 +6,11 @@ import { APP_NAME, getAgentDir, VERSION } from "../config.js";
 import { isOrphanProcessIdentityCurrent, readActiveOrphanProcesses } from "../core/orphan-process-journal.js";
 import { getProcessStartId } from "../core/session-lease.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
-import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
+import {
+	DAEMON_PROTOCOL_VERSION,
+	DAEMON_SCHEMA_ID,
+	type DaemonRuntimeIdentity,
+} from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketDir, defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { acquireDaemonShutdownAdmission } from "../modes/daemon/daemon-supervisor-ownership.js";
 import type { DaemonWorkerDescriptor } from "../modes/daemon/daemon-worker-protocol.js";
@@ -46,6 +50,10 @@ export interface DaemonInfo {
 	uptimeSeconds?: number;
 	version?: string;
 	protocolVersion?: number;
+	schemaId?: string;
+	buildId?: string;
+	executablePath?: string;
+	pidSource?: "listener" | "hello";
 	sessionCount?: number;
 	status: DaemonStatus;
 	isDefault: boolean;
@@ -58,6 +66,8 @@ const STATUS_ORDER: Record<DaemonStatus, number> = {
 	unreachable: 2,
 	"orphan-file": 3,
 };
+const SHUTDOWN_QUIET_PERIOD_MS = 1000;
+const SHUTDOWN_CONVERGENCE_TIMEOUT_MS = 10_000;
 
 // Linux comm names (and thus the process name ss reports) are capped at 15 chars.
 const MAX_COMM_LENGTH = 15;
@@ -117,6 +127,22 @@ export function parseLsofListeners(stdout: string): DiscoveredDaemonProcess[] {
 	return daemons;
 }
 
+export function parsePrimeAgentProcessIds(stdout: string, appName: string): number[] {
+	const pids: number[] = [];
+	for (const line of stdout.split("\n")) {
+		const match = line.trim().match(/^(\d+)\s+(\S+)(?:\s+(.*))?$/);
+		if (!match) {
+			continue;
+		}
+		const command = basename(match[2]!);
+		const argv0 = basename(match[3]?.trim().split(/\s+/, 1)[0] ?? "");
+		if (processNameMatches(command, appName) || processNameMatches(argv0, appName)) {
+			pids.push(Number.parseInt(match[1]!, 10));
+		}
+	}
+	return pids;
+}
+
 /** Parse `ps -o pid=,etimes=` output into a pid → uptime-seconds map. */
 export function parsePsEtimes(stdout: string): Map<number, number> {
 	const uptimes = new Map<number, number>();
@@ -138,8 +164,21 @@ function scanListeningDaemons(): DiscoveredDaemonProcess[] {
 		return enrichUptimes(parseSsListeners(ss.stdout, APP_NAME));
 	}
 	const lsof = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-c", APP_NAME], { encoding: "utf8" });
-	if (!lsof.error && typeof lsof.stdout === "string") {
-		return enrichUptimes(parseLsofListeners(lsof.stdout));
+	const byName = !lsof.error && typeof lsof.stdout === "string" ? parseLsofListeners(lsof.stdout) : [];
+	if (byName.length > 0) {
+		return enrichUptimes(byName);
+	}
+	const ps = spawnSync("ps", ["-axo", "pid=,comm=,args="], { encoding: "utf8" });
+	if (!ps.error && ps.status === 0 && typeof ps.stdout === "string") {
+		const pids = parsePrimeAgentProcessIds(ps.stdout, APP_NAME);
+		if (pids.length > 0) {
+			const byPid = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-p", pids.join(",")], {
+				encoding: "utf8",
+			});
+			if (!byPid.error && typeof byPid.stdout === "string") {
+				return enrichUptimes(parseLsofListeners(byPid.stdout));
+			}
+		}
 	}
 	return [];
 }
@@ -188,8 +227,11 @@ function scanSocketDir(): string[] {
 interface ProbeResult {
 	version?: string;
 	protocolVersion?: number;
+	schemaId?: string;
+	runtime?: DaemonRuntimeIdentity;
 	sessionCount?: number;
 	supervisorPid?: number;
+	supervisorProcessStartId?: string;
 	reachable: boolean;
 }
 
@@ -204,13 +246,19 @@ async function probeDaemon(socketPath: string): Promise<ProbeResult> {
 	try {
 		let version: string | undefined;
 		let protocolVersion: number | undefined;
+		let schemaId: string | undefined;
+		let runtime: DaemonRuntimeIdentity | undefined;
 		let supervisorPid: number | undefined;
+		let supervisorProcessStartId: string | undefined;
 		let greeted = false;
 		try {
 			const hello = await client.waitForHello(1500);
 			version = hello.appVersion;
 			protocolVersion = hello.protocol.version;
+			schemaId = hello.schemaId;
+			runtime = hello.runtime;
 			supervisorPid = hello.supervisorPid;
+			supervisorProcessStartId = hello.supervisorProcessStartId;
 			greeted = true;
 		} catch {
 			// Connected but no recognizable greeting: an old/foreign daemon.
@@ -227,17 +275,53 @@ async function probeDaemon(socketPath: string): Promise<ProbeResult> {
 		} catch {
 			// Leave sessionCount undefined when the daemon will not answer list.
 		}
-		return { version, protocolVersion, sessionCount, supervisorPid, reachable: true };
+		return {
+			version,
+			protocolVersion,
+			schemaId,
+			runtime,
+			sessionCount,
+			supervisorPid,
+			supervisorProcessStartId,
+			reachable: true,
+		};
 	} finally {
 		client.close();
 	}
 }
 
 function classifyReachable(probe: ProbeResult): DaemonStatus {
-	if (probe.protocolVersion === DAEMON_PROTOCOL_VERSION && probe.version === VERSION) {
+	if (
+		probe.protocolVersion === DAEMON_PROTOCOL_VERSION &&
+		probe.schemaId === DAEMON_SCHEMA_ID &&
+		probe.version === VERSION
+	) {
 		return "current";
 	}
 	return "stale";
+}
+
+export function verifyHelloSupervisorPid(
+	pid: number | undefined,
+	expectedProcessStartId: string | undefined,
+): number | undefined {
+	if (!Number.isInteger(pid) || pid === undefined || pid <= 0) {
+		return undefined;
+	}
+	try {
+		process.kill(pid, 0);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EPERM") {
+			return undefined;
+		}
+	}
+	if (expectedProcessStartId) {
+		const observedStartId = getProcessStartId(pid);
+		if (observedStartId !== expectedProcessStartId) {
+			return undefined;
+		}
+	}
+	return pid;
 }
 
 /** Discover every daemon on the machine and probe each for version + session count. */
@@ -264,6 +348,7 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 		[...sockets].map(async (socketPath): Promise<DaemonInfo> => {
 			const proc = processBySocket.get(socketPath);
 			const probe = await probeDaemon(socketPath);
+			const pid = proc?.pid ?? verifyHelloSupervisorPid(probe.supervisorPid, probe.supervisorProcessStartId);
 			const hasTrackedWorkers = workerSockets.has(socketPath);
 			const status: DaemonStatus = probe.reachable
 				? classifyReachable(probe)
@@ -272,10 +357,15 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 					: "orphan-file";
 			return {
 				socketPath,
-				pid: proc?.pid,
+				pid,
 				uptimeSeconds: proc?.uptimeSeconds,
 				version: probe.version,
 				protocolVersion: probe.protocolVersion,
+				schemaId: probe.schemaId,
+				buildId: probe.runtime?.buildId,
+				executablePath:
+					probe.runtime?.launcherPath ?? probe.runtime?.entrypointPath ?? probe.runtime?.executablePath,
+				...(pid !== undefined ? { pidSource: proc ? ("listener" as const) : ("hello" as const) } : {}),
 				sessionCount: probe.sessionCount,
 				status,
 				isDefault: socketPath === defaultSocket,
@@ -632,11 +722,20 @@ async function terminateVerifiedResiduals(
 	assertAdmission: () => Promise<void>,
 ): Promise<void> {
 	let previousSignature: string | undefined;
-	while (true) {
-		const listeners = scanListeningDaemons();
+	let quietSince: number | undefined;
+	const deadline = Date.now() + SHUTDOWN_CONVERGENCE_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		await assertAdmission();
+		const listeners = await discoverListeningDaemonProcesses();
 		if (listeners.length === 0) {
-			return;
+			quietSince ??= Date.now();
+			if (Date.now() - quietSince >= SHUTDOWN_QUIET_PERIOD_MS) {
+				return;
+			}
+			await delay(100);
+			continue;
 		}
+		quietSince = undefined;
 		const signature = daemonListenerSignature(listeners);
 		if (signature === previousSignature) {
 			for (const listener of listeners) {
@@ -646,7 +745,7 @@ async function terminateVerifiedResiduals(
 						failed,
 						reportedFailures,
 						listener.socketPath,
-						`daemon process remained after shutdown (pid ${listener.pid}, start ${processStartId})`,
+						`daemon process remained after shutdown (pid ${listener.pid}, start ${processStartId})${describeDaemonParent(listener.pid)}`,
 					);
 				}
 			}
@@ -671,6 +770,45 @@ async function terminateVerifiedResiduals(
 			}
 		}
 	}
+	for (const listener of await discoverListeningDaemonProcesses()) {
+		const processStartId = getProcessStartId(listener.pid);
+		if (!processStartId || getProcessStartId(listener.pid) !== processStartId) {
+			continue;
+		}
+		recordShutdownFailure(
+			failed,
+			reportedFailures,
+			listener.socketPath,
+			`daemon kept respawning during shutdown (pid ${listener.pid}, start ${processStartId})${describeDaemonParent(listener.pid)}`,
+		);
+	}
+}
+
+async function discoverListeningDaemonProcesses(): Promise<DiscoveredDaemonProcess[]> {
+	const byIdentity = new Map<string, DiscoveredDaemonProcess>();
+	for (const listener of scanListeningDaemons()) {
+		byIdentity.set(`${listener.pid}:${listener.socketPath}`, listener);
+	}
+	for (const daemon of await discoverDaemons()) {
+		if (daemon.pid === undefined || daemon.status === "orphan-file") {
+			continue;
+		}
+		const listener = { pid: daemon.pid, socketPath: daemon.socketPath, uptimeSeconds: daemon.uptimeSeconds };
+		byIdentity.set(`${listener.pid}:${listener.socketPath}`, listener);
+	}
+	return [...byIdentity.values()];
+}
+
+function describeDaemonParent(pid: number): string {
+	const result = spawnSync("ps", ["-o", "ppid=,tty=,command=", "-p", String(pid)], { encoding: "utf8" });
+	if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+		return "";
+	}
+	const match = result.stdout.trim().match(/^(\d+)\s+(\S+)\s+(.+)$/);
+	if (!match) {
+		return "";
+	}
+	return `; close parent PID ${match[1]} on ${match[2]} (${match[3]}) and retry shutdown`;
 }
 
 async function terminateVerifiedListener(
