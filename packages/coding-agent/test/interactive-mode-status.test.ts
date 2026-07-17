@@ -118,6 +118,7 @@ describe("mergeChildAgentSnapshots", () => {
 	const rich: AgentConnectionRlmChildAgentSnapshot = {
 		id: "child-1",
 		activeSessionId: "active-child-1",
+		model: "openai/gpt-5.4",
 		label: "Inspect the scheduler",
 		status: "running",
 		durationMs: 5_000,
@@ -139,6 +140,7 @@ describe("mergeChildAgentSnapshots", () => {
 
 		expect(merged).toMatchObject({
 			activeSessionId: "active-child-1",
+			model: "openai/gpt-5.4",
 			durationMs: 5_000,
 			answerPreview: "Reading the queue",
 			toolUseCount: 4,
@@ -641,7 +643,9 @@ describe("InteractiveMode pending bash components", () => {
 		expect(loader.intervalId).not.toBeNull();
 
 		const editorStub = { clearHistory: vi.fn(), setText: vi.fn() };
+		const endFeatureHintRun = vi.fn();
 		const fakeThis = {
+			endFeatureHintRun,
 			chatContainer: new Container(),
 			shortcutGuideContainer: new Container(),
 			pendingMessagesContainer: new Container(),
@@ -673,11 +677,62 @@ describe("InteractiveMode pending bash components", () => {
 		).resetCurrentSessionRenderState.call(fakeThis);
 
 		expect(loader.intervalId).toBeNull();
+		expect(endFeatureHintRun).toHaveBeenCalledOnce();
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBeUndefined();
 	});
 });
 
 describe("InteractiveMode connection events", () => {
+	test("degrades heartbeat refresh failures without hiding queue refresh failures during rebind", async () => {
+		const rebindCurrentSession = (
+			InteractiveMode.prototype as unknown as { rebindCurrentSession(this: InteractiveMode): Promise<void> }
+		).rebindCurrentSession;
+		const createHarness = (
+			refreshConnectionQueue: () => Promise<void>,
+			refreshHeartbeatCatalog: () => Promise<void>,
+		) =>
+			({
+				unsubscribe: undefined,
+				localSessionHost: undefined,
+				toolDefinitionCache: { clear: vi.fn() },
+				applyRuntimeSettings: vi.fn(),
+				bindLocalSessionExtensions: true,
+				bindCurrentSessionExtensions: vi.fn(async () => {}),
+				subscribeToAgent: vi.fn(),
+				refreshConnectionQueue,
+				refreshHeartbeatCatalog,
+				updateAvailableProviderCount: vi.fn(async () => {}),
+				updateEditorBorderColor: vi.fn(),
+				updateTerminalTitle: vi.fn(),
+				setGoalAnnouncementBaseline: vi.fn(),
+				syncGoalTray: vi.fn(),
+				syncWorkingLoader: vi.fn(),
+				getGoalState: () => emptyGoalState(),
+			}) as unknown as InteractiveMode;
+
+		await expect(
+			rebindCurrentSession.call(
+				createHarness(
+					vi.fn(async () => {}),
+					vi.fn(async () => {
+						throw new Error("heartbeat unavailable");
+					}),
+				),
+			),
+		).resolves.toBeUndefined();
+
+		await expect(
+			rebindCurrentSession.call(
+				createHarness(
+					vi.fn(async () => {
+						throw new Error("queue unavailable");
+					}),
+					vi.fn(async () => {}),
+				),
+			),
+		).rejects.toThrow("queue unavailable");
+	});
+
 	test("restores in-flight assistant state on every session render", async () => {
 		const streamingMessage = {
 			role: "assistant",
