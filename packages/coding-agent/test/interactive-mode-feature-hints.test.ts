@@ -187,6 +187,32 @@ describe("InteractiveMode feature hints", () => {
 		expect(featureHintDeck.next).toHaveBeenCalledOnce();
 	});
 
+	it("resumes hints when an editor switch closes subagent detail", () => {
+		const resumeFeatureHintPresentation = vi.fn();
+		const defaultEditor = { setText: vi.fn() };
+		const mode = {
+			childAgentPanelMode: "detail",
+			childAgentDetailNodeId: "subagent-1",
+			enteredSessionViaSubagentDetail: true,
+			childAgentDetail: { setBackHintLabel: vi.fn(), setNode: vi.fn() },
+			childAgentSummary: { setHidden: vi.fn() },
+			editor: { getText: () => "draft" },
+			defaultEditor,
+			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			restoreMainAgentView: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+			resumeFeatureHintPresentation,
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+
+		Reflect.get(InteractiveMode.prototype, "setCustomEditorComponent").call(mode, undefined);
+
+		expect(Reflect.get(mode, "childAgentPanelMode")).toBeUndefined();
+		expect(defaultEditor.setText).toHaveBeenCalledWith("draft");
+		expect(resumeFeatureHintPresentation).toHaveBeenCalledOnce();
+	});
+
 	it("retains the hint and remaining delay when the loader is recreated", () => {
 		const { mode, statusContainer, featureHintContainer, featureHintDeck } = createMode();
 

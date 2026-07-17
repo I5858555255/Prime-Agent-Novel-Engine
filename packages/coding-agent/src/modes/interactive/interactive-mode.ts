@@ -3631,8 +3631,9 @@ export class InteractiveMode {
 			this.enteredSessionViaSubagentDetail = false;
 			this.childAgentDetail.setBackHintLabel("back to chat");
 			this.childAgentDetail.setNode(undefined);
+			this.childAgentPanelMode = undefined;
+			this.resumeFeatureHintPresentation();
 		}
-		this.childAgentPanelMode = undefined;
 		this.childAgentSummary.setHidden(false);
 
 		// Save text from current editor before switching
