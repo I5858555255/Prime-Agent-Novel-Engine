@@ -2,7 +2,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	type DaemonInfo,
+	evaluateShutdownQuietPeriod,
 	isWorkerSocketPath,
+	mergeDiscoveredDaemonProcesses,
 	parseLsofListeners,
 	parsePrimeAgentProcessIds,
 	parsePsEtimes,
@@ -73,6 +75,35 @@ describe("parsePrimeAgentProcessIds", () => {
 			"",
 		].join("\n");
 		expect(parsePrimeAgentProcessIds(stdout, "prime-agent")).toEqual([123, 456, 789]);
+	});
+});
+
+describe("mergeDiscoveredDaemonProcesses", () => {
+	it("keeps process-title discoveries when lsof by name returned only a partial set", () => {
+		expect(
+			mergeDiscoveredDaemonProcesses(
+				[
+					{ pid: 123, socketPath: "/tmp/by-name.sock" },
+					{ pid: 456, socketPath: "/tmp/shared.sock" },
+				],
+				[
+					{ pid: 456, socketPath: "/tmp/shared.sock" },
+					{ pid: 789, socketPath: "/tmp/by-pid.sock" },
+				],
+			),
+		).toEqual([
+			{ pid: 123, socketPath: "/tmp/by-name.sock" },
+			{ pid: 456, socketPath: "/tmp/shared.sock" },
+			{ pid: 789, socketPath: "/tmp/by-pid.sock" },
+		]);
+	});
+});
+
+describe("evaluateShutdownQuietPeriod", () => {
+	it("expires instead of succeeding when the deadline arrives before a full quiet period", () => {
+		expect(evaluateShutdownQuietPeriod(10_500, 11_000, 10_000)).toBe("waiting");
+		expect(evaluateShutdownQuietPeriod(11_000, 11_000, 10_500)).toBe("expired");
+		expect(evaluateShutdownQuietPeriod(11_000, 11_000, 10_000)).toBe("complete");
 	});
 });
 

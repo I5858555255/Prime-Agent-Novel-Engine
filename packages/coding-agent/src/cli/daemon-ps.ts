@@ -69,6 +69,17 @@ const STATUS_ORDER: Record<DaemonStatus, number> = {
 const SHUTDOWN_QUIET_PERIOD_MS = 1000;
 const SHUTDOWN_CONVERGENCE_TIMEOUT_MS = 10_000;
 
+export function evaluateShutdownQuietPeriod(
+	now: number,
+	deadline: number,
+	quietSince: number | undefined,
+): "complete" | "waiting" | "expired" {
+	if (quietSince !== undefined && now - quietSince >= SHUTDOWN_QUIET_PERIOD_MS) {
+		return "complete";
+	}
+	return now >= deadline ? "expired" : "waiting";
+}
+
 // Linux comm names (and thus the process name ss reports) are capped at 15 chars.
 const MAX_COMM_LENGTH = 15;
 
@@ -143,6 +154,18 @@ export function parsePrimeAgentProcessIds(stdout: string, appName: string): numb
 	return pids;
 }
 
+export function mergeDiscoveredDaemonProcesses(
+	...groups: readonly DiscoveredDaemonProcess[][]
+): DiscoveredDaemonProcess[] {
+	const byIdentity = new Map<string, DiscoveredDaemonProcess>();
+	for (const group of groups) {
+		for (const daemon of group) {
+			byIdentity.set(`${daemon.pid}:${daemon.socketPath}`, daemon);
+		}
+	}
+	return [...byIdentity.values()];
+}
+
 /** Parse `ps -o pid=,etimes=` output into a pid → uptime-seconds map. */
 export function parsePsEtimes(stdout: string): Map<number, number> {
 	const uptimes = new Map<number, number>();
@@ -165,22 +188,20 @@ function scanListeningDaemons(): DiscoveredDaemonProcess[] {
 	}
 	const lsof = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-c", APP_NAME], { encoding: "utf8" });
 	const byName = !lsof.error && typeof lsof.stdout === "string" ? parseLsofListeners(lsof.stdout) : [];
-	if (byName.length > 0) {
-		return enrichUptimes(byName);
-	}
+	let byPid: DiscoveredDaemonProcess[] = [];
 	const ps = spawnSync("ps", ["-axo", "pid=,comm=,args="], { encoding: "utf8" });
 	if (!ps.error && ps.status === 0 && typeof ps.stdout === "string") {
 		const pids = parsePrimeAgentProcessIds(ps.stdout, APP_NAME);
 		if (pids.length > 0) {
-			const byPid = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-p", pids.join(",")], {
+			const lsofByPid = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-p", pids.join(",")], {
 				encoding: "utf8",
 			});
-			if (!byPid.error && typeof byPid.stdout === "string") {
-				return enrichUptimes(parseLsofListeners(byPid.stdout));
+			if (!lsofByPid.error && typeof lsofByPid.stdout === "string") {
+				byPid = parseLsofListeners(lsofByPid.stdout);
 			}
 		}
 	}
-	return [];
+	return enrichUptimes(mergeDiscoveredDaemonProcesses(byName, byPid));
 }
 
 function isDaemonProcessListening(pid: number, socketPath: string): boolean {
@@ -723,19 +744,25 @@ async function terminateVerifiedResiduals(
 ): Promise<void> {
 	let previousSignature: string | undefined;
 	let quietSince: number | undefined;
-	const deadline = Date.now() + SHUTDOWN_CONVERGENCE_TIMEOUT_MS;
-	while (Date.now() < deadline) {
+	let lastObservedSocketPath: string | undefined;
+	const deadline = Date.now() + SHUTDOWN_CONVERGENCE_TIMEOUT_MS + SHUTDOWN_QUIET_PERIOD_MS;
+	while (true) {
 		await assertAdmission();
 		const listeners = await discoverListeningDaemonProcesses();
+		const now = Date.now();
 		if (listeners.length === 0) {
-			quietSince ??= Date.now();
-			if (Date.now() - quietSince >= SHUTDOWN_QUIET_PERIOD_MS) {
+			quietSince ??= now;
+			const quietPeriod = evaluateShutdownQuietPeriod(now, deadline, quietSince);
+			if (quietPeriod === "complete") {
 				return;
 			}
+			if (quietPeriod === "expired") break;
 			await delay(100);
 			continue;
 		}
 		quietSince = undefined;
+		lastObservedSocketPath = listeners[0]?.socketPath;
+		if (now >= deadline) break;
 		const signature = daemonListenerSignature(listeners);
 		if (signature === previousSignature) {
 			for (const listener of listeners) {
@@ -770,7 +797,17 @@ async function terminateVerifiedResiduals(
 			}
 		}
 	}
-	for (const listener of await discoverListeningDaemonProcesses()) {
+	const remainingListeners = await discoverListeningDaemonProcesses();
+	if (remainingListeners.length === 0) {
+		recordShutdownFailure(
+			failed,
+			reportedFailures,
+			lastObservedSocketPath ?? defaultDaemonSocketPath(),
+			`daemon did not remain stopped for the required ${SHUTDOWN_QUIET_PERIOD_MS}ms quiet period`,
+		);
+		return;
+	}
+	for (const listener of remainingListeners) {
 		const processStartId = getProcessStartId(listener.pid);
 		if (!processStartId || getProcessStartId(listener.pid) !== processStartId) {
 			continue;
