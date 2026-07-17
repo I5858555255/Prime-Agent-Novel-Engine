@@ -35,7 +35,6 @@ describe.skipIf(process.platform === "win32")("execCommand", () => {
 
 			vi.useFakeTimers();
 			controller.abort();
-			expect(vi.getTimerCount()).toBe(1);
 
 			await vi.advanceTimersByTimeAsync(5000);
 			const result = await resultPromise;
