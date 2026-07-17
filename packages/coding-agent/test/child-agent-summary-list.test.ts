@@ -195,6 +195,19 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		expect(hint.indexOf("anthropic/claude-opus-4-7")).toBeGreaterThan(hint.indexOf("back to chat"));
 	});
 
+	it("truncates long models before hiding detail actions", () => {
+		const detail = new ChildAgentDetailComponent();
+		detail.setNode({
+			...node("a"),
+			model: "provider-with-a-long-name/model-with-an-even-longer-name",
+		});
+		const hint = stripAnsi(detail.render(60).at(-1) ?? "");
+		expect(hint).toContain("back to chat");
+		expect(hint).toContain("provider-…");
+		expect(hint).toContain("to expand");
+		expect(hint).toContain("stop");
+	});
+
 	it("keeps the starting prompt compact so the recap gets more room", () => {
 		const summary = new ChildAgentSummaryComponent();
 		const prompt = "Investigate every scheduler dispatch path and identify all possible starvation conditions";

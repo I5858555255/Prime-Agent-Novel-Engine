@@ -803,6 +803,7 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 	}
 
 	private detailHintLine(width: number): string {
+		const backAction = keyAction("app.agents.back", this.backHintLabel, { primaryOnly: true });
 		const expandAction = keyAction("app.tools.expand", this.toolsExpanded ? "to collapse" : "to expand");
 		const killable = this.node !== undefined && isKillableChildAgentStatus(this.node.status);
 		const stopAction = !killable
@@ -810,15 +811,14 @@ export class ChildAgentDetailComponent implements Component, Focusable {
 			: this.isKillConfirmationVisible()
 				? theme.fg("error", `${keyText("app.agents.delete", { primaryOnly: true }).trim()} again to stop`)
 				: keyAction("app.agents.delete", "stop", { primaryOnly: true });
-		return hintLine(
-			[
-				keyAction("app.agents.back", this.backHintLabel, { primaryOnly: true }),
-				this.node?.model ? theme.fg("muted", this.node.model) : undefined,
-				expandAction,
-				stopAction,
-			],
-			width,
-		);
+		const actions = [backAction, expandAction, stopAction];
+		const separatorWidth = visibleWidth(joinHints(["", ""]));
+		const modelWidth = Math.max(0, width - visibleWidth(joinHints(actions)) - separatorWidth);
+		const model =
+			this.node?.model && modelWidth >= 4
+				? theme.fg("muted", truncateToWidth(this.node.model, modelWidth, "…"))
+				: undefined;
+		return hintLine([backAction, model, expandAction, stopAction], width);
 	}
 
 	private panelLine(line: string, width: number): string {

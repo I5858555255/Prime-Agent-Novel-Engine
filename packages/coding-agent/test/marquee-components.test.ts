@@ -488,7 +488,7 @@ describe("marquee TUI components", () => {
 		expect(detail).toContain("inspect training logs");
 		expect(detail).toContain("reading shard metrics");
 		expect(detail).toContain("← back to chat");
-		expect(detail).toContain("openai/gpt-5.4");
+		expect(stripAnsi(detailComponent.render(80).at(-1) ?? "")).toContain("openai/gpt-5.4");
 		expect(detail).not.toContain("user: inspect training logs");
 		expect(detail).not.toContain("assistant: reading shard metrics");
 	});
