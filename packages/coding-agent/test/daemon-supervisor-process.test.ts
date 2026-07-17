@@ -324,6 +324,11 @@ describe("daemon supervisor resident workers", () => {
 		expect(internalList.success).toBe(true);
 		expect(requireSessionList(internalList.success ? internalList.data : undefined)).toHaveLength(1);
 		const otherClient = await connectEventually(socketPath);
+		const deniedList = await otherClient.request({ type: "list", includeClientOwned: true });
+		expect(deniedList).toMatchObject({
+			success: true,
+			data: { sessions: [], busyClientOwnedSessionCount: 0 },
+		});
 		const privateSelector = summary.sessionId.slice(-8);
 		const deniedAttach = await otherClient.request({ type: "attach", activeSessionId: privateSelector });
 		expect(deniedAttach).toMatchObject({

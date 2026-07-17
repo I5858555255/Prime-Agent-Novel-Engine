@@ -13,7 +13,7 @@ import { getProcessStartId } from "../core/session-lease.js";
 import { DaemonClient, type DaemonHello } from "../modes/daemon/daemon-client.js";
 import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../modes/daemon/daemon-protocol.js";
 import { getDaemonRuntimeIdentity } from "../modes/daemon/daemon-runtime-identity.js";
-import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
+import { isSessionSummaryBusy, type SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isHelpCommandRequest, PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } from "./command-registry.js";
 import { createCliSubprocessEnv, formatCurrentCliCommand } from "./subprocess-launch.js";
@@ -106,6 +106,13 @@ export async function listActiveDaemonSessionSummaries(
 	client: DaemonClient,
 	options: { includeClientOwned?: boolean } = {},
 ): Promise<SessionSummary[]> {
+	return (await queryActiveDaemonSessions(client, options)).sessions;
+}
+
+async function queryActiveDaemonSessions(
+	client: DaemonClient,
+	options: { includeClientOwned?: boolean } = {},
+): Promise<{ sessions: SessionSummary[]; busyClientOwnedSessionCount: number }> {
 	const hello = await client.waitForHello(2000).catch(() => undefined);
 	const response =
 		hello && hello.protocol.version < DAEMON_PROTOCOL_VERSION
@@ -125,7 +132,16 @@ export async function listActiveDaemonSessionSummaries(
 	if (!sessions.every(isDaemonSessionSummary)) {
 		throw new Error("Daemon returned an invalid session list response");
 	}
-	return sessions;
+	const busyClientOwnedSessionCount = (data as { busyClientOwnedSessionCount?: unknown }).busyClientOwnedSessionCount;
+	if (
+		busyClientOwnedSessionCount !== undefined &&
+		(typeof busyClientOwnedSessionCount !== "number" ||
+			!Number.isInteger(busyClientOwnedSessionCount) ||
+			busyClientOwnedSessionCount < 0)
+	) {
+		throw new Error("Daemon returned an invalid client-owned session count");
+	}
+	return { sessions, busyClientOwnedSessionCount: busyClientOwnedSessionCount ?? 0 };
 }
 
 /** Thrown when a stale-version daemon can't be replaced. The message is user-facing. */
@@ -253,18 +269,12 @@ export async function shutdownDaemonAndWait(socketPath: string, timeoutMs = 5000
 
 // activeSessions is undefined when the daemon is reachable but its sessions couldn't
 // be listed — callers must treat that as "possibly busy", not idle.
-export type RunningDaemonProbe = { reachable: false } | { reachable: true; activeSessions?: SessionSummary[] };
+export type RunningDaemonProbe =
+	| { reachable: false }
+	| { reachable: true; activeSessions?: SessionSummary[]; busyClientOwnedSessionCount?: number };
 
 export function isSessionBusy(summary: SessionSummary): boolean {
-	// pendingMessageCount covers queued steering/follow-ups, which live only in
-	// memory and would be lost if the daemon were stopped.
-	return (
-		summary.isStreaming ||
-		summary.isCompacting ||
-		summary.isBashRunning === true ||
-		summary.hasRunningRlmChildren === true ||
-		summary.pendingMessageCount > 0
-	);
+	return isSessionSummaryBusy(summary);
 }
 
 export async function probeRunningDaemonSessions(socketPath: string): Promise<RunningDaemonProbe> {
@@ -276,8 +286,14 @@ export async function probeRunningDaemonSessions(socketPath: string): Promise<Ru
 		return { reachable: false };
 	}
 	try {
-		const summaries = await listActiveDaemonSessionSummaries(client, { includeClientOwned: true });
-		return { reachable: true, activeSessions: summaries.filter((summary) => summary.activeSessionId !== undefined) };
+		const result = await queryActiveDaemonSessions(client, { includeClientOwned: true });
+		return {
+			reachable: true,
+			activeSessions: result.sessions.filter((summary) => summary.activeSessionId !== undefined),
+			...(result.busyClientOwnedSessionCount > 0
+				? { busyClientOwnedSessionCount: result.busyClientOwnedSessionCount }
+				: {}),
+		};
 	} catch {
 		return { reachable: true };
 	} finally {
@@ -297,7 +313,9 @@ export async function shouldUseLegacyOwnedSessionWorkerFrontend(socketPath: stri
 	const running = await probeRunningDaemonSessions(socketPath);
 	return (
 		running.reachable &&
-		(running.activeSessions === undefined || running.activeSessions.some((summary) => isSessionBusy(summary)))
+		(running.activeSessions === undefined ||
+			(running.busyClientOwnedSessionCount ?? 0) > 0 ||
+			running.activeSessions.some((summary) => isSessionBusy(summary)))
 	);
 }
 
@@ -312,9 +330,10 @@ async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean
 		await client.connect(1000);
 		connected = true;
 		try {
-			const summaries = await listActiveDaemonSessionSummaries(client, { includeClientOwned: true });
-			loadedSessionCount = summaries.length;
-			hasBusySessions = summaries.some(isSessionBusy);
+			const result = await queryActiveDaemonSessions(client, { includeClientOwned: true });
+			loadedSessionCount = result.sessions.length;
+			hasBusySessions =
+				result.busyClientOwnedSessionCount !== 0 || result.sessions.some((summary) => isSessionBusy(summary));
 		} catch {
 			// Couldn't confirm idleness: treat as busy rather than risk interrupting work.
 			hasBusySessions = true;

@@ -18,6 +18,7 @@ import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../src/modes/daemon/d
 interface FakeDaemonOptions {
 	/** Sessions returned for a `list` command. */
 	sessions?: Array<Record<string, unknown>>;
+	busyClientOwnedSessionCount?: number;
 	/** When true, the `list` command responds with a failure. */
 	failList?: boolean;
 	/** When false, the server ignores `shutdown` and stays up. */
@@ -77,7 +78,13 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 						id: command.id,
 						...(options.failList
 							? { success: false, error: "list failed" }
-							: { success: true, data: { sessions: options.sessions ?? [] } }),
+							: {
+									success: true,
+									data: {
+										sessions: options.sessions ?? [],
+										busyClientOwnedSessionCount: options.busyClientOwnedSessionCount ?? 0,
+									},
+								}),
 					});
 				} else if (command.type === "shutdown") {
 					if (options.respondToShutdown === false) {
@@ -227,6 +234,22 @@ describe("ensureInteractiveDaemonRunning", () => {
 		cleanups.push(daemon.close);
 
 		await expect(ensureInteractiveDaemonRunning(daemon.socketPath)).resolves.toBeUndefined();
+		expect(commands).toContain("list");
+		expect(commands).not.toContain("shutdown");
+	});
+
+	it("does not replace a stale daemon with busy private client sessions", async () => {
+		const commands: string[] = [];
+		const daemon = await startFakeDaemon({
+			protocolVersion: DAEMON_PROTOCOL_VERSION,
+			appVersion: VERSION,
+			schemaId: "stale-schema",
+			busyClientOwnedSessionCount: 1,
+			onCommand: (command) => commands.push(command.type),
+		});
+		cleanups.push(daemon.close);
+
+		await expect(ensureInteractiveDaemonRunning(daemon.socketPath)).rejects.toThrow("stale");
 		expect(commands).toContain("list");
 		expect(commands).not.toContain("shutdown");
 	});

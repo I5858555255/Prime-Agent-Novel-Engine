@@ -60,7 +60,7 @@ import {
 } from "./daemon-protocol.js";
 import { getDaemonRuntimeIdentity } from "./daemon-runtime-identity.js";
 import { matchesSessionIdSuffix } from "./daemon-session-id.js";
-import { type SessionSummary, summaryForInactiveSession } from "./daemon-session-list.js";
+import { isSessionSummaryBusy, type SessionSummary, summaryForInactiveSession } from "./daemon-session-list.js";
 import {
 	acquireDaemonSocketPathLease,
 	cleanupDaemonSocketPath,
@@ -1012,7 +1012,7 @@ export class DaemonSupervisor {
 				this.commandJournal.acknowledge(client.id, command.commandId);
 				return undefined;
 			case "list":
-				return this.handleList(command);
+				return this.handleList(client, command);
 			case "list_saved_sessions":
 				return this.handleSavedSessionList(client, command);
 			case "create": {
@@ -1406,20 +1406,35 @@ export class DaemonSupervisor {
 		return response;
 	}
 
-	private async handleList(command: Extract<DaemonCommand, { type: "list" }>): Promise<DaemonResponse> {
+	private async handleList(
+		client: DaemonSocketClient,
+		command: Extract<DaemonCommand, { type: "list" }>,
+	): Promise<DaemonResponse> {
 		await Promise.all(
 			[...this.workers.values()].map((worker) => this.refreshWorkerSummaries(worker).catch(() => undefined)),
 		);
 		await this.syncAgentPeers().catch((error) => this.log(`Could not synchronize agent peers: ${String(error)}`));
+		const clientOwnedWorkers = [...this.workers.values()].filter((worker) => !this.isVisibleWorker(worker));
 		const active = [...this.workers.values()]
-			.filter((worker) => command.includeClientOwned || this.isVisibleWorker(worker))
+			.filter(
+				(worker) =>
+					this.isVisibleWorker(worker) ||
+					(command.includeClientOwned === true && this.isWorkerAccessibleToClient(client, worker)),
+			)
 			.flatMap((worker) => [...worker.summaries.values()].map((summary) => this.publicSummary(worker, summary)));
+		const busyClientOwnedSessionCount = clientOwnedWorkers
+			.flatMap((worker) => [...worker.summaries.values()])
+			.filter(isSessionSummaryBusy).length;
+		const data = {
+			sessions: active,
+			...(command.includeClientOwned ? { busyClientOwnedSessionCount } : {}),
+		};
 		if (!command.all) {
-			return success(command.id, "list", { sessions: active });
+			return success(command.id, "list", data);
 		}
 		const sessionDir = command.sessionDir ?? this.defaultSessionConfig.sessionDir;
 		const saved = await this.catalog.list(command.cwd ? resolve(command.cwd) : undefined, sessionDir);
-		return success(command.id, "list", { sessions: mergeSessionLists(active, saved) });
+		return success(command.id, "list", { ...data, sessions: mergeSessionLists(active, saved) });
 	}
 
 	private async handleSavedSessionList(
