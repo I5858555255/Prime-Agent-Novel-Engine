@@ -45,8 +45,8 @@ import type { SessionSummary } from "./daemon-session-list.js";
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
 export const DAEMON_PROTOCOL_VERSION = 4;
 export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 2;
-export const DAEMON_SCHEMA_REVISION = 1;
-export const DAEMON_SCHEMA_ID = "protocol-4-schema-1-07ce10c7f10a";
+export const DAEMON_SCHEMA_REVISION = 2;
+export const DAEMON_SCHEMA_ID = "protocol-4-schema-2-54d420fc653e";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -64,7 +64,11 @@ export type DaemonClientCapability =
 	| "extension_ui"
 	| "slim_attach"
 	| "chunked_snapshot";
-export type DaemonServerCapability = DaemonClientCapability | "heartbeat_catalog" | "heartbeat_management";
+export type DaemonServerCapability =
+	| DaemonClientCapability
+	| "heartbeat_catalog"
+	| "heartbeat_management"
+	| "model_catalog";
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
 export interface DaemonProtocolInfo {
@@ -94,6 +98,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	...DAEMON_SUPPORTED_CLIENT_CAPABILITIES,
 	"heartbeat_catalog",
 	"heartbeat_management",
+	"model_catalog",
 ];
 
 export interface DaemonRuntimeIdentity {
@@ -544,6 +549,7 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	get_context_tree: LEGACY_DAEMON_COMMAND,
 	get_commands: LEGACY_DAEMON_COMMAND,
 	get_resource_snapshot: LEGACY_DAEMON_COMMAND,
+	get_model_catalog: { minProtocol: 4, capability: "model_catalog" },
 	get_available_models: LEGACY_DAEMON_COMMAND,
 	get_queue: LEGACY_DAEMON_COMMAND,
 	clear_queue: LEGACY_DAEMON_COMMAND,

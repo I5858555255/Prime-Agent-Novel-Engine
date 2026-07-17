@@ -395,6 +395,13 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async getModelCatalog(): Promise<AgentConnectionModelCatalog> {
+		if (!this.client.supportsServerCapability("model_catalog")) {
+			const models = await this.getAvailableModels();
+			return {
+				models,
+				configuredProviders: [...new Set(models.map((model) => model.provider))],
+			};
+		}
 		return this.requestData<AgentConnectionModelCatalog>({
 			type: "get_model_catalog",
 			activeSessionId: this.activeSessionId,
