@@ -101,6 +101,7 @@ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.j
 import {
 	createCompactionSummaryMessage,
 	createHeartbeatPromptMessage,
+	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
@@ -745,6 +746,7 @@ export class InteractiveMode {
 	private featureHintTimer: NodeJS.Timeout | undefined;
 	private featureHintAnimationTimer: NodeJS.Timeout | undefined;
 	private featureHintComponent: FeatureHintComponent | undefined;
+	private featureHintRunPending = false;
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
@@ -3019,10 +3021,25 @@ export class InteractiveMode {
 		this.clearFeatureHintPresentation();
 		this.currentFeatureHint = undefined;
 		this.featureHintEligibleAt = 0;
+		this.featureHintRunPending = false;
 	}
 
-	private prepareFeatureHintRun(): void {
+	private prepareFeatureHintRun(message: AgentMessage): void {
+		if (!this.featureHintRunPending) return;
+		if (message.role === "assistant") {
+			this.featureHintRunPending = false;
+			return;
+		}
+		const startsNewRun =
+			message.role === "user" ||
+			isAgentSessionMessage(message) ||
+			(message.role === "custom" && message.customType === HEARTBEAT_PROMPT_CUSTOM_TYPE);
+		if (!startsNewRun) return;
+
 		this.endFeatureHintRun();
+		if (this.shouldShowWorkingLoader()) {
+			this.startFeatureHintPresentation();
+		}
 	}
 
 	private updateWorkingPulse(): void {
@@ -4651,8 +4668,10 @@ export class InteractiveMode {
 		this.updateConnectionStateFromEvent(event);
 		// A new user message resets the activity tracker to 0, so the in-flight baseline must
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
+		if (event.type === "message_start") {
+			this.prepareFeatureHintRun(event.message);
+		}
 		if (event.type === "message_start" && (event.message.role === "user" || isAgentSessionMessage(event.message))) {
-			this.prepareFeatureHintRun();
 			this.contextUsageTokenBaseline = 0;
 			this.setSessionHasMessages(true);
 			this.clearShortcutGuide();
@@ -4664,6 +4683,7 @@ export class InteractiveMode {
 
 		switch (event.type) {
 			case "agent_start":
+				this.featureHintRunPending = this.getRetryAttempt() === 0;
 				this.resetPendingToolState();
 				this.renderRecap();
 				if (this.settingsManager.getShowTerminalProgress()) {

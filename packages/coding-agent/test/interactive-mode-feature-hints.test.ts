@@ -42,6 +42,7 @@ function createMode() {
 		featureHintTimer: undefined,
 		featureHintAnimationTimer: undefined,
 		featureHintComponent: undefined,
+		featureHintRunPending: false,
 		options: { returnToAgentsView: true },
 		ui: { requestRender },
 	};
@@ -196,15 +197,34 @@ describe("InteractiveMode feature hints", () => {
 		expect(Reflect.get(mode, "currentFeatureHint")).toBeUndefined();
 	});
 
-	it("keeps the current hint across loader restarts and clears it for new runs", () => {
+	it("keeps hints for steering and continuations, then restarts the delay for new runs", () => {
 		const { mode } = createMode();
 		Reflect.set(mode, "currentFeatureHint", "Existing hint");
 		Reflect.set(mode, "featureHintEligibleAt", 5_000);
 
-		callPrivate(mode, "clearFeatureHintPresentation");
+		Reflect.get(InteractiveMode.prototype, "prepareFeatureHintRun").call(mode, {
+			role: "user",
+			content: [{ type: "text", text: "steer" }],
+			timestamp: 0,
+		});
 		expect(Reflect.get(mode, "currentFeatureHint")).toBe("Existing hint");
 
-		callPrivate(mode, "prepareFeatureHintRun");
+		Reflect.set(mode, "featureHintRunPending", true);
+		Reflect.get(InteractiveMode.prototype, "prepareFeatureHintRun").call(mode, {
+			role: "assistant",
+			content: [],
+		});
+		expect(Reflect.get(mode, "currentFeatureHint")).toBe("Existing hint");
+		expect(Reflect.get(mode, "featureHintRunPending")).toBe(false);
+
+		Reflect.set(mode, "featureHintRunPending", true);
+		Reflect.get(InteractiveMode.prototype, "prepareFeatureHintRun").call(mode, {
+			role: "user",
+			content: [{ type: "text", text: "new run" }],
+			timestamp: 0,
+		});
 		expect(Reflect.get(mode, "currentFeatureHint")).toBeUndefined();
+		expect(Reflect.get(mode, "featureHintEligibleAt")).toBe(5_000);
+		expect(Reflect.get(mode, "featureHintTimer")).toBeDefined();
 	});
 });
