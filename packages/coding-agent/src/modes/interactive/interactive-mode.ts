@@ -207,6 +207,7 @@ import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
 import { FeatureHintDeck } from "./feature-hints.js";
+import { scopeHeartbeatsToSession } from "./heartbeat-scope.js";
 import { collectMarkedImages, evictImagesToBudget, formatImageMarker, imageMarkerIds } from "./image-markers.js";
 import type {
 	InteractiveModeLocalSessionHost,
@@ -340,6 +341,7 @@ function childAgentSummaryChanged(
 	const nextTokens = next.tokenCount === undefined ? undefined : formatTokenCount(next.tokenCount);
 	return (
 		previous.parentId !== next.parentId ||
+		previous.activeSessionId !== next.activeSessionId ||
 		previous.sessionName !== next.sessionName ||
 		previous.model !== next.model ||
 		previous.label !== next.label ||
@@ -833,6 +835,7 @@ export class InteractiveMode {
 	private connectionState: AgentConnectionState | undefined;
 	private connectionResourceSnapshot: AgentConnectionResourceSnapshot | undefined;
 	private sessionHasMessages = false;
+	private heartbeatCatalog: AgentConnectionHeartbeat[] = [];
 	private heartbeats: AgentConnectionHeartbeat[] = [];
 	private heartbeatRefreshPromise: Promise<void> | undefined;
 	private heartbeatRefreshRequested = false;
@@ -2342,6 +2345,22 @@ export class InteractiveMode {
 	}
 
 	private applyHeartbeatCatalog(heartbeats: AgentConnectionHeartbeat[]): void {
+		this.heartbeatCatalog = heartbeats;
+		this.updateScopedHeartbeats();
+	}
+
+	private updateScopedHeartbeats(): void {
+		const heartbeats = scopeHeartbeatsToSession(
+			this.heartbeatCatalog,
+			this.connectionState,
+			this.childAgentSnapshots.values(),
+		);
+		if (
+			heartbeats.length === this.heartbeats.length &&
+			heartbeats.every((heartbeat, index) => heartbeat === this.heartbeats[index])
+		) {
+			return;
+		}
 		this.heartbeats = heartbeats;
 		this.heartbeatManager?.setHeartbeats(heartbeats);
 		this.scheduleHeartbeatManagerRefresh();
@@ -2352,6 +2371,7 @@ export class InteractiveMode {
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
 		this.bindPromptStashSession(state.sessionId);
 		this.connectionState = state;
+		this.updateScopedHeartbeats();
 		// Don't touch contextUsageTokenBaseline: a mid-stream snapshot reflects only completed
 		// turns (the in-flight message isn't persisted yet), so the in-flight delta must keep
 		// accumulating. The baseline is managed at turn end (refreshConnectionContextUsage) and
@@ -2725,7 +2745,6 @@ export class InteractiveMode {
 				latestToolCall.arguments,
 				{
 					showImages: this.settingsManager.getShowImages(),
-					imageWidthCells: this.settingsManager.getImageWidthCells(),
 				},
 				toolDefinition,
 				this.ui,
@@ -2937,6 +2956,9 @@ export class InteractiveMode {
 
 	private startFeatureHintPresentation(): void {
 		this.clearFeatureHintPresentation();
+		if (this.childAgentPanelMode) {
+			return;
+		}
 		if (this.featureHintEligibleAt === 0) {
 			this.featureHintEligibleAt = Date.now() + FEATURE_HINT_DELAY_MS;
 		}
@@ -2995,6 +3017,16 @@ export class InteractiveMode {
 		if (this.featureHintComponent) {
 			this.featureHintContainer.removeChild(this.featureHintComponent);
 			this.featureHintComponent = undefined;
+		}
+	}
+
+	private resumeFeatureHintPresentation(): void {
+		if (
+			this.loadingAnimation &&
+			this.shouldShowWorkingLoader() &&
+			this.statusContainer.children.includes(this.loadingAnimation)
+		) {
+			this.startFeatureHintPresentation();
 		}
 	}
 
@@ -3597,8 +3629,9 @@ export class InteractiveMode {
 			this.enteredSessionViaSubagentDetail = false;
 			this.childAgentDetail.setBackHintLabel("back to chat");
 			this.childAgentDetail.setNode(undefined);
+			this.childAgentPanelMode = undefined;
+			this.resumeFeatureHintPresentation();
 		}
-		this.childAgentPanelMode = undefined;
 		this.childAgentSummary.setHidden(false);
 
 		// Save text from current editor before switching
@@ -5241,6 +5274,7 @@ export class InteractiveMode {
 	private refreshChildAgentInspector(): void {
 		this.childAgentNodes = this.buildChildAgentInspectorNodes();
 		this.childAgentSummary.setNodes(this.childAgentNodes);
+		this.updateScopedHeartbeats();
 		this.updateWorkingPulse();
 		this.syncWorkingLoader();
 		this.updateWorkingLoaderMessage();
@@ -5277,6 +5311,7 @@ export class InteractiveMode {
 		this.childAgentSnapshots.clear();
 		this.childAgentNodes = [];
 		this.childAgentSummary.setNodes([]);
+		this.updateScopedHeartbeats();
 		this.childAgentSummary.setHidden(false);
 		this.childAgentDetail.setNode(undefined);
 		this.childAgentDetailNodeId = undefined;
@@ -5476,6 +5511,7 @@ export class InteractiveMode {
 			return false;
 		}
 		this.childAgentPanelMode = "detail";
+		this.clearFeatureHintPresentation();
 		this.childAgentDetailNodeId = nodeId;
 		this.childAgentDetail.setNode(node);
 		this.childAgentDetail.setBodyComponents([]);
@@ -5585,7 +5621,6 @@ export class InteractiveMode {
 				cwd: this.getCurrentCwd(),
 				toolOptions: {
 					showImages: this.settingsManager.getShowImages(),
-					imageWidthCells: this.settingsManager.getImageWidthCells(),
 				},
 				getToolDefinition: (name) => definitions.get(name),
 				markdownTheme: this.getMarkdownThemeWithSettings(),
@@ -5615,6 +5650,7 @@ export class InteractiveMode {
 		this.childAgentDetail.setBodyComponents([]);
 		this.childAgentSummary.setHidden(false);
 		this.restoreMainAgentView();
+		this.resumeFeatureHintPresentation();
 		// Restore the parent recap that was suppressed while the panel was open.
 		this.renderRecap();
 		// Re-render queued previews cleared on panel entry; the queue may still hold messages.
@@ -5949,9 +5985,7 @@ export class InteractiveMode {
 							content.arguments,
 							{
 								showImages: this.settingsManager.getShowImages(),
-								imageWidthCells: this.settingsManager.getImageWidthCells(),
-								// Do not replay historical inline image payloads on session load/rebuild.
-								allowInlineImages: false,
+								includeImageDimensions: false,
 							},
 							this.getCachedToolDefinition(content.name),
 							this.ui,
@@ -5995,8 +6029,7 @@ export class InteractiveMode {
 		}
 
 		for (const [toolCallId, component] of renderedPendingTools) {
-			// These tool calls have no historical result yet, so future updates are live output.
-			component.setAllowInlineImages(true);
+			component.setIncludeImageDimensions(true);
 			this.pendingTools.set(toolCallId, component);
 		}
 		this.ui.requestRender();
@@ -6852,7 +6885,6 @@ export class InteractiveMode {
 				{
 					autoCompact: state.autoCompactionEnabled,
 					showImages: this.settingsManager.getShowImages(),
-					imageWidthCells: this.settingsManager.getImageWidthCells(),
 					autoResizeImages: this.settingsManager.getImageAutoResize(),
 					blockImages: this.settingsManager.getBlockImages(),
 					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
@@ -6888,14 +6920,6 @@ export class InteractiveMode {
 						for (const child of this.chatContainer.children) {
 							if (child instanceof ToolExecutionComponent) {
 								child.setShowImages(enabled);
-							}
-						}
-					},
-					onImageWidthCellsChange: (width) => {
-						this.settingsManager.setImageWidthCells(width);
-						for (const child of this.chatContainer.children) {
-							if (child instanceof ToolExecutionComponent) {
-								child.setImageWidthCells(width);
 							}
 						}
 					},
@@ -8982,7 +9006,7 @@ export class InteractiveMode {
 		if (updated.source === "heartbeat" && updated.activeSessionId === this.connectionState?.activeSessionId) {
 			this.patchConnectionState({ heartbeat: action === "stop" ? null : updated });
 		}
-		const remaining = this.heartbeats.filter((entry) => entry.job.id !== updated.id);
+		const remaining = this.heartbeatCatalog.filter((entry) => entry.job.id !== updated.id);
 		this.applyHeartbeatCatalog(
 			updated.status === "active" || updated.status === "paused"
 				? [...remaining, { ...heartbeat, job: updated }]
