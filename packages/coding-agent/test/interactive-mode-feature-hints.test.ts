@@ -58,14 +58,17 @@ describe("feature hint deck", () => {
 	it("uses configured shortcuts in keybinding-based hints", () => {
 		const deck = new FeatureHintDeck(() => 0);
 		const context = {
-			getKeybinding: (action: string) =>
-				action === "app.prompt.stash" ? "Meta+S" : action === "app.message.followUp" ? "Meta+Enter" : "Meta+Escape",
+			getKeybinding: (action: string) => {
+				if (action === "app.prompt.stash") return "Meta+S";
+				if (action === "app.message.followUp") return "Meta+Enter";
+				return "Meta+Left";
+			},
 		};
 		const hints = FEATURE_HINTS.map(() => deck.next(context));
 
 		expect(hints.find((hint) => hint?.id === "prompt-stash")?.text).toContain("Meta+S");
 		expect(hints.find((hint) => hint?.id === "follow-up")?.text).toContain("Meta+Enter");
-		expect(hints.find((hint) => hint?.id === "session-rewind")?.text).toContain("Meta+Escape twice");
+		expect(hints.find((hint) => hint?.id === "agents-view")?.text).toContain("Meta+Left");
 	});
 
 	it("covers Prime Agent workflows with capability-focused copy", () => {
@@ -73,9 +76,9 @@ describe("feature hint deck", () => {
 		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Meta+A" }));
 		const textById = new Map(hints.map((hint) => [hint?.id, hint?.text]));
 
-		expect(textById.get("subagents")).toBe("Prime Agent can delegate independent tasks to subagents in parallel.");
+		expect(textById.get("subagents")).toBe("Prime Agent can delegate tasks to subagents and run them in parallel.");
 		expect(textById.get("agents-view")).toContain("Agents View");
-		expect(textById.get("session-rewind")).toContain("tree");
+		expect(textById.get("session-rewind")).toContain("/tree");
 		expect(textById.get("steering")).toContain("steer");
 		expect(textById.get("agent-messaging")).toContain("message each other");
 		expect(textById.get("goal")).toContain("/goal");

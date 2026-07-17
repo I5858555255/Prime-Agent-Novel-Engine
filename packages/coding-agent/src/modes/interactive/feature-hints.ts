@@ -17,72 +17,72 @@ export interface FeatureHint {
 export const FEATURE_HINTS: readonly FeatureHintDefinition[] = [
 	{
 		id: "side-question",
-		getText: () => "Use /btw <question> for a side question that won't change the main session.",
+		getText: () => "Use /btw <question> to ask questions without interrupting your agent.",
 	},
 	{
 		id: "prompt-stash",
 		getText: ({ getKeybinding }) => {
 			const key = getKeybinding("app.prompt.stash");
-			return key ? `Press ${key} to stash your draft and restore it later.` : undefined;
+			return key ? `Press ${key} to stash your prompt and restore it later.` : undefined;
 		},
 	},
 	{
 		id: "follow-up",
 		getText: ({ getKeybinding }) => {
 			const key = getKeybinding("app.message.followUp");
-			return key ? `Press ${key} to queue a message after the current task.` : undefined;
+			return key ? `Press ${key} to send a message after your agent finishes.` : undefined;
 		},
 	},
 	{
 		id: "heartbeat",
-		getText: () => "Use /heartbeat every 10m <instruction> to schedule recurring work.",
+		getText: () => "Use /heartbeat every 10m <instruction> to repeat a task on a schedule.",
 	},
 	{
 		id: "subagents",
-		getText: () => "Prime Agent can delegate independent tasks to subagents in parallel.",
+		getText: () => "Prime Agent can delegate tasks to subagents and run them in parallel.",
 	},
 	{
 		id: "agents-view",
-		getText: () => "The Agents View shows your working, waiting, and completed agents.",
-	},
-	{
-		id: "session-rewind",
 		getText: ({ getKeybinding }) => {
-			const key = getKeybinding("app.input.clear");
-			return key ? `Press ${key} twice on an empty prompt to open the tree and rewind.` : undefined;
+			const key = getKeybinding("app.agents.back");
+			return key ? `Hit ${key} for Agents View, where you can manage all your running agents.` : undefined;
 		},
 	},
 	{
+		id: "session-rewind",
+		getText: () => "Run /tree to open the session tree and return to a previous message.",
+	},
+	{
 		id: "steering",
-		getText: () => "Messages sent during active work steer the current task.",
+		getText: () => "Send a message while your agent works to steer its current task.",
 	},
 	{
 		id: "agent-messaging",
-		getText: () => "Agents can message each other to share context and coordinate work.",
+		getText: () => "Agents can message each other to share context and coordinate their work.",
 	},
 	{
 		id: "goal",
-		getText: () => "Use /goal <objective> for work that should continue across turns.",
+		getText: () => "Use /goal <objective> to keep your agent working until the goal is complete.",
 	},
 	{
 		id: "refine",
-		getText: () => "Use /refine to save useful lessons as skills, memory, prompts, or subagents.",
+		getText: () => "Use /refine to turn useful lessons into reusable skills, memory, and prompts.",
 	},
 	{
 		id: "persistent-ipython",
-		getText: () => "IPython keeps variables and helpers available across turns and compaction.",
+		getText: () => "Prime Agent keeps IPython variables and helpers between turns and compactions.",
 	},
 	{
 		id: "context-usage",
-		getText: () => "Use /context to see token, cost, and context usage.",
+		getText: () => "Use /context to check token usage, cost, and remaining context.",
 	},
 	{
 		id: "session-fork",
-		getText: () => "Use /fork to branch from an earlier prompt without losing the current session.",
+		getText: () => "Use /fork to start a new session from an earlier prompt.",
 	},
 	{
 		id: "compaction",
-		getText: () => "Use /compact <instructions> to summarize old context around what matters.",
+		getText: () => "Use /compact <instructions> to summarize old messages and free up context.",
 	},
 ] as const;
 
