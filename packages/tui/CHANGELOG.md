@@ -4,6 +4,7 @@
 
 - Fixed fullscreen terminal images reserving blank rows by showing a compact metadata fallback with viewing instructions.
 - Changed the fullscreen follow shortcut from `Alt+Down` to `Ctrl+Shift+Down` for more reliable terminal input ([ENG-4684](https://linear.app/primeintellect/issue/ENG-4684/altdown-doesnt-work)).
+- Fixed autocomplete popups overlapping the prompt's top edge.
 
 ## [0.3.1] - 2026-07-15
 
