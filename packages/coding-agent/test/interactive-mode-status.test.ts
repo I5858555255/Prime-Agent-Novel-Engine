@@ -1437,6 +1437,7 @@ describe("InteractiveMode model selection persistence", () => {
 			refresh: vi.fn(),
 			getError: vi.fn(() => undefined),
 			getAvailable: vi.fn(() => registryModels),
+			hasConfiguredAuth: vi.fn(() => false),
 			getProviderAuthStatus: vi.fn(() => ({ configured: false })),
 			find: vi.fn((provider: string, modelId: string) =>
 				registryModels.find((model) => model.provider === provider && model.id === modelId),
