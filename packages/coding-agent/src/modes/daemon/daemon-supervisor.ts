@@ -1054,7 +1054,7 @@ export class DaemonSupervisor {
 				return success(command.id, "attach", attached.result);
 			}
 			case "reattach": {
-				const target = await this.findWorker(command.targetActiveSessionId);
+				const target = await this.findWorkerForClient(client, command.targetActiveSessionId);
 				const targetActiveSessionId = target.summary.activeSessionId ?? target.summary.id;
 				if (targetActiveSessionId === command.activeSessionId) {
 					return success(command.id, command.type, { cancelled: false });
@@ -1108,7 +1108,7 @@ export class DaemonSupervisor {
 				this.detachClient(client, command.activeSessionId);
 				return success(command.id, "detach");
 			case "complete_owned_session": {
-				const match = await this.findWorker(command.activeSessionId);
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
 				if (match.worker.descriptor.ownerClientId !== this.protocolClientId(client)) {
 					throw new Error("Session is not owned by this client");
 				}
@@ -1120,7 +1120,7 @@ export class DaemonSupervisor {
 				return success(command.id, command.type);
 			}
 			case "promote_owned_session": {
-				const match = await this.findWorker(command.activeSessionId);
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
 				await this.promoteOwnedWorker(client, match.worker);
 				return success(command.id, command.type, this.publicSummary(match.worker, match.summary));
 			}
@@ -1130,7 +1130,8 @@ export class DaemonSupervisor {
 						worker.descriptor.rootActiveSessionId === command.activeSessionId ||
 						worker.descriptor.rootSessionId === command.activeSessionId,
 				);
-				const worker = direct ?? (await this.findWorker(command.activeSessionId)).worker;
+				const worker = direct ?? (await this.findWorkerForClient(client, command.activeSessionId)).worker;
+				this.assertWorkerAccessibleToClient(client, worker, command.activeSessionId);
 				worker.intentionalStop = false;
 				worker.descriptor.lifecycle = "recovering";
 				worker.descriptor.consecutiveFailures = 0;
@@ -1154,7 +1155,7 @@ export class DaemonSupervisor {
 			}
 			case "agent_messages_status": {
 				if (command.activeSessionId) {
-					const match = await this.findWorker(command.activeSessionId);
+					const match = await this.findWorkerForClient(client, command.activeSessionId);
 					return this.forwardToWorker(match.worker, command);
 				}
 				const first = [...this.workers.values()].find((worker) => this.isVisibleWorker(worker) && worker.client);
@@ -1166,7 +1167,7 @@ export class DaemonSupervisor {
 			case "agent_messages_pause":
 			case "agent_messages_resume": {
 				if (command.activeSessionId) {
-					const match = await this.findWorker(command.activeSessionId);
+					const match = await this.findWorkerForClient(client, command.activeSessionId);
 					return this.forwardToWorker(match.worker, command);
 				}
 				const responses = await Promise.all(
@@ -1179,7 +1180,7 @@ export class DaemonSupervisor {
 			}
 			case "cron_list": {
 				if (command.activeSessionId) {
-					const match = await this.findWorker(command.activeSessionId);
+					const match = await this.findWorkerForClient(client, command.activeSessionId);
 					return this.forwardToWorker(match.worker, command);
 				}
 				const jobs = new Map<string, AgentCronJob>();
@@ -1208,7 +1209,7 @@ export class DaemonSupervisor {
 			}
 			case "heartbeats_list": {
 				if (command.activeSessionId) {
-					const match = await this.findWorker(command.activeSessionId);
+					const match = await this.findWorkerForClient(client, command.activeSessionId);
 					return this.forwardToWorker(match.worker, command);
 				}
 				const workers = [...this.workers.values()].filter((worker) => this.isVisibleWorker(worker));
@@ -1258,7 +1259,8 @@ export class DaemonSupervisor {
 							heartbeat.job.id === command.jobId && heartbeat.job.activeSessionId === command.activeSessionId,
 					),
 				);
-				const worker = cachedWorker ?? (await this.findWorker(command.activeSessionId)).worker;
+				const worker = cachedWorker ?? (await this.findWorkerForClient(client, command.activeSessionId)).worker;
+				this.assertWorkerAccessibleToClient(client, worker, command.activeSessionId);
 				const response = await this.forwardToWorker(worker, command);
 				if (
 					response.success &&
@@ -1279,7 +1281,7 @@ export class DaemonSupervisor {
 				return response;
 			}
 			case "cron_add": {
-				const match = await this.findWorker(command.activeSessionId);
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
 				const response = await this.forwardToWorker(match.worker, command);
 				if (response.success && command.promoteOwnedSession) {
 					await this.promoteOwnedWorker(client, match.worker);
@@ -1288,7 +1290,7 @@ export class DaemonSupervisor {
 			}
 			case "cron_cancel": {
 				if (command.activeSessionId) {
-					const match = await this.findWorker(command.activeSessionId);
+					const match = await this.findWorkerForClient(client, command.activeSessionId);
 					return this.forwardToWorker(match.worker, command);
 				}
 				const listed = await Promise.all(
@@ -1317,11 +1319,11 @@ export class DaemonSupervisor {
 				throw new Error(`No cron job found: ${command.jobId}`);
 			}
 			case "heartbeat_get": {
-				const match = await this.findWorker(command.activeSessionId);
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
 				return this.forwardToWorker(match.worker, command);
 			}
 			case "heartbeat_set": {
-				const match = await this.findWorker(command.activeSessionId);
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
 				const response = await this.forwardToWorker(match.worker, command);
 				if (response.success && command.promoteOwnedSession) {
 					await this.promoteOwnedWorker(client, match.worker);
@@ -1329,7 +1331,7 @@ export class DaemonSupervisor {
 				return response;
 			}
 			case "heartbeat_update": {
-				const match = await this.findWorker(command.activeSessionId);
+				const match = await this.findWorkerForClient(client, command.activeSessionId);
 				return this.forwardToWorker(match.worker, command);
 			}
 			case "rename_saved_session":
@@ -1351,8 +1353,10 @@ export class DaemonSupervisor {
 		}
 
 		if (command.type === "send_message") {
-			const target = await this.findWorker(command.targetActiveSessionId);
-			const source = command.fromActiveSessionId ? await this.findWorker(command.fromActiveSessionId) : undefined;
+			const target = await this.findWorkerForClient(client, command.targetActiveSessionId);
+			const source = command.fromActiveSessionId
+				? await this.findWorkerForClient(client, command.fromActiveSessionId)
+				: undefined;
 			if (source && source.worker !== target.worker) {
 				if (!target.worker.client) {
 					throw new Error("Target session worker is not connected");
@@ -1381,7 +1385,7 @@ export class DaemonSupervisor {
 		if (!("activeSessionId" in command) || typeof command.activeSessionId !== "string") {
 			throw new Error(`Supervisor cannot route daemon command: ${command.type}`);
 		}
-		const match = await this.findWorker(command.activeSessionId);
+		const match = await this.findWorkerForClient(client, command.activeSessionId);
 		const resolvedCommand = {
 			...command,
 			activeSessionId: match.summary.activeSessionId ?? match.summary.id,
@@ -1426,7 +1430,7 @@ export class DaemonSupervisor {
 		let sessionDir: string | undefined;
 		let activeSessionId: string | undefined;
 		if ("activeSessionId" in command) {
-			const match = await this.findWorker(command.activeSessionId);
+			const match = await this.findWorkerForClient(client, command.activeSessionId);
 			cwd = match.summary.cwd;
 			sessionDir = this.defaultSessionConfig.sessionDir;
 			activeSessionId = match.summary.activeSessionId ?? match.summary.id;
@@ -2440,13 +2444,16 @@ export class DaemonSupervisor {
 		};
 	}
 
-	private async findWorker(selector: string): Promise<WorkerMatch> {
-		let matches = this.matchWorkers(selector);
+	private async findWorker(
+		selector: string,
+		includeWorker?: (worker: ResidentWorker) => boolean,
+	): Promise<WorkerMatch> {
+		let matches = this.matchWorkers(selector, includeWorker);
 		if (matches.length === 0) {
 			await Promise.all(
 				[...this.workers.values()].map((worker) => this.refreshWorkerSummaries(worker).catch(() => undefined)),
 			);
-			matches = this.matchWorkers(selector);
+			matches = this.matchWorkers(selector, includeWorker);
 		}
 		if (matches.length === 1) {
 			return matches[0]!;
@@ -2457,10 +2464,30 @@ export class DaemonSupervisor {
 		throw new Error(`Unknown active session: ${selector}`);
 	}
 
-	private matchWorkers(selector: string): WorkerMatch[] {
+	private findWorkerForClient(client: DaemonSocketClient, selector: string): Promise<WorkerMatch> {
+		return this.findWorker(selector, (worker) => this.isWorkerAccessibleToClient(client, worker));
+	}
+
+	private isWorkerAccessibleToClient(client: DaemonSocketClient, worker: ResidentWorker): boolean {
+		return (
+			worker.descriptor.ownerClientId === undefined ||
+			worker.descriptor.ownerClientId === this.protocolClientId(client)
+		);
+	}
+
+	private assertWorkerAccessibleToClient(client: DaemonSocketClient, worker: ResidentWorker, selector: string): void {
+		if (!this.isWorkerAccessibleToClient(client, worker)) {
+			throw new Error(`Unknown active session: ${selector}`);
+		}
+	}
+
+	private matchWorkers(selector: string, includeWorker?: (worker: ResidentWorker) => boolean): WorkerMatch[] {
 		const exact: WorkerMatch[] = [];
 		const suffix: WorkerMatch[] = [];
 		for (const worker of this.workers.values()) {
+			if (includeWorker && !includeWorker(worker)) {
+				continue;
+			}
 			for (const summary of worker.summaries.values()) {
 				const activeSessionId = summary.activeSessionId ?? summary.id;
 				const match = { worker, summary };
@@ -2536,13 +2563,7 @@ export class DaemonSupervisor {
 				await this.recoverWorker(ownedWorker);
 			}
 		}
-		const match = await this.findWorker(command.activeSessionId);
-		if (
-			match.worker.descriptor.ownerClientId !== undefined &&
-			match.worker.descriptor.ownerClientId !== this.protocolClientId(client)
-		) {
-			throw new Error(`Unknown active session: ${command.activeSessionId}`);
-		}
+		const match = await this.findWorkerForClient(client, command.activeSessionId);
 		const activeSessionId = match.summary.activeSessionId ?? match.summary.id;
 		const duplicateValidation = this.currentSnapshotGeneration(match.worker, activeSessionId)?.validation;
 		if (duplicateValidation) {

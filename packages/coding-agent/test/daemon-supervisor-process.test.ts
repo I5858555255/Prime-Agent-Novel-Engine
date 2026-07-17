@@ -330,12 +330,23 @@ describe("daemon supervisor resident workers", () => {
 			success: false,
 			error: `Unknown active session: ${privateSelector}`,
 		});
+		const deniedCron = await otherClient.request({
+			type: "cron_add",
+			activeSessionId: summary.activeSessionId,
+			schedule: "every 1h",
+			prompt: "unauthorized",
+		});
+		expect(deniedCron).toMatchObject({
+			success: false,
+			error: `Unknown active session: ${summary.activeSessionId}`,
+		});
 		otherClient.close();
 		const connection = await DaemonAgentConnection.attach(client, summary.activeSessionId, {
 			ownedSession: true,
 			supportsExtensionUi: false,
 		});
 		await expect(connection.listHeartbeats()).resolves.toEqual([]);
+		await expect(connection.listCronJobs()).resolves.toEqual([]);
 		const cronResponse = await client.request({
 			type: "cron_add",
 			activeSessionId: summary.activeSessionId,
