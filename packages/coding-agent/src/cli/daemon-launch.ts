@@ -11,11 +11,12 @@ import { resolve } from "node:path";
 import { appendRotatingLog, expandTildePath, getClientErrorLogPath, VERSION } from "../config.js";
 import { getProcessStartId } from "../core/session-lease.js";
 import { DaemonClient, type DaemonHello } from "../modes/daemon/daemon-client.js";
-import { DAEMON_PROTOCOL_VERSION } from "../modes/daemon/daemon-protocol.js";
+import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../modes/daemon/daemon-protocol.js";
+import { getDaemonRuntimeIdentity } from "../modes/daemon/daemon-runtime-identity.js";
 import type { SessionSummary } from "../modes/daemon/daemon-session-list.js";
 import { defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
 import { isHelpCommandRequest, PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } from "./command-registry.js";
-import { createCliSubprocessEnv } from "./subprocess-launch.js";
+import { createCliSubprocessEnv, formatCurrentCliCommand } from "./subprocess-launch.js";
 
 const DAEMON_STARTUP_TIMEOUT_MS = 30_000;
 
@@ -50,31 +51,52 @@ async function canConnectToDaemon(socketPath: string, timeoutMs: number): Promis
 	}
 }
 
-type DaemonVersionProbe = "absent" | "current" | "stale";
+type DaemonVersionProbe =
+	| { status: "absent" }
+	| { status: "current"; hello: DaemonHello }
+	| { status: "stale"; hello?: DaemonHello; compatible: boolean };
 
 /** Connect to a running daemon and check whether it matches this client's protocol and app version. */
-async function probeDaemonVersion(socketPath: string): Promise<DaemonVersionProbe> {
-	const client = new DaemonClient(socketPath);
-	try {
-		await client.connect(250);
-	} catch {
-		client.close();
-		return "absent";
+export async function probeDaemonVersion(socketPath: string): Promise<DaemonVersionProbe> {
+	let client: DaemonClient | undefined;
+	for (const timeoutMs of [250, 2000]) {
+		const candidate = new DaemonClient(socketPath);
+		try {
+			await candidate.connect(timeoutMs);
+			client = candidate;
+			break;
+		} catch {
+			candidate.close();
+		}
+	}
+	if (!client) {
+		return { status: "absent" };
 	}
 	try {
 		const hello = await client.waitForHello(2000);
-		const current = hello.protocol.version === DAEMON_PROTOCOL_VERSION && hello.appVersion === VERSION;
+		const current =
+			hello.protocol.version === DAEMON_PROTOCOL_VERSION &&
+			hello.schemaId === DAEMON_SCHEMA_ID &&
+			hello.appVersion === VERSION;
 		if (!current) {
 			logDaemonLaunch(
-				`running daemon on ${socketPath} is stale: daemon v${hello.appVersion}/proto${hello.protocol.version} ` +
-					`vs client v${VERSION}/proto${DAEMON_PROTOCOL_VERSION}`,
+				`running daemon on ${socketPath} is stale: daemon v${hello.appVersion}/proto${hello.protocol.version}` +
+					`/schema ${hello.schemaId ?? "legacy"}/build ${hello.runtime?.buildId ?? "unknown"} vs client ` +
+					`v${VERSION}/proto${DAEMON_PROTOCOL_VERSION}/schema ${DAEMON_SCHEMA_ID}/build ${getDaemonRuntimeIdentity().buildId}`,
 			);
 		}
-		return current ? "current" : "stale";
+		if (current) {
+			return { status: "current", hello };
+		}
+		return {
+			status: "stale",
+			hello,
+			compatible: hello.protocol.version === 3,
+		};
 	} catch {
 		// Connected but no recognizable greeting: assume a stale daemon.
 		logDaemonLaunch(`running daemon on ${socketPath} sent no recognizable hello; treating as stale`);
-		return "stale";
+		return { status: "stale", compatible: false };
 	} finally {
 		client.close();
 	}
@@ -108,10 +130,21 @@ export async function listActiveDaemonSessionSummaries(
 
 /** Thrown when a stale-version daemon can't be replaced. The message is user-facing. */
 export class StaleDaemonError extends Error {
-	constructor(readonly socketPath: string) {
+	constructor(
+		readonly socketPath: string,
+		hello?: DaemonHello,
+	) {
+		const daemonIdentity = hello
+			? `Daemon: v${hello.appVersion ?? "unknown"}, protocol ${hello.protocol.version}, schema ${hello.schemaId ?? "legacy"}, ` +
+				`build ${hello.runtime?.buildId ?? "unknown"}, PID ${hello.supervisorPid ?? "unknown"}, ` +
+				`executable ${hello.runtime?.launcherPath ?? hello.runtime?.entrypointPath ?? hello.runtime?.executablePath ?? "unknown"}`
+			: `Daemon: unknown build on ${socketPath}`;
+		const client = getDaemonRuntimeIdentity();
 		super(
-			`A background service from a different Prime Agent version is running on ${socketPath} and can't be driven by ` +
-				`this version. Run "prime-agent shutdown" to stop it, then retry.`,
+			`An incompatible Prime Agent daemon is running.\n\n${daemonIdentity}\n` +
+				`Client: v${VERSION}, protocol ${DAEMON_PROTOCOL_VERSION}, schema ${DAEMON_SCHEMA_ID}, build ${client.buildId}, ` +
+				`executable ${client.launcherPath ?? client.entrypointPath ?? client.executablePath}\n\nRun:\n` +
+				`${formatCurrentCliCommand(["shutdown", "--force"])}\n\nThen retry the original command.`,
 		);
 		this.name = "StaleDaemonError";
 	}
@@ -252,6 +285,22 @@ export async function probeRunningDaemonSessions(socketPath: string): Promise<Ru
 	}
 }
 
+export async function shouldUseLegacyOwnedSessionWorkerFrontend(socketPath: string): Promise<boolean> {
+	const version = await probeDaemonVersion(socketPath);
+	if (
+		version.status !== "stale" ||
+		!version.compatible ||
+		version.hello?.serverCapabilities?.includes("client_owned_sessions")
+	) {
+		return false;
+	}
+	const running = await probeRunningDaemonSessions(socketPath);
+	return (
+		running.reachable &&
+		(running.activeSessions === undefined || running.activeSessions.some((summary) => isSessionBusy(summary)))
+	);
+}
+
 // Idle-but-loaded sessions reload from disk on the fresh daemon, so only a busy
 // session blocks replacing a stale daemon.
 async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean> {
@@ -291,13 +340,17 @@ async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean
 
 async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promise<void> {
 	const probe = await probeDaemonVersion(socketPath);
-	if (probe === "current") {
+	if (probe.status === "current") {
 		return;
 	}
-	if (probe === "stale") {
+	if (probe.status === "stale") {
 		const stopped = await shutdownStaleDaemonIfNotBusy(socketPath);
 		if (!stopped) {
-			throw new StaleDaemonError(socketPath);
+			if (probe.compatible) {
+				logDaemonLaunch(`using compatible legacy daemon on ${socketPath} while busy work completes`);
+				return;
+			}
+			throw new StaleDaemonError(socketPath, probe.hello);
 		}
 	}
 
@@ -322,7 +375,8 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 
 	const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS;
 	while (Date.now() < deadline) {
-		if (await canConnectToDaemon(socketPath, 250)) {
+		const started = await probeDaemonVersion(socketPath);
+		if (started.status === "current") {
 			return;
 		}
 		await delay(25);

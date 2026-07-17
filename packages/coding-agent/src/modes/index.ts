@@ -31,7 +31,11 @@ export {
 	sectionTitle,
 	shouldShowAgentsViewSession,
 } from "./agents-view/agents-view-state.js";
-export { DaemonClient, type DaemonClientMessageListener } from "./daemon/daemon-client.js";
+export {
+	DaemonCapabilityUnavailableError,
+	DaemonClient,
+	type DaemonClientMessageListener,
+} from "./daemon/daemon-client.js";
 export { type DaemonModeOptions, runDaemonMode } from "./daemon/daemon-mode.js";
 export type {
 	DaemonArtifactReference,

@@ -81,6 +81,7 @@ import {
 	createInteractiveModeLocalSessionHost,
 	createInteractiveModeUiServicesFromServices,
 	DaemonAgentConnection,
+	DaemonCapabilityUnavailableError,
 	DaemonClient,
 	defaultDaemonSocketPath,
 	InProcessAgentConnection,
@@ -1025,6 +1026,12 @@ async function createDaemonClientConnection(options: {
 			);
 			if (activeSummary) {
 				return await attach(activeSummary);
+			}
+		}
+		if (options.clientOwned) {
+			await client.waitForHello();
+			if (!client.supportsServerCapability("client_owned_sessions")) {
+				throw new DaemonCapabilityUnavailableError("create", "client_owned_sessions");
 			}
 		}
 
