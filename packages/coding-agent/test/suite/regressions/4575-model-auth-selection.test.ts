@@ -116,11 +116,11 @@ describe("ENG-4575 model authentication", () => {
 		const harness = await createHarness({ models: [{ id: "base", name: "Base", reasoning: true }] });
 		harnesses.push(harness);
 		const base = harness.getModel("base")!;
-		const scoped = { ...base, provider: "prime-inference", id: "openai/gpt-5.5" } as AgentConnectionModel;
+		const scoped = { ...base, provider: "custom", id: "scoped-only" } as AgentConnectionModel;
 		const publicModel = { ...base, provider: "openai", id: "gpt-5.4" } as AgentConnectionModel;
 		const fakeThis = Object.create(InteractiveMode.prototype) as InteractiveAutocompleteHarness;
 		fakeThis.connectionState = { scopedModels: [{ model: scoped }] };
-		fakeThis.connectionModelCatalog = [scoped, publicModel];
+		fakeThis.connectionModelCatalog = [publicModel];
 		fakeThis.connectionCommands = [];
 		fakeThis.skillCommands = new Map();
 		fakeThis.uiServices = { settingsManager: { getEnableSkillCommands: () => false } };
@@ -131,11 +131,21 @@ describe("ENG-4575 model authentication", () => {
 		fakeThis.getCurrentCwd = () => "/tmp";
 
 		const provider = fakeThis.createBaseAutocompleteProvider();
-		const suggestions = await provider.getSuggestions(["/model gpt-5.4"], 0, 14, {
+		const scopedInput = "/model scoped-only";
+		const scopedSuggestions = await provider.getSuggestions([scopedInput], 0, scopedInput.length, {
+			signal: new AbortController().signal,
+		});
+		const publicInput = "/model gpt-5.4";
+		const publicSuggestions = await provider.getSuggestions([publicInput], 0, publicInput.length, {
 			signal: new AbortController().signal,
 		});
 
-		expect(suggestions?.items).toContainEqual({
+		expect(scopedSuggestions?.items).toContainEqual({
+			value: "custom/scoped-only",
+			label: "scoped-only",
+			description: "custom",
+		});
+		expect(publicSuggestions?.items).toContainEqual({
 			value: "openai/gpt-5.4",
 			label: "gpt-5.4",
 			description: "openai",

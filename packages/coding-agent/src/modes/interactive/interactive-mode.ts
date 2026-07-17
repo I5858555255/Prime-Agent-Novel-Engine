@@ -1097,7 +1097,7 @@ export class InteractiveMode {
 		const modelCommand = slashCommands.find((command) => command.name === "model");
 		if (modelCommand) {
 			modelCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
-				getModelArgumentCompletions(prefix, this.connectionModelCatalog);
+				getModelArgumentCompletions(prefix, this.getCachedModelCandidates());
 		}
 
 		const effortCommand = slashCommands.find((command) => command.name === "effort");

@@ -267,19 +267,16 @@ describe("ModelSelectorComponent", () => {
 			})),
 		});
 		harnesses.push(harness);
-		const scopedModels = Array.from({ length: 12 }, (_, index) => {
-			const model = harness.getModel(`faux-${index + 1}`);
-			if (!model) {
-				throw new Error(`Missing model faux-${index + 1}`);
-			}
-			return { model };
-		});
+		const scopedModel = harness.getModel("faux-1");
+		if (!scopedModel) {
+			throw new Error("Missing model faux-1");
+		}
 
 		const selector = new ModelSelectorComponent(
 			createFakeTui(),
 			harness.getModel("faux-1"),
 			harness.session.modelRegistry,
-			scopedModels,
+			[{ model: scopedModel }],
 			() => {},
 			() => {},
 			undefined,
@@ -288,12 +285,20 @@ describe("ModelSelectorComponent", () => {
 
 		await waitForAsyncRender();
 
-		const lines = selector.render(120);
-		const output = stripAnsi(lines.join("\n"));
+		let lines = selector.render(120);
+		let output = stripAnsi(lines.join("\n"));
 
 		expect(lines.length).toBeLessThanOrEqual(16);
 		expect(output).toContain("Scope: ");
+		expect(output).toContain("Shift+Tab scope");
 		expect(output).toContain("(all/scoped)");
+		expect(output).not.toContain("(1/12)");
+
+		selector.handleInput("\x1b[Z");
+		lines = selector.render(120);
+		output = stripAnsi(lines.join("\n"));
+
+		expect(lines.length).toBeLessThanOrEqual(16);
 		expect(output).toContain("(1/12)");
 	});
 });

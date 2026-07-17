@@ -5,8 +5,10 @@ import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
+	getKeybindings,
 	resetCapabilitiesCache,
 	setCapabilities,
+	setKeybindings,
 	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -16,6 +18,7 @@ import { type AuthStatus, AuthStorage } from "../src/core/auth-storage.js";
 import type { AgentCronJob } from "../src/core/cron-jobs.js";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.js";
 import { emptyGoalState, type GoalState } from "../src/core/goals.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
 import type {
@@ -1694,6 +1697,8 @@ describe("InteractiveMode model selection persistence", () => {
 	});
 
 	test("keeps cached daemon models visible when scoped models are active", async () => {
+		const previousKeybindings = getKeybindings();
+		setKeybindings(new KeybindingsManager());
 		const scopedModel = createModel("openai", "scoped");
 		const catalogModel = createModel("anthropic", "catalog");
 		const getAvailableModels = vi.fn(async () => [catalogModel]);
@@ -1711,12 +1716,15 @@ describe("InteractiveMode model selection persistence", () => {
 		expect(fakeThis.getCachedModelCandidates()).toEqual([scopedModel, catalogModel]);
 		await expect(fakeThis.findExactModelMatch("catalog")).resolves.toEqual(catalogModel);
 
-		getSelector().handleInput("\t");
+		getSelector().handleInput("\x1b[Z");
 		expect(getSelector().render(120).join("\n")).toContain("catalog");
 		expect(getAvailableModels).not.toHaveBeenCalled();
+		getSelector().handleInput("\t");
+		expect(getSelector().getActiveTab()).toBe("mcp-connections");
 
 		getSelector().handleInput("\x1b");
 		await expect(result).resolves.toBeUndefined();
+		setKeybindings(previousKeybindings);
 	});
 
 	test("uses a fresh cached model catalog without starting another refresh", async () => {

@@ -302,7 +302,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private getScopeHintText(): string {
-		return keyHint("tui.input.tab", "scope") + theme.fg("muted", " (all/scoped)");
+		return keyHint("app.model.toggleScope", "scope") + theme.fg("muted", " (all/scoped)");
 	}
 
 	private setScope(scope: ModelScope): void {
@@ -411,7 +411,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
-		if (kb.matches(keyData, "tui.input.tab")) {
+		if (kb.matches(keyData, "app.model.toggleScope")) {
 			if (this.scopedModelItems.length > 0) {
 				const nextScope: ModelScope = this.scope === "all" ? "scoped" : "all";
 				this.setScope(nextScope);
