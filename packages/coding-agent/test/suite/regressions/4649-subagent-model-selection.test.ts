@@ -6,6 +6,13 @@ import { createHarness } from "../harness.js";
 
 const provider = "faux-eng-4649";
 
+function openAICodexToken(accountId: string): string {
+	const payload = Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
+	).toString("base64url");
+	return `header.${payload}.signature`;
+}
+
 describe("ENG-4649 subagent model selection", () => {
 	it("searches a bounded authenticated catalog without advertising it", async () => {
 		const harness = await createHarness({
@@ -50,15 +57,91 @@ describe("ENG-4649 subagent model selection", () => {
 	it("omits providers whose credentials are marked expired", async () => {
 		const harness = await createHarness({ provider, models: [{ id: "parent-model" }, { id: "child-model" }] });
 		try {
-			expect(harness.session.findRlmModels("child", 8).models).toHaveLength(1);
+			expect((await harness.session.findRlmModels("child", 8)).models).toHaveLength(1);
 			expect(harness.session.modelRegistry.markProviderAuthStale(provider)).toBe(true);
 			expect(harness.session.modelRegistry.markProviderAuthStale(provider)).toBe(true);
 			expect(harness.session.modelRegistry.getProviderAuthStatus(provider)).toMatchObject({
 				source: "stale",
 				label: "expired",
 			});
-			expect(harness.session.findRlmModels("", 8)).toEqual({ models: [] });
+			await expect(harness.session.findRlmModels("", 8)).resolves.toEqual({ models: [] });
 		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("limits ChatGPT discovery and execution to the account model catalog", async () => {
+		const codexProvider = "openai-codex";
+		const harness = await createHarness({
+			provider: codexProvider,
+			models: [{ id: "parent-model" }, { id: "unsupported-model" }],
+		});
+		const fetchModels = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ models: [{ slug: "parent-model" }] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchModels);
+		try {
+			harness.authStorage.setRuntimeApiKey(codexProvider, openAICodexToken("account-1"));
+			const discovered = await harness.session.findRlmModels("", 20);
+			expect(discovered.models.map((model) => model.selector)).toEqual([`${codexProvider}/parent-model`]);
+			expect(fetchModels).toHaveBeenCalledWith(
+				expect.stringMatching(/\/codex\/models\?client_version=/),
+				expect.objectContaining({
+					headers: expect.objectContaining({ "chatgpt-account-id": "account-1" }),
+				}),
+			);
+
+			harness.setResponses([fauxAssistantMessage("parent fallback answer")]);
+			const result = await harness.session.runRlmChild("reject unsupported account model", {
+				model: `${codexProvider}/unsupported-model`,
+			});
+			expect(result.model).toBe(`${codexProvider}/parent-model`);
+			expect(result.warning).toContain(`not "${codexProvider}/unsupported-model"`);
+		} finally {
+			vi.unstubAllGlobals();
+			harness.cleanup();
+		}
+	});
+
+	it("does not start a child after its parent is disposed during preflight", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model" }, { id: "child-model" }],
+		});
+		let releasePreflight!: () => void;
+		const preflightGate = new Promise<void>((resolve) => {
+			releasePreflight = resolve;
+		});
+		let providerCalls = 0;
+		try {
+			harness.setResponses([
+				() => {
+					providerCalls++;
+					return fauxAssistantMessage("late child ran");
+				},
+			]);
+			const authPreflight = vi
+				.spyOn(harness.session.modelRegistry, "getApiKeyAndHeaders")
+				.mockImplementationOnce(async () => {
+					await preflightGate;
+					return { ok: true, apiKey: "faux-key" };
+				});
+			const run = harness.session.runRlmChild("do not run after disposal", {
+				model: `${provider}/child-model`,
+			});
+			await vi.waitFor(() => expect(authPreflight).toHaveBeenCalledOnce());
+			harness.session.dispose();
+			releasePreflight();
+
+			await expect(run).rejects.toThrow("parent session has been disposed");
+			expect(providerCalls).toBe(0);
+			expect(harness.session.listRlmSubagents().subagents).toEqual([]);
+		} finally {
+			releasePreflight();
 			harness.cleanup();
 		}
 	});

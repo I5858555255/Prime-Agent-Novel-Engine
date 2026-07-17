@@ -6752,15 +6752,15 @@ export class AgentSession {
 		}
 	}
 
-	private _authenticatedRlmModels(): Model<Api>[] {
-		return this._modelRegistry.getAvailable().filter((model) => {
+	private async _authenticatedRlmModels(): Promise<Model<Api>[]> {
+		return (await this._modelRegistry.getExecutableModels()).filter((model) => {
 			const status = this._modelRegistry.getProviderAuthStatus(model.provider);
 			return status.source !== "stale" && status.label !== "expired";
 		});
 	}
 
-	findRlmModels(query: string, limit: number): RlmFindModelsResult {
-		return { models: findRlmModelMatches(query, this._authenticatedRlmModels(), limit) };
+	async findRlmModels(query: string, limit: number): Promise<RlmFindModelsResult> {
+		return { models: findRlmModelMatches(query, await this._authenticatedRlmModels(), limit) };
 	}
 
 	private _rlmModelFallback(reference: string, parentModel: Model<Api>, reason: string): RlmSubagentModelSelection {
@@ -6781,7 +6781,7 @@ export class AgentSession {
 		}
 
 		const normalizedReference = reference.toLowerCase();
-		const model = this._authenticatedRlmModels().find(
+		const model = (await this._authenticatedRlmModels()).find(
 			(candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === normalizedReference,
 		);
 		if (!model) {
@@ -6826,6 +6826,9 @@ export class AgentSession {
 			if (requestedSessionName) {
 				this._pendingRlmSubagentSessionNames.delete(requestedSessionName);
 			}
+		}
+		if (this._disposed || this._disposing) {
+			throw new Error("Cannot start a subagent after the parent session has been disposed");
 		}
 
 		const childSessionDir = this._createChildRlmSessionDir();

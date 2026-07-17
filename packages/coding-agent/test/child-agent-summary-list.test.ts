@@ -62,6 +62,14 @@ describe("ChildAgentSummaryComponent inline list", () => {
 		expect(out).not.toContain("tools");
 	});
 
+	it("preserves the model suffix when its selector is truncated", () => {
+		const summary = new ChildAgentSummaryComponent();
+		summary.setNodes([{ ...node("a"), model: "prime-inference/internal/glm-5.2-fast" }]);
+		const out = stripAnsi(summary.render(80).join("\n"));
+		expect(out).toContain("prime-…/glm-5.2-fast");
+		expect(out).not.toContain("prime-inference/int…");
+	});
+
 	it("shows recaps in a fixed column and falls back to activity", () => {
 		const summary = new ChildAgentSummaryComponent();
 		summary.setNodes([

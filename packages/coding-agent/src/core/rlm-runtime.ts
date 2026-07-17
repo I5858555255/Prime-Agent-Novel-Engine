@@ -62,7 +62,7 @@ export interface RlmFindModelsResult {
 export type RlmRunHandler = (request: RlmRunRequest) => Promise<RlmRunResult>;
 export type RlmListSubagentsHandler = () => RlmListSubagentsResult;
 export type RlmDeleteSubagentHandler = (target: string) => Promise<RlmDeleteSubagentResult>;
-export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindModelsResult;
+export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindModelsResult | Promise<RlmFindModelsResult>;
 
 const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
 export const DEFAULT_RLM_MODEL_SEARCH_LIMIT = 8;
@@ -181,7 +181,7 @@ export function createRlmFindModelsHostHandler(handler: RlmFindModelsHandler): H
 		if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > MAX_RLM_MODEL_SEARCH_LIMIT) {
 			throw new Error(`rlm.find_models limit must be an integer from 1 to ${MAX_RLM_MODEL_SEARCH_LIMIT}`);
 		}
-		return { models: handler(payload.query, limit as number).models };
+		return { models: (await handler(payload.query, limit as number)).models };
 	};
 }
 

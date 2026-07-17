@@ -193,6 +193,25 @@ function padTableCell(value: string, width: number, ellipsis = ""): string {
 	return truncated + " ".repeat(Math.max(0, width - visibleWidth(truncated)));
 }
 
+function truncateModelSelector(value: string, width: number): string {
+	if (visibleWidth(value) <= width) {
+		return value;
+	}
+	if (width <= 1) {
+		return truncateToWidth(value, width, "");
+	}
+	const prefixWidth = Math.max(1, Math.floor((width - 1) * 0.35));
+	const suffixWidth = width - prefixWidth - 1;
+	let suffix = "";
+	for (const character of [...value].reverse()) {
+		if (visibleWidth(character + suffix) > suffixWidth) {
+			break;
+		}
+		suffix = character + suffix;
+	}
+	return `${truncateToWidth(value, prefixWidth, "")}…${suffix}`;
+}
+
 // Rows shown at once in the inline list below the prompt; extras scroll.
 const SUMMARY_VISIBLE_ROWS = 5;
 const SUMMARY_LIST_INDENT = 0;
@@ -454,7 +473,7 @@ export class ChildAgentSummaryComponent implements Component, Focusable {
 		const model = entry.node.model ?? "";
 		const tokens = entry.node.tokenCount === undefined ? "" : `${formatTokenCount(entry.node.tokenCount)} tok`;
 		const duration = formatChildAgentDuration(entry.node.durationMs);
-		const modelCell = padTableCell(model, SUMMARY_MODEL_WIDTH, "…");
+		const modelCell = padTableCell(truncateModelSelector(model, SUMMARY_MODEL_WIDTH), SUMMARY_MODEL_WIDTH);
 		const tokensCell = padTableCell(tokens, SUMMARY_TOKENS_WIDTH, "…");
 		const durationCell = padTableCell(duration, SUMMARY_DURATION_WIDTH, "…");
 		const metrics = `${modelCell} ${tokensCell}${" ".repeat(SUMMARY_TOKEN_TIME_GAP)}${durationCell}`;
