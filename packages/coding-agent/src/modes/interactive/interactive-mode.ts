@@ -183,6 +183,7 @@ import { type FileChangeSummary, formatTotalChangeSummary, mergeTurnFileChanges 
 import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
+import { FEATURE_HINT_ANIMATION_INTERVAL_MS, FeatureHintComponent } from "./components/feature-hint.js";
 import { FooterComponent } from "./components/footer.js";
 import { HeartbeatManagerComponent } from "./components/heartbeat-manager.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
@@ -705,6 +706,7 @@ export class InteractiveMode {
 	private statusContainer: Container;
 	private queuedMessagesContainer: Container;
 	private sideQuestionContainer: Container;
+	private featureHintContainer: Container;
 	private defaultEditor: CustomEditor;
 	private editor: EditorComponent;
 	private readonly promptStashStore: ClientPromptStashStore | undefined;
@@ -741,7 +743,8 @@ export class InteractiveMode {
 	private currentFeatureHint: string | undefined;
 	private featureHintEligibleAt = 0;
 	private featureHintTimer: NodeJS.Timeout | undefined;
-	private featureHintComponent: TruncatedText | undefined;
+	private featureHintAnimationTimer: NodeJS.Timeout | undefined;
+	private featureHintComponent: FeatureHintComponent | undefined;
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
@@ -935,6 +938,7 @@ export class InteractiveMode {
 		this.statusContainer = new Container();
 		this.queuedMessagesContainer = new Container();
 		this.sideQuestionContainer = new Container();
+		this.featureHintContainer = new Container();
 		this.childAgentDetail = new ChildAgentDetailComponent(() => this.getChildAgentPanelRows(), {
 			ui: this.ui,
 		});
@@ -1269,12 +1273,14 @@ export class InteractiveMode {
 		this.mainContainer.addChild(this.recapContainer);
 		this.mainContainer.addChild(this.queuedMessagesContainer);
 		this.mainContainer.addChild(this.sideQuestionContainer);
+		this.mainContainer.addChild(this.featureHintContainer);
 		this.mainContainer.addChild(this.editorContainer);
 		this.mainContainer.addChild(this.childAgentSummary);
 		this.mainContainer.addChild(this.widgetContainerBelow);
 		this.footerSlot.addChild(this.footer);
 		this.mainContainer.addChild(this.footerSlot);
 		this.promptDock.addChild(this.sideQuestionContainer);
+		this.promptDock.addChild(this.featureHintContainer);
 		this.promptDock.addChild(this.editorContainer);
 		this.promptDock.addChild(this.childAgentSummary);
 		this.promptDock.addChild(this.footerSlot);
@@ -2983,8 +2989,13 @@ export class InteractiveMode {
 		) {
 			return;
 		}
-		this.featureHintComponent = new TruncatedText(theme.fg("dim", `Hint: ${this.currentFeatureHint}`), 1, 0);
-		this.statusContainer.addChild(this.featureHintComponent);
+		this.featureHintComponent = new FeatureHintComponent(this.currentFeatureHint);
+		this.featureHintContainer.addChild(this.featureHintComponent);
+		this.featureHintAnimationTimer = setInterval(() => {
+			this.featureHintComponent?.advance();
+			this.ui.requestRender();
+		}, FEATURE_HINT_ANIMATION_INTERVAL_MS);
+		this.featureHintAnimationTimer.unref?.();
 		this.ui.requestRender();
 	}
 
@@ -2993,8 +3004,12 @@ export class InteractiveMode {
 			clearTimeout(this.featureHintTimer);
 			this.featureHintTimer = undefined;
 		}
+		if (this.featureHintAnimationTimer) {
+			clearInterval(this.featureHintAnimationTimer);
+			this.featureHintAnimationTimer = undefined;
+		}
 		if (this.featureHintComponent) {
-			this.statusContainer.removeChild(this.featureHintComponent);
+			this.featureHintContainer.removeChild(this.featureHintComponent);
 			this.featureHintComponent = undefined;
 		}
 	}

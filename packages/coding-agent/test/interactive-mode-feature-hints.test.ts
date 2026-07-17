@@ -1,6 +1,7 @@
 import { type Component, Container, visibleWidth } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { FEATURE_HINT_ANIMATION_INTERVAL_MS } from "../src/modes/interactive/components/feature-hint.js";
 import { FEATURE_HINTS, FeatureHintDeck } from "../src/modes/interactive/feature-hints.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -21,6 +22,7 @@ function callPrivate(mode: object, name: string): void {
 
 function createMode() {
 	const statusContainer = new Container();
+	const featureHintContainer = new Container();
 	const loader = new FakeLoader();
 	statusContainer.addChild(loader);
 	const hint = { id: "test", text: "This is a deliberately long feature hint for narrow terminals." };
@@ -28,6 +30,7 @@ function createMode() {
 	const requestRender = vi.fn();
 	const mode = {
 		statusContainer,
+		featureHintContainer,
 		loadingAnimation: loader,
 		workingVisible: true,
 		connectionState: { isStreaming: true },
@@ -37,12 +40,13 @@ function createMode() {
 		currentFeatureHint: undefined,
 		featureHintEligibleAt: 0,
 		featureHintTimer: undefined,
+		featureHintAnimationTimer: undefined,
 		featureHintComponent: undefined,
 		options: { returnToAgentsView: true },
 		ui: { requestRender },
 	};
 	Object.setPrototypeOf(mode, InteractiveMode.prototype);
-	return { mode, statusContainer, loader, featureHintDeck, requestRender };
+	return { mode, statusContainer, featureHintContainer, loader, featureHintDeck, requestRender };
 }
 
 describe("feature hint deck", () => {
@@ -124,25 +128,33 @@ describe("InteractiveMode feature hints", () => {
 		vi.useRealTimers();
 	});
 
-	it("adds one truncated hint after a sustained agent run", () => {
-		const { mode, statusContainer, featureHintDeck, requestRender } = createMode();
+	it("adds one animated truncated hint above the prompt after a sustained agent run", () => {
+		const { mode, statusContainer, featureHintContainer, featureHintDeck, requestRender } = createMode();
 
 		callPrivate(mode, "startFeatureHintPresentation");
 		vi.advanceTimersByTime(4_999);
 		expect(statusContainer.children).toHaveLength(1);
+		expect(featureHintContainer.children).toHaveLength(0);
 
 		vi.advanceTimersByTime(1);
-		expect(statusContainer.children).toHaveLength(2);
-		const lines = statusContainer.children[1]?.render(24) ?? [];
+		expect(statusContainer.children).toHaveLength(1);
+		expect(featureHintContainer.children).toHaveLength(1);
+		const lines = featureHintContainer.children[0]?.render(24) ?? [];
 		expect(lines).toHaveLength(1);
 		expect(stripAnsi(lines[0] ?? "")).toContain("Hint:");
 		expect(visibleWidth(lines[0] ?? "")).toBeLessThanOrEqual(24);
 		expect(featureHintDeck.next).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+
+		vi.advanceTimersByTime(FEATURE_HINT_ANIMATION_INTERVAL_MS);
+		const animatedLines = featureHintContainer.children[0]?.render(24) ?? [];
+		expect(stripAnsi(animatedLines[0] ?? "")).toBe(stripAnsi(lines[0] ?? ""));
+		expect(animatedLines[0]).not.toBe(lines[0]);
+		expect(requestRender).toHaveBeenCalledTimes(2);
 	});
 
 	it("cancels a pending hint when the loader stops", () => {
-		const { mode, statusContainer, requestRender } = createMode();
+		const { mode, statusContainer, featureHintContainer, requestRender } = createMode();
 
 		callPrivate(mode, "startFeatureHintPresentation");
 		vi.advanceTimersByTime(2_000);
@@ -150,11 +162,12 @@ describe("InteractiveMode feature hints", () => {
 		vi.advanceTimersByTime(5_000);
 
 		expect(statusContainer.children).toHaveLength(0);
+		expect(featureHintContainer.children).toHaveLength(0);
 		expect(requestRender).not.toHaveBeenCalled();
 	});
 
 	it("retains the hint and remaining delay when the loader is recreated", () => {
-		const { mode, statusContainer, featureHintDeck } = createMode();
+		const { mode, statusContainer, featureHintContainer, featureHintDeck } = createMode();
 
 		callPrivate(mode, "startFeatureHintPresentation");
 		vi.advanceTimersByTime(3_000);
@@ -166,13 +179,16 @@ describe("InteractiveMode feature hints", () => {
 		callPrivate(mode, "startFeatureHintPresentation");
 		vi.advanceTimersByTime(1_999);
 		expect(statusContainer.children).toHaveLength(1);
+		expect(featureHintContainer.children).toHaveLength(0);
 
 		vi.advanceTimersByTime(1);
-		expect(statusContainer.children).toHaveLength(2);
+		expect(statusContainer.children).toHaveLength(1);
+		expect(featureHintContainer.children).toHaveLength(1);
 		expect(featureHintDeck.next).toHaveBeenCalledTimes(1);
 
 		callPrivate(mode, "endFeatureHintRun");
 		expect(statusContainer.children).toHaveLength(1);
+		expect(featureHintContainer.children).toHaveLength(0);
 		expect(Reflect.get(mode, "currentFeatureHint")).toBeUndefined();
 	});
 
