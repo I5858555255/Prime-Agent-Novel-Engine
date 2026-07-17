@@ -159,7 +159,7 @@ const PRIME_INFERENCE_MODEL_METADATA: Record<string, PrimeInferenceModelMetadata
 	"qwen/qwen3-30b-a3b-instruct-2507": { contextWindow: 262144 },
 	// OpenRouter has no max_completion_tokens for the rest of these.
 	"moonshotai/kimi-k2.5": { maxTokens: 65535 },
-	"moonshotai/kimi-k3": { maxTokens: 131072 },
+	"moonshotai/kimi-k3": { maxTokens: 1048576 },
 	"openai/gpt-4.1": { maxTokens: 32768 },
 	"openai/gpt-5-nano": { maxTokens: 128000 },
 	"openai/gpt-oss-20b": { maxTokens: 131072 },
@@ -1589,7 +1589,7 @@ async function generateModels() {
 			candidate.maxTokens = 4096;
 		}
 		if (candidate.provider === "openrouter" && candidate.id === "moonshotai/kimi-k3") {
-			candidate.maxTokens = 131072;
+			candidate.maxTokens = 1048576;
 		}
 		if (candidate.provider === "openrouter" && candidate.id === "z-ai/glm-5") {
 			candidate.cost.input = 0.6;

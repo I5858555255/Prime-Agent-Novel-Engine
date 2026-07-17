@@ -11480,7 +11480,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 1048576,
-			maxTokens: 131072,
+			maxTokens: 1048576,
 		} satisfies Model<"openai-completions">,
 		"nex-agi/nex-n2-mini": {
 			id: "nex-agi/nex-n2-mini",
@@ -15086,7 +15086,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 1048576,
-			maxTokens: 131072,
+			maxTokens: 1048576,
 			featured: true,
 		} satisfies Model<"openai-completions">,
 		"nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {

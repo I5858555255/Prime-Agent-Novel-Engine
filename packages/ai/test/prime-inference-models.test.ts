@@ -82,7 +82,7 @@ describe("Prime Inference models", () => {
 			expect(getSupportedThinkingLevels(model)).toEqual(["max"]);
 			expect(model.input).toEqual(["text", "image"]);
 			expect(model.contextWindow).toBe(1048576);
-			expect(model.maxTokens).toBe(131072);
+			expect(model.maxTokens).toBe(1048576);
 			expect(model.cost.input).toBe(3);
 			expect(model.cost.output).toBe(15);
 		}
