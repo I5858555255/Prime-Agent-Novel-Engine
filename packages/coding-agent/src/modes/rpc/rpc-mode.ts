@@ -453,13 +453,12 @@ async function runRpcModeWithConnectionInternal(
 			);
 			return;
 		}
+		if (typeof parsed !== "object" || parsed === null || !("type" in parsed) || typeof parsed.type !== "string") {
+			output(error(undefined, "parse", "Invalid command: expected an object with a string type"));
+			return;
+		}
 
-		if (
-			typeof parsed === "object" &&
-			parsed !== null &&
-			"type" in parsed &&
-			parsed.type === "extension_ui_response"
-		) {
+		if (parsed.type === "extension_ui_response") {
 			const response = parsed as RpcExtensionUIResponse;
 			if (extensionUi.handleResponse(response)) return;
 			pendingConnectionUiRequests.delete(response.id);

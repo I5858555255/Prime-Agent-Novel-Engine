@@ -103,7 +103,7 @@ async function runCli(
 }
 
 async function runRpc(
-	commands: object[],
+	commands: unknown[],
 	options: { trailingNewline?: boolean } = {},
 ): Promise<{ stdout: object[]; stderr: string }> {
 	const child = spawn(process.execPath, [tsxPath, fixturePath], {
@@ -375,6 +375,19 @@ describe("ENG-4685 daemon-backed client modes", () => {
 				command: "get_available_models",
 				success: true,
 				data: { models: [] },
+			},
+		]);
+	});
+
+	it("returns a structured error for scalar JSON input", async () => {
+		const result = await runRpc([null]);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toEqual([
+			{
+				type: "response",
+				command: "parse",
+				success: false,
+				error: "Invalid command: expected an object with a string type",
 			},
 		]);
 	});
