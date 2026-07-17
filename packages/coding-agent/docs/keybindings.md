@@ -123,7 +123,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 
 ### Configuration Menu
 
-Use `tab` to cycle through Providers, Models, and MCP Connections. Left and right move the cursor in the active search field.
+Use `tab` to cycle through Providers, Models, and MCP Connections, and `escape` to close the menu. Left and right move the cursor in the active search field.
 
 ### Display and Message Queue
 

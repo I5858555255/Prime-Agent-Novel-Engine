@@ -75,12 +75,8 @@ class ConfigurationMenuTabBar implements Component {
 			safeWidth,
 		);
 		const tabKey = keyText("tui.input.tab", { primaryOnly: true });
-		const hint = `${theme.fg("dim", tabKey)}${theme.fg("muted", " switch tabs")}`;
-		const lastLine = lines.at(-1);
-		if (lastLine && visibleWidth(`${lastLine}   ${hint}`) <= safeWidth) {
-			lines[lines.length - 1] = `${lastLine}   ${hint}`;
-			return lines;
-		}
+		const closeKey = keyText("tui.select.cancel", { primaryOnly: true });
+		const hint = `${theme.fg("dim", tabKey)}${theme.fg("muted", " switch tabs · ")}${theme.fg("dim", closeKey)}${theme.fg("muted", " close")}`;
 		return [...lines, ...wrapTextWithAnsi(hint, safeWidth)];
 	}
 
@@ -233,6 +229,10 @@ export class ConfigurationMenuComponent extends Container implements Focusable {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.input.tab")) {
 			this.switchTab();
+			return;
+		}
+		if (kb.matches(keyData, "tui.editor.cursorLeft") || kb.matches(keyData, "tui.editor.cursorRight")) {
+			this.activeBody.getSearchInput().handleInput(keyData);
 			return;
 		}
 		this.activeBody.handleInput(keyData);

@@ -24,6 +24,7 @@ describe("ConfigurationMenuComponent", () => {
 			getRows?: () => number;
 			requestRender?: () => void;
 			onSelectProvider?: () => void;
+			onCancel?: () => void;
 		} = {},
 	): Promise<ConfigurationMenuComponent> {
 		const harness = await createHarness({
@@ -54,7 +55,7 @@ describe("ConfigurationMenuComponent", () => {
 			onSelectProvider: options.onSelectProvider ?? (() => {}),
 			onSelectMcpConnection: () => {},
 			onSelectModel: () => {},
-			onCancel: () => {},
+			onCancel: options.onCancel ?? (() => {}),
 		});
 	}
 
@@ -112,7 +113,11 @@ describe("ConfigurationMenuComponent", () => {
 	it("switches tabs with Tab and preserves focus and search state", async () => {
 		const menu = await createMenu();
 		menu.focused = true;
-		expect(stripAnsi(menu.render(120).join("\n"))).toContain("Tab switch tabs");
+		const lines = stripAnsi(menu.render(120).join("\n")).split("\n");
+		const tabsLine = lines.findIndex((line) => line.includes("[▶ Providers]"));
+		const shortcutsLine = lines.findIndex((line) => line.includes("Tab switch tabs"));
+		expect(shortcutsLine).toBeGreaterThan(tabsLine);
+		expect(lines[shortcutsLine]).toContain("Esc close");
 
 		menu.handleInput("\t");
 		expect(menu.getActiveTab()).toBe("models");
@@ -165,16 +170,24 @@ describe("ConfigurationMenuComponent", () => {
 		expect(postLoginRow).toContain("current");
 	});
 
-	it("keeps arrow keys in the active search field", async () => {
-		const menu = await createMenu();
+	it("keeps arrow keys in the active search field and uses Escape to close", async () => {
+		const onCancel = vi.fn();
+		const menu = await createMenu({ initialTab: "models", onCancel });
+
+		menu.handleInput("\x1b[D");
+		expect(menu.getActiveTab()).toBe("models");
+		expect(onCancel).not.toHaveBeenCalled();
 
 		menu.handleInput("a");
 		menu.handleInput("n");
 		menu.handleInput("\x1b[D");
 		menu.handleInput("\x1b[C");
 
-		expect(menu.getActiveTab()).toBe("providers");
+		expect(menu.getActiveTab()).toBe("models");
 		expect(menu.getSearchValue()).toBe("an");
+
+		menu.handleInput("\x1b");
+		expect(onCancel).toHaveBeenCalledOnce();
 	});
 
 	it("wraps complete tab labels at narrow widths without overflowing the viewport", async () => {
